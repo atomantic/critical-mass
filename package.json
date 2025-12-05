@@ -1,0 +1,19 @@
+{
+  "name": "coinbase_dca_trade",
+  "version": "1.0.0",
+  "description": "Coinbase Dollar Cost Average trading bot for BTC-USDC",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["coinbase", "dca", "trading", "btc", "usdc"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^11.0.3"
+  }
+}

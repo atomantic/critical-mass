@@ -1,0 +1,10 @@
+{
+  "productId": "BTC-USDC",
+  "totalAllocation": 10000,
+  "daysToSpread": 10,
+  "sellMarkupPercent": 10,
+  "holdbackPercent": 5,
+  "minOrderSize": 1,
+  "maxBuyPrice": 250000,
+  "enabled": true
+}
