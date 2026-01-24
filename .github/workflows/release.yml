@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get version from package.json
+        id: package-version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: tag-check
+        run: |
+          if git rev-parse "v${{ steps.package-version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        if: steps.tag-check.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.package-version.outputs.version }}"
+          CHANGELOG_FILE=".changelogs/v${VERSION}.md"
+
+          if [ -f "$CHANGELOG_FILE" ]; then
+            CHANGELOG=$(cat "$CHANGELOG_FILE")
+          else
+            PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)
+            COMMIT_LOG=$(git log $PREV_TAG..HEAD --pretty=format:"- %s" --no-merges | grep -v "\[skip ci\]" | head -50)
+
+            CHANGELOG="# Release v${VERSION}
+
+          ## Changes
+
+          ${COMMIT_LOG}
+
+          ## Installation
+
+          \`\`\`bash
+          git clone https://github.com/atomantic/dca_bot.git
+          cd dca_bot
+          npm run install:all
+          cp config.json.example config.json
+          # Edit config.json with your exchange credentials
+          npm run pm2:start
+          \`\`\`"
+          fi
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        if: steps.tag-check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.package-version.outputs.version }}
+          name: v${{ steps.package-version.outputs.version }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prep dev branch for next release
+        if: steps.tag-check.outputs.exists == 'false'
+        run: |
+          CURRENT_VERSION=${{ steps.package-version.outputs.version }}
+
+          MAJOR=$(echo $CURRENT_VERSION | cut -d. -f1)
+          MINOR=$(echo $CURRENT_VERSION | cut -d. -f2)
+
+          NEW_MINOR=$((MINOR + 1))
+          NEW_VERSION="$MAJOR.$NEW_MINOR.0"
+
+          git fetch origin dev
+          git checkout dev
+
+          npm version $NEW_VERSION --no-git-tag-version
+
+          git add package.json package-lock.json
+          git commit -m "build: prep v$NEW_VERSION for next release [skip ci]"
+          git push origin dev
