@@ -9,6 +9,8 @@ import Backtest from './components/Backtest'
 import Optimizer from './components/Optimizer'
 import ExchangeSelector from './components/ExchangeSelector'
 import KeysConfig from './components/KeysConfig'
+import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
+import { useTradeEvents } from './hooks/useTradeEvents'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -43,7 +45,25 @@ const tabs = [
 // Valid exchange names
 const VALID_EXCHANGES = ['coinbase', 'gemini']
 
-function App() {
+// Component that listens to trade events and shows toasts
+function TradeEventListener() {
+  const { addToast } = useToast()
+  const { latestEvent } = useTradeEvents()
+
+  useEffect(() => {
+    if (latestEvent) {
+      // Only show toasts for significant events (skip info-level like price checks)
+      const significantTypes = ['buy_filled', 'sell_placed', 'order_filled', 'complete', 'error', 'skipped']
+      if (significantTypes.includes(latestEvent.type)) {
+        addToast(tradeEventToToast(latestEvent))
+      }
+    }
+  }, [latestEvent, addToast])
+
+  return null
+}
+
+function AppContent() {
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -173,7 +193,9 @@ function App() {
                   onRefresh={fetchExchanges}
                 />
                 <span className="text-sm text-gray-400">
-                  {summary?.state?.lastRunDate ? `Last run: ${summary.state.lastRunDate}` : 'Never run'}
+                  {summary?.state?.lastRunTimestamp
+                    ? `Last run: ${new Date(summary.state.lastRunTimestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+                    : 'Never run'}
                 </span>
                 <button
                   onClick={syncOrders}
@@ -255,6 +277,15 @@ function App() {
         </main>
       </div>
     </ExchangeContext.Provider>
+  )
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <TradeEventListener />
+      <AppContent />
+    </ToastProvider>
   )
 }
 

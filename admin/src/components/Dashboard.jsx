@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import ActivityFeed from './ActivityFeed'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD")
 function getQuoteCurrency(productId) {
@@ -42,9 +43,9 @@ function StatCard({ label, value, subtext, color = 'blue' }) {
   }
 
   return (
-    <div className={`p-4 rounded-lg border ${colors[color]}`}>
-      <div className="text-sm text-gray-400">{label}</div>
-      <div className="text-2xl font-bold mt-1">{value}</div>
+    <div className={`p-3 rounded-lg border ${colors[color]}`}>
+      <div className="text-xs text-gray-400">{label}</div>
+      <div className="text-lg font-bold mt-1">{value}</div>
       {subtext && <div className="text-xs text-gray-500 mt-1">{subtext}</div>}
     </div>
   )
@@ -75,6 +76,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
   const [liveData, setLiveData] = useState(null)
   const [updating, setUpdating] = useState(false)
   const [countdown, setCountdown] = useState('')
+  const [consolidating, setConsolidating] = useState(false)
 
   useEffect(() => {
     const fetchLive = async () => {
@@ -122,6 +124,19 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
     setUpdating(false)
   }
 
+  const handleConsolidate = async () => {
+    setConsolidating(true)
+    const res = await fetch(`/api/${exchange}/consolidate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    })
+    if (res.ok && onRefresh) {
+      onRefresh()
+    }
+    setConsolidating(false)
+  }
+
   if (!summary) return null
 
   const { config, state, stats, costBasis, nextTrade } = summary
@@ -136,215 +151,269 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
   const formatBTC = (n) => `${(n || 0).toFixed(8)} BTC`
 
   return (
-    <div className="space-y-6">
-      {/* Live Price Banner */}
-      <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
-        <div>
-          <span className="text-gray-400">{config?.productId || 'BTC-' + quoteCurrency}</span>
-          <span className="text-3xl font-bold ml-4">{formatUSD(currentPrice)}</span>
-        </div>
-        <div className="flex items-center gap-6">
-          <ToggleSwitch
-            label="Automation"
-            checked={config.enabled}
-            onChange={(v) => toggleConfig('enabled', v)}
-            disabled={updating}
-            colorOn="bg-green-500"
-          />
-          <ToggleSwitch
-            label="Dry Run"
-            checked={config.dryRun}
-            onChange={(v) => toggleConfig('dryRun', v)}
-            disabled={updating}
-            colorOn="bg-yellow-500"
-          />
-          <div className="text-right pl-4 border-l border-gray-700">
-            <div className="text-sm text-gray-400">Mode</div>
-            <div className={`text-lg font-semibold ${
-              !config.enabled ? 'text-red-400' :
-              config.dryRun ? 'text-yellow-400' : 'text-green-400'
-            }`}>
-              {!config.enabled ? 'Disabled' : config.dryRun ? 'Dry Run' : 'Live'}
+    <div className="flex gap-6">
+      {/* Main Content Column */}
+      <div className="flex-1 space-y-4 min-w-0">
+        {/* Live Price Banner + Controls */}
+        <div className="bg-gray-800 rounded-lg p-4">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-4">
+              <span className="text-gray-400">{config?.productId || 'BTC-' + quoteCurrency}</span>
+              <span className="text-3xl font-bold">{formatUSD(currentPrice)}</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <ToggleSwitch
+                label="Automation"
+                checked={config.enabled}
+                onChange={(v) => toggleConfig('enabled', v)}
+                disabled={updating}
+                colorOn="bg-green-500"
+              />
+              <ToggleSwitch
+                label="Dry Run"
+                checked={config.dryRun}
+                onChange={(v) => toggleConfig('dryRun', v)}
+                disabled={updating}
+                colorOn="bg-yellow-500"
+              />
+              <div className="text-right pl-4 border-l border-gray-700">
+                <div className="text-xs text-gray-400">Mode</div>
+                <div className={`text-sm font-semibold ${
+                  !config.enabled ? 'text-red-400' :
+                  config.dryRun ? 'text-yellow-400' : 'text-green-400'
+                }`}>
+                  {!config.enabled ? 'Disabled' : config.dryRun ? 'Dry Run' : 'Live'}
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Next Trade Info */}
-      {nextTrade && (
-        <div className={`rounded-lg p-4 border ${
-          !nextTrade.enabled ? 'bg-red-900/30 border-red-700' :
-          nextTrade.fullyAllocated ? 'bg-yellow-900/30 border-yellow-700' :
-          nextTrade.dryRun ? 'bg-yellow-900/30 border-yellow-600' :
-          'bg-blue-900/30 border-blue-700'
-        }`}>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-gray-400">
-                Next {nextTrade.intervalLabel || 'Daily'} Trade
-                {nextTrade.dryRun && nextTrade.enabled && (
-                  <span className="ml-2 px-2 py-0.5 bg-yellow-600 text-yellow-100 text-xs rounded">DRY RUN</span>
-                )}
+        {/* Next Trade + Fund Assets Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Next Trade Info */}
+          {nextTrade && (
+            <div className={`rounded-lg p-4 border ${
+              !nextTrade.enabled ? 'bg-red-900/30 border-red-700' :
+              nextTrade.fullyAllocated ? 'bg-yellow-900/30 border-yellow-700' :
+              nextTrade.dryRun ? 'bg-yellow-900/30 border-yellow-600' :
+              'bg-blue-900/30 border-blue-700'
+            }`}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs text-gray-400">
+                    Next {nextTrade.intervalLabel || 'Daily'} Trade
+                    {nextTrade.dryRun && nextTrade.enabled && (
+                      <span className="ml-2 px-1.5 py-0.5 bg-yellow-600 text-yellow-100 text-xs rounded">DRY RUN</span>
+                    )}
+                  </div>
+                  <div className="text-lg font-bold mt-1">
+                    {!nextTrade.enabled ? (
+                      <span className="text-red-400">Bot Disabled</span>
+                    ) : nextTrade.fullyAllocated ? (
+                      <span className="text-yellow-400">Fully Allocated</span>
+                    ) : (
+                      <span className={nextTrade.dryRun ? 'text-yellow-400' : 'text-blue-400'}>
+                        {countdown ? `in ${countdown}` : new Date(nextTrade.nextTradeTime).toLocaleString([], {
+                          weekday: 'short',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit'
+                        })}
+                      </span>
+                    )}
+                  </div>
+                  {nextTrade.ranThisInterval && !nextTrade.fullyAllocated && (
+                    <div className="text-xs text-green-400 mt-1">✓ Already traded this interval</div>
+                  )}
+                </div>
+                <div className="text-right">
+                  <div className="text-xs text-gray-400">Trade Amount</div>
+                  <div className="text-xl font-bold text-white">
+                    {formatUSD(nextTrade.nextTradeAmount)}
+                  </div>
+                  <div className="text-xs text-gray-400">
+                    {formatUSD(nextTrade.remaining)} left
+                  </div>
+                </div>
               </div>
-              <div className="text-xl font-bold">
-                {!nextTrade.enabled ? (
-                  <span className="text-red-400">Bot Disabled</span>
-                ) : nextTrade.fullyAllocated ? (
-                  <span className="text-yellow-400">Fully Allocated</span>
-                ) : (
-                  <span className={nextTrade.dryRun ? 'text-yellow-400' : 'text-blue-400'}>
-                    {countdown ? `in ${countdown}` : new Date(nextTrade.nextTradeTime).toLocaleString([], {
-                      weekday: 'short',
+            </div>
+          )}
+
+          {/* Fund Assets */}
+          <div className="bg-gray-800 rounded-lg p-4">
+            <h3 className="text-xs text-gray-400 mb-2">Fund Assets</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-lg font-bold text-green-400">{formatUSD(state.usdcFundSize)}</div>
+                <div className="text-xs text-gray-500">{quoteCurrency}</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-yellow-400">{formatBTC(totalBTCHeld)}</div>
+                <div className="text-xs text-gray-500">Total BTC</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-purple-400">{formatUSD(totalBTCCostBasis)}</div>
+                <div className="text-xs text-gray-400">Cost Basis (Avg: {formatUSD(totalBTCHeld > 0 ? totalBTCCostBasis / totalBTCHeld : 0)}/BTC)</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-blue-400">{formatUSD((state.usdcFundSize || 0) + btcValue + pendingBtcValue)}</div>
+                <div className="text-xs text-gray-400">Total Value</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Allocation Progress */}
+        <div className="bg-gray-800 rounded-lg p-4">
+          <div className="flex justify-between mb-2 text-sm">
+            <span className="text-gray-400">Allocation Progress</span>
+            <span className="text-white">
+              {formatUSD(stats.allocationUsed)} / {formatUSD(config.totalAllocation)}
+            </span>
+          </div>
+          <div className="w-full bg-gray-700 rounded-full h-2">
+            <div
+              className="bg-blue-500 h-2 rounded-full transition-all"
+              style={{ width: `${Math.min(100, (stats.allocationUsed / config.totalAllocation) * 100)}%` }}
+            />
+          </div>
+          <div className="flex justify-between mt-2 text-xs text-gray-500">
+            <span>{stats.intervalsRun || 0} of {config.intervalsToSpread || config.daysToSpread} intervals</span>
+            <span>{formatUSD(stats.allocationRemaining)} remaining</span>
+          </div>
+          {/* Runs remaining and expected completion */}
+          {nextTrade && !nextTrade.fullyAllocated && nextTrade.nextTradeAmount > 0 && (() => {
+            const intervalsRemaining = Math.ceil(stats.allocationRemaining / nextTrade.nextTradeAmount)
+            const intervalMs = {
+              '1min': 60 * 1000,
+              '5min': 5 * 60 * 1000,
+              'hourly': 60 * 60 * 1000,
+              'daily': 24 * 60 * 60 * 1000,
+              'weekly': 7 * 24 * 60 * 60 * 1000,
+            }[config.intervalType] || 24 * 60 * 60 * 1000
+            const expectedEndDate = new Date(Date.now() + (intervalsRemaining * intervalMs))
+            return (
+              <div className="flex justify-between mt-1 text-xs text-gray-400">
+                <span>{intervalsRemaining} intervals left</span>
+                <span>Est. completion: {expectedEndDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+              </div>
+            )
+          })()}
+        </div>
+
+        {/* Stats Grid */}
+        <div className="grid grid-cols-3 lg:grid-cols-6 gap-3">
+          <StatCard label="Total Buys" value={stats.totalBuys} color="blue" />
+          <StatCard label="Total Sells" value={stats.totalSells} color="green" />
+          <StatCard label="Pending" value={stats.pendingOrders} color="yellow" />
+          <StatCard label="Fees" value={formatUSD(stats.totalFees)} color="red" />
+          <StatCard label="Rebates" value={formatUSD(stats.totalRebates)} color="green" />
+          <StatCard label="Net Fees" value={formatUSD(stats.netFees)} color="purple" />
+        </div>
+
+        {/* Config Summary */}
+        <div className="bg-gray-800 rounded-lg p-4">
+          <h3 className="text-sm font-semibold mb-3">Configuration</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div>
+              <span className="text-gray-400">Product:</span>
+              <span className="ml-1 text-white">{config.productId}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Interval:</span>
+              <span className="ml-1 text-white">{config.intervalType || 'daily'}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Buy Amount:</span>
+              <span className="ml-1 text-white">{formatUSD(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Intervals:</span>
+              <span className="ml-1 text-white">{config.intervalsToSpread || config.daysToSpread}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Sell Markup:</span>
+              <span className="ml-1 text-white">+{config.sellMarkupPercent}%</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Holdback:</span>
+              <span className="ml-1 text-white">{config.holdbackPercent}%</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Max Price:</span>
+              <span className="ml-1 text-white">{formatUSD(config.maxBuyPrice)}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Last Run:</span>
+              <span className="ml-1 text-white">
+                {state.lastRunTimestamp
+                  ? new Date(state.lastRunTimestamp).toLocaleString([], {
                       month: 'short',
                       day: 'numeric',
                       hour: 'numeric',
                       minute: '2-digit'
-                    })}
-                  </span>
-                )}
-              </div>
-              {nextTrade.ranThisInterval && !nextTrade.fullyAllocated && (
-                <div className="text-xs text-green-400 mt-1">✓ Already traded this interval</div>
+                    })
+                  : 'Never'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Pending Orders */}
+        {(state.orders || []).filter(o => o.status === 'pending').length > 0 && (
+          <div className="bg-gray-800 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold">Pending Sell Orders ({stats.pendingOrders})</h3>
+              {stats.pendingOrders >= 2 && (
+                <button
+                  onClick={handleConsolidate}
+                  disabled={consolidating}
+                  className={`px-3 py-1 text-xs rounded font-medium ${
+                    consolidating
+                      ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                      : 'bg-purple-600 hover:bg-purple-500 text-white'
+                  }`}
+                >
+                  {consolidating ? 'Consolidating...' : 'Consolidate Orders'}
+                </button>
               )}
             </div>
-            <div className="text-right">
-              <div className="text-sm text-gray-400">Trade Amount</div>
-              <div className="text-2xl font-bold text-white">
-                {formatUSD(nextTrade.nextTradeAmount)}
-              </div>
-              <div className="text-xs text-gray-500">
-                {formatUSD(nextTrade.remaining)} remaining
-              </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-400 text-left">
+                    <th className="pb-2">Created</th>
+                    <th className="pb-2">Buy Price</th>
+                    <th className="pb-2">Sell Price</th>
+                    <th className="pb-2">Amount</th>
+                    <th className="pb-2">Expected {quoteCurrency}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(state.orders || []).filter(o => o.status === 'pending').sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map((order, i) => (
+                    <tr key={i} className="border-t border-gray-700">
+                      <td className="py-2">{new Date(order.createdAt).toISOString().replace('T', ' ').slice(0, 19)}</td>
+                      <td className="py-2">{formatUSD(order.buyPrice)}</td>
+                      <td className="py-2">{formatUSD(order.sellPrice)}</td>
+                      <td className="py-2">{order.sellQuantityBTC?.toFixed(8)} BTC</td>
+                      <td className="py-2">{formatUSD(order.sellQuantityBTC * order.sellPrice)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Fund Assets */}
-      <div className="bg-gray-800 rounded-lg p-4">
-        <h3 className="text-sm text-gray-400 mb-3">Fund Assets</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div>
-            <div className="text-2xl font-bold text-green-400">{formatUSD(state.usdcFundSize)}</div>
-            <div className="text-sm text-gray-500">{quoteCurrency}</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-yellow-400">{formatBTC(totalBTCHeld)}</div>
-            <div className="text-sm text-gray-500">Total BTC</div>
-            <div className="text-xs text-gray-600">{formatBTC(state.btcReserves)} reserves + {formatBTC(state.outstandingOrdersBTC)} on orders</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-purple-400">{formatUSD(totalBTCCostBasis)}</div>
-            <div className="text-sm text-gray-500">BTC Cost Basis</div>
-            <div className="text-xs text-gray-600">Avg: {formatUSD(totalBTCHeld > 0 ? totalBTCCostBasis / totalBTCHeld : 0)}/BTC</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-blue-400">{formatUSD((state.usdcFundSize || 0) + btcValue + pendingBtcValue)}</div>
-            <div className="text-sm text-gray-500">Total Value</div>
-            <div className="text-xs text-gray-600">at current price</div>
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* Allocation Progress */}
-      <div className="bg-gray-800 rounded-lg p-4">
-        <div className="flex justify-between mb-2">
-          <span className="text-gray-400">Allocation Progress</span>
-          <span className="text-white">
-            {formatUSD(stats.allocationUsed)} / {formatUSD(config.totalAllocation)}
-          </span>
-        </div>
-        <div className="w-full bg-gray-700 rounded-full h-3">
-          <div
-            className="bg-blue-500 h-3 rounded-full transition-all"
-            style={{ width: `${Math.min(100, (stats.allocationUsed / config.totalAllocation) * 100)}%` }}
-          />
-        </div>
-        <div className="flex justify-between mt-2 text-sm text-gray-500">
-          <span>{stats.intervalsRun || stats.daysRun || 0} intervals run</span>
-          <span>{formatUSD(stats.allocationRemaining)} remaining</span>
+      {/* Activity Sidebar */}
+      <div className="w-80 flex-shrink-0 hidden lg:block">
+        <div className="sticky top-4">
+          <ActivityFeed exchange={exchange} maxEvents={15} />
         </div>
       </div>
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <StatCard label="Total Buys" value={stats.totalBuys} color="blue" />
-        <StatCard label="Total Sells" value={stats.totalSells} color="green" />
-        <StatCard label="Pending Orders" value={stats.pendingOrders} color="yellow" />
-        <StatCard label="Total Fees" value={formatUSD(stats.totalFees)} color="red" />
-        <StatCard label="Total Rebates" value={formatUSD(stats.totalRebates)} color="green" />
-        <StatCard label="Net Fees" value={formatUSD(stats.netFees)} color="purple" />
-      </div>
-
-      {/* Config Summary */}
-      <div className="bg-gray-800 rounded-lg p-4">
-        <h3 className="text-lg font-semibold mb-3">Current Configuration</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-          <div>
-            <span className="text-gray-400">Product:</span>
-            <span className="ml-2 text-white">{config.productId}</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Interval:</span>
-            <span className="ml-2 text-white">{config.intervalType || 'daily'}</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Buy Amount:</span>
-            <span className="ml-2 text-white">{formatUSD(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Intervals:</span>
-            <span className="ml-2 text-white">{config.intervalsToSpread || config.daysToSpread}</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Sell Markup:</span>
-            <span className="ml-2 text-white">+{config.sellMarkupPercent}%</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Holdback:</span>
-            <span className="ml-2 text-white">{config.holdbackPercent}%</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Max Buy Price:</span>
-            <span className="ml-2 text-white">{formatUSD(config.maxBuyPrice)}</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Last Run:</span>
-            <span className="ml-2 text-white">{state.lastRunId || state.lastRunDate || 'Never'}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Pending Orders */}
-      {(state.orders || []).filter(o => o.status === 'pending').length > 0 && (
-        <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-lg font-semibold mb-3">Pending Sell Orders</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-gray-400 text-left">
-                  <th className="pb-2">Created</th>
-                  <th className="pb-2">Buy Price</th>
-                  <th className="pb-2">Sell Price</th>
-                  <th className="pb-2">Amount</th>
-                  <th className="pb-2">Expected {quoteCurrency}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(state.orders || []).filter(o => o.status === 'pending').map((order, i) => (
-                  <tr key={i} className="border-t border-gray-700">
-                    <td className="py-2">{new Date(order.createdAt).toLocaleDateString()}</td>
-                    <td className="py-2">{formatUSD(order.buyPrice)}</td>
-                    <td className="py-2">{formatUSD(order.sellPrice)}</td>
-                    <td className="py-2">{order.sellQuantityBTC?.toFixed(8)} BTC</td>
-                    <td className="py-2">{formatUSD(order.sellQuantityBTC * order.sellPrice)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

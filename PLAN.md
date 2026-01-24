@@ -30,6 +30,13 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 - Transaction history and cost basis reports
 - Backtesting with historical price data
 - Parameter optimization engine
+- D3.js interactive charts:
+  - Fund balance over time (area chart)
+  - Price history with buy markers (line chart)
+  - Pending sell orders visualization
+  - Cost basis distribution histogram
+  - Daily buy/sell volume (bar chart)
+  - Cumulative fees & rebates (composed chart)
 
 ### Core Trading Engine
 - Market buy with fee tracking
@@ -37,6 +44,12 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 - Configurable holdback percentage for BTC reserves
 - Price protection (max buy price threshold)
 - Dry-run mode for testing
+- Order consolidation:
+  - Consolidate multiple pending orders into single order at weighted average price
+  - Manual consolidation via admin UI button
+  - Auto-consolidation when pending orders exceed `consolidateAfterOrders` threshold
+  - Skips partially filled orders
+  - Tracks consolidation in state and transaction logs
 
 ### Data Management
 - Exchange-namespaced data directories
@@ -76,6 +89,19 @@ src/
 ├── migration.js        # Data structure migration
 ├── backtest-engine.js  # Historical simulation
 └── optimizer-engine.js # Parameter optimization
+
+admin/src/components/
+├── charts/             # D3.js chart components
+│   ├── index.js        # Chart exports
+│   ├── chartUtils.js   # Formatting, colors, responsive utils
+│   ├── AreaChart.jsx   # Area and stacked area charts
+│   ├── BarChart.jsx    # Bar and horizontal bar charts
+│   ├── PriceChart.jsx  # Price line with buy markers
+│   ├── ComposedChart.jsx # Multi-series area/line charts
+│   └── PendingOrdersChart.jsx # Order visualization
+├── Charts.jsx          # Charts page using D3 components
+├── Dashboard.jsx       # Main dashboard view
+└── ...                 # Other components
 ```
 
 ### Configuration Format
@@ -118,6 +144,7 @@ GET  /api/:exchange/keys         - Get API keys (masked)
 PUT  /api/:exchange/keys         - Save API keys
 POST /api/:exchange/test-connection - Test exchange connectivity
 POST /api/:exchange/trade        - Trigger manual trade
+POST /api/:exchange/consolidate  - Consolidate pending orders
 GET  /api/:exchange/transactions - Get transaction history
 GET  /api/:exchange/cost-basis   - Get cost basis report
 POST /api/:exchange/backtest     - Run backtest simulation
