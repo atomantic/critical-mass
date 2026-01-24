@@ -785,10 +785,13 @@ app.post('/api/backtest/run', async (req, res) => {
 // ============ Optimizer API ============
 
 const optimizerEngine = require('./src/optimizer-engine');
-const OPTIMIZER_CACHE_FILE = path.join(DATA_DIR, 'optimizer-cache.json');
 
-app.get('/api/optimizer/cache', (req, res) => {
-  const cache = readJSON(OPTIMIZER_CACHE_FILE, null);
+const getOptimizerCacheFile = (exchange) => path.join(DATA_DIR, exchange, 'optimizer-cache.json');
+
+app.get('/api/:exchange/optimizer/cache', (req, res) => {
+  const { exchange } = req.params;
+  const cacheFile = getOptimizerCacheFile(exchange);
+  const cache = readJSON(cacheFile, null);
   if (cache) {
     res.json({ success: true, cached: true, ...cache });
   } else {
@@ -796,33 +799,38 @@ app.get('/api/optimizer/cache', (req, res) => {
   }
 });
 
-app.delete('/api/optimizer/cache', (req, res) => {
-  if (fs.existsSync(OPTIMIZER_CACHE_FILE)) {
-    fs.unlinkSync(OPTIMIZER_CACHE_FILE);
-    log('INFO', 'Optimizer cache cleared');
+app.delete('/api/:exchange/optimizer/cache', (req, res) => {
+  const { exchange } = req.params;
+  const cacheFile = getOptimizerCacheFile(exchange);
+  if (fs.existsSync(cacheFile)) {
+    fs.unlinkSync(cacheFile);
+    log('INFO', `Optimizer cache cleared for ${exchange}`);
   }
   res.json({ success: true, message: 'Cache cleared' });
 });
 
 let currentBestResult = null;
 
-app.post('/api/optimizer/run', (req, res) => {
+app.post('/api/:exchange/optimizer/run', (req, res) => {
+  const { exchange } = req.params;
   const { fundSize = 10000, forceRefresh = false } = req.body;
+  const cacheFile = getOptimizerCacheFile(exchange);
 
   if (!forceRefresh) {
-    const cache = readJSON(OPTIMIZER_CACHE_FILE, null);
+    const cache = readJSON(cacheFile, null);
     if (cache && cache.fundSize === fundSize) {
-      log('INFO', `Returning cached optimizer results for fund size: $${fundSize}`);
+      log('INFO', `[${exchange}] Returning cached optimizer results for fund size: $${fundSize}`);
       res.json({ success: true, cached: true, ...cache });
       return;
     }
   }
 
-  log('INFO', `Running optimizer with fund size: $${fundSize}`);
+  log('INFO', `[${exchange}] Running optimizer with fund size: $${fundSize}`);
   currentBestResult = null;
 
   optimizerEngine.runOptimizer({
     fundSize,
+    exchange,
     onProgress: (progress) => {
       io.emit('optimizer:progress', progress);
 
@@ -834,13 +842,13 @@ app.post('/api/optimizer/run', (req, res) => {
       }
 
       if (progress.current % 20 === 0 || progress.phase === 'prefetch') {
-        log('INFO', `Optimizer: ${progress.message} (${progress.percentComplete}%)`);
+        log('INFO', `[${exchange}] Optimizer: ${progress.message} (${progress.percentComplete}%)`);
       }
     }
   })
     .then(result => {
-      log('INFO', `Optimizer complete: ${result.totalCombinations} combinations in ${(result.duration / 1000).toFixed(1)}s`);
-      log('INFO', `Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> $${result.bestResult.metrics.totalValue.toFixed(2)}`);
+      log('INFO', `[${exchange}] Optimizer complete: ${result.totalCombinations} combinations in ${(result.duration / 1000).toFixed(1)}s`);
+      log('INFO', `[${exchange}] Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> $${result.bestResult.metrics.totalValue.toFixed(2)}`);
 
       const topResults = optimizerEngine.getTopResults(result.results, 20);
       const response = {
@@ -855,14 +863,14 @@ app.post('/api/optimizer/run', (req, res) => {
         config: result.config
       };
 
-      writeJSON(OPTIMIZER_CACHE_FILE, response);
-      log('INFO', 'Optimizer results cached');
+      writeJSON(cacheFile, response);
+      log('INFO', `[${exchange}] Optimizer results cached`);
 
       io.emit('optimizer:complete', response);
       res.json(response);
     })
     .catch(err => {
-      log('ERROR', `Optimizer failed: ${err.message}`);
+      log('ERROR', `[${exchange}] Optimizer failed: ${err.message}`);
       io.emit('optimizer:error', { error: err.message });
       res.status(500).json({ success: false, error: err.message });
     });

@@ -250,16 +250,31 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 <div className="text-xs text-gray-500">{quoteCurrency}</div>
               </div>
               <div>
-                <div className="text-lg font-bold text-yellow-400">{formatBTC(totalBTCHeld)}</div>
-                <div className="text-xs text-gray-500">Total BTC</div>
-              </div>
-              <div>
-                <div className="text-lg font-bold text-purple-400">{formatUSD(totalBTCCostBasis)}</div>
-                <div className="text-xs text-gray-400">Cost Basis (Avg: {formatUSD(totalBTCHeld > 0 ? totalBTCCostBasis / totalBTCHeld : 0)}/BTC)</div>
-              </div>
-              <div>
                 <div className="text-lg font-bold text-blue-400">{formatUSD((state.usdcFundSize || 0) + btcValue + pendingBtcValue)}</div>
                 <div className="text-xs text-gray-400">Total Value</div>
+              </div>
+            </div>
+            {/* BTC Holdings Breakdown */}
+            <div className="mt-3 pt-3 border-t border-gray-700">
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className="text-center">
+                  <div className="text-gray-400 mb-1">Pending Sale</div>
+                  <div className="text-yellow-400 font-semibold">{formatBTC(state.outstandingOrdersBTC || 0)}</div>
+                  <div className="text-gray-500">Cost: {formatUSD(costBasis?.pendingCostBasis || 0)}</div>
+                  <div className="text-green-400">Exp: {formatUSD(state.outstandingOrdersUSDC || 0)}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-gray-400 mb-1">Reserves</div>
+                  <div className="text-orange-400 font-semibold">{formatBTC(state.btcReserves || 0)}</div>
+                  <div className="text-gray-500">Cost: {formatUSD(costBasis?.reservesCostBasis || 0)}</div>
+                  <div className="text-gray-500">Val: {formatUSD(btcValue)}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-gray-400 mb-1">Total BTC</div>
+                  <div className="text-purple-400 font-semibold">{formatBTC(totalBTCHeld)}</div>
+                  <div className="text-gray-500">Cost: {formatUSD(totalBTCCostBasis)}</div>
+                  <div className="text-gray-500">Avg: {formatUSD(totalBTCHeld > 0 ? totalBTCCostBasis / totalBTCHeld : 0)}/BTC</div>
+                </div>
               </div>
             </div>
           </div>
