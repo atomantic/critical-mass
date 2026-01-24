@@ -14,7 +14,7 @@
       "consolidateAfterOrders": 0
     },
     "gemini": {
-      "enabled": true,
+      "enabled": false,
       "dryRun": false,
       "productId": "BTCUSD",
       "totalAllocation": 5000,
