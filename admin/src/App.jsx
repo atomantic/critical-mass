@@ -1,5 +1,5 @@
 import { useState, useEffect, createContext, useContext } from 'react'
-import { Routes, Route, Link, useLocation, Navigate } from 'react-router-dom'
+import { Routes, Route, Link, useLocation, useNavigate, useParams, Navigate } from 'react-router-dom'
 import Dashboard from './components/Dashboard'
 import ConfigEditor from './components/ConfigEditor'
 import Transactions from './components/Transactions'
@@ -30,7 +30,7 @@ export const ExchangeContext = createContext({
 export const useExchange = () => useContext(ExchangeContext)
 
 const tabs = [
-  { name: 'Dashboard', path: '/' },
+  { name: 'Dashboard', path: '' },
   { name: 'Cost Basis', path: '/cost-basis' },
   { name: 'Transactions', path: '/transactions' },
   { name: 'Charts', path: '/charts' },
@@ -40,9 +40,18 @@ const tabs = [
   { name: 'API Keys', path: '/keys' },
 ]
 
+// Valid exchange names
+const VALID_EXCHANGES = ['coinbase', 'gemini']
+
 function App() {
   const location = useLocation()
-  const [currentExchange, setCurrentExchange] = useState('coinbase')
+  const navigate = useNavigate()
+
+  // Extract exchange from URL path (e.g., /coinbase/config -> coinbase)
+  const pathParts = location.pathname.split('/').filter(Boolean)
+  const urlExchange = VALID_EXCHANGES.includes(pathParts[0]) ? pathParts[0] : null
+
+  const [currentExchange, setCurrentExchange] = useState(urlExchange || 'coinbase')
   const [exchanges, setExchanges] = useState([])
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -56,17 +65,26 @@ function App() {
     if (res.ok) {
       const data = await res.json()
       setExchanges(data.exchanges || [])
-      // Only auto-select exchange on initial load, not on refreshes
-      if (autoSelect) {
+      // Only auto-select exchange on initial load if not already in URL
+      if (autoSelect && !urlExchange) {
         const enabled = data.exchanges?.find(e => e.enabled)
         const first = data.exchanges?.[0]
-        if (enabled) {
-          setCurrentExchange(enabled.name)
-        } else if (first) {
-          setCurrentExchange(first.name)
-        }
+        const targetExchange = enabled?.name || first?.name || 'coinbase'
+        setCurrentExchange(targetExchange)
+        navigate(`/${targetExchange}`, { replace: true })
+      } else if (autoSelect && urlExchange) {
+        // URL already has exchange, just use it
+        setCurrentExchange(urlExchange)
       }
     }
+  }
+
+  // Handle exchange change - update URL
+  const handleExchangeChange = (newExchange) => {
+    setCurrentExchange(newExchange)
+    // Get current sub-path (everything after exchange)
+    const subPath = urlExchange ? location.pathname.replace(`/${urlExchange}`, '') : location.pathname
+    navigate(`/${newExchange}${subPath || ''}`)
   }
 
   const fetchData = async () => {
@@ -105,6 +123,13 @@ function App() {
     fetchExchanges(true)
   }, [])
 
+  // Sync exchange from URL when it changes
+  useEffect(() => {
+    if (urlExchange && urlExchange !== currentExchange) {
+      setCurrentExchange(urlExchange)
+    }
+  }, [urlExchange])
+
   // Fetch data when exchange changes
   useEffect(() => {
     if (currentExchange) {
@@ -115,10 +140,20 @@ function App() {
     }
   }, [currentExchange])
 
-  const isActiveTab = (path) => {
-    if (path === '/') return location.pathname === '/'
-    return location.pathname.startsWith(path)
+  // Get the current sub-path (tab) without the exchange prefix
+  const getSubPath = () => {
+    if (!urlExchange) return location.pathname
+    return location.pathname.replace(`/${urlExchange}`, '') || ''
   }
+
+  const isActiveTab = (tabPath) => {
+    const subPath = getSubPath()
+    if (tabPath === '') return subPath === '' || subPath === '/'
+    return subPath.startsWith(tabPath)
+  }
+
+  // Build full path with exchange prefix
+  const buildPath = (tabPath) => `/${currentExchange}${tabPath}`
 
   return (
     <ExchangeContext.Provider value={{ exchange: currentExchange, setExchange: setCurrentExchange, exchanges }}>
@@ -127,14 +162,14 @@ function App() {
         <header className="bg-gray-800 border-b border-gray-700">
           <div className="max-w-7xl mx-auto px-4 py-4">
             <div className="flex items-center justify-between">
-              <Link to="/" className="text-2xl font-bold text-white hover:text-gray-200">
+              <Link to={buildPath('')} className="text-2xl font-bold text-white hover:text-gray-200">
                 DCA Trading Bot
               </Link>
               <div className="flex items-center gap-4">
                 <ExchangeSelector
                   currentExchange={currentExchange}
                   exchanges={exchanges}
-                  onChange={setCurrentExchange}
+                  onChange={handleExchangeChange}
                   onRefresh={fetchExchanges}
                 />
                 <span className="text-sm text-gray-400">
@@ -165,7 +200,7 @@ function App() {
               {tabs.map(tab => (
                 <Link
                   key={tab.path}
-                  to={tab.path}
+                  to={buildPath(tab.path)}
                   className={`px-4 py-3 text-sm font-medium transition-colors ${
                     isActiveTab(tab.path)
                       ? 'text-white border-b-2 border-blue-500'
@@ -200,15 +235,21 @@ function App() {
             </div>
           ) : (
             <Routes>
-              <Route path="/" element={<Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />} />
-              <Route path="/cost-basis" element={<CostBasis summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/transactions" element={<Transactions transactions={summary?.transactions} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/charts" element={<Charts summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/optimizer" element={<Optimizer exchange={currentExchange} />} />
-              <Route path="/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} />} />
-              <Route path="/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
+              {/* Redirect root to default exchange */}
+              <Route path="/" element={<Navigate to={`/${currentExchange}`} replace />} />
+
+              {/* Exchange-prefixed routes */}
+              <Route path="/:exchange" element={<Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />} />
+              <Route path="/:exchange/cost-basis" element={<CostBasis summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/transactions" element={<Transactions transactions={summary?.transactions} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/charts" element={<Charts summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/optimizer" element={<Optimizer exchange={currentExchange} />} />
+              <Route path="/:exchange/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} />} />
+              <Route path="/:exchange/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
+
+              {/* Catch invalid routes - redirect to current exchange */}
+              <Route path="*" element={<Navigate to={`/${currentExchange}`} replace />} />
             </Routes>
           )}
         </main>
