@@ -239,12 +239,40 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
             </div>
           </div>
 
-          {/* Stats Grid - 2 rows of 3 */}
+          {/* Stats Grid - 3 rows of 3 */}
           <div className="space-y-2">
             <div className="grid grid-cols-3 gap-2">
               <StatCard label="Total Buys" value={stats.totalBuys} color="blue" />
               <StatCard label="Total Sells" value={stats.totalSells} color="green" />
               <StatCard label="Pending" value={stats.pendingOrders} color="yellow" />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(() => {
+                const unrealizedPnL = (state.outstandingOrdersUSDC || 0) - (costBasis?.pendingCostBasis || 0)
+                const unrealizedPnLPct = (costBasis?.pendingCostBasis || 0) > 0
+                  ? (unrealizedPnL / costBasis.pendingCostBasis) * 100
+                  : 0
+                const realizedPnL = stats.realizedProfit || 0
+                return (
+                  <>
+                    <StatCard
+                      label="Unreal P&L"
+                      value={`${unrealizedPnL >= 0 ? '+' : ''}${formatUSD(unrealizedPnL)}`}
+                      color={unrealizedPnL >= 0 ? 'green' : 'red'}
+                    />
+                    <StatCard
+                      label="Unreal %"
+                      value={`${unrealizedPnLPct >= 0 ? '+' : ''}${unrealizedPnLPct.toFixed(1)}%`}
+                      color={unrealizedPnLPct >= 0 ? 'green' : 'red'}
+                    />
+                    <StatCard
+                      label="Realized"
+                      value={`${realizedPnL >= 0 ? '+' : ''}${formatUSD(realizedPnL)}`}
+                      color={realizedPnL >= 0 ? 'green' : 'red'}
+                    />
+                  </>
+                )
+              })()}
             </div>
             <div className="grid grid-cols-3 gap-2">
               <StatCard label="Fees" value={formatUSD(stats.totalFees)} color="red" />
