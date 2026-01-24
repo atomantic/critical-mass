@@ -173,11 +173,6 @@ function AppContent() {
                   onChange={handleExchangeChange}
                   onRefresh={fetchExchanges}
                 />
-                <span className="text-sm text-gray-400">
-                  {summary?.state?.lastRunTimestamp
-                    ? `Last run: ${new Date(summary.state.lastRunTimestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
-                    : 'Never run'}
-                </span>
               </div>
             </div>
           </div>

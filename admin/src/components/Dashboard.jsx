@@ -434,6 +434,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 <span className="text-gray-400">Amount: <span className="text-white font-medium">{formatUSD(nextTrade.nextTradeAmount)}</span></span>
                 <span className="text-gray-400">{formatUSD(nextTrade.remaining)} left</span>
               </div>
+              {state.lastRunTimestamp && (
+                <div className="mt-1 text-xs text-gray-500">
+                  Last run: {new Date(state.lastRunTimestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                </div>
+              )}
             </div>
           )}
 
