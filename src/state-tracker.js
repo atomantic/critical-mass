@@ -1,13 +1,24 @@
 const fs = require('fs');
 const path = require('path');
+const {
+  normalizeConfig,
+  getRunIdentifier,
+  hasRunThisInterval
+} = require('./interval-utils');
+const { getExchangeDataDir } = require('./migration');
 
-const STATE_FILE = path.join(__dirname, '..', 'data', 'state.json');
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
 
 /**
- * Get today's date in YYYY-MM-DD format
- * @returns {string}
+ * Get state file path for an exchange
+ * @param {string} exchange - Exchange name (default: coinbase)
+ * @returns {string} Path to state file
  */
-const today = () => new Date().toISOString().split('T')[0];
+const getStateFile = (exchange = 'coinbase') => {
+  const dir = getExchangeDataDir(exchange);
+  return path.join(dir, 'state.json');
+};
 
 /**
  * Create initial state structure
@@ -17,71 +28,122 @@ const today = () => new Date().toISOString().split('T')[0];
 const createInitialState = (config) => ({
   initialAllocation: config.totalAllocation,
   totalAllocated: 0,
-  totalDaysRun: 0,
+  totalIntervalsRun: 0,
   usdcFundSize: config.totalAllocation,
   btcReserves: 0,
   outstandingOrdersUSDC: 0,
   outstandingOrdersBTC: 0,
-  // Fee tracking
   totalFees: 0,
   totalRebates: 0,
   netFees: 0,
-  lastRunDate: null,
+  lastRunId: null,
+  lastRunTimestamp: null,
   orders: [],
 });
 
 /**
+ * Migrate old state format to new format
+ * @param {Object} state - State object
+ * @returns {Object} Migrated state
+ */
+const migrateState = (state) => {
+  // Migrate totalDaysRun -> totalIntervalsRun
+  if (state.totalDaysRun !== undefined && state.totalIntervalsRun === undefined) {
+    state.totalIntervalsRun = state.totalDaysRun;
+    delete state.totalDaysRun;
+  }
+  // Migrate lastRunDate -> lastRunId
+  if (state.lastRunDate && !state.lastRunId) {
+    state.lastRunId = `daily-migrated-${state.lastRunDate}`;
+    state.lastRunTimestamp = new Date(state.lastRunDate).getTime();
+    delete state.lastRunDate;
+  }
+  // Ensure new fields exist
+  if (state.totalIntervalsRun === undefined) state.totalIntervalsRun = 0;
+  if (state.lastRunId === undefined) state.lastRunId = null;
+  if (state.lastRunTimestamp === undefined) state.lastRunTimestamp = null;
+  return state;
+};
+
+/**
  * Load state from file
  * @param {Object} config - Configuration for initial state if file doesn't exist
+ * @param {string} exchange - Exchange name (default: coinbase)
  * @returns {Object} Current state
  */
-const loadState = (config = null) => {
-  if (!fs.existsSync(STATE_FILE)) {
-    if (!config) {
-      config = require('../config.json');
+const loadState = (config = null, exchange = 'coinbase') => {
+  if (!config) {
+    config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    // If multi-exchange config, get the specific exchange config
+    if (config.exchanges && config.exchanges[exchange]) {
+      config = { ...config.global, ...config.exchanges[exchange] };
     }
+  }
+
+  const stateFile = getStateFile(exchange);
+
+  if (!fs.existsSync(stateFile)) {
     return createInitialState(config);
   }
 
-  const data = fs.readFileSync(STATE_FILE, 'utf8');
-  return JSON.parse(data);
+  const data = fs.readFileSync(stateFile, 'utf8');
+  let state = JSON.parse(data);
+
+  // Migrate old state format if needed
+  state = migrateState(state);
+
+  // Sync usdcFundSize if totalAllocation changed in config
+  if (config.totalAllocation !== state.initialAllocation) {
+    const delta = config.totalAllocation - state.initialAllocation;
+    state.usdcFundSize += delta;
+    state.initialAllocation = config.totalAllocation;
+    saveState(state, exchange);
+  }
+
+  return state;
 };
 
 /**
  * Save state to file
  * @param {Object} state - State to save
+ * @param {string} exchange - Exchange name (default: coinbase)
  */
-const saveState = (state) => {
-  const dir = path.dirname(STATE_FILE);
+const saveState = (state, exchange = 'coinbase') => {
+  const stateFile = getStateFile(exchange);
+  const dir = path.dirname(stateFile);
+
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
 };
 
 /**
  * Check if there's allocation remaining
  * @param {Object} state - Current state
  * @param {Object} config - Configuration
- * @returns {{remaining: number, dailyAmount: number}}
+ * @returns {{remaining: number, intervalAmount: number}}
  */
 const checkAllocationRemaining = (state, config) => {
-  const remaining = config.totalAllocation - state.totalAllocated;
-  const dailyAmount = Math.min(
-    config.totalAllocation / config.daysToSpread,
+  const normalized = normalizeConfig(config);
+  const remaining = normalized.totalAllocation - state.totalAllocated;
+  const intervalAmount = Math.min(
+    normalized.totalAllocation / normalized.intervalsToSpread,
     remaining
   );
 
-  return { remaining, dailyAmount };
+  return { remaining, intervalAmount };
 };
 
 /**
- * Check if bot already ran today
+ * Check if bot already ran this interval
  * @param {Object} state - Current state
+ * @param {string} intervalType - Interval type from config
  * @returns {boolean}
  */
-const checkIfRanToday = (state) => state.lastRunDate === today();
+const checkIfRanThisInterval = (state, intervalType) =>
+  hasRunThisInterval(state.lastRunId, intervalType);
 
 /**
  * Update state after a buy order
@@ -92,6 +154,7 @@ const checkIfRanToday = (state) => state.lastRunDate === today();
  * @returns {Object} Updated state
  */
 const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
+  const normalized = normalizeConfig(config);
   const holdbackBTC = buyDetails.btcAmount * (config.holdbackPercent / 100);
   const sellQuantityBTC = buyDetails.btcAmount - holdbackBTC;
   const expectedSellUSDC = sellQuantityBTC * sellOrder.limitPrice;
@@ -102,13 +165,14 @@ const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
   const buyNetFees = buyDetails.netFees || 0;
 
   state.totalAllocated += buyDetails.usdcAmount;
-  state.totalDaysRun += 1;
+  state.totalIntervalsRun += 1;
   // Actual cost includes net fees
   state.usdcFundSize -= (buyDetails.usdcAmount + buyNetFees);
   state.btcReserves += holdbackBTC;
   state.outstandingOrdersBTC += sellQuantityBTC;
   state.outstandingOrdersUSDC += expectedSellUSDC;
-  state.lastRunDate = today();
+  state.lastRunId = getRunIdentifier(normalized.intervalType);
+  state.lastRunTimestamp = Date.now();
 
   // Update cumulative fee tracking
   state.totalFees = (state.totalFees || 0) + buyFees;
@@ -182,13 +246,14 @@ const updateAfterSellFill = (state, fillDetails) => {
 const getPendingOrders = (state) => state.orders.filter(o => o.status === 'pending');
 
 module.exports = {
-  today,
   loadState,
   saveState,
   createInitialState,
+  migrateState,
   checkAllocationRemaining,
-  checkIfRanToday,
+  checkIfRanThisInterval,
   updateAfterBuy,
   updateAfterSellFill,
   getPendingOrders,
+  getStateFile,
 };
