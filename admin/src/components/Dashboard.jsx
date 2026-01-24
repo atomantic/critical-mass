@@ -43,10 +43,10 @@ function StatCard({ label, value, subtext, color = 'blue' }) {
   }
 
   return (
-    <div className={`p-3 rounded-lg border ${colors[color]}`}>
+    <div className={`p-2 rounded-lg border ${colors[color]}`}>
       <div className="text-xs text-gray-400">{label}</div>
-      <div className="text-lg font-bold mt-1">{value}</div>
-      {subtext && <div className="text-xs text-gray-500 mt-1">{subtext}</div>}
+      <div className="text-base font-bold">{value}</div>
+      {subtext && <div className="text-xs text-gray-500">{subtext}</div>}
     </div>
   )
 }
@@ -199,8 +199,10 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
           </div>
         </div>
 
-        {/* Fund Assets */}
-        <div className="bg-gray-800 rounded-lg p-4">
+        {/* Fund Assets + Stats Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Fund Assets */}
+          <div className="bg-gray-800 rounded-lg p-4">
             <h3 className="text-xs text-gray-400 mb-2">Fund Assets</h3>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -237,98 +239,72 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
             </div>
           </div>
 
-        {/* Allocation Progress */}
-        <div className="bg-gray-800 rounded-lg p-4">
-          <div className="flex justify-between mb-2 text-sm">
-            <span className="text-gray-400">Allocation Progress</span>
-            <span className="text-white">
-              {formatUSD(stats.allocationUsed)} / {formatUSD(config.totalAllocation)}
-            </span>
+          {/* Stats Grid - 2 rows of 3 */}
+          <div className="space-y-2">
+            <div className="grid grid-cols-3 gap-2">
+              <StatCard label="Total Buys" value={stats.totalBuys} color="blue" />
+              <StatCard label="Total Sells" value={stats.totalSells} color="green" />
+              <StatCard label="Pending" value={stats.pendingOrders} color="yellow" />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <StatCard label="Fees" value={formatUSD(stats.totalFees)} color="red" />
+              <StatCard label="Rebates" value={formatUSD(stats.totalRebates)} color="green" />
+              <StatCard label="Net Fees" value={formatUSD(stats.netFees)} color="purple" />
+            </div>
           </div>
-          <div className="w-full bg-gray-700 rounded-full h-2">
-            <div
-              className="bg-blue-500 h-2 rounded-full transition-all"
-              style={{ width: `${Math.min(100, (stats.allocationUsed / config.totalAllocation) * 100)}%` }}
-            />
-          </div>
-          <div className="flex justify-between mt-2 text-xs text-gray-500">
-            <span>{stats.intervalsRun || 0} of {config.intervalsToSpread || config.daysToSpread} intervals</span>
-            <span>{formatUSD(stats.allocationRemaining)} remaining</span>
-          </div>
-          {/* Runs remaining and expected completion */}
-          {nextTrade && !nextTrade.fullyAllocated && nextTrade.nextTradeAmount > 0 && (() => {
-            const intervalsRemaining = Math.ceil(stats.allocationRemaining / nextTrade.nextTradeAmount)
-            const intervalMs = {
-              '1min': 60 * 1000,
-              '5min': 5 * 60 * 1000,
-              'hourly': 60 * 60 * 1000,
-              'daily': 24 * 60 * 60 * 1000,
-              'weekly': 7 * 24 * 60 * 60 * 1000,
-            }[config.intervalType] || 24 * 60 * 60 * 1000
-            const expectedEndDate = new Date(Date.now() + (intervalsRemaining * intervalMs))
-            return (
-              <div className="flex justify-between mt-1 text-xs text-gray-400">
-                <span>{intervalsRemaining} intervals left</span>
-                <span>Est. completion: {expectedEndDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-              </div>
-            )
-          })()}
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatCard label="Total Buys" value={stats.totalBuys} color="blue" />
-          <StatCard label="Total Sells" value={stats.totalSells} color="green" />
-          <StatCard label="Pending" value={stats.pendingOrders} color="yellow" />
-          <StatCard label="Fees" value={formatUSD(stats.totalFees)} color="red" />
-          <StatCard label="Rebates" value={formatUSD(stats.totalRebates)} color="green" />
-          <StatCard label="Net Fees" value={formatUSD(stats.netFees)} color="purple" />
-        </div>
-
-        {/* Config Summary */}
-        <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-sm font-semibold mb-3">Configuration</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-            <div>
-              <span className="text-gray-400">Product:</span>
-              <span className="ml-1 text-white">{config.productId}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Interval:</span>
-              <span className="ml-1 text-white">{config.intervalType || 'daily'}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Buy Amount:</span>
-              <span className="ml-1 text-white">{formatUSD(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Intervals:</span>
-              <span className="ml-1 text-white">{config.intervalsToSpread || config.daysToSpread}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Sell Markup:</span>
-              <span className="ml-1 text-white">+{config.sellMarkupPercent}%</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Holdback:</span>
-              <span className="ml-1 text-white">{config.holdbackPercent}%</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Max Price:</span>
-              <span className="ml-1 text-white">{formatUSD(config.maxBuyPrice)}</span>
-            </div>
-            <div>
-              <span className="text-gray-400">Last Run:</span>
-              <span className="ml-1 text-white">
-                {state.lastRunTimestamp
-                  ? new Date(state.lastRunTimestamp).toLocaleString([], {
-                      month: 'short',
-                      day: 'numeric',
-                      hour: 'numeric',
-                      minute: '2-digit'
-                    })
-                  : 'Never'}
+        {/* Allocation Progress + Config Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Allocation Progress */}
+          <div className="bg-gray-800 rounded-lg p-4">
+            <div className="flex justify-between mb-2 text-sm">
+              <span className="text-gray-400">Allocation Progress</span>
+              <span className="text-white">
+                {formatUSD(stats.allocationUsed)} / {formatUSD(config.totalAllocation)}
               </span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2">
+              <div
+                className="bg-blue-500 h-2 rounded-full transition-all"
+                style={{ width: `${Math.min(100, (stats.allocationUsed / config.totalAllocation) * 100)}%` }}
+              />
+            </div>
+            <div className="flex justify-between mt-2 text-xs text-gray-500">
+              <span>{stats.intervalsRun || 0} of {config.intervalsToSpread || config.daysToSpread} intervals</span>
+              <span>{formatUSD(stats.allocationRemaining)} remaining</span>
+            </div>
+            {nextTrade && !nextTrade.fullyAllocated && nextTrade.nextTradeAmount > 0 && (() => {
+              const intervalsRemaining = Math.ceil(stats.allocationRemaining / nextTrade.nextTradeAmount)
+              const intervalMs = {
+                '1min': 60 * 1000,
+                '5min': 5 * 60 * 1000,
+                'hourly': 60 * 60 * 1000,
+                'daily': 24 * 60 * 60 * 1000,
+                'weekly': 7 * 24 * 60 * 60 * 1000,
+              }[config.intervalType] || 24 * 60 * 60 * 1000
+              const expectedEndDate = new Date(Date.now() + (intervalsRemaining * intervalMs))
+              return (
+                <div className="flex justify-between mt-1 text-xs text-gray-400">
+                  <span>{intervalsRemaining} intervals left</span>
+                  <span>Est: {expectedEndDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                </div>
+              )
+            })()}
+          </div>
+
+          {/* Config Summary */}
+          <div className="bg-gray-800 rounded-lg p-4">
+            <h3 className="text-xs text-gray-400 mb-2">Configuration</h3>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <div><span className="text-gray-500">Product:</span> <span className="text-white">{config.productId}</span></div>
+              <div><span className="text-gray-500">Interval:</span> <span className="text-white">{config.intervalType || 'daily'}</span></div>
+              <div><span className="text-gray-500">Buy:</span> <span className="text-white">{formatUSD(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span></div>
+              <div><span className="text-gray-500">Intervals:</span> <span className="text-white">{config.intervalsToSpread || config.daysToSpread}</span></div>
+              <div><span className="text-gray-500">Markup:</span> <span className="text-white">+{config.sellMarkupPercent}%</span></div>
+              <div><span className="text-gray-500">Holdback:</span> <span className="text-white">{config.holdbackPercent}%</span></div>
+              <div><span className="text-gray-500">Max Price:</span> <span className="text-white">{formatUSD(config.maxBuyPrice)}</span></div>
+              <div><span className="text-gray-500">Consolidate:</span> <span className="text-white">{config.consolidateAfterOrders || 'Off'}</span></div>
             </div>
           </div>
         </div>
