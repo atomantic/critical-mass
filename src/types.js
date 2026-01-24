@@ -38,6 +38,7 @@
  * @property {number} maxBuyPrice - Maximum price to buy at
  * @property {boolean} enabled - Whether this exchange is enabled
  * @property {boolean} dryRun - Whether to simulate trades
+ * @property {number} [consolidateAfterOrders] - Auto-consolidate when pending orders exceed this count (0 = disabled)
  */
 
 /**
@@ -62,7 +63,7 @@
 // ============================================================================
 
 /**
- * @typedef {'pending' | 'filled'} OrderStatus
+ * @typedef {'pending' | 'filled' | 'consolidated'} OrderStatus
  */
 
 /**
@@ -87,6 +88,10 @@
  * @property {number} [sellRebates] - Rebates received on sell
  * @property {number} [sellNetFees] - Net fees on sell
  * @property {number} [netProceeds] - Net proceeds after fees
+ * @property {string} [consolidatedInto] - Order ID of the consolidated order (for original orders)
+ * @property {string} [consolidatedAt] - ISO timestamp when order was consolidated
+ * @property {boolean} [isConsolidated] - Whether this order is a consolidated order
+ * @property {string[]} [sourceOrderIds] - Original order IDs that were consolidated (for consolidated orders)
  */
 
 /**
@@ -318,7 +323,7 @@
 // ============================================================================
 
 /**
- * @typedef {'BUY' | 'SELL_ORDER' | 'SELL_FILLED'} TransactionType
+ * @typedef {'BUY' | 'SELL_ORDER' | 'SELL_FILLED' | 'CONSOLIDATE'} TransactionType
  */
 
 /**
@@ -371,6 +376,22 @@
  * @property {(orderId: string) => Promise<OrderFill[]>} getOrderFills - Get order fills
  * @property {(orderId: string) => Promise<FillSummary>} getOrderFillSummary - Get fill summary
  * @property {(productId: string, start: number, end: number, granularity: string) => Promise<Candle[]>} getCandles - Get candles
+ */
+
+// ============================================================================
+// Consolidation Types
+// ============================================================================
+
+/**
+ * @typedef {Object} ConsolidationResult
+ * @property {boolean} success - Whether consolidation was successful
+ * @property {string} [newOrderId] - New consolidated order ID
+ * @property {number} [consolidatedPrice] - Weighted average sell price
+ * @property {number} [consolidatedBTC] - Total BTC in consolidated order
+ * @property {number} [consolidatedCount] - Number of orders consolidated
+ * @property {string[]} [skippedOrderIds] - Order IDs skipped due to partial fills
+ * @property {string[]} [cancelledOrderIds] - Order IDs that were cancelled
+ * @property {string} [error] - Error message if consolidation failed
  */
 
 // Export empty object to make this a module

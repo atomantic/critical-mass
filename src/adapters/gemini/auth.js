@@ -34,6 +34,19 @@ const getWebSocketAuthHeaders = (apiKey, apiSecret) => {
 };
 
 /**
+ * Stringify payload converting big integer strings to unquoted numbers
+ * Gemini order IDs exceed JavaScript's MAX_SAFE_INTEGER but API expects numbers
+ * @param {Object} payload - Payload object
+ * @returns {string} JSON string with big integer fields as unquoted numbers
+ */
+const stringifyPayload = (payload) => {
+  // First stringify normally, then convert string order_id back to unquoted number
+  const json = JSON.stringify(payload);
+  // Match "order_id":"<digits>" and convert to "order_id":<digits>
+  return json.replace(/"(order_id)":\s*"(\d+)"/g, '"$1":$2');
+};
+
+/**
  * Get REST API authentication headers for Gemini
  * Used for endpoints not available via WebSocket
  * @param {string} apiKey - Gemini API key
@@ -50,7 +63,7 @@ const getRestAuthHeaders = (apiKey, apiSecret, endpoint, requestPayload = {}) =>
     ...requestPayload,
   };
 
-  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64');
+  const encodedPayload = Buffer.from(stringifyPayload(payload)).toString('base64');
   const signature = generateSignature(encodedPayload, apiSecret);
 
   return {

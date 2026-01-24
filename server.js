@@ -5,7 +5,7 @@ const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
 const stateTracker = require('./src/state-tracker');
-const { syncOrderStatuses, runIntervalCycle, loadConfig, runAllExchangeCycles } = require('./src/dca-engine');
+const { syncOrderStatuses, runIntervalCycle, loadConfig, runAllExchangeCycles, executeConsolidation } = require('./src/dca-engine');
 const { log, loadTransactionHistory, getLogFile } = require('./src/logger');
 const backtestEngine = require('./src/backtest-engine');
 const { runMigrationIfNeeded, getExchangeDataDir, getExchangeKeysPath } = require('./src/migration');
@@ -388,6 +388,38 @@ app.post('/api/:exchange/trade', async (req, res) => {
   res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
 });
 
+// Consolidate pending orders for an exchange
+app.post('/api/:exchange/consolidate', async (req, res) => {
+  const { exchange } = req.params;
+  const { orderIds } = req.body || {};
+
+  log('INFO', `[${exchange}] Consolidation triggered via API`);
+
+  // Check if we have enough orders
+  const config = getExchangeConfig(exchange);
+  const state = stateTracker.loadState(config, exchange);
+  const pendingOrders = (state.orders || []).filter(o => o.status === 'pending');
+
+  // Filter to specific order IDs if provided
+  const ordersToConsolidate = orderIds && orderIds.length > 0
+    ? pendingOrders.filter(o => orderIds.includes(o.orderId))
+    : pendingOrders;
+
+  if (ordersToConsolidate.length < 2) {
+    return res.status(400).json({
+      success: false,
+      error: `Need at least 2 pending orders to consolidate, found ${ordersToConsolidate.length}`,
+    });
+  }
+
+  const result = await executeConsolidation(exchange, orderIds);
+  res.json({
+    ...result,
+    triggeredAt: new Date().toISOString(),
+    trigger: 'manual',
+  });
+});
+
 // ============ Keys Management API ============
 
 // Check if keys exist for an exchange
@@ -608,16 +640,30 @@ app.get('/api/status', async (req, res) => {
   let currentPrice = 0;
   let usdcBalance = { available: 0, hold: 0 };
   let btcBalance = { available: 0, hold: 0 };
+  let keysConfigured = false;
+  let apiError = null;
 
   const adapter = getAdapter('coinbase');
-  currentPrice = await adapter.getCurrentPrice(config.productId);
-  usdcBalance = await adapter.getAccountBalance('USDC');
-  btcBalance = await adapter.getAccountBalance('BTC');
+
+  // Check if keys are configured before making API calls
+  if (adapter.hasValidKeys && adapter.hasValidKeys()) {
+    keysConfigured = true;
+    try {
+      currentPrice = await adapter.getCurrentPrice(config.productId);
+      usdcBalance = await adapter.getAccountBalance('USDC');
+      btcBalance = await adapter.getAccountBalance('BTC');
+    } catch (err) {
+      apiError = err.message || 'API connection failed';
+      log('ERROR', `[coinbase] Status check failed: ${apiError}`);
+    }
+  }
 
   res.json({
     currentPrice,
     usdcBalance,
     btcBalance,
+    keysConfigured,
+    apiError,
     config,
     state,
     lastUpdated: new Date().toISOString(),
@@ -837,6 +883,14 @@ app.get('*', (req, res) => {
 
 // ============ WebSocket ============
 
+// Import trade events for real-time updates
+const { tradeEvents } = require('./src/trade-events');
+
+// Broadcast trade events to all connected clients
+tradeEvents.on('trade', (event) => {
+  io.emit('trade:event', event);
+});
+
 io.on('connection', (socket) => {
   log('INFO', `WebSocket client connected: ${socket.id}`);
   socket.on('disconnect', () => {
@@ -856,7 +910,9 @@ const checkAndRunIntervalTrade = () => {
     const { intervalType } = config;
 
     if (!schedulerState[exchange]) {
-      schedulerState[exchange] = { lastRunId: null, nextExecutionTime: null };
+      // Initialize with nextExecutionTime=0 so first check passes immediately
+      // The duplicate-prevention is handled by hasRunThisInterval check
+      schedulerState[exchange] = { lastRunId: null, nextExecutionTime: 0 };
     }
 
     if (hasRunThisInterval(schedulerState[exchange].lastRunId, intervalType)) {
@@ -864,7 +920,7 @@ const checkAndRunIntervalTrade = () => {
     }
 
     const now = Date.now();
-    const nextExec = schedulerState[exchange].nextExecutionTime || getNextExecutionTime(intervalType);
+    const nextExec = schedulerState[exchange].nextExecutionTime;
 
     if (now >= nextExec) {
       const intervalLabel = formatInterval(intervalType);

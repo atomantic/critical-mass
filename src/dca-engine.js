@@ -5,8 +5,10 @@ const { getAdapter } = require('./adapters');
 const stateTracker = require('./state-tracker');
 const orderManager = require('./order-manager');
 const logger = require('./logger');
+const { consolidatePendingOrders } = require('./order-manager');
 const { getExchangeConfig, getEnabledExchanges } = require('./config-utils');
 const { normalizeConfig, formatInterval } = require('./interval-utils');
+const { tradeEvents } = require('./trade-events');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -14,6 +16,8 @@ const { normalizeConfig, formatInterval } = require('./interval-utils');
  * @typedef {import('./types').CycleResult} CycleResult
  * @typedef {import('./types').StatusResult} StatusResult
  * @typedef {import('./types').FilledSellOrder} FilledSellOrder
+ * @typedef {import('./types').ConsolidationResult} ConsolidationResult
+ * @typedef {import('./types').TrackedOrder} TrackedOrder
  */
 
 /**
@@ -37,6 +41,7 @@ const syncOrderStatuses = async (state, exchange = 'coinbase') => {
   }
 
   logger.log('INFO', `[${exchange}] Checking ${pendingOrders.length} pending orders...`);
+  tradeEvents.checkingOrders(exchange, pendingOrders.length);
 
   const adapter = getAdapter(exchange);
   const filledOrders = await orderManager.checkFilledOrders(pendingOrders, adapter);
@@ -45,9 +50,79 @@ const syncOrderStatuses = async (state, exchange = 'coinbase') => {
     stateTracker.updateAfterSellFill(state, filled);
     logger.logSellFilled(filled, state, exchange);
     logger.log('INFO', `[${exchange}] Sell order filled: +${filled.fillValue.toFixed(2)} USDC`);
+    tradeEvents.orderFilled(exchange, filled.orderId, filled.fillValue);
   }
 
   return filledOrders;
+};
+
+/**
+ * Execute order consolidation for an exchange
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string[]} [orderIds] - Specific order IDs to consolidate (optional, defaults to all pending)
+ * @returns {Promise<ConsolidationResult>} Result of the consolidation
+ */
+const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
+  const config = loadConfig(exchange);
+  const state = stateTracker.loadState(config, exchange);
+  const adapter = getAdapter(exchange);
+
+  // Get pending orders to consolidate
+  let pendingOrders = stateTracker.getPendingOrders(state);
+
+  // Filter to specific order IDs if provided
+  if (orderIds && orderIds.length > 0) {
+    pendingOrders = pendingOrders.filter(o => orderIds.includes(o.orderId));
+  }
+
+  if (pendingOrders.length < 2) {
+    return {
+      success: false,
+      error: `Need at least 2 pending orders, found ${pendingOrders.length}`,
+    };
+  }
+
+  logger.log('INFO', `[${exchange}] Starting consolidation of ${pendingOrders.length} orders`);
+
+  const result = await consolidatePendingOrders(config, pendingOrders, adapter);
+
+  if (result.success) {
+    // Get the orders that were actually consolidated (not skipped)
+    const consolidatedOrders = pendingOrders.filter(o =>
+      result.cancelledOrderIds.includes(o.orderId)
+    );
+
+    // Update state
+    stateTracker.updateAfterConsolidation(
+      state,
+      consolidatedOrders,
+      result.newOrderId,
+      result.consolidatedPrice,
+      result.consolidatedBTC
+    );
+
+    // Save state
+    stateTracker.saveState(state, exchange);
+
+    // Log the transaction
+    logger.logConsolidation(result, state, exchange);
+
+    // Emit event
+    tradeEvents.ordersConsolidated(
+      exchange,
+      result.consolidatedCount,
+      result.newOrderId,
+      result.consolidatedPrice,
+      result.consolidatedBTC
+    );
+
+    logger.log('INFO', `[${exchange}] Consolidation complete: ${result.consolidatedCount} orders -> 1 @ $${result.consolidatedPrice.toFixed(2)}`);
+  } else {
+    logger.log('ERROR', `[${exchange}] Consolidation failed: ${result.error}`);
+    tradeEvents.error(exchange, `Consolidation failed: ${result.error}`);
+  }
+
+  return result;
 };
 
 /**
@@ -61,15 +136,20 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   const intervalLabel = formatInterval(config.intervalType);
   const adapter = getAdapter(exchange);
 
+  // Emit starting event
+  tradeEvents.starting(exchange, intervalLabel);
+
   // Check if enabled
   if (!config.enabled) {
     logger.log('INFO', `[${exchange}] DCA bot is disabled in config`);
+    tradeEvents.disabled(exchange);
     return { status: 'disabled', exchange };
   }
 
   // Check if already ran this interval
   if (stateTracker.checkIfRanThisInterval(state, config.intervalType)) {
     logger.log('INFO', `[${exchange}] Already ran this ${intervalLabel} interval (${state.lastRunId})`);
+    tradeEvents.skipped(exchange, `Already ran this ${intervalLabel} interval`);
     return { status: 'already_ran', lastRunId: state.lastRunId, intervalType: config.intervalType, exchange };
   }
 
@@ -84,9 +164,11 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   // Check current price against max threshold
   const currentPrice = await adapter.getCurrentPrice(config.productId);
   logger.log('INFO', `[${exchange}] Current ${config.productId} price: ${currentPrice.toFixed(2)}`);
+  tradeEvents.priceCheck(exchange, config.productId, currentPrice);
 
   if (currentPrice > config.maxBuyPrice) {
     logger.log('WARN', `[${exchange}] Price ${currentPrice} exceeds max buy price ${config.maxBuyPrice}`);
+    tradeEvents.skipped(exchange, `Price $${currentPrice.toFixed(2)} exceeds max $${config.maxBuyPrice}`);
     return {
       status: 'price_too_high',
       currentPrice,
@@ -113,6 +195,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
   const balance = await adapter.getAccountBalance(quoteCurrency);
   logger.log('INFO', `[${exchange}] ${quoteCurrency} balance: ${balance.available.toFixed(2)} available, ${balance.hold.toFixed(2)} on hold`);
+  tradeEvents.balanceCheck(exchange, quoteCurrency, balance.available);
 
   // Use the minimum of: interval amount, remaining allocation, or available balance
   let actualBuyAmount = Math.min(intervalAmount, remaining, balance.available);
@@ -125,6 +208,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   // Check if we have enough to meet minimum order size
   if (actualBuyAmount < config.minOrderSize) {
     logger.log('ERROR', `[${exchange}] Available amount ${actualBuyAmount.toFixed(2)} below minimum ${config.minOrderSize}`);
+    tradeEvents.error(exchange, `Insufficient balance: $${actualBuyAmount.toFixed(2)} below minimum $${config.minOrderSize}`, { available: balance.available, required: config.minOrderSize });
     return {
       status: 'insufficient_balance',
       available: balance.available,
@@ -139,6 +223,9 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   logger.log('INFO', `[${exchange}] ${modeLabel}Allocation: ${state.totalAllocated}/${config.totalAllocation} used, buying ${actualBuyAmount.toFixed(2)}`);
 
   let buyResult, sellOrder;
+
+  // Emit buy placing event
+  tradeEvents.buyPlacing(exchange, actualBuyAmount, config.productId);
 
   if (isDryRun) {
     // Simulate the trade without executing
@@ -171,10 +258,17 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
 
     logger.log('INFO', `[${exchange}] ${modeLabel}Simulated buy: ${buyResult.btcAmount.toFixed(8)} BTC at ${buyResult.price.toFixed(2)}`);
     logger.log('INFO', `[${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} BTC at ${sellOrder.limitPrice.toFixed(2)}`);
+
+    // Emit events for dry run
+    tradeEvents.buyFilled(exchange, buyResult.btcAmount, buyResult.price, buyResult.fees);
+    tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
   } else {
     // Execute real trades
     buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter);
+    tradeEvents.buyFilled(exchange, buyResult.btcAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
+
     sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter);
+    tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
   }
 
   // Update state (even in dry-run to track what would have happened)
@@ -195,6 +289,25 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   logger.log('INFO', `[${exchange}] ${modeLabel}Holdback (reserves): ${holdbackBTC.toFixed(8)} BTC`);
   logger.log('INFO', `[${exchange}] ${modeLabel}Total BTC reserves: ${state.btcReserves.toFixed(8)} BTC`);
   logger.log('INFO', `[${exchange}] ${modeLabel}Outstanding sell orders: ${state.outstandingOrdersUSDC.toFixed(2)}`);
+
+  // Emit cycle complete event
+  tradeEvents.cycleComplete(exchange, isDryRun ? 'dry_run_success' : 'success', {
+    btcAmount: buyResult.btcAmount,
+    buyPrice: buyResult.price,
+    sellPrice: sellOrder.limitPrice,
+    holdbackBTC,
+    btcReserves: state.btcReserves,
+    outstandingOrdersUSDC: state.outstandingOrdersUSDC,
+  });
+
+  // Check if auto-consolidation is needed (only for non-dry-run)
+  if (!isDryRun && config.consolidateAfterOrders > 0) {
+    const pendingCount = stateTracker.getPendingOrders(state).length;
+    if (pendingCount > config.consolidateAfterOrders) {
+      logger.log('INFO', `[${exchange}] Auto-consolidation triggered: ${pendingCount} orders > ${config.consolidateAfterOrders} threshold`);
+      await executeConsolidation(exchange);
+    }
+  }
 
   return {
     status: isDryRun ? 'dry_run_success' : 'success',
@@ -290,4 +403,5 @@ module.exports = {
   checkStatus,
   syncOrderStatuses,
   loadConfig,
+  executeConsolidation,
 };

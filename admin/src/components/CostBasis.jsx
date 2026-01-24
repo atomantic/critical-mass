@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
+import { useParams } from 'react-router-dom'
 
 function CostBasis({ summary, quoteCurrency = 'USDC' }) {
+  const { exchange = 'coinbase' } = useParams()
   const [currentPrice, setCurrentPrice] = useState(0)
 
   useEffect(() => {
     const fetchPrice = async () => {
       try {
-        const res = await fetch('/api/status')
+        const res = await fetch(`/api/${exchange}/status`)
         const data = await res.json()
         setCurrentPrice(data.currentPrice || 0)
       } catch (err) {
@@ -16,7 +18,7 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
     fetchPrice()
     const interval = setInterval(fetchPrice, 10000)
     return () => clearInterval(interval)
-  }, [])
+  }, [exchange])
 
   if (!summary?.costBasis) {
     return (

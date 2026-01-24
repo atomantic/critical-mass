@@ -83,6 +83,7 @@ const createGeminiAdapter = (keysPath = null) => {
 
   /**
    * Make authenticated REST request to Gemini API
+   * Preserves large order IDs (exceeding JavaScript's MAX_SAFE_INTEGER) as strings
    * @param {string} endpoint - API endpoint (e.g., '/v1/balances')
    * @param {Object} [payload] - Request payload
    * @returns {Promise<any>} API response
@@ -91,7 +92,15 @@ const createGeminiAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
-    const response = await axios.post(`${REST_BASE_URL}${endpoint}`, null, { headers });
+    const response = await axios.post(`${REST_BASE_URL}${endpoint}`, null, {
+      headers,
+      // Preserve big integers as strings using regex before JSON parse
+      transformResponse: [data => {
+        // Convert large numbers (order_id, tid) to strings before JSON.parse
+        const preserved = data.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
+        return JSON.parse(preserved);
+      }],
+    });
     return response.data;
   };
 
@@ -255,11 +264,13 @@ const createGeminiAdapter = (keysPath = null) => {
 
   /**
    * Get order status
-   * @param {string} orderId - Order ID
+   * @param {string} orderId - Order ID (kept as string to preserve precision for large IDs)
    * @returns {Promise<OrderDetails>} Order details
    */
   adapter.getOrder = async (orderId) => {
-    const result = await makeRestRequest('/v1/order/status', { order_id: parseInt(orderId) });
+    // Gemini order IDs can exceed JavaScript's MAX_SAFE_INTEGER
+    // Pass as number but let JSON serialization handle it
+    const result = await makeRestRequest('/v1/order/status', { order_id: orderId });
 
     const executedAmount = parseFloat(result.executed_amount || 0);
     const originalAmount = parseFloat(result.original_amount || 0);
@@ -311,11 +322,11 @@ const createGeminiAdapter = (keysPath = null) => {
 
   /**
    * Cancel an order
-   * @param {string} orderId - Order ID
+   * @param {string} orderId - Order ID (kept as string to preserve precision for large IDs)
    * @returns {Promise<CancelResult>} Cancel result
    */
   adapter.cancelOrder = async (orderId) => {
-    const result = await makeRestRequest('/v1/order/cancel', { order_id: parseInt(orderId) });
+    const result = await makeRestRequest('/v1/order/cancel', { order_id: orderId });
 
     return {
       success: result.is_cancelled === true,

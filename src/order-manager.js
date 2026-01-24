@@ -9,6 +9,7 @@ const { log } = require('./logger');
  * @typedef {import('./types').SellOrder} SellOrder
  * @typedef {import('./types').FilledSellOrder} FilledSellOrder
  * @typedef {import('./types').TrackedOrder} TrackedOrder
+ * @typedef {import('./types').ConsolidationResult} ConsolidationResult
  */
 
 /**
@@ -197,10 +198,102 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
   throw new Error(`Failed to place sell order after ${maxRetries} attempts: ${lastError}`);
 };
 
+/**
+ * Consolidate multiple pending orders into a single order at weighted average price
+ * @param {ExchangeConfig} config - Configuration
+ * @param {TrackedOrder[]} pendingOrders - List of pending orders to consolidate
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @returns {Promise<ConsolidationResult>} Consolidation result
+ */
+const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
+  if (pendingOrders.length < 2) {
+    return {
+      success: false,
+      error: 'At least 2 pending orders required for consolidation',
+    };
+  }
+
+  const eligibleOrders = [];
+  const skippedOrderIds = [];
+  const cancelledOrderIds = [];
+
+  // Step 1: Check each order for partial fills
+  log('INFO', `Checking ${pendingOrders.length} orders for partial fills...`);
+  for (const order of pendingOrders) {
+    const orderDetails = await adapter.getOrder(order.orderId);
+
+    // Skip orders that have partial fills
+    if (orderDetails.completionPercentage > 0) {
+      log('WARN', `Order ${order.orderId} has ${orderDetails.completionPercentage}% filled, skipping`);
+      skippedOrderIds.push(order.orderId);
+      continue;
+    }
+
+    eligibleOrders.push(order);
+  }
+
+  if (eligibleOrders.length < 2) {
+    return {
+      success: false,
+      error: `Only ${eligibleOrders.length} eligible orders after filtering partial fills`,
+      skippedOrderIds,
+    };
+  }
+
+  // Step 2: Calculate weighted average sell price
+  const totalBTC = eligibleOrders.reduce((sum, o) => sum + o.sellQuantityBTC, 0);
+  const weightedPriceSum = eligibleOrders.reduce((sum, o) => sum + (o.sellQuantityBTC * o.sellPrice), 0);
+  const consolidatedPrice = weightedPriceSum / totalBTC;
+
+  log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalBTC.toFixed(8)} BTC @ ${consolidatedPrice.toFixed(2)}`);
+
+  // Step 3: Cancel all eligible orders
+  log('INFO', `Cancelling ${eligibleOrders.length} orders...`);
+  for (const order of eligibleOrders) {
+    const cancelResult = await adapter.cancelOrder(order.orderId);
+    if (!cancelResult.success) {
+      // Abort consolidation if any cancel fails
+      return {
+        success: false,
+        error: `Failed to cancel order ${order.orderId}`,
+        cancelledOrderIds,
+        skippedOrderIds,
+      };
+    }
+    cancelledOrderIds.push(order.orderId);
+  }
+
+  // Step 4: Place new consolidated order
+  log('INFO', `Placing consolidated sell order: ${totalBTC.toFixed(8)} BTC @ ${consolidatedPrice.toFixed(2)}`);
+  const sellResult = await adapter.placeLimitSell(config.productId, totalBTC, consolidatedPrice);
+
+  if (!sellResult.success) {
+    return {
+      success: false,
+      error: `Failed to place consolidated order: ${sellResult.errorMessage}`,
+      cancelledOrderIds,
+      skippedOrderIds,
+    };
+  }
+
+  log('INFO', `Consolidation complete: ${eligibleOrders.length} orders -> 1 order (${sellResult.orderId})`);
+
+  return {
+    success: true,
+    newOrderId: sellResult.orderId,
+    consolidatedPrice,
+    consolidatedBTC: totalBTC,
+    consolidatedCount: eligibleOrders.length,
+    skippedOrderIds,
+    cancelledOrderIds,
+  };
+};
+
 module.exports = {
   executeDailyBuy,
   placeSellOrder,
   placeSellOrderWithRetry,
   checkFilledOrders,
   waitForBuyFill,
+  consolidatePendingOrders,
 };
