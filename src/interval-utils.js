@@ -15,6 +15,12 @@
  * @type {Record<IntervalType, IntervalDefinition>}
  */
 const INTERVAL_DEFINITIONS = {
+  '1min': {
+    ms: 1 * 60 * 1000,
+    label: '1 Minute',
+    granularity: 60,   // ONE_MINUTE candles
+    aggregateFactor: 1
+  },
   '5min': {
     ms: 5 * 60 * 1000,
     label: '5 Minutes',
