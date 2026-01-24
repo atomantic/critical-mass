@@ -328,6 +328,15 @@ app.get('/api/:exchange/summary', (req, res) => {
   const totalBTCBought = buys.reduce((sum, t) => sum + (t['BTC Amount'] || 0), 0);
   const totalBTCSold = sells.reduce((sum, t) => sum + Math.abs(t['BTC Amount'] || 0), 0);
 
+  // Calculate realized profit from filled orders
+  const filledOrders = (state.orders || []).filter(o => o.status === 'filled');
+  const realizedProfit = filledOrders.reduce((sum, o) => {
+    const proceeds = o.netProceeds || (o.sellQuantityBTC * (o.filledPrice || o.sellPrice));
+    const cost = o.buyCostBasis || (o.buyQuantityBTC * o.buyPrice);
+    const costForSold = o.buyQuantityBTC > 0 ? cost * (o.sellQuantityBTC / o.buyQuantityBTC) : 0;
+    return sum + (proceeds - costForSold);
+  }, 0);
+
   const costBasis = calculateCostBasis(state, transactions);
   const nextTrade = getNextTradeInfo(config, state);
 
@@ -353,6 +362,7 @@ app.get('/api/:exchange/summary', (req, res) => {
       allocationUsed: state.totalAllocated || 0,
       allocationRemaining: (config.totalAllocation || 0) - (state.totalAllocated || 0),
       intervalsRun: state.totalIntervalsRun || 0,
+      realizedProfit,
     },
     costBasis,
     nextTrade,
