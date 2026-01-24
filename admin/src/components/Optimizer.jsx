@@ -42,7 +42,7 @@ function Optimizer({ exchange = 'coinbase' }) {
 
   // Load cached results on mount
   useEffect(() => {
-    fetch('/api/optimizer/cache')
+    fetch(`/api/${exchange}/optimizer/cache`)
       .then(res => res.json())
       .then(data => {
         if (data.cached) {
@@ -64,7 +64,7 @@ function Optimizer({ exchange = 'coinbase' }) {
     setCurrentBest(null)
     if (forceRefresh) setResults(null)
 
-    fetch('/api/optimizer/run', {
+    fetch(`/api/${exchange}/optimizer/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fundSize, forceRefresh })
@@ -86,7 +86,7 @@ function Optimizer({ exchange = 'coinbase' }) {
   }
 
   const clearCache = async () => {
-    fetch('/api/optimizer/cache', { method: 'DELETE' })
+    fetch(`/api/${exchange}/optimizer/cache`, { method: 'DELETE' })
       .then(res => res.json())
       .then(() => setResults(null))
       .catch(err => setError(err.message))
