@@ -76,8 +76,6 @@ function AppContent() {
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [syncing, setSyncing] = useState(false)
-  const [syncResult, setSyncResult] = useState(null)
 
   // Fetch list of configured exchanges
   const fetchExchanges = async (autoSelect = false) => {
@@ -119,23 +117,6 @@ function AppContent() {
     const data = await res.json()
     setSummary(data)
     setLoading(false)
-  }
-
-  const syncOrders = async () => {
-    setSyncing(true)
-    setSyncResult(null)
-    const res = await fetch(`/api/${currentExchange}/sync`, { method: 'POST' })
-    if (!res.ok) {
-      setError('Sync failed')
-      setSyncing(false)
-      return
-    }
-    const data = await res.json()
-    setSyncResult(data)
-    if (data.filledOrders > 0) {
-      fetchData() // Refresh data if orders filled
-    }
-    setSyncing(false)
   }
 
   // Initial load of exchanges (with auto-select on first load)
@@ -197,19 +178,6 @@ function AppContent() {
                     ? `Last run: ${new Date(summary.state.lastRunTimestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
                     : 'Never run'}
                 </span>
-                <button
-                  onClick={syncOrders}
-                  disabled={syncing}
-                  className="px-3 py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-sm"
-                >
-                  {syncing ? 'Syncing...' : 'Sync Orders'}
-                </button>
-                <button
-                  onClick={fetchData}
-                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm"
-                >
-                  Refresh
-                </button>
               </div>
             </div>
           </div>
@@ -241,13 +209,6 @@ function AppContent() {
           {error && (
             <div className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200">
               Error: {error}
-            </div>
-          )}
-
-          {syncResult && (
-            <div className="mb-4 p-4 bg-purple-900/50 border border-purple-700 rounded-lg text-purple-200">
-              Sync complete: {syncResult.filledOrders} order(s) filled
-              {syncResult.lastSyncTime && <span className="text-purple-400 ml-2">at {new Date(syncResult.lastSyncTime).toLocaleTimeString()}</span>}
             </div>
           )}
 
