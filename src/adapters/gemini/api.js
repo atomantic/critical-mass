@@ -1,3 +1,4 @@
+// @ts-check
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -6,14 +7,28 @@ const { v4: uuidv4 } = require('uuid');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
 
+/**
+ * @typedef {import('../../types').AccountBalance} AccountBalance
+ * @typedef {import('../../types').ProductDetails} ProductDetails
+ * @typedef {import('../../types').MarketBuyResult} MarketBuyResult
+ * @typedef {import('../../types').LimitSellResult} LimitSellResult
+ * @typedef {import('../../types').OrderDetails} OrderDetails
+ * @typedef {import('../../types').OpenOrder} OpenOrder
+ * @typedef {import('../../types').CancelResult} CancelResult
+ * @typedef {import('../../types').OrderFill} OrderFill
+ * @typedef {import('../../types').Candle} Candle
+ * @typedef {import('../../types').ApiCredentials} ApiCredentials
+ * @typedef {import('../../types').ExchangeAdapter} ExchangeAdapter
+ */
+
 const REST_BASE_URL = 'https://api.gemini.com';
 const WS_FAST_API_URL = 'wss://api.gemini.com/v1/order/events';
 const WS_MARKET_DATA_URL = 'wss://api.gemini.com/v1/marketdata';
 
 /**
  * Create a Gemini adapter instance
- * @param {string} keysPath - Path to keys file (defaults to data/gemini-keys.json)
- * @returns {Object} Gemini adapter with all required methods
+ * @param {string|null} [keysPath] - Path to keys file (defaults to data/gemini-keys.json)
+ * @returns {ExchangeAdapter} Gemini adapter with all required methods
  */
 const createGeminiAdapter = (keysPath = null) => {
   // Resolve keys path
@@ -48,7 +63,7 @@ const createGeminiAdapter = (keysPath = null) => {
 
   /**
    * Load API credentials from keys file
-   * @returns {{apiKey: string, apiSecret: string}}
+   * @returns {ApiCredentials}
    */
   adapter.loadCredentials = () => {
     if (!fs.existsSync(resolvedKeysPath)) {
@@ -69,8 +84,8 @@ const createGeminiAdapter = (keysPath = null) => {
   /**
    * Make authenticated REST request to Gemini API
    * @param {string} endpoint - API endpoint (e.g., '/v1/balances')
-   * @param {Object} payload - Request payload
-   * @returns {Promise<Object>} API response
+   * @param {Object} [payload] - Request payload
+   * @returns {Promise<any>} API response
    */
   const makeRestRequest = async (endpoint, payload = {}) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
@@ -83,7 +98,7 @@ const createGeminiAdapter = (keysPath = null) => {
   /**
    * Make public REST request (no auth)
    * @param {string} endpoint - API endpoint
-   * @returns {Promise<Object>} API response
+   * @returns {Promise<any>} API response
    */
   const makePublicRequest = async (endpoint) => {
     const response = await axios.get(`${REST_BASE_URL}${endpoint}`);
@@ -106,7 +121,7 @@ const createGeminiAdapter = (keysPath = null) => {
   /**
    * Get account balance for a specific currency
    * @param {string} currency - Currency code (e.g., 'USD', 'BTC')
-   * @returns {Promise<{available: number, hold: number, total: number}>}
+   * @returns {Promise<AccountBalance>}
    */
   adapter.getAccountBalance = async (currency) => {
     // Map USDC to USD for Gemini
@@ -141,7 +156,7 @@ const createGeminiAdapter = (keysPath = null) => {
   /**
    * Get product details
    * @param {string} productId - Product ID
-   * @returns {Promise<Object>} Product details
+   * @returns {Promise<ProductDetails>} Product details
    */
   adapter.getProductDetails = async (productId) => {
     const symbol = toGeminiSymbol(productId);
@@ -162,7 +177,7 @@ const createGeminiAdapter = (keysPath = null) => {
    * Gemini doesn't have true market orders, so we use IOC limit at slightly above market
    * @param {string} productId - Product ID
    * @param {number} quoteAmount - Amount in quote currency to spend
-   * @returns {Promise<Object>} Order result
+   * @returns {Promise<MarketBuyResult>} Order result
    */
   adapter.placeMarketBuy = async (productId, quoteAmount) => {
     const symbol = toGeminiSymbol(productId);
@@ -200,7 +215,7 @@ const createGeminiAdapter = (keysPath = null) => {
    * @param {string} productId - Product ID
    * @param {number} baseAmount - Amount of base currency to sell
    * @param {number} price - Limit price
-   * @returns {Promise<Object>} Order result
+   * @returns {Promise<LimitSellResult>} Order result
    */
   adapter.placeLimitSell = async (productId, baseAmount, price) => {
     const symbol = toGeminiSymbol(productId);
@@ -241,7 +256,7 @@ const createGeminiAdapter = (keysPath = null) => {
   /**
    * Get order status
    * @param {string} orderId - Order ID
-   * @returns {Promise<Object>} Order details
+   * @returns {Promise<OrderDetails>} Order details
    */
   adapter.getOrder = async (orderId) => {
     const result = await makeRestRequest('/v1/order/status', { order_id: parseInt(orderId) });
@@ -277,7 +292,7 @@ const createGeminiAdapter = (keysPath = null) => {
   /**
    * Get all open orders for a product
    * @param {string} productId - Product ID
-   * @returns {Promise<Array>} List of open orders
+   * @returns {Promise<OpenOrder[]>} List of open orders
    */
   adapter.getOpenOrders = async (productId) => {
     const orders = await makeRestRequest('/v1/orders');
@@ -297,7 +312,7 @@ const createGeminiAdapter = (keysPath = null) => {
   /**
    * Cancel an order
    * @param {string} orderId - Order ID
-   * @returns {Promise<Object>} Cancel result
+   * @returns {Promise<CancelResult>} Cancel result
    */
   adapter.cancelOrder = async (orderId) => {
     const result = await makeRestRequest('/v1/order/cancel', { order_id: parseInt(orderId) });
@@ -311,7 +326,7 @@ const createGeminiAdapter = (keysPath = null) => {
    * Get fills for an order
    * Gemini includes fees in the trade response
    * @param {string} orderId - Order ID
-   * @returns {Promise<Array>} List of fills
+   * @returns {Promise<OrderFill[]>} List of fills
    */
   adapter.getOrderFills = async (orderId) => {
     // Get trades for this account and filter by order
@@ -350,7 +365,7 @@ const createGeminiAdapter = (keysPath = null) => {
    * @param {number} start - Start timestamp (seconds) - not used by Gemini, fetches latest
    * @param {number} end - End timestamp (seconds) - not used by Gemini
    * @param {string} granularity - Candle granularity (1m, 5m, 15m, 30m, 1hr, 6hr, 1day)
-   * @returns {Promise<Array>} Array of candle data
+   * @returns {Promise<Candle[]>} Array of candle data
    */
   adapter.getCandles = async (productId, start, end, granularity) => {
     const symbol = toGeminiSymbol(productId);

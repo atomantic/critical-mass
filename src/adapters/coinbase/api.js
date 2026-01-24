@@ -1,3 +1,4 @@
+// @ts-check
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -5,12 +6,26 @@ const { v4: uuidv4 } = require('uuid');
 const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
 
+/**
+ * @typedef {import('../../types').AccountBalance} AccountBalance
+ * @typedef {import('../../types').ProductDetails} ProductDetails
+ * @typedef {import('../../types').MarketBuyResult} MarketBuyResult
+ * @typedef {import('../../types').LimitSellResult} LimitSellResult
+ * @typedef {import('../../types').OrderDetails} OrderDetails
+ * @typedef {import('../../types').OpenOrder} OpenOrder
+ * @typedef {import('../../types').CancelResult} CancelResult
+ * @typedef {import('../../types').OrderFill} OrderFill
+ * @typedef {import('../../types').Candle} Candle
+ * @typedef {import('../../types').ApiCredentials} ApiCredentials
+ * @typedef {import('../../types').ExchangeAdapter} ExchangeAdapter
+ */
+
 const BASE_URL = 'https://api.coinbase.com';
 
 /**
  * Create a Coinbase adapter instance
- * @param {string} keysPath - Path to keys file (defaults to data/coinbase-keys.json)
- * @returns {Object} Coinbase adapter with all required methods
+ * @param {string|null} [keysPath] - Path to keys file (defaults to data/coinbase-keys.json)
+ * @returns {ExchangeAdapter} Coinbase adapter with all required methods
  */
 const createCoinbaseAdapter = (keysPath = null) => {
   // Resolve keys path
@@ -45,7 +60,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
   /**
    * Load API credentials from keys file
-   * @returns {{apiKey: string, apiSecret: string}}
+   * @returns {ApiCredentials}
    * @throws {Error} If keys file is missing or invalid
    */
   adapter.loadCredentials = () => {
@@ -77,8 +92,8 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * Make authenticated request to Coinbase API
    * @param {string} method - HTTP method
    * @param {string} apiPath - API path
-   * @param {Object} data - Request body (for POST)
-   * @returns {Promise<Object>} API response data
+   * @param {Object|null} [data] - Request body (for POST)
+   * @returns {Promise<any>} API response data
    */
   const makeRequest = async (method, apiPath, data = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
@@ -102,7 +117,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * Get account balance for a specific currency (handles pagination)
    * Prefers non-vault accounts with balances
    * @param {string} currency - Currency code (e.g., 'USDC', 'BTC')
-   * @returns {Promise<{available: number, hold: number, total: number}>}
+   * @returns {Promise<AccountBalance>}
    */
   adapter.getAccountBalance = async (currency) => {
     let cursor = null;
@@ -153,7 +168,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
   /**
    * Get product details including base/quote increments
    * @param {string} productId - Product ID
-   * @returns {Promise<Object>} Product details
+   * @returns {Promise<ProductDetails>} Product details
    */
   adapter.getProductDetails = async (productId) => {
     const data = await makeRequest('GET', `/api/v3/brokerage/products/${productId}`);
@@ -170,7 +185,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * Place a market buy order using quote currency (USDC)
    * @param {string} productId - Product ID (e.g., 'BTC-USDC')
    * @param {number} quoteAmount - Amount in quote currency to spend
-   * @returns {Promise<Object>} Order result
+   * @returns {Promise<MarketBuyResult>} Order result
    */
   adapter.placeMarketBuy = async (productId, quoteAmount) => {
     const clientOrderId = uuidv4();
@@ -201,7 +216,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @param {string} productId - Product ID
    * @param {number} baseAmount - Amount of base currency to sell
    * @param {number} price - Limit price in quote currency
-   * @returns {Promise<Object>} Order result
+   * @returns {Promise<LimitSellResult>} Order result
    */
   adapter.placeLimitSell = async (productId, baseAmount, price) => {
     const clientOrderId = uuidv4();
@@ -244,7 +259,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
   /**
    * Get order details by order ID (includes fee info)
    * @param {string} orderId - Order ID
-   * @returns {Promise<Object>} Order details
+   * @returns {Promise<OrderDetails>} Order details
    */
   adapter.getOrder = async (orderId) => {
     const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/${orderId}`);
@@ -267,7 +282,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
   /**
    * Get all open orders for a product
    * @param {string} productId - Product ID
-   * @returns {Promise<Array>} List of open orders
+   * @returns {Promise<OpenOrder[]>} List of open orders
    */
   adapter.getOpenOrders = async (productId) => {
     const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical?product_id=${productId}&order_status=OPEN`);
@@ -285,7 +300,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
   /**
    * Cancel an order
    * @param {string} orderId - Order ID to cancel
-   * @returns {Promise<Object>} Cancel result
+   * @returns {Promise<CancelResult>} Cancel result
    */
   adapter.cancelOrder = async (orderId) => {
     const result = await makeRequest('POST', '/api/v3/brokerage/orders/batch_cancel', {
@@ -300,7 +315,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
   /**
    * Get fills for an order with detailed fee/rebate info
    * @param {string} orderId - Order ID
-   * @returns {Promise<Array>} List of fills with fee details
+   * @returns {Promise<OrderFill[]>} List of fills with fee details
    */
   adapter.getOrderFills = async (orderId) => {
     const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}`);
@@ -336,7 +351,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @param {number} start - Start timestamp (seconds)
    * @param {number} end - End timestamp (seconds)
    * @param {string} granularity - Candle granularity (e.g., 'ONE_DAY', 'ONE_HOUR')
-   * @returns {Promise<Array>} Array of candle data
+   * @returns {Promise<Candle[]>} Array of candle data
    */
   adapter.getCandles = async (productId, start, end, granularity) => {
     const apiPath = `/api/v3/brokerage/products/${productId}/candles?start=${start}&end=${end}&granularity=${granularity}`;

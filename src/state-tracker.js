@@ -1,3 +1,4 @@
+// @ts-check
 const fs = require('fs');
 const path = require('path');
 const {
@@ -6,6 +7,17 @@ const {
   hasRunThisInterval
 } = require('./interval-utils');
 const { getExchangeDataDir } = require('./migration');
+
+/**
+ * @typedef {import('./types').BotState} BotState
+ * @typedef {import('./types').TrackedOrder} TrackedOrder
+ * @typedef {import('./types').ExchangeConfig} ExchangeConfig
+ * @typedef {import('./types').AllocationInfo} AllocationInfo
+ * @typedef {import('./types').BuyResult} BuyResult
+ * @typedef {import('./types').SellOrder} SellOrder
+ * @typedef {import('./types').FilledSellOrder} FilledSellOrder
+ * @typedef {import('./types').IntervalType} IntervalType
+ */
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
@@ -22,8 +34,8 @@ const getStateFile = (exchange = 'coinbase') => {
 
 /**
  * Create initial state structure
- * @param {Object} config - Configuration object
- * @returns {Object} Initial state
+ * @param {ExchangeConfig} config - Configuration object
+ * @returns {BotState} Initial state
  */
 const createInitialState = (config) => ({
   initialAllocation: config.totalAllocation,
@@ -43,8 +55,8 @@ const createInitialState = (config) => ({
 
 /**
  * Migrate old state format to new format
- * @param {Object} state - State object
- * @returns {Object} Migrated state
+ * @param {BotState} state - State object
+ * @returns {BotState} Migrated state
  */
 const migrateState = (state) => {
   // Migrate totalDaysRun -> totalIntervalsRun
@@ -67,9 +79,9 @@ const migrateState = (state) => {
 
 /**
  * Load state from file
- * @param {Object} config - Configuration for initial state if file doesn't exist
- * @param {string} exchange - Exchange name (default: coinbase)
- * @returns {Object} Current state
+ * @param {ExchangeConfig|null} [config] - Configuration for initial state if file doesn't exist
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {BotState} Current state
  */
 const loadState = (config = null, exchange = 'coinbase') => {
   if (!config) {
@@ -105,8 +117,9 @@ const loadState = (config = null, exchange = 'coinbase') => {
 
 /**
  * Save state to file
- * @param {Object} state - State to save
- * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {BotState} state - State to save
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
  */
 const saveState = (state, exchange = 'coinbase') => {
   const stateFile = getStateFile(exchange);
@@ -121,9 +134,9 @@ const saveState = (state, exchange = 'coinbase') => {
 
 /**
  * Check if there's allocation remaining
- * @param {Object} state - Current state
- * @param {Object} config - Configuration
- * @returns {{remaining: number, intervalAmount: number}}
+ * @param {BotState} state - Current state
+ * @param {ExchangeConfig} config - Configuration
+ * @returns {AllocationInfo}
  */
 const checkAllocationRemaining = (state, config) => {
   const normalized = normalizeConfig(config);
@@ -138,8 +151,8 @@ const checkAllocationRemaining = (state, config) => {
 
 /**
  * Check if bot already ran this interval
- * @param {Object} state - Current state
- * @param {string} intervalType - Interval type from config
+ * @param {BotState} state - Current state
+ * @param {IntervalType} intervalType - Interval type from config
  * @returns {boolean}
  */
 const checkIfRanThisInterval = (state, intervalType) =>
@@ -147,11 +160,11 @@ const checkIfRanThisInterval = (state, intervalType) =>
 
 /**
  * Update state after a buy order
- * @param {Object} state - Current state
- * @param {Object} buyDetails - Buy order details
- * @param {Object} sellOrder - Sell order details
- * @param {Object} config - Configuration
- * @returns {Object} Updated state
+ * @param {BotState} state - Current state
+ * @param {BuyResult} buyDetails - Buy order details
+ * @param {SellOrder} sellOrder - Sell order details
+ * @param {ExchangeConfig} config - Configuration
+ * @returns {BotState} Updated state
  */
 const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
   const normalized = normalizeConfig(config);
@@ -201,9 +214,9 @@ const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
 
 /**
  * Update state when a sell order fills (includes fee tracking)
- * @param {Object} state - Current state
- * @param {Object} fillDetails - Fill details including fees/rebates
- * @returns {Object} Updated state
+ * @param {BotState} state - Current state
+ * @param {FilledSellOrder} fillDetails - Fill details including fees/rebates
+ * @returns {BotState} Updated state
  */
 const updateAfterSellFill = (state, fillDetails) => {
   // Extract fee details (with defaults for backwards compatibility)
@@ -240,8 +253,8 @@ const updateAfterSellFill = (state, fillDetails) => {
 
 /**
  * Get all pending orders
- * @param {Object} state - Current state
- * @returns {Array} Pending orders
+ * @param {BotState} state - Current state
+ * @returns {TrackedOrder[]} Pending orders
  */
 const getPendingOrders = (state) => state.orders.filter(o => o.status === 'pending');
 

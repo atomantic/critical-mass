@@ -1,6 +1,12 @@
+// @ts-check
 /**
  * Base adapter interface definition
  * All exchange adapters must implement these methods
+ */
+
+/**
+ * @typedef {import('../types').FillSummary} FillSummary
+ * @typedef {import('../types').OrderFill} OrderFill
  */
 
 /**
@@ -74,6 +80,7 @@ const REQUIRED_METHODS = [
  * Validate that an adapter implements all required methods
  * @param {Object} adapter - Adapter instance to validate
  * @param {string} name - Adapter name for error messages
+ * @returns {void}
  * @throws {Error} If adapter is missing required methods
  */
 const validateAdapter = (adapter, name) => {
@@ -86,7 +93,7 @@ const validateAdapter = (adapter, name) => {
 /**
  * Create a base adapter with default implementations (for optional methods)
  * @param {string} exchangeName - Name of the exchange
- * @returns {Object} Base adapter object
+ * @returns {{name: string, getOrderFillSummary: (orderId: string) => Promise<FillSummary>}} Base adapter object
  */
 const createBaseAdapter = (exchangeName) => ({
   name: exchangeName,
@@ -94,6 +101,8 @@ const createBaseAdapter = (exchangeName) => ({
   /**
    * Get aggregated fill info for an order
    * Default implementation that works with getOrderFills
+   * @param {string} orderId - Order ID
+   * @returns {Promise<FillSummary>}
    */
   getOrderFillSummary: async function(orderId) {
     const fills = await this.getOrderFills(orderId);
