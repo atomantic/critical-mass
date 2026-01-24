@@ -1,10 +1,21 @@
+// @ts-check
 const fs = require('fs');
 const path = require('path');
 const { getExchangeDataDir } = require('./migration');
 
 /**
+ * @typedef {import('./types').BotState} BotState
+ * @typedef {import('./types').BuyResult} BuyResult
+ * @typedef {import('./types').SellOrder} SellOrder
+ * @typedef {import('./types').FilledSellOrder} FilledSellOrder
+ * @typedef {import('./types').TransactionType} TransactionType
+ * @typedef {import('./types').TransactionDetails} TransactionDetails
+ * @typedef {import('./types').TransactionRecord} TransactionRecord
+ */
+
+/**
  * Get log file path for an exchange
- * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {string} [exchange] - Exchange name (default: coinbase)
  * @returns {string} Path to transactions log file
  */
 const getLogFile = (exchange = 'coinbase') => {
@@ -32,7 +43,8 @@ const HEADERS = [
 
 /**
  * Ensure log file exists with headers
- * @param {string} exchange - Exchange name
+ * @param {string} [exchange] - Exchange name
+ * @returns {void}
  */
 const ensureLogFile = (exchange = 'coinbase') => {
   const logFile = getLogFile(exchange);
@@ -49,8 +61,8 @@ const ensureLogFile = (exchange = 'coinbase') => {
 
 /**
  * Format a number for TSV output
- * @param {number} value - Value to format
- * @param {number} decimals - Decimal places
+ * @param {number|null|undefined} value - Value to format
+ * @param {number} [decimals] - Decimal places
  * @returns {string}
  */
 const formatNumber = (value, decimals = 8) => {
@@ -60,10 +72,11 @@ const formatNumber = (value, decimals = 8) => {
 
 /**
  * Log a transaction to the TSV file (includes fee tracking)
- * @param {string} type - Transaction type (BUY, SELL_ORDER, SELL_FILLED)
- * @param {Object} details - Transaction details including fees
- * @param {Object} state - Current state after transaction
- * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {TransactionType} type - Transaction type (BUY, SELL_ORDER, SELL_FILLED)
+ * @param {TransactionDetails} details - Transaction details including fees
+ * @param {BotState} state - Current state after transaction
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
  */
 const logTransaction = (type, details, state, exchange = 'coinbase') => {
   ensureLogFile(exchange);
@@ -92,9 +105,10 @@ const logTransaction = (type, details, state, exchange = 'coinbase') => {
 
 /**
  * Log a buy transaction (includes fee details)
- * @param {Object} buyDetails - Buy order details with fees
- * @param {Object} state - Current state
- * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {BuyResult} buyDetails - Buy order details with fees
+ * @param {BotState} state - Current state
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
  */
 const logBuy = (buyDetails, state, exchange = 'coinbase') => {
   logTransaction('BUY', {
@@ -110,9 +124,10 @@ const logBuy = (buyDetails, state, exchange = 'coinbase') => {
 
 /**
  * Log a sell order placement
- * @param {Object} sellOrder - Sell order details
- * @param {Object} state - Current state
- * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {SellOrder} sellOrder - Sell order details
+ * @param {BotState} state - Current state
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
  */
 const logSellOrder = (sellOrder, state, exchange = 'coinbase') => {
   logTransaction('SELL_ORDER', {
@@ -125,9 +140,10 @@ const logSellOrder = (sellOrder, state, exchange = 'coinbase') => {
 
 /**
  * Log a filled sell order (includes fee details)
- * @param {Object} fillDetails - Fill details with fees
- * @param {Object} state - Current state
- * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {FilledSellOrder} fillDetails - Fill details with fees
+ * @param {BotState} state - Current state
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
  */
 const logSellFilled = (fillDetails, state, exchange = 'coinbase') => {
   logTransaction('SELL_FILLED', {
@@ -143,8 +159,8 @@ const logSellFilled = (fillDetails, state, exchange = 'coinbase') => {
 
 /**
  * Load transaction history from TSV
- * @param {string} exchange - Exchange name (default: coinbase)
- * @returns {Array} Transaction records
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {TransactionRecord[]} Transaction records
  */
 const loadTransactionHistory = (exchange = 'coinbase') => {
   const logFile = getLogFile(exchange);
@@ -173,9 +189,10 @@ const loadTransactionHistory = (exchange = 'coinbase') => {
 
 /**
  * Log a message to console with timestamp
- * @param {string} level - Log level (INFO, WARN, ERROR)
+ * @param {'INFO' | 'WARN' | 'ERROR'} level - Log level
  * @param {string} message - Log message
- * @param {Object} data - Optional data to include
+ * @param {Object|null} [data] - Optional data to include
+ * @returns {void}
  */
 const log = (level, message, data = null) => {
   const timestamp = new Date().toISOString();

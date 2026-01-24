@@ -1,13 +1,23 @@
+// @ts-check
 const { getAdapter } = require('./adapters');
 const { log } = require('./logger');
 
 /**
+ * @typedef {import('./types').ExchangeConfig} ExchangeConfig
+ * @typedef {import('./types').ExchangeAdapter} ExchangeAdapter
+ * @typedef {import('./types').BuyResult} BuyResult
+ * @typedef {import('./types').SellOrder} SellOrder
+ * @typedef {import('./types').FilledSellOrder} FilledSellOrder
+ * @typedef {import('./types').TrackedOrder} TrackedOrder
+ */
+
+/**
  * Wait for a market buy order to fill and get fill details with fees
  * @param {string} orderId - Order ID to check
- * @param {Object} adapter - Exchange adapter
- * @param {number} maxAttempts - Maximum polling attempts
- * @param {number} delayMs - Delay between polls
- * @returns {Promise<Object>} Fill details including fees and rebates
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {number} [maxAttempts] - Maximum polling attempts
+ * @param {number} [delayMs] - Delay between polls
+ * @returns {Promise<BuyResult>} Fill details including fees and rebates
  */
 const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000) => {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -45,10 +55,10 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
 
 /**
  * Execute a daily buy order
- * @param {Object} config - Configuration
+ * @param {ExchangeConfig} config - Configuration
  * @param {number} usdcAmount - Amount to spend in quote currency
- * @param {Object} adapter - Exchange adapter (optional, uses coinbase by default)
- * @returns {Promise<Object>} Buy result with fill details
+ * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional, uses coinbase by default)
+ * @returns {Promise<BuyResult>} Buy result with fill details
  */
 const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
   adapter = adapter || getAdapter('coinbase');
@@ -75,10 +85,10 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
 
 /**
  * Place a post-only sell order
- * @param {Object} config - Configuration
- * @param {Object} buyDetails - Buy order fill details
- * @param {Object} adapter - Exchange adapter (optional)
- * @returns {Promise<Object>} Sell order result
+ * @param {ExchangeConfig} config - Configuration
+ * @param {BuyResult} buyDetails - Buy order fill details
+ * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional)
+ * @returns {Promise<SellOrder>} Sell order result
  */
 const placeSellOrder = async (config, buyDetails, adapter = null) => {
   adapter = adapter || getAdapter('coinbase');
@@ -104,9 +114,9 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
 
 /**
  * Check status of pending sell orders (includes fee details)
- * @param {Array} pendingOrders - List of pending orders from state
- * @param {Object} adapter - Exchange adapter (optional)
- * @returns {Promise<Array>} List of orders that have filled with fee info
+ * @param {TrackedOrder[]} pendingOrders - List of pending orders from state
+ * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional)
+ * @returns {Promise<FilledSellOrder[]>} List of orders that have filled with fee info
  */
 const checkFilledOrders = async (pendingOrders, adapter = null) => {
   adapter = adapter || getAdapter('coinbase');
@@ -143,11 +153,11 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
 
 /**
  * Retry placing a sell order if post-only was rejected
- * @param {Object} config - Configuration
- * @param {Object} buyDetails - Buy order fill details
- * @param {Object} adapter - Exchange adapter (optional)
- * @param {number} maxRetries - Maximum retry attempts
- * @returns {Promise<Object>} Sell order result
+ * @param {ExchangeConfig} config - Configuration
+ * @param {BuyResult} buyDetails - Buy order fill details
+ * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional)
+ * @param {number} [maxRetries] - Maximum retry attempts
+ * @returns {Promise<SellOrder>} Sell order result
  */
 const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRetries = 3) => {
   adapter = adapter || getAdapter('coinbase');

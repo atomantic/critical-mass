@@ -1,3 +1,4 @@
+// @ts-check
 const fs = require('fs');
 const path = require('path');
 const { getAdapter } = require('./adapters');
@@ -8,17 +9,25 @@ const { getExchangeConfig, getEnabledExchanges } = require('./config-utils');
 const { normalizeConfig, formatInterval } = require('./interval-utils');
 
 /**
+ * @typedef {import('./types').ExchangeConfig} ExchangeConfig
+ * @typedef {import('./types').BotState} BotState
+ * @typedef {import('./types').CycleResult} CycleResult
+ * @typedef {import('./types').StatusResult} StatusResult
+ * @typedef {import('./types').FilledSellOrder} FilledSellOrder
+ */
+
+/**
  * Load configuration for an exchange
- * @param {string} exchange - Exchange name (default: coinbase)
- * @returns {Object} Configuration
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {ExchangeConfig} Configuration
  */
 const loadConfig = (exchange = 'coinbase') => getExchangeConfig(exchange);
 
 /**
  * Sync order statuses and update state for filled orders
- * @param {Object} state - Current state
- * @param {string} exchange - Exchange name
- * @returns {Promise<Array>} List of newly filled orders
+ * @param {BotState} state - Current state
+ * @param {string} [exchange] - Exchange name
+ * @returns {Promise<FilledSellOrder[]>} List of newly filled orders
  */
 const syncOrderStatuses = async (state, exchange = 'coinbase') => {
   const pendingOrders = stateTracker.getPendingOrders(state);
@@ -43,8 +52,8 @@ const syncOrderStatuses = async (state, exchange = 'coinbase') => {
 
 /**
  * Run the interval DCA cycle for an exchange
- * @param {string} exchange - Exchange name (default: coinbase)
- * @returns {Promise<Object>} Result of the cycle
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {Promise<CycleResult>} Result of the cycle
  */
 const runIntervalCycle = async (exchange = 'coinbase') => {
   const config = loadConfig(exchange);
@@ -206,7 +215,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
 
 /**
  * Run cycle for all enabled exchanges
- * @returns {Promise<Object>} Results per exchange
+ * @returns {Promise<Object<string, CycleResult>>} Results per exchange
  */
 const runAllExchangeCycles = async () => {
   const enabledExchanges = getEnabledExchanges();
@@ -222,8 +231,8 @@ const runAllExchangeCycles = async () => {
 
 /**
  * Check status only (no trading) for an exchange
- * @param {string} exchange - Exchange name (default: coinbase)
- * @returns {Promise<Object>} Current status
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {Promise<StatusResult>} Current status
  */
 const checkStatus = async (exchange = 'coinbase') => {
   const config = loadConfig(exchange);

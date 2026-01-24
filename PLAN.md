@@ -44,6 +44,16 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 - State persistence with migration support
 - Price cache for backtesting
 
+### Type System
+- JSDoc type definitions in `src/types.js`
+- `@ts-check` enabled for type checking in editors
+- Comprehensive types for:
+  - Exchange configurations and state
+  - Order and fill results
+  - API responses
+  - Transaction records
+- TypeScript-compatible `jsconfig.json` for IDE support
+
 ---
 
 ## Architecture
@@ -51,6 +61,7 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 ### File Structure
 ```
 src/
+├── types.js            # JSDoc type definitions
 ├── adapters/           # Exchange abstraction layer
 │   ├── base-adapter.js # Interface definition
 │   ├── index.js        # Registry and factory

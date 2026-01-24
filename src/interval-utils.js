@@ -1,9 +1,19 @@
+// @ts-check
 /**
  * Interval utilities for granular time-based trading
  * Supports 10-minute, 1-hour, 4-hour, and daily intervals
  */
 
-// Interval definitions with ms values and Coinbase API granularity
+/**
+ * @typedef {import('./types').IntervalType} IntervalType
+ * @typedef {import('./types').IntervalDefinition} IntervalDefinition
+ * @typedef {import('./types').ExchangeConfig} ExchangeConfig
+ */
+
+/**
+ * Interval definitions with ms values and Coinbase API granularity
+ * @type {Record<IntervalType, IntervalDefinition>}
+ */
 const INTERVAL_DEFINITIONS = {
   '5min': {
     ms: 5 * 60 * 1000,
@@ -45,16 +55,16 @@ const INTERVAL_DEFINITIONS = {
 
 /**
  * Get interval config by type
- * @param {string} intervalType - One of: 10min, 1hour, 4hour, daily
- * @returns {Object} Interval configuration
+ * @param {IntervalType} intervalType - One of: 5min, 10min, 30min, 1hour, 4hour, daily
+ * @returns {IntervalDefinition} Interval configuration
  */
 const getIntervalConfig = (intervalType) =>
   INTERVAL_DEFINITIONS[intervalType] || INTERVAL_DEFINITIONS['daily'];
 
 /**
  * Calculate next execution time aligned to interval boundaries
- * @param {string} intervalType - Interval type
- * @param {number} lastRunTimestamp - Optional last run timestamp
+ * @param {IntervalType} intervalType - Interval type
+ * @param {number|null} [lastRunTimestamp] - Optional last run timestamp
  * @returns {number} Next execution timestamp in ms
  */
 const getNextExecutionTime = (intervalType, lastRunTimestamp = null) => {
@@ -80,7 +90,7 @@ const getNextExecutionTime = (intervalType, lastRunTimestamp = null) => {
 /**
  * Generate unique run identifier for an interval slot
  * Prevents duplicate runs within the same interval
- * @param {string} intervalType - Interval type
+ * @param {IntervalType} intervalType - Interval type
  * @returns {string} Unique run identifier
  */
 const getRunIdentifier = (intervalType) => {
@@ -92,8 +102,8 @@ const getRunIdentifier = (intervalType) => {
 
 /**
  * Check if current interval was already executed
- * @param {string} lastRunId - Last run identifier from state
- * @param {string} intervalType - Interval type
+ * @param {string|null} lastRunId - Last run identifier from state
+ * @param {IntervalType} intervalType - Interval type
  * @returns {boolean} True if already ran this interval
  */
 const hasRunThisInterval = (lastRunId, intervalType) => {
@@ -104,8 +114,8 @@ const hasRunThisInterval = (lastRunId, intervalType) => {
 /**
  * Normalize config for backwards compatibility
  * Handles both old (daysToSpread) and new (intervalsToSpread) formats
- * @param {Object} config - Configuration object
- * @returns {Object} Normalized configuration
+ * @param {Partial<ExchangeConfig> & {daysToSpread?: number}} config - Configuration object
+ * @returns {ExchangeConfig} Normalized configuration
  */
 const normalizeConfig = (config) => ({
   ...config,
@@ -115,7 +125,7 @@ const normalizeConfig = (config) => ({
 
 /**
  * Get interval amount (allocation per interval)
- * @param {Object} config - Configuration object
+ * @param {ExchangeConfig} config - Configuration object
  * @returns {number} Amount per interval
  */
 const getIntervalAmount = (config) => {
@@ -125,7 +135,7 @@ const getIntervalAmount = (config) => {
 
 /**
  * Format interval for display
- * @param {string} intervalType - Interval type
+ * @param {IntervalType} intervalType - Interval type
  * @returns {string} Human-readable label
  */
 const formatInterval = (intervalType) => {
@@ -135,7 +145,7 @@ const formatInterval = (intervalType) => {
 
 /**
  * Get time until next execution
- * @param {string} intervalType - Interval type
+ * @param {IntervalType} intervalType - Interval type
  * @returns {{ms: number, formatted: string}} Time until next run
  */
 const getTimeUntilNext = (intervalType) => {

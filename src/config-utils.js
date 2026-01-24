@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Configuration Utilities
  *
@@ -9,10 +10,18 @@ const fs = require('fs');
 const path = require('path');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
 
+/**
+ * @typedef {import('./types').ExchangeConfig} ExchangeConfig
+ * @typedef {import('./types').GlobalConfig} GlobalConfig
+ * @typedef {import('./types').MultiExchangeConfig} MultiExchangeConfig
+ * @typedef {import('./types').ValidationResult} ValidationResult
+ */
+
 const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
 
 /**
  * Default configuration values
+ * @type {ExchangeConfig}
  */
 const DEFAULTS = {
   productId: 'BTC-USDC',
@@ -29,6 +38,7 @@ const DEFAULTS = {
 
 /**
  * Global default configuration
+ * @type {GlobalConfig}
  */
 const GLOBAL_DEFAULTS = {
   schedulerInterval: 30000,
@@ -47,7 +57,8 @@ const loadRawConfig = () => {
 
 /**
  * Save configuration to file
- * @param {Object} config - Configuration to save
+ * @param {MultiExchangeConfig} config - Configuration to save
+ * @returns {void}
  */
 const saveConfig = (config) => {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -65,7 +76,7 @@ const isMultiExchangeConfig = (config) => {
 /**
  * Normalize single-exchange config to multi-exchange format
  * @param {Object} config - Single-exchange configuration
- * @returns {Object} Multi-exchange configuration
+ * @returns {MultiExchangeConfig} Multi-exchange configuration
  */
 const normalizeToMultiExchange = (config) => {
   if (isMultiExchangeConfig(config)) {
@@ -97,7 +108,7 @@ const normalizeToMultiExchange = (config) => {
 
 /**
  * Load and normalize configuration
- * @returns {Object} Normalized multi-exchange configuration
+ * @returns {MultiExchangeConfig} Normalized multi-exchange configuration
  */
 const loadConfig = () => {
   const raw = loadRawConfig();
@@ -107,7 +118,7 @@ const loadConfig = () => {
 /**
  * Get configuration for a specific exchange
  * @param {string} exchange - Exchange name
- * @returns {Object} Exchange configuration with defaults applied
+ * @returns {ExchangeConfig} Exchange configuration with defaults applied
  */
 const getExchangeConfig = (exchange) => {
   const config = loadConfig();
@@ -126,7 +137,7 @@ const getExchangeConfig = (exchange) => {
 
 /**
  * Get list of enabled exchanges
- * @returns {Array<string>} List of enabled exchange names
+ * @returns {string[]} List of enabled exchange names
  */
 const getEnabledExchanges = () => {
   const config = loadConfig();
@@ -137,7 +148,7 @@ const getEnabledExchanges = () => {
 
 /**
  * Get list of all configured exchanges
- * @returns {Array<string>} List of exchange names
+ * @returns {string[]} List of exchange names
  */
 const getConfiguredExchanges = () => {
   const config = loadConfig();
@@ -147,8 +158,8 @@ const getConfiguredExchanges = () => {
 /**
  * Update configuration for a specific exchange
  * @param {string} exchange - Exchange name
- * @param {Object} updates - Configuration updates
- * @returns {Object} Updated full configuration
+ * @param {Partial<ExchangeConfig>} updates - Configuration updates
+ * @returns {MultiExchangeConfig} Updated full configuration
  */
 const updateExchangeConfig = (exchange, updates) => {
   const config = loadConfig();
@@ -168,8 +179,8 @@ const updateExchangeConfig = (exchange, updates) => {
 
 /**
  * Update global configuration
- * @param {Object} updates - Global configuration updates
- * @returns {Object} Updated full configuration
+ * @param {Partial<GlobalConfig>} updates - Global configuration updates
+ * @returns {MultiExchangeConfig} Updated full configuration
  */
 const updateGlobalConfig = (updates) => {
   const config = loadConfig();
@@ -187,7 +198,7 @@ const updateGlobalConfig = (updates) => {
  * Enable or disable an exchange
  * @param {string} exchange - Exchange name
  * @param {boolean} enabled - Whether to enable
- * @returns {Object} Updated configuration
+ * @returns {MultiExchangeConfig} Updated configuration
  */
 const setExchangeEnabled = (exchange, enabled) => {
   return updateExchangeConfig(exchange, { enabled });
@@ -197,7 +208,7 @@ const setExchangeEnabled = (exchange, enabled) => {
  * Set dry-run mode for an exchange
  * @param {string} exchange - Exchange name
  * @param {boolean} dryRun - Whether to enable dry-run
- * @returns {Object} Updated configuration
+ * @returns {MultiExchangeConfig} Updated configuration
  */
 const setExchangeDryRun = (exchange, dryRun) => {
   return updateExchangeConfig(exchange, { dryRun });
@@ -205,8 +216,8 @@ const setExchangeDryRun = (exchange, dryRun) => {
 
 /**
  * Validate exchange configuration
- * @param {Object} config - Exchange configuration to validate
- * @returns {{valid: boolean, errors: Array<string>}}
+ * @param {Partial<ExchangeConfig>} config - Exchange configuration to validate
+ * @returns {ValidationResult}
  */
 const validateExchangeConfig = (config) => {
   const errors = [];
@@ -247,7 +258,7 @@ const validateExchangeConfig = (config) => {
 
 /**
  * Get global configuration
- * @returns {Object} Global configuration
+ * @returns {GlobalConfig} Global configuration
  */
 const getGlobalConfig = () => {
   const config = loadConfig();
