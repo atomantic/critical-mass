@@ -35,6 +35,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
   }
 
   const INTERVAL_OPTIONS = [
+    { value: '1min', label: '1 Minute' },
+    { value: '5min', label: '5 Minutes' },
     { value: '10min', label: '10 Minutes' },
     { value: '1hour', label: '1 Hour' },
     { value: '4hour', label: '4 Hours' },

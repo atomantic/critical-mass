@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Bar } from 'recharts'
 
 const INTERVAL_OPTIONS = [
+  { value: '1min', label: '1 min' },
   { value: '5min', label: '5 min' },
   { value: '10min', label: '10 min' },
   { value: '30min', label: '30 min' },
@@ -13,6 +14,15 @@ const INTERVAL_OPTIONS = [
 // Time periods adjusted per interval type
 const getPeriodsForInterval = (intervalType) => {
   switch (intervalType) {
+    case '1min':
+      return [
+        { label: '1H', intervals: 60 },       // 60 x 1min = 1 hour
+        { label: '4H', intervals: 240 },      // 4 hours
+        { label: '12H', intervals: 720 },     // 12 hours
+        { label: '1D', intervals: 1440 },     // 1 day
+        { label: '3D', intervals: 4320 },     // 3 days
+        { label: '7D', intervals: 10080 },    // 7 days
+      ]
     case '5min':
       return [
         { label: '1D', intervals: 288 },      // 288 x 5min = 1 day
