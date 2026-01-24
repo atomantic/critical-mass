@@ -1,203 +1,283 @@
-const api = require('./api');
+const fs = require('fs');
+const path = require('path');
+const { getAdapter } = require('./adapters');
 const stateTracker = require('./state-tracker');
 const orderManager = require('./order-manager');
 const logger = require('./logger');
+const { getExchangeConfig, getEnabledExchanges } = require('./config-utils');
+const { normalizeConfig, formatInterval } = require('./interval-utils');
 
 /**
- * Load configuration from config.json
+ * Load configuration for an exchange
+ * @param {string} exchange - Exchange name (default: coinbase)
  * @returns {Object} Configuration
  */
-const loadConfig = () => require('../config.json');
+const loadConfig = (exchange = 'coinbase') => getExchangeConfig(exchange);
 
 /**
  * Sync order statuses and update state for filled orders
  * @param {Object} state - Current state
+ * @param {string} exchange - Exchange name
  * @returns {Promise<Array>} List of newly filled orders
  */
-const syncOrderStatuses = async (state) => {
+const syncOrderStatuses = async (state, exchange = 'coinbase') => {
   const pendingOrders = stateTracker.getPendingOrders(state);
 
   if (pendingOrders.length === 0) {
     return [];
   }
 
-  logger.log('INFO', `Checking ${pendingOrders.length} pending orders...`);
+  logger.log('INFO', `[${exchange}] Checking ${pendingOrders.length} pending orders...`);
 
-  const filledOrders = await orderManager.checkFilledOrders(pendingOrders);
+  const adapter = getAdapter(exchange);
+  const filledOrders = await orderManager.checkFilledOrders(pendingOrders, adapter);
 
   for (const filled of filledOrders) {
     stateTracker.updateAfterSellFill(state, filled);
-    logger.logSellFilled(filled, state);
-    logger.log('INFO', `Sell order filled: +${filled.fillValue.toFixed(2)} USDC`);
+    logger.logSellFilled(filled, state, exchange);
+    logger.log('INFO', `[${exchange}] Sell order filled: +${filled.fillValue.toFixed(2)} USDC`);
   }
 
   return filledOrders;
 };
 
 /**
- * Run the daily DCA cycle
+ * Run the interval DCA cycle for an exchange
+ * @param {string} exchange - Exchange name (default: coinbase)
  * @returns {Promise<Object>} Result of the cycle
  */
-const runDailyCycle = async () => {
-  const config = loadConfig();
-  const state = stateTracker.loadState(config);
+const runIntervalCycle = async (exchange = 'coinbase') => {
+  const config = loadConfig(exchange);
+  const state = stateTracker.loadState(config, exchange);
+  const intervalLabel = formatInterval(config.intervalType);
+  const adapter = getAdapter(exchange);
 
   // Check if enabled
   if (!config.enabled) {
-    logger.log('INFO', 'DCA bot is disabled in config');
-    return { status: 'disabled' };
+    logger.log('INFO', `[${exchange}] DCA bot is disabled in config`);
+    return { status: 'disabled', exchange };
   }
 
-  // Check if already ran today
-  if (stateTracker.checkIfRanToday(state)) {
-    logger.log('INFO', `Already ran today (${state.lastRunDate})`);
-    return { status: 'already_ran', lastRunDate: state.lastRunDate };
+  // Check if already ran this interval
+  if (stateTracker.checkIfRanThisInterval(state, config.intervalType)) {
+    logger.log('INFO', `[${exchange}] Already ran this ${intervalLabel} interval (${state.lastRunId})`);
+    return { status: 'already_ran', lastRunId: state.lastRunId, intervalType: config.intervalType, exchange };
   }
 
   // Sync order statuses (check for filled sells)
-  const filledOrders = await syncOrderStatuses(state);
+  const filledOrders = await syncOrderStatuses(state, exchange);
 
   if (filledOrders.length > 0) {
-    logger.log('INFO', `${filledOrders.length} orders filled since last run`);
-    stateTracker.saveState(state);
+    logger.log('INFO', `[${exchange}] ${filledOrders.length} orders filled since last run`);
+    stateTracker.saveState(state, exchange);
   }
 
   // Check current price against max threshold
-  const currentPrice = await api.getCurrentPrice(config.productId);
-  logger.log('INFO', `Current ${config.productId} price: ${currentPrice.toFixed(2)} USDC`);
+  const currentPrice = await adapter.getCurrentPrice(config.productId);
+  logger.log('INFO', `[${exchange}] Current ${config.productId} price: ${currentPrice.toFixed(2)}`);
 
   if (currentPrice > config.maxBuyPrice) {
-    logger.log('WARN', `Price ${currentPrice} exceeds max buy price ${config.maxBuyPrice}`);
+    logger.log('WARN', `[${exchange}] Price ${currentPrice} exceeds max buy price ${config.maxBuyPrice}`);
     return {
       status: 'price_too_high',
       currentPrice,
       maxBuyPrice: config.maxBuyPrice,
+      exchange,
     };
   }
 
   // Check allocation remaining
-  const { remaining, dailyAmount } = stateTracker.checkAllocationRemaining(state, config);
+  const { remaining, intervalAmount } = stateTracker.checkAllocationRemaining(state, config);
 
   if (remaining <= 0) {
-    logger.log('INFO', 'Full allocation has been used');
-    return { status: 'fully_allocated', totalAllocated: state.totalAllocated };
+    logger.log('INFO', `[${exchange}] Full allocation has been used`);
+    return { status: 'fully_allocated', totalAllocated: state.totalAllocated, exchange };
   }
 
-  if (dailyAmount < config.minOrderSize) {
-    logger.log('INFO', `Daily amount ${dailyAmount} below minimum ${config.minOrderSize}`);
-    return { status: 'below_minimum', dailyAmount, minOrderSize: config.minOrderSize };
+  if (intervalAmount < config.minOrderSize) {
+    logger.log('INFO', `[${exchange}] Interval amount ${intervalAmount} below minimum ${config.minOrderSize}`);
+    return { status: 'below_minimum', intervalAmount, minOrderSize: config.minOrderSize, exchange };
   }
 
-  // Check USDC balance and determine actual buy amount
-  const balance = await api.getAccountBalance('USDC');
-  logger.log('INFO', `Coinbase USDC balance: ${balance.available.toFixed(2)} available, ${balance.hold.toFixed(2)} on hold`);
+  // Check balance and determine actual buy amount
+  // Map currency based on exchange
+  const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
+  const balance = await adapter.getAccountBalance(quoteCurrency);
+  logger.log('INFO', `[${exchange}] ${quoteCurrency} balance: ${balance.available.toFixed(2)} available, ${balance.hold.toFixed(2)} on hold`);
 
-  // Use the minimum of: daily amount, remaining allocation, or available balance
-  let actualBuyAmount = Math.min(dailyAmount, remaining, balance.available);
+  // Use the minimum of: interval amount, remaining allocation, or available balance
+  let actualBuyAmount = Math.min(intervalAmount, remaining, balance.available);
 
-  // If balance is below daily amount, use what's available
-  if (balance.available < dailyAmount) {
-    logger.log('WARN', `Balance ${balance.available.toFixed(2)} below daily amount ${dailyAmount.toFixed(2)}, using what's available`);
+  // If balance is below interval amount, use what's available
+  if (balance.available < intervalAmount) {
+    logger.log('WARN', `[${exchange}] Balance ${balance.available.toFixed(2)} below interval amount ${intervalAmount.toFixed(2)}, using what's available`);
   }
 
   // Check if we have enough to meet minimum order size
   if (actualBuyAmount < config.minOrderSize) {
-    logger.log('ERROR', `Available amount ${actualBuyAmount.toFixed(2)} below minimum ${config.minOrderSize}`);
+    logger.log('ERROR', `[${exchange}] Available amount ${actualBuyAmount.toFixed(2)} below minimum ${config.minOrderSize}`);
     return {
       status: 'insufficient_balance',
       available: balance.available,
       required: config.minOrderSize,
+      exchange,
     };
   }
 
-  logger.log('INFO', `Allocation: ${state.totalAllocated}/${config.totalAllocation} USDC used, buying ${actualBuyAmount.toFixed(2)} USDC`);
+  const isDryRun = config.dryRun === true;
+  const modeLabel = isDryRun ? '[DRY-RUN] ' : '';
 
-  // Execute buy
-  const buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Allocation: ${state.totalAllocated}/${config.totalAllocation} used, buying ${actualBuyAmount.toFixed(2)}`);
 
-  // Place sell order with retry (in case of post-only rejection)
-  const sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult);
+  let buyResult, sellOrder;
 
-  // Update state
+  if (isDryRun) {
+    // Simulate the trade without executing
+    const simulatedBtcAmount = actualBuyAmount / currentPrice;
+    const simulatedFees = actualBuyAmount * 0.00125; // ~0.125% fee
+    const simulatedRebates = actualBuyAmount * 0.00031; // ~0.031% rebate
+
+    buyResult = {
+      orderId: `dry-run-buy-${Date.now()}`,
+      price: currentPrice,
+      btcAmount: simulatedBtcAmount,
+      usdcAmount: actualBuyAmount,
+      fees: simulatedFees,
+      rebates: simulatedRebates,
+      netFees: simulatedFees - simulatedRebates,
+      actualCost: actualBuyAmount + (simulatedFees - simulatedRebates),
+      status: 'SIMULATED',
+    };
+
+    const sellQuantity = simulatedBtcAmount * (1 - config.holdbackPercent / 100);
+    const sellPrice = currentPrice * (1 + config.sellMarkupPercent / 100);
+
+    sellOrder = {
+      orderId: `dry-run-sell-${Date.now()}`,
+      success: true,
+      baseSize: sellQuantity,
+      limitPrice: sellPrice,
+      status: 'SIMULATED',
+    };
+
+    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated buy: ${buyResult.btcAmount.toFixed(8)} BTC at ${buyResult.price.toFixed(2)}`);
+    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} BTC at ${sellOrder.limitPrice.toFixed(2)}`);
+  } else {
+    // Execute real trades
+    buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter);
+    sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter);
+  }
+
+  // Update state (even in dry-run to track what would have happened)
   stateTracker.updateAfterBuy(state, buyResult, sellOrder, config);
 
   // Log transactions
-  logger.logBuy(buyResult, state);
-  logger.logSellOrder(sellOrder, state);
+  logger.logBuy(buyResult, state, exchange);
+  logger.logSellOrder(sellOrder, state, exchange);
 
   // Save state
-  stateTracker.saveState(state);
+  stateTracker.saveState(state, exchange);
 
   const holdbackBTC = buyResult.btcAmount * (config.holdbackPercent / 100);
 
-  logger.log('INFO', '=== Daily Cycle Complete ===');
-  logger.log('INFO', `Bought: ${buyResult.btcAmount.toFixed(8)} BTC at ${buyResult.price.toFixed(2)}`);
-  logger.log('INFO', `Sell order: ${sellOrder.baseSize.toFixed(8)} BTC at ${sellOrder.limitPrice.toFixed(2)}`);
-  logger.log('INFO', `Holdback (reserves): ${holdbackBTC.toFixed(8)} BTC`);
-  logger.log('INFO', `Total BTC reserves: ${state.btcReserves.toFixed(8)} BTC`);
-  logger.log('INFO', `Outstanding sell orders: ${state.outstandingOrdersUSDC.toFixed(2)} USDC`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}=== ${intervalLabel} Cycle Complete ===`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Bought: ${buyResult.btcAmount.toFixed(8)} BTC at ${buyResult.price.toFixed(2)}`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Sell order: ${sellOrder.baseSize.toFixed(8)} BTC at ${sellOrder.limitPrice.toFixed(2)}`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Holdback (reserves): ${holdbackBTC.toFixed(8)} BTC`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Total BTC reserves: ${state.btcReserves.toFixed(8)} BTC`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Outstanding sell orders: ${state.outstandingOrdersUSDC.toFixed(2)}`);
 
   return {
-    status: 'success',
+    status: isDryRun ? 'dry_run_success' : 'success',
+    dryRun: isDryRun,
+    intervalType: config.intervalType,
     buyResult,
     sellOrder,
     holdbackBTC,
+    exchange,
     state: {
       totalAllocated: state.totalAllocated,
       btcReserves: state.btcReserves,
       outstandingOrdersUSDC: state.outstandingOrdersUSDC,
-      daysRun: state.totalDaysRun,
+      intervalsRun: state.totalIntervalsRun,
     },
   };
 };
 
 /**
- * Check status only (no trading)
- * @returns {Promise<Object>} Current status
+ * Run cycle for all enabled exchanges
+ * @returns {Promise<Object>} Results per exchange
  */
-const checkStatus = async () => {
-  const config = loadConfig();
-  const state = stateTracker.loadState(config);
+const runAllExchangeCycles = async () => {
+  const enabledExchanges = getEnabledExchanges();
+  const results = {};
 
-  // Sync order statuses
-  const filledOrders = await syncOrderStatuses(state);
-
-  if (filledOrders.length > 0) {
-    stateTracker.saveState(state);
+  for (const exchange of enabledExchanges) {
+    logger.log('INFO', `Running cycle for ${exchange}...`);
+    results[exchange] = await runIntervalCycle(exchange);
   }
 
-  const currentPrice = await api.getCurrentPrice(config.productId);
-  const { remaining, dailyAmount } = stateTracker.checkAllocationRemaining(state, config);
+  return results;
+};
+
+/**
+ * Check status only (no trading) for an exchange
+ * @param {string} exchange - Exchange name (default: coinbase)
+ * @returns {Promise<Object>} Current status
+ */
+const checkStatus = async (exchange = 'coinbase') => {
+  const config = loadConfig(exchange);
+  const state = stateTracker.loadState(config, exchange);
+  const adapter = getAdapter(exchange);
+
+  // Sync order statuses
+  const filledOrders = await syncOrderStatuses(state, exchange);
+
+  if (filledOrders.length > 0) {
+    stateTracker.saveState(state, exchange);
+  }
+
+  const currentPrice = await adapter.getCurrentPrice(config.productId);
+  const { remaining, intervalAmount } = stateTracker.checkAllocationRemaining(state, config);
 
   return {
+    exchange,
     currentPrice,
     config: {
       productId: config.productId,
       totalAllocation: config.totalAllocation,
-      daysToSpread: config.daysToSpread,
+      intervalsToSpread: config.intervalsToSpread,
+      intervalType: config.intervalType,
       sellMarkupPercent: config.sellMarkupPercent,
       holdbackPercent: config.holdbackPercent,
       maxBuyPrice: config.maxBuyPrice,
       enabled: config.enabled,
+      dryRun: config.dryRun,
     },
     state: {
       totalAllocated: state.totalAllocated,
       remaining,
-      dailyAmount,
-      totalDaysRun: state.totalDaysRun,
+      intervalAmount,
+      totalIntervalsRun: state.totalIntervalsRun,
       usdcFundSize: state.usdcFundSize,
       btcReserves: state.btcReserves,
       outstandingOrdersUSDC: state.outstandingOrdersUSDC,
       outstandingOrdersBTC: state.outstandingOrdersBTC,
       pendingOrders: stateTracker.getPendingOrders(state).length,
-      lastRunDate: state.lastRunDate,
+      lastRunId: state.lastRunId,
+      lastRunTimestamp: state.lastRunTimestamp,
     },
     recentFills: filledOrders.length,
   };
 };
 
+// Legacy alias for backward compatibility
+const runDailyCycle = runIntervalCycle;
+
 module.exports = {
+  runIntervalCycle,
   runDailyCycle,
+  runAllExchangeCycles,
   checkStatus,
   syncOrderStatuses,
   loadConfig,

@@ -1,7 +1,16 @@
 const fs = require('fs');
 const path = require('path');
+const { getExchangeDataDir } = require('./migration');
 
-const LOG_FILE = path.join(__dirname, '..', 'data', 'transactions.tsv');
+/**
+ * Get log file path for an exchange
+ * @param {string} exchange - Exchange name (default: coinbase)
+ * @returns {string} Path to transactions log file
+ */
+const getLogFile = (exchange = 'coinbase') => {
+  const dir = getExchangeDataDir(exchange);
+  return path.join(dir, 'transactions.tsv');
+};
 
 const HEADERS = [
   'Date',
@@ -23,15 +32,18 @@ const HEADERS = [
 
 /**
  * Ensure log file exists with headers
+ * @param {string} exchange - Exchange name
  */
-const ensureLogFile = () => {
-  const dir = path.dirname(LOG_FILE);
+const ensureLogFile = (exchange = 'coinbase') => {
+  const logFile = getLogFile(exchange);
+  const dir = path.dirname(logFile);
+
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  if (!fs.existsSync(LOG_FILE)) {
-    fs.writeFileSync(LOG_FILE, HEADERS.join('\t') + '\n');
+  if (!fs.existsSync(logFile)) {
+    fs.writeFileSync(logFile, HEADERS.join('\t') + '\n');
   }
 };
 
@@ -51,9 +63,11 @@ const formatNumber = (value, decimals = 8) => {
  * @param {string} type - Transaction type (BUY, SELL_ORDER, SELL_FILLED)
  * @param {Object} details - Transaction details including fees
  * @param {Object} state - Current state after transaction
+ * @param {string} exchange - Exchange name (default: coinbase)
  */
-const logTransaction = (type, details, state) => {
-  ensureLogFile();
+const logTransaction = (type, details, state, exchange = 'coinbase') => {
+  ensureLogFile(exchange);
+  const logFile = getLogFile(exchange);
 
   const row = [
     new Date().toISOString().split('T')[0],
@@ -73,15 +87,16 @@ const logTransaction = (type, details, state) => {
     formatNumber(state.totalRebates || 0, 4),
   ];
 
-  fs.appendFileSync(LOG_FILE, row.join('\t') + '\n');
+  fs.appendFileSync(logFile, row.join('\t') + '\n');
 };
 
 /**
  * Log a buy transaction (includes fee details)
  * @param {Object} buyDetails - Buy order details with fees
  * @param {Object} state - Current state
+ * @param {string} exchange - Exchange name (default: coinbase)
  */
-const logBuy = (buyDetails, state) => {
+const logBuy = (buyDetails, state, exchange = 'coinbase') => {
   logTransaction('BUY', {
     price: buyDetails.price,
     btcAmount: buyDetails.btcAmount,
@@ -90,29 +105,31 @@ const logBuy = (buyDetails, state) => {
     rebates: buyDetails.rebates || 0,
     netFees: buyDetails.netFees || 0,
     orderId: buyDetails.orderId,
-  }, state);
+  }, state, exchange);
 };
 
 /**
  * Log a sell order placement
  * @param {Object} sellOrder - Sell order details
  * @param {Object} state - Current state
+ * @param {string} exchange - Exchange name (default: coinbase)
  */
-const logSellOrder = (sellOrder, state) => {
+const logSellOrder = (sellOrder, state, exchange = 'coinbase') => {
   logTransaction('SELL_ORDER', {
     price: sellOrder.limitPrice,
     btcAmount: -sellOrder.baseSize,
     usdcAmount: sellOrder.baseSize * sellOrder.limitPrice,
     orderId: sellOrder.orderId,
-  }, state);
+  }, state, exchange);
 };
 
 /**
  * Log a filled sell order (includes fee details)
  * @param {Object} fillDetails - Fill details with fees
  * @param {Object} state - Current state
+ * @param {string} exchange - Exchange name (default: coinbase)
  */
-const logSellFilled = (fillDetails, state) => {
+const logSellFilled = (fillDetails, state, exchange = 'coinbase') => {
   logTransaction('SELL_FILLED', {
     price: fillDetails.averageFilledPrice,
     btcAmount: -fillDetails.filledSize,
@@ -121,19 +138,22 @@ const logSellFilled = (fillDetails, state) => {
     rebates: fillDetails.rebates || 0,
     netFees: fillDetails.netFees || 0,
     orderId: fillDetails.orderId,
-  }, state);
+  }, state, exchange);
 };
 
 /**
  * Load transaction history from TSV
+ * @param {string} exchange - Exchange name (default: coinbase)
  * @returns {Array} Transaction records
  */
-const loadTransactionHistory = () => {
-  if (!fs.existsSync(LOG_FILE)) {
+const loadTransactionHistory = (exchange = 'coinbase') => {
+  const logFile = getLogFile(exchange);
+
+  if (!fs.existsSync(logFile)) {
     return [];
   }
 
-  const content = fs.readFileSync(LOG_FILE, 'utf8');
+  const content = fs.readFileSync(logFile, 'utf8');
   const lines = content.trim().split('\n');
 
   if (lines.length <= 1) {
@@ -175,4 +195,5 @@ module.exports = {
   logSellFilled,
   loadTransactionHistory,
   log,
+  getLogFile,
 };

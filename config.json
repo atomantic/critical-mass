@@ -1,10 +1,32 @@
 {
-  "productId": "BTC-USDC",
-  "totalAllocation": 10000,
-  "daysToSpread": 10,
-  "sellMarkupPercent": 10,
-  "holdbackPercent": 5,
-  "minOrderSize": 1,
-  "maxBuyPrice": 250000,
-  "enabled": true
+  "exchanges": {
+    "coinbase": {
+      "enabled": false,
+      "dryRun": true,
+      "productId": "BTC-USDC",
+      "totalAllocation": 30000,
+      "intervalsToSpread": 60,
+      "intervalType": "daily",
+      "sellMarkupPercent": 10,
+      "holdbackPercent": 5,
+      "minOrderSize": 1,
+      "maxBuyPrice": 250000
+    },
+    "gemini": {
+      "enabled": true,
+      "dryRun": true,
+      "productId": "BTCUSD",
+      "totalAllocation": 5000,
+      "intervalsToSpread": 2500,
+      "intervalType": "10min",
+      "sellMarkupPercent": 10,
+      "holdbackPercent": 5,
+      "minOrderSize": 1,
+      "maxBuyPrice": 250000,
+      "schedulerInterval": 30000
+    }
+  },
+  "global": {
+    "schedulerInterval": 30000
+  }
 }
