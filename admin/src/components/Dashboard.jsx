@@ -1,14 +1,31 @@
 import { useState, useEffect } from 'react'
 import ActivityFeed from './ActivityFeed'
+import { formatCurrency, formatPrice } from './charts/chartUtils'
 
-// Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD")
+// Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD", "CRO_USD" -> "USD")
 function getQuoteCurrency(productId) {
   if (!productId) return 'USDC'
   if (productId.includes('-')) {
     return productId.split('-')[1]
   }
+  if (productId.includes('_')) {
+    return productId.split('_')[1]
+  }
   // For Gemini-style (BTCUSD), strip BTC prefix
   return productId.replace(/^BTC/, '') || 'USD'
+}
+
+// Extract base currency from product ID (e.g., "BTC-USDC" -> "BTC", "BTCUSD" -> "BTC", "CRO_USD" -> "CRO")
+function getBaseCurrency(productId) {
+  if (!productId) return 'BTC'
+  if (productId.includes('-')) {
+    return productId.split('-')[0]
+  }
+  if (productId.includes('_')) {
+    return productId.split('_')[0]
+  }
+  // For Gemini-style (BTCUSD), assume BTC prefix
+  return 'BTC'
 }
 
 function ToggleSwitch({ label, checked, onChange, disabled, colorOn = 'bg-green-500', colorOff = 'bg-gray-600' }) {
@@ -151,14 +168,15 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
 
   const { config, state, stats, costBasis, nextTrade } = summary
   const quoteCurrency = getQuoteCurrency(config?.productId)
+  const baseCurrency = getBaseCurrency(config?.productId)
   const currentPrice = liveData?.currentPrice || 0
-  const btcValue = (state.btcReserves || 0) * currentPrice
-  const pendingBtcValue = (state.outstandingOrdersBTC || 0) * currentPrice
-  const totalBTCHeld = (state.btcReserves || 0) + (state.outstandingOrdersBTC || 0)
-  const totalBTCCostBasis = (costBasis?.reservesCostBasis || 0) + (costBasis?.pendingCostBasis || 0)
+  const assetValue = (state.btcReserves || 0) * currentPrice
+  const pendingAssetValue = (state.outstandingOrdersBTC || 0) * currentPrice
+  const totalAssetHeld = (state.btcReserves || 0) + (state.outstandingOrdersBTC || 0)
+  const totalAssetCostBasis = (costBasis?.reservesCostBasis || 0) + (costBasis?.pendingCostBasis || 0)
 
-  const formatUSD = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-  const formatBTC = (n) => `${(n || 0).toFixed(8)} BTC`
+  // formatCurrency for balances/totals, formatPrice for prices
+  const formatAsset = (n) => `${parseFloat((n || 0).toFixed(8))} ${baseCurrency}`
 
   return (
     <div className="flex gap-6">
@@ -169,7 +187,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">
               <span className="text-gray-400">{config?.productId || 'BTC-' + quoteCurrency}</span>
-              <span className="text-3xl font-bold">{formatUSD(currentPrice)}</span>
+              <span className="text-3xl font-bold">{formatPrice(currentPrice)}</span>
             </div>
             <div className="flex items-center gap-4">
               <ToggleSwitch
@@ -204,36 +222,40 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
           {/* Fund Assets */}
           <div className="bg-gray-800 rounded-lg p-4">
             <h3 className="text-xs text-gray-400 mb-2">Fund Assets</h3>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
-                <div className="text-lg font-bold text-green-400">{formatUSD(state.usdcFundSize)}</div>
+                <div className="text-lg font-bold text-green-400">{formatCurrency(state.usdcFundSize)}</div>
                 <div className="text-xs text-gray-500">{quoteCurrency}</div>
               </div>
               <div>
-                <div className="text-lg font-bold text-blue-400">{formatUSD((state.usdcFundSize || 0) + btcValue + pendingBtcValue)}</div>
-                <div className="text-xs text-gray-400">Total Value</div>
+                <div className="text-lg font-bold text-orange-400">{formatCurrency(assetValue + pendingAssetValue)}</div>
+                <div className="text-xs text-gray-500">{baseCurrency} Value</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold text-blue-400">{formatCurrency((state.usdcFundSize || 0) + assetValue + pendingAssetValue)}</div>
+                <div className="text-xs text-gray-400">Total</div>
               </div>
             </div>
-            {/* BTC Holdings Breakdown */}
+            {/* Asset Holdings Breakdown */}
             <div className="mt-3 pt-3 border-t border-gray-700">
               <div className="grid grid-cols-3 gap-2 text-xs">
                 <div className="text-center">
                   <div className="text-gray-400 mb-1">Pending Sale</div>
-                  <div className="text-yellow-400 font-semibold">{formatBTC(state.outstandingOrdersBTC || 0)}</div>
-                  <div className="text-gray-500">Cost: {formatUSD(costBasis?.pendingCostBasis || 0)}</div>
-                  <div className="text-green-400">Exp: {formatUSD(state.outstandingOrdersUSDC || 0)}</div>
+                  <div className="text-yellow-400 font-semibold">{formatAsset(state.outstandingOrdersBTC || 0)}</div>
+                  <div className="text-gray-500">Cost: {formatCurrency(costBasis?.pendingCostBasis || 0)}</div>
+                  <div className="text-green-400">Exp: {formatCurrency(state.outstandingOrdersUSDC || 0)}</div>
                 </div>
                 <div className="text-center">
                   <div className="text-gray-400 mb-1">Reserves</div>
-                  <div className="text-orange-400 font-semibold">{formatBTC(state.btcReserves || 0)}</div>
-                  <div className="text-gray-500">Cost: {formatUSD(costBasis?.reservesCostBasis || 0)}</div>
-                  <div className="text-gray-500">Val: {formatUSD(btcValue)}</div>
+                  <div className="text-orange-400 font-semibold">{formatAsset(state.btcReserves || 0)}</div>
+                  <div className="text-gray-500">Cost: {formatCurrency(costBasis?.reservesCostBasis || 0)}</div>
+                  <div className="text-gray-500">Val: {formatCurrency(assetValue)}</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-gray-400 mb-1">Total BTC</div>
-                  <div className="text-purple-400 font-semibold">{formatBTC(totalBTCHeld)}</div>
-                  <div className="text-gray-500">Cost: {formatUSD(totalBTCCostBasis)}</div>
-                  <div className="text-gray-500">Avg: {formatUSD(totalBTCHeld > 0 ? totalBTCCostBasis / totalBTCHeld : 0)}/BTC</div>
+                  <div className="text-gray-400 mb-1">Total {baseCurrency}</div>
+                  <div className="text-purple-400 font-semibold">{formatAsset(totalAssetHeld)}</div>
+                  <div className="text-gray-500">Cost: {formatCurrency(totalAssetCostBasis)}</div>
+                  <div className="text-gray-500">Avg: {formatPrice(totalAssetHeld > 0 ? totalAssetCostBasis / totalAssetHeld : 0)}/{baseCurrency}</div>
                 </div>
               </div>
             </div>
@@ -248,26 +270,29 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
             </div>
             <div className="grid grid-cols-3 gap-2">
               {(() => {
-                const unrealizedPnL = (state.outstandingOrdersUSDC || 0) - (costBasis?.pendingCostBasis || 0)
-                const unrealizedPnLPct = (costBasis?.pendingCostBasis || 0) > 0
-                  ? (unrealizedPnL / costBasis.pendingCostBasis) * 100
-                  : 0
+                // Current market value of all asset holdings
+                const totalAssetMarketValue = totalAssetHeld * currentPrice
+                // Float P&L: if we sold everything at current price, what's the profit?
+                const floatPnL = totalAssetMarketValue - totalAssetCostBasis
+                const floatPnLPct = totalAssetCostBasis > 0 ? (floatPnL / totalAssetCostBasis) * 100 : 0
                 const realizedPnL = stats.realizedProfit || 0
                 return (
                   <>
                     <StatCard
-                      label="Unreal P&L"
-                      value={`${unrealizedPnL >= 0 ? '+' : ''}${formatUSD(unrealizedPnL)}`}
-                      color={unrealizedPnL >= 0 ? 'green' : 'red'}
+                      label={`${baseCurrency} Mkt Val`}
+                      value={formatCurrency(totalAssetMarketValue)}
+                      subtext={`Cost: ${formatCurrency(totalAssetCostBasis)}`}
+                      color="blue"
                     />
                     <StatCard
-                      label="Unreal %"
-                      value={`${unrealizedPnLPct >= 0 ? '+' : ''}${unrealizedPnLPct.toFixed(1)}%`}
-                      color={unrealizedPnLPct >= 0 ? 'green' : 'red'}
+                      label="Float P&L"
+                      value={`${floatPnL >= 0 ? '+' : ''}${formatCurrency(floatPnL)}`}
+                      subtext={`${floatPnLPct >= 0 ? '+' : ''}${floatPnLPct.toFixed(1)}%`}
+                      color={floatPnL >= 0 ? 'green' : 'red'}
                     />
                     <StatCard
                       label="Realized"
-                      value={`${realizedPnL >= 0 ? '+' : ''}${formatUSD(realizedPnL)}`}
+                      value={`${realizedPnL >= 0 ? '+' : ''}${formatCurrency(realizedPnL)}`}
                       color={realizedPnL >= 0 ? 'green' : 'red'}
                     />
                   </>
@@ -275,9 +300,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
               })()}
             </div>
             <div className="grid grid-cols-3 gap-2">
-              <StatCard label="Fees" value={formatUSD(stats.totalFees)} color="red" />
-              <StatCard label="Rebates" value={formatUSD(stats.totalRebates)} color="green" />
-              <StatCard label="Net Fees" value={formatUSD(stats.netFees)} color="purple" />
+              <StatCard label="Fees" value={formatCurrency(stats.totalFees)} color="red" />
+              <StatCard label="Rebates" value={formatCurrency(stats.totalRebates)} color="green" />
+              <StatCard label="Net Fees" value={formatCurrency(stats.netFees)} color="purple" />
             </div>
           </div>
         </div>
@@ -289,7 +314,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
             <div className="flex justify-between mb-2 text-sm">
               <span className="text-gray-400">Allocation Progress</span>
               <span className="text-white">
-                {formatUSD(stats.allocationUsed)} / {formatUSD(config.totalAllocation)}
+                {formatCurrency(stats.allocationUsed)} / {formatCurrency(config.totalAllocation)}
               </span>
             </div>
             <div className="w-full bg-gray-700 rounded-full h-2">
@@ -300,7 +325,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
             </div>
             <div className="flex justify-between mt-2 text-xs text-gray-500">
               <span>{stats.intervalsRun || 0} of {config.intervalsToSpread || config.daysToSpread} intervals</span>
-              <span>{formatUSD(stats.allocationRemaining)} remaining</span>
+              <span>{formatCurrency(stats.allocationRemaining)} remaining</span>
             </div>
             {nextTrade && !nextTrade.fullyAllocated && nextTrade.nextTradeAmount > 0 && (() => {
               const intervalsRemaining = Math.ceil(stats.allocationRemaining / nextTrade.nextTradeAmount)
@@ -327,11 +352,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
               <div><span className="text-gray-500">Product:</span> <span className="text-white">{config.productId}</span></div>
               <div><span className="text-gray-500">Interval:</span> <span className="text-white">{config.intervalType || 'daily'}</span></div>
-              <div><span className="text-gray-500">Buy:</span> <span className="text-white">{formatUSD(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span></div>
+              <div><span className="text-gray-500">Buy:</span> <span className="text-white">{formatCurrency(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span></div>
               <div><span className="text-gray-500">Intervals:</span> <span className="text-white">{config.intervalsToSpread || config.daysToSpread}</span></div>
               <div><span className="text-gray-500">Markup:</span> <span className="text-white">+{config.sellMarkupPercent}%</span></div>
               <div><span className="text-gray-500">Holdback:</span> <span className="text-white">{config.holdbackPercent}%</span></div>
-              <div><span className="text-gray-500">Max Price:</span> <span className="text-white">{formatUSD(config.maxBuyPrice)}</span></div>
+              <div><span className="text-gray-500">Max Price:</span> <span className="text-white">{formatPrice(config.maxBuyPrice)}</span></div>
               <div><span className="text-gray-500">Consolidate:</span> <span className="text-white">{config.consolidateAfterOrders || 'Off'}</span></div>
             </div>
           </div>
@@ -384,10 +409,10 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                   {(state.orders || []).filter(o => o.status === 'pending').sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map((order, i) => (
                     <tr key={i} className="border-t border-gray-700">
                       <td className="py-2">{new Date(order.createdAt).toISOString().replace('T', ' ').slice(0, 19)}</td>
-                      <td className="py-2">{formatUSD(order.buyPrice)}</td>
-                      <td className="py-2">{formatUSD(order.sellPrice)}</td>
-                      <td className="py-2">{order.sellQuantityBTC?.toFixed(8)} BTC</td>
-                      <td className="py-2">{formatUSD(order.sellQuantityBTC * order.sellPrice)}</td>
+                      <td className="py-2">{formatPrice(order.buyPrice)}</td>
+                      <td className="py-2">{formatPrice(order.sellPrice)}</td>
+                      <td className="py-2">{order.sellQuantityBTC?.toFixed(8)} {baseCurrency}</td>
+                      <td className="py-2">{formatCurrency(order.sellQuantityBTC * order.sellPrice)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -435,8 +460,8 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 <div className="text-xs text-green-400 mt-1">✓ Already traded this interval</div>
               )}
               <div className="mt-2 pt-2 border-t border-gray-700/50 flex justify-between text-xs">
-                <span className="text-gray-400">Amount: <span className="text-white font-medium">{formatUSD(nextTrade.nextTradeAmount)}</span></span>
-                <span className="text-gray-400">{formatUSD(nextTrade.remaining)} left</span>
+                <span className="text-gray-400">Amount: <span className="text-white font-medium">{formatCurrency(nextTrade.nextTradeAmount)}</span></span>
+                <span className="text-gray-400">{formatCurrency(nextTrade.remaining)} left</span>
               </div>
               {state.lastRunTimestamp && (
                 <div className="mt-1 text-xs text-gray-500">
