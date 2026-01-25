@@ -11,6 +11,7 @@ const { getExchangeDataDir } = require('./migration');
  * @typedef {import('./types').TransactionType} TransactionType
  * @typedef {import('./types').TransactionDetails} TransactionDetails
  * @typedef {import('./types').TransactionRecord} TransactionRecord
+ * @typedef {import('./types').ConsolidationResult} ConsolidationResult
  */
 
 /**
@@ -24,6 +25,7 @@ const getLogFile = (exchange = 'coinbase') => {
 };
 
 const HEADERS = [
+  'Timestamp',
   'Date',
   'Type',
   'Price',
@@ -82,8 +84,10 @@ const logTransaction = (type, details, state, exchange = 'coinbase') => {
   ensureLogFile(exchange);
   const logFile = getLogFile(exchange);
 
+  const now = new Date();
   const row = [
-    new Date().toISOString().split('T')[0],
+    now.toISOString(),
+    now.toISOString().split('T')[0],
     type,
     formatNumber(details.price, 2),
     formatNumber(details.btcAmount, 8),
@@ -187,22 +191,39 @@ const loadTransactionHistory = (exchange = 'coinbase') => {
   });
 };
 
+const LOG_EMOJI = {
+  INFO: 'ℹ️',
+  WARN: '⚠️',
+  ERROR: '❌',
+};
+
 /**
- * Log a message to console with timestamp
+ * Log a message to console with emoji prefix (pm2 handles timestamps)
  * @param {'INFO' | 'WARN' | 'ERROR'} level - Log level
  * @param {string} message - Log message
  * @param {Object|null} [data] - Optional data to include
  * @returns {void}
  */
 const log = (level, message, data = null) => {
-  const timestamp = new Date().toISOString();
-  const prefix = `[${timestamp}] [${level}]`;
+  const emoji = LOG_EMOJI[level] || 'ℹ️';
+  const output = data ? `${emoji} ${message} ${JSON.stringify(data)}` : `${emoji} ${message}`;
+  console.log(output);
+};
 
-  if (data) {
-    console.log(`${prefix} ${message}`, JSON.stringify(data));
-  } else {
-    console.log(`${prefix} ${message}`);
-  }
+/**
+ * Log a consolidation transaction
+ * @param {ConsolidationResult} consolidation - Consolidation result
+ * @param {BotState} state - Current state after consolidation
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
+ */
+const logConsolidation = (consolidation, state, exchange = 'coinbase') => {
+  logTransaction('CONSOLIDATE', {
+    price: consolidation.consolidatedPrice,
+    btcAmount: consolidation.consolidatedBTC,
+    usdcAmount: consolidation.consolidatedBTC * consolidation.consolidatedPrice,
+    orderId: consolidation.newOrderId,
+  }, state, exchange);
 };
 
 module.exports = {
@@ -210,6 +231,7 @@ module.exports = {
   logBuy,
   logSellOrder,
   logSellFilled,
+  logConsolidation,
   loadTransactionHistory,
   log,
   getLogFile,

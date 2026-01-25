@@ -258,6 +258,74 @@ const updateAfterSellFill = (state, fillDetails) => {
  */
 const getPendingOrders = (state) => state.orders.filter(o => o.status === 'pending');
 
+/**
+ * Update state after consolidating orders
+ * @param {BotState} state - Current state
+ * @param {TrackedOrder[]} consolidatedOrders - Orders that were consolidated
+ * @param {string} newOrderId - ID of the new consolidated order
+ * @param {number} newSellPrice - Sell price of the consolidated order
+ * @param {number} newSellQuantity - BTC quantity in the consolidated order
+ * @returns {BotState} Updated state
+ */
+const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSellPrice, newSellQuantity) => {
+  const now = new Date().toISOString();
+  const sourceOrderIds = consolidatedOrders.map(o => o.orderId);
+
+  // Calculate aggregated buy data from consolidated orders
+  let totalBuyCostBasis = 0;
+  let totalBuyQuantityBTC = 0;
+  let totalHoldbackBTC = 0;
+  let totalBuyFees = 0;
+  let totalBuyRebates = 0;
+  let totalBuyNetFees = 0;
+
+  for (const order of consolidatedOrders) {
+    totalBuyCostBasis += order.buyCostBasis || (order.buyUSDC + (order.buyNetFees || 0));
+    totalBuyQuantityBTC += order.buyQuantityBTC;
+    totalHoldbackBTC += order.holdbackBTC || 0;
+    totalBuyFees += order.buyFees || 0;
+    totalBuyRebates += order.buyRebates || 0;
+    totalBuyNetFees += order.buyNetFees || 0;
+
+    // Mark original order as consolidated
+    const orderIndex = state.orders.findIndex(o => o.orderId === order.orderId);
+    if (orderIndex >= 0) {
+      state.orders[orderIndex].status = 'consolidated';
+      state.orders[orderIndex].consolidatedInto = newOrderId;
+      state.orders[orderIndex].consolidatedAt = now;
+    }
+  }
+
+  // Calculate weighted average buy price
+  const weightedBuyPrice = totalBuyQuantityBTC > 0
+    ? totalBuyCostBasis / totalBuyQuantityBTC
+    : 0;
+
+  // Create new consolidated order entry
+  const consolidatedOrder = {
+    orderId: newOrderId,
+    buyOrderId: `consolidated-${Date.now()}`,
+    buyPrice: weightedBuyPrice,
+    buyQuantityBTC: totalBuyQuantityBTC,
+    buyUSDC: totalBuyCostBasis - totalBuyNetFees,
+    buyFees: totalBuyFees,
+    buyRebates: totalBuyRebates,
+    buyNetFees: totalBuyNetFees,
+    buyCostBasis: totalBuyCostBasis,
+    sellPrice: newSellPrice,
+    sellQuantityBTC: newSellQuantity,
+    holdbackBTC: totalHoldbackBTC,
+    status: 'pending',
+    createdAt: now,
+    isConsolidated: true,
+    sourceOrderIds,
+  };
+
+  state.orders.push(consolidatedOrder);
+
+  return state;
+};
+
 module.exports = {
   loadState,
   saveState,
@@ -267,6 +335,7 @@ module.exports = {
   checkIfRanThisInterval,
   updateAfterBuy,
   updateAfterSellFill,
+  updateAfterConsolidation,
   getPendingOrders,
   getStateFile,
 };

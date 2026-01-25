@@ -174,8 +174,45 @@ const getTimeUntilNext = (intervalType) => {
   return { ms, formatted };
 };
 
+/**
+ * Consolidation interval definitions (for order consolidation)
+ * @type {Record<string, {ms: number, label: string}>}
+ */
+const CONSOLIDATION_INTERVALS = {
+  'never': { ms: 0, label: 'Never' },
+  'daily': { ms: 24 * 60 * 60 * 1000, label: 'Daily' },
+  'weekly': { ms: 7 * 24 * 60 * 60 * 1000, label: 'Weekly' },
+};
+
+/**
+ * Get consolidation run identifier
+ * @param {'daily' | 'weekly'} intervalType - Consolidation interval type
+ * @returns {string} Unique run identifier
+ */
+const getConsolidationRunId = (intervalType) => {
+  const now = Date.now();
+  const { ms } = CONSOLIDATION_INTERVALS[intervalType] || CONSOLIDATION_INTERVALS['daily'];
+  const intervalIndex = Math.floor(now / ms);
+  return `consolidate-${intervalType}-${intervalIndex}`;
+};
+
+/**
+ * Check if consolidation should run based on interval
+ * @param {string|null|undefined} lastConsolidationId - Last consolidation run ID
+ * @param {'never' | 'daily' | 'weekly'} consolidateInterval - Consolidation interval setting
+ * @returns {boolean} True if consolidation should run
+ */
+const shouldRunConsolidation = (lastConsolidationId, consolidateInterval) => {
+  if (!consolidateInterval || consolidateInterval === 'never') {
+    return false;
+  }
+  const currentId = getConsolidationRunId(consolidateInterval);
+  return lastConsolidationId !== currentId;
+};
+
 module.exports = {
   INTERVAL_DEFINITIONS,
+  CONSOLIDATION_INTERVALS,
   getIntervalConfig,
   getNextExecutionTime,
   getRunIdentifier,
@@ -184,4 +221,6 @@ module.exports = {
   getIntervalAmount,
   formatInterval,
   getTimeUntilNext,
+  getConsolidationRunId,
+  shouldRunConsolidation,
 };
