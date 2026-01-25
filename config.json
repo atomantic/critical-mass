@@ -35,7 +35,7 @@
       "productId": "CRO_USD",
       "totalAllocation": 5000,
       "intervalsToSpread": 100,
-      "intervalType": "1hour",
+      "intervalType": "4hour",
       "sellMarkupPercent": 10,
       "holdbackPercent": 5,
       "minOrderSize": 1,
