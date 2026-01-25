@@ -117,6 +117,9 @@ function AppContent() {
     const data = await res.json()
     setSummary(data)
     setLoading(false)
+
+    // Also refresh exchanges list to update badges (enabled/dryRun status)
+    fetchExchanges()
   }
 
   // Initial load of exchanges (with auto-select on first load)

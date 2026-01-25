@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { formatCurrency, formatPrice } from './charts/chartUtils'
 
 function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
   const [filter, setFilter] = useState('all')
@@ -33,7 +34,7 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
     }
   }
 
-  const formatUSD = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  // formatCurrency for totals, formatPrice for per-unit prices
   const formatBTC = (n) => (n || 0).toFixed(8)
 
   const typeColors = {
@@ -100,7 +101,7 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
                     <td className={`px-4 py-3 font-medium ${typeColors[tx.Type] || ''}`}>
                       {tx.Type}
                     </td>
-                    <td className="px-4 py-3">{formatUSD(tx.Price)}</td>
+                    <td className="px-4 py-3">{formatPrice(tx.Price)}</td>
                     <td className="px-4 py-3 font-mono">
                       <span className={tx['BTC Amount'] >= 0 ? 'text-green-400' : 'text-red-400'}>
                         {tx['BTC Amount'] >= 0 ? '+' : ''}{formatBTC(tx['BTC Amount'])}
@@ -108,13 +109,13 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
                     </td>
                     <td className="px-4 py-3">
                       <span className={tx['USDC Amount'] >= 0 ? 'text-green-400' : 'text-red-400'}>
-                        {tx['USDC Amount'] >= 0 ? '+' : ''}{formatUSD(tx['USDC Amount'])}
+                        {tx['USDC Amount'] >= 0 ? '+' : ''}{formatCurrency(tx['USDC Amount'])}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-red-400">{formatUSD(tx.Fees)}</td>
-                    <td className="px-4 py-3 text-green-400">{formatUSD(tx.Rebates)}</td>
-                    <td className="px-4 py-3">{formatUSD(tx['Net Fees'])}</td>
-                    <td className="px-4 py-3">{formatUSD(tx['Fund Size'])}</td>
+                    <td className="px-4 py-3 text-red-400">{formatCurrency(tx.Fees)}</td>
+                    <td className="px-4 py-3 text-green-400">{formatCurrency(tx.Rebates)}</td>
+                    <td className="px-4 py-3">{formatCurrency(tx['Net Fees'])}</td>
+                    <td className="px-4 py-3">{formatCurrency(tx['Fund Size'])}</td>
                   </tr>
                 ))
               )}
@@ -131,7 +132,7 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
             <div>
               <span className="text-gray-500">Total {quoteCurrency} Spent:</span>
               <span className="ml-2 text-white">
-                {formatUSD(sortedTx
+                {formatCurrency(sortedTx
                   .filter(t => t.Type === 'BUY')
                   .reduce((sum, t) => sum + Math.abs(t['USDC Amount'] || 0), 0)
                 )}
@@ -140,7 +141,7 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
             <div>
               <span className="text-gray-500">Total {quoteCurrency} Received:</span>
               <span className="ml-2 text-white">
-                {formatUSD(sortedTx
+                {formatCurrency(sortedTx
                   .filter(t => t.Type === 'SELL_FILLED')
                   .reduce((sum, t) => sum + (t['USDC Amount'] || 0), 0)
                 )}
@@ -149,13 +150,13 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
             <div>
               <span className="text-gray-500">Total Fees:</span>
               <span className="ml-2 text-red-400">
-                {formatUSD(sortedTx.reduce((sum, t) => sum + (t.Fees || 0), 0))}
+                {formatCurrency(sortedTx.reduce((sum, t) => sum + (t.Fees || 0), 0))}
               </span>
             </div>
             <div>
               <span className="text-gray-500">Total Rebates:</span>
               <span className="ml-2 text-green-400">
-                {formatUSD(sortedTx.reduce((sum, t) => sum + (t.Rebates || 0), 0))}
+                {formatCurrency(sortedTx.reduce((sum, t) => sum + (t.Rebates || 0), 0))}
               </span>
             </div>
           </div>

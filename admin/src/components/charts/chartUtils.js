@@ -8,9 +8,32 @@ export function formatCurrencyCompact(value) {
   return `$${value.toFixed(0)}`
 }
 
-// Full currency format
+// Full currency format (fixed 2 decimals for totals/balances)
 export function formatCurrency(value) {
   return `$${(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+// Smart price format - adjusts decimals based on price magnitude
+// For high prices like BTC ($100k): 2 decimals
+// For low prices like CRO ($0.10): up to 5 decimals
+export function formatPrice(value) {
+  const absValue = Math.abs(value || 0)
+  if (absValue === 0) return '$0.00'
+  if (absValue >= 100) return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  if (absValue >= 1) return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
+  if (absValue >= 0.01) return `$${value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 5 })}`
+  return `$${value.toLocaleString('en-US', { minimumFractionDigits: 5, maximumFractionDigits: 8 })}`
+}
+
+// Compact price format for axes/charts
+export function formatPriceCompact(value) {
+  const absValue = Math.abs(value || 0)
+  if (absValue >= 1000000) return `$${(value / 1000000).toFixed(1)}M`
+  if (absValue >= 1000) return `$${(value / 1000).toFixed(1)}K`
+  if (absValue >= 100) return `$${value.toFixed(0)}`
+  if (absValue >= 1) return `$${value.toFixed(2)}`
+  if (absValue >= 0.01) return `$${value.toFixed(4)}`
+  return `$${value.toFixed(5)}`
 }
 
 // BTC format

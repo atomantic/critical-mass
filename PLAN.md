@@ -13,6 +13,7 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 - Adapter architecture for exchange abstraction (`src/adapters/`)
 - Coinbase adapter with JWT ES256 authentication
 - Gemini adapter with HMAC-SHA384 authentication
+- Crypto.com adapter with HMAC-SHA256 authentication
 - Per-exchange configuration, data namespacing, and state management
 - Automatic data migration from v1 flat structure
 
@@ -28,8 +29,13 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 - Configuration editor with validation
 - API keys management (masked display)
 - Transaction history and cost basis reports
-- Backtesting with historical price data
-- Parameter optimization engine
+- Backtesting with historical price data (supports any trading pair from config)
+- Parameter optimization engine (supports any trading pair from config)
+- Smart price formatting: adapts decimal places based on asset price magnitude
+  - High prices (>$100): 2 decimals (e.g., $105,234.56)
+  - Medium prices ($1-$100): up to 4 decimals (e.g., $45.1234)
+  - Low prices ($0.01-$1): up to 5 decimals (e.g., $0.10234)
+  - Very low prices (<$0.01): up to 8 decimals
 - D3.js interactive charts:
   - Fund balance over time (area chart)
   - Price history with buy markers (line chart)
@@ -48,6 +54,7 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
   - Consolidate multiple pending orders into single order at weighted average price
   - Manual consolidation via admin UI button
   - Auto-consolidation when pending orders exceed `consolidateAfterOrders` threshold
+  - Interval-based consolidation with `consolidateInterval` option (daily, weekly, never)
   - Skips partially filled orders
   - Tracks consolidation in state and transaction logs
 
@@ -79,7 +86,8 @@ src/
 │   ├── base-adapter.js # Interface definition
 │   ├── index.js        # Registry and factory
 │   ├── coinbase/       # Coinbase implementation
-│   └── gemini/         # Gemini implementation
+│   ├── gemini/         # Gemini implementation
+│   └── cryptocom/      # Crypto.com implementation
 ├── config-utils.js     # Multi-exchange config management
 ├── dca-engine.js       # Core trading logic
 ├── interval-utils.js   # Time interval calculations
@@ -109,7 +117,8 @@ admin/src/components/
 {
   "exchanges": {
     "coinbase": { /* exchange-specific settings */ },
-    "gemini": { /* exchange-specific settings */ }
+    "gemini": { /* exchange-specific settings */ },
+    "cryptocom": { /* exchange-specific settings */ }
   },
   "global": {
     "schedulerInterval": 30000
@@ -127,8 +136,12 @@ data/
 ├── gemini/
 │   ├── state.json
 │   └── transactions.tsv
+├── cryptocom/
+│   ├── state.json
+│   └── transactions.tsv
 ├── coinbase-keys.json
-└── gemini-keys.json
+├── gemini-keys.json
+└── cryptocom-keys.json
 ```
 
 ---
@@ -178,3 +191,15 @@ Required methods for each adapter:
 - Portfolio rebalancing
 - Tax reporting exports
 - Mobile notifications
+
+---
+
+## Exchange-Specific Notes
+
+### Crypto.com Exchange
+- Uses HMAC-SHA256 authentication with alphabetically sorted parameters
+- Instrument format: `BTC_USDT` (underscore separator, uppercase)
+- Spot trading uses `spot_margin: "SPOT"` parameter
+- Market buy orders use `notional` field for quote amount
+- API documentation: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
+- Keys file: `data/cryptocom-keys.json` with `{ "apiKey": "...", "apiSecret": "..." }`

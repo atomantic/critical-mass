@@ -78,7 +78,9 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
   // Wait for fill
   const fillDetails = await waitForBuyFill(buyResult.orderId, adapter);
 
-  log('INFO', `Buy filled: ${fillDetails.btcAmount.toFixed(8)} BTC at ${fillDetails.price.toFixed(2)}`);
+  // Extract base currency from product ID (e.g., CRO_USD -> CRO, BTC-USDC -> BTC)
+  const baseCurrency = config.productId.split(/[-_]/)[0];
+  log('INFO', `Buy filled: ${fillDetails.btcAmount.toFixed(8)} ${baseCurrency} at ${fillDetails.price.toFixed(2)}`);
   log('INFO', `Fees: ${fillDetails.fees.toFixed(4)}, Rebates: ${fillDetails.rebates.toFixed(4)}, Net: ${fillDetails.netFees.toFixed(4)}`);
 
   return fillDetails;

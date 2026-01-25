@@ -3,11 +3,12 @@ const path = require('path');
 const { getIntervalConfig } = require('./interval-utils');
 const { getAuthHeaders } = require('./auth');
 const { getExchangeDataDir } = require('./migration');
+const { getAdapter } = require('./adapters');
 const axios = require('axios');
 
 const BASE_URL = 'https://api.coinbase.com';
 
-// Coinbase Advanced Trade API granularity (string enums)
+// Granularity config used by both exchanges (Coinbase format is the canonical)
 // Valid: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, THIRTY_MINUTE, ONE_HOUR, TWO_HOUR, ONE_DAY
 const GRANULARITY = {
   '5min': { value: 'FIVE_MINUTE', seconds: 300 },
@@ -16,6 +17,13 @@ const GRANULARITY = {
   '1hour': { value: 'ONE_HOUR', seconds: 3600 },
   '4hour': { value: 'ONE_HOUR', seconds: 3600 },   // Use 1-hour candles, aggregate to 4-hour
   'daily': { value: 'ONE_DAY', seconds: 86400 }
+};
+
+// Default product IDs by exchange (used if not specified)
+const DEFAULT_PRODUCT_IDS = {
+  coinbase: 'BTC-USDC',
+  gemini: 'BTCUSD',
+  cryptocom: 'BTC_USDT'
 };
 
 /**
@@ -51,12 +59,12 @@ const makeRequest = async (method, apiPath) => {
  * @param {string} productId - Product ID (e.g., 'BTC-USDC')
  * @param {number} start - Start timestamp (seconds)
  * @param {number} end - End timestamp (seconds)
- * @param {number} granularity - Candle granularity in seconds
+ * @param {string} granularity - Candle granularity (e.g., 'FIVE_MINUTE')
  * @returns {Promise<Array>} Array of candle data
  */
 const fetchCoinbaseCandles = async (productId, start, end, granularity) => {
-  const path = `/api/v3/brokerage/products/${productId}/candles?start=${start}&end=${end}&granularity=${granularity}`;
-  const data = await makeRequest('GET', path);
+  const apiPath = `/api/v3/brokerage/products/${productId}/candles?start=${start}&end=${end}&granularity=${granularity}`;
+  const data = await makeRequest('GET', apiPath);
   return (data.candles || []).map(c => ({
     timestamp: parseInt(c.start) * 1000,
     open: parseFloat(c.open),
@@ -65,6 +73,27 @@ const fetchCoinbaseCandles = async (productId, start, end, granularity) => {
     close: parseFloat(c.close),
     volume: parseFloat(c.volume)
   }));
+};
+
+/**
+ * Fetch candles using exchange adapter
+ * @param {string} exchange - Exchange name (coinbase, gemini, cryptocom)
+ * @param {number} start - Start timestamp (seconds)
+ * @param {number} end - End timestamp (seconds)
+ * @param {string} granularity - Candle granularity (Coinbase format, e.g., 'FIVE_MINUTE')
+ * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
+ * @returns {Promise<Array>} Array of candle data
+ */
+const fetchCandles = async (exchange, start, end, granularity, productId = null) => {
+  const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
+
+  if (exchange === 'coinbase') {
+    return fetchCoinbaseCandles(effectiveProductId, start, end, granularity);
+  }
+
+  // Use adapter for other exchanges (e.g., Gemini, Crypto.com)
+  const adapter = getAdapter(exchange);
+  return adapter.getCandles(effectiveProductId, start, end, granularity);
 };
 
 /**
@@ -97,25 +126,28 @@ const aggregateCandles = (candles, factor) => {
 };
 
 /**
- * Fetch price data for backtesting using Coinbase API
+ * Fetch price data for backtesting
  * @param {number} intervals - Number of intervals to fetch
  * @param {string} intervalType - Interval type (10min, 1hour, 4hour, daily)
+ * @param {string} exchange - Exchange name (coinbase, gemini, cryptocom)
+ * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  * @returns {Promise<Array>} Array of price data
  */
-const fetchPriceData = async (intervals, intervalType = 'daily') => {
+const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coinbase', productId = null) => {
   const config = getIntervalConfig(intervalType);
   const granConfig = GRANULARITY[intervalType];
   const { aggregateFactor } = config;
+  const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
 
   // Calculate raw candles needed (accounting for aggregation)
   const rawCandlesNeeded = intervals * aggregateFactor;
 
-  // Coinbase limits to 300 candles per request, so we may need to paginate
+  // Limit candles per request (300 for Coinbase, Gemini returns less but we'll batch similarly)
   const candlesPerRequest = 300;
   const now = Math.floor(Date.now() / 1000);
   const allCandles = [];
 
-  console.log(`Fetching ${rawCandlesNeeded} ${granConfig.value} candles from Coinbase (${intervals} ${intervalType} intervals)...`);
+  console.log(`Fetching ${rawCandlesNeeded} ${granConfig.value} candles for ${effectiveProductId} from ${exchange} (${intervals} ${intervalType} intervals)...`);
 
   let end = now;
   let remaining = rawCandlesNeeded;
@@ -124,7 +156,18 @@ const fetchPriceData = async (intervals, intervalType = 'daily') => {
     const batchSize = Math.min(remaining, candlesPerRequest);
     const start = end - (batchSize * granConfig.seconds);
 
-    const candles = await fetchCoinbaseCandles('BTC-USDC', start, end, granConfig.value);
+    const candles = await fetchCandles(exchange, start, end, granConfig.value, effectiveProductId)
+      .catch(err => {
+        console.error(`Error fetching candles from ${exchange}: ${err.message}`);
+        return []; // Return empty to continue with partial data
+      });
+
+    if (candles.length === 0 && exchange !== 'coinbase') {
+      // Non-Coinbase exchanges may have limited historical data
+      console.warn(`No more candles available from ${exchange} (may have reached API limit)`);
+      break;
+    }
+
     allCandles.push(...candles);
 
     remaining -= batchSize;
@@ -156,14 +199,19 @@ const fetchPriceData = async (intervals, intervalType = 'daily') => {
 };
 
 /**
- * Get cache file path for interval type and exchange
+ * Get cache file path for interval type, exchange, and product
  * @param {string} intervalType - Interval type
  * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  * @returns {string} Cache file path
  */
-const getCacheFile = (intervalType, exchange = 'coinbase') => {
+const getCacheFile = (intervalType, exchange = 'coinbase', productId = null) => {
   const cacheDir = getExchangeDataDir(exchange);
-  return path.join(cacheDir, `btc-price-cache-${intervalType}.json`);
+  // Normalize productId for filename (replace special chars)
+  const productSlug = (productId || DEFAULT_PRODUCT_IDS[exchange] || 'BTC')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-');
+  return path.join(cacheDir, `${productSlug}-price-cache-${intervalType}.json`);
 };
 
 /**
@@ -172,10 +220,15 @@ const getCacheFile = (intervalType, exchange = 'coinbase') => {
  * @param {number} intervals - Number of intervals needed
  * @param {string} intervalType - Interval type
  * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {Object} options - Additional options
+ * @param {boolean} options.preferCache - If true, use cached data without fetching new intervals (for optimizer)
+ * @param {string} options.productId - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  * @returns {Promise<Array>} Price data array
  */
-const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinbase') => {
-  const cacheFile = getCacheFile(intervalType, exchange);
+const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinbase', options = {}) => {
+  const { preferCache = false, productId = null } = options;
+  const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
+  const cacheFile = getCacheFile(intervalType, exchange, effectiveProductId);
   const cacheDir = getExchangeDataDir(exchange);
   const granConfig = GRANULARITY[intervalType];
   const config = getIntervalConfig(intervalType);
@@ -189,6 +242,12 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
   if (fs.existsSync(cacheFile)) {
     cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     cachedPrices = cache.prices || [];
+  }
+
+  // If preferCache is set and we have enough cached data, use it without fetching
+  if (preferCache && cachedPrices.length >= intervals) {
+    console.log(`Using cached ${intervalType} data for ${effectiveProductId} from ${exchange} (${cachedPrices.length} intervals, preferCache=true)`);
+    return cachedPrices.slice(-intervals);
   }
 
   // Determine what we need to fetch
@@ -209,8 +268,8 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
       // Need older data - refetch everything for simplicity
       needsFetch = true;
       fetchReason = `Need older data (have from ${new Date(oldestCached).toISOString().split('T')[0]})`;
-    } else {
-      // Check if we need newer data
+    } else if (!preferCache) {
+      // Only check for newer data if not preferring cache
       const newestCached = cachedPrices[cachedPrices.length - 1].timestamp;
       const timeSinceNewest = now - newestCached;
 
@@ -236,7 +295,7 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
         const batchSize = Math.min(candlesPerRequest, Math.ceil((end - fetchStartSeconds) / granConfig.seconds));
         const start = Math.max(fetchStartSeconds, end - (batchSize * granConfig.seconds));
 
-        const candles = await fetchCoinbaseCandles('BTC-USDC', start, end, granConfig.value);
+        const candles = await fetchCandles(exchange, start, end, granConfig.value, effectiveProductId);
         newCandles.push(...candles);
 
         end = start;
@@ -250,7 +309,7 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
       const uniqueNewCandles = newCandles.filter(c => !existingTimestamps.has(c.timestamp));
 
       if (uniqueNewCandles.length > 0) {
-        console.log(`Adding ${uniqueNewCandles.length} new ${intervalType} candles to cache`);
+        console.log(`Adding ${uniqueNewCandles.length} new ${intervalType} candles for ${effectiveProductId} to ${exchange} cache`);
 
         // Aggregate if needed
         const aggregated = aggregateCandles(uniqueNewCandles, config.aggregateFactor);
@@ -268,14 +327,16 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
         cachedPrices = [...cachedPrices, ...formatted].sort((a, b) => a.timestamp - b.timestamp);
       }
     } else {
-      // Full fetch
-      cachedPrices = await fetchPriceData(intervals, intervalType);
+      // Full fetch - pass exchange and productId to fetchPriceData
+      cachedPrices = await fetchPriceData(intervals, intervalType, exchange, effectiveProductId);
     }
 
     // Save updated cache
     const cacheData = {
       lastFetch: new Date().toISOString(),
       intervalType,
+      exchange,
+      productId: effectiveProductId,
       intervals: cachedPrices.length,
       prices: cachedPrices
     };
@@ -285,7 +346,7 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
     }
     fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
   } else {
-    console.log(`Using cached ${intervalType} data (${cachedPrices.length} intervals)`);
+    console.log(`Using cached ${intervalType} data for ${effectiveProductId} from ${exchange} (${cachedPrices.length} intervals)`);
   }
 
   // Return the requested number of intervals from the end
@@ -295,9 +356,10 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
 /**
  * Run backtest simulation
  * @param {Object} params - Backtest parameters
+ * @param {Array} [preFetchedPrices] - Optional pre-fetched price data (from optimizer cache)
  * @returns {Object} Backtest results
  */
-const runBacktest = async (params) => {
+const runBacktest = async (params, preFetchedPrices = null) => {
   const {
     intervalBuyAmount = 500,
     sellMarkupPercent = 10,
@@ -306,11 +368,15 @@ const runBacktest = async (params) => {
     rebatePercent = 0.031,
     intervals = 365,
     intervalType = 'daily',
-    fundSize = 0 // 0 = unlimited funds
+    fundSize = 0, // 0 = unlimited funds
+    exchange = 'coinbase',
+    productId = null // e.g., 'BTC-USDC', 'CRO_USD'
   } = params;
 
-  // Get price data for the specified interval type
-  const priceData = await getPriceData(intervals, intervalType);
+  const effectiveProductId = productId || DEFAULT_PRODUCT_IDS[exchange] || DEFAULT_PRODUCT_IDS.coinbase;
+
+  // Use pre-fetched prices if provided (from optimizer), otherwise fetch
+  const priceData = preFetchedPrices || await getPriceData(intervals, intervalType, exchange, { productId: effectiveProductId });
 
   if (priceData.length === 0) {
     throw new Error('No price data available');
@@ -499,7 +565,8 @@ const runBacktest = async (params) => {
       rebatePercent,
       intervals: priceData.length,
       intervalType,
-      fundSize: hasFixedFund ? fundSize : null
+      fundSize: hasFixedFund ? fundSize : null,
+      productId: effectiveProductId
     },
     metrics: {
       totalInvested,

@@ -372,11 +372,14 @@ const createGeminiAdapter = (keysPath = null) => {
 
   /**
    * Get historical price candles
+   * NOTE: Gemini's public candles API only returns ~500 most recent candles
+   * and is limited to 7 calendar days of data. The start/end params are ignored.
+   * For longer backtests, cached data should be used.
    * @param {string} productId - Product ID
-   * @param {number} start - Start timestamp (seconds) - not used by Gemini, fetches latest
-   * @param {number} end - End timestamp (seconds) - not used by Gemini
+   * @param {number} start - Start timestamp (seconds) - NOT USED by Gemini API
+   * @param {number} end - End timestamp (seconds) - NOT USED by Gemini API
    * @param {string} granularity - Candle granularity (1m, 5m, 15m, 30m, 1hr, 6hr, 1day)
-   * @returns {Promise<Candle[]>} Array of candle data
+   * @returns {Promise<Candle[]>} Array of candle data (max ~500 candles)
    */
   adapter.getCandles = async (productId, start, end, granularity) => {
     const symbol = toGeminiSymbol(productId);
@@ -393,7 +396,17 @@ const createGeminiAdapter = (keysPath = null) => {
     };
 
     const geminiGranularity = granularityMap[granularity] || '1day';
-    const candles = await makePublicRequest(`/v2/candles/${symbol}/${geminiGranularity}`);
+
+    const candles = await makePublicRequest(`/v2/candles/${symbol}/${geminiGranularity}`)
+      .catch(err => {
+        console.error(`Gemini candles API error for ${symbol}: ${err.message}`);
+        return []; // Return empty array on error
+      });
+
+    if (!Array.isArray(candles)) {
+      console.error(`Gemini candles API returned unexpected format for ${symbol}`);
+      return [];
+    }
 
     // Gemini returns [timestamp, open, high, low, close, volume]
     return candles.map(c => ({
