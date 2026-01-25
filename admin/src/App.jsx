@@ -9,6 +9,8 @@ import Backtest from './components/Backtest'
 import Optimizer from './components/Optimizer'
 import ExchangeSelector from './components/ExchangeSelector'
 import KeysConfig from './components/KeysConfig'
+import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
+import { useTradeEvents } from './hooks/useTradeEvents'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -43,7 +45,25 @@ const tabs = [
 // Valid exchange names
 const VALID_EXCHANGES = ['coinbase', 'gemini']
 
-function App() {
+// Component that listens to trade events and shows toasts
+function TradeEventListener() {
+  const { addToast } = useToast()
+  const { latestEvent } = useTradeEvents()
+
+  useEffect(() => {
+    if (latestEvent) {
+      // Only show toasts for significant events (skip info-level like price checks)
+      const significantTypes = ['buy_filled', 'sell_placed', 'order_filled', 'complete', 'error', 'skipped']
+      if (significantTypes.includes(latestEvent.type)) {
+        addToast(tradeEventToToast(latestEvent))
+      }
+    }
+  }, [latestEvent, addToast])
+
+  return null
+}
+
+function AppContent() {
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -56,8 +76,6 @@ function App() {
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [syncing, setSyncing] = useState(false)
-  const [syncResult, setSyncResult] = useState(null)
 
   // Fetch list of configured exchanges
   const fetchExchanges = async (autoSelect = false) => {
@@ -99,23 +117,9 @@ function App() {
     const data = await res.json()
     setSummary(data)
     setLoading(false)
-  }
 
-  const syncOrders = async () => {
-    setSyncing(true)
-    setSyncResult(null)
-    const res = await fetch(`/api/${currentExchange}/sync`, { method: 'POST' })
-    if (!res.ok) {
-      setError('Sync failed')
-      setSyncing(false)
-      return
-    }
-    const data = await res.json()
-    setSyncResult(data)
-    if (data.filledOrders > 0) {
-      fetchData() // Refresh data if orders filled
-    }
-    setSyncing(false)
+    // Also refresh exchanges list to update badges (enabled/dryRun status)
+    fetchExchanges()
   }
 
   // Initial load of exchanges (with auto-select on first load)
@@ -172,22 +176,6 @@ function App() {
                   onChange={handleExchangeChange}
                   onRefresh={fetchExchanges}
                 />
-                <span className="text-sm text-gray-400">
-                  {summary?.state?.lastRunDate ? `Last run: ${summary.state.lastRunDate}` : 'Never run'}
-                </span>
-                <button
-                  onClick={syncOrders}
-                  disabled={syncing}
-                  className="px-3 py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-sm"
-                >
-                  {syncing ? 'Syncing...' : 'Sync Orders'}
-                </button>
-                <button
-                  onClick={fetchData}
-                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm"
-                >
-                  Refresh
-                </button>
               </div>
             </div>
           </div>
@@ -222,13 +210,6 @@ function App() {
             </div>
           )}
 
-          {syncResult && (
-            <div className="mb-4 p-4 bg-purple-900/50 border border-purple-700 rounded-lg text-purple-200">
-              Sync complete: {syncResult.filledOrders} order(s) filled
-              {syncResult.lastSyncTime && <span className="text-purple-400 ml-2">at {new Date(syncResult.lastSyncTime).toLocaleTimeString()}</span>}
-            </div>
-          )}
-
           {loading && !summary ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
@@ -255,6 +236,15 @@ function App() {
         </main>
       </div>
     </ExchangeContext.Provider>
+  )
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <TradeEventListener />
+      <AppContent />
+    </ToastProvider>
   )
 }
 

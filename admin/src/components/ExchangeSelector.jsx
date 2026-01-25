@@ -3,11 +3,13 @@ import { useState, useEffect } from 'react'
 const EXCHANGE_ICONS = {
   coinbase: '₿',
   gemini: '♊',
+  cryptocom: '🔷',
 }
 
 const EXCHANGE_COLORS = {
   coinbase: 'bg-blue-600',
   gemini: 'bg-cyan-600',
+  cryptocom: 'bg-indigo-600',
 }
 
 function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {

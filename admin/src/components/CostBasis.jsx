@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react'
+import { useParams } from 'react-router-dom'
+import { formatCurrency, formatPrice } from './charts/chartUtils'
 
 function CostBasis({ summary, quoteCurrency = 'USDC' }) {
+  const { exchange = 'coinbase' } = useParams()
   const [currentPrice, setCurrentPrice] = useState(0)
 
   useEffect(() => {
     const fetchPrice = async () => {
       try {
-        const res = await fetch('/api/status')
+        const res = await fetch(`/api/${exchange}/status`)
         const data = await res.json()
         setCurrentPrice(data.currentPrice || 0)
       } catch (err) {
@@ -16,7 +19,7 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
     fetchPrice()
     const interval = setInterval(fetchPrice, 10000)
     return () => clearInterval(interval)
-  }, [])
+  }, [exchange])
 
   if (!summary?.costBasis) {
     return (
@@ -27,7 +30,7 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
   }
 
   const { costBasis } = summary
-  const formatUSD = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  // formatCurrency for totals, formatPrice for per-unit prices
   const formatBTC = (n) => (n || 0).toFixed(8)
 
   // Calculate unrealized P&L
@@ -61,11 +64,11 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
       <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
         <div>
           <span className="text-gray-400">Current BTC Price:</span>
-          <span className="text-3xl font-bold ml-4">{formatUSD(currentPrice)}</span>
+          <span className="text-3xl font-bold ml-4">{formatPrice(currentPrice)}</span>
         </div>
         <div>
           <span className="text-gray-400">Avg Cost Basis:</span>
-          <span className="text-2xl font-semibold ml-4">{formatUSD(costBasis.avgCostPerBTC)}</span>
+          <span className="text-2xl font-semibold ml-4">{formatPrice(costBasis.avgCostPerBTC)}</span>
         </div>
       </div>
 
@@ -81,20 +84,20 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Cost Basis:</span>
-              <span>{formatUSD(costBasis.reservesCostBasis)}</span>
+              <span>{formatCurrency(costBasis.reservesCostBasis)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Avg Cost/BTC:</span>
-              <span>{formatUSD(costBasis.reservesAvgCost)}</span>
+              <span>{formatPrice(costBasis.reservesAvgCost)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
-              <span>{formatUSD(reservesCurrentValue)}</span>
+              <span>{formatCurrency(reservesCurrentValue)}</span>
             </div>
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
               <span className={reservesUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                {reservesUnrealizedPnL >= 0 ? '+' : ''}{formatUSD(reservesUnrealizedPnL)}
+                {reservesUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(reservesUnrealizedPnL)}
                 <span className="text-sm ml-1">({reservesPnLPercent >= 0 ? '+' : ''}{reservesPnLPercent.toFixed(2)}%)</span>
               </span>
             </div>
@@ -111,20 +114,20 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Cost Basis:</span>
-              <span>{formatUSD(costBasis.pendingCostBasis)}</span>
+              <span>{formatCurrency(costBasis.pendingCostBasis)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Avg Cost/BTC:</span>
-              <span>{formatUSD(costBasis.pendingAvgCost)}</span>
+              <span>{formatPrice(costBasis.pendingAvgCost)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
-              <span>{formatUSD(pendingCurrentValue)}</span>
+              <span>{formatCurrency(pendingCurrentValue)}</span>
             </div>
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
               <span className={pendingUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                {pendingUnrealizedPnL >= 0 ? '+' : ''}{formatUSD(pendingUnrealizedPnL)}
+                {pendingUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(pendingUnrealizedPnL)}
                 <span className="text-sm ml-1">({pendingPnLPercent >= 0 ? '+' : ''}{pendingPnLPercent.toFixed(2)}%)</span>
               </span>
             </div>
@@ -141,20 +144,20 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Cost Basis:</span>
-              <span>{formatUSD(totalHeldCostBasis)}</span>
+              <span>{formatCurrency(totalHeldCostBasis)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Avg Cost/BTC:</span>
-              <span>{formatUSD(costBasis.avgCostPerBTC)}</span>
+              <span>{formatPrice(costBasis.avgCostPerBTC)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
-              <span>{formatUSD(totalCurrentValue)}</span>
+              <span>{formatCurrency(totalCurrentValue)}</span>
             </div>
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Unrealized P&L:</span>
               <span className={totalUnrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                {totalUnrealizedPnL >= 0 ? '+' : ''}{formatUSD(totalUnrealizedPnL)}
+                {totalUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(totalUnrealizedPnL)}
                 <span className="text-sm ml-1">({totalPnLPercent >= 0 ? '+' : ''}{totalPnLPercent.toFixed(2)}%)</span>
               </span>
             </div>
@@ -167,7 +170,7 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
         <div className="bg-gray-800 rounded-lg p-4">
           <h3 className="text-lg font-semibold mb-3">Realized P&L (from filled sell orders)</h3>
           <div className={`text-3xl font-bold ${realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {realizedPnL >= 0 ? '+' : ''}{formatUSD(realizedPnL)}
+            {realizedPnL >= 0 ? '+' : ''}{formatCurrency(realizedPnL)}
           </div>
         </div>
       )}
@@ -209,14 +212,14 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
                   return (
                     <tr key={i} className="border-t border-gray-700">
                       <td className="py-2">{order.date}</td>
-                      <td className="py-2">{formatUSD(order.buyPrice)}</td>
+                      <td className="py-2">{formatPrice(order.buyPrice)}</td>
                       <td className="py-2 font-mono">{formatBTC(order.btcBought)}</td>
-                      <td className="py-2">{formatUSD(order.costBasis)}</td>
-                      <td className="py-2 text-red-400">{formatUSD(order.netFees)}</td>
-                      <td className="py-2">{formatUSD(order.costPerBTC)}</td>
+                      <td className="py-2">{formatCurrency(order.costBasis)}</td>
+                      <td className="py-2 text-red-400">{formatCurrency(order.netFees)}</td>
+                      <td className="py-2">{formatPrice(order.costPerBTC)}</td>
                       <td className="py-2 font-mono text-yellow-400">{formatBTC(order.holdback)}</td>
                       <td className="py-2">
-                        {formatBTC(order.sellQuantity)} @ {formatUSD(order.sellPrice)}
+                        {formatBTC(order.sellQuantity)} @ {formatPrice(order.sellPrice)}
                       </td>
                       <td className="py-2">
                         <span className={`px-2 py-0.5 rounded text-xs ${
@@ -230,7 +233,7 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
                       <td className="py-2">
                         {order.status === 'filled' ? (
                           <span className={order.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {order.realizedPnL >= 0 ? '+' : ''}{formatUSD(order.realizedPnL)}
+                            {order.realizedPnL >= 0 ? '+' : ''}{formatCurrency(order.realizedPnL)}
                           </span>
                         ) : (
                           <span className={unrealized >= 0 ? 'text-green-400' : 'text-red-400'}>

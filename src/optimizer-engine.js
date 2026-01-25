@@ -7,11 +7,11 @@
 const { runBacktest, getPriceData } = require('./backtest-engine');
 const { getIntervalConfig } = require('./interval-utils');
 
-// Interval types to test
-const INTERVALS = ['5min', '10min', '30min', '1hour', '4hour', 'daily'];
+// Default interval types to test
+const DEFAULT_INTERVALS = ['5min', '10min', '30min', '1hour', '4hour', 'daily'];
 
-// Scaled buy amounts per interval
-const BUY_AMOUNTS = {
+// Default scaled buy amounts per interval
+const DEFAULT_BUY_AMOUNTS = {
   '5min': 1,
   '10min': 2,
   '30min': 10,
@@ -20,11 +20,14 @@ const BUY_AMOUNTS = {
   'daily': 500
 };
 
-// Markup percentages to test (1-8%)
-const MARKUPS = [1, 2, 3, 4, 5, 6, 7, 8];
+// Default markup percentages to test (1-10%)
+const DEFAULT_MARKUPS = [1, 2, 3, 4, 5, 6, 7, 8, 10];
+
+// Default periods to test
+const DEFAULT_PERIODS = ['30D', '60D', '90D', '1Y'];
 
 // Time periods to test with interval counts
-const PERIODS = {
+const PERIOD_INTERVALS = {
   '5min': {
     '30D': 8640,
     '60D': 17280,
@@ -68,26 +71,53 @@ const FEE_PERCENT = 0.125;
 const REBATE_PERCENT = 0.031;
 
 /**
- * Pre-fetch and cache price data for all interval types
+ * Pre-fetch and cache price data for selected interval types
  * This improves performance by avoiding redundant API calls
+ * @param {string[]} intervals - Interval types to fetch
+ * @param {string[]} periods - Periods to fetch (determines max intervals needed)
+ * @param {function} onProgress - Progress callback
+ * @param {string} exchange - Exchange name (coinbase, gemini, cryptocom)
+ * @param {boolean} forceRefresh - If true, fetch fresh data; otherwise prefer cached data
+ * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  */
-const prefetchPriceData = async (onProgress) => {
+const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coinbase', forceRefresh = false, productId = null) => {
   const cache = {};
   let fetched = 0;
-  const total = INTERVALS.length;
+  const total = intervals.length;
 
-  for (const intervalType of INTERVALS) {
-    // Get the maximum intervals needed for this type (1Y)
-    const maxIntervals = PERIODS[intervalType]['1Y'];
+  // Find the longest period we need data for
+  const periodOrder = ['30D', '60D', '90D', '1Y'];
+  const maxPeriodIndex = Math.max(...periods.map(p => periodOrder.indexOf(p)));
+  const maxPeriod = periodOrder[maxPeriodIndex] || '1Y';
+
+  for (const intervalType of intervals) {
+    // Get the maximum intervals needed for this type based on selected periods
+    const maxIntervals = PERIOD_INTERVALS[intervalType]?.[maxPeriod] || PERIOD_INTERVALS[intervalType]?.['1Y'];
 
     onProgress?.({
       phase: 'prefetch',
-      message: `Fetching ${intervalType} price data...`,
+      message: forceRefresh
+        ? `Fetching fresh ${intervalType} price data for ${productId || 'default'} from ${exchange}...`
+        : `Loading ${intervalType} price data for ${productId || 'default'}...`,
       current: fetched,
       total
     });
 
-    cache[intervalType] = await getPriceData(maxIntervals, intervalType);
+    // Use preferCache option to avoid fetching new data if we have enough cached
+    // Wrap in error handling to prevent crashes from API failures
+    const priceData = await getPriceData(maxIntervals, intervalType, exchange, {
+      preferCache: !forceRefresh,
+      productId
+    }).catch(err => {
+      console.error(`Error fetching ${intervalType} price data: ${err.message}`);
+      return []; // Return empty array on error, backtest will fail gracefully
+    });
+
+    if (priceData.length === 0) {
+      console.warn(`Warning: No ${intervalType} price data available for ${productId || 'default'} from ${exchange}`);
+    }
+
+    cache[intervalType] = priceData;
     fetched++;
   }
 
@@ -96,8 +126,12 @@ const prefetchPriceData = async (onProgress) => {
 
 /**
  * Run a single backtest with given parameters
+ * @param {Object} params - Backtest parameters
+ * @param {Object} priceCache - Cached price data by interval type
+ * @param {string} exchange - Exchange name (coinbase, gemini, cryptocom)
+ * @param {string} [productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
  */
-const runSingleBacktest = async (params, priceCache) => {
+const runSingleBacktest = async (params, priceCache, exchange, productId = null) => {
   const {
     intervalType,
     intervalBuyAmount,
@@ -111,7 +145,7 @@ const runSingleBacktest = async (params, priceCache) => {
   const cachedPrices = priceCache[intervalType];
   const prices = cachedPrices.slice(-intervals);
 
-  // Run backtest
+  // Run backtest with exchange and productId, passing pre-fetched prices
   const result = await runBacktest({
     intervalBuyAmount,
     sellMarkupPercent,
@@ -120,8 +154,10 @@ const runSingleBacktest = async (params, priceCache) => {
     rebatePercent: REBATE_PERCENT,
     intervals,
     intervalType,
-    fundSize
-  });
+    fundSize,
+    exchange,
+    productId
+  }, prices);  // Pass pre-fetched prices to avoid redundant API calls
 
   return result;
 };
@@ -130,33 +166,55 @@ const runSingleBacktest = async (params, priceCache) => {
  * Run the full optimizer across all parameter combinations
  * @param {Object} options - Optimizer options
  * @param {number} options.fundSize - Fund size to test with
+ * @param {string} options.exchange - Exchange name (coinbase, gemini, cryptocom)
+ * @param {boolean} options.forceRefresh - If true, fetch fresh price data
  * @param {function} options.onProgress - Progress callback
+ * @param {string} [options.productId] - Product ID (e.g., 'BTC-USDC', 'CRO_USD')
+ * @param {string[]} [options.intervals] - Intervals to test (default: all)
+ * @param {number[]} [options.markups] - Markup percentages to test (default: 1-8)
+ * @param {string[]} [options.periods] - Periods to test (default: 30D, 60D, 90D, 1Y)
+ * @param {Object} [options.buyAmounts] - Buy amounts per interval (default: scaled)
  * @returns {Object} Optimization results
  */
-const runOptimizer = async ({ fundSize = 10000, onProgress }) => {
+const runOptimizer = async ({
+  fundSize = 10000,
+  exchange = 'coinbase',
+  forceRefresh = false,
+  onProgress,
+  productId = null,
+  intervals = null,
+  markups = null,
+  periods = null,
+  buyAmounts = null
+}) => {
   const startTime = Date.now();
   const results = [];
 
+  // Use provided options or defaults
+  const selectedIntervals = intervals || DEFAULT_INTERVALS;
+  const selectedMarkups = markups || DEFAULT_MARKUPS;
+  const selectedPeriods = periods || DEFAULT_PERIODS;
+  const selectedBuyAmounts = { ...DEFAULT_BUY_AMOUNTS, ...buyAmounts };
+
   // Calculate total combinations
-  const periodCount = Object.keys(PERIODS['daily']).length;
-  const totalCombinations = INTERVALS.length * MARKUPS.length * periodCount;
+  const totalCombinations = selectedIntervals.length * selectedMarkups.length * selectedPeriods.length;
   let completed = 0;
 
-  // Phase 1: Pre-fetch all price data
+  // Phase 1: Pre-fetch price data for selected intervals only
   onProgress?.({
     phase: 'prefetch',
-    message: 'Pre-fetching price data...',
+    message: `Pre-fetching price data for ${productId || 'default pair'}...`,
     current: 0,
-    total: INTERVALS.length,
+    total: selectedIntervals.length,
     percentComplete: 0
   });
 
-  const priceCache = await prefetchPriceData((progress) => {
+  const priceCache = await prefetchPriceData(selectedIntervals, selectedPeriods, (progress) => {
     onProgress?.({
       ...progress,
       percentComplete: Math.round((progress.current / progress.total) * 10) // 0-10%
     });
-  });
+  }, exchange, forceRefresh, productId);
 
   // Phase 2: Run backtests
   onProgress?.({
@@ -169,14 +227,17 @@ const runOptimizer = async ({ fundSize = 10000, onProgress }) => {
     latestResult: null
   });
 
-  for (const intervalType of INTERVALS) {
-    const intervalBuyAmount = BUY_AMOUNTS[intervalType];
-    const intervalPeriods = PERIODS[intervalType];
+  for (const intervalType of selectedIntervals) {
+    const intervalBuyAmount = selectedBuyAmounts[intervalType] || DEFAULT_BUY_AMOUNTS[intervalType];
+    const intervalPeriods = PERIOD_INTERVALS[intervalType];
 
-    for (const markup of MARKUPS) {
+    for (const markup of selectedMarkups) {
       const holdback = markup / 2; // Holdback is always 50% of markup
 
-      for (const [periodLabel, intervals] of Object.entries(intervalPeriods)) {
+      for (const periodLabel of selectedPeriods) {
+        const intervals = intervalPeriods[periodLabel];
+        if (!intervals) continue; // Skip if period not valid for this interval type
+
         const currentParams = {
           intervalType,
           intervalBuyAmount,
@@ -187,7 +248,7 @@ const runOptimizer = async ({ fundSize = 10000, onProgress }) => {
           fundSize
         };
 
-        const result = await runSingleBacktest(currentParams, priceCache);
+        const result = await runSingleBacktest(currentParams, priceCache, exchange, productId);
 
         const fullResult = {
           params: currentParams,
@@ -231,11 +292,12 @@ const runOptimizer = async ({ fundSize = 10000, onProgress }) => {
     totalCombinations,
     duration,
     fundSize,
+    productId,
     config: {
-      intervals: INTERVALS,
-      buyAmounts: BUY_AMOUNTS,
-      markups: MARKUPS,
-      periods: Object.keys(PERIODS['daily']),
+      intervals: selectedIntervals,
+      buyAmounts: selectedBuyAmounts,
+      markups: selectedMarkups,
+      periods: selectedPeriods,
       feePercent: FEE_PERCENT,
       rebatePercent: REBATE_PERCENT
     }
@@ -256,8 +318,9 @@ const getTopResults = (results, n = 10) => {
 module.exports = {
   runOptimizer,
   getTopResults,
-  INTERVALS,
-  BUY_AMOUNTS,
-  MARKUPS,
-  PERIODS
+  DEFAULT_INTERVALS,
+  DEFAULT_BUY_AMOUNTS,
+  DEFAULT_MARKUPS,
+  DEFAULT_PERIODS,
+  PERIOD_INTERVALS
 };

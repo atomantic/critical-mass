@@ -5,7 +5,7 @@ const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
 const stateTracker = require('./src/state-tracker');
-const { syncOrderStatuses, runIntervalCycle, loadConfig, runAllExchangeCycles } = require('./src/dca-engine');
+const { syncOrderStatuses, runIntervalCycle, loadConfig, runAllExchangeCycles, executeConsolidation } = require('./src/dca-engine');
 const { log, loadTransactionHistory, getLogFile } = require('./src/logger');
 const backtestEngine = require('./src/backtest-engine');
 const { runMigrationIfNeeded, getExchangeDataDir, getExchangeKeysPath } = require('./src/migration');
@@ -51,7 +51,14 @@ const DATA_DIR = path.join(__dirname, 'data');
 // Helper to read JSON file
 const readJSON = (filepath, defaultValue = {}) => {
   if (!fs.existsSync(filepath)) return defaultValue;
-  return JSON.parse(fs.readFileSync(filepath, 'utf8'));
+  const content = fs.readFileSync(filepath, 'utf8');
+  if (!content || content.trim() === '') return defaultValue;
+  try {
+    return JSON.parse(content);
+  } catch (err) {
+    console.error(`Error parsing JSON from ${filepath}:`, err.message);
+    return defaultValue;
+  }
 };
 
 // Helper to write JSON file
@@ -328,6 +335,15 @@ app.get('/api/:exchange/summary', (req, res) => {
   const totalBTCBought = buys.reduce((sum, t) => sum + (t['BTC Amount'] || 0), 0);
   const totalBTCSold = sells.reduce((sum, t) => sum + Math.abs(t['BTC Amount'] || 0), 0);
 
+  // Calculate realized profit from filled orders
+  const filledOrders = (state.orders || []).filter(o => o.status === 'filled');
+  const realizedProfit = filledOrders.reduce((sum, o) => {
+    const proceeds = o.netProceeds || (o.sellQuantityBTC * (o.filledPrice || o.sellPrice));
+    const cost = o.buyCostBasis || (o.buyQuantityBTC * o.buyPrice);
+    const costForSold = o.buyQuantityBTC > 0 ? cost * (o.sellQuantityBTC / o.buyQuantityBTC) : 0;
+    return sum + (proceeds - costForSold);
+  }, 0);
+
   const costBasis = calculateCostBasis(state, transactions);
   const nextTrade = getNextTradeInfo(config, state);
 
@@ -353,6 +369,7 @@ app.get('/api/:exchange/summary', (req, res) => {
       allocationUsed: state.totalAllocated || 0,
       allocationRemaining: (config.totalAllocation || 0) - (state.totalAllocated || 0),
       intervalsRun: state.totalIntervalsRun || 0,
+      realizedProfit,
     },
     costBasis,
     nextTrade,
@@ -386,6 +403,38 @@ app.post('/api/:exchange/trade', async (req, res) => {
 
   const result = await runIntervalCycle(exchange);
   res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
+});
+
+// Consolidate pending orders for an exchange
+app.post('/api/:exchange/consolidate', async (req, res) => {
+  const { exchange } = req.params;
+  const { orderIds } = req.body || {};
+
+  log('INFO', `[${exchange}] Consolidation triggered via API`);
+
+  // Check if we have enough orders
+  const config = getExchangeConfig(exchange);
+  const state = stateTracker.loadState(config, exchange);
+  const pendingOrders = (state.orders || []).filter(o => o.status === 'pending');
+
+  // Filter to specific order IDs if provided
+  const ordersToConsolidate = orderIds && orderIds.length > 0
+    ? pendingOrders.filter(o => orderIds.includes(o.orderId))
+    : pendingOrders;
+
+  if (ordersToConsolidate.length < 2) {
+    return res.status(400).json({
+      success: false,
+      error: `Need at least 2 pending orders to consolidate, found ${ordersToConsolidate.length}`,
+    });
+  }
+
+  const result = await executeConsolidation(exchange, orderIds);
+  res.json({
+    ...result,
+    triggeredAt: new Date().toISOString(),
+    trigger: 'manual',
+  });
 });
 
 // ============ Keys Management API ============
@@ -517,7 +566,20 @@ app.post('/api/:exchange/test-connection', async (req, res) => {
   const { getAdapter } = require('./src/adapters');
 
   const adapter = getAdapter(exchange);
-  const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
+
+  // Get quote currency from config based on productId
+  // loadConfig(exchange) returns exchange-specific config directly
+  const exchangeConfig = loadConfig(exchange);
+  const productId = exchangeConfig.productId || '';
+
+  // Extract quote currency from productId (e.g., BTC-USDC -> USDC, BTC_USDT -> USDT)
+  const parts = productId.replace('_', '-').split('-');
+  let quoteCurrency = parts[1] || 'USD';
+
+  // Handle Gemini special case (USDC -> USD)
+  if (exchange === 'gemini' && quoteCurrency === 'USDC') {
+    quoteCurrency = 'USD';
+  }
 
   // Check if keys are configured
   if (!adapter.hasValidKeys || !adapter.hasValidKeys()) {
@@ -608,16 +670,30 @@ app.get('/api/status', async (req, res) => {
   let currentPrice = 0;
   let usdcBalance = { available: 0, hold: 0 };
   let btcBalance = { available: 0, hold: 0 };
+  let keysConfigured = false;
+  let apiError = null;
 
   const adapter = getAdapter('coinbase');
-  currentPrice = await adapter.getCurrentPrice(config.productId);
-  usdcBalance = await adapter.getAccountBalance('USDC');
-  btcBalance = await adapter.getAccountBalance('BTC');
+
+  // Check if keys are configured before making API calls
+  if (adapter.hasValidKeys && adapter.hasValidKeys()) {
+    keysConfigured = true;
+    try {
+      currentPrice = await adapter.getCurrentPrice(config.productId);
+      usdcBalance = await adapter.getAccountBalance('USDC');
+      btcBalance = await adapter.getAccountBalance('BTC');
+    } catch (err) {
+      apiError = err.message || 'API connection failed';
+      log('ERROR', `[coinbase] Status check failed: ${apiError}`);
+    }
+  }
 
   res.json({
     currentPrice,
     usdcBalance,
     btcBalance,
+    keysConfigured,
+    apiError,
     config,
     state,
     lastUpdated: new Date().toISOString(),
@@ -697,15 +773,23 @@ app.get('/api/trade', (req, res) => {
 
 // ============ Backtest API ============
 
-app.get('/api/backtest/prices', async (req, res) => {
+app.get('/api/:exchange/backtest/prices', async (req, res) => {
+  const { exchange } = req.params;
   const intervals = parseInt(req.query.intervals) || 365;
   const intervalType = req.query.intervalType || 'daily';
 
-  const prices = await backtestEngine.getPriceData(intervals, intervalType);
-  res.json({ success: true, count: prices.length, intervalType, prices });
+  const prices = await backtestEngine.getPriceData(intervals, intervalType, exchange);
+  res.json({ success: true, count: prices.length, intervalType, exchange, prices });
 });
 
-app.post('/api/backtest/run', async (req, res) => {
+app.post('/api/:exchange/backtest/run', async (req, res) => {
+  const { exchange } = req.params;
+
+  // Get productId from request or fall back to config
+  // loadConfig(exchange) returns exchange-specific config directly
+  const exchangeConfig = loadConfig(exchange);
+  const configProductId = exchangeConfig.productId || null;
+
   const {
     intervalBuyAmount = 500,
     sellMarkupPercent = 10,
@@ -714,12 +798,13 @@ app.post('/api/backtest/run', async (req, res) => {
     rebatePercent = 0.031,
     intervals = 365,
     intervalType = 'daily',
-    fundSize = 0
+    fundSize = 0,
+    productId = configProductId
   } = req.body;
 
   const fundInfo = fundSize > 0 ? `, $${fundSize} fund` : ', unlimited funds';
   const intervalLabel = formatInterval(intervalType);
-  log('INFO', `Running backtest: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`);
+  log('INFO', `[${exchange}] Running backtest for ${productId}: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`);
 
   const results = await backtestEngine.runBacktest({
     intervalBuyAmount,
@@ -729,20 +814,25 @@ app.post('/api/backtest/run', async (req, res) => {
     rebatePercent,
     intervals,
     intervalType,
-    fundSize
+    fundSize,
+    exchange,
+    productId
   });
 
-  log('INFO', `Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`);
+  log('INFO', `[${exchange}] Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`);
   res.json({ success: true, ...results });
 });
 
 // ============ Optimizer API ============
 
 const optimizerEngine = require('./src/optimizer-engine');
-const OPTIMIZER_CACHE_FILE = path.join(DATA_DIR, 'optimizer-cache.json');
 
-app.get('/api/optimizer/cache', (req, res) => {
-  const cache = readJSON(OPTIMIZER_CACHE_FILE, null);
+const getOptimizerCacheFile = (exchange) => path.join(DATA_DIR, exchange, 'optimizer-cache.json');
+
+app.get('/api/:exchange/optimizer/cache', (req, res) => {
+  const { exchange } = req.params;
+  const cacheFile = getOptimizerCacheFile(exchange);
+  const cache = readJSON(cacheFile, null);
   if (cache) {
     res.json({ success: true, cached: true, ...cache });
   } else {
@@ -750,33 +840,70 @@ app.get('/api/optimizer/cache', (req, res) => {
   }
 });
 
-app.delete('/api/optimizer/cache', (req, res) => {
-  if (fs.existsSync(OPTIMIZER_CACHE_FILE)) {
-    fs.unlinkSync(OPTIMIZER_CACHE_FILE);
-    log('INFO', 'Optimizer cache cleared');
+app.delete('/api/:exchange/optimizer/cache', (req, res) => {
+  const { exchange } = req.params;
+  const cacheFile = getOptimizerCacheFile(exchange);
+  if (fs.existsSync(cacheFile)) {
+    fs.unlinkSync(cacheFile);
+    log('INFO', `Optimizer cache cleared for ${exchange}`);
   }
   res.json({ success: true, message: 'Cache cleared' });
 });
 
 let currentBestResult = null;
 
-app.post('/api/optimizer/run', (req, res) => {
-  const { fundSize = 10000, forceRefresh = false } = req.body;
+app.post('/api/:exchange/optimizer/run', (req, res) => {
+  const { exchange } = req.params;
+
+  // Get productId from config - loadConfig(exchange) returns exchange-specific config directly
+  const exchangeConfig = loadConfig(exchange);
+  const configProductId = exchangeConfig.productId || null;
+
+  const {
+    fundSize = 10000,
+    forceRefresh = false,
+    productId = configProductId,
+    intervals = null,  // Custom intervals to test (null = use defaults)
+    markups = null,    // Custom markups to test (null = use defaults)
+    periods = null,    // Custom periods to test (null = use defaults)
+    buyAmounts = null  // Custom buy amounts per interval (null = use defaults)
+  } = req.body;
+  const cacheFile = getOptimizerCacheFile(exchange);
+
+  // Create a config key for cache validation (includes selected options)
+  const configKey = JSON.stringify({ intervals, markups, periods });
 
   if (!forceRefresh) {
-    const cache = readJSON(OPTIMIZER_CACHE_FILE, null);
-    if (cache && cache.fundSize === fundSize) {
-      log('INFO', `Returning cached optimizer results for fund size: $${fundSize}`);
+    const cache = readJSON(cacheFile, null);
+    // Check cache matches fundSize, productId, and config options
+    const cacheConfigKey = JSON.stringify({
+      intervals: cache?.config?.intervals,
+      markups: cache?.config?.markups,
+      periods: cache?.config?.periods
+    });
+    if (cache && cache.fundSize === fundSize && cache.productId === productId && configKey === cacheConfigKey) {
+      log('INFO', `[${exchange}] Returning cached optimizer results for ${productId}, fund size: $${fundSize}`);
       res.json({ success: true, cached: true, ...cache });
       return;
     }
   }
 
-  log('INFO', `Running optimizer with fund size: $${fundSize}`);
+  const totalTests = (intervals?.length || 6) * (markups?.length || 9) * (periods?.length || 4);
+  log('INFO', `[${exchange}] Running optimizer for ${productId} with fund size: $${fundSize} (${totalTests} combinations)`);
   currentBestResult = null;
+
+  // Respond immediately - results will come via WebSocket
+  res.json({ success: true, streaming: true, message: 'Optimizer started, results will stream via WebSocket' });
 
   optimizerEngine.runOptimizer({
     fundSize,
+    exchange,
+    forceRefresh,
+    productId,
+    intervals,
+    markups,
+    periods,
+    buyAmounts,
     onProgress: (progress) => {
       io.emit('optimizer:progress', progress);
 
@@ -788,13 +915,13 @@ app.post('/api/optimizer/run', (req, res) => {
       }
 
       if (progress.current % 20 === 0 || progress.phase === 'prefetch') {
-        log('INFO', `Optimizer: ${progress.message} (${progress.percentComplete}%)`);
+        log('INFO', `[${exchange}] Optimizer: ${progress.message} (${progress.percentComplete}%)`);
       }
     }
   })
     .then(result => {
-      log('INFO', `Optimizer complete: ${result.totalCombinations} combinations in ${(result.duration / 1000).toFixed(1)}s`);
-      log('INFO', `Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> $${result.bestResult.metrics.totalValue.toFixed(2)}`);
+      log('INFO', `[${exchange}] Optimizer complete: ${result.totalCombinations} combinations in ${(result.duration / 1000).toFixed(1)}s`);
+      log('INFO', `[${exchange}] Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> $${result.bestResult.metrics.totalValue.toFixed(2)}`);
 
       const topResults = optimizerEngine.getTopResults(result.results, 20);
       const response = {
@@ -802,6 +929,7 @@ app.post('/api/optimizer/run', (req, res) => {
         cached: false,
         cachedAt: new Date().toISOString(),
         fundSize,
+        productId: result.productId,
         totalCombinations: result.totalCombinations,
         duration: result.duration,
         bestResult: result.bestResult,
@@ -809,16 +937,15 @@ app.post('/api/optimizer/run', (req, res) => {
         config: result.config
       };
 
-      writeJSON(OPTIMIZER_CACHE_FILE, response);
-      log('INFO', 'Optimizer results cached');
+      writeJSON(cacheFile, response);
+      log('INFO', `[${exchange}] Optimizer results cached`);
 
       io.emit('optimizer:complete', response);
-      res.json(response);
     })
     .catch(err => {
-      log('ERROR', `Optimizer failed: ${err.message}`);
+      log('ERROR', `[${exchange}] Optimizer failed: ${err.message}`);
       io.emit('optimizer:error', { error: err.message });
-      res.status(500).json({ success: false, error: err.message });
+      // Don't try to send response here - we already responded with streaming: true
     });
 });
 
@@ -836,6 +963,14 @@ app.get('*', (req, res) => {
 });
 
 // ============ WebSocket ============
+
+// Import trade events for real-time updates
+const { tradeEvents } = require('./src/trade-events');
+
+// Broadcast trade events to all connected clients
+tradeEvents.on('trade', (event) => {
+  io.emit('trade:event', event);
+});
 
 io.on('connection', (socket) => {
   log('INFO', `WebSocket client connected: ${socket.id}`);
@@ -856,7 +991,9 @@ const checkAndRunIntervalTrade = () => {
     const { intervalType } = config;
 
     if (!schedulerState[exchange]) {
-      schedulerState[exchange] = { lastRunId: null, nextExecutionTime: null };
+      // Initialize with nextExecutionTime=0 so first check passes immediately
+      // The duplicate-prevention is handled by hasRunThisInterval check
+      schedulerState[exchange] = { lastRunId: null, nextExecutionTime: 0 };
     }
 
     if (hasRunThisInterval(schedulerState[exchange].lastRunId, intervalType)) {
@@ -864,7 +1001,7 @@ const checkAndRunIntervalTrade = () => {
     }
 
     const now = Date.now();
-    const nextExec = schedulerState[exchange].nextExecutionTime || getNextExecutionTime(intervalType);
+    const nextExec = schedulerState[exchange].nextExecutionTime;
 
     if (now >= nextExec) {
       const intervalLabel = formatInterval(intervalType);
