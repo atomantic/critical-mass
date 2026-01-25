@@ -27,6 +27,10 @@
 // ============================================================================
 
 /**
+ * @typedef {'never' | 'daily' | 'weekly'} ConsolidateIntervalType
+ */
+
+/**
  * @typedef {Object} ExchangeConfig
  * @property {string} productId - Trading pair (e.g., 'BTC-USDC', 'BTCUSD')
  * @property {number} totalAllocation - Total amount to allocate in quote currency
@@ -39,6 +43,7 @@
  * @property {boolean} enabled - Whether this exchange is enabled
  * @property {boolean} dryRun - Whether to simulate trades
  * @property {number} [consolidateAfterOrders] - Auto-consolidate when pending orders exceed this count (0 = disabled)
+ * @property {ConsolidateIntervalType} [consolidateInterval] - How often to run interval-based consolidation ('never', 'daily', 'weekly')
  */
 
 /**
@@ -109,6 +114,8 @@
  * @property {string|null} lastRunId - Identifier for last run
  * @property {number|null} lastRunTimestamp - Timestamp of last run
  * @property {TrackedOrder[]} orders - List of tracked orders
+ * @property {string|null} [lastConsolidationId] - Identifier for last consolidation run
+ * @property {number|null} [lastConsolidationTimestamp] - Timestamp of last consolidation
  */
 
 /**

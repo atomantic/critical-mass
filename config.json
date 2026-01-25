@@ -11,21 +11,38 @@
       "holdbackPercent": 5,
       "minOrderSize": 1,
       "maxBuyPrice": 250000,
-      "consolidateAfterOrders": 0
+      "consolidateAfterOrders": 0,
+      "consolidateInterval": "never"
     },
     "gemini": {
-      "enabled": false,
+      "enabled": true,
       "dryRun": false,
       "productId": "BTCUSD",
       "totalAllocation": 5000,
-      "intervalsToSpread": 5000,
-      "intervalType": "5min",
+      "intervalsToSpread": 50,
+      "intervalType": "daily",
       "sellMarkupPercent": 8,
       "holdbackPercent": 4,
       "minOrderSize": 1,
       "maxBuyPrice": 150000,
       "schedulerInterval": 30000,
-      "consolidateAfterOrders": 0
+      "consolidateAfterOrders": 25,
+      "consolidateInterval": "never"
+    },
+    "cryptocom": {
+      "enabled": true,
+      "dryRun": false,
+      "productId": "CRO_USD",
+      "totalAllocation": 5000,
+      "intervalsToSpread": 100,
+      "intervalType": "1hour",
+      "sellMarkupPercent": 10,
+      "holdbackPercent": 5,
+      "minOrderSize": 1,
+      "maxBuyPrice": 0.5,
+      "consolidateAfterOrders": 25,
+      "consolidateInterval": "never",
+      "schedulerInterval": 30000
     }
   },
   "global": {

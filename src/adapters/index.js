@@ -11,6 +11,7 @@ const { validateAdapter } = require('./base-adapter');
 const adapters = {
   coinbase: null,
   gemini: null,
+  cryptocom: null,
 };
 
 /**
@@ -29,8 +30,11 @@ const loadAdapterModule = (exchange) => {
       case 'gemini':
         adapters.gemini = require('./gemini');
         break;
+      case 'cryptocom':
+        adapters.cryptocom = require('./cryptocom');
+        break;
       default:
-        throw new Error(`Unknown exchange: ${exchange}. Supported: coinbase, gemini`);
+        throw new Error(`Unknown exchange: ${exchange}. Supported: coinbase, gemini, cryptocom`);
     }
   }
 
@@ -57,7 +61,7 @@ const createAdapter = (exchange, options = {}) => {
  * Get list of supported exchanges
  * @returns {Array<string>} List of exchange names
  */
-const getSupportedExchanges = () => ['coinbase', 'gemini'];
+const getSupportedExchanges = () => ['coinbase', 'gemini', 'cryptocom'];
 
 /**
  * Check if an exchange is supported

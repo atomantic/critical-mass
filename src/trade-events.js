@@ -61,15 +61,15 @@ class TradeEventEmitter extends EventEmitter {
   }
 
   buyPlaced(exchange, orderId, btcAmount, price) {
-    this.emitTradeEvent('buy_placed', exchange, `Buy order placed: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)}`, { orderId, btcAmount, price });
+    this.emitTradeEvent('buy_placed', exchange, `Buy order placed: ${btcAmount.toFixed(8)} @ $${price.toFixed(2)}`, { orderId, btcAmount, price });
   }
 
   buyFilled(exchange, btcAmount, price, fees) {
-    this.emitTradeEvent('buy_filled', exchange, `Buy filled: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (fees: $${fees.toFixed(4)})`, { btcAmount, price, fees });
+    this.emitTradeEvent('buy_filled', exchange, `Buy filled: ${btcAmount.toFixed(8)} @ $${price.toFixed(2)} (fees: $${fees.toFixed(4)})`, { btcAmount, price, fees });
   }
 
   sellPlaced(exchange, orderId, btcAmount, price) {
-    this.emitTradeEvent('sell_placed', exchange, `Sell order placed: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)}`, { orderId, btcAmount, price });
+    this.emitTradeEvent('sell_placed', exchange, `Sell order placed: ${btcAmount.toFixed(8)} @ $${price.toFixed(2)}`, { orderId, btcAmount, price });
   }
 
   cycleComplete(exchange, status, summary) {

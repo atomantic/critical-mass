@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Bar } from 'recharts'
+import { formatCurrency, formatPrice, formatPriceCompact } from './charts/chartUtils'
 
 const INTERVAL_OPTIONS = [
   { value: '1min', label: '1 min' },
@@ -86,25 +87,58 @@ const DEFAULT_PARAMS = {
   rebatePercent: 0.031,
   intervals: 144,  // 1 day of 10-min intervals
   intervalType: '10min',
-  fundSize: 10000
+  fundSize: 10000,
+  productId: null  // Will be loaded from config
 }
 
-function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
+// Extract base and quote currencies from productId
+const parseProductId = (productId) => {
+  if (!productId) return { baseCurrency: 'BTC', quoteCurrency: 'USD' }
+  // Handle both BTC-USDC and BTC_USDT formats
+  const parts = productId.replace('_', '-').split('-')
+  return {
+    baseCurrency: parts[0] || 'BTC',
+    quoteCurrency: parts[1] || 'USD'
+  }
+}
+
+function Backtest({ summary, exchange = 'coinbase', quoteCurrency: defaultQuoteCurrency = 'USDC' }) {
   const [params, setParams] = useState(DEFAULT_PARAMS)
   const [selectedPeriod, setSelectedPeriod] = useState('1D')
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
+  const [configLoaded, setConfigLoaded] = useState(false)
 
-  const formatUSD = (n) => `$${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-  const formatBTC = (n) => (n || 0).toFixed(8)
+  // Parse the productId for display
+  const { baseCurrency, quoteCurrency } = params.productId
+    ? parseProductId(params.productId)
+    : parseProductId(summary?.config?.productId)
+
+  // Auto-load config when exchange or summary changes
+  useEffect(() => {
+    if (summary?.config && !configLoaded) {
+      loadFromConfig()
+      setConfigLoaded(true)
+    }
+  }, [summary?.config])
+
+  // Reset configLoaded when exchange changes
+  useEffect(() => {
+    setConfigLoaded(false)
+    setResults(null)
+  }, [exchange])
+
+  // formatCurrency for balances/totals (fixed 2 decimals)
+  // formatPrice for prices (smart decimals based on magnitude)
+  const formatBase = (n) => (n || 0).toFixed(8)
   const formatPercent = (n) => `${(n || 0).toFixed(2)}%`
 
   const runBacktest = async () => {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/backtest/run', {
+      const res = await fetch(`/api/${exchange}/backtest/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params)
@@ -153,14 +187,18 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
       rebatePercent: 0.031,
       intervals: periods[periods.length > 2 ? 2 : periods.length - 1].intervals,
       intervalType,
-      fundSize: config.totalAllocation || 0
+      fundSize: config.totalAllocation || 0,
+      productId: config.productId || null
     })
     setSelectedPeriod(periods[periods.length > 2 ? 2 : periods.length - 1].label)
   }
 
   const resetToDefaults = () => {
-    setParams(DEFAULT_PARAMS)
-    setSelectedPeriod('1Y')
+    setParams({
+      ...DEFAULT_PARAMS,
+      productId: summary?.config?.productId || null
+    })
+    setSelectedPeriod('1D')
   }
 
   // Prepare chart data (sample for performance)
@@ -315,23 +353,23 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
           {/* Summary Cards */}
           <div className="bg-gray-800 rounded-lg p-4">
             <h3 className="text-lg font-semibold mb-4">
-              Results: {results.params.intervals} {results.params.intervalType} intervals ({results.metrics.startDate?.split('T')[0]} to {results.metrics.endDate?.split('T')[0]})
+              {results.params.productId || baseCurrency + '/' + quoteCurrency}: {results.params.intervals} {results.params.intervalType} intervals ({results.metrics.startDate?.split('T')[0]} to {results.metrics.endDate?.split('T')[0]})
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-gray-700/50 rounded p-3">
                 <div className="text-sm text-gray-400">
                   {results.metrics.fundSize ? 'Initial Capital' : 'Total Invested'}
                 </div>
-                <div className="text-xl font-bold text-blue-400">{formatUSD(results.metrics.roiBasis)}</div>
+                <div className="text-xl font-bold text-blue-400">{formatCurrency(results.metrics.roiBasis)}</div>
                 {results.metrics.fundSize && (
                   <div className="text-xs text-gray-500 mt-1">
-                    Recycled: {formatUSD(results.metrics.totalInvested)}
+                    Recycled: {formatCurrency(results.metrics.totalInvested)}
                   </div>
                 )}
               </div>
               <div className="bg-gray-700/50 rounded p-3">
                 <div className="text-sm text-gray-400">Final Portfolio Value</div>
-                <div className="text-xl font-bold text-green-400">{formatUSD(results.metrics.totalValue)}</div>
+                <div className="text-xl font-bold text-green-400">{formatCurrency(results.metrics.totalValue)}</div>
               </div>
               <div className="bg-gray-700/50 rounded p-3">
                 <div className="text-sm text-gray-400">ROI</div>
@@ -343,7 +381,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                 <div className="text-sm text-gray-400">Profit/Loss</div>
                 <div className={`text-xl font-bold ${results.metrics.totalValue - results.metrics.roiBasis >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                   {results.metrics.totalValue - results.metrics.roiBasis >= 0 ? '+' : ''}
-                  {formatUSD(results.metrics.totalValue - results.metrics.roiBasis)}
+                  {formatCurrency(results.metrics.totalValue - results.metrics.roiBasis)}
                 </div>
               </div>
             </div>
@@ -359,23 +397,23 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                   <span className="text-gray-400">
                     {results.metrics.fundSize ? `${quoteCurrency} (available funds)` : `${quoteCurrency} (from sells)`}
                   </span>
-                  <span className="text-green-400">{formatUSD(results.metrics.finalUSDC)}</span>
+                  <span className="text-green-400">{formatCurrency(results.metrics.finalUSDC)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">BTC Reserves (holdback)</span>
-                  <span className="text-yellow-400">{formatBTC(results.metrics.btcReserves)} BTC</span>
+                  <span className="text-gray-400">{baseCurrency} Reserves (holdback)</span>
+                  <span className="text-yellow-400">{formatBase(results.metrics.btcReserves)} {baseCurrency}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">BTC on Orders (pending)</span>
-                  <span className="text-purple-400">{formatBTC(results.metrics.btcOnOrders)} BTC</span>
+                  <span className="text-gray-400">{baseCurrency} on Orders (pending)</span>
+                  <span className="text-purple-400">{formatBase(results.metrics.btcOnOrders)} {baseCurrency}</span>
                 </div>
                 <div className="flex justify-between border-t border-gray-700 pt-2">
-                  <span className="text-gray-400">Total BTC</span>
-                  <span className="text-white">{formatBTC(results.metrics.totalBTC)} BTC</span>
+                  <span className="text-gray-400">Total {baseCurrency}</span>
+                  <span className="text-white">{formatBase(results.metrics.totalBTC)} {baseCurrency}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">BTC Value @ {formatUSD(results.metrics.endPrice)}</span>
-                  <span className="text-white">{formatUSD(results.metrics.btcValue)}</span>
+                  <span className="text-gray-400">{baseCurrency} Value @ {formatPrice(results.metrics.endPrice)}</span>
+                  <span className="text-white">{formatCurrency(results.metrics.btcValue)}</span>
                 </div>
               </div>
             </div>
@@ -402,11 +440,11 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                   <>
                     <div className="flex justify-between border-t border-gray-700 pt-2">
                       <span className="text-gray-400">Initial Fund</span>
-                      <span className="text-blue-400">{formatUSD(results.metrics.fundSize)}</span>
+                      <span className="text-blue-400">{formatCurrency(results.metrics.fundSize)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400">Final Available</span>
-                      <span className="text-blue-300">{formatUSD(results.metrics.finalAvailableFunds)}</span>
+                      <span className="text-blue-300">{formatCurrency(results.metrics.finalAvailableFunds)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400">Intervals Skipped (no funds)</span>
@@ -422,15 +460,15 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                 )}
                 <div className="flex justify-between border-t border-gray-700 pt-2">
                   <span className="text-gray-400">Total Fees</span>
-                  <span className="text-red-400">{formatUSD(results.metrics.totalFees)}</span>
+                  <span className="text-red-400">{formatCurrency(results.metrics.totalFees)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">Total Rebates</span>
-                  <span className="text-green-400">{formatUSD(results.metrics.totalRebates)}</span>
+                  <span className="text-green-400">{formatCurrency(results.metrics.totalRebates)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">Net Fees</span>
-                  <span className="text-orange-400">{formatUSD(results.metrics.netFees)}</span>
+                  <span className="text-orange-400">{formatCurrency(results.metrics.netFees)}</span>
                 </div>
               </div>
             </div>
@@ -442,11 +480,11 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
               <div>
                 <span className="text-gray-400">Start Price:</span>
-                <span className="ml-2">{formatUSD(results.metrics.startPrice)}</span>
+                <span className="ml-2">{formatPrice(results.metrics.startPrice)}</span>
               </div>
               <div>
                 <span className="text-gray-400">End Price:</span>
-                <span className="ml-2">{formatUSD(results.metrics.endPrice)}</span>
+                <span className="ml-2">{formatPrice(results.metrics.endPrice)}</span>
               </div>
               <div>
                 <span className="text-gray-400">Price Change:</span>
@@ -457,7 +495,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
               <div>
                 <span className="text-gray-400">If HODL Only:</span>
                 <span className="ml-2 text-gray-300">
-                  {formatUSD(results.metrics.roiBasis * (results.metrics.endPrice / results.metrics.startPrice))}
+                  {formatCurrency(results.metrics.roiBasis * (results.metrics.endPrice / results.metrics.startPrice))}
                 </span>
               </div>
             </div>
@@ -490,8 +528,8 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                   <Tooltip
                     contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
                     formatter={(value, name) => {
-                      if (name === 'btcPrice') return [formatUSD(value), 'BTC Price']
-                      return [formatUSD(value), name]
+                      if (name === 'basePrice') return [formatPrice(value), `${baseCurrency} Price`]
+                      return [formatCurrency(value), name]
                     }}
                     labelFormatter={(label) => `Date: ${label}`}
                   />
@@ -510,7 +548,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                     yAxisId="usd"
                     type="monotone"
                     dataKey="btcValue"
-                    name="BTC Value"
+                    name={`${baseCurrency} Value`}
                     stackId="portfolio"
                     fill="#F59E0B"
                     fillOpacity={0.6}
@@ -529,7 +567,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                     yAxisId="btc"
                     type="monotone"
                     dataKey="btcPrice"
-                    name="btcPrice"
+                    name="basePrice"
                     stroke="#F59E0B"
                     strokeWidth={1}
                     strokeDasharray="5 5"
@@ -551,7 +589,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                       <th className="pb-2">Buy Date</th>
                       <th className="pb-2">Buy Price</th>
                       <th className="pb-2">Target Price</th>
-                      <th className="pb-2">BTC Amount</th>
+                      <th className="pb-2">{baseCurrency} Amount</th>
                       <th className="pb-2">Current Value</th>
                       <th className="pb-2">Unrealized P&L</th>
                     </tr>
@@ -560,12 +598,12 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
                     {results.pendingOrders.slice(0, 20).map((order, i) => (
                       <tr key={i} className="border-t border-gray-700">
                         <td className="py-2">{order.buyDate}</td>
-                        <td className="py-2">{formatUSD(order.buyPrice)}</td>
-                        <td className="py-2">{formatUSD(order.sellTargetPrice)}</td>
-                        <td className="py-2 font-mono">{formatBTC(order.sellBTC)}</td>
-                        <td className="py-2">{formatUSD(order.currentValue)}</td>
+                        <td className="py-2">{formatPrice(order.buyPrice)}</td>
+                        <td className="py-2">{formatPrice(order.sellTargetPrice)}</td>
+                        <td className="py-2 font-mono">{formatBase(order.sellBTC)}</td>
+                        <td className="py-2">{formatCurrency(order.currentValue)}</td>
                         <td className={`py-2 ${order.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {order.unrealizedPnL >= 0 ? '+' : ''}{formatUSD(order.unrealizedPnL)}
+                          {order.unrealizedPnL >= 0 ? '+' : ''}{formatCurrency(order.unrealizedPnL)}
                         </td>
                       </tr>
                     ))}
@@ -585,15 +623,17 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency = 'USDC' }) {
       {/* Instructions */}
       {!results && !loading && (
         <div className="bg-gray-800/50 rounded-lg p-4 text-gray-400">
-          <h4 className="font-semibold text-gray-300 mb-2">How Backtesting Works</h4>
+          <h4 className="font-semibold text-gray-300 mb-2">
+            Backtesting {params.productId || summary?.config?.productId || 'BTC-USD'}
+          </h4>
           <ul className="list-disc list-inside space-y-1 text-sm">
-            <li>Simulates buying a fixed USD amount of BTC every interval at the <strong>mid price</strong> (avg of high/low)</li>
+            <li>Simulates buying a fixed {quoteCurrency} amount of {baseCurrency} every interval at the <strong>mid price</strong> (avg of high/low)</li>
             <li>Posts a sell order at +{params.sellMarkupPercent}% for {100 - params.holdbackPercent}% of each purchase</li>
-            <li>Keeps {params.holdbackPercent}% of each purchase as BTC reserves (never sold)</li>
+            <li>Keeps {params.holdbackPercent}% of each purchase as {baseCurrency} reserves (never sold)</li>
             <li>Sell orders fill when the interval HIGH price reaches the target</li>
             <li>Fees ({params.feePercent}%) and rebates ({params.rebatePercent}%) applied to both buys and sells</li>
             <li><strong>Fund Size:</strong> Set to 0 for unlimited funds, or set a fixed amount - when depleted, buying pauses until sells fill</li>
-            <li>Historical price data from Coinbase Advanced Trade API (cached per interval type)</li>
+            <li>Historical price data from {exchange} API (cached per trading pair)</li>
           </ul>
         </div>
       )}

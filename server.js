@@ -51,7 +51,14 @@ const DATA_DIR = path.join(__dirname, 'data');
 // Helper to read JSON file
 const readJSON = (filepath, defaultValue = {}) => {
   if (!fs.existsSync(filepath)) return defaultValue;
-  return JSON.parse(fs.readFileSync(filepath, 'utf8'));
+  const content = fs.readFileSync(filepath, 'utf8');
+  if (!content || content.trim() === '') return defaultValue;
+  try {
+    return JSON.parse(content);
+  } catch (err) {
+    console.error(`Error parsing JSON from ${filepath}:`, err.message);
+    return defaultValue;
+  }
 };
 
 // Helper to write JSON file
@@ -559,7 +566,20 @@ app.post('/api/:exchange/test-connection', async (req, res) => {
   const { getAdapter } = require('./src/adapters');
 
   const adapter = getAdapter(exchange);
-  const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
+
+  // Get quote currency from config based on productId
+  // loadConfig(exchange) returns exchange-specific config directly
+  const exchangeConfig = loadConfig(exchange);
+  const productId = exchangeConfig.productId || '';
+
+  // Extract quote currency from productId (e.g., BTC-USDC -> USDC, BTC_USDT -> USDT)
+  const parts = productId.replace('_', '-').split('-');
+  let quoteCurrency = parts[1] || 'USD';
+
+  // Handle Gemini special case (USDC -> USD)
+  if (exchange === 'gemini' && quoteCurrency === 'USDC') {
+    quoteCurrency = 'USD';
+  }
 
   // Check if keys are configured
   if (!adapter.hasValidKeys || !adapter.hasValidKeys()) {
@@ -753,15 +773,23 @@ app.get('/api/trade', (req, res) => {
 
 // ============ Backtest API ============
 
-app.get('/api/backtest/prices', async (req, res) => {
+app.get('/api/:exchange/backtest/prices', async (req, res) => {
+  const { exchange } = req.params;
   const intervals = parseInt(req.query.intervals) || 365;
   const intervalType = req.query.intervalType || 'daily';
 
-  const prices = await backtestEngine.getPriceData(intervals, intervalType);
-  res.json({ success: true, count: prices.length, intervalType, prices });
+  const prices = await backtestEngine.getPriceData(intervals, intervalType, exchange);
+  res.json({ success: true, count: prices.length, intervalType, exchange, prices });
 });
 
-app.post('/api/backtest/run', async (req, res) => {
+app.post('/api/:exchange/backtest/run', async (req, res) => {
+  const { exchange } = req.params;
+
+  // Get productId from request or fall back to config
+  // loadConfig(exchange) returns exchange-specific config directly
+  const exchangeConfig = loadConfig(exchange);
+  const configProductId = exchangeConfig.productId || null;
+
   const {
     intervalBuyAmount = 500,
     sellMarkupPercent = 10,
@@ -770,12 +798,13 @@ app.post('/api/backtest/run', async (req, res) => {
     rebatePercent = 0.031,
     intervals = 365,
     intervalType = 'daily',
-    fundSize = 0
+    fundSize = 0,
+    productId = configProductId
   } = req.body;
 
   const fundInfo = fundSize > 0 ? `, $${fundSize} fund` : ', unlimited funds';
   const intervalLabel = formatInterval(intervalType);
-  log('INFO', `Running backtest: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`);
+  log('INFO', `[${exchange}] Running backtest for ${productId}: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`);
 
   const results = await backtestEngine.runBacktest({
     intervalBuyAmount,
@@ -785,10 +814,12 @@ app.post('/api/backtest/run', async (req, res) => {
     rebatePercent,
     intervals,
     intervalType,
-    fundSize
+    fundSize,
+    exchange,
+    productId
   });
 
-  log('INFO', `Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`);
+  log('INFO', `[${exchange}] Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`);
   res.json({ success: true, ...results });
 });
 
@@ -823,24 +854,56 @@ let currentBestResult = null;
 
 app.post('/api/:exchange/optimizer/run', (req, res) => {
   const { exchange } = req.params;
-  const { fundSize = 10000, forceRefresh = false } = req.body;
+
+  // Get productId from config - loadConfig(exchange) returns exchange-specific config directly
+  const exchangeConfig = loadConfig(exchange);
+  const configProductId = exchangeConfig.productId || null;
+
+  const {
+    fundSize = 10000,
+    forceRefresh = false,
+    productId = configProductId,
+    intervals = null,  // Custom intervals to test (null = use defaults)
+    markups = null,    // Custom markups to test (null = use defaults)
+    periods = null,    // Custom periods to test (null = use defaults)
+    buyAmounts = null  // Custom buy amounts per interval (null = use defaults)
+  } = req.body;
   const cacheFile = getOptimizerCacheFile(exchange);
+
+  // Create a config key for cache validation (includes selected options)
+  const configKey = JSON.stringify({ intervals, markups, periods });
 
   if (!forceRefresh) {
     const cache = readJSON(cacheFile, null);
-    if (cache && cache.fundSize === fundSize) {
-      log('INFO', `[${exchange}] Returning cached optimizer results for fund size: $${fundSize}`);
+    // Check cache matches fundSize, productId, and config options
+    const cacheConfigKey = JSON.stringify({
+      intervals: cache?.config?.intervals,
+      markups: cache?.config?.markups,
+      periods: cache?.config?.periods
+    });
+    if (cache && cache.fundSize === fundSize && cache.productId === productId && configKey === cacheConfigKey) {
+      log('INFO', `[${exchange}] Returning cached optimizer results for ${productId}, fund size: $${fundSize}`);
       res.json({ success: true, cached: true, ...cache });
       return;
     }
   }
 
-  log('INFO', `[${exchange}] Running optimizer with fund size: $${fundSize}`);
+  const totalTests = (intervals?.length || 6) * (markups?.length || 9) * (periods?.length || 4);
+  log('INFO', `[${exchange}] Running optimizer for ${productId} with fund size: $${fundSize} (${totalTests} combinations)`);
   currentBestResult = null;
+
+  // Respond immediately - results will come via WebSocket
+  res.json({ success: true, streaming: true, message: 'Optimizer started, results will stream via WebSocket' });
 
   optimizerEngine.runOptimizer({
     fundSize,
     exchange,
+    forceRefresh,
+    productId,
+    intervals,
+    markups,
+    periods,
+    buyAmounts,
     onProgress: (progress) => {
       io.emit('optimizer:progress', progress);
 
@@ -866,6 +929,7 @@ app.post('/api/:exchange/optimizer/run', (req, res) => {
         cached: false,
         cachedAt: new Date().toISOString(),
         fundSize,
+        productId: result.productId,
         totalCombinations: result.totalCombinations,
         duration: result.duration,
         bestResult: result.bestResult,
@@ -877,12 +941,11 @@ app.post('/api/:exchange/optimizer/run', (req, res) => {
       log('INFO', `[${exchange}] Optimizer results cached`);
 
       io.emit('optimizer:complete', response);
-      res.json(response);
     })
     .catch(err => {
       log('ERROR', `[${exchange}] Optimizer failed: ${err.message}`);
       io.emit('optimizer:error', { error: err.message });
-      res.status(500).json({ success: false, error: err.message });
+      // Don't try to send response here - we already responded with streaming: true
     });
 });
 

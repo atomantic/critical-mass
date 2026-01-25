@@ -7,7 +7,7 @@ const orderManager = require('./order-manager');
 const logger = require('./logger');
 const { consolidatePendingOrders } = require('./order-manager');
 const { getExchangeConfig, getEnabledExchanges } = require('./config-utils');
-const { normalizeConfig, formatInterval } = require('./interval-utils');
+const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
 
 /**
@@ -26,6 +26,55 @@ const { tradeEvents } = require('./trade-events');
  * @returns {ExchangeConfig} Configuration
  */
 const loadConfig = (exchange = 'coinbase') => getExchangeConfig(exchange);
+
+/**
+ * Extract quote currency from product ID
+ * @param {string} productId - Product ID (e.g., 'BTC-USDC', 'BTCUSD', 'CRO_USD')
+ * @returns {string} Quote currency (e.g., 'USDC', 'USD')
+ */
+const getQuoteCurrency = (productId) => {
+  if (!productId) return 'USD';
+  // Handle different formats:
+  // Coinbase: BTC-USDC -> USDC
+  // Gemini: BTCUSD -> USD
+  // Crypto.com: CRO_USD -> USD
+  if (productId.includes('-')) {
+    return productId.split('-')[1];
+  }
+  if (productId.includes('_')) {
+    return productId.split('_')[1];
+  }
+  // Gemini format: BTCUSD - extract last 3 chars (USD) or 4 (USDC, USDT)
+  const upper = productId.toUpperCase();
+  if (upper.endsWith('USDC')) return 'USDC';
+  if (upper.endsWith('USDT')) return 'USDT';
+  if (upper.endsWith('USD')) return 'USD';
+  return 'USD'; // Default fallback
+};
+
+/**
+ * Extract base currency from product ID
+ * @param {string} productId - Product ID (e.g., 'BTC-USDC', 'BTCUSD', 'CRO_USD')
+ * @returns {string} Base currency (e.g., 'BTC', 'CRO')
+ */
+const getBaseCurrency = (productId) => {
+  if (!productId) return 'BTC';
+  // Handle different formats:
+  // Coinbase: BTC-USDC -> BTC
+  // Crypto.com: CRO_USD -> CRO
+  if (productId.includes('-')) {
+    return productId.split('-')[0];
+  }
+  if (productId.includes('_')) {
+    return productId.split('_')[0];
+  }
+  // Gemini format: BTCUSD - extract base by removing known quote suffixes
+  const upper = productId.toUpperCase();
+  if (upper.endsWith('USDC')) return upper.slice(0, -4);
+  if (upper.endsWith('USDT')) return upper.slice(0, -4);
+  if (upper.endsWith('USD')) return upper.slice(0, -3);
+  return upper; // Return as-is if no pattern matches
+};
 
 /**
  * Sync order statuses and update state for filled orders
@@ -49,7 +98,7 @@ const syncOrderStatuses = async (state, exchange = 'coinbase') => {
   for (const filled of filledOrders) {
     stateTracker.updateAfterSellFill(state, filled);
     logger.logSellFilled(filled, state, exchange);
-    logger.log('INFO', `[${exchange}] Sell order filled: +${filled.fillValue.toFixed(2)} USDC`);
+    logger.log('INFO', `[${exchange}] Sell order filled: +${filled.fillValue.toFixed(2)}`);
     tradeEvents.orderFilled(exchange, filled.orderId, filled.fillValue);
   }
 
@@ -100,6 +149,12 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
       result.consolidatedPrice,
       result.consolidatedBTC
     );
+
+    // Track consolidation run for interval-based scheduling
+    if (config.consolidateInterval && config.consolidateInterval !== 'never') {
+      state.lastConsolidationId = getConsolidationRunId(config.consolidateInterval);
+      state.lastConsolidationTimestamp = Date.now();
+    }
 
     // Save state
     stateTracker.saveState(state, exchange);
@@ -191,8 +246,8 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   }
 
   // Check balance and determine actual buy amount
-  // Map currency based on exchange
-  const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
+  // Extract quote currency from product ID (e.g., BTC-USDC -> USDC, CRO_USD -> USD)
+  const quoteCurrency = getQuoteCurrency(config.productId);
   const balance = await adapter.getAccountBalance(quoteCurrency);
   logger.log('INFO', `[${exchange}] ${quoteCurrency} balance: ${balance.available.toFixed(2)} available, ${balance.hold.toFixed(2)} on hold`);
   tradeEvents.balanceCheck(exchange, quoteCurrency, balance.available);
@@ -256,8 +311,9 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       status: 'SIMULATED',
     };
 
-    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated buy: ${buyResult.btcAmount.toFixed(8)} BTC at ${buyResult.price.toFixed(2)}`);
-    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} BTC at ${sellOrder.limitPrice.toFixed(2)}`);
+    const baseCcy = getBaseCurrency(config.productId);
+    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated buy: ${buyResult.btcAmount.toFixed(8)} ${baseCcy} at ${buyResult.price.toFixed(2)}`);
+    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} ${baseCcy} at ${sellOrder.limitPrice.toFixed(2)}`);
 
     // Emit events for dry run
     tradeEvents.buyFilled(exchange, buyResult.btcAmount, buyResult.price, buyResult.fees);
@@ -282,12 +338,13 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   stateTracker.saveState(state, exchange);
 
   const holdbackBTC = buyResult.btcAmount * (config.holdbackPercent / 100);
+  const baseCurrency = getBaseCurrency(config.productId);
 
   logger.log('INFO', `[${exchange}] ${modeLabel}=== ${intervalLabel} Cycle Complete ===`);
-  logger.log('INFO', `[${exchange}] ${modeLabel}Bought: ${buyResult.btcAmount.toFixed(8)} BTC at ${buyResult.price.toFixed(2)}`);
-  logger.log('INFO', `[${exchange}] ${modeLabel}Sell order: ${sellOrder.baseSize.toFixed(8)} BTC at ${sellOrder.limitPrice.toFixed(2)}`);
-  logger.log('INFO', `[${exchange}] ${modeLabel}Holdback (reserves): ${holdbackBTC.toFixed(8)} BTC`);
-  logger.log('INFO', `[${exchange}] ${modeLabel}Total BTC reserves: ${state.btcReserves.toFixed(8)} BTC`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Bought: ${buyResult.btcAmount.toFixed(8)} ${baseCurrency} at ${buyResult.price.toFixed(2)}`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Sell order: ${sellOrder.baseSize.toFixed(8)} ${baseCurrency} at ${sellOrder.limitPrice.toFixed(2)}`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Holdback (reserves): ${holdbackBTC.toFixed(8)} ${baseCurrency}`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Total ${baseCurrency} reserves: ${state.btcReserves.toFixed(8)} ${baseCurrency}`);
   logger.log('INFO', `[${exchange}] ${modeLabel}Outstanding sell orders: ${state.outstandingOrdersUSDC.toFixed(2)}`);
 
   // Emit cycle complete event
@@ -301,10 +358,17 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   });
 
   // Check if auto-consolidation is needed (only for non-dry-run)
-  if (!isDryRun && config.consolidateAfterOrders > 0) {
+  if (!isDryRun) {
     const pendingCount = stateTracker.getPendingOrders(state).length;
-    if (pendingCount > config.consolidateAfterOrders) {
+
+    // Threshold-based consolidation
+    if (config.consolidateAfterOrders > 0 && pendingCount > config.consolidateAfterOrders) {
       logger.log('INFO', `[${exchange}] Auto-consolidation triggered: ${pendingCount} orders > ${config.consolidateAfterOrders} threshold`);
+      await executeConsolidation(exchange);
+    }
+    // Interval-based consolidation (only if threshold didn't trigger and we have 2+ orders)
+    else if (pendingCount >= 2 && shouldRunConsolidation(state.lastConsolidationId, config.consolidateInterval)) {
+      logger.log('INFO', `[${exchange}] Scheduled consolidation triggered: ${config.consolidateInterval} interval`);
       await executeConsolidation(exchange);
     }
   }
@@ -404,4 +468,6 @@ module.exports = {
   syncOrderStatuses,
   loadConfig,
   executeConsolidation,
+  getQuoteCurrency,
+  getBaseCurrency,
 };
