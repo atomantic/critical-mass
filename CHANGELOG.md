@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.1] - 2026-01-31
+
+### Fixed
+- Hardcoded "BTC" in order consolidation logs now dynamically uses actual trading pair currency (e.g., CRO)
+
 ## [2.2.0] - 2025-01-31
 
 ### Fixed

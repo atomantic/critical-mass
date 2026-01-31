@@ -102,7 +102,8 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
   // Calculate sell price (plus markup)
   const sellPrice = buyDetails.price * (1 + config.sellMarkupPercent / 100);
 
-  log('INFO', `Placing post-only sell for ${sellQuantity} BTC at ${sellPrice}`);
+  const baseCurrency = config.productId.split(/[-_]/)[0];
+  log('INFO', `Placing post-only sell for ${sellQuantity} ${baseCurrency} at ${sellPrice}`);
 
   const sellResult = await adapter.placeLimitSell(config.productId, sellQuantity, sellPrice);
 
@@ -246,8 +247,9 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   const totalBTC = eligibleOrders.reduce((sum, o) => sum + o.sellQuantityBTC, 0);
   const weightedPriceSum = eligibleOrders.reduce((sum, o) => sum + (o.sellQuantityBTC * o.sellPrice), 0);
   const consolidatedPrice = weightedPriceSum / totalBTC;
+  const baseCurrency = config.productId.split(/[-_]/)[0];
 
-  log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalBTC.toFixed(8)} BTC @ ${consolidatedPrice.toFixed(2)}`);
+  log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalBTC.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
 
   // Step 3: Cancel all eligible orders
   log('INFO', `Cancelling ${eligibleOrders.length} orders...`);
@@ -266,7 +268,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   }
 
   // Step 4: Place new consolidated order
-  log('INFO', `Placing consolidated sell order: ${totalBTC.toFixed(8)} BTC @ ${consolidatedPrice.toFixed(2)}`);
+  log('INFO', `Placing consolidated sell order: ${totalBTC.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
   const sellResult = await adapter.placeLimitSell(config.productId, totalBTC, consolidatedPrice);
 
   if (!sellResult.success) {
