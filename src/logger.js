@@ -44,7 +44,7 @@ const HEADERS = [
 ];
 
 /**
- * Ensure log file exists with headers
+ * Ensure log file exists with headers, migrate old schema if needed
  * @param {string} [exchange] - Exchange name
  * @returns {void}
  */
@@ -58,6 +58,29 @@ const ensureLogFile = (exchange = 'coinbase') => {
 
   if (!fs.existsSync(logFile)) {
     fs.writeFileSync(logFile, HEADERS.join('\t') + '\n');
+    return;
+  }
+
+  // Check if migration is needed (old schema missing Timestamp column)
+  const content = fs.readFileSync(logFile, 'utf8');
+  const lines = content.split('\n');
+  const existingHeaders = lines[0].split('\t');
+
+  if (existingHeaders[0] !== 'Timestamp' && existingHeaders[0] === 'Date') {
+    // Migrate: add Timestamp column to headers and blank values to existing rows
+    const expectedColumnCount = existingHeaders.length;
+    const newLines = lines.map((line, i) => {
+      if (i === 0) {
+        return 'Timestamp\t' + line;
+      }
+      if (line.trim() === '') return line;
+      // Validate row has expected column count before prepending
+      const columns = line.split('\t');
+      if (columns.length !== expectedColumnCount) return line;
+      // For existing data rows, add empty Timestamp (we don't have that info)
+      return '\t' + line;
+    });
+    fs.writeFileSync(logFile, newLines.join('\n'));
   }
 };
 

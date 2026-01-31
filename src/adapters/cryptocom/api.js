@@ -23,6 +23,19 @@ const { createBaseAdapter } = require('../base-adapter');
 const REST_BASE_URL = 'https://api.crypto.com/exchange/v1';
 
 /**
+ * Custom JSON parser that converts large integers to strings to avoid precision loss.
+ * Order IDs from Crypto.com exceed JavaScript's MAX_SAFE_INTEGER (9007199254740991).
+ * @param {string} data - Raw JSON string
+ * @returns {any} Parsed object with large integers preserved as strings
+ */
+const safeParseBigInt = (data) => {
+  // Match integers larger than MAX_SAFE_INTEGER and wrap them in quotes
+  // This regex finds standalone integers (not already in quotes) that are 16+ digits
+  const processed = data.replace(/:(\s*)(\d{16,})(\s*[,}\]])/g, ':$1"$2"$3');
+  return JSON.parse(processed);
+};
+
+/**
  * Create a Crypto.com adapter instance
  * @param {string|null} [keysPath] - Path to keys file (defaults to data/cryptocom-keys.json)
  * @returns {ExchangeAdapter} Crypto.com adapter with all required methods
@@ -86,6 +99,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       headers: {
         'Content-Type': 'application/json',
       },
+      transformResponse: [safeParseBigInt],
     }).catch(err => {
       // Log the full error for debugging
       const errData = err.response?.data;
@@ -119,6 +133,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       headers: {
         'Content-Type': 'application/json',
       },
+      transformResponse: [safeParseBigInt],
     });
 
     if (response.data.code !== 0) {
@@ -344,11 +359,16 @@ const createCryptocomAdapter = (keysPath = null) => {
       order_id: orderId,
     });
 
-    const order = result;
-    const filledQuantity = parseFloat(order.filled_quantity || order.cumulative_quantity || 0);
-    const originalQuantity = parseFloat(order.quantity || 0);
+    // API returns order nested under result.order_info
+    const order = result?.order_info || result;
+    if (!order || typeof order !== 'object') {
+      throw new Error(`No order data returned for order ${orderId}`);
+    }
+
+    const filledQuantity = parseFloat(order.cumulative_quantity || order.filled_quantity || 0);
+    const originalQuantity = parseFloat(order.quantity || order.order_value || 0);
     const avgPrice = parseFloat(order.avg_price || order.filled_price || 0);
-    const filledValue = filledQuantity * avgPrice;
+    const filledValue = parseFloat(order.cumulative_value || 0) || filledQuantity * avgPrice;
 
     // Map status
     let status = 'UNKNOWN';
@@ -372,7 +392,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       filledValue,
       averageFilledPrice: avgPrice,
       completionPercentage: originalQuantity > 0 ? (filledQuantity / originalQuantity) * 100 : 0,
-      totalFees: parseFloat(order.fee || order.total_fee || 0),
+      totalFees: parseFloat(order.cumulative_fee || order.fee || order.total_fee || 0),
       createdTime: order.create_time
         ? new Date(order.create_time).toISOString()
         : new Date().toISOString(),
@@ -398,7 +418,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       productId: order.instrument_name,
       side: (order.side || '').toUpperCase(),
       status: 'OPEN',
-      filledSize: parseFloat(order.filled_quantity || order.cumulative_quantity || 0),
+      filledSize: parseFloat(order.cumulative_quantity || order.filled_quantity || 0),
       createdTime: order.create_time
         ? new Date(order.create_time).toISOString()
         : new Date().toISOString(),

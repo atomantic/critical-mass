@@ -333,6 +333,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 '1min': 60 * 1000,
                 '5min': 5 * 60 * 1000,
                 'hourly': 60 * 60 * 1000,
+                '1hour': 60 * 60 * 1000,
                 'daily': 24 * 60 * 60 * 1000,
                 'weekly': 7 * 24 * 60 * 60 * 1000,
               }[config.intervalType] || 24 * 60 * 60 * 1000

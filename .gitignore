@@ -3,3 +3,4 @@ keys.json
 data/
 logs/
 .DS_Store
+.playwright-mcp
