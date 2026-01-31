@@ -36,6 +36,19 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
 
   // formatCurrency for totals, formatPrice for per-unit prices
   const formatBTC = (n) => (n || 0).toFixed(8)
+  // Show full timestamp if available, otherwise just the date
+  const formatDateTime = (tx) => {
+    // Prefer Timestamp column (full ISO) if available
+    const ts = tx.Timestamp || tx.Date
+    if (!ts) return ''
+    const str = String(ts)
+    // If it has time info (contains T or space with time), format it
+    if (str.includes('T') || /\d{2}:\d{2}:\d{2}/.test(str)) {
+      return new Date(str).toISOString().replace('T', ' ').slice(0, 19)
+    }
+    // Otherwise just return the date as-is (no fake 00:00:00)
+    return str
+  }
 
   const typeColors = {
     BUY: 'text-blue-400',
@@ -97,7 +110,7 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
               ) : (
                 sortedTx.map((tx, i) => (
                   <tr key={i} className="border-t border-gray-700 hover:bg-gray-700/50">
-                    <td className="px-4 py-3">{tx.Date}</td>
+                    <td className="px-4 py-3">{formatDateTime(tx)}</td>
                     <td className={`px-4 py-3 font-medium ${typeColors[tx.Type] || ''}`}>
                       {tx.Type}
                     </td>

@@ -79,7 +79,8 @@ const parseTSV = (filepath) => {
     const record = {};
     headers.forEach((header, i) => {
       const value = values[i] || '';
-      if (header === 'Date') {
+      // Keep date/time columns as strings
+      if (header === 'Date' || header === 'Timestamp') {
         record[header] = value;
       } else {
         const num = parseFloat(value);

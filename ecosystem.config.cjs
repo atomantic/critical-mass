@@ -18,10 +18,12 @@ module.exports = {
       env: {
         NODE_ENV: 'development',
         PORT: PORTS.API,
+        NODE_OPTIONS: '--dns-result-order=ipv4first', // Force IPv4 for API stability (IPv6 rotates)
       },
       env_production: {
         NODE_ENV: 'production',
         PORT: PORTS.API,
+        NODE_OPTIONS: '--dns-result-order=ipv4first',
       },
       watch: false,
       autorestart: true,
