@@ -42,9 +42,11 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
     const ts = tx.Timestamp || tx.Date
     if (!ts) return ''
     const str = String(ts)
-    // If it has time info (contains T or space with time), format it
+    // If it has time info (contains T or space with time), format in local timezone
     if (str.includes('T') || /\d{2}:\d{2}:\d{2}/.test(str)) {
-      return new Date(str).toISOString().replace('T', ' ').slice(0, 19)
+      const d = new Date(str)
+      const pad = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
     }
     // Otherwise just return the date as-is (no fake 00:00:00)
     return str
