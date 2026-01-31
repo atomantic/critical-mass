@@ -31,7 +31,7 @@ const REST_BASE_URL = 'https://api.crypto.com/exchange/v1';
 const safeParseBigInt = (data) => {
   // Match integers larger than MAX_SAFE_INTEGER and wrap them in quotes
   // This regex finds standalone integers (not already in quotes) that are 16+ digits
-  const processed = data.replace(/:(\s*)(\d{16,})(\s*[,}\]])/g, ':"$2"$3');
+  const processed = data.replace(/:(\s*)(\d{16,})(\s*[,}\]])/g, ':$1"$2"$3');
   return JSON.parse(processed);
 };
 
