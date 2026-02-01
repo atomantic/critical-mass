@@ -34,6 +34,8 @@ const DEFAULTS = {
   maxBuyPrice: 500000,
   enabled: false,
   dryRun: true,
+  dcaStrategy: 'fixed',
+  fibBaseAmount: 10,
 };
 
 /**
@@ -248,6 +250,17 @@ const validateExchangeConfig = (config) => {
 
   if (typeof config.maxBuyPrice !== 'number' || config.maxBuyPrice <= 0) {
     errors.push('maxBuyPrice must be a positive number');
+  }
+
+  // Fibonacci strategy validation
+  if (config.dcaStrategy !== undefined && !['fixed', 'fibonacci'].includes(config.dcaStrategy)) {
+    errors.push('dcaStrategy must be "fixed" or "fibonacci"');
+  }
+
+  if (config.dcaStrategy === 'fibonacci') {
+    if (typeof config.fibBaseAmount !== 'number' || config.fibBaseAmount <= 0) {
+      errors.push('fibBaseAmount must be a positive number when using Fibonacci strategy');
+    }
   }
 
   return {

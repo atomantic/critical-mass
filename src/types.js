@@ -44,6 +44,8 @@
  * @property {boolean} dryRun - Whether to simulate trades
  * @property {number} [consolidateAfterOrders] - Auto-consolidate when pending orders exceed this count (0 = disabled)
  * @property {ConsolidateIntervalType} [consolidateInterval] - How often to run interval-based consolidation ('never', 'daily', 'weekly')
+ * @property {'fixed' | 'fibonacci'} [dcaStrategy] - DCA strategy (default: 'fixed')
+ * @property {number} [fibBaseAmount] - Base amount for Fibonacci multiplier (default: 10)
  */
 
 /**
@@ -116,6 +118,11 @@
  * @property {TrackedOrder[]} orders - List of tracked orders
  * @property {string|null} [lastConsolidationId] - Identifier for last consolidation run
  * @property {number|null} [lastConsolidationTimestamp] - Timestamp of last consolidation
+ * @property {number} [fibPosition] - Current Fibonacci sequence position (0-indexed)
+ * @property {number} [fibCycleStartTime] - Timestamp when Fibonacci cycle started
+ * @property {number} [fibCumulativeCost] - Total cost basis for current Fibonacci cycle
+ * @property {number} [fibCumulativeBTC] - Total BTC accumulated in current Fibonacci cycle
+ * @property {string|null} [fibActiveSellOrderId] - Active consolidated sell order ID for Fibonacci cycle
  */
 
 /**
@@ -316,6 +323,35 @@
  */
 
 // ============================================================================
+// Fibonacci Strategy Types
+// ============================================================================
+
+/**
+ * @typedef {Object} FibonacciFillDetails
+ * @property {string} orderId - Order ID
+ * @property {number} filledSize - Amount of BTC filled
+ * @property {number} fillValue - Value of fill in quote currency
+ * @property {number} averageFilledPrice - Average fill price
+ * @property {number} fees - Fees paid
+ * @property {number} rebates - Rebates received
+ * @property {number} netFees - Net fees
+ * @property {number} netProceeds - Net proceeds after fees
+ * @property {number} realizedProfit - Profit from cycle
+ * @property {number} cyclePosition - Final Fibonacci position of cycle
+ * @property {number} cycleBuys - Number of buys in cycle
+ */
+
+/**
+ * @typedef {Object} FibonacciCycleInfo
+ * @property {number} position - Current Fibonacci sequence position
+ * @property {number} cumulativeCost - Total cost basis
+ * @property {number} cumulativeBTC - Total BTC accumulated
+ * @property {number} avgCostBasis - Weighted average cost basis per BTC
+ * @property {string|null} activeSellOrderId - Active sell order ID
+ * @property {number|null} cycleStartTime - When cycle started
+ */
+
+// ============================================================================
 // API Credentials Types
 // ============================================================================
 
@@ -330,7 +366,7 @@
 // ============================================================================
 
 /**
- * @typedef {'BUY' | 'SELL_ORDER' | 'SELL_FILLED' | 'CONSOLIDATE'} TransactionType
+ * @typedef {'BUY' | 'SELL_ORDER' | 'SELL_FILLED' | 'CONSOLIDATE' | 'FIB_BUY' | 'FIB_SELL_ORDER' | 'FIB_SELL_FILLED'} TransactionType
  */
 
 /**
