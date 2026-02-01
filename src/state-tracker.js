@@ -17,7 +17,11 @@ const { getExchangeDataDir } = require('./migration');
  * @typedef {import('./types').SellOrder} SellOrder
  * @typedef {import('./types').FilledSellOrder} FilledSellOrder
  * @typedef {import('./types').IntervalType} IntervalType
+ * @typedef {import('./types').FibonacciFillDetails} FibonacciFillDetails
+ * @typedef {import('./types').FibonacciCycleInfo} FibonacciCycleInfo
  */
+
+const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
@@ -326,6 +330,132 @@ const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSell
   return state;
 };
 
+/**
+ * Initialize Fibonacci state fields if not present
+ * @param {BotState} state - Current state
+ * @param {ExchangeConfig} config - Configuration
+ * @returns {BotState} State with Fibonacci fields initialized
+ */
+const initFibonacciState = (state, config) => {
+  if (config.dcaStrategy !== 'fibonacci') return state;
+
+  // Initialize Fibonacci fields if they don't exist
+  if (state.fibPosition === undefined) {
+    const fibState = createInitialFibState();
+    Object.assign(state, fibState);
+  }
+
+  return state;
+};
+
+/**
+ * Update state after a Fibonacci buy order
+ * @param {BotState} state - Current state
+ * @param {BuyResult} buyDetails - Buy order details
+ * @param {ExchangeConfig} config - Configuration
+ * @returns {BotState} Updated state
+ */
+const updateAfterFibBuy = (state, buyDetails, config) => {
+  const normalized = normalizeConfig(config);
+
+  // Extract fee details
+  const buyFees = buyDetails.fees || 0;
+  const buyRebates = buyDetails.rebates || 0;
+  const buyNetFees = buyDetails.netFees || 0;
+  const costBasis = buyDetails.usdcAmount + buyNetFees;
+
+  // Start cycle if this is the first buy
+  if (state.fibCycleStartTime === null) {
+    state.fibCycleStartTime = Date.now();
+  }
+
+  // Update cumulative tracking
+  state.fibCumulativeCost = (state.fibCumulativeCost || 0) + costBasis;
+  state.fibCumulativeBTC = (state.fibCumulativeBTC || 0) + buyDetails.btcAmount;
+
+  // Increment position for next buy
+  state.fibPosition = (state.fibPosition || 0) + 1;
+
+  // Update standard tracking
+  state.totalAllocated += buyDetails.usdcAmount;
+  state.totalIntervalsRun += 1;
+  state.usdcFundSize -= (buyDetails.usdcAmount + buyNetFees);
+  state.lastRunId = getRunIdentifier(normalized.intervalType);
+  state.lastRunTimestamp = Date.now();
+
+  // Update cumulative fee tracking
+  state.totalFees = (state.totalFees || 0) + buyFees;
+  state.totalRebates = (state.totalRebates || 0) + buyRebates;
+  state.netFees = (state.netFees || 0) + buyNetFees;
+
+  return state;
+};
+
+/**
+ * Update state after placing a Fibonacci sell order
+ * @param {BotState} state - Current state
+ * @param {SellOrder} sellOrder - Sell order details
+ * @param {number} sellQuantityBTC - BTC quantity in sell order
+ * @param {number} holdbackBTC - BTC held back as reserves
+ * @returns {BotState} Updated state
+ */
+const updateAfterFibSellOrder = (state, sellOrder, sellQuantityBTC, holdbackBTC) => {
+  state.fibActiveSellOrderId = sellOrder.orderId;
+  state.btcReserves += holdbackBTC;
+  state.outstandingOrdersBTC = sellQuantityBTC; // Replace, not add (consolidated order)
+  state.outstandingOrdersUSDC = sellQuantityBTC * sellOrder.limitPrice;
+
+  return state;
+};
+
+/**
+ * Update state when a Fibonacci cycle sell fills
+ * @param {BotState} state - Current state
+ * @param {FibonacciFillDetails} fillDetails - Fill details
+ * @returns {BotState} Updated state with cycle reset
+ */
+const updateAfterFibSellFill = (state, fillDetails) => {
+  const sellFees = fillDetails.fees || 0;
+  const sellRebates = fillDetails.rebates || 0;
+  const sellNetFees = fillDetails.netFees || 0;
+  const netProceeds = fillDetails.netProceeds || (fillDetails.fillValue - sellNetFees);
+
+  // Return proceeds to fund
+  state.usdcFundSize += netProceeds;
+  state.outstandingOrdersBTC -= fillDetails.filledSize;
+  state.outstandingOrdersUSDC = Math.max(0, state.outstandingOrdersUSDC - fillDetails.fillValue);
+
+  // Update cumulative fee tracking
+  state.totalFees = (state.totalFees || 0) + sellFees;
+  state.totalRebates = (state.totalRebates || 0) + sellRebates;
+  state.netFees = (state.netFees || 0) + sellNetFees;
+
+  // Reset Fibonacci cycle state
+  const fibReset = resetFibState();
+  Object.assign(state, fibReset);
+
+  return state;
+};
+
+/**
+ * Get current Fibonacci cycle information
+ * @param {BotState} state - Current state
+ * @returns {FibonacciCycleInfo} Cycle information
+ */
+const getFibonacciCycleInfo = (state) => {
+  const cumulativeCost = state.fibCumulativeCost || 0;
+  const cumulativeBTC = state.fibCumulativeBTC || 0;
+
+  return {
+    position: state.fibPosition || 0,
+    cumulativeCost,
+    cumulativeBTC,
+    avgCostBasis: getAverageCostBasis(cumulativeCost, cumulativeBTC),
+    activeSellOrderId: state.fibActiveSellOrderId || null,
+    cycleStartTime: state.fibCycleStartTime || null,
+  };
+};
+
 module.exports = {
   loadState,
   saveState,
@@ -338,4 +468,10 @@ module.exports = {
   updateAfterConsolidation,
   getPendingOrders,
   getStateFile,
+  // Fibonacci state management
+  initFibonacciState,
+  updateAfterFibBuy,
+  updateAfterFibSellOrder,
+  updateAfterFibSellFill,
+  getFibonacciCycleInfo,
 };

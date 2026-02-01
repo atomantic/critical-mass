@@ -96,6 +96,20 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
     { value: 'weekly', label: 'Weekly' },
   ]
 
+  const STRATEGY_OPTIONS = [
+    { value: 'fixed', label: 'Fixed Amount' },
+    { value: 'fibonacci', label: 'Fibonacci' },
+  ]
+
+  const isFibonacci = config.dcaStrategy === 'fibonacci'
+
+  // Generate Fibonacci preview sequence
+  const getFibPreview = (baseAmount, count = 8) => {
+    const fib = [1, 1]
+    for (let i = 2; i < count; i++) fib.push(fib[i-1] + fib[i-2])
+    return fib.map(n => `$${(n * baseAmount).toFixed(0)}`).join(' → ')
+  }
+
   const quoteCurrency = getQuoteCurrency(config.productId)
   const intervalsToSpread = config.intervalsToSpread || config.daysToSpread || 1
   const intervalAmount = intervalsToSpread ? (config.totalAllocation / intervalsToSpread) : 0
@@ -160,56 +174,112 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
           </div>
         )}
 
+        {/* DCA Strategy Selection */}
+        <div className="border-b border-gray-700 pb-3 mb-4">
+          <div className="flex items-center gap-4 mb-2">
+            <FormSelect
+              label="DCA Strategy"
+              value={config.dcaStrategy || 'fixed'}
+              onChange={(v) => handleChange('dcaStrategy', v)}
+              options={STRATEGY_OPTIONS}
+              className="w-48"
+            />
+            {isFibonacci && (
+              <FormInput
+                label="Fib Base Amount"
+                value={config.fibBaseAmount || 10}
+                onChange={(v) => handleChange('fibBaseAmount', v)}
+                type="number"
+                className="w-32"
+              />
+            )}
+          </div>
+          {isFibonacci && (
+            <div className="bg-gray-900/50 rounded p-3 text-xs">
+              <div className="text-gray-400 mb-1">
+                <span className="text-yellow-400 font-medium">Fibonacci Sequence:</span>{' '}
+                <span className="text-white font-mono">{getFibPreview(config.fibBaseAmount || 10)}</span>
+              </div>
+              <p className="text-gray-500 leading-relaxed">
+                This strategy is a volatility-harvesting accumulation system that incrementally builds a BTC position using
+                Fibonacci-sized buys on a fixed cadence during sideways conditions, continuously resetting a limit-sell order
+                based on the updated weighted cost basis while retaining a small percentage as long-term inventory.
+                It relies on short-term mean reversion within low-to-moderate volatility regimes to capture small, repeated
+                price oscillations that exceed the effective fee floor (~0.045% per entry), making modest profit targets
+                (sub-1%) more structurally aligned than large moves. There is no directional edge; the mechanism is position
+                sizing plus inventory cycling, and during trending or volatility expansion regimes it transitions from a
+                trading system into a BTC accumulation engine, concentrating capital over a short window (Fibonacci ramp)
+                and potentially locking funds into drawdowns, which is acceptable under the assumption of long-term BTC
+                conviction and no need for near-term capital liquidity.
+              </p>
+            </div>
+          )}
+        </div>
+
         {/* Trading Settings - 3 column grid */}
         <div className="grid grid-cols-3 gap-3 mb-4">
           <FormInput label="Product ID" value={config.productId} onChange={(v) => handleChange('productId', v)} />
-          <FormInput label={`Allocation (${quoteCurrency})`} value={config.totalAllocation} onChange={(v) => handleChange('totalAllocation', v)} type="number" />
+          {!isFibonacci && (
+            <>
+              <FormInput label={`Allocation (${quoteCurrency})`} value={config.totalAllocation} onChange={(v) => handleChange('totalAllocation', v)} type="number" />
+              <FormInput label="Intervals" value={config.intervalsToSpread} onChange={(v) => handleChange('intervalsToSpread', v)} type="number" />
+            </>
+          )}
           <FormSelect label="Interval" value={config.intervalType} onChange={(v) => handleChange('intervalType', v)} options={INTERVAL_OPTIONS} />
-          <FormInput label="Intervals" value={config.intervalsToSpread} onChange={(v) => handleChange('intervalsToSpread', v)} type="number" />
           <FormInput label="Markup %" value={config.sellMarkupPercent} onChange={(v) => handleChange('sellMarkupPercent', v)} type="number" />
           <FormInput label="Holdback %" value={config.holdbackPercent} onChange={(v) => handleChange('holdbackPercent', v)} type="number" />
           <FormInput label={`Min Order (${quoteCurrency})`} value={config.minOrderSize} onChange={(v) => handleChange('minOrderSize', v)} type="number" />
           <FormInput label={`Max Price (${quoteCurrency})`} value={config.maxBuyPrice} onChange={(v) => handleChange('maxBuyPrice', v)} type="number" />
         </div>
 
-        {/* Consolidation - inline row */}
-        <div className="border-t border-gray-700 pt-3 mb-4">
-          <div className="flex items-center gap-4">
-            <span className="text-xs text-gray-400 whitespace-nowrap">Auto-Consolidate:</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">When orders &gt;</span>
-              <input
-                type="number"
-                value={config.consolidateAfterOrders || 0}
-                onChange={(e) => handleChange('consolidateAfterOrders', parseInt(e.target.value) || 0)}
-                className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
-              />
+        {/* Consolidation - inline row (hidden for Fibonacci which handles its own consolidation) */}
+        {!isFibonacci && (
+          <div className="border-t border-gray-700 pt-3 mb-4">
+            <div className="flex items-center gap-4">
+              <span className="text-xs text-gray-400 whitespace-nowrap">Auto-Consolidate:</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">When orders &gt;</span>
+                <input
+                  type="number"
+                  value={config.consolidateAfterOrders || 0}
+                  onChange={(e) => handleChange('consolidateAfterOrders', parseInt(e.target.value) || 0)}
+                  className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">or on schedule:</span>
+                <select
+                  value={config.consolidateInterval || 'never'}
+                  onChange={(e) => handleChange('consolidateInterval', e.target.value)}
+                  className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  {CONSOLIDATE_INTERVAL_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              <span className="text-xs text-gray-500 ml-auto">
+                Active: <span className="text-white">{getConsolidationStatus()}</span>
+              </span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">or on schedule:</span>
-              <select
-                value={config.consolidateInterval || 'never'}
-                onChange={(e) => handleChange('consolidateInterval', e.target.value)}
-                className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
-              >
-                {CONSOLIDATE_INTERVAL_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            <span className="text-xs text-gray-500 ml-auto">
-              Active: <span className="text-white">{getConsolidationStatus()}</span>
-            </span>
           </div>
-        </div>
+        )}
 
         {/* Calculated Values - compact */}
         <div className="border-t border-gray-700 pt-3 mb-4">
           <div className="grid grid-cols-4 gap-3 text-xs">
-            <div>
-              <span className="text-gray-500">Buy per {intervalLabel}:</span>
-              <span className="ml-1 text-white">${intervalAmount.toFixed(2)}</span>
-            </div>
+            {!isFibonacci && (
+              <div>
+                <span className="text-gray-500">Buy per {intervalLabel}:</span>
+                <span className="ml-1 text-white">${intervalAmount.toFixed(2)}</span>
+              </div>
+            )}
+            {isFibonacci && (
+              <div>
+                <span className="text-gray-500">Strategy:</span>
+                <span className="ml-1 text-yellow-400">Fibonacci</span>
+              </div>
+            )}
             <div>
               <span className="text-gray-500">Return/Cycle:</span>
               <span className="ml-1 text-green-400">

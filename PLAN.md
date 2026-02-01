@@ -2,7 +2,7 @@
 
 A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 
-**Version:** 2.0.0
+**Version:** 2.3.0
 **Ports:** 5563 (API), 5564 (UI dev)
 
 ---
@@ -58,6 +58,16 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
   - Skips partially filled orders
   - Tracks consolidation in state and transaction logs
 
+### DCA Strategies
+- **Fixed Amount (default)**: Traditional DCA with fixed buy amounts per interval
+- **Fibonacci**: Volatility-harvesting accumulation strategy
+  - Buys using Fibonacci sequence multipliers (1, 1, 2, 3, 5, 8, 13... × base amount)
+  - Maintains single consolidated sell order per cycle at weighted-average cost basis + markup
+  - Automatic cycle reset when sell fills, restarting at position 0
+  - Optimized for short-term mean reversion in low-to-moderate volatility regimes
+  - Transitions to accumulation mode during trending/high-volatility periods
+  - Configurable via `dcaStrategy: 'fibonacci'` and `fibBaseAmount` in config
+
 ### Data Management
 - Exchange-namespaced data directories
 - Transaction logging in TSV format
@@ -89,13 +99,14 @@ src/
 │   ├── gemini/         # Gemini implementation
 │   └── cryptocom/      # Crypto.com implementation
 ├── config-utils.js     # Multi-exchange config management
-├── dca-engine.js       # Core trading logic
+├── dca-engine.js       # Core trading logic (fixed + fibonacci strategies)
+├── fibonacci-utils.js  # Fibonacci sequence and cycle calculations
 ├── interval-utils.js   # Time interval calculations
 ├── order-manager.js    # Order execution and tracking
-├── state-tracker.js    # State persistence
+├── state-tracker.js    # State persistence (including fib cycle state)
 ├── logger.js           # Transaction logging
 ├── migration.js        # Data structure migration
-├── backtest-engine.js  # Historical simulation
+├── backtest-engine.js  # Historical simulation (fixed + fibonacci)
 └── optimizer-engine.js # Parameter optimization
 
 admin/src/components/

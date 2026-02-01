@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] - 2026-01-31
+
+### Added
+- Fibonacci DCA strategy - alternative to fixed-amount DCA using Fibonacci sequence for buy amounts (1, 1, 2, 3, 5, 8, 13... × base amount)
+- Consolidated sell order per Fibonacci cycle with weighted-average cost basis pricing
+- Automatic cycle reset when consolidated sell fills, enabling continuous volatility harvesting
+- Fibonacci backtest simulation with cycle tracking and Fibonacci-specific metrics
+- Strategy selector in admin UI with detailed risk disclosure about the volatility-harvesting approach
+
 ## [2.2.1] - 2026-01-31
 
 ### Fixed
