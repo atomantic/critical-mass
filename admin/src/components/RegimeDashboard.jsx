@@ -669,12 +669,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               <div className="grid grid-cols-2 gap-3">
                 <StatCard
                   label="BTC Held"
-                  value={position.totalBTC?.toFixed(6) || '0'}
+                  value={position.totalBTC?.toFixed(8) || '0'}
                   color="text-orange-400"
                 />
                 <StatCard
                   label="BTC on Order"
-                  value={(isDryRun && dryRunState?.pnl?.btcOnOrder ? dryRunState.pnl.btcOnOrder : position.btcOnOrder || 0).toFixed(6)}
+                  value={(isDryRun && dryRunState?.pnl?.btcOnOrder ? dryRunState.pnl.btcOnOrder : position.btcOnOrder || 0).toFixed(8)}
                   subValue="in sell orders"
                   color="text-yellow-400"
                 />
@@ -693,7 +693,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 />
                 <StatCard
                   label="BTC Reserves"
-                  value={(position.realizedBtcPnL || 0).toFixed(6)}
+                  value={(position.realizedBtcPnL || 0).toFixed(8)}
                   subValue="from holdback"
                   color="text-cyan-400"
                 />
@@ -712,7 +712,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     </div>
                     {(position.realizedBtcPnL || 0) > 0 && (
                       <div className="text-xs text-cyan-400 mt-0.5">
-                        + {position.realizedBtcPnL?.toFixed(6)} BTC
+                        + {position.realizedBtcPnL?.toFixed(8)} BTC
                       </div>
                     )}
                   </div>
@@ -725,10 +725,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 <div className="mt-3 pt-3 border-t border-gray-700 text-xs">
                   <div className="text-purple-400 mb-1">Dry-Run Stats</div>
                   <div className="grid grid-cols-2 gap-2 text-gray-400">
-                    <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(6) || 0} BTC</div>
-                    <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(6) || 0} BTC</div>
-                    <div>BTC on Order: <span className="text-yellow-400">{dryRunState.pnl.btcOnOrder?.toFixed(6) || 0}</span></div>
-                    <div>BTC Reserves: <span className="text-cyan-400">{position.realizedBtcPnL?.toFixed(6) || 0}</span></div>
+                    <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(8) || 0} BTC</div>
+                    <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(8) || 0} BTC</div>
+                    <div>BTC on Order: <span className="text-yellow-400">{dryRunState.pnl.btcOnOrder?.toFixed(8) || 0}</span></div>
+                    <div>BTC Reserves: <span className="text-cyan-400">{position.realizedBtcPnL?.toFixed(8) || 0}</span></div>
                     <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
                     <div>Avg Entry: ${dryRunState.pnl.avgEntryPrice?.toFixed(2) || 0}</div>
                   </div>
@@ -955,7 +955,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <th className="text-left py-2 pr-2">Side</th>
                       <th className="text-right py-2 pr-2">Size (BTC)</th>
                       <th className="text-right py-2 pr-2">Price</th>
-                      <th className="text-right py-2 pr-2">Value</th>
+                      <th className="text-right py-2 pr-2">Est. USD</th>
+                      <th className="text-right py-2 pr-2">Est. BTC</th>
                       <th className="text-right py-2">Age</th>
                     </tr>
                   </thead>
@@ -964,6 +965,16 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       .filter(o => o.status === 'open')
                       .map((order) => {
                         const age = Date.now() - order.placedAt
+                        // Calculate expected P&L for TP orders
+                        const avgCost = position.avgCostBasis || 0
+                        const estPnl = order.type === 'take_profit' && avgCost > 0
+                          ? (order.price - avgCost) * order.size
+                          : null
+                        // Calculate expected BTC holdback for TP orders
+                        const holdbackPct = config?.holdbackPercent || 5
+                        const estHoldback = order.type === 'take_profit'
+                          ? order.size * (holdbackPct / (100 - holdbackPct))
+                          : null
                         return (
                           <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">
                             <td className="py-2 pr-2">
@@ -977,13 +988,16 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               {order.side?.toUpperCase()}
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-white">
-                              {order.size?.toFixed(6)}
+                              {order.size?.toFixed(8)}
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-white">
                               ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
-                            <td className="text-right py-2 pr-2 font-mono text-gray-400">
-                              ${order.sizeUsdc?.toFixed(2)}
+                            <td className={`text-right py-2 pr-2 font-mono text-xs ${estPnl !== null ? (estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`}>
+                              {estPnl !== null ? `${estPnl >= 0 ? '+' : ''}$${estPnl.toFixed(2)}` : '—'}
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
+                              {estHoldback !== null ? `+${estHoldback.toFixed(8)}` : '—'}
                             </td>
                             <td className="text-right py-2 font-mono text-gray-500 text-xs">
                               {formatDuration(age)}
@@ -1018,7 +1032,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <th className="text-left py-2 pr-2">Side</th>
                       <th className="text-right py-2 pr-2">Size (BTC)</th>
                       <th className="text-right py-2 pr-2">Fill Price</th>
-                      <th className="text-right py-2 pr-2">Value</th>
+                      <th className="text-right py-2 pr-2">USD P&L</th>
+                      <th className="text-right py-2 pr-2">BTC Hold</th>
                       <th className="text-right py-2">Time</th>
                     </tr>
                   </thead>
@@ -1039,13 +1054,24 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             {order.side?.toUpperCase()}
                           </td>
                           <td className="text-right py-2 pr-2 font-mono text-white">
-                            {order.size?.toFixed(6)}
+                            {order.size?.toFixed(8)}
                           </td>
                           <td className="text-right py-2 pr-2 font-mono text-white">
                             ${order.fillPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </td>
-                          <td className="text-right py-2 pr-2 font-mono text-gray-400">
-                            ${(order.size * order.fillPrice)?.toFixed(2)}
+                          <td className={`text-right py-2 pr-2 font-mono text-xs ${
+                            order.type === 'take_profit'
+                              ? (order.pnl >= 0 ? 'text-green-400' : 'text-red-400')
+                              : 'text-gray-500'
+                          }`}>
+                            {order.type === 'take_profit' && order.pnl !== undefined
+                              ? `${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}`
+                              : '—'}
+                          </td>
+                          <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
+                            {order.type === 'take_profit' && order.holdbackBtc !== undefined
+                              ? `+${order.holdbackBtc.toFixed(8)}`
+                              : '—'}
                           </td>
                           <td className="text-right py-2 font-mono text-gray-500 text-xs">
                             {order.filledAt ? new Date(order.filledAt).toLocaleTimeString() : '-'}
