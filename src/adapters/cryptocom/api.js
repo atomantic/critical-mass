@@ -226,6 +226,29 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
+   * Get current bid/ask for a product
+   * @param {string} productId - Product ID (e.g., 'BTC-USDT' or 'BTC_USDT')
+   * @returns {Promise<{bid: number, ask: number}>} Bid and ask prices
+   */
+  adapter.getBidAsk = async (productId) => {
+    const instrument = toCryptocomSymbol(productId);
+    const result = await makePublicRequest('public/get-tickers', {
+      instrument_name: instrument,
+    });
+
+    const ticker = result.data?.find(t => t.i === instrument);
+    if (!ticker) {
+      throw new Error(`Ticker not found for ${instrument}`);
+    }
+
+    // 'b' is best bid, 'k' is best ask
+    return {
+      bid: parseFloat(ticker.b || 0),
+      ask: parseFloat(ticker.k || 0),
+    };
+  };
+
+  /**
    * Get product details
    * @param {string} productId - Product ID
    * @returns {Promise<ProductDetails>} Product details
