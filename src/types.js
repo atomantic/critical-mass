@@ -413,7 +413,9 @@
  * @property {number} lastTpPrice - Last take-profit price placed
  * @property {number} cyclesCompleted - Number of completed inventory cycles
  * @property {number} unrealizedPnL - Current unrealized P&L
- * @property {number} realizedPnL - Cumulative realized P&L
+ * @property {number} realizedPnL - Cumulative realized P&L in USD
+ * @property {number} realizedBtcPnL - Cumulative realized P&L in BTC (holdback reserves)
+ * @property {number} btcOnOrder - BTC currently in open sell orders
  * @property {number} maxDrawdownSeen - Maximum drawdown observed
  * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled

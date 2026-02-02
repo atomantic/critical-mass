@@ -75,6 +75,8 @@ const createInitialPositionState = () => ({
   cyclesCompleted: 0,
   unrealizedPnL: 0,
   realizedPnL: 0,
+  realizedBtcPnL: 0,
+  btcOnOrder: 0,
   maxDrawdownSeen: 0,
   scalingDisabled: false,
   scalingDisabledReason: null,
@@ -382,15 +384,22 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const soldCostBasis = summary.totalSize * positionState.avgCostBasis;
       const pnl = proceeds - soldCostBasis;
 
+      // Calculate BTC holdback (the BTC we kept as reserves from this cycle)
+      const holdbackBtc = roundBTC(positionState.totalBTC - summary.totalSize);
+
       positionState.realizedPnL += pnl;
+      positionState.realizedBtcPnL += holdbackBtc;
+      positionState.btcOnOrder = 0;
       positionState.cyclesCompleted += 1;
 
-      console.log(`✅ [${exchange}] TP filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`);
+      console.log(`✅ [${exchange}] TP filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`);
 
       tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
         btcAmount: summary.totalSize,
         price: summary.avgPrice,
         pnl,
+        holdbackBtc,
+        totalRealizedBtc: positionState.realizedBtcPnL,
       });
 
       // Reset for next cycle
@@ -580,9 +589,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (result.success) {
       positionState.activeTpOrderId = result.orderId;
       positionState.lastTpPrice = tpPrice;
+      positionState.btcOnOrder = sellQty;
 
       if (result.updated) {
-        console.log(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} BTC @ $${tpPrice}`);
+        console.log(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)})`);
       }
     }
   };
@@ -624,6 +634,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.ladderStep = 0;
     positionState.activeTpOrderId = null;
     positionState.lastTpPrice = 0;
+    positionState.btcOnOrder = 0;
     positionState.anchorPrice = 0;
     positionState.scalingDisabled = false;
     positionState.scalingDisabledReason = null;
@@ -674,13 +685,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     };
 
     dryRunCallbacks.onSellFill = (orderId, btcQty, price, proceeds, pnl) => {
+      // Calculate BTC holdback (the BTC we kept as reserves from this cycle)
+      const holdbackBtc = roundBTC(positionState.totalBTC - btcQty);
+
       positionState.realizedPnL += pnl;
+      positionState.realizedBtcPnL += holdbackBtc;
+      positionState.btcOnOrder = 0;
       positionState.cyclesCompleted += 1;
 
-      tradeEvents.emitTradeEvent('tp_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}`, {
+      tradeEvents.emitTradeEvent('tp_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`, {
         btcAmount: btcQty,
         price,
         pnl,
+        holdbackBtc,
+        totalRealizedBtc: positionState.realizedBtcPnL,
         isDryRun: true,
       });
 

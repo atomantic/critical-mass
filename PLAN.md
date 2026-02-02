@@ -112,6 +112,13 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Maximum exposure caps (BTC and USDC)
 - Maximum drawdown protection
 
+**Position & P&L Tracking:**
+- BTC Held - Current cycle position
+- BTC on Order - BTC in pending sell orders
+- BTC Reserves - Accumulated holdback from completed cycles (realized BTC P&L)
+- Realized P&L shows both USD profit and BTC reserves
+- Holdback percentage applied to each TP, accumulating as BTC reserves
+
 **Dry-Run Mode:**
 - Test regime engine against live market data without placing real orders
 - Simulates order placement, fills, and P&L tracking
