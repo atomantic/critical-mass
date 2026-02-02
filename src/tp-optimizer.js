@@ -32,7 +32,7 @@ const { roundUSDC } = require('./volatility-utils');
  * @typedef {Object} TpAdjustment
  * @property {number} tpMinPercent - New minimum TP %
  * @property {number} tpMaxPercent - New maximum TP %
- * @property {number} holdbackPercent - New holdback % (half of tpMinPercent)
+ * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0)
  * @property {string} reason - Adjustment reason
  */
 
@@ -43,7 +43,7 @@ const { roundUSDC } = require('./volatility-utils');
  * @property {Object} stats - Current statistics
  * @property {number} lastEvaluationTime - Last evaluation timestamp
  * @property {number} lastEvaluationCycle - Cycle count at last evaluation
- * @property {Array<{timestamp: number, tpMin: number, tpMax: number, holdback: number, reason: string}>} adjustmentHistory
+ * @property {Array<{timestamp: number, tpMin: number, tpMax: number, holdbackRatio: number, reason: string}>} adjustmentHistory
  */
 
 const BUCKET_COUNT = 20;
@@ -273,7 +273,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
         timestamp: now,
         tpMin: adjustment.tpMinPercent,
         tpMax: adjustment.tpMaxPercent,
-        holdback: adjustment.holdbackPercent,
+        holdbackRatio: adjustment.holdbackRatio,
         reason: adjustment.reason,
       });
 
@@ -366,13 +366,14 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
       return null;
     }
 
-    // Holdback is half of tpMin when auto-managed
-    const newHoldback = roundUSDC(newTpMin * 50) / 100; // Half of tpMin
+    // HoldbackRatio stays at 0.5 when auto-managed (50% sell, 50% hold)
+    // This provides balanced profit-taking between USDC and BTC appreciation
+    const currentHoldbackRatio = config.holdbackRatio ?? 0.5;
 
     return {
       tpMinPercent: newTpMin,
       tpMaxPercent: newTpMax,
-      holdbackPercent: newHoldback,
+      holdbackRatio: currentHoldbackRatio,
       reason: `${reason}: p25=${percentiles.p25.toFixed(2)}% p50=${percentiles.p50.toFixed(2)}% p75=${percentiles.p75.toFixed(2)}%`,
     };
   };
@@ -449,7 +450,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
       currentConfig: {
         tpMinPercent: config.tpMinPercent,
         tpMaxPercent: config.tpMaxPercent,
-        holdbackPercent: config.holdbackPercent,
+        holdbackRatio: config.holdbackRatio,
       },
     };
   };

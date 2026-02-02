@@ -176,7 +176,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   // Create TP optimizer for dynamic TP adjustment
   const tpOptimizer = createTpOptimizer(exchange, config, {
     onAdjustment: (adjustment) => {
-      console.log(`📊 [${exchange}] ${modeLabel}TP auto-adjusted: min=${adjustment.tpMinPercent}% max=${adjustment.tpMaxPercent}% holdback=${adjustment.holdbackPercent}%`);
+      console.log(`📊 [${exchange}] ${modeLabel}TP auto-adjusted: min=${adjustment.tpMinPercent}% max=${adjustment.tpMaxPercent}% holdbackRatio=${adjustment.holdbackRatio}`);
     },
   });
 
@@ -195,19 +195,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Update in-memory config
     config.tpMinPercent = adjustment.tpMinPercent;
     config.tpMaxPercent = adjustment.tpMaxPercent;
-    config.holdbackPercent = adjustment.holdbackPercent;
+    config.holdbackRatio = adjustment.holdbackRatio;
 
     // Persist to config.json
     updateRegimeConfig(exchange, {
       tpMinPercent: adjustment.tpMinPercent,
       tpMaxPercent: adjustment.tpMaxPercent,
-      holdbackPercent: adjustment.holdbackPercent,
+      holdbackRatio: adjustment.holdbackRatio,
     });
 
     tradeEvents.emitTradeEvent('tp_adjusted', exchange, `TP adjusted: ${adjustment.tpMinPercent}%-${adjustment.tpMaxPercent}%`, {
       tpMinPercent: adjustment.tpMinPercent,
       tpMaxPercent: adjustment.tpMaxPercent,
-      holdbackPercent: adjustment.holdbackPercent,
+      holdbackRatio: adjustment.holdbackRatio,
       reason: adjustment.reason,
     });
   };

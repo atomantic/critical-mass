@@ -403,8 +403,8 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       simulatedRealizedPnL += pnl;
 
       // Calculate BTC holdback for this cycle
-      const holdbackPercent = config.holdbackPercent || 5;
-      const totalBtcBeforeSale = order.size / (1 - holdbackPercent / 100);
+      const holdbackRatio = config.holdbackRatio ?? 0.5;
+      const totalBtcBeforeSale = order.size / (1 - holdbackRatio);
       const holdbackBtc = totalBtcBeforeSale - order.size;
       simulatedRealizedBtcPnL += holdbackBtc;
 

@@ -115,7 +115,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Periodic evaluation every N cycles (default: 5) or daily (whichever first)
 - Rate-limited adjustments (max 25% change per evaluation)
 - Safety bounds: absolute min (0.05%), absolute max (5.0%)
-- Auto-holdback set to half of tpMinPercent when auto-adjusted
+- `holdbackRatio` (0.0-1.0, default 0.5) - configurable profit split between sell/hold
 - State persisted across restarts (in regime-state.json / dry-run-state.json)
 - Dashboard panel shows current settings, observed percentiles, adjustment history
 
@@ -139,7 +139,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - BTC on Order - BTC in pending sell orders
 - BTC Reserves - Accumulated holdback from completed cycles (realized BTC P&L)
 - Realized P&L shows both USD profit and BTC reserves
-- Holdback percentage applied to each TP, accumulating as BTC reserves
+- Holdback ratio applied to each TP (sells 1-ratio, holds ratio of position)
 
 **APY & Performance Tracking:**
 - Tracks engine start time and initial capital (maxUsdcDeployed)

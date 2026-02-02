@@ -75,7 +75,7 @@ const REGIME_DEFAULTS = {
   tpMinPercent: 2.0,
   tpMaxPercent: 15.0,
   tpUpdateThresholdPct: 0.5,
-  holdbackPercent: 5,
+  holdbackRatio: 0.5,
 
   // TP Auto-Management
   tpAutoManaged: false,         // Opt-in flag for dynamic TP adjustment
@@ -445,6 +445,9 @@ const validateRegimeConfig = (config) => {
   }
   if (config.tpMaxPercent !== undefined && (config.tpMaxPercent < 0.1 || config.tpMaxPercent > 50.0)) {
     errors.push('tpMaxPercent must be between 0.1 and 50.0');
+  }
+  if (config.holdbackRatio !== undefined && (config.holdbackRatio < 0.0 || config.holdbackRatio > 1.0)) {
+    errors.push('holdbackRatio must be between 0.0 and 1.0');
   }
 
   // TP Auto-Management validation

@@ -970,8 +970,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         <span className="text-white font-mono">{tpOptimizer.currentConfig?.tpMaxPercent?.toFixed(2)}%</span>
                       </div>
                       <div>
-                        <span className="text-gray-400">Holdback:</span>{' '}
-                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.holdbackPercent?.toFixed(2)}%</span>
+                        <span className="text-gray-400">Holdback Ratio:</span>{' '}
+                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.holdbackRatio?.toFixed(2)}</span>
                       </div>
                     </div>
                   </div>
@@ -1118,8 +1118,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <th className="text-left py-2 pr-2">Side</th>
                       <th className="text-right py-2 pr-2">Size (BTC)</th>
                       <th className="text-right py-2 pr-2">Price</th>
-                      <th className="text-right py-2 pr-2">Est. USD</th>
-                      <th className="text-right py-2 pr-2">Est. BTC</th>
+                      <th className="text-right py-2 pr-2">Est. P&L</th>
+                      <th className="text-right py-2 pr-2">Holdback</th>
                       <th className="text-right py-2">Age</th>
                     </tr>
                   </thead>
@@ -1134,9 +1134,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           ? (order.price - avgCost) * order.size
                           : null
                         // Calculate expected BTC holdback for TP orders
-                        const holdbackPct = config?.holdbackPercent || 5
+                        const holdbackRatio = config?.holdbackRatio ?? 0.5
                         const estHoldback = order.type === 'take_profit'
-                          ? order.size * (holdbackPct / (100 - holdbackPct))
+                          ? order.size * (holdbackRatio / (1 - holdbackRatio))
                           : null
                         return (
                           <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">

@@ -413,35 +413,20 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
                 <FormInput label="TP Multiplier" value={regimeConfig.tpMult || 1.0} onChange={(v) => handleRegimeChange('tpMult', v)} type="number" />
                 <FormInput label="TP Min %" value={regimeConfig.tpMinPercent || 2.0} onChange={(v) => handleRegimeChange('tpMinPercent', v)} type="number" />
                 <FormInput label="TP Max %" value={regimeConfig.tpMaxPercent || 15.0} onChange={(v) => handleRegimeChange('tpMaxPercent', v)} type="number" />
-                <FormInput label="Holdback %" value={regimeConfig.holdbackPercent || 5} onChange={(v) => handleRegimeChange('holdbackPercent', v)} type="number" />
+                <FormInput label="Holdback Ratio" value={regimeConfig.holdbackRatio ?? 0.5} onChange={(v) => handleRegimeChange('holdbackRatio', v)} type="number" />
               </div>
-              {/* Holdback vs TP validation warning */}
+              {/* Holdback ratio explanation */}
               {(() => {
-                const holdback = regimeConfig.holdbackPercent || 5;
+                const holdbackRatio = regimeConfig.holdbackRatio ?? 0.5;
+                const sellRatio = 1 - holdbackRatio;
                 const tpMin = regimeConfig.tpMinPercent || 0.1;
-                const cashReturn = (1 - holdback / 100) * (1 + tpMin / 100) * 100 - 100;
-                const btcGain = holdback;
-                const maxHoldbackForCashBreakeven = (tpMin / (1 + tpMin / 100)).toFixed(2);
+                const usdcProfitPct = (sellRatio * tpMin).toFixed(2);
+                const btcProfitPct = (holdbackRatio * tpMin).toFixed(2);
 
-                if (holdback > tpMin) {
-                  return (
-                    <div className="mt-2 p-2 bg-amber-900/30 border border-amber-600/50 rounded text-xs">
-                      <div className="text-amber-400 font-medium mb-1">⚠️ Holdback exceeds TP Min</div>
-                      <div className="text-gray-300">
-                        At minimum TP ({tpMin}%), each cycle returns{' '}
-                        <span className="text-red-400 font-medium">{cashReturn.toFixed(2)}% cash</span>
-                        {' '}but gains{' '}
-                        <span className="text-green-400 font-medium">+{btcGain}% BTC</span>.
-                        <div className="mt-1 text-gray-400">
-                          For cash-neutral cycles at {tpMin}% TP, set holdback ≤ {maxHoldbackForCashBreakeven}%.
-                        </div>
-                      </div>
-                    </div>
-                  );
-                }
                 return (
                   <div className="mt-2 text-xs text-gray-500">
-                    At min TP ({tpMin}%): <span className="text-green-400">+{cashReturn.toFixed(2)}% cash</span>, <span className="text-blue-400">+{btcGain}% BTC</span> per cycle
+                    Sell <span className="text-white font-medium">{(sellRatio * 100).toFixed(0)}%</span>, hold <span className="text-white font-medium">{(holdbackRatio * 100).toFixed(0)}%</span> of position.
+                    {' '}At min TP ({tpMin}%): <span className="text-green-400">+{usdcProfitPct}% USDC</span>, <span className="text-blue-400">+{btcProfitPct}% BTC value</span>
                   </div>
                 );
               })()}

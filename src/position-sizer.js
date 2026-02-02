@@ -133,11 +133,13 @@ const createPositionSizer = (exchange, config) => {
 
   /**
    * Calculate take-profit size (accounts for holdback)
+   * Uses holdbackRatio to split position between sell and hold
    * @param {number} totalBTC - Total BTC position
    * @returns {{sellQty: number, holdbackQty: number}}
    */
   const calculateTakeProfitSize = (totalBTC) => {
-    const holdbackQty = roundBTC(totalBTC * (config.holdbackPercent / 100));
+    const holdbackRatio = config.holdbackRatio ?? 0.5;
+    const holdbackQty = roundBTC(totalBTC * holdbackRatio);
     const sellQty = roundBTC(totalBTC - holdbackQty);
 
     return {
