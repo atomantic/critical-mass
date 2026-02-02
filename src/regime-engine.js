@@ -402,20 +402,29 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const totalReturn = positionState.realizedPnL;
     const totalReturnPercent = (totalReturn / initialCapital) * 100;
 
-    // Daily return rate (simple)
-    const dailyReturnPercent = elapsedDays > 0 ? totalReturnPercent / elapsedDays : 0;
+    // Minimum 1 hour of data required for meaningful projections
+    const minHoursForProjection = 1;
+    const hasEnoughData = elapsedMs >= minHoursForProjection * 60 * 60 * 1000;
+
+    // Daily return rate (simple) - only calculate with enough data
+    const dailyReturnPercent = hasEnoughData && elapsedDays > 0
+      ? totalReturnPercent / elapsedDays
+      : 0;
 
     // Estimated annual return (simple linear projection)
-    const estimatedAnnualReturn = dailyReturnPercent * 365;
+    const estimatedAnnualReturn = hasEnoughData ? dailyReturnPercent * 365 : 0;
 
     // Compound APY calculation: (1 + dailyReturn)^365 - 1
-    const dailyReturnDecimal = dailyReturnPercent / 100;
-    const estimatedApy = elapsedDays > 0
+    // Cap daily return to prevent overflow (max 100% daily = 3678% APY annually)
+    const dailyReturnDecimal = Math.min(dailyReturnPercent / 100, 1);
+    const estimatedApy = hasEnoughData && elapsedDays > 0
       ? (Math.pow(1 + dailyReturnDecimal, 365) - 1) * 100
       : 0;
 
-    // Cycles per day
-    const cyclesPerDay = elapsedDays > 0 ? positionState.cyclesCompleted / elapsedDays : 0;
+    // Cycles per day - only calculate with enough data
+    const cyclesPerDay = hasEnoughData && elapsedDays > 0
+      ? positionState.cyclesCompleted / elapsedDays
+      : 0;
 
     // Average P&L per cycle
     const avgPnlPerCycle = positionState.cyclesCompleted > 0
