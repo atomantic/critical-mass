@@ -66,19 +66,10 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     // 5. Rebuild position state from fill ledger
     const position = fillLedger.rebuildPositionFromFills();
 
-    // 6. Map open orders to internal state
-    orderExecutor.clearPendingOrders();
-    for (const order of openOrders) {
-      const pendingOrder = {
-        type: order.side === 'BUY' ? 'entry' : 'take_profit',
-        price: parseFloat(order.price || 0),
-        size: parseFloat(order.filledSize || 0),
-        sizeUsdc: 0, // Will be calculated if needed
-        placedAt: new Date(order.createdTime).getTime(),
-        recoveredFromExchange: true,
-      };
-      orderExecutor.restorePendingOrder(order.orderId, pendingOrder);
-    }
+    // 6. Note: We do NOT restore all exchange orders to the order executor
+    // The regime engine should only track orders IT places, not orders from other engines (like DCA)
+    // Exchange open orders are used only for validation and offline fill detection
+    console.log(`📋 [${exchange}] Exchange has ${openOrders.length} open orders (regime engine tracks its own orders separately)`);
 
     // 7. Compare position against base balance (informational only)
     // NOTE: Account may have BTC from other sources - we only track what regime engine traded
@@ -94,18 +85,11 @@ const createRecoveryModule = (exchange, adapter, productId) => {
       console.log(`⚠️ [${exchange}] ${discrepancies[discrepancies.length - 1]}`);
     }
 
-    console.log(`✅ [${exchange}] Recovery complete: ${openOrders.length} open orders, ${position.totalBTC} ${baseCurrency} position`);
+    console.log(`✅ [${exchange}] Recovery complete: ${position.totalBTC} ${baseCurrency} tracked position`);
 
     return {
       position,
-      openOrders: new Map(openOrders.map(o => [o.orderId, {
-        type: o.side === 'BUY' ? 'entry' : 'take_profit',
-        price: 0,
-        size: 0,
-        sizeUsdc: 0,
-        placedAt: new Date(o.createdTime).getTime(),
-        recoveredFromExchange: true,
-      }])),
+      openOrders: new Map(), // Regime engine tracks its own orders, not all exchange orders
       discrepancies,
     };
   };
