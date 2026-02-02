@@ -35,6 +35,29 @@ const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig } = require('.
 // Active regime engines by exchange
 const regimeEngines = new Map();
 
+// Path for regime engine running state
+const getRegimeRunningFlagPath = (exchange) => path.join(__dirname, 'data', exchange, 'regime-engine-running.json');
+
+// Save running state flag for auto-resume
+const saveRegimeRunningFlag = (exchange, isRunning) => {
+  const flagPath = getRegimeRunningFlagPath(exchange);
+  const dir = path.dirname(flagPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  if (isRunning) {
+    fs.writeFileSync(flagPath, JSON.stringify({ running: true, startedAt: new Date().toISOString() }));
+  } else if (fs.existsSync(flagPath)) {
+    fs.unlinkSync(flagPath);
+  }
+};
+
+// Check if regime engine should auto-resume
+const shouldAutoResumeRegime = (exchange) => {
+  const flagPath = getRegimeRunningFlagPath(exchange);
+  return fs.existsSync(flagPath);
+};
+
 // Run migration on startup
 runMigrationIfNeeded();
 
@@ -542,6 +565,9 @@ app.post('/api/:exchange/regime/start', async (req, res) => {
     });
   }
 
+  // Save running flag for auto-resume on restart
+  saveRegimeRunningFlag(exchange, true);
+
   log('INFO', `🚀 [${exchange}] Regime engine started`);
 
   res.json({
@@ -565,6 +591,9 @@ app.post('/api/:exchange/regime/stop', async (req, res) => {
 
   await engine.stop();
   regimeEngines.delete(exchange);
+
+  // Remove running flag (user intentionally stopped)
+  saveRegimeRunningFlag(exchange, false);
 
   log('INFO', `🛑 [${exchange}] Regime engine stopped`);
 
@@ -1424,7 +1453,7 @@ const checkAndRunIntervalTrade = () => {
 
 // ============ Start Server ============
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   const enabledExchanges = getEnabledExchanges();
 
   log('INFO', `DCA Trading Bot running on http://localhost:${PORT}`);
@@ -1437,6 +1466,43 @@ server.listen(PORT, () => {
     const intervalLabel = formatInterval(config.intervalType);
     const timeUntilNext = getTimeUntilNext(config.intervalType);
     log('INFO', `[${exchange}] Interval: ${intervalLabel}, next trade in ${timeUntilNext.formatted}`);
+  }
+
+  // Auto-resume regime engines that were running before restart
+  const configuredExchanges = getConfiguredExchanges();
+  for (const exchange of configuredExchanges) {
+    if (shouldAutoResumeRegime(exchange)) {
+      log('INFO', `🔄 [${exchange}] Auto-resuming regime engine from previous session...`);
+
+      const { getAdapter } = require('./src/adapters');
+      const exchangeConfig = getExchangeConfig(exchange);
+      const adapter = getAdapter(exchange);
+
+      // Only auto-resume if keys are still valid
+      if (adapter.hasValidKeys && adapter.hasValidKeys()) {
+        const engine = createRegimeEngine(exchange, exchangeConfig, {
+          onTradeEvent: (event) => io.emit('trade:event', event),
+          onRegimeChange: (prevMode, newMode, reason) => io.emit('regime:change', { exchange, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
+          onHealthChange: (mode, reason) => io.emit('regime:health', { exchange, mode, reason, message: reason || `Health: ${mode}` }),
+          onPositionUpdate: (data) => io.emit('regime:position', { exchange, ...data }),
+          onStatusUpdate: (status) => io.emit('regime:status', { exchange, status }),
+        });
+
+        regimeEngines.set(exchange, engine);
+
+        const startResult = await engine.start();
+        if (startResult.success) {
+          log('INFO', `✅ [${exchange}] Regime engine auto-resumed successfully`);
+        } else {
+          log('ERROR', `❌ [${exchange}] Failed to auto-resume regime engine: ${startResult.error}`);
+          regimeEngines.delete(exchange);
+          saveRegimeRunningFlag(exchange, false);
+        }
+      } else {
+        log('WARN', `⚠️ [${exchange}] Cannot auto-resume regime engine: API keys not configured`);
+        saveRegimeRunningFlag(exchange, false);
+      }
+    }
   }
 
   // Check for scheduled trades every 30 seconds

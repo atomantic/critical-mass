@@ -15,7 +15,7 @@
  */
 
 const { getAdapter } = require('./adapters');
-const { getRegimeConfig } = require('./config-utils');
+const { getRegimeConfig, updateRegimeConfig } = require('./config-utils');
 const { createFillLedger } = require('./fill-ledger');
 const { createHealthMonitor } = require('./health-monitor');
 const { createTailEventsMonitor } = require('./tail-events');
@@ -26,6 +26,7 @@ const { createRiskManager } = require('./risk-manager');
 const { createOrderExecutor } = require('./order-executor');
 const { createDryRunExecutor } = require('./dry-run-executor');
 const { createRecoveryModule } = require('./recovery');
+const { createTpOptimizer } = require('./tp-optimizer');
 const { calculateAllMetrics, clamp, roundBTC, roundUSDC } = require('./volatility-utils');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
@@ -171,11 +172,64 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     : createOrderExecutor(exchange, config, adapter, productId);
 
   const recoveryModule = createRecoveryModule(exchange, adapter, productId);
+
+  // Create TP optimizer for dynamic TP adjustment
+  const tpOptimizer = createTpOptimizer(exchange, config, {
+    onAdjustment: (adjustment) => {
+      console.log(`📊 [${exchange}] ${modeLabel}TP auto-adjusted: min=${adjustment.tpMinPercent}% max=${adjustment.tpMaxPercent}% holdback=${adjustment.holdbackPercent}%`);
+    },
+  });
+
   let isRunning = false;
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
   let stateSaveInterval = null;
+
+  /**
+   * Handle TP optimizer adjustment
+   * Updates in-memory config and persists to config.json
+   * @param {Object} adjustment - Adjustment from optimizer
+   */
+  const handleTpAdjustment = (adjustment) => {
+    // Update in-memory config
+    config.tpMinPercent = adjustment.tpMinPercent;
+    config.tpMaxPercent = adjustment.tpMaxPercent;
+    config.holdbackPercent = adjustment.holdbackPercent;
+
+    // Persist to config.json
+    updateRegimeConfig(exchange, {
+      tpMinPercent: adjustment.tpMinPercent,
+      tpMaxPercent: adjustment.tpMaxPercent,
+      holdbackPercent: adjustment.holdbackPercent,
+    });
+
+    tradeEvents.emitTradeEvent('tp_adjusted', exchange, `TP adjusted: ${adjustment.tpMinPercent}%-${adjustment.tpMaxPercent}%`, {
+      tpMinPercent: adjustment.tpMinPercent,
+      tpMaxPercent: adjustment.tpMaxPercent,
+      holdbackPercent: adjustment.holdbackPercent,
+      reason: adjustment.reason,
+    });
+  };
+
+  /**
+   * Record cycle completion for TP optimizer
+   * @param {Object} cycleData - Data about the completed cycle
+   */
+  const recordCycleForOptimizer = (cycleData) => {
+    if (!config.tpAutoManaged) return;
+
+    const adjustment = tpOptimizer.recordCycle({
+      optimalTpPct: cycleData.optimalTpPct || 0,
+      actualTpPct: cycleData.actualTpPct || 0,
+      completedAt: Date.now(),
+      volBaseline: marketState.volBaseline || 0,
+    });
+
+    if (adjustment) {
+      handleTpAdjustment(adjustment);
+    }
+  };
 
   /**
    * Save dry-run state to disk
@@ -187,6 +241,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       isDryRun: true,
       executor: orderExecutor.exportState(),
       position: { ...positionState },
+      tpOptimizer: tpOptimizer.exportState(),
     });
   };
 
@@ -208,6 +263,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState = { ...createInitialPositionState(), ...savedState.position };
     }
 
+    // Restore TP optimizer state
+    if (savedState.tpOptimizer) {
+      tpOptimizer.importState(savedState.tpOptimizer);
+    }
+
     // Log APY tracking state restoration
     const apyStatus = positionState.engineStartTime
       ? `APY from ${new Date(positionState.engineStartTime).toISOString()}`
@@ -224,7 +284,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (isDryRun) return;
 
     const regimeState = regimeDetector.getState();
-    saveRegimeState(positionState, regimeState, exchange);
+    const optimizerState = tpOptimizer.exportState();
+    saveRegimeState(positionState, regimeState, exchange, optimizerState);
   };
 
   /**
@@ -237,12 +298,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const savedState = loadRegimeState(exchange);
     if (!savedState.position || savedState.position.totalBTC === 0) {
       console.log(`ℹ️ [${exchange}] No saved live state or empty position`);
+      // Still restore optimizer state even if no position
+      if (savedState.tpOptimizer) {
+        tpOptimizer.importState(savedState.tpOptimizer);
+      }
       return false;
     }
 
     positionState = { ...createInitialPositionState(), ...savedState.position };
     if (savedState.regime) {
       regimeDetector.restoreState(savedState.regime);
+    }
+    if (savedState.tpOptimizer) {
+      tpOptimizer.importState(savedState.tpOptimizer);
     }
 
     console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, ${positionState.totalBTC.toFixed(6)} BTC`);
@@ -378,45 +446,73 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   /**
    * Calculate APY and return metrics
+   * Uses total liquid value (USDC + BTC at current price) for APY calculations
    * @returns {Object} APY metrics
    */
   const calculateApyMetrics = () => {
     const now = Date.now();
     const startTime = positionState.engineStartTime;
     const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+    const currentPrice = marketState.lastPrice || 0;
+
+    // Calculate BTC value in USD terms
+    const totalBtcReturn = positionState.realizedBtcPnL || 0;
+    const btcValueUsd = totalBtcReturn * currentPrice;
+
+    // Total USDC return (realized P&L from trading)
+    const totalUsdcReturn = positionState.realizedPnL || 0;
+
+    // Total liquid value = USDC return + BTC holdings at current market price
+    const totalLiquidValue = totalUsdcReturn + btcValueUsd;
 
     // If engine hasn't started tracking yet or no realized P&L, return zeros
-    if (!startTime || positionState.realizedPnL === 0) {
+    if (!startTime || (totalUsdcReturn === 0 && totalBtcReturn === 0)) {
       return {
         engineStartTime: startTime,
         initialCapital,
         elapsedMs: startTime ? now - startTime : 0,
         elapsedDays: 0,
-        totalReturn: 0,
-        totalReturnPercent: 0,
+        // USDC returns
+        totalUsdcReturn: 0,
+        totalUsdcReturnPercent: 0,
+        estimatedDailyUsdc: 0,
+        // BTC returns
+        totalBtcReturn: 0,
+        btcValueUsd: 0,
+        estimatedDailyBtc: 0,
+        // Combined liquid value (used for APY)
+        totalLiquidValue: 0,
+        totalLiquidValuePercent: 0,
+        // APY calculations based on liquid value
         dailyReturnPercent: 0,
         estimatedAnnualReturn: 0,
         estimatedApy: 0,
+        // Cycle metrics
         cyclesPerDay: 0,
         avgPnlPerCycle: 0,
+        // Legacy field for backwards compatibility
+        totalReturn: 0,
+        totalReturnPercent: 0,
       };
     }
 
     const elapsedMs = now - startTime;
     const elapsedDays = elapsedMs / (1000 * 60 * 60 * 24);
-    const totalReturn = positionState.realizedPnL;
-    const totalReturnPercent = (totalReturn / initialCapital) * 100;
+
+    // Calculate return percentages
+    const totalUsdcReturnPercent = (totalUsdcReturn / initialCapital) * 100;
+    const totalLiquidValuePercent = (totalLiquidValue / initialCapital) * 100;
 
     // Minimum 1 hour of data required for meaningful projections
     const minHoursForProjection = 1;
     const hasEnoughData = elapsedMs >= minHoursForProjection * 60 * 60 * 1000;
 
-    // Daily return rate (simple) - only calculate with enough data
+    // Daily return rate based on total liquid value - only calculate with enough data
     const dailyReturnPercent = hasEnoughData && elapsedDays > 0
-      ? totalReturnPercent / elapsedDays
+      ? totalLiquidValuePercent / elapsedDays
       : 0;
 
-    // Estimated annual return (simple linear projection)
+    // Estimated annual return (simple linear projection) based on liquid value
     const estimatedAnnualReturn = hasEnoughData ? dailyReturnPercent * 365 : 0;
 
     // Compound APY calculation: (1 + dailyReturn)^365 - 1
@@ -434,9 +530,23 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       ? positionState.cyclesCompleted / elapsedDays
       : 0;
 
-    // Average P&L per cycle
+    // Average P&L per cycle (USDC only, since that's the direct trading profit)
     const avgPnlPerCycle = positionState.cyclesCompleted > 0
-      ? totalReturn / positionState.cyclesCompleted
+      ? totalUsdcReturn / positionState.cyclesCompleted
+      : 0;
+
+    // Estimated daily returns
+    const estimatedDailyUsdc = hasEnoughData && elapsedDays > 0
+      ? totalUsdcReturn / elapsedDays
+      : 0;
+
+    const estimatedDailyBtc = hasEnoughData && elapsedDays > 0
+      ? totalBtcReturn / elapsedDays
+      : 0;
+
+    // Estimated daily liquid value (USDC + BTC value combined)
+    const estimatedDailyLiquid = hasEnoughData && elapsedDays > 0
+      ? totalLiquidValue / elapsedDays
       : 0;
 
     return {
@@ -444,13 +554,28 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       initialCapital,
       elapsedMs,
       elapsedDays: roundUSDC(elapsedDays * 100) / 100, // 2 decimal places
-      totalReturn: roundUSDC(totalReturn),
-      totalReturnPercent: roundUSDC(totalReturnPercent * 100) / 100,
+      // USDC returns
+      totalUsdcReturn: roundUSDC(totalUsdcReturn),
+      totalUsdcReturnPercent: roundUSDC(totalUsdcReturnPercent * 100) / 100,
+      estimatedDailyUsdc: roundUSDC(estimatedDailyUsdc),
+      // BTC returns
+      totalBtcReturn: roundBTC(totalBtcReturn),
+      btcValueUsd: roundUSDC(btcValueUsd),
+      estimatedDailyBtc: roundBTC(estimatedDailyBtc),
+      // Combined liquid value (used for APY calculations)
+      totalLiquidValue: roundUSDC(totalLiquidValue),
+      totalLiquidValuePercent: roundUSDC(totalLiquidValuePercent * 100) / 100,
+      estimatedDailyLiquid: roundUSDC(estimatedDailyLiquid),
+      // APY calculations based on total liquid value
       dailyReturnPercent: roundUSDC(dailyReturnPercent * 100) / 100,
       estimatedAnnualReturn: roundUSDC(estimatedAnnualReturn * 100) / 100,
       estimatedApy: roundUSDC(estimatedApy * 100) / 100,
+      // Cycle metrics
       cyclesPerDay: roundUSDC(cyclesPerDay * 100) / 100,
       avgPnlPerCycle: roundUSDC(avgPnlPerCycle),
+      // Legacy fields for backwards compatibility
+      totalReturn: roundUSDC(totalLiquidValue),
+      totalReturnPercent: roundUSDC(totalLiquidValuePercent * 100) / 100,
     };
   };
 
@@ -589,6 +714,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         isDryRun: true,
         executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
         position: { ...positionState },
+        tpOptimizer: tpOptimizer.exportState(),
       });
     } else {
       // Save live state on shutdown
@@ -778,6 +904,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Calculate BTC holdback (the BTC we kept as reserves from this cycle)
       const holdbackBtc = roundBTC(positionState.totalBTC - summary.totalSize);
 
+      // Calculate actual TP percentage for optimizer
+      const actualTpPct = positionState.avgCostBasis > 0
+        ? ((summary.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
+        : 0;
+
       positionState.realizedPnL += pnl;
       positionState.realizedBtcPnL += holdbackBtc;
       positionState.btcOnOrder = 0;
@@ -791,6 +922,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         pnl,
         holdbackBtc,
         totalRealizedBtc: positionState.realizedBtcPnL,
+      });
+
+      // Record cycle for TP optimizer (live mode doesn't track max price, use actual TP as optimal)
+      recordCycleForOptimizer({
+        optimalTpPct: actualTpPct, // In live mode, we don't track optimal; use actual
+        actualTpPct,
       });
 
       // Reset for next cycle
@@ -1088,6 +1225,18 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Calculate BTC holdback (the BTC we kept as reserves from this cycle)
       const holdbackBtc = roundBTC(positionState.totalBTC - btcQty);
 
+      // Calculate actual TP percentage for optimizer
+      const actualTpPct = positionState.avgCostBasis > 0
+        ? ((price - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
+        : 0;
+
+      // Get optimal TP analytics from dry-run executor
+      const optimalAnalytics = orderExecutor.getOptimalTpAnalytics
+        ? orderExecutor.getOptimalTpAnalytics()
+        : null;
+      const lastCycle = optimalAnalytics?.cycles?.[optimalAnalytics.cycles.length - 1];
+      const optimalTpPct = lastCycle?.optimalTpPct || actualTpPct;
+
       positionState.realizedPnL += pnl;
       positionState.realizedBtcPnL += holdbackBtc;
       positionState.btcOnOrder = 0;
@@ -1100,6 +1249,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         holdbackBtc,
         totalRealizedBtc: positionState.realizedBtcPnL,
         isDryRun: true,
+      });
+
+      // Record cycle for TP optimizer (use optimal from dry-run tracking)
+      recordCycleForOptimizer({
+        optimalTpPct,
+        actualTpPct,
       });
 
       // Reset for next cycle
@@ -1126,6 +1281,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     orders: orderExecutor.getPendingCounts(),
     apy: calculateApyMetrics(),
     dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,
+    tpOptimizer: tpOptimizer.getStatus(),
   });
 
   /**

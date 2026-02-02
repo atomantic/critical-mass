@@ -107,6 +107,18 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Maximum interval fallback (default: 1hr)
 - ATR calculated from 1-minute and 5-minute candles
 
+**Dynamic TP Auto-Management (v2.4+):**
+- Opt-in feature (`tpAutoManaged: true`) for automatic TP parameter adjustment
+- Records cycle analytics (optimal TP %, actual TP %, volatility context)
+- Compresses historical data into histogram buckets with time-weighted decay
+- Calculates percentiles (p25, p50, p75) from compressed + recent data
+- Periodic evaluation every N cycles (default: 5) or daily (whichever first)
+- Rate-limited adjustments (max 25% change per evaluation)
+- Safety bounds: absolute min (0.05%), absolute max (5.0%)
+- Auto-holdback set to half of tpMinPercent when auto-adjusted
+- State persisted across restarts (in regime-state.json / dry-run-state.json)
+- Dashboard panel shows current settings, observed percentiles, adjustment history
+
 **Safety Features:**
 - Automatic SAFE mode on: WebSocket disconnect, stale data, REST errors
 - Flash move detection pauses entries and disables scaling
@@ -132,14 +144,20 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 **APY & Performance Tracking:**
 - Tracks engine start time and initial capital (maxUsdcDeployed)
 - Persists APY tracking across restarts
+- **Total Liquid Value** - APY calculated from combined USDC + BTC (at live market price)
+  - `totalUsdcReturn` - USDC realized P&L from trading
+  - `totalBtcReturn` - BTC holdback accumulated (8 decimal precision)
+  - `btcValueUsd` - BTC valued at current market price
+  - `totalLiquidValue` - Combined value used for APY projections
 - Calculates and displays:
-  - Total return (USD and %)
-  - Daily return rate
+  - Total return breakdown (USDC, BTC with USD value, combined Live Total)
+  - Daily return rate based on liquid value
   - Estimated annual return (linear projection)
   - Estimated APY (compound calculation)
   - Cycles per day
   - Average P&L per cycle
 - UI displays performance metrics in the Position section
+- **Auto-resume on restart** - Engine automatically resumes if it was running before server restart
 
 **Dry-Run Mode:**
 - Test regime engine against live market data without placing real orders
@@ -254,6 +272,7 @@ src/
 ├── order-executor.js   # Maker-prefer limit order placement
 ├── dry-run-executor.js # Simulated order execution for dry-run mode
 ├── dry-run-state.js    # State persistence for dry-run simulations
+├── tp-optimizer.js     # Dynamic TP auto-management with histogram compression
 ├── health-monitor.js   # SAFE mode and system health
 ├── tail-events.js      # Flash/spread/depth event detection
 ├── websocket-feed.js   # Coinbase WebSocket real-time feed
