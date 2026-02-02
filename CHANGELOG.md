@@ -39,6 +39,10 @@ All notable changes to this project will be documented in this file.
 - **Offline fills check failure blocking startup** - Startup continues even if offline fill check fails
   - Error is logged but doesn't prevent engine from starting
   - Fills will be detected on next reconciliation cycle
+- **Regime engine showing DCA orders in Open Orders** - Fixed order isolation between engines
+  - Regime engine was absorbing ALL open orders from Coinbase during recovery
+  - Now only tracks orders it places itself, ignoring orders from DCA engine
+  - Orders from other engines (like standard DCA) are no longer displayed or tracked
 
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)
