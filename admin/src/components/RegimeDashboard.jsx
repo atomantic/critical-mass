@@ -640,7 +640,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 />
                 <StatCard
                   label="BTC on Order"
-                  value={position.btcOnOrder?.toFixed(6) || '0'}
+                  value={(isDryRun && dryRunState?.pnl?.btcOnOrder ? dryRunState.pnl.btcOnOrder : position.btcOnOrder || 0).toFixed(6)}
                   subValue="in sell orders"
                   color="text-yellow-400"
                 />
@@ -659,7 +659,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 />
                 <StatCard
                   label="BTC Reserves"
-                  value={position.realizedBtcPnL?.toFixed(6) || '0'}
+                  value={(position.realizedBtcPnL || 0).toFixed(6)}
                   subValue="from holdback"
                   color="text-cyan-400"
                 />
@@ -676,7 +676,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div className={`text-lg font-semibold ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       ${position.realizedPnL?.toFixed(2) || '0'}
                     </div>
-                    {position.realizedBtcPnL > 0 && (
+                    {(position.realizedBtcPnL || 0) > 0 && (
                       <div className="text-xs text-cyan-400 mt-0.5">
                         + {position.realizedBtcPnL?.toFixed(6)} BTC
                       </div>
@@ -694,7 +694,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(6) || 0} BTC</div>
                     <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(6) || 0} BTC</div>
                     <div>BTC on Order: <span className="text-yellow-400">{dryRunState.pnl.btcOnOrder?.toFixed(6) || 0}</span></div>
-                    <div>BTC Reserves: <span className="text-cyan-400">{dryRunState.pnl.realizedBtcPnL?.toFixed(6) || 0}</span></div>
+                    <div>BTC Reserves: <span className="text-cyan-400">{position.realizedBtcPnL?.toFixed(6) || 0}</span></div>
                     <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
                     <div>Avg Entry: ${dryRunState.pnl.avgEntryPrice?.toFixed(2) || 0}</div>
                   </div>
