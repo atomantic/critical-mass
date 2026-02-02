@@ -80,9 +80,11 @@ const REGIME_DEFAULTS = {
   maxBtcExposure: 0.5,
   maxUsdcDeployed: 10000,
   maxDrawdownPercent: 20,
+  drawdownResetHours: 72, // Auto-reset peak after 72 hours (3 days) of drawdown pause
 
   // Order Execution
   entryOffsetBps: 10,
+  entryMaxRetries: 3, // Max retries for post-only rejections in fast markets
   cancelRateLimitMs: 1000,
   orderStaleMs: 30000,
   makerTimeoutMs: 10000,
@@ -445,6 +447,9 @@ const validateRegimeConfig = (config) => {
   }
   if (config.maxDrawdownPercent !== undefined && (config.maxDrawdownPercent < 10 || config.maxDrawdownPercent > 30)) {
     errors.push('maxDrawdownPercent must be between 10 and 30');
+  }
+  if (config.drawdownResetHours !== undefined && (config.drawdownResetHours < 0 || config.drawdownResetHours > 720)) {
+    errors.push('drawdownResetHours must be between 0 (disabled) and 720 (30 days)');
   }
 
   return {

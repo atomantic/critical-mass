@@ -510,9 +510,11 @@
  * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)
  * @property {number} maxUsdcDeployed - Maximum USDC deployed (default: 10000)
  * @property {number} maxDrawdownPercent - Pause threshold (default: 20)
+ * @property {number} drawdownResetHours - Hours after which to auto-reset peak during drawdown pause (default: 72, 0 to disable)
  *
  * Order Execution Parameters
  * @property {number} entryOffsetBps - Offset below mid for bids (default: 10)
+ * @property {number} entryMaxRetries - Max retries for post-only rejections in fast markets (default: 3)
  * @property {number} cancelRateLimitMs - Min time between cancels (default: 1000)
  * @property {number} orderStaleMs - Timeout for stale orders (default: 30000)
  * @property {number} makerTimeoutMs - Wait time for maker fill (default: 10000)
@@ -624,6 +626,7 @@
  * @property {() => ApiCredentials} loadCredentials - Load API credentials
  * @property {(currency: string) => Promise<AccountBalance>} getAccountBalance - Get account balance
  * @property {(productId: string) => Promise<number>} getCurrentPrice - Get current price
+ * @property {(productId: string) => Promise<{bid: number, ask: number}>} getBidAsk - Get current bid/ask
  * @property {(productId: string) => Promise<ProductDetails>} getProductDetails - Get product details
  * @property {(productId: string, quoteAmount: number) => Promise<MarketBuyResult>} placeMarketBuy - Place market buy
  * @property {(productId: string, baseAmount: number, price: number) => Promise<LimitSellResult>} placeLimitSell - Place limit sell
