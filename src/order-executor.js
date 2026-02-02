@@ -376,6 +376,20 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
   };
 
   /**
+   * Get all pending entry orders
+   * @returns {Map<string, PendingOrder>}
+   */
+  const getPendingEntries = () => {
+    const entries = new Map();
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type === 'entry') {
+        entries.set(orderId, order);
+      }
+    }
+    return entries;
+  };
+
+  /**
    * Check invariants (max open orders)
    * @returns {{valid: boolean, reason?: string}}
    */
@@ -445,6 +459,7 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
     handleOrderFill,
     handleOrderCancel,
     getPendingCounts,
+    getPendingEntries,
     checkInvariants,
     getActiveTpOrderId,
     getSummary,

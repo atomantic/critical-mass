@@ -146,6 +146,28 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Training and understanding the system behavior
   - Stress testing under volatile market conditions
 
+**Live Mode State Persistence:**
+- Exchange is always source of truth for position and orders
+- State persistence for faster recovery on restarts:
+  - Saves regime state to `data/{exchange}/regime-state.json` every 5 minutes
+  - Saves fill ledger to `data/{exchange}/fill-ledger.json` on shutdown
+  - Restores state on startup, then validates against exchange
+- **Restart recovery flow:**
+  1. Load saved state from disk (if exists)
+  2. Recover state from exchange (fills, open orders, balances)
+  3. Merge saved state with exchange-recovered values
+  4. Check for orders that filled while offline (TP orders, entry orders)
+  5. Re-evaluate position based on current market price
+  6. Re-anchor volatility triggers to current price
+  7. Resume trading with validated state
+- Offline order detection handles:
+  - TP orders that filled while offline → completes cycle, calculates P&L
+  - Entry orders that filled while offline → updates position
+- Market position re-evaluation on startup:
+  - Logs price movement since last entry
+  - Re-anchors price for volatility triggers
+  - Warns if price dropped significantly while offline
+
 **API Routes:**
 ```
 GET  /api/:exchange/regime/config    - Get regime configuration
