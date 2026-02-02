@@ -31,6 +31,8 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 - Transaction history and cost basis reports
 - Backtesting with historical price data (supports any trading pair from config)
 - Parameter optimization engine (supports any trading pair from config)
+- Responsive layout with breakpoints: 1280px (default), 1440px (2xl), 1920px (3xl)
+- Regime Dashboard with live D3.js charts (price, volatility, regime timeline)
 - Smart price formatting: adapts decimal places based on asset price magnitude
   - High prices (>$100): 2 decimals (e.g., $105,234.56)
   - Medium prices ($1-$100): up to 4 decimals (e.g., $45.1234)
@@ -220,10 +222,19 @@ admin/src/components/
 │   ├── BarChart.jsx    # Bar and horizontal bar charts
 │   ├── PriceChart.jsx  # Price line with buy markers
 │   ├── ComposedChart.jsx # Multi-series area/line charts
-│   └── PendingOrdersChart.jsx # Order visualization
+│   ├── PendingOrdersChart.jsx # Order visualization
+│   ├── MiniPriceSparkline.jsx  # Compact price sparkline for status bar
+│   ├── RegimePriceChart.jsx    # Price chart with ATR trigger bands
+│   ├── VolatilityChart.jsx     # ATR/volatility area chart
+│   └── RegimeTimeline.jsx      # Horizontal regime history bar
 ├── Charts.jsx          # Charts page using D3 components
 ├── Dashboard.jsx       # Main dashboard view
+├── RegimeDashboard.jsx # Regime engine control panel with live charts
 └── ...                 # Other components
+
+admin/src/hooks/
+├── useTradeEvents.js    # WebSocket event subscriptions
+└── useChartDataBuffer.js # 15-minute rolling data buffer for charts
 ```
 
 ### Configuration Format

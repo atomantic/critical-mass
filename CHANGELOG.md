@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.5] - 2026-02-01
+
+### Added
+- Responsive layout for admin dashboard (1280px → 1600px → 1800px breakpoints)
+- Live D3.js charts for Regime Dashboard: price sparkline, volatility chart, regime timeline
+- `useChartDataBuffer` hook for 15-minute rolling WebSocket data accumulation
+- 4-column layout on 3xl screens (1920px+) with dedicated charts column
+
 ## [2.3.0] - 2026-01-31
 
 ### Added
