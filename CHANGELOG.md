@@ -46,6 +46,10 @@ All notable changes to this project will be documented in this file.
 - **Stop Engine button not updating UI** - UI now properly reflects stopped state
   - Socket status was taking precedence over fetched status after stop
   - Now clears socket status when engine stops so UI shows correct state
+- **Ghost orders in UI** - Orders that exist in UI but not on exchange
+  - Post-only orders can be immediately cancelled by Coinbase if they would cross the spread
+  - Now verifies order status after placement before adding to pending orders
+  - If order was immediately cancelled, retries with fresh prices
 
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)
