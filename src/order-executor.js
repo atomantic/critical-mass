@@ -192,18 +192,23 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
    * @param {string} orderId - Order ID to check
    */
   const scheduleStaleOrderTimeout = (orderId) => {
-    setTimeout(async () => {
+    setTimeout(() => {
       const order = pendingOrders.get(orderId);
       if (!order || order.type !== 'entry') return;
 
-      const status = await adapter.getOrder(orderId);
-
-      if (status.status === 'OPEN' && status.completionPercentage === 0) {
-        // Not filled at all, cancel
-        console.log(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`);
-        await adapter.cancelOrder(orderId);
-        pendingOrders.delete(orderId);
-      }
+      adapter.getOrder(orderId)
+        .then(status => {
+          if (status.status === 'OPEN' && status.completionPercentage === 0) {
+            // Not filled at all, cancel
+            console.log(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`);
+            return adapter.cancelOrder(orderId).then(() => {
+              pendingOrders.delete(orderId);
+            });
+          }
+        })
+        .catch(err => {
+          console.log(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err.message}`);
+        });
     }, config.orderStaleMs);
   };
 
@@ -308,20 +313,34 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
 
   /**
    * Cancel all entry orders (for SAFE mode)
+   * Continues on individual cancel failures to ensure all orders are attempted
    * @returns {Promise<number>} Number of orders cancelled
    */
   const cancelAllEntries = async () => {
     let cancelled = 0;
+    let failed = 0;
 
-    for (const [orderId, order] of pendingOrders) {
-      if (order.type === 'entry') {
-        await adapter.cancelOrder(orderId);
+    const entryOrders = Array.from(pendingOrders.entries())
+      .filter(([, order]) => order.type === 'entry');
+
+    const results = await Promise.allSettled(
+      entryOrders.map(([orderId]) => adapter.cancelOrder(orderId))
+    );
+
+    results.forEach((result, index) => {
+      const [orderId] = entryOrders[index];
+      if (result.status === 'fulfilled') {
         pendingOrders.delete(orderId);
         cancelled++;
+      } else {
+        failed++;
+        console.log(`⚠️ [${exchange}] Failed to cancel order ${orderId}: ${result.reason?.message || 'unknown'}`);
+        // Still remove from tracking - order may have filled or been cancelled already
+        pendingOrders.delete(orderId);
       }
-    }
+    });
 
-    console.log(`🚫 [${exchange}] Cancelled ${cancelled} entry orders`);
+    console.log(`🚫 [${exchange}] Cancelled ${cancelled} entry orders${failed > 0 ? ` (${failed} failed)` : ''}`);
     return cancelled;
   };
 
