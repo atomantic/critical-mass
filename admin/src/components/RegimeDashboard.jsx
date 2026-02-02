@@ -207,7 +207,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Combine and filter regime-related trade events
   const allEvents = [...regimeEvents, ...tradeEvents.filter(e =>
-    ['regime_change', 'entry_placed', 'entry_filled', 'tp_placed', 'tp_filled', 'flash_move', 'safe_mode', 'active_mode'].includes(e.type)
+    ['regime_change', 'entry_placed', 'entry_filled', 'tp_placed', 'tp_filled', 'tp_adjusted', 'flash_move', 'safe_mode', 'active_mode'].includes(e.type)
   )].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 30)
 
   // Fetch status (only used for initial load and when engine is stopped)
@@ -326,6 +326,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const regimeStyle = REGIME_COLORS[regime.mode] || REGIME_COLORS.HARVEST
   const healthStyle = HEALTH_COLORS[health.mode] || HEALTH_COLORS.ACTIVE
   const apy = status?.apy || {}
+  const tpOptimizer = status?.tpOptimizer || {}
 
   return (
     <div className="space-y-6">
@@ -736,19 +737,56 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <div className="text-gray-500">Running For</div>
                       <div className="text-white font-mono">{apy.elapsedDays?.toFixed(1)} days</div>
                     </div>
-                    <div className="bg-gray-900/50 rounded p-2">
-                      <div className="text-gray-500">Total Return</div>
-                      <div className={`font-mono ${apy.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        ${apy.totalReturn?.toFixed(2)} ({apy.totalReturnPercent?.toFixed(2)}%)
+                  </div>
+
+                  {/* Returns Breakdown */}
+                  <div className="mt-2 p-2 bg-gray-900/50 rounded">
+                    <div className="text-gray-500 text-xs mb-2">Total Return</div>
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <div className="text-gray-400">USDC</div>
+                        <div className={`font-mono ${(apy.totalUsdcReturn || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          ${(apy.totalUsdcReturn || 0).toFixed(2)}
+                        </div>
                       </div>
-                    </div>
-                    <div className="bg-gray-900/50 rounded p-2">
-                      <div className="text-gray-500">Daily Return</div>
-                      <div className={`font-mono ${apy.dailyReturnPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {apy.dailyReturnPercent > 99 ? '>99' : apy.dailyReturnPercent?.toFixed(2)}%
+                      <div>
+                        <div className="text-gray-400">BTC</div>
+                        <div className="text-orange-400 font-mono">
+                          {(apy.totalBtcReturn || 0).toFixed(8)}
+                        </div>
+                        <div className="text-gray-500 text-xs">
+                          ≈ ${(apy.btcValueUsd || 0).toFixed(2)}
+                        </div>
+                      </div>
+                      <div className="border-l border-gray-700 pl-2">
+                        <div className="text-cyan-400/70">Live Total</div>
+                        <div className={`font-mono font-semibold ${(apy.totalLiquidValue || 0) >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
+                          ${(apy.totalLiquidValue || 0).toFixed(2)}
+                        </div>
+                        <div className="text-gray-500 text-xs">
+                          ({(apy.totalLiquidValuePercent || 0).toFixed(2)}%)
+                        </div>
                       </div>
                     </div>
                   </div>
+
+                  {/* Daily Return based on total liquid value */}
+                  <div className="mt-2 bg-gray-900/50 rounded p-2">
+                    <div className="text-gray-500 text-xs mb-1">Est. Daily Return (Live Value)</div>
+                    <div className="flex items-baseline gap-2">
+                      <div className={`font-mono text-lg ${apy.dailyReturnPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {apy.dailyReturnPercent > 99 ? '>99' : apy.dailyReturnPercent?.toFixed(2)}%
+                      </div>
+                      <div className="text-gray-400 text-xs">
+                        (${(apy.estimatedDailyLiquid || 0).toFixed(2)}/day)
+                      </div>
+                    </div>
+                    <div className="text-gray-500 text-xs mt-1 flex gap-3">
+                      <span>${apy.estimatedDailyUsdc?.toFixed(2)} USDC</span>
+                      <span>+{((apy.estimatedDailyBtc || 0) * 1e8).toFixed(0)} sats</span>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-2 text-xs mt-2">
                     <div className="bg-gradient-to-r from-green-900/30 to-green-800/20 border border-green-700/30 rounded p-2">
                       <div className="text-green-400/70">Est. Annual Return</div>
@@ -908,6 +946,81 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               </div>
             )}
 
+            {/* TP Auto-Management Panel */}
+            {tpOptimizer.enabled && (
+              <div className="bg-gray-800 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-gray-400">TP Auto-Management</h3>
+                  <span className="px-2 py-0.5 bg-green-900/50 text-green-400 text-xs rounded">
+                    Active
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  {/* Current Config */}
+                  <div className="p-2 bg-gray-900/50 rounded">
+                    <div className="text-gray-500 mb-1">Current TP Settings</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <span className="text-gray-400">Min:</span>{' '}
+                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.tpMinPercent?.toFixed(2)}%</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Max:</span>{' '}
+                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.tpMaxPercent?.toFixed(2)}%</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Holdback:</span>{' '}
+                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.holdbackPercent?.toFixed(2)}%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Observed Percentiles */}
+                  {tpOptimizer.sampleCount >= 3 && (
+                    <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded">
+                      <div className="text-cyan-400/70 mb-1">Observed Percentiles ({tpOptimizer.sampleCount} samples)</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <span className="text-gray-400">p25:</span>{' '}
+                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p25?.toFixed(2)}%</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-400">p50:</span>{' '}
+                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p50?.toFixed(2)}%</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-400">p75:</span>{' '}
+                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p75?.toFixed(2)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Evaluation Status */}
+                  <div className="flex justify-between text-gray-500">
+                    <span>Cycles since eval: {tpOptimizer.cyclesSinceEval || 0}</span>
+                    <span>Samples: {tpOptimizer.sampleCount || 0}</span>
+                  </div>
+
+                  {/* Recent Adjustments */}
+                  {tpOptimizer.adjustmentHistory?.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-gray-700">
+                      <div className="text-gray-500 mb-1">Recent Adjustments</div>
+                      <div className="space-y-1 max-h-24 overflow-y-auto">
+                        {tpOptimizer.adjustmentHistory.slice(-3).reverse().map((adj, idx) => (
+                          <div key={idx} className="text-xs text-gray-400 flex justify-between">
+                            <span>{new Date(adj.timestamp).toLocaleTimeString()}</span>
+                            <span className="text-cyan-400">{adj.tpMin?.toFixed(1)}%-{adj.tpMax?.toFixed(1)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Activity Feed */}
             <div className="bg-gray-800 rounded-lg p-4 h-fit">
             <div className="flex items-center justify-between mb-3">
@@ -932,6 +1045,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     entry_filled: 'text-green-400',
                     tp_placed: 'text-cyan-400',
                     tp_filled: 'text-green-400',
+                    tp_adjusted: 'text-cyan-400',
                     flash_move: 'text-red-400',
                     safe_mode: 'text-yellow-400',
                     error: 'text-red-400',
@@ -1199,7 +1313,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
             </div>
             <div>
               <span className="text-gray-500">TP Range</span>
-              <div className="text-white">{config.tpMinPercent}% - {config.tpMaxPercent}%</div>
+              <div className="flex items-center gap-1">
+                <span className="text-white">{config.tpMinPercent}% - {config.tpMaxPercent}%</span>
+                {config.tpAutoManaged && (
+                  <span className="px-1 py-0.5 bg-cyan-900/50 text-cyan-400 text-xs rounded">Auto</span>
+                )}
+              </div>
             </div>
           </div>
         </div>

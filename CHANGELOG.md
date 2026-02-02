@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.20] - 2026-02-01
+
+### Added
+- **Auto-resume regime engine on server restart** - Engine automatically resumes if it was running before restart
+  - Running flag saved when engine starts, removed when manually stopped
+  - Server restarts preserve flag to enable auto-resume
+- **Total liquid value for APY calculations** - APY now based on combined USDC + BTC (at current price)
+  - `totalUsdcReturn` - USDC realized P&L from trading
+  - `totalBtcReturn` - BTC holdback accumulated
+  - `btcValueUsd` - BTC holdings valued at current market price
+  - `totalLiquidValue` - Combined value (USDC + BTC at live price) used for APY projections
+  - UI shows breakdown: USDC return, BTC return with USD equivalent, and combined "Live Total"
+
+### Changed
+- Performance Metrics UI redesigned to show USDC, BTC, and total liquid value separately
+- Est. Daily Return now labeled "(Live Value)" to indicate it's based on combined liquid value
+- BTC values now displayed with 8 decimal places for precision
+
+## [2.3.19] - 2026-02-01
+
+### Added
+- Estimated daily USDC and BTC returns in APY metrics
+  - `estimatedDailyUsdc` - projected daily USD return based on current performance
+  - `estimatedDailyBtc` - projected daily BTC return (holdback accumulation rate)
+  - UI displays both values alongside daily return percentage (in sats for BTC)
+
 ## [2.3.17] - 2026-02-01
 
 ### Added
