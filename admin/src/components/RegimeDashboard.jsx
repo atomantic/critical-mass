@@ -1133,11 +1133,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         const estPnl = order.type === 'take_profit' && avgCost > 0
                           ? (order.price - avgCost) * order.size
                           : null
-                        // Calculate expected BTC holdback for TP orders
+                        // Calculate expected profit-based BTC holdback for TP orders
+                        // holdbackQty = sellQty * profitPerBTC * ratio / (price * (1-ratio) + cost * ratio)
                         const holdbackRatio = config?.holdbackRatio ?? 0.5
-                        const estHoldback = order.type === 'take_profit'
-                          ? order.size * (holdbackRatio / (1 - holdbackRatio))
+                        const profitPerBTC = order.price - avgCost
+                        const denominator = order.price * (1 - holdbackRatio) + avgCost * holdbackRatio
+                        const estHoldback = order.type === 'take_profit' && profitPerBTC > 0 && denominator > 0
+                          ? order.size * profitPerBTC * holdbackRatio / denominator
                           : null
+                        const estHoldbackValue = estHoldback ? estHoldback * order.price : null
                         return (
                           <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">
                             <td className="py-2 pr-2">
@@ -1160,7 +1164,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               {estPnl !== null ? `${estPnl >= 0 ? '+' : ''}$${estPnl.toFixed(2)}` : '—'}
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                              {estHoldback !== null ? `+${estHoldback.toFixed(8)}` : '—'}
+                              {estHoldback !== null ? (
+                                <span title={`≈$${estHoldbackValue?.toFixed(2)}`}>+{estHoldback.toFixed(8)}</span>
+                              ) : '—'}
                             </td>
                             <td className="text-right py-2 font-mono text-gray-500 text-xs">
                               {formatDuration(age)}

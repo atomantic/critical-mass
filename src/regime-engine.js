@@ -914,7 +914,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.btcOnOrder = 0;
       positionState.cyclesCompleted += 1;
 
-      console.log(`✅ [${exchange}] TP filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`);
+      // Grow capital by adding USDC profit to maxUsdcDeployed
+      const prevMaxUsdc = config.maxUsdcDeployed;
+      config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+      updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+
+      console.log(`✅ [${exchange}] TP filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
       tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
         btcAmount: summary.totalSize,
@@ -922,6 +927,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         pnl,
         holdbackBtc,
         totalRealizedBtc: positionState.realizedBtcPnL,
+        capitalGrowth: pnl,
+        newMaxUsdcDeployed: config.maxUsdcDeployed,
       });
 
       // Record cycle for TP optimizer (live mode doesn't track max price, use actual TP as optimal)
@@ -1112,11 +1119,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * Place or update take-profit order
    */
   const placeTakeProfitOrder = async () => {
-    const { sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(positionState.totalBTC);
+    // Calculate TP price first (needed for profit-based holdback calculation)
+    const tpPrice = calculateDynamicTP();
+
+    // Calculate sizing based on profit at TP price
+    const { sellQty, holdbackQty, profitUsdc, profitBtcValue } = positionSizer.calculateTakeProfitSize(
+      positionState.totalBTC,
+      positionState.avgCostBasis,
+      tpPrice
+    );
 
     if (sellQty <= 0) return;
-
-    const tpPrice = calculateDynamicTP();
 
     const result = await orderExecutor.placeTakeProfitOrder(sellQty, tpPrice);
 
@@ -1126,7 +1139,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.btcOnOrder = sellQty;
 
       if (result.updated) {
-        console.log(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)})`);
+        console.log(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC ≈$${profitBtcValue.toFixed(2)})`);
       }
     }
   };
@@ -1242,12 +1255,21 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.btcOnOrder = 0;
       positionState.cyclesCompleted += 1;
 
+      // Grow capital by adding USDC profit to maxUsdcDeployed
+      const prevMaxUsdc = config.maxUsdcDeployed;
+      config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+      updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+
+      console.log(`💰 [${exchange}] [DRY-RUN] Capital growth: $${prevMaxUsdc.toFixed(2)} → $${config.maxUsdcDeployed.toFixed(2)} (+$${pnl.toFixed(2)})`);
+
       tradeEvents.emitTradeEvent('tp_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`, {
         btcAmount: btcQty,
         price,
         pnl,
         holdbackBtc,
         totalRealizedBtc: positionState.realizedBtcPnL,
+        capitalGrowth: pnl,
+        newMaxUsdcDeployed: config.maxUsdcDeployed,
         isDryRun: true,
       });
 

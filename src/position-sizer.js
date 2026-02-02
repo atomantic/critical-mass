@@ -132,19 +132,38 @@ const createPositionSizer = (exchange, config) => {
   };
 
   /**
-   * Calculate take-profit size (accounts for holdback)
-   * Uses holdbackRatio to split position between sell and hold
+   * Calculate take-profit size based on profit-based holdback
+   * Recovers full cost basis + (1-holdbackRatio) of profit as USDC
+   * Keeps holdbackRatio of profit as BTC appreciation
+   *
    * @param {number} totalBTC - Total BTC position
-   * @returns {{sellQty: number, holdbackQty: number}}
+   * @param {number} avgCostBasis - Average cost per BTC
+   * @param {number} sellPrice - Target sell price
+   * @returns {{sellQty: number, holdbackQty: number, profitUsdc: number, profitBtcValue: number}}
    */
-  const calculateTakeProfitSize = (totalBTC) => {
+  const calculateTakeProfitSize = (totalBTC, avgCostBasis, sellPrice) => {
     const holdbackRatio = config.holdbackRatio ?? 0.5;
-    const holdbackQty = roundBTC(totalBTC * holdbackRatio);
+
+    // Calculate profit per BTC and total profit
+    const profitPerBTC = sellPrice - avgCostBasis;
+    const totalProfit = totalBTC * profitPerBTC;
+
+    // Calculate how much profit to keep as BTC value
+    const profitToHoldAsBtcValue = totalProfit * holdbackRatio;
+
+    // Convert that profit value to BTC quantity at sell price
+    const holdbackQty = roundBTC(profitToHoldAsBtcValue / sellPrice);
     const sellQty = roundBTC(totalBTC - holdbackQty);
+
+    // Calculate actual profit split
+    const profitUsdc = sellQty * profitPerBTC;  // USDC profit from selling
+    const profitBtcValue = holdbackQty * profitPerBTC;  // BTC profit value kept
 
     return {
       sellQty,
       holdbackQty,
+      profitUsdc,
+      profitBtcValue,
     };
   };
 
