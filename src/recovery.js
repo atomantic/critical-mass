@@ -80,20 +80,18 @@ const createRecoveryModule = (exchange, adapter, productId) => {
       orderExecutor.restorePendingOrder(order.orderId, pendingOrder);
     }
 
-    // 7. Validate position against base balance
-    const expectedBTC = position.totalBTC;
-    const actualBTC = baseBalance.available + baseBalance.hold;
-    const btcDiff = Math.abs(expectedBTC - actualBTC);
+    // 7. Compare position against base balance (informational only)
+    // NOTE: Account may have BTC from other sources - we only track what regime engine traded
+    const trackedBTC = position.totalBTC;
+    const accountBTC = baseBalance.available + baseBalance.hold;
 
-    if (btcDiff > 0.00001) {
-      discrepancies.push(`BTC discrepancy: expected=${expectedBTC.toFixed(8)}, actual=${actualBTC.toFixed(8)}`);
+    if (accountBTC > trackedBTC + 0.00001) {
+      // Account has more BTC than we're tracking - this is expected if user has other holdings
+      console.log(`ℹ️ [${exchange}] Account has ${accountBTC.toFixed(8)} BTC, regime engine tracking ${trackedBTC.toFixed(8)} BTC (other holdings not tracked)`);
+    } else if (trackedBTC > accountBTC + 0.00001) {
+      // We're tracking more than exists - this is a real problem
+      discrepancies.push(`BTC tracking error: tracking ${trackedBTC.toFixed(8)} but only ${accountBTC.toFixed(8)} in account`);
       console.log(`⚠️ [${exchange}] ${discrepancies[discrepancies.length - 1]}`);
-      // Use exchange balance as truth
-      position.totalBTC = roundBTC(actualBTC);
-      // Recalculate avg cost if we have any position
-      if (position.totalBTC > 0 && position.totalCostBasis > 0) {
-        position.avgCostBasis = position.totalCostBasis / position.totalBTC;
-      }
     }
 
     console.log(`✅ [${exchange}] Recovery complete: ${openOrders.length} open orders, ${position.totalBTC} ${baseCurrency} position`);
@@ -146,12 +144,13 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     const baseCurrency = productId.split('-')[0];
     const baseBalance = await adapter.getAccountBalance(baseCurrency);
 
-    const expectedBTC = position.totalBTC;
-    const actualBTC = baseBalance.available + baseBalance.hold;
-    const btcDiff = Math.abs(expectedBTC - actualBTC);
+    const trackedBTC = position.totalBTC;
+    const accountBTC = baseBalance.available + baseBalance.hold;
 
-    if (btcDiff > 0.00001) {
-      discrepancies.push(`BTC: expected=${expectedBTC.toFixed(8)}, actual=${actualBTC.toFixed(8)}`);
+    // Only flag as discrepancy if we're tracking MORE than exists in account
+    // Account having extra BTC is fine (user's other holdings)
+    if (trackedBTC > accountBTC + 0.00001) {
+      discrepancies.push(`Tracking ${trackedBTC.toFixed(8)} BTC but only ${accountBTC.toFixed(8)} in account`);
     }
 
     return {
@@ -172,13 +171,8 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     if (!validation.valid) {
       console.log(`⚠️ [${exchange}] Reconciliation found discrepancies: ${validation.discrepancies.join(', ')}`);
 
-      // Rebuild from fills
+      // Rebuild from fills only - don't use exchange balance as it may include other holdings
       const rebuiltPosition = fillLedger.rebuildPositionFromFills();
-
-      // Use exchange balance for BTC
-      const baseCurrency = productId.split('-')[0];
-      const baseBalance = await adapter.getAccountBalance(baseCurrency);
-      rebuiltPosition.totalBTC = roundBTC(baseBalance.available + baseBalance.hold);
 
       return {
         updated: true,
