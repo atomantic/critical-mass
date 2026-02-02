@@ -110,7 +110,16 @@ const createCoinbaseAdapter = (keysPath = null) => {
       config.data = data;
     }
 
-    const response = await axios(config);
+    const response = await axios(config).catch(err => {
+      // Extract clean error info instead of dumping full axios error object
+      const status = err.response?.status || 'unknown';
+      const message = err.response?.data?.message || err.response?.data?.error_details || err.message;
+      const errorData = err.response?.data?.error || '';
+      const cleanError = new Error(`Coinbase API ${status}: ${message}${errorData ? ` (${errorData})` : ''}`);
+      cleanError.status = status;
+      cleanError.endpoint = `${method} ${apiPath}`;
+      throw cleanError;
+    });
     return response.data;
   };
 
