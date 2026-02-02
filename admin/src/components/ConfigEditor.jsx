@@ -286,6 +286,31 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
               <FormInput label={`Min Order (${quoteCurrency})`} value={config.minOrderSize} onChange={(v) => handleChange('minOrderSize', v)} type="number" />
               <FormInput label={`Max Price (${quoteCurrency})`} value={config.maxBuyPrice} onChange={(v) => handleChange('maxBuyPrice', v)} type="number" />
             </div>
+            {/* Holdback vs Markup validation warning */}
+            {(() => {
+              const holdback = config.holdbackPercent || 0;
+              const markup = config.sellMarkupPercent || 1;
+              const cashReturn = (1 - holdback / 100) * (1 + markup / 100) * 100 - 100;
+              const maxHoldbackForCashBreakeven = (markup / (1 + markup / 100)).toFixed(2);
+
+              if (holdback > markup && holdback > 0) {
+                return (
+                  <div className="mb-4 p-2 bg-amber-900/30 border border-amber-600/50 rounded text-xs">
+                    <div className="text-amber-400 font-medium mb-1">⚠️ Holdback exceeds Markup</div>
+                    <div className="text-gray-300">
+                      Each cycle returns{' '}
+                      <span className="text-red-400 font-medium">{cashReturn.toFixed(2)}% cash</span>
+                      {' '}but gains{' '}
+                      <span className="text-green-400 font-medium">+{holdback}% BTC</span>.
+                      <div className="mt-1 text-gray-400">
+                        For cash-neutral cycles at {markup}% markup, set holdback ≤ {maxHoldbackForCashBreakeven}%.
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
 
             {/* Consolidation - inline row (hidden for Fibonacci which handles its own consolidation) */}
             {!isFibonacci && (
@@ -390,6 +415,36 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
                 <FormInput label="TP Max %" value={regimeConfig.tpMaxPercent || 15.0} onChange={(v) => handleRegimeChange('tpMaxPercent', v)} type="number" />
                 <FormInput label="Holdback %" value={regimeConfig.holdbackPercent || 5} onChange={(v) => handleRegimeChange('holdbackPercent', v)} type="number" />
               </div>
+              {/* Holdback vs TP validation warning */}
+              {(() => {
+                const holdback = regimeConfig.holdbackPercent || 5;
+                const tpMin = regimeConfig.tpMinPercent || 0.1;
+                const cashReturn = (1 - holdback / 100) * (1 + tpMin / 100) * 100 - 100;
+                const btcGain = holdback;
+                const maxHoldbackForCashBreakeven = (tpMin / (1 + tpMin / 100)).toFixed(2);
+
+                if (holdback > tpMin) {
+                  return (
+                    <div className="mt-2 p-2 bg-amber-900/30 border border-amber-600/50 rounded text-xs">
+                      <div className="text-amber-400 font-medium mb-1">⚠️ Holdback exceeds TP Min</div>
+                      <div className="text-gray-300">
+                        At minimum TP ({tpMin}%), each cycle returns{' '}
+                        <span className="text-red-400 font-medium">{cashReturn.toFixed(2)}% cash</span>
+                        {' '}but gains{' '}
+                        <span className="text-green-400 font-medium">+{btcGain}% BTC</span>.
+                        <div className="mt-1 text-gray-400">
+                          For cash-neutral cycles at {tpMin}% TP, set holdback ≤ {maxHoldbackForCashBreakeven}%.
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="mt-2 text-xs text-gray-500">
+                    At min TP ({tpMin}%): <span className="text-green-400">+{cashReturn.toFixed(2)}% cash</span>, <span className="text-blue-400">+{btcGain}% BTC</span> per cycle
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="border-t border-gray-700 pt-3 mb-4">
