@@ -710,6 +710,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     console.log(`🛑 [${exchange}] Stopping regime engine`);
 
+    // Mark as not running FIRST to prevent callbacks from taking action
+    isRunning = false;
+
     // Save state before stopping
     if (isDryRun) {
       dryRunState.forceSave(exchange, {
@@ -726,13 +729,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       console.log(`💾 [${exchange}] Saved live state and fill ledger`);
     }
 
-    // Disconnect WebSocket
-    if (wsFeed) {
-      wsFeed.disconnect();
-      wsFeed = null;
-    }
-
-    // Stop intervals
+    // Stop intervals first
     if (metricsInterval) {
       clearInterval(metricsInterval);
       metricsInterval = null;
@@ -749,7 +746,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     tailEvents.cleanup();
-    isRunning = false;
+
+    // Disconnect WebSocket last (callbacks will check isRunning)
+    if (wsFeed) {
+      wsFeed.disconnect();
+      wsFeed = null;
+    }
 
     console.log(`✅ [${exchange}] Regime engine stopped`);
   };
@@ -764,17 +766,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       productId,
       apiKey: credentials.apiKey,
       apiSecret: credentials.apiSecret,
-      onTicker: handleTicker,
-      onTrade: handleTrade,
-      onOrderUpdate: handleOrderUpdate,
+      onTicker: (data) => { if (isRunning) handleTicker(data); },
+      onTrade: (data) => { if (isRunning) handleTrade(data); },
+      onOrderUpdate: (data) => { if (isRunning) handleOrderUpdate(data); },
       onConnect: () => {
-        healthMonitor.recordWsStatus(true);
+        if (isRunning) healthMonitor.recordWsStatus(true);
       },
       onDisconnect: () => {
-        healthMonitor.recordWsStatus(false);
+        if (isRunning) healthMonitor.recordWsStatus(false);
       },
       onError: (error) => {
-        console.log(`❌ [${exchange}] WebSocket error: ${error.message}`);
+        if (isRunning) console.log(`❌ [${exchange}] WebSocket error: ${error.message}`);
       },
     });
 
