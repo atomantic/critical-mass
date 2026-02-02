@@ -51,6 +51,14 @@ All notable changes to this project will be documented in this file.
   - Now verifies order status after placement before adding to pending orders
   - If order was immediately cancelled, retries with fresh prices
 
+### Added
+- **Dynamic entry offset based on momentum** - Entry bid offset now adapts to market direction
+  - When momentum is UP: uses smaller offset (`entryOffsetUpBps`, default 5bps) to get fills before price rises
+  - When momentum is DOWN: uses larger offset (`entryOffsetDownBps`, default 15bps) to catch falling price
+  - When momentum is NEUTRAL: uses default offset (`entryOffsetBps`, default 10bps)
+  - Momentum calculated from 1-minute candles (short and long period price returns)
+  - Logs now show `momentum=up/down/neutral offset=Xbps` for debugging
+
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)
 

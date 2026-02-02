@@ -40,7 +40,7 @@
         "maxDrawdownPercent": 30,
         "entryOffsetBps": 12,
         "cancelRateLimitMs": 1000,
-        "orderStaleMs": 30000,
+        "orderStaleMs": 60000,
         "staleDataMs": 30000,
         "staleOrdersMs": 60000,
         "maxRestErrors": 5,

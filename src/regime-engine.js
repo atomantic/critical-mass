@@ -57,6 +57,7 @@ const createInitialMarketState = () => ({
   vwapDistance: 0,
   recentSwing: 0,
   tradeImbalance: 0,
+  momentum: { magnitude: 0, direction: 'neutral' },
   trades: [],
   lastUpdate: 0,
 });
@@ -1016,6 +1017,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     marketState.volBaseline = metrics.volBaseline;
     marketState.vwap = metrics.vwap;
     marketState.recentSwing = metrics.recentSwing;
+    marketState.momentum = metrics.momentum;
 
     // Calculate VWAP distance
     if (marketState.lastPrice > 0 && marketState.atr1m > 0) {
@@ -1124,14 +1126,28 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return;
     }
 
-    // Place entry
-    const result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask);
+    // Calculate dynamic offset based on momentum direction
+    // UP momentum: smaller offset to get fills before price rises further
+    // DOWN momentum: larger offset to catch the falling price
+    // NEUTRAL: use default config offset
+    const momentumDirection = marketState.momentum?.direction || 'neutral';
+    let effectiveOffsetBps;
+    if (momentumDirection === 'up') {
+      effectiveOffsetBps = config.entryOffsetUpBps;
+    } else if (momentumDirection === 'down') {
+      effectiveOffsetBps = config.entryOffsetDownBps;
+    } else {
+      effectiveOffsetBps = config.entryOffsetBps;
+    }
+
+    // Place entry with dynamic offset
+    const result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps);
 
     if (result.success) {
       positionState.lastEntryTime = Date.now();
       positionState.anchorPrice = marketState.lastPrice;
 
-      console.log(`📝 [${exchange}] Entry placed: regime=${regime} step=${positionState.ladderStep} size=$${sizing.sizeUsdc} price=$${result.price} trigger=${triggerType}`);
+      console.log(`📝 [${exchange}] Entry placed: regime=${regime} step=${positionState.ladderStep} size=$${sizing.sizeUsdc} price=$${result.price} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
 
       tradeEvents.emitTradeEvent('entry_placed', exchange, `$${sizing.sizeUsdc} @ $${result.price}`, {
         regime,
@@ -1139,6 +1155,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         sizeUsdc: sizing.sizeUsdc,
         price: result.price,
         trigger: triggerType,
+        momentum: momentumDirection,
+        offsetBps: effectiveOffsetBps,
       });
     }
   };

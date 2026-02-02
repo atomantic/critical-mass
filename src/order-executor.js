@@ -54,11 +54,13 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
    * @param {number} currentBid - Current best bid
    * @param {number} currentAsk - Current best ask
    * @param {number} [retryCount=0] - Current retry attempt
+   * @param {number} [effectiveOffsetBps] - Optional dynamic offset (defaults to config.entryOffsetBps)
    * @returns {Promise<{success: boolean, orderId?: string, price?: number, btcQty?: number, errorMessage?: string}>}
    */
-  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0) => {
-    // Calculate bid price with offset below current bid
-    const offsetMultiplier = 1 - (config.entryOffsetBps / 10000);
+  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null) => {
+    // Calculate bid price with offset below current bid (use dynamic offset if provided)
+    const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
+    const offsetMultiplier = 1 - (offsetBps / 10000);
     let bidPrice = currentBid * offsetMultiplier;
 
     // Ensure post-only by checking against ask

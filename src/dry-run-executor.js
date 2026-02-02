@@ -132,12 +132,14 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
    * @param {number} sizeUsdc - Order size in USDC
    * @param {number} currentBid - Current best bid
    * @param {number} currentAsk - Current best ask
-   * @param {string} [regime] - Current regime for logging
+   * @param {number} [retryCount=0] - Current retry attempt (unused in dry-run, for API compatibility)
+   * @param {number} [effectiveOffsetBps] - Optional dynamic offset (defaults to config.entryOffsetBps)
    * @returns {Promise<{success: boolean, orderId?: string, price?: number, btcQty?: number, errorMessage?: string}>}
    */
-  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, regime = 'UNKNOWN') => {
-    // Calculate bid price with offset below current bid
-    const offsetMultiplier = 1 - (config.entryOffsetBps / 10000);
+  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null) => {
+    // Calculate bid price with offset below current bid (use dynamic offset if provided)
+    const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
+    const offsetMultiplier = 1 - (offsetBps / 10000);
     let bidPrice = currentBid * offsetMultiplier;
 
     // Ensure post-only by checking against ask
@@ -165,14 +167,15 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
     pendingOrders.set(orderId, order);
 
-    logDecision('entry_placed', regime, currentBid, {
+    logDecision('entry_placed', 'N/A', currentBid, {
       orderId,
       bidPrice,
       btcQty,
       sizeUsdc,
+      offsetBps,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${btcQty} BTC @ $${bidPrice} (size $${sizeUsdc})`);
+    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${btcQty} BTC @ $${bidPrice} (size $${sizeUsdc}) offset=${offsetBps}bps`);
 
     // Entry fills are checked continuously via checkEntryFills() called from regime engine
 

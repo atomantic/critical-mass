@@ -94,6 +94,8 @@ const REGIME_DEFAULTS = {
 
   // Order Execution
   entryOffsetBps: 10,
+  entryOffsetUpBps: 5, // Smaller offset when momentum is UP (get fills before price rises)
+  entryOffsetDownBps: 15, // Larger offset when momentum is DOWN (catch falling price)
   entryMaxRetries: 3, // Max retries for post-only rejections in fast markets
   cancelRateLimitMs: 1000,
   orderStaleMs: 30000,
