@@ -657,6 +657,32 @@ app.post('/api/:exchange/regime/force-regime', (req, res) => {
   });
 });
 
+// Force resume from drawdown pause
+app.post('/api/:exchange/regime/resume-drawdown', (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running for this exchange',
+    });
+  }
+
+  const result = engine.forceResumeDrawdown();
+
+  if (result.success) {
+    log('INFO', `▶️ [${exchange}] Drawdown pause manually resumed: ${result.message}`);
+  }
+
+  res.json({
+    success: result.success,
+    exchange,
+    message: result.message,
+    status: engine.getStatus(),
+  });
+});
+
 // Get regime engine fill ledger
 app.get('/api/:exchange/regime/fills', (req, res) => {
   const { exchange } = req.params;

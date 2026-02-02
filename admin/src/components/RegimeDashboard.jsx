@@ -278,6 +278,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     if (res.ok) await fetchStatus()
   }
 
+  // Resume from drawdown pause
+  const handleResumeDrawdown = async () => {
+    if (!confirm('Resume trading from drawdown pause? This will reset the peak equity to current levels.')) return
+    const res = await fetch(`/api/${exchange}/regime/resume-drawdown`, { method: 'POST' })
+    if (res.ok) await fetchStatus()
+  }
+
   // Force regime
   const handleForceRegime = async (regime) => {
     const res = await fetch(`/api/${exchange}/regime/force-regime`, {
@@ -618,6 +625,33 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     />
                   </div>
                 </div>
+                {/* Drawdown Pause Warning */}
+                {risk.isDrawdownPaused && (
+                  <div className="mt-3 p-3 bg-red-900/30 border border-red-500/50 rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-red-400 font-medium text-sm flex items-center gap-2">
+                          <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                          Entries Paused (Drawdown Limit)
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          Paused for {risk.drawdownPausedHours?.toFixed(1) || 0}h
+                          {risk.drawdownResetHours > 0 && (
+                            <span className="ml-2">
+                              (auto-reset in {Math.max(0, risk.drawdownResetHours - (risk.drawdownPausedHours || 0)).toFixed(1)}h)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleResumeDrawdown}
+                        className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded transition-colors"
+                      >
+                        Resume Trading
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

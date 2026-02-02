@@ -28,6 +28,7 @@ const createRiskManager = (exchange, config) => {
   let peakEquity = 0;
   let maxDrawdownSeen = 0;
   let isDrawdownPaused = false;
+  let drawdownPausedAt = null; // Timestamp when drawdown pause started
 
   /**
    * Check if entry would exceed BTC exposure cap
@@ -116,6 +117,18 @@ const createRiskManager = (exchange, config) => {
     const currentValue = totalBTC * currentPrice;
     const currentEquity = currentValue - totalCostBasis;
 
+    // Check for time-based reset if paused and configured
+    if (isDrawdownPaused && drawdownPausedAt && config.drawdownResetHours > 0) {
+      const pausedMs = Date.now() - drawdownPausedAt;
+      const pausedHours = pausedMs / (1000 * 60 * 60);
+      if (pausedHours >= config.drawdownResetHours) {
+        console.log(`🔄 [${exchange}] Auto-resetting peak after ${config.drawdownResetHours}h of drawdown pause`);
+        peakEquity = currentEquity; // Reset peak to current equity
+        isDrawdownPaused = false;
+        drawdownPausedAt = null;
+      }
+    }
+
     // Update peak
     if (currentEquity > peakEquity) {
       peakEquity = currentEquity;
@@ -136,11 +149,13 @@ const createRiskManager = (exchange, config) => {
     if (drawdownPercent >= config.maxDrawdownPercent) {
       if (!isDrawdownPaused) {
         isDrawdownPaused = true;
+        drawdownPausedAt = Date.now();
         console.log(`⚠️ [${exchange}] Drawdown limit reached: ${drawdownPercent.toFixed(1)}% >= ${config.maxDrawdownPercent}%`);
       }
     } else if (isDrawdownPaused && drawdownPercent < config.maxDrawdownPercent * 0.5) {
       // Resume if drawdown recovers to half of limit
       isDrawdownPaused = false;
+      drawdownPausedAt = null;
       console.log(`✅ [${exchange}] Drawdown recovered: ${drawdownPercent.toFixed(1)}%`);
     }
 
@@ -148,6 +163,7 @@ const createRiskManager = (exchange, config) => {
       drawdownPercent,
       isPaused: isDrawdownPaused,
       peakEquity,
+      drawdownPausedAt,
     };
   };
 
@@ -255,7 +271,12 @@ const createRiskManager = (exchange, config) => {
     }
 
     if (isDrawdownPaused) {
-      parts.push('PAUSED');
+      if (drawdownPausedAt) {
+        const pausedHours = ((Date.now() - drawdownPausedAt) / (1000 * 60 * 60)).toFixed(1);
+        parts.push(`PAUSED(${pausedHours}h)`);
+      } else {
+        parts.push('PAUSED');
+      }
     }
 
     return parts.join(' ');
@@ -271,21 +292,35 @@ const createRiskManager = (exchange, config) => {
 
   /**
    * Get current risk state
-   * @returns {{peakEquity: number, maxDrawdownSeen: number, isDrawdownPaused: boolean}}
+   * @returns {{peakEquity: number, maxDrawdownSeen: number, isDrawdownPaused: boolean, drawdownPausedAt: number|null, drawdownPausedHours: number|null}}
    */
-  const getState = () => ({
-    peakEquity,
-    maxDrawdownSeen,
-    isDrawdownPaused,
-  });
+  const getState = () => {
+    let drawdownPausedHours = null;
+    if (isDrawdownPaused && drawdownPausedAt) {
+      drawdownPausedHours = (Date.now() - drawdownPausedAt) / (1000 * 60 * 60);
+    }
+    return {
+      peakEquity,
+      maxDrawdownSeen,
+      isDrawdownPaused,
+      drawdownPausedAt,
+      drawdownPausedHours,
+      drawdownResetHours: config.drawdownResetHours,
+    };
+  };
 
   /**
    * Force resume from drawdown pause (manual override)
+   * @param {number} [currentEquity] - Current equity to set as new peak (optional)
    */
-  const forceResume = () => {
+  const forceResume = (currentEquity) => {
     if (isDrawdownPaused) {
       isDrawdownPaused = false;
-      console.log(`▶️ [${exchange}] Manually resumed from drawdown pause`);
+      drawdownPausedAt = null;
+      if (currentEquity !== undefined) {
+        peakEquity = currentEquity; // Reset peak to current equity
+      }
+      console.log(`▶️ [${exchange}] Manually resumed from drawdown pause, peak reset to ${peakEquity.toFixed(2)}`);
     }
   };
 

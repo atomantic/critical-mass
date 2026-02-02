@@ -811,6 +811,27 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     return false;
   };
 
+  /**
+   * Force resume from drawdown pause (manual override)
+   * Resets peak equity to current level to allow trading to continue
+   * @returns {{success: boolean, message: string}}
+   */
+  const forceResumeDrawdown = () => {
+    const riskState = riskManager.getState();
+    if (!riskState.isDrawdownPaused) {
+      return { success: false, message: 'Not in drawdown pause' };
+    }
+
+    // Calculate current equity to set as new peak
+    const currentValue = positionState.totalBTC * marketState.lastPrice;
+    const currentEquity = currentValue - positionState.totalCostBasis;
+
+    riskManager.forceResume(currentEquity);
+    console.log(`▶️ [${exchange}] Drawdown pause manually cleared, peak reset to $${currentEquity.toFixed(2)}`);
+
+    return { success: true, message: `Resumed, peak reset to $${currentEquity.toFixed(2)}` };
+  };
+
   return {
     start,
     stop,
@@ -822,6 +843,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     updateConfig,
     getFills,
     getFillStats,
+    forceResumeDrawdown,
     // Dry-run specific methods
     isDryRun,
     getDryRunLog,

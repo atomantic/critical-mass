@@ -112,7 +112,11 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Flash move detection pauses entries and disables scaling
 - Spread widening and depth drop pauses
 - Maximum exposure caps (BTC and USDC)
-- Maximum drawdown protection
+- Maximum drawdown protection with auto-recovery:
+  - Pauses entries when drawdown >= configured limit (default: 20%)
+  - Auto-resumes when drawdown recovers to < 50% of limit
+  - Auto-resets peak after configurable hours (default: 72h/3 days)
+  - Manual "Resume Trading" button in UI to override pause
 
 **Position & P&L Tracking:**
 - BTC Held - Current cycle position
