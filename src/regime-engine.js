@@ -208,7 +208,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState = { ...createInitialPositionState(), ...savedState.position };
     }
 
-    console.log(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, PnL=$${positionState.realizedPnL.toFixed(2)}`);
+    // Log APY tracking state restoration
+    const apyStatus = positionState.engineStartTime
+      ? `APY from ${new Date(positionState.engineStartTime).toISOString()}`
+      : 'APY not tracked yet';
+
+    console.log(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, PnL=$${positionState.realizedPnL.toFixed(2)}, ${apyStatus}`);
     return true;
   };
 
@@ -415,11 +420,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const estimatedAnnualReturn = hasEnoughData ? dailyReturnPercent * 365 : 0;
 
     // Compound APY calculation: (1 + dailyReturn)^365 - 1
-    // Cap daily return to prevent overflow (max 100% daily = 3678% APY annually)
-    const dailyReturnDecimal = Math.min(dailyReturnPercent / 100, 1);
-    const estimatedApy = hasEnoughData && elapsedDays > 0
-      ? (Math.pow(1 + dailyReturnDecimal, 365) - 1) * 100
-      : 0;
+    // Cap daily return to prevent overflow (max 10% daily to keep APY reasonable)
+    const dailyReturnDecimal = Math.min(dailyReturnPercent / 100, 0.1);
+    let estimatedApy = 0;
+    if (hasEnoughData && elapsedDays > 0) {
+      const rawApy = (Math.pow(1 + dailyReturnDecimal, 365) - 1) * 100;
+      // Cap APY at 99999% to avoid scientific notation in UI
+      estimatedApy = Math.min(rawApy, 99999);
+    }
 
     // Cycles per day - only calculate with enough data
     const cyclesPerDay = hasEnoughData && elapsedDays > 0
@@ -448,13 +456,43 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   /**
    * Initialize APY tracking if not already set
+   * If there are existing filled orders but start time is after first order, backfill
    */
   const initializeApyTracking = () => {
-    if (!positionState.engineStartTime) {
-      positionState.engineStartTime = Date.now();
-      positionState.initialCapital = config.maxUsdcDeployed || 10000;
-      console.log(`📊 [${exchange}] APY tracking started: $${positionState.initialCapital} initial capital`);
+    // Check for existing filled orders to potentially backfill start time
+    const filledOrders = orderExecutor.getFilledOrders ? orderExecutor.getFilledOrders() : [];
+    let earliestOrderTime = Infinity;
+
+    if (filledOrders.length > 0) {
+      earliestOrderTime = filledOrders.reduce((earliest, order) => {
+        const orderTime = order.placedAt || order.filledAt;
+        return orderTime < earliest ? orderTime : earliest;
+      }, Infinity);
     }
+
+    // If we have filled orders and the saved start time is after the first order, backfill
+    if (earliestOrderTime !== Infinity) {
+      if (!positionState.engineStartTime || positionState.engineStartTime > earliestOrderTime) {
+        positionState.engineStartTime = earliestOrderTime;
+        positionState.initialCapital = config.maxUsdcDeployed || 10000;
+        console.log(`📊 [${exchange}] APY tracking backfilled to first order: ${new Date(earliestOrderTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+        return;
+      }
+      // Preserved existing start time that's earlier than first order
+      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+      return;
+    }
+
+    // No filled orders - preserve existing or start fresh
+    if (positionState.engineStartTime) {
+      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+      return;
+    }
+
+    // No existing state or orders, start fresh
+    positionState.engineStartTime = Date.now();
+    positionState.initialCapital = config.maxUsdcDeployed || 10000;
+    console.log(`📊 [${exchange}] APY tracking started fresh: $${positionState.initialCapital} initial capital`);
   };
 
   /**
