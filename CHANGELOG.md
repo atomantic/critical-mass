@@ -43,6 +43,9 @@ All notable changes to this project will be documented in this file.
   - Regime engine was absorbing ALL open orders from Coinbase during recovery
   - Now only tracks orders it places itself, ignoring orders from DCA engine
   - Orders from other engines (like standard DCA) are no longer displayed or tracked
+- **Stop Engine button not updating UI** - UI now properly reflects stopped state
+  - Socket status was taking precedence over fetched status after stop
+  - Now clears socket status when engine stops so UI shows correct state
 
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)

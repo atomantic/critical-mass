@@ -189,7 +189,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [error, setError] = useState(null)
   const prevPriceRef = useRef(null)
 
-  const { connected, status: socketStatus, regimeState, healthState, positionState, events: regimeEvents, clearEvents } = useRegimeEvents(exchange)
+  const { connected, status: socketStatus, setStatus: setSocketStatus, regimeState, healthState, positionState, events: regimeEvents, clearEvents } = useRegimeEvents(exchange)
   const { events: tradeEvents } = useTradeEvents(exchange)
 
   // Use socket status when available, fall back to local status (for initial load / when engine stopped)
@@ -258,6 +258,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     setStopping(true)
     const res = await fetch(`/api/${exchange}/regime/stop`, { method: 'POST' })
     if (res.ok) {
+      // Clear socket status so localStatus takes precedence (shows stopped state)
+      setSocketStatus(null)
       await fetchStatus()
     }
     setStopping(false)
