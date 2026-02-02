@@ -50,6 +50,8 @@ let lastSaveTime = 0;
  * @property {number} maxDrawdownSeen - Max drawdown seen
  * @property {boolean} scalingDisabled - Whether scaling is disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
+ * @property {number|null} engineStartTime - Timestamp when engine first started with capital
+ * @property {number} initialCapital - Initial capital (maxUsdcDeployed from config)
  */
 
 /**

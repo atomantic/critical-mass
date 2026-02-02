@@ -745,7 +745,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div className="bg-gray-900/50 rounded p-2">
                       <div className="text-gray-500">Daily Return</div>
                       <div className={`font-mono ${apy.dailyReturnPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {apy.dailyReturnPercent?.toFixed(3)}%
+                        {apy.dailyReturnPercent > 99 ? '>99' : apy.dailyReturnPercent?.toFixed(2)}%
                       </div>
                     </div>
                   </div>
@@ -753,18 +753,18 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div className="bg-gradient-to-r from-green-900/30 to-green-800/20 border border-green-700/30 rounded p-2">
                       <div className="text-green-400/70">Est. Annual Return</div>
                       <div className={`font-mono text-lg ${apy.estimatedAnnualReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {apy.estimatedAnnualReturn?.toFixed(1)}%
+                        {apy.estimatedAnnualReturn > 9999 ? '>9999' : apy.estimatedAnnualReturn?.toFixed(0)}%
                       </div>
                     </div>
                     <div className="bg-gradient-to-r from-cyan-900/30 to-cyan-800/20 border border-cyan-700/30 rounded p-2">
                       <div className="text-cyan-400/70">Est. APY (Compound)</div>
                       <div className={`font-mono text-lg ${apy.estimatedApy >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
-                        {apy.estimatedApy?.toFixed(1)}%
+                        {apy.estimatedApy > 9999 ? '>9999' : apy.estimatedApy?.toFixed(0)}%
                       </div>
                     </div>
                   </div>
                   <div className="flex justify-between text-xs text-gray-500 mt-2">
-                    <span>Cycles/Day: {apy.cyclesPerDay?.toFixed(2)}</span>
+                    <span>Cycles/Day: {apy.cyclesPerDay?.toFixed(1)}</span>
                     <span>Avg P&L/Cycle: ${apy.avgPnlPerCycle?.toFixed(2)}</span>
                   </div>
                 </div>

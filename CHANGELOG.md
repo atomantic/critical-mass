@@ -11,6 +11,11 @@ All notable changes to this project will be documented in this file.
   - Persists tracking across restarts
   - UI displays performance metrics in Position section with highlighted APY/annual return
 
+### Fixed
+- APY tracking now properly persists `engineStartTime` across restarts
+- APY backfill logic: if engine started before APY tracking was added, automatically backfills start time from first filled order
+- Added `engineStartTime` and `initialCapital` to PositionState typedef for proper type checking
+
 ## [2.3.16] - 2026-02-01
 
 ### Added
