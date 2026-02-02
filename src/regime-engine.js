@@ -344,9 +344,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Evaluate entry trigger
     evaluateEntryTrigger();
 
-    // In dry-run mode, check if any TP orders should fill
-    if (isDryRun && orderExecutor.checkTpFills) {
-      orderExecutor.checkTpFills(data.price);
+    // In dry-run mode, check if any orders should fill based on current price
+    if (isDryRun) {
+      if (orderExecutor.checkTpFills) {
+        orderExecutor.checkTpFills(data.price);
+      }
+      if (orderExecutor.checkEntryFills) {
+        orderExecutor.checkEntryFills(data.price);
+      }
     }
 
     // Update unrealized P&L

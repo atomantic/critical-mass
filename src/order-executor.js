@@ -82,8 +82,8 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
         placedAt: Date.now(),
       });
 
-      // Schedule maker timeout check
-      scheduleMakerTimeout(result.orderId);
+      // Schedule stale order timeout check
+      scheduleStaleOrderTimeout(result.orderId);
 
       return {
         success: true,
@@ -187,10 +187,11 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
   };
 
   /**
-   * Schedule maker timeout for entry order
+   * Schedule stale order timeout for entry order
+   * Uses orderStaleMs for consistency with dry-run simulation
    * @param {string} orderId - Order ID to check
    */
-  const scheduleMakerTimeout = (orderId) => {
+  const scheduleStaleOrderTimeout = (orderId) => {
     setTimeout(async () => {
       const order = pendingOrders.get(orderId);
       if (!order || order.type !== 'entry') return;
@@ -199,11 +200,11 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
 
       if (status.status === 'OPEN' && status.completionPercentage === 0) {
         // Not filled at all, cancel
-        console.log(`⏰ [${exchange}] Maker timeout, cancelling unfilled order ${orderId}`);
+        console.log(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`);
         await adapter.cancelOrder(orderId);
         pendingOrders.delete(orderId);
       }
-    }, config.makerTimeoutMs);
+    }, config.orderStaleMs);
   };
 
   /**

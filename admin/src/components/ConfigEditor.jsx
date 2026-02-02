@@ -453,7 +453,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
                 <FormInput label="Max BTC Exposure" value={regimeConfig.maxBtcExposure || 0.5} onChange={(v) => handleRegimeChange('maxBtcExposure', v)} type="number" />
                 <FormInput label="Max USDC Deployed" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
                 <FormInput label="Max Drawdown %" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
-                <FormInput label="Entry Offset (bps)" value={regimeConfig.entryOffsetBps || 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
+                <FormInput label="Liquidity Factor Cap" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
               </div>
               <div className="grid grid-cols-4 gap-3 mt-3">
                 <FormInput label="Drawdown Reset (hrs)" value={regimeConfig.drawdownResetHours || 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
@@ -472,15 +472,67 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
                 <FormInput label="Vol Contraction" value={regimeConfig.volContractionMult || 1.2} onChange={(v) => handleRegimeChange('volContractionMult', v)} type="number" />
                 <FormInput label="VWAP Hours" value={regimeConfig.vwapPeriodHours || 4} onChange={(v) => handleRegimeChange('vwapPeriodHours', v)} type="number" />
               </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Trend Confirm Periods" value={regimeConfig.trendConfirmationPeriods || 5} onChange={(v) => handleRegimeChange('trendConfirmationPeriods', v)} type="number" />
+              </div>
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Order Execution</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Entry Offset (bps)" value={regimeConfig.entryOffsetBps || 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
+                <FormInput label="Entry Max Retries" value={regimeConfig.entryMaxRetries || 3} onChange={(v) => handleRegimeChange('entryMaxRetries', v)} type="number" />
+                <FormInput label="Order Stale (ms)" value={regimeConfig.orderStaleMs || 30000} onChange={(v) => handleRegimeChange('orderStaleMs', v)} type="number" />
+                <FormInput label="Cancel Rate Limit (ms)" value={regimeConfig.cancelRateLimitMs || 1000} onChange={(v) => handleRegimeChange('cancelRateLimitMs', v)} type="number" />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Max Open Orders" value={regimeConfig.maxOpenOrders || 3} onChange={(v) => handleRegimeChange('maxOpenOrders', v)} type="number" />
+                <FormInput label="TP Update Threshold %" value={regimeConfig.tpUpdateThresholdPct || 0.5} onChange={(v) => handleRegimeChange('tpUpdateThresholdPct', v)} type="number" />
+                <FormInput label="Reconcile Interval (ms)" value={regimeConfig.reconcileIntervalMs || 300000} onChange={(v) => handleRegimeChange('reconcileIntervalMs', v)} type="number" />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Order Stale: Time before unfilled entry orders are cancelled. TP Update Threshold: Min % change to update TP order.
+              </div>
             </div>
 
             <div className="border-t border-gray-700 pt-3 mb-4">
               <h3 className="text-sm font-medium text-purple-400 mb-3">Safety & Tail Events</h3>
               <div className="grid grid-cols-4 gap-3">
                 <FormInput label="Max Spread (bps)" value={regimeConfig.maxSpreadBps || 50} onChange={(v) => handleRegimeChange('maxSpreadBps', v)} type="number" />
+                <FormInput label="Spread Pause (ms)" value={regimeConfig.spreadPauseMs || 300000} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} type="number" />
+                <FormInput label="Min Depth (USDC)" value={regimeConfig.minDepthUsdc || 10000} onChange={(v) => handleRegimeChange('minDepthUsdc', v)} type="number" />
+                <FormInput label="Depth Pause (ms)" value={regimeConfig.depthPauseMs || 300000} onChange={(v) => handleRegimeChange('depthPauseMs', v)} type="number" />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
                 <FormInput label="Flash Move Mult" value={regimeConfig.flashMoveMult || 3.0} onChange={(v) => handleRegimeChange('flashMoveMult', v)} type="number" />
+                <FormInput label="Flash Cooldown (ms)" value={regimeConfig.flashCooldownMs || 600000} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} type="number" />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="cancelEntriesOnFlash"
+                    checked={regimeConfig.cancelEntriesOnFlash !== false}
+                    onChange={(e) => handleRegimeChange('cancelEntriesOnFlash', e.target.checked)}
+                    className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                  />
+                  <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">System Health</h3>
+              <div className="grid grid-cols-4 gap-3">
                 <FormInput label="Stale Data (ms)" value={regimeConfig.staleDataMs || 30000} onChange={(v) => handleRegimeChange('staleDataMs', v)} type="number" />
+                <FormInput label="Stale Orders (ms)" value={regimeConfig.staleOrdersMs || 60000} onChange={(v) => handleRegimeChange('staleOrdersMs', v)} type="number" />
+                <FormInput label="Max Latency (ms)" value={regimeConfig.maxLatencyMs || 5000} onChange={(v) => handleRegimeChange('maxLatencyMs', v)} type="number" />
                 <FormInput label="Safe Recovery (ms)" value={regimeConfig.safeRecoveryMs || 60000} onChange={(v) => handleRegimeChange('safeRecoveryMs', v)} type="number" />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Max REST Errors" value={regimeConfig.maxRestErrors || 5} onChange={(v) => handleRegimeChange('maxRestErrors', v)} type="number" />
+                <FormInput label="Max Rate Limits" value={regimeConfig.maxRateLimits || 3} onChange={(v) => handleRegimeChange('maxRateLimits', v)} type="number" />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                System enters SAFE mode when health thresholds are exceeded. Safe Recovery is time healthy before exiting SAFE.
               </div>
             </div>
           </>

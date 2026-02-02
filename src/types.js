@@ -517,8 +517,7 @@
  * @property {number} entryOffsetBps - Offset below mid for bids (default: 10)
  * @property {number} entryMaxRetries - Max retries for post-only rejections in fast markets (default: 3)
  * @property {number} cancelRateLimitMs - Min time between cancels (default: 1000)
- * @property {number} orderStaleMs - Timeout for stale orders (default: 30000)
- * @property {number} makerTimeoutMs - Wait time for maker fill (default: 10000)
+ * @property {number} orderStaleMs - Timeout for stale entry orders (default: 30000)
  *
  * System Health Parameters
  * @property {number} staleDataMs - Max age of market data (default: 30000)

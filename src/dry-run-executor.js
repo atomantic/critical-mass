@@ -174,8 +174,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
     console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${btcQty} BTC @ $${bidPrice} (size $${sizeUsdc})`);
 
-    // Schedule simulated fill check
-    scheduleSimulatedFillCheck(orderId);
+    // Entry fills are checked continuously via checkEntryFills() called from regime engine
 
     return {
       success: true,
@@ -272,41 +271,32 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   };
 
   /**
-   * Schedule simulated fill check for entry orders
-   * @param {string} orderId - Order ID to check
+   * Check all pending entry orders for fills based on current price
+   * Also cancels stale entries that haven't filled within orderStaleMs
+   * Called periodically from regime engine alongside checkTpFills
+   * @param {number} currentPrice - Current market price
    */
-  const scheduleSimulatedFillCheck = (orderId) => {
-    // Check for fill after maker timeout
-    setTimeout(() => {
-      checkAndSimulateFill(orderId);
-    }, config.makerTimeoutMs);
-  };
-
-  /**
-   * Check and simulate fill for an order based on market conditions
-   * @param {string} orderId - Order ID to check
-   */
-  const checkAndSimulateFill = (orderId) => {
-    const order = pendingOrders.get(orderId);
-    if (!order || order.status !== 'open') return;
-
-    const currentPrice = marketStateRef.lastPrice;
+  const checkEntryFills = (currentPrice) => {
     if (!currentPrice) return;
 
-    // Entry orders: fill if price dropped to our bid level
-    if (order.type === 'entry' && order.side === 'buy') {
-      // Simulate maker fill - fills if price touched or went below our bid
-      if (currentPrice <= order.price * 1.001) {
-        simulateFill(orderId, order.price);
-      } else {
-        // Cancel unfilled entry after timeout
-        order.status = 'cancelled';
-        pendingOrders.delete(orderId);
-        logDecision('entry_cancelled', 'N/A', currentPrice, {
-          orderId,
-          reason: 'maker_timeout',
-        });
-        console.log(`🧪 [${exchange}] [DRY-RUN] Entry cancelled (maker timeout): ${orderId}`);
+    const now = Date.now();
+
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type === 'entry' && order.side === 'buy' && order.status === 'open') {
+        // Entry fills if price drops to or below our bid level (with small tolerance for spread)
+        if (currentPrice <= order.price * 1.001) {
+          simulateFill(orderId, order.price);
+        } else if (now - order.placedAt > config.orderStaleMs) {
+          // Cancel stale entries that haven't filled
+          order.status = 'cancelled';
+          pendingOrders.delete(orderId);
+          logDecision('entry_cancelled', 'N/A', currentPrice, {
+            orderId,
+            reason: 'stale_order',
+            ageMs: now - order.placedAt,
+          });
+          console.log(`🧪 [${exchange}] [DRY-RUN] Entry cancelled (stale after ${Math.round((now - order.placedAt) / 1000)}s): ${orderId}`);
+        }
       }
     }
   };
@@ -898,6 +888,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
     // Dry-run specific methods
     checkTpFills,
+    checkEntryFills,
     logEntryBlocked,
     getDecisionLog,
     getFilledOrders,
