@@ -402,15 +402,23 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       const pnl = netProceeds - costBasis;
       simulatedRealizedPnL += pnl;
 
-      // Calculate BTC holdback for this cycle
+      // Calculate profit-based BTC holdback for this cycle
+      // holdbackQty = sellQty * (price - cost) * ratio / (price * (1 - ratio) + cost * ratio)
       const holdbackRatio = config.holdbackRatio ?? 0.5;
-      const totalBtcBeforeSale = order.size / (1 - holdbackRatio);
-      const holdbackBtc = totalBtcBeforeSale - order.size;
+      const profitPerBTC = fillPrice - avgBuyPrice;
+      const denominator = fillPrice * (1 - holdbackRatio) + avgBuyPrice * holdbackRatio;
+      const holdbackBtc = denominator > 0 ? order.size * profitPerBTC * holdbackRatio / denominator : 0;
+      const holdbackValue = holdbackBtc * fillPrice;
       simulatedRealizedBtcPnL += holdbackBtc;
+
+      // Calculate USDC profit (this is what grows the capital)
+      const usdcProfit = order.size * profitPerBTC;
 
       // Store P&L data on the order for UI display
       order.pnl = pnl;
       order.holdbackBtc = holdbackBtc;
+      order.holdbackValue = holdbackValue;
+      order.usdcProfit = usdcProfit;
       order.avgCostBasis = avgBuyPrice;
 
       // Push to filled orders after all data is populated
@@ -422,9 +430,11 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
         fillPrice,
         pnl,
         holdbackBtc,
+        holdbackValue,
+        usdcProfit,
         totalRealizedPnL: simulatedRealizedPnL,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} BTC @ $${fillPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`);
+      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} BTC @ $${fillPrice}, USDC profit=$${usdcProfit.toFixed(2)}, holdback=${holdbackBtc.toFixed(8)} BTC (≈$${holdbackValue.toFixed(2)})`);
 
       if (orderId === activeTpOrderId) {
         activeTpOrderId = null;

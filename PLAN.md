@@ -116,6 +116,10 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Rate-limited adjustments (max 25% change per evaluation)
 - Safety bounds: absolute min (0.05%), absolute max (5.0%)
 - `holdbackRatio` (0.0-1.0, default 0.5) - configurable profit split between sell/hold
+  - Profit-based holdback: sells to recover cost basis + (1-ratio) of profit as USDC
+  - Keeps (ratio) of profit as BTC appreciation
+  - Example: ratio 0.5 at +1% → 0.5% USDC profit + 0.5% BTC value retained
+- **Capital Growth**: maxUsdcDeployed automatically increases by USDC profit each cycle
 - State persisted across restarts (in regime-state.json / dry-run-state.json)
 - Dashboard panel shows current settings, observed percentiles, adjustment history
 
