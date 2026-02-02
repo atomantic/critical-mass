@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.16] - 2026-02-01
+
+### Added
+- Live state persistence for regime engine - saves position and regime state to `regime-state.json` for faster recovery on restarts
+- Offline order fill detection - checks for TP and entry orders that filled while the engine was offline
+- Market re-evaluation on startup - re-anchors volatility triggers after downtime and logs price movement warnings
+- `restoreState()` method to regime-detector for restoring regime mode on restart
+- `getPendingEntries()` method to both order-executor and dry-run-executor for tracking pending entry orders
+
+### Changed
+- Live mode startup now: loads saved state → recovers from exchange → checks offline fills → re-evaluates position
+- Periodic state saves every 5 minutes for live mode (dry-run unchanged at 60 seconds)
+
 ## [2.3.5] - 2026-02-01
 
 ### Added

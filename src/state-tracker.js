@@ -489,6 +489,8 @@ const createInitialRegimePositionState = () => ({
   cyclesCompleted: 0,
   unrealizedPnL: 0,
   realizedPnL: 0,
+  realizedBtcPnL: 0,
+  btcOnOrder: 0,
   maxDrawdownSeen: 0,
   scalingDisabled: false,
   scalingDisabledReason: null,

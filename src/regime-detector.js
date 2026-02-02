@@ -317,6 +317,23 @@ const createRegimeDetector = (exchange, config, callbacks = {}) => {
     momentumHistory = [];
   };
 
+  /**
+   * Restore state from saved data (for restart recovery)
+   * @param {RegimeState} savedState - Saved regime state
+   */
+  const restoreState = (savedState) => {
+    if (!savedState) return;
+
+    state = {
+      ...createInitialRegimeState(),
+      ...savedState,
+      // Don't restore 'since' timestamp - it's relative to current session
+      since: savedState.since || Date.now(),
+    };
+
+    console.log(`📂 [${exchange}] Restored regime state: mode=${state.mode}, transitions=${state.transitionCount}`);
+  };
+
   return {
     classify,
     forceTransition,
@@ -326,6 +343,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}) => {
     getRegimeScale,
     allowsEntries,
     reset,
+    restoreState,
   };
 };
 

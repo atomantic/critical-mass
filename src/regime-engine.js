@@ -29,6 +29,7 @@ const { createRecoveryModule } = require('./recovery');
 const { calculateAllMetrics, clamp, roundBTC, roundUSDC } = require('./volatility-utils');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
+const { loadRegimeState, saveRegimeState } = require('./state-tracker');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -209,6 +210,165 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
+   * Save live state to disk (for faster recovery on restarts)
+   */
+  const saveLiveState = () => {
+    if (isDryRun) return;
+
+    const regimeState = regimeDetector.getState();
+    saveRegimeState(positionState, regimeState, exchange);
+  };
+
+  /**
+   * Load live state from disk
+   * @returns {boolean} Whether state was loaded
+   */
+  const loadLiveState = () => {
+    if (isDryRun) return false;
+
+    const savedState = loadRegimeState(exchange);
+    if (!savedState.position || savedState.position.totalBTC === 0) {
+      console.log(`ℹ️ [${exchange}] No saved live state or empty position`);
+      return false;
+    }
+
+    positionState = { ...createInitialPositionState(), ...savedState.position };
+    if (savedState.regime) {
+      regimeDetector.restoreState(savedState.regime);
+    }
+
+    console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, ${positionState.totalBTC.toFixed(6)} BTC`);
+    return true;
+  };
+
+  /**
+   * Check for orders that filled while offline
+   * @returns {Promise<{tpFilled: boolean, entriesFilled: number}>}
+   */
+  const checkOfflineOrderFills = async () => {
+    const openOrders = await adapter.getOpenOrders(productId);
+    const openOrderIds = new Set(openOrders.map(o => o.orderId));
+
+    let tpFilled = false;
+    let entriesFilled = 0;
+
+    // Check if active TP order still exists on exchange
+    if (positionState.activeTpOrderId && !openOrderIds.has(positionState.activeTpOrderId)) {
+      // TP order is gone - check if it filled
+      const orderStatus = await adapter.getOrder(positionState.activeTpOrderId);
+      if (orderStatus.status === 'FILLED') {
+        console.log(`✅ [${exchange}] TP order ${positionState.activeTpOrderId} filled while offline`);
+        tpFilled = true;
+
+        // Get fill details
+        const fills = await adapter.getOrderFills(positionState.activeTpOrderId);
+        for (const fill of fills) {
+          fillLedger.ingestFill(fill);
+        }
+
+        // Calculate P&L from the fills
+        const summary = fillLedger.aggregateFills(fills);
+        const proceeds = summary.totalValue - summary.totalFees;
+        const soldCostBasis = summary.totalSize * positionState.avgCostBasis;
+        const pnl = proceeds - soldCostBasis;
+        const holdbackBtc = roundBTC(positionState.totalBTC - summary.totalSize);
+
+        positionState.realizedPnL += pnl;
+        positionState.realizedBtcPnL += holdbackBtc;
+        positionState.cyclesCompleted += 1;
+
+        console.log(`💰 [${exchange}] Offline TP fill: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`);
+
+        tradeEvents.emitTradeEvent('tp_filled', exchange, `[OFFLINE] ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
+          btcAmount: summary.totalSize,
+          price: summary.avgPrice,
+          pnl,
+          holdbackBtc,
+          offlineFill: true,
+        });
+
+        // Reset cycle
+        resetCycle();
+      }
+    }
+
+    // Check for entry orders that filled while offline
+    const pendingEntries = orderExecutor.getPendingEntries();
+    for (const [orderId] of pendingEntries) {
+      if (!openOrderIds.has(orderId)) {
+        const orderStatus = await adapter.getOrder(orderId);
+        if (orderStatus.status === 'FILLED') {
+          console.log(`✅ [${exchange}] Entry order ${orderId} filled while offline`);
+          entriesFilled++;
+
+          // Get and ingest fills
+          const fills = await adapter.getOrderFills(orderId);
+          for (const fill of fills) {
+            fillLedger.ingestFill(fill);
+          }
+
+          // Update position
+          const summary = fillLedger.aggregateFills(fills);
+          positionState.totalBTC = roundBTC(positionState.totalBTC + summary.totalSize);
+          positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + summary.totalValue + summary.totalFees);
+          positionState.avgCostBasis = positionState.totalBTC > 0
+            ? positionState.totalCostBasis / positionState.totalBTC
+            : 0;
+          positionState.ladderStep += 1;
+          positionState.lastEntryPrice = summary.avgPrice;
+          positionState.lastEntryTime = Date.now();
+
+          orderExecutor.handleOrderFill(orderId);
+
+          tradeEvents.emitTradeEvent('buy_filled', exchange, `[OFFLINE] ${summary.totalSize} BTC @ $${summary.avgPrice}`, {
+            btcAmount: summary.totalSize,
+            price: summary.avgPrice,
+            avgCostBasis: positionState.avgCostBasis,
+            offlineFill: true,
+          });
+        }
+      }
+    }
+
+    return { tpFilled, entriesFilled };
+  };
+
+  /**
+   * Re-evaluate position after downtime
+   * Checks if market has moved significantly and adjusts strategy accordingly
+   * @param {number} currentPrice - Current market price
+   */
+  const reEvaluateAfterDowntime = (currentPrice) => {
+    if (positionState.totalBTC <= 0) {
+      console.log(`ℹ️ [${exchange}] No position to re-evaluate`);
+      return;
+    }
+
+    const lastEntryPrice = positionState.lastEntryPrice || positionState.avgCostBasis;
+    if (lastEntryPrice <= 0) return;
+
+    const priceChange = ((currentPrice - lastEntryPrice) / lastEntryPrice) * 100;
+    const priceChangeAbs = Math.abs(priceChange);
+
+    console.log(`📊 [${exchange}] Re-evaluating position: price moved ${priceChange.toFixed(2)}% since last entry ($${lastEntryPrice.toFixed(2)} -> $${currentPrice.toFixed(2)})`);
+
+    // Re-anchor price for volatility triggers
+    positionState.anchorPrice = currentPrice;
+    console.log(`⚓ [${exchange}] Re-anchored price to $${currentPrice.toFixed(2)}`);
+
+    // If price dropped significantly (>5%), consider the position may need attention
+    if (priceChange < -5) {
+      console.log(`⚠️ [${exchange}] Price dropped ${priceChangeAbs.toFixed(2)}% while offline - position unrealized P&L affected`);
+    }
+
+    // If price rose significantly and we have a position, TP might need updating
+    if (priceChange > 3 && positionState.totalBTC > 0) {
+      console.log(`📈 [${exchange}] Price rose ${priceChangeAbs.toFixed(2)}% while offline - TP order may need adjustment`);
+      // TP order will be re-evaluated naturally on next metrics update
+    }
+  };
+
+  /**
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
    */
@@ -222,8 +382,38 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Recover state from exchange (skip in dry-run mode)
     if (!isDryRun) {
+      // First, try to load saved state for faster startup
+      const hasSavedState = loadLiveState();
+
+      // Then recover/validate from exchange (source of truth)
       const { position } = await recoveryModule.recoverState(fillLedger, orderExecutor);
-      positionState = { ...createInitialPositionState(), ...position };
+
+      // Merge recovered position with any saved state (exchange is authoritative for BTC balance)
+      positionState = {
+        ...createInitialPositionState(),
+        ...positionState, // Keep saved fields like realizedPnL, cyclesCompleted
+        ...position,      // Override with exchange-recovered values
+      };
+
+      // Check for orders that filled while we were offline
+      const { tpFilled, entriesFilled } = await checkOfflineOrderFills();
+      if (tpFilled || entriesFilled > 0) {
+        console.log(`📋 [${exchange}] Processed offline fills: TP=${tpFilled}, entries=${entriesFilled}`);
+      }
+
+      // Get current price and re-evaluate position
+      const currentPrice = await adapter.getCurrentPrice(productId);
+      if (currentPrice > 0 && positionState.totalBTC > 0) {
+        reEvaluateAfterDowntime(currentPrice);
+      }
+
+      // If we have position but no TP order, place one
+      if (positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
+        console.log(`📝 [${exchange}] Position exists but no TP order, will place after metrics update`);
+      }
+
+      // Save initial state after recovery
+      saveLiveState();
     } else {
       // Try to load saved dry-run state
       const loaded = loadDryRunState();
@@ -239,9 +429,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Start periodic metrics updates
     startMetricsUpdater();
 
-    // Start reconciliation (skip in dry-run mode)
+    // Start reconciliation and state saving
     if (!isDryRun) {
       startReconciliation();
+      // Start periodic state saving for live mode (every 5 minutes)
+      stateSaveInterval = setInterval(saveLiveState, 300000);
     } else {
       // Start periodic state saving for dry-run (every 60 seconds)
       stateSaveInterval = setInterval(saveDryRunState, 60000);
@@ -261,13 +453,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     console.log(`🛑 [${exchange}] Stopping regime engine`);
 
-    // Save dry-run state before stopping
+    // Save state before stopping
     if (isDryRun) {
       dryRunState.forceSave(exchange, {
         isDryRun: true,
         executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
         position: { ...positionState },
       });
+    } else {
+      // Save live state on shutdown
+      saveLiveState();
+      // Also persist fill ledger
+      fillLedger.persist();
+      console.log(`💾 [${exchange}] Saved live state and fill ledger`);
     }
 
     // Disconnect WebSocket

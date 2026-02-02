@@ -542,6 +542,20 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   };
 
   /**
+   * Get all pending entry orders
+   * @returns {Map<string, Object>}
+   */
+  const getPendingEntries = () => {
+    const entries = new Map();
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type === 'entry' && order.status === 'open') {
+        entries.set(orderId, order);
+      }
+    }
+    return entries;
+  };
+
+  /**
    * Check invariants
    * @returns {{valid: boolean, reason?: string}}
    */
@@ -886,6 +900,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     handleOrderFill,
     handleOrderCancel,
     getPendingCounts,
+    getPendingEntries,
     checkInvariants,
     getActiveTpOrderId,
     getSummary,
