@@ -592,13 +592,26 @@ app.post('/api/:exchange/regime/stop', async (req, res) => {
     });
   }
 
-  await engine.stop();
+  log('INFO', `🛑 [${exchange}] Stopping regime engine...`);
+
+  const stopResult = await engine.stop().catch(err => {
+    log('ERROR', `❌ [${exchange}] Error stopping engine: ${err.message}`);
+    return { error: err.message };
+  });
+
+  if (stopResult?.error) {
+    return res.status(500).json({
+      success: false,
+      error: stopResult.error,
+    });
+  }
+
   regimeEngines.delete(exchange);
 
   // Remove running flag (user intentionally stopped)
   saveRegimeRunningFlag(exchange, false);
 
-  log('INFO', `🛑 [${exchange}] Regime engine stopped`);
+  log('INFO', `✅ [${exchange}] Regime engine stopped successfully`);
 
   res.json({
     success: true,

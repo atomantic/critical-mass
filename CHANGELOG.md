@@ -16,6 +16,11 @@ All notable changes to this project will be documented in this file.
   - Old: `/api/v3/brokerage/orders/historical?product_id=X`
   - New: `/api/v3/brokerage/orders/historical/batch?product_ids=X`
   - This fixes 404 errors when starting the regime engine in live mode
+- **Recovery no longer absorbs full account balance** - Position only tracks what regime engine traded
+  - Previously, recovery would overwrite position with full account BTC balance
+  - Now only fills from regime engine trades are tracked
+  - Account having extra BTC from other sources is logged but not absorbed into position
+- **Stop endpoint error handling** - Added proper error handling and logging for stop requests
 
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)
