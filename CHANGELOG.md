@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
 - **Regime Dashboard not reflecting dryRun toggle changes** - Dashboard now receives dryRun from exchange config
   - `/api/:exchange/regime/config` endpoint now includes exchange-level dryRun value
   - UI correctly displays "Dry-Run Mode" or "Live" based on current config
+- **Coinbase API endpoint change** - Updated list orders endpoint to use new batch endpoint
+  - Old: `/api/v3/brokerage/orders/historical?product_id=X`
+  - New: `/api/v3/brokerage/orders/historical/batch?product_ids=X`
+  - This fixes 404 errors when starting the regime engine in live mode
 
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)

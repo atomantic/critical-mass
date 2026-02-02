@@ -349,7 +349,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<OpenOrder[]>} List of open orders
    */
   adapter.getOpenOrders = async (productId) => {
-    const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical?product_id=${productId}&order_status=OPEN`);
+    const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/batch?product_ids=${productId}&order_status=OPEN`);
 
     return (data.orders || []).map(order => ({
       orderId: order.order_id,
