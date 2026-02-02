@@ -23,6 +23,22 @@ All notable changes to this project will be documented in this file.
 - **Stop endpoint error handling** - Added proper error handling and logging for stop requests
 - **Duplicate entry orders race condition** - Added lock to prevent concurrent entry evaluations from rapid ticker updates
 - **Pending orders not showing in live mode UI** - Added `getPendingOrdersList()` to order executor and updated dashboard to show orders for both live and dry-run modes
+- **Unhandled promise in reconciliation interval** - Reconciliation now catches errors and continues operating
+  - Added `isRunning` guard to prevent reconciliation after engine stop
+  - Errors are logged instead of causing unhandled rejections
+- **Unhandled promise in stale order timeout** - Stale order checks now catch errors gracefully
+  - Converted async/await to Promise chain with `.catch()` for proper error handling
+- **WebSocket malformed JSON crash** - Added safe JSON parsing for WebSocket messages
+  - Invalid JSON now logs a warning and is ignored instead of crashing
+- **Cancel all entries partial failure** - Cancel loop now continues on individual failures
+  - Uses `Promise.allSettled()` to attempt all cancels even if some fail
+  - Failed cancels are logged and orders removed from tracking (may have already filled/cancelled)
+- **State not persisted immediately after fills** - Added immediate state persistence on order fills
+  - Both buy fills and TP fills now trigger immediate state save and fill ledger persist
+  - Prevents data loss if process crashes after a fill but before next periodic save
+- **Offline fills check failure blocking startup** - Startup continues even if offline fill check fails
+  - Error is logged but doesn't prevent engine from starting
+  - Fills will be detected on next reconciliation cycle
 
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)

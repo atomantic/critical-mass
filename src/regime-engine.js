@@ -649,10 +649,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         ...position,      // Override with exchange-recovered values
       };
 
-      // Check for orders that filled while we were offline
-      const { tpFilled, entriesFilled } = await checkOfflineOrderFills();
-      if (tpFilled || entriesFilled > 0) {
-        console.log(`📋 [${exchange}] Processed offline fills: TP=${tpFilled}, entries=${entriesFilled}`);
+      // Check for orders that filled while we were offline (non-critical, continue on error)
+      const offlineFills = await checkOfflineOrderFills().catch(err => {
+        console.log(`⚠️ [${exchange}] Failed to check offline fills: ${err.message}`);
+        return { tpFilled: false, entriesFilled: 0 };
+      });
+      if (offlineFills.tpFilled || offlineFills.entriesFilled > 0) {
+        console.log(`📋 [${exchange}] Processed offline fills: TP=${offlineFills.tpFilled}, entries=${offlineFills.entriesFilled}`);
       }
 
       // Get current price and re-evaluate position
@@ -898,6 +901,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         avgCostBasis: positionState.avgCostBasis,
       });
 
+      // Persist state immediately after buy fill to prevent loss on crash
+      saveLiveState();
+      fillLedger.persist();
+
     } else if (fillData.side.toLowerCase() === 'sell') {
       // Cycle complete
       const summary = fillLedger.aggregateFills(fills);
@@ -940,6 +947,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         optimalTpPct: actualTpPct, // In live mode, we don't track optimal; use actual
         actualTpPct,
       });
+
+      // Persist state immediately after TP fill to prevent loss on crash
+      saveLiveState();
+      fillLedger.persist();
 
       // Reset for next cycle
       resetCycle();
@@ -1022,12 +1033,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * Start periodic reconciliation
    */
   const startReconciliation = () => {
-    reconcileInterval = setInterval(async () => {
-      const result = await recoveryModule.reconcile(positionState, fillLedger);
-      if (result.updated) {
-        positionState = result.position;
-        console.log(`🔄 [${exchange}] Position reconciled from exchange`);
-      }
+    reconcileInterval = setInterval(() => {
+      if (!isRunning) return; // Guard against firing after stop
+
+      recoveryModule.reconcile(positionState, fillLedger)
+        .then(result => {
+          if (result.updated) {
+            positionState = result.position;
+            console.log(`🔄 [${exchange}] Position reconciled from exchange`);
+          }
+        })
+        .catch(err => {
+          console.log(`❌ [${exchange}] Reconciliation failed: ${err.message}`);
+        });
     }, config.reconcileIntervalMs);
   };
 

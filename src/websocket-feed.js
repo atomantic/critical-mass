@@ -89,6 +89,15 @@ const generateWsJWT = (apiKey, apiSecret) => {
 };
 
 /**
+ * Safely parse JSON, returning null on failure
+ * @param {string} data - JSON string
+ * @returns {Object|null} Parsed object or null
+ */
+const safeJsonParse = (data) => {
+  try { return JSON.parse(data); } catch { return null; }
+};
+
+/**
  * Create WebSocket feed manager
  * @param {string} exchange - Exchange name
  * @param {WebSocketConfig} config - Configuration
@@ -195,7 +204,11 @@ const createWebSocketFeed = (exchange, config) => {
    * @param {string} data - Message data
    */
   const handleMessage = (data) => {
-    const message = JSON.parse(data);
+    const message = safeJsonParse(data);
+    if (!message) {
+      console.log(`⚠️ [${exchange}] Received invalid JSON from WebSocket`);
+      return;
+    }
     const { channel, events } = message;
 
     if (!events || events.length === 0) return;
