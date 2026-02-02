@@ -505,7 +505,7 @@
  * @property {number} tpMinPercent - Minimum TP percentage (default: 2.0)
  * @property {number} tpMaxPercent - Maximum TP percentage (default: 15.0)
  * @property {number} tpUpdateThresholdPct - Min % change to update TP (default: 0.5)
- * @property {number} holdbackPercent - BTC holdback percentage (default: 5)
+ * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0, default: 0.5)
  *
  * Risk Cap Parameters
  * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)
