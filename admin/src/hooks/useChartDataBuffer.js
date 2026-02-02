@@ -6,6 +6,9 @@ const MAX_RETENTION_MS = 15 * 60 * 1000
 // Minimum interval between data points (to prevent over-sampling)
 const MIN_SAMPLE_INTERVAL_MS = 1000
 
+// Hard cap on array length as safety net (15 min at 1 sample/sec = 900, add buffer)
+const MAX_POINTS = 1000
+
 /**
  * Hook that accumulates WebSocket data for charting
  * - Stores last 15 minutes of data points
@@ -20,10 +23,15 @@ export function useChartDataBuffer(status) {
 
   const lastSampleTimeRef = useRef(0)
 
-  // Trim old data from an array
+  // Trim old data from an array (time-based + hard cap)
   const trimOldData = useCallback((data) => {
     const cutoff = Date.now() - MAX_RETENTION_MS
-    return data.filter(d => d.timestamp > cutoff)
+    const filtered = data.filter(d => d.timestamp > cutoff)
+    // Hard cap as safety net - keep most recent points if somehow over limit
+    if (filtered.length > MAX_POINTS) {
+      return filtered.slice(-MAX_POINTS)
+    }
+    return filtered
   }, [])
 
   // Process incoming status updates

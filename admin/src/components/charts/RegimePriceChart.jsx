@@ -38,7 +38,7 @@ function RegimePriceChart({
     const svg = d3.select(svgRef.current)
     svg.selectAll('*').remove()
 
-    const margin = { top: 20, right: 60, bottom: 30, left: 60 }
+    const margin = { top: 20, right: 90, bottom: 30, left: 60 }
     const width = containerWidth
     const innerWidth = width - margin.left - margin.right
     const innerHeight = height - margin.top - margin.bottom
