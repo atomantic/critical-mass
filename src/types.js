@@ -385,6 +385,7 @@
  * @property {number} vwapDistance - Distance from VWAP in ATR units
  * @property {number} recentSwing - Recent price swing range
  * @property {number} tradeImbalance - Buy/sell imbalance (-1 to +1)
+ * @property {{magnitude: number, direction: 'up' | 'down' | 'neutral'}} momentum - Price momentum indicator
  * @property {Array<{price: number, size: number, side: string, timestamp: number}>} trades - Recent trades
  * @property {number} lastUpdate - Timestamp of last market data update
  */
@@ -514,7 +515,9 @@
  * @property {number} drawdownResetHours - Hours after which to auto-reset peak during drawdown pause (default: 72, 0 to disable)
  *
  * Order Execution Parameters
- * @property {number} entryOffsetBps - Offset below mid for bids (default: 10)
+ * @property {number} entryOffsetBps - Offset below mid for bids when momentum is neutral (default: 10)
+ * @property {number} entryOffsetUpBps - Offset when momentum is UP, smaller to get fills before price rises (default: 5)
+ * @property {number} entryOffsetDownBps - Offset when momentum is DOWN, larger to catch falling price (default: 15)
  * @property {number} entryMaxRetries - Max retries for post-only rejections in fast markets (default: 3)
  * @property {number} cancelRateLimitMs - Min time between cancels (default: 1000)
  * @property {number} orderStaleMs - Timeout for stale entry orders (default: 30000)
