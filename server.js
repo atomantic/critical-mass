@@ -1446,3 +1446,34 @@ server.listen(PORT, () => {
   // Check immediately on startup
   checkAndRunIntervalTrade();
 });
+
+// ============ Graceful Shutdown ============
+
+const gracefulShutdown = async (signal) => {
+  log('INFO', `Received ${signal}, shutting down gracefully...`);
+
+  // Stop all regime engines (this saves dry-run state)
+  const stopPromises = [];
+  for (const [exchange, engine] of regimeEngines) {
+    log('INFO', `Stopping regime engine for ${exchange}...`);
+    stopPromises.push(engine.stop());
+  }
+
+  await Promise.all(stopPromises);
+  log('INFO', 'All regime engines stopped');
+
+  // Close server
+  server.close(() => {
+    log('INFO', 'Server closed');
+    process.exit(0);
+  });
+
+  // Force exit after 5 seconds if graceful shutdown fails
+  setTimeout(() => {
+    log('WARN', 'Forcing exit after timeout');
+    process.exit(1);
+  }, 5000);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

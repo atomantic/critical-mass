@@ -54,6 +54,20 @@ const generateOrderId = () => {
 };
 
 /**
+ * Set order ID counter (for state restoration)
+ * @param {number} value - Counter value
+ */
+const setOrderIdCounter = (value) => {
+  orderIdCounter = value;
+};
+
+/**
+ * Get order ID counter (for state export)
+ * @returns {number}
+ */
+const getOrderIdCounter = () => orderIdCounter;
+
+/**
  * Create dry-run order executor instance
  * @param {string} exchange - Exchange name
  * @param {RegimeStrategyConfig} config - Configuration
@@ -799,6 +813,72 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     console.log(`🧪 [${exchange}] [DRY-RUN] State reset`);
   };
 
+  /**
+   * Export executor state for persistence
+   * @returns {Object}
+   */
+  const exportState = () => ({
+    pendingOrders: Array.from(pendingOrders.values()),
+    filledOrders: [...filledOrders],
+    activeTpOrderId,
+    lastTpPrice,
+    lastTpSize,
+    simulatedRealizedPnL,
+    simulatedRealizedBtcPnL,
+    simulatedTotalBought,
+    simulatedTotalSold,
+    currentCycleTracking,
+    cycleAnalytics: [...cycleAnalytics],
+    orderIdCounter: getOrderIdCounter(),
+  });
+
+  /**
+   * Import executor state from persistence
+   * @param {Object} state - State to restore
+   */
+  const importState = (state) => {
+    if (!state) return;
+
+    // Restore pending orders
+    pendingOrders.clear();
+    if (state.pendingOrders) {
+      for (const order of state.pendingOrders) {
+        pendingOrders.set(order.orderId, order);
+      }
+    }
+
+    // Restore filled orders
+    filledOrders.length = 0;
+    if (state.filledOrders) {
+      filledOrders.push(...state.filledOrders);
+    }
+
+    // Restore TP tracking
+    activeTpOrderId = state.activeTpOrderId || null;
+    lastTpPrice = state.lastTpPrice || 0;
+    lastTpSize = state.lastTpSize || 0;
+
+    // Restore P&L tracking
+    simulatedRealizedPnL = state.simulatedRealizedPnL || 0;
+    simulatedRealizedBtcPnL = state.simulatedRealizedBtcPnL || 0;
+    simulatedTotalBought = state.simulatedTotalBought || 0;
+    simulatedTotalSold = state.simulatedTotalSold || 0;
+
+    // Restore cycle tracking
+    currentCycleTracking = state.currentCycleTracking || null;
+    cycleAnalytics.length = 0;
+    if (state.cycleAnalytics) {
+      cycleAnalytics.push(...state.cycleAnalytics);
+    }
+
+    // Restore order ID counter
+    if (state.orderIdCounter) {
+      setOrderIdCounter(state.orderIdCounter);
+    }
+
+    console.log(`🧪 [${exchange}] [DRY-RUN] State restored: ${filledOrders.length} filled orders, ${pendingOrders.size} pending, PnL=$${simulatedRealizedPnL.toFixed(2)}`);
+  };
+
   return {
     // Standard executor interface
     placeEntryBid,
@@ -826,6 +906,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     getOptimalTpAnalytics,
     getDryRunState,
     resetDryRunState,
+
+    // State persistence methods
+    exportState,
+    importState,
 
     // Flag to identify dry-run executor
     isDryRun: true,

@@ -455,6 +455,13 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
                 <FormInput label="Max Drawdown %" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
                 <FormInput label="Entry Offset (bps)" value={regimeConfig.entryOffsetBps || 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
               </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Drawdown Reset (hrs)" value={regimeConfig.drawdownResetHours || 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
+                <FormInput label="Ladder Reset (hrs)" value={regimeConfig.ladderResetHours || 72} onChange={(v) => handleRegimeChange('ladderResetHours', v)} type="number" />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Auto-reset hours: 0 = disabled. After this time at a limit, the engine resumes with reset counters.
+              </div>
             </div>
 
             <div className="border-t border-gray-700 pt-3 mb-4">
