@@ -9,6 +9,9 @@ All notable changes to this project will be documented in this file.
   - Previously, UI toggle modified `exchanges.coinbase.dryRun` but regime engine read from `exchanges.coinbase.regime.dryRun`
   - This caused the "Dry Run" toggle to not affect the regime engine
   - Both engines now use the same config path, making the UI toggle work correctly for all strategies
+- **Regime Dashboard not reflecting dryRun toggle changes** - Dashboard now receives dryRun from exchange config
+  - `/api/:exchange/regime/config` endpoint now includes exchange-level dryRun value
+  - UI correctly displays "Dry-Run Mode" or "Live" based on current config
 
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)

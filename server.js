@@ -471,7 +471,10 @@ app.post('/api/:exchange/consolidate', async (req, res) => {
 // Get regime configuration for an exchange
 app.get('/api/:exchange/regime/config', (req, res) => {
   const { exchange } = req.params;
-  const config = getRegimeConfig(exchange);
+  const regimeConfig = getRegimeConfig(exchange);
+  const exchangeConfig = getExchangeConfig(exchange);
+  // Include exchange-level dryRun for UI display
+  const config = { ...regimeConfig, dryRun: exchangeConfig.dryRun };
   res.json({ success: true, exchange, config });
 });
 
