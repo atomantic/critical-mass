@@ -79,6 +79,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
   // Simulated P&L tracking
   let simulatedRealizedPnL = 0;
+  let simulatedRealizedBtcPnL = 0;
   let simulatedTotalBought = 0;
   let simulatedTotalSold = 0;
 
@@ -659,11 +660,27 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   const getFilledOrders = () => [...filledOrders];
 
   /**
+   * Get BTC currently on open sell orders
+   * @returns {number}
+   */
+  const getBtcOnOrder = () => {
+    let total = 0;
+    for (const order of pendingOrders.values()) {
+      if (order.type === 'take_profit' && order.status === 'open') {
+        total += order.size;
+      }
+    }
+    return total;
+  };
+
+  /**
    * Get simulated P&L summary
    * @returns {Object}
    */
   const getSimulatedPnL = () => ({
     realizedPnL: simulatedRealizedPnL,
+    realizedBtcPnL: simulatedRealizedBtcPnL,
+    btcOnOrder: getBtcOnOrder(),
     totalBought: simulatedTotalBought,
     totalSold: simulatedTotalSold,
     avgEntryPrice: getAverageEntryPrice(),
@@ -761,6 +778,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     lastTpPrice = 0;
     lastTpSize = 0;
     simulatedRealizedPnL = 0;
+    simulatedRealizedBtcPnL = 0;
     simulatedTotalBought = 0;
     simulatedTotalSold = 0;
     console.log(`🧪 [${exchange}] [DRY-RUN] State reset`);
@@ -789,6 +807,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     getDecisionLog,
     getFilledOrders,
     getSimulatedPnL,
+    getBtcOnOrder,
     getOptimalTpAnalytics,
     getDryRunState,
     resetDryRunState,

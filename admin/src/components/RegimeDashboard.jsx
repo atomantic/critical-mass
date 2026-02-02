@@ -618,6 +618,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   color="text-orange-400"
                 />
                 <StatCard
+                  label="BTC on Order"
+                  value={position.btcOnOrder?.toFixed(6) || '0'}
+                  subValue="in sell orders"
+                  color="text-yellow-400"
+                />
+                <StatCard
                   label="Cost Basis"
                   value={`$${position.totalCostBasis?.toFixed(2) || '0'}`}
                 />
@@ -630,6 +636,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   value={position.ladderStep || 0}
                   subValue={`of ${config?.maxLadderSteps || 10}`}
                 />
+                <StatCard
+                  label="BTC Reserves"
+                  value={position.realizedBtcPnL?.toFixed(6) || '0'}
+                  subValue="from holdback"
+                  color="text-cyan-400"
+                />
               </div>
               <div className="mt-3 pt-3 border-t border-gray-700">
                 <div className="grid grid-cols-2 gap-3">
@@ -638,11 +650,17 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     value={`$${position.unrealizedPnL?.toFixed(2) || '0'}`}
                     color={position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}
                   />
-                  <StatCard
-                    label="Realized P&L"
-                    value={`$${position.realizedPnL?.toFixed(2) || '0'}`}
-                    color={position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}
-                  />
+                  <div className="bg-gray-800 rounded-lg p-3">
+                    <div className="text-xs text-gray-400 mb-1">Realized P&L</div>
+                    <div className={`text-lg font-semibold ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      ${position.realizedPnL?.toFixed(2) || '0'}
+                    </div>
+                    {position.realizedBtcPnL > 0 && (
+                      <div className="text-xs text-cyan-400 mt-0.5">
+                        + {position.realizedBtcPnL?.toFixed(6)} BTC
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="mt-3 text-xs text-gray-500">
@@ -654,6 +672,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   <div className="grid grid-cols-2 gap-2 text-gray-400">
                     <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(6) || 0} BTC</div>
                     <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(6) || 0} BTC</div>
+                    <div>BTC on Order: <span className="text-yellow-400">{dryRunState.pnl.btcOnOrder?.toFixed(6) || 0}</span></div>
+                    <div>BTC Reserves: <span className="text-cyan-400">{dryRunState.pnl.realizedBtcPnL?.toFixed(6) || 0}</span></div>
                     <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
                     <div>Avg Entry: ${dryRunState.pnl.avgEntryPrice?.toFixed(2) || 0}</div>
                   </div>
