@@ -129,6 +129,18 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Realized P&L shows both USD profit and BTC reserves
 - Holdback percentage applied to each TP, accumulating as BTC reserves
 
+**APY & Performance Tracking:**
+- Tracks engine start time and initial capital (maxUsdcDeployed)
+- Persists APY tracking across restarts
+- Calculates and displays:
+  - Total return (USD and %)
+  - Daily return rate
+  - Estimated annual return (linear projection)
+  - Estimated APY (compound calculation)
+  - Cycles per day
+  - Average P&L per cycle
+- UI displays performance metrics in the Position section
+
 **Dry-Run Mode:**
 - Test regime engine against live market data without placing real orders
 - Simulates order placement, fills, and P&L tracking

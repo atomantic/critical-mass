@@ -82,6 +82,9 @@ const createInitialPositionState = () => ({
   maxDrawdownSeen: 0,
   scalingDisabled: false,
   scalingDisabledReason: null,
+  // APY tracking fields
+  engineStartTime: null,    // Timestamp when engine first started with capital
+  initialCapital: 0,        // Initial capital (maxUsdcDeployed from config)
 });
 
 /**
@@ -369,6 +372,83 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
+   * Calculate APY and return metrics
+   * @returns {Object} APY metrics
+   */
+  const calculateApyMetrics = () => {
+    const now = Date.now();
+    const startTime = positionState.engineStartTime;
+    const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+
+    // If engine hasn't started tracking yet or no realized P&L, return zeros
+    if (!startTime || positionState.realizedPnL === 0) {
+      return {
+        engineStartTime: startTime,
+        initialCapital,
+        elapsedMs: startTime ? now - startTime : 0,
+        elapsedDays: 0,
+        totalReturn: 0,
+        totalReturnPercent: 0,
+        dailyReturnPercent: 0,
+        estimatedAnnualReturn: 0,
+        estimatedApy: 0,
+        cyclesPerDay: 0,
+        avgPnlPerCycle: 0,
+      };
+    }
+
+    const elapsedMs = now - startTime;
+    const elapsedDays = elapsedMs / (1000 * 60 * 60 * 24);
+    const totalReturn = positionState.realizedPnL;
+    const totalReturnPercent = (totalReturn / initialCapital) * 100;
+
+    // Daily return rate (simple)
+    const dailyReturnPercent = elapsedDays > 0 ? totalReturnPercent / elapsedDays : 0;
+
+    // Estimated annual return (simple linear projection)
+    const estimatedAnnualReturn = dailyReturnPercent * 365;
+
+    // Compound APY calculation: (1 + dailyReturn)^365 - 1
+    const dailyReturnDecimal = dailyReturnPercent / 100;
+    const estimatedApy = elapsedDays > 0
+      ? (Math.pow(1 + dailyReturnDecimal, 365) - 1) * 100
+      : 0;
+
+    // Cycles per day
+    const cyclesPerDay = elapsedDays > 0 ? positionState.cyclesCompleted / elapsedDays : 0;
+
+    // Average P&L per cycle
+    const avgPnlPerCycle = positionState.cyclesCompleted > 0
+      ? totalReturn / positionState.cyclesCompleted
+      : 0;
+
+    return {
+      engineStartTime: startTime,
+      initialCapital,
+      elapsedMs,
+      elapsedDays: roundUSDC(elapsedDays * 100) / 100, // 2 decimal places
+      totalReturn: roundUSDC(totalReturn),
+      totalReturnPercent: roundUSDC(totalReturnPercent * 100) / 100,
+      dailyReturnPercent: roundUSDC(dailyReturnPercent * 100) / 100,
+      estimatedAnnualReturn: roundUSDC(estimatedAnnualReturn * 100) / 100,
+      estimatedApy: roundUSDC(estimatedApy * 100) / 100,
+      cyclesPerDay: roundUSDC(cyclesPerDay * 100) / 100,
+      avgPnlPerCycle: roundUSDC(avgPnlPerCycle),
+    };
+  };
+
+  /**
+   * Initialize APY tracking if not already set
+   */
+  const initializeApyTracking = () => {
+    if (!positionState.engineStartTime) {
+      positionState.engineStartTime = Date.now();
+      positionState.initialCapital = config.maxUsdcDeployed || 10000;
+      console.log(`📊 [${exchange}] APY tracking started: $${positionState.initialCapital} initial capital`);
+    }
+  };
+
+  /**
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
    */
@@ -422,6 +502,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         positionState = createInitialPositionState();
       }
     }
+
+    // Initialize APY tracking if not already set (preserves existing tracking from saved state)
+    initializeApyTracking();
 
     // Start WebSocket feed
     await connectWebSocket();
@@ -994,6 +1077,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     pause: tailEvents.getPauseState(),
     risk: riskManager.getState(),
     orders: orderExecutor.getPendingCounts(),
+    apy: calculateApyMetrics(),
     dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,
   });
 

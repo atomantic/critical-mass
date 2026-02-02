@@ -325,6 +325,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   const regimeStyle = REGIME_COLORS[regime.mode] || REGIME_COLORS.HARVEST
   const healthStyle = HEALTH_COLORS[health.mode] || HEALTH_COLORS.ACTIVE
+  const apy = status?.apy || {}
 
   return (
     <div className="space-y-6">
@@ -721,6 +722,54 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               <div className="mt-3 text-xs text-gray-500">
                 Cycles completed: {position.cyclesCompleted || 0}
               </div>
+
+              {/* APY & Returns Section */}
+              {apy.engineStartTime && (
+                <div className="mt-3 pt-3 border-t border-gray-700">
+                  <div className="text-xs text-gray-400 mb-2">Performance Metrics</div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="bg-gray-900/50 rounded p-2">
+                      <div className="text-gray-500">Initial Capital</div>
+                      <div className="text-white font-mono">${apy.initialCapital?.toLocaleString()}</div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded p-2">
+                      <div className="text-gray-500">Running For</div>
+                      <div className="text-white font-mono">{apy.elapsedDays?.toFixed(1)} days</div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded p-2">
+                      <div className="text-gray-500">Total Return</div>
+                      <div className={`font-mono ${apy.totalReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        ${apy.totalReturn?.toFixed(2)} ({apy.totalReturnPercent?.toFixed(2)}%)
+                      </div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded p-2">
+                      <div className="text-gray-500">Daily Return</div>
+                      <div className={`font-mono ${apy.dailyReturnPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {apy.dailyReturnPercent?.toFixed(3)}%
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs mt-2">
+                    <div className="bg-gradient-to-r from-green-900/30 to-green-800/20 border border-green-700/30 rounded p-2">
+                      <div className="text-green-400/70">Est. Annual Return</div>
+                      <div className={`font-mono text-lg ${apy.estimatedAnnualReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {apy.estimatedAnnualReturn?.toFixed(1)}%
+                      </div>
+                    </div>
+                    <div className="bg-gradient-to-r from-cyan-900/30 to-cyan-800/20 border border-cyan-700/30 rounded p-2">
+                      <div className="text-cyan-400/70">Est. APY (Compound)</div>
+                      <div className={`font-mono text-lg ${apy.estimatedApy >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
+                        {apy.estimatedApy?.toFixed(1)}%
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex justify-between text-xs text-gray-500 mt-2">
+                    <span>Cycles/Day: {apy.cyclesPerDay?.toFixed(2)}</span>
+                    <span>Avg P&L/Cycle: ${apy.avgPnlPerCycle?.toFixed(2)}</span>
+                  </div>
+                </div>
+              )}
+
               {isDryRun && dryRunState?.pnl && (
                 <div className="mt-3 pt-3 border-t border-gray-700 text-xs">
                   <div className="text-purple-400 mb-1">Dry-Run Stats</div>

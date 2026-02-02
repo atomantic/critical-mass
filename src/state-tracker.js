@@ -494,6 +494,9 @@ const createInitialRegimePositionState = () => ({
   maxDrawdownSeen: 0,
   scalingDisabled: false,
   scalingDisabledReason: null,
+  // APY tracking fields
+  engineStartTime: null,
+  initialCapital: 0,
 });
 
 /**
