@@ -46,7 +46,7 @@ const DEFAULTS = {
 const REGIME_DEFAULTS = {
   // Mode flags
   enabled: false,
-  dryRun: true,
+  // Note: dryRun is read from exchange-level config, not regime config
 
   // Volatility Clock
   atrPeriod: 14,

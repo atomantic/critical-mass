@@ -167,7 +167,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Test regime engine against live market data without placing real orders
 - Simulates order placement, fills, and P&L tracking
 - Decision log tracks all hypothetical trades for analysis
-- Configurable via `dryRun: true` in regime config (default: true)
+- Configurable via exchange-level `dryRun: true` (same as DCA engine)
 - Visual indicators in admin UI show dry-run status
 - Reset capability to clear simulated state and start fresh
 - **State persistence** - Simulation survives server restarts

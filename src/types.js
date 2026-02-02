@@ -476,7 +476,7 @@
  * @typedef {Object} RegimeStrategyConfig
  * Mode Flags
  * @property {boolean} enabled - Whether regime engine is enabled (default: false)
- * @property {boolean} dryRun - Dry-run mode simulates trades without placing real orders (default: true)
+ * Note: dryRun is read from exchange-level config (ExchangeConfig.dryRun), not here
  *
  * Volatility Clock Parameters
  * @property {number} atrPeriod - Periods for ATR calculation (default: 14)

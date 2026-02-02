@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.24] - 2026-02-02
+
+### Fixed
+- **Regime engine dryRun config path** - Regime engine now reads `dryRun` from exchange-level config (same as DCA engine)
+  - Previously, UI toggle modified `exchanges.coinbase.dryRun` but regime engine read from `exchanges.coinbase.regime.dryRun`
+  - This caused the "Dry Run" toggle to not affect the regime engine
+  - Both engines now use the same config path, making the UI toggle work correctly for all strategies
+
+### Changed
+- Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)
+
 ## [2.3.20] - 2026-02-01
 
 ### Added
