@@ -21,6 +21,8 @@ All notable changes to this project will be documented in this file.
   - Now only fills from regime engine trades are tracked
   - Account having extra BTC from other sources is logged but not absorbed into position
 - **Stop endpoint error handling** - Added proper error handling and logging for stop requests
+- **Duplicate entry orders race condition** - Added lock to prevent concurrent entry evaluations from rapid ticker updates
+- **Pending orders not showing in live mode UI** - Added `getPendingOrdersList()` to order executor and updated dashboard to show orders for both live and dry-run modes
 
 ### Changed
 - Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)
