@@ -77,6 +77,15 @@ const REGIME_DEFAULTS = {
   tpUpdateThresholdPct: 0.5,
   holdbackPercent: 5,
 
+  // TP Auto-Management
+  tpAutoManaged: false,         // Opt-in flag for dynamic TP adjustment
+  tpEvaluationCycles: 5,        // Evaluate every N cycles
+  tpEvaluationMaxHours: 24,     // Or at least once per day
+  tpMinSampleSize: 10,          // Minimum cycles before adjusting
+  tpAbsoluteMin: 0.05,          // Floor for tpMinPercent
+  tpAbsoluteMax: 5.0,           // Ceiling for tpMaxPercent
+  tpMaxChangePercent: 25,       // Max % change per adjustment
+
   // Risk Caps
   maxBtcExposure: 0.5,
   maxUsdcDeployed: 10000,
@@ -436,6 +445,26 @@ const validateRegimeConfig = (config) => {
   }
   if (config.tpMaxPercent !== undefined && (config.tpMaxPercent < 0.1 || config.tpMaxPercent > 50.0)) {
     errors.push('tpMaxPercent must be between 0.1 and 50.0');
+  }
+
+  // TP Auto-Management validation
+  if (config.tpEvaluationCycles !== undefined && (config.tpEvaluationCycles < 1 || config.tpEvaluationCycles > 100)) {
+    errors.push('tpEvaluationCycles must be between 1 and 100');
+  }
+  if (config.tpEvaluationMaxHours !== undefined && (config.tpEvaluationMaxHours < 1 || config.tpEvaluationMaxHours > 168)) {
+    errors.push('tpEvaluationMaxHours must be between 1 and 168 (1 week)');
+  }
+  if (config.tpMinSampleSize !== undefined && (config.tpMinSampleSize < 3 || config.tpMinSampleSize > 100)) {
+    errors.push('tpMinSampleSize must be between 3 and 100');
+  }
+  if (config.tpAbsoluteMin !== undefined && (config.tpAbsoluteMin < 0.01 || config.tpAbsoluteMin > 1.0)) {
+    errors.push('tpAbsoluteMin must be between 0.01 and 1.0');
+  }
+  if (config.tpAbsoluteMax !== undefined && (config.tpAbsoluteMax < 1.0 || config.tpAbsoluteMax > 10.0)) {
+    errors.push('tpAbsoluteMax must be between 1.0 and 10.0');
+  }
+  if (config.tpMaxChangePercent !== undefined && (config.tpMaxChangePercent < 5 || config.tpMaxChangePercent > 50)) {
+    errors.push('tpMaxChangePercent must be between 5 and 50');
   }
 
   // Risk Caps validation

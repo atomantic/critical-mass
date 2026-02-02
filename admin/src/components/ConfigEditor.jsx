@@ -448,6 +448,50 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
             </div>
 
             <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">TP Auto-Management</h3>
+              <div className="flex items-center gap-4 mb-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <span className="text-gray-400">Enable Auto-Management</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRegimeChange('tpAutoManaged', !regimeConfig.tpAutoManaged)}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                      regimeConfig.tpAutoManaged ? 'bg-cyan-500' : 'bg-gray-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                      regimeConfig.tpAutoManaged ? 'translate-x-5' : 'translate-x-1'
+                    }`} />
+                  </button>
+                </label>
+                {regimeConfig.tpAutoManaged && (
+                  <span className="text-xs text-cyan-400">
+                    TP values will be dynamically adjusted based on observed cycle data
+                  </span>
+                )}
+              </div>
+              {regimeConfig.tpAutoManaged && (
+                <>
+                  <div className="grid grid-cols-4 gap-3">
+                    <FormInput label="Evaluation Cycles" value={regimeConfig.tpEvaluationCycles || 5} onChange={(v) => handleRegimeChange('tpEvaluationCycles', v)} type="number" />
+                    <FormInput label="Eval Max Hours" value={regimeConfig.tpEvaluationMaxHours || 24} onChange={(v) => handleRegimeChange('tpEvaluationMaxHours', v)} type="number" />
+                    <FormInput label="Min Sample Size" value={regimeConfig.tpMinSampleSize || 10} onChange={(v) => handleRegimeChange('tpMinSampleSize', v)} type="number" />
+                    <FormInput label="Max Change %" value={regimeConfig.tpMaxChangePercent || 25} onChange={(v) => handleRegimeChange('tpMaxChangePercent', v)} type="number" />
+                  </div>
+                  <div className="grid grid-cols-4 gap-3 mt-3">
+                    <FormInput label="Absolute Min %" value={regimeConfig.tpAbsoluteMin || 0.05} onChange={(v) => handleRegimeChange('tpAbsoluteMin', v)} type="number" />
+                    <FormInput label="Absolute Max %" value={regimeConfig.tpAbsoluteMax || 5.0} onChange={(v) => handleRegimeChange('tpAbsoluteMax', v)} type="number" />
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">
+                    Auto-adjusts TP range every {regimeConfig.tpEvaluationCycles || 5} cycles or {regimeConfig.tpEvaluationMaxHours || 24}h.
+                    Requires {regimeConfig.tpMinSampleSize || 10} samples before first adjustment.
+                    Holdback auto-set to half of TP Min.
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
               <h3 className="text-sm font-medium text-purple-400 mb-3">Risk Caps</h3>
               <div className="grid grid-cols-4 gap-3">
                 <FormInput label="Max BTC Exposure" value={regimeConfig.maxBtcExposure || 0.5} onChange={(v) => handleRegimeChange('maxBtcExposure', v)} type="number" />

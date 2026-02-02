@@ -14,6 +14,17 @@ All notable changes to this project will be documented in this file.
   - `btcValueUsd` - BTC holdings valued at current market price
   - `totalLiquidValue` - Combined value (USDC + BTC at live price) used for APY projections
   - UI shows breakdown: USDC return, BTC return with USD equivalent, and combined "Live Total"
+- **Dynamic TP Auto-Management** - Opt-in feature for automatic take-profit parameter adjustment
+  - Records cycle analytics (optimal TP %, actual TP %, volatility context)
+  - Compresses historical data into histogram buckets with time-weighted decay
+  - Calculates percentiles (p25, p50, p75) from compressed + recent data
+  - Periodic evaluation every N cycles (default: 5) or daily (whichever first)
+  - Rate-limited adjustments (max 25% change per evaluation)
+  - Safety bounds: absolute min (0.05%), absolute max (5.0%)
+  - Auto-holdback set to half of tpMinPercent when auto-adjusted
+  - State persisted across restarts
+  - Dashboard panel shows current settings, observed percentiles, adjustment history
+  - Config UI with enable toggle and all adjustment parameters
 
 ### Changed
 - Performance Metrics UI redesigned to show USDC, BTC, and total liquid value separately
