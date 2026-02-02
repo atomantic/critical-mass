@@ -107,8 +107,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let lastStatusUpdate = 0;
   const STATUS_UPDATE_INTERVAL = 1000; // 1 second throttle
 
-  // Dry-run mode flag
-  const isDryRun = config.dryRun === true;
+  // Dry-run mode flag - use exchange-level config (same as DCA engine)
+  // This ensures the UI toggle at exchanges.coinbase.dryRun controls both engines
+  const isDryRun = exchangeConfig.dryRun === true;
   const modeLabel = isDryRun ? '[DRY-RUN] ' : '';
 
   // Create adapter
