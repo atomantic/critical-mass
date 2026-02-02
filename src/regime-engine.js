@@ -164,6 +164,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     onSellFill: null,
   };
 
+  // Callbacks container for live mode fill detection (populated after functions are defined)
+  const liveCallbacks = {
+    onFillDetected: null,
+  };
+
   // Create order executor - use dry-run executor when dryRun is enabled
   // Callbacks are set up later after internal functions are defined
   const orderExecutor = isDryRun
@@ -171,7 +176,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         onBuyFill: (...args) => dryRunCallbacks.onBuyFill && dryRunCallbacks.onBuyFill(...args),
         onSellFill: (...args) => dryRunCallbacks.onSellFill && dryRunCallbacks.onSellFill(...args),
       })
-    : createOrderExecutor(exchange, config, adapter, productId);
+    : createOrderExecutor(exchange, config, adapter, productId, {
+        onFillDetected: (orderId, status) => liveCallbacks.onFillDetected && liveCallbacks.onFillDetected(orderId, status),
+      });
 
   const recoveryModule = createRecoveryModule(exchange, adapter, productId);
 
@@ -340,13 +347,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         tpFilled = true;
 
         // Get fill details
-        const fills = await adapter.getOrderFills(positionState.activeTpOrderId);
-        for (const fill of fills) {
-          fillLedger.ingestFill(fill);
+        const rawFills = await adapter.getOrderFills(positionState.activeTpOrderId);
+        const ingestedFills = [];
+        for (const fill of rawFills) {
+          const result = fillLedger.ingestFill(fill);
+          if (result.fill) ingestedFills.push(result.fill);
         }
 
+        // Use ingested fills (with quoteAmount) for aggregation
+        const fillsToAggregate = ingestedFills.length > 0
+          ? ingestedFills
+          : fillLedger.getFillsForOrder(positionState.activeTpOrderId);
+
         // Calculate P&L from the fills
-        const summary = fillLedger.aggregateFills(fills);
+        const summary = fillLedger.aggregateFills(fillsToAggregate);
         const proceeds = summary.totalValue - summary.totalFees;
         const soldCostBasis = summary.totalSize * positionState.avgCostBasis;
         const pnl = proceeds - soldCostBasis;
@@ -381,13 +395,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           entriesFilled++;
 
           // Get and ingest fills
-          const fills = await adapter.getOrderFills(orderId);
-          for (const fill of fills) {
-            fillLedger.ingestFill(fill);
+          const rawFills = await adapter.getOrderFills(orderId);
+          const ingestedFills = [];
+          for (const fill of rawFills) {
+            const result = fillLedger.ingestFill(fill);
+            if (result.fill) ingestedFills.push(result.fill);
           }
 
+          // Use ingested fills (with quoteAmount) for aggregation
+          const fillsToAggregate = ingestedFills.length > 0
+            ? ingestedFills
+            : fillLedger.getFillsForOrder(orderId);
+
           // Update position
-          const summary = fillLedger.aggregateFills(fills);
+          const summary = fillLedger.aggregateFills(fillsToAggregate);
           positionState.totalBTC = roundBTC(positionState.totalBTC + summary.totalSize);
           positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + summary.totalValue + summary.totalFees);
           positionState.avgCostBasis = positionState.totalBTC > 0
@@ -644,10 +665,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const { position } = await recoveryModule.recoverState(fillLedger, orderExecutor);
 
       // Merge recovered position with any saved state (exchange is authoritative for BTC balance)
+      // Preserve activeTpOrderId and lastTpPrice from saved state - these are engine tracking state
+      const savedTpOrderId = positionState.activeTpOrderId;
+      const savedTpPrice = positionState.lastTpPrice;
       positionState = {
         ...createInitialPositionState(),
         ...positionState, // Keep saved fields like realizedPnL, cyclesCompleted
         ...position,      // Override with exchange-recovered values
+        activeTpOrderId: savedTpOrderId, // Restore TP tracking (not in fills)
+        lastTpPrice: savedTpPrice,
       };
 
       // Check for orders that filled while we were offline (non-critical, continue on error)
@@ -668,6 +694,30 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // If we have position but no TP order, place one
       if (positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
         console.log(`📝 [${exchange}] Position exists but no TP order, will place after metrics update`);
+      }
+
+      // Restore TP order tracking if we have an active TP order ID - but validate it exists first
+      if (positionState.activeTpOrderId) {
+        const tpOrderStatus = await adapter.getOrder(positionState.activeTpOrderId).catch(() => null);
+        const tpOrderExists = tpOrderStatus && tpOrderStatus.status !== 'CANCELLED' && tpOrderStatus.status !== 'FAILED';
+
+        if (tpOrderExists && orderExecutor.restorePendingOrder) {
+          orderExecutor.restorePendingOrder(positionState.activeTpOrderId, {
+            type: 'take_profit',
+            price: positionState.lastTpPrice,
+            size: positionState.btcOnOrder || positionState.totalBTC,
+            sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.btcOnOrder || positionState.totalBTC),
+            placedAt: positionState.lastEntryTime || Date.now(),
+            status: 'open',
+          });
+          console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ $${positionState.lastTpPrice}`);
+        } else {
+          // TP order no longer exists on exchange - clear tracking so a new one gets placed
+          console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
+          positionState.activeTpOrderId = null;
+          positionState.lastTpPrice = 0;
+          positionState.btcOnOrder = 0;
+        }
       }
 
       // Save initial state after recovery
@@ -871,17 +921,27 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    */
   const handleOrderFill = async (fillData) => {
     // Get detailed fills
-    const fills = await adapter.getOrderFills(fillData.orderId);
+    const rawFills = await adapter.getOrderFills(fillData.orderId);
 
-    // Ingest each fill
-    for (const fill of fills) {
-      fillLedger.ingestFill(fill);
+    // Ingest each fill and collect the normalized fills
+    const ingestedFills = [];
+    for (const fill of rawFills) {
+      const result = fillLedger.ingestFill(fill);
+      if (result.fill) {
+        ingestedFills.push(result.fill);
+      }
     }
+
+    // Use ingested fills (which have quoteAmount) for aggregation
+    // Fall back to getting fills from ledger if all were duplicates
+    const fillsToAggregate = ingestedFills.length > 0
+      ? ingestedFills
+      : fillLedger.getFillsForOrder(fillData.orderId);
 
     // Determine if buy or sell
     if (fillData.side.toLowerCase() === 'buy') {
       // Update position
-      const summary = fillLedger.aggregateFills(fills);
+      const summary = fillLedger.aggregateFills(fillsToAggregate);
       positionState.totalBTC = roundBTC(positionState.totalBTC + summary.totalSize);
       positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + summary.totalValue + summary.totalFees);
       positionState.avgCostBasis = positionState.totalBTC > 0
@@ -908,7 +968,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     } else if (fillData.side.toLowerCase() === 'sell') {
       // Cycle complete
-      const summary = fillLedger.aggregateFills(fills);
+      const summary = fillLedger.aggregateFills(fillsToAggregate);
       const proceeds = summary.totalValue - summary.totalFees;
       const soldCostBasis = summary.totalSize * positionState.avgCostBasis;
       const pnl = proceeds - soldCostBasis;
@@ -1029,6 +1089,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Log hourly summary
     logHourlySummary();
+
+    // Place TP order if we have a position but no active TP order (e.g., after recovery)
+    if (!isDryRun && positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
+      console.log(`📝 [${exchange}] Position without TP order detected, placing TP order now`);
+      await placeTakeProfitOrder();
+    }
   };
 
   /**
@@ -1037,6 +1103,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const startReconciliation = () => {
     reconcileInterval = setInterval(() => {
       if (!isRunning) return; // Guard against firing after stop
+
+      // Check for fills that WebSocket might have missed
+      if (!isDryRun && orderExecutor.checkPendingOrderFills) {
+        orderExecutor.checkPendingOrderFills()
+          .then(result => {
+            if (result.filled > 0 || result.cancelled > 0) {
+              console.log(`🔄 [${exchange}] Reconcile fill check: ${result.filled} filled, ${result.cancelled} cancelled`);
+            }
+          })
+          .catch(err => {
+            console.log(`❌ [${exchange}] Fill check failed: ${err.message}`);
+          });
+      }
 
       recoveryModule.reconcile(positionState, fillLedger)
         .then(result => {
@@ -1330,6 +1409,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       // Save state after TP fill
       saveDryRunState();
+    };
+  }
+
+  // Set up live mode fill detection callback (backup for when WebSocket misses fills)
+  if (!isDryRun) {
+    liveCallbacks.onFillDetected = async (orderId, status) => {
+      console.log(`🔄 [${exchange}] Processing fill detected via polling: ${orderId} side=${status.side}`);
+      // Convert status to the format handleOrderFill expects
+      const fillData = {
+        orderId,
+        side: status.side,
+        status: 'FILLED',
+        filledSize: status.filledSize,
+        filledValue: status.filledValue,
+        averageFilledPrice: status.averageFilledPrice,
+        totalFees: status.totalFees,
+      };
+      await handleOrderFill(fillData);
     };
   }
 

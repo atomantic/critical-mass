@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.25] - 2026-02-02
+
+### Fixed
+- **NaN position state corruption after fill processing** - Fixed critical bug where position state (avgCostBasis, totalCostBasis) became NaN after processing fills
+  - Root cause: `aggregateFills()` was called with raw adapter fills (which have `sizeInQuote`) instead of ingested fills (which have `quoteAmount`)
+  - Fixed in `handleOrderFill()`, `checkOfflineOrderFills()` for both TP and entry orders
+- **Ghost TP orders after restart** - Engine now validates saved TP order exists on Coinbase before restoring
+  - If order was cancelled/failed, clears tracking so a new TP order gets placed
+  - Prevents UI showing orders that don't exist on exchange
+- **Auto-TP placement after recovery** - Engine now places TP order after metrics update when position exists but no active TP order
+  - Previously, TP orders were only placed after buy fills, leaving recovered positions without TP protection
+- **Recovery now uses all fills** - Changed recovery to use `fillLedger.getAllFills()` instead of just current cycle fills
+  - Fixes issue where restored state showed no fills because `currentCycleId` was null
+
+### Added
+- **TP order validation on startup** - Validates saved TP order exists on exchange before restoring tracking
+- **restorePendingOrder API** - Added to order executor to restore TP order tracking after recovery
+
 ## [2.3.24] - 2026-02-02
 
 ### Fixed
@@ -50,6 +68,12 @@ All notable changes to this project will be documented in this file.
   - Post-only orders can be immediately cancelled by Coinbase if they would cross the spread
   - Now verifies order status after placement before adding to pending orders
   - If order was immediately cancelled, retries with fresh prices
+- **Filled orders not detected** - Orders would fill but engine didn't process them
+  - Stale order timeout now detects FILLED status and triggers fill processing
+  - Added `checkPendingOrderFills()` method for periodic fill detection backup
+  - Reconciliation interval now checks for missed fills every 5 minutes
+  - `onFillDetected` callback wired up to handle fills detected via polling
+  - Status comparison now case-insensitive to handle varying API response formats
 
 ### Added
 - **Dynamic entry offset based on momentum** - Entry bid offset now adapts to market direction
