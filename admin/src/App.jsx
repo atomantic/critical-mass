@@ -9,6 +9,7 @@ import Backtest from './components/Backtest'
 import Optimizer from './components/Optimizer'
 import ExchangeSelector from './components/ExchangeSelector'
 import KeysConfig from './components/KeysConfig'
+import RegimeDashboard from './components/RegimeDashboard'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents } from './hooks/useTradeEvents'
 
@@ -38,6 +39,7 @@ const tabs = [
   { name: 'Charts', path: '/charts' },
   { name: 'Backtest', path: '/backtest' },
   { name: 'Optimizer', path: '/optimizer' },
+  { name: 'Regime', path: '/regime', highlight: true },
   { name: 'Config', path: '/config' },
   { name: 'API Keys', path: '/keys' },
 ]
@@ -192,7 +194,9 @@ function AppContent() {
                   className={`px-4 py-3 text-sm font-medium transition-colors ${
                     isActiveTab(tab.path)
                       ? 'text-white border-b-2 border-blue-500'
-                      : 'text-gray-400 hover:text-white'
+                      : tab.highlight
+                        ? 'text-purple-400 hover:text-purple-300'
+                        : 'text-gray-400 hover:text-white'
                   }`}
                 >
                   {tab.name}
@@ -226,6 +230,7 @@ function AppContent() {
               <Route path="/:exchange/charts" element={<Charts summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
               <Route path="/:exchange/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
               <Route path="/:exchange/optimizer" element={<Optimizer exchange={currentExchange} />} />
+              <Route path="/:exchange/regime" element={<RegimeDashboard exchange={currentExchange} />} />
               <Route path="/:exchange/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} />} />
               <Route path="/:exchange/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
 

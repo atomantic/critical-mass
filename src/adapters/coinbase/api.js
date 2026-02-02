@@ -11,6 +11,7 @@ const { createBaseAdapter } = require('../base-adapter');
  * @typedef {import('../../types').ProductDetails} ProductDetails
  * @typedef {import('../../types').MarketBuyResult} MarketBuyResult
  * @typedef {import('../../types').LimitSellResult} LimitSellResult
+ * @typedef {import('../../types').LimitBuyResult} LimitBuyResult
  * @typedef {import('../../types').OrderDetails} OrderDetails
  * @typedef {import('../../types').OpenOrder} OpenOrder
  * @typedef {import('../../types').CancelResult} CancelResult
@@ -257,6 +258,55 @@ const createCoinbaseAdapter = (keysPath = null) => {
   };
 
   /**
+   * Place a post-only limit buy order (maker-prefer)
+   * @param {string} productId - Product ID
+   * @param {number} baseAmount - Amount of base currency to buy
+   * @param {number} price - Limit price in quote currency
+   * @param {Object} [options] - Order options
+   * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
+   * @returns {Promise<LimitBuyResult>} Order result
+   */
+  adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
+    const clientOrderId = uuidv4();
+    const postOnly = options.postOnly !== false; // Default to true
+
+    // Get product details for proper rounding
+    const product = await adapter.getProductDetails(productId);
+
+    // Round to proper increments
+    const baseIncrement = parseFloat(product.baseIncrement);
+    const quoteIncrement = parseFloat(product.quoteIncrement);
+
+    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
+    const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
+
+    const orderData = {
+      client_order_id: clientOrderId,
+      product_id: productId,
+      side: 'BUY',
+      order_configuration: {
+        limit_limit_gtc: {
+          base_size: roundedAmount.toFixed(8),
+          limit_price: roundedPrice.toFixed(2),
+          post_only: postOnly,
+        },
+      },
+    };
+
+    const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
+
+    return {
+      orderId: result.order_id || result.success_response?.order_id,
+      clientOrderId,
+      success: result.success || !!result.success_response,
+      errorMessage: result.error_response?.message,
+      baseSize: roundedAmount,
+      limitPrice: roundedPrice,
+      postOnly,
+    };
+  };
+
+  /**
    * Get order details by order ID (includes fee info)
    * @param {string} orderId - Order ID
    * @returns {Promise<OrderDetails>} Order details
@@ -381,6 +431,7 @@ module.exports = {
   getCurrentPrice: defaultAdapter.getCurrentPrice,
   getProductDetails: defaultAdapter.getProductDetails,
   placeMarketBuy: defaultAdapter.placeMarketBuy,
+  placeLimitBuy: defaultAdapter.placeLimitBuy,
   placeLimitSell: defaultAdapter.placeLimitSell,
   getOrder: defaultAdapter.getOrder,
   getOpenOrders: defaultAdapter.getOpenOrders,

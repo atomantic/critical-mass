@@ -15,6 +15,7 @@ const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils')
  * @typedef {import('./types').GlobalConfig} GlobalConfig
  * @typedef {import('./types').MultiExchangeConfig} MultiExchangeConfig
  * @typedef {import('./types').ValidationResult} ValidationResult
+ * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
  */
 
 const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
@@ -36,6 +37,76 @@ const DEFAULTS = {
   dryRun: true,
   dcaStrategy: 'fixed',
   fibBaseAmount: 10,
+};
+
+/**
+ * Default regime strategy configuration
+ * @type {RegimeStrategyConfig}
+ */
+const REGIME_DEFAULTS = {
+  // Mode flags
+  enabled: false,
+  dryRun: true,
+
+  // Volatility Clock
+  atrPeriod: 14,
+  kFactor: 0.6,
+  minIntervalMs: 60000,
+  maxIntervalMs: 3600000,
+
+  // Regime Detection
+  momentumMult: 1.5,
+  volExpansionMult: 1.5,
+  volContractionMult: 1.2,
+  vwapPeriodHours: 4,
+  trendConfirmationPeriods: 5,
+
+  // Position Sizing
+  baseSizeUsdc: 50,
+  harvestScale: 1.0,
+  cautionScale: 0.5,
+  trendScale: 0.0,
+  maxLadderSteps: 10,
+  liquidityFactorCap: 2.0,
+
+  // Take-Profit
+  tpMult: 1.0,
+  tpMinPercent: 2.0,
+  tpMaxPercent: 15.0,
+  tpUpdateThresholdPct: 0.5,
+  holdbackPercent: 5,
+
+  // Risk Caps
+  maxBtcExposure: 0.5,
+  maxUsdcDeployed: 10000,
+  maxDrawdownPercent: 20,
+
+  // Order Execution
+  entryOffsetBps: 10,
+  cancelRateLimitMs: 1000,
+  orderStaleMs: 30000,
+  makerTimeoutMs: 10000,
+
+  // System Health
+  staleDataMs: 30000,
+  staleOrdersMs: 60000,
+  maxRestErrors: 5,
+  maxRateLimits: 3,
+  maxLatencyMs: 5000,
+  safeRecoveryMs: 60000,
+
+  // Invariants
+  maxOpenOrders: 3,
+  reconcileIntervalMs: 300000,
+
+  // Tail Events
+  maxSpreadBps: 50,
+  spreadPauseMs: 300000,
+  minDepthUsdc: 10000,
+  depthPauseMs: 300000,
+  flashMoveMult: 3.0,
+  flashCooldownMs: 600000,
+  cancelEntriesOnFlash: true,
 };
 
 /**
@@ -281,6 +352,107 @@ const getGlobalConfig = () => {
   };
 };
 
+/**
+ * Get regime strategy configuration for an exchange
+ * @param {string} exchange - Exchange name
+ * @returns {RegimeStrategyConfig} Regime configuration with defaults applied
+ */
+const getRegimeConfig = (exchange) => {
+  const config = loadConfig();
+  const exchangeConfig = config.exchanges?.[exchange] || {};
+  const regimeConfig = exchangeConfig.regime || {};
+
+  return {
+    ...REGIME_DEFAULTS,
+    ...regimeConfig,
+  };
+};
+
+/**
+ * Update regime configuration for an exchange
+ * @param {string} exchange - Exchange name
+ * @param {Partial<RegimeStrategyConfig>} updates - Regime config updates
+ * @returns {MultiExchangeConfig} Updated full configuration
+ */
+const updateRegimeConfig = (exchange, updates) => {
+  const config = loadConfig();
+
+  if (!config.exchanges[exchange]) {
+    config.exchanges[exchange] = { ...DEFAULTS };
+  }
+
+  config.exchanges[exchange].regime = {
+    ...(config.exchanges[exchange].regime || {}),
+    ...updates,
+  };
+
+  saveConfig(config);
+  return config;
+};
+
+/**
+ * Validate regime strategy configuration
+ * @param {Partial<RegimeStrategyConfig>} config - Regime config to validate
+ * @returns {ValidationResult}
+ */
+const validateRegimeConfig = (config) => {
+  const errors = [];
+
+  // Volatility Clock validation
+  if (config.atrPeriod !== undefined && (config.atrPeriod < 5 || config.atrPeriod > 30)) {
+    errors.push('atrPeriod must be between 5 and 30');
+  }
+  if (config.kFactor !== undefined && (config.kFactor < 0.4 || config.kFactor > 0.8)) {
+    errors.push('kFactor must be between 0.4 and 0.8');
+  }
+  if (config.minIntervalMs !== undefined && config.minIntervalMs < 30000) {
+    errors.push('minIntervalMs must be at least 30000 (30 seconds)');
+  }
+  if (config.maxIntervalMs !== undefined && config.maxIntervalMs > 14400000) {
+    errors.push('maxIntervalMs must not exceed 14400000 (4 hours)');
+  }
+
+  // Regime Detection validation
+  if (config.momentumMult !== undefined && (config.momentumMult < 1.0 || config.momentumMult > 2.5)) {
+    errors.push('momentumMult must be between 1.0 and 2.5');
+  }
+  if (config.volExpansionMult !== undefined && (config.volExpansionMult < 1.2 || config.volExpansionMult > 2.0)) {
+    errors.push('volExpansionMult must be between 1.2 and 2.0');
+  }
+
+  // Position Sizing validation
+  if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 10 || config.baseSizeUsdc > 500)) {
+    errors.push('baseSizeUsdc must be between 10 and 500');
+  }
+  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 5 || config.maxLadderSteps > 20)) {
+    errors.push('maxLadderSteps must be between 5 and 20');
+  }
+
+  // Take-Profit validation
+  if (config.tpMinPercent !== undefined && (config.tpMinPercent < 1.0 || config.tpMinPercent > 5.0)) {
+    errors.push('tpMinPercent must be between 1.0 and 5.0');
+  }
+  if (config.tpMaxPercent !== undefined && (config.tpMaxPercent < 8.0 || config.tpMaxPercent > 25.0)) {
+    errors.push('tpMaxPercent must be between 8.0 and 25.0');
+  }
+
+  // Risk Caps validation
+  if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.1 || config.maxBtcExposure > 2.0)) {
+    errors.push('maxBtcExposure must be between 0.1 and 2.0');
+  }
+  if (config.maxUsdcDeployed !== undefined && (config.maxUsdcDeployed < 1000 || config.maxUsdcDeployed > 100000)) {
+    errors.push('maxUsdcDeployed must be between 1000 and 100000');
+  }
+  if (config.maxDrawdownPercent !== undefined && (config.maxDrawdownPercent < 10 || config.maxDrawdownPercent > 30)) {
+    errors.push('maxDrawdownPercent must be between 10 and 30');
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+};
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -296,6 +468,11 @@ module.exports = {
   getGlobalConfig,
   isMultiExchangeConfig,
   normalizeToMultiExchange,
+  // Regime strategy
+  getRegimeConfig,
+  updateRegimeConfig,
+  validateRegimeConfig,
   DEFAULTS,
   GLOBAL_DEFAULTS,
+  REGIME_DEFAULTS,
 };

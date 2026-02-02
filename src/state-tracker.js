@@ -19,6 +19,8 @@ const { getExchangeDataDir } = require('./migration');
  * @typedef {import('./types').IntervalType} IntervalType
  * @typedef {import('./types').FibonacciFillDetails} FibonacciFillDetails
  * @typedef {import('./types').FibonacciCycleInfo} FibonacciCycleInfo
+ * @typedef {import('./types').RegimePositionState} RegimePositionState
+ * @typedef {import('./types').RegimeState} RegimeState
  */
 
 const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
@@ -456,6 +458,148 @@ const getFibonacciCycleInfo = (state) => {
   };
 };
 
+// ============================================================================
+// Regime State Management
+// ============================================================================
+
+/**
+ * Get regime state file path
+ * @param {string} exchange - Exchange name
+ * @returns {string} Path to regime state file
+ */
+const getRegimeStateFile = (exchange = 'coinbase') => {
+  const dir = getExchangeDataDir(exchange);
+  return path.join(dir, 'regime-state.json');
+};
+
+/**
+ * Create initial regime position state
+ * @returns {RegimePositionState}
+ */
+const createInitialRegimePositionState = () => ({
+  totalBTC: 0,
+  totalCostBasis: 0,
+  avgCostBasis: 0,
+  ladderStep: 0,
+  lastEntryPrice: 0,
+  lastEntryTime: 0,
+  anchorPrice: 0,
+  activeTpOrderId: null,
+  lastTpPrice: 0,
+  cyclesCompleted: 0,
+  unrealizedPnL: 0,
+  realizedPnL: 0,
+  maxDrawdownSeen: 0,
+  scalingDisabled: false,
+  scalingDisabledReason: null,
+});
+
+/**
+ * Create initial regime state
+ * @returns {RegimeState}
+ */
+const createInitialRegimeState = () => ({
+  mode: 'HARVEST',
+  since: Date.now(),
+  transitionCount: 0,
+  trendDirection: null,
+  lastVolExpansion: 1.0,
+  lastMomentumMag: 0,
+  trendConfirmationCount: 0,
+});
+
+/**
+ * Load regime state from file
+ * @param {string} exchange - Exchange name
+ * @returns {{position: RegimePositionState, regime: RegimeState}}
+ */
+const loadRegimeState = (exchange = 'coinbase') => {
+  const stateFile = getRegimeStateFile(exchange);
+
+  if (!fs.existsSync(stateFile)) {
+    return {
+      position: createInitialRegimePositionState(),
+      regime: createInitialRegimeState(),
+    };
+  }
+
+  const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+
+  return {
+    position: { ...createInitialRegimePositionState(), ...data.position },
+    regime: { ...createInitialRegimeState(), ...data.regime },
+  };
+};
+
+/**
+ * Save regime state to file
+ * @param {RegimePositionState} position - Position state
+ * @param {RegimeState} regime - Regime state
+ * @param {string} exchange - Exchange name
+ */
+const saveRegimeState = (position, regime, exchange = 'coinbase') => {
+  const stateFile = getRegimeStateFile(exchange);
+  const dir = path.dirname(stateFile);
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  fs.writeFileSync(stateFile, JSON.stringify({ position, regime }, null, 2));
+};
+
+/**
+ * Update regime position state after entry
+ * @param {RegimePositionState} state - Current state
+ * @param {Object} entryDetails - Entry details
+ * @param {number} entryDetails.btcAmount - BTC purchased
+ * @param {number} entryDetails.costBasis - Cost including fees
+ * @param {number} entryDetails.price - Entry price
+ * @returns {RegimePositionState} Updated state
+ */
+const updateRegimeStateAfterEntry = (state, entryDetails) => {
+  const { btcAmount, costBasis, price } = entryDetails;
+
+  state.totalBTC += btcAmount;
+  state.totalCostBasis += costBasis;
+  state.avgCostBasis = state.totalBTC > 0 ? state.totalCostBasis / state.totalBTC : 0;
+  state.ladderStep += 1;
+  state.lastEntryPrice = price;
+  state.lastEntryTime = Date.now();
+  state.anchorPrice = price;
+
+  return state;
+};
+
+/**
+ * Update regime position state after TP fill
+ * @param {RegimePositionState} state - Current state
+ * @param {Object} fillDetails - Fill details
+ * @param {number} fillDetails.btcAmount - BTC sold
+ * @param {number} fillDetails.proceeds - Net proceeds
+ * @param {number} fillDetails.pnl - Realized P&L
+ * @returns {RegimePositionState} Updated state
+ */
+const updateRegimeStateAfterTP = (state, fillDetails) => {
+  const { pnl } = fillDetails;
+
+  state.realizedPnL += pnl;
+  state.cyclesCompleted += 1;
+
+  // Reset cycle
+  state.totalBTC = 0;
+  state.totalCostBasis = 0;
+  state.avgCostBasis = 0;
+  state.ladderStep = 0;
+  state.activeTpOrderId = null;
+  state.lastTpPrice = 0;
+  state.anchorPrice = 0;
+  state.scalingDisabled = false;
+  state.scalingDisabledReason = null;
+
+  return state;
+};
+
 module.exports = {
   loadState,
   saveState,
@@ -474,4 +618,12 @@ module.exports = {
   updateAfterFibSellOrder,
   updateAfterFibSellFill,
   getFibonacciCycleInfo,
+  // Regime state management
+  getRegimeStateFile,
+  createInitialRegimePositionState,
+  createInitialRegimeState,
+  loadRegimeState,
+  saveRegimeState,
+  updateRegimeStateAfterEntry,
+  updateRegimeStateAfterTP,
 };

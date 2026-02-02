@@ -352,6 +352,218 @@
  */
 
 // ============================================================================
+// Regime Strategy Types
+// ============================================================================
+
+/**
+ * @typedef {'HARVEST' | 'CAUTION' | 'TREND'} RegimeMode
+ * Three trading modes based on market conditions:
+ * - HARVEST: Mean-reverting, full inventory cycling
+ * - CAUTION: Volatility rising, reduced scaling, wider TP
+ * - TREND: Strong momentum, exit/manage only, no averaging down
+ */
+
+/**
+ * @typedef {'ACTIVE' | 'SAFE' | 'PAUSED'} HealthMode
+ * System health states:
+ * - ACTIVE: Normal operation, entries allowed
+ * - SAFE: Degraded conditions, entries blocked, TP orders maintained
+ * - PAUSED: Manually paused by operator
+ */
+
+/**
+ * @typedef {Object} MarketState
+ * @property {number} lastPrice - Most recent trade price
+ * @property {number} bid - Current best bid price
+ * @property {number} ask - Current best ask price
+ * @property {number} spread - Current spread (ask - bid)
+ * @property {number} atr1m - 1-minute ATR value
+ * @property {number} atr5m - 5-minute ATR value
+ * @property {number} realizedVol - Rolling realized volatility
+ * @property {number} volBaseline - EMA baseline of realized volatility
+ * @property {number} vwap - Volume-weighted average price
+ * @property {number} vwapDistance - Distance from VWAP in ATR units
+ * @property {number} recentSwing - Recent price swing range
+ * @property {number} tradeImbalance - Buy/sell imbalance (-1 to +1)
+ * @property {Array<{price: number, size: number, side: string, timestamp: number}>} trades - Recent trades
+ * @property {number} lastUpdate - Timestamp of last market data update
+ */
+
+/**
+ * @typedef {Object} RegimeState
+ * @property {RegimeMode} mode - Current regime mode
+ * @property {number} since - Timestamp when current regime started
+ * @property {number} transitionCount - Number of regime transitions
+ * @property {'up' | 'down' | null} trendDirection - Trend direction if in TREND mode
+ * @property {number} lastVolExpansion - Last computed volatility expansion ratio
+ * @property {number} lastMomentumMag - Last computed momentum magnitude
+ * @property {number} trendConfirmationCount - Consecutive trend confirmations
+ */
+
+/**
+ * @typedef {Object} RegimePositionState
+ * @property {number} totalBTC - Total BTC in current cycle
+ * @property {number} totalCostBasis - Total cost including fees
+ * @property {number} avgCostBasis - Average cost per BTC
+ * @property {number} ladderStep - Current averaging-down step (0-indexed)
+ * @property {number} lastEntryPrice - Price of last entry
+ * @property {number} lastEntryTime - Timestamp of last entry
+ * @property {number} anchorPrice - Price anchor for volatility clock
+ * @property {string|null} activeTpOrderId - Active take-profit order ID
+ * @property {number} lastTpPrice - Last take-profit price placed
+ * @property {number} cyclesCompleted - Number of completed inventory cycles
+ * @property {number} unrealizedPnL - Current unrealized P&L
+ * @property {number} realizedPnL - Cumulative realized P&L
+ * @property {number} maxDrawdownSeen - Maximum drawdown observed
+ * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
+ * @property {string|null} scalingDisabledReason - Reason scaling is disabled
+ */
+
+/**
+ * @typedef {Object} HealthState
+ * @property {HealthMode} mode - Current health mode
+ * @property {number} since - Timestamp when current mode started
+ * @property {string|null} reason - Reason for current mode
+ * @property {Object} healthChecks - Health check statuses
+ * @property {boolean} healthChecks.wsConnected - WebSocket connection status
+ * @property {number} healthChecks.lastTickerMs - Age of last ticker in ms
+ * @property {number} healthChecks.lastOrderUpdateMs - Age of last order update in ms
+ * @property {number} healthChecks.restErrorCount - REST errors in window
+ * @property {number} healthChecks.rateLimitCount - Rate limits in window
+ * @property {number} healthChecks.avgLatencyMs - Average REST latency
+ */
+
+/**
+ * @typedef {Object} PauseState
+ * @property {boolean} spreadPaused - Paused due to wide spread
+ * @property {number} spreadPausedUntil - Resume timestamp for spread pause
+ * @property {number} lastSpreadBps - Last observed spread in bps
+ * @property {boolean} depthPaused - Paused due to thin depth
+ * @property {number} depthPausedUntil - Resume timestamp for depth pause
+ */
+
+/**
+ * @typedef {Object} Fill
+ * @property {string} tradeId - Exchange trade ID (primary key)
+ * @property {string} orderId - Order ID
+ * @property {'buy' | 'sell'} side - Trade side
+ * @property {number} price - Fill price
+ * @property {number} size - Fill size in BTC
+ * @property {number} quoteAmount - Fill amount in USDC
+ * @property {number} fee - Fee charged
+ * @property {string} feeAsset - Fee asset ('USDC' or 'BTC')
+ * @property {number} rebate - Maker rebate if any
+ * @property {number} netFee - Net fee (fee - rebate)
+ * @property {'MAKER' | 'TAKER'} liquidityIndicator - Maker or taker
+ * @property {number} timestamp - Exchange timestamp
+ * @property {number} ingestedAt - When fill was ingested
+ * @property {string|null} cycleId - Trading cycle ID
+ */
+
+/**
+ * @typedef {Object} PendingOrder
+ * @property {'entry' | 'take_profit'} type - Order type
+ * @property {number} price - Order price
+ * @property {number} size - Order size
+ * @property {number} sizeUsdc - Order size in USDC (for entries)
+ * @property {number} placedAt - Timestamp when placed
+ * @property {boolean} [recoveredFromExchange] - Whether recovered on startup
+ */
+
+/**
+ * @typedef {Object} RegimeStrategyConfig
+ * Mode Flags
+ * @property {boolean} enabled - Whether regime engine is enabled (default: false)
+ * @property {boolean} dryRun - Dry-run mode simulates trades without placing real orders (default: true)
+ *
+ * Volatility Clock Parameters
+ * @property {number} atrPeriod - Periods for ATR calculation (default: 14)
+ * @property {number} kFactor - ATR multiplier for entry trigger (default: 0.6)
+ * @property {number} minIntervalMs - Minimum time between entries (default: 60000)
+ * @property {number} maxIntervalMs - Maximum time between entries (default: 3600000)
+ *
+ * Regime Detection Parameters
+ * @property {number} momentumMult - Momentum threshold multiplier (default: 1.5)
+ * @property {number} volExpansionMult - RV/baseline for CAUTION (default: 1.5)
+ * @property {number} volContractionMult - RV/baseline to return to HARVEST (default: 1.2)
+ * @property {number} vwapPeriodHours - VWAP calculation window (default: 4)
+ * @property {number} trendConfirmationPeriods - Periods to confirm TREND (default: 5)
+ *
+ * Position Sizing Parameters
+ * @property {number} baseSizeUsdc - Base order size in USDC (default: 50)
+ * @property {number} harvestScale - Size multiplier in HARVEST (default: 1.0)
+ * @property {number} cautionScale - Size multiplier in CAUTION (default: 0.5)
+ * @property {number} trendScale - Size multiplier in TREND (default: 0.0)
+ * @property {number} maxLadderSteps - Maximum averaging-down steps (default: 10)
+ * @property {number} liquidityFactorCap - Maximum liquidity multiplier (default: 2.0)
+ *
+ * Take-Profit Parameters
+ * @property {number} tpMult - TP distance multiplier (default: 1.0)
+ * @property {number} tpMinPercent - Minimum TP percentage (default: 2.0)
+ * @property {number} tpMaxPercent - Maximum TP percentage (default: 15.0)
+ * @property {number} tpUpdateThresholdPct - Min % change to update TP (default: 0.5)
+ * @property {number} holdbackPercent - BTC holdback percentage (default: 5)
+ *
+ * Risk Cap Parameters
+ * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)
+ * @property {number} maxUsdcDeployed - Maximum USDC deployed (default: 10000)
+ * @property {number} maxDrawdownPercent - Pause threshold (default: 20)
+ *
+ * Order Execution Parameters
+ * @property {number} entryOffsetBps - Offset below mid for bids (default: 10)
+ * @property {number} cancelRateLimitMs - Min time between cancels (default: 1000)
+ * @property {number} orderStaleMs - Timeout for stale orders (default: 30000)
+ * @property {number} makerTimeoutMs - Wait time for maker fill (default: 10000)
+ *
+ * System Health Parameters
+ * @property {number} staleDataMs - Max age of market data (default: 30000)
+ * @property {number} staleOrdersMs - Max age of order updates (default: 60000)
+ * @property {number} maxRestErrors - REST errors to trigger SAFE (default: 5)
+ * @property {number} maxRateLimits - Rate limits to trigger SAFE (default: 3)
+ * @property {number} maxLatencyMs - Latency to trigger SAFE (default: 5000)
+ * @property {number} safeRecoveryMs - Time healthy to exit SAFE (default: 60000)
+ *
+ * Invariant Parameters
+ * @property {number} maxOpenOrders - Maximum concurrent orders (default: 3)
+ * @property {number} reconcileIntervalMs - State reconciliation frequency (default: 300000)
+ *
+ * Tail Event Parameters
+ * @property {number} maxSpreadBps - Spread pause threshold (default: 50)
+ * @property {number} spreadPauseMs - Spread pause duration (default: 300000)
+ * @property {number} minDepthUsdc - Minimum depth for entries (default: 10000)
+ * @property {number} depthPauseMs - Depth pause duration (default: 300000)
+ * @property {number} flashMoveMult - ATR multiple for flash detection (default: 3.0)
+ * @property {number} flashCooldownMs - Flash move cooldown (default: 600000)
+ * @property {boolean} cancelEntriesOnFlash - Cancel entries on flash (default: true)
+ */
+
+/**
+ * @typedef {Object} LimitBuyResult
+ * @property {string} orderId - Order ID from exchange
+ * @property {string} clientOrderId - Client-generated order ID
+ * @property {boolean} success - Whether order was placed successfully
+ * @property {string} [errorMessage] - Error message if order failed
+ * @property {number} baseSize - Amount of base currency in order
+ * @property {number} limitPrice - Limit price for the order
+ * @property {boolean} [postOnly] - Whether order was post-only
+ */
+
+/**
+ * @typedef {Object} EntryCheckResult
+ * @property {boolean} allowed - Whether entry is allowed
+ * @property {string|null} reason - Reason if not allowed
+ */
+
+/**
+ * @typedef {Object} VolatilityMetrics
+ * @property {number} atr - Average True Range
+ * @property {number} realizedVol - Realized volatility
+ * @property {number} volExpansion - Volatility expansion ratio
+ * @property {number} vwap - Volume-weighted average price
+ * @property {number} recentSwing - Recent swing range
+ */
+
+// ============================================================================
 // API Credentials Types
 // ============================================================================
 
