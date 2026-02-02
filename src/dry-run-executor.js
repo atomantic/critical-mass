@@ -342,7 +342,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     order.filledAt = Date.now();
     order.fillPrice = fillPrice;
 
-    filledOrders.push({ ...order });
+    // Note: Don't push to filledOrders yet - we need to add P&L data first for TP orders
     pendingOrders.delete(orderId);
 
     if (order.type === 'entry') {
@@ -380,6 +380,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       });
       console.log(`🧪 [${exchange}] [DRY-RUN] Entry FILLED: ${order.size} BTC @ $${fillPrice}`);
 
+      // Push to filled orders after all data is populated
+      filledOrders.push({ ...order });
+
       // Notify callback for position update
       if (callbacks.onBuyFill) {
         callbacks.onBuyFill(orderId, order.size, fillPrice, costBasis);
@@ -409,6 +412,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       order.pnl = pnl;
       order.holdbackBtc = holdbackBtc;
       order.avgCostBasis = avgBuyPrice;
+
+      // Push to filled orders after all data is populated
+      filledOrders.push({ ...order });
 
       logDecision('tp_filled', 'N/A', fillPrice, {
         orderId,
