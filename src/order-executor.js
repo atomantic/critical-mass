@@ -1,0 +1,433 @@
+// @ts-check
+/**
+ * Order Executor
+ *
+ * Handles order placement with maker-preference:
+ * - Places post-only limit orders below current bid
+ * - Manages order lifecycle (timeout, refresh, cancel)
+ * - Implements atomic order replacement
+ * - Anti-churn logic for TP updates
+ */
+
+const { roundBTC, roundPrice } = require('./volatility-utils');
+
+/**
+ * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
+ * @typedef {import('./types').PendingOrder} PendingOrder
+ * @typedef {import('./types').ExchangeAdapter} ExchangeAdapter
+ */
+
+/**
+ * Create order executor instance
+ * @param {string} exchange - Exchange name
+ * @param {RegimeStrategyConfig} config - Configuration
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {string} productId - Product to trade
+ * @returns {Object} Order executor instance
+ */
+const createOrderExecutor = (exchange, config, adapter, productId) => {
+  /** @type {Map<string, PendingOrder>} */
+  const pendingOrders = new Map();
+
+  let lastCancelTime = 0;
+  let lastTpPrice = 0;
+  let lastTpSize = 0;
+  let activeTpOrderId = null;
+
+  /**
+   * Place entry bid (maker-prefer post-only)
+   * @param {number} sizeUsdc - Order size in USDC
+   * @param {number} currentBid - Current best bid
+   * @param {number} currentAsk - Current best ask
+   * @returns {Promise<{success: boolean, orderId?: string, price?: number, btcQty?: number, errorMessage?: string}>}
+   */
+  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk) => {
+    // Calculate bid price with offset below current bid
+    const offsetMultiplier = 1 - (config.entryOffsetBps / 10000);
+    let bidPrice = currentBid * offsetMultiplier;
+
+    // Ensure post-only by checking against ask
+    if (bidPrice >= currentAsk) {
+      bidPrice = currentAsk * 0.999; // Back off to ensure maker
+    }
+
+    bidPrice = roundPrice(bidPrice);
+    const btcQty = roundBTC(sizeUsdc / bidPrice);
+
+    console.log(`📝 [${exchange}] Placing entry bid: ${btcQty} BTC @ $${bidPrice} (size $${sizeUsdc})`);
+
+    const result = await adapter.placeLimitBuy(productId, btcQty, bidPrice, { postOnly: true });
+
+    if (result.success) {
+      pendingOrders.set(result.orderId, {
+        type: 'entry',
+        price: bidPrice,
+        size: btcQty,
+        sizeUsdc,
+        placedAt: Date.now(),
+      });
+
+      // Schedule maker timeout check
+      scheduleMakerTimeout(result.orderId);
+
+      return {
+        success: true,
+        orderId: result.orderId,
+        price: bidPrice,
+        btcQty,
+      };
+    }
+
+    return {
+      success: false,
+      errorMessage: result.errorMessage || 'Order placement failed',
+    };
+  };
+
+  /**
+   * Place or update take-profit sell order
+   * @param {number} btcQty - BTC quantity to sell
+   * @param {number} tpPrice - Take-profit price
+   * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, errorMessage?: string}>}
+   */
+  const placeTakeProfitOrder = async (btcQty, tpPrice) => {
+    // Anti-churn: check if price OR size change is significant
+    if (activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
+      const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
+      const sizeChange = Math.abs(btcQty - lastTpSize) / lastTpSize * 100;
+      // Update if neither price nor size changed significantly
+      if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
+        return {
+          success: true,
+          orderId: activeTpOrderId,
+          updated: false, // No update needed
+        };
+      }
+    }
+
+    // Cancel existing TP order if present
+    if (activeTpOrderId) {
+      await cancelTpOrder();
+    }
+
+    const roundedPrice = roundPrice(tpPrice);
+    const roundedQty = roundBTC(btcQty);
+
+    console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} BTC @ $${roundedPrice}`);
+
+    const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
+
+    if (result.success) {
+      activeTpOrderId = result.orderId;
+      lastTpPrice = roundedPrice;
+      lastTpSize = roundedQty;
+
+      pendingOrders.set(result.orderId, {
+        type: 'take_profit',
+        price: roundedPrice,
+        size: roundedQty,
+        sizeUsdc: roundedQty * roundedPrice,
+        placedAt: Date.now(),
+      });
+
+      return {
+        success: true,
+        orderId: result.orderId,
+        updated: true,
+      };
+    }
+
+    return {
+      success: false,
+      errorMessage: result.errorMessage || 'TP order placement failed',
+    };
+  };
+
+  /**
+   * Cancel take-profit order
+   * @returns {Promise<boolean>}
+   */
+  const cancelTpOrder = async () => {
+    if (!activeTpOrderId) return true;
+
+    const result = await adapter.cancelOrder(activeTpOrderId);
+
+    if (result.success) {
+      pendingOrders.delete(activeTpOrderId);
+      activeTpOrderId = null;
+      lastTpSize = 0;
+      return true;
+    }
+
+    return false;
+  };
+
+  /**
+   * Schedule maker timeout for entry order
+   * @param {string} orderId - Order ID to check
+   */
+  const scheduleMakerTimeout = (orderId) => {
+    setTimeout(async () => {
+      const order = pendingOrders.get(orderId);
+      if (!order || order.type !== 'entry') return;
+
+      const status = await adapter.getOrder(orderId);
+
+      if (status.status === 'OPEN' && status.completionPercentage === 0) {
+        // Not filled at all, cancel
+        console.log(`⏰ [${exchange}] Maker timeout, cancelling unfilled order ${orderId}`);
+        await adapter.cancelOrder(orderId);
+        pendingOrders.delete(orderId);
+      }
+    }, config.makerTimeoutMs);
+  };
+
+  /**
+   * Refresh stale orders (cancel unfilled, rate-limited)
+   * @returns {Promise<number>} Number of orders refreshed
+   */
+  const refreshStaleOrders = async () => {
+    const now = Date.now();
+    let refreshed = 0;
+
+    for (const [orderId, order] of pendingOrders) {
+      // Skip TP orders - they should stay
+      if (order.type === 'take_profit') continue;
+
+      // Check if order is stale
+      if (now - order.placedAt > config.orderStaleMs) {
+        // Rate limit cancels
+        if (now - lastCancelTime < config.cancelRateLimitMs) {
+          continue;
+        }
+
+        const status = await adapter.getOrder(orderId);
+
+        if (status.status === 'OPEN' && status.completionPercentage === 0) {
+          await adapter.cancelOrder(orderId);
+          lastCancelTime = now;
+          pendingOrders.delete(orderId);
+          refreshed++;
+        }
+      }
+    }
+
+    return refreshed;
+  };
+
+  /**
+   * Atomic order replacement (cancel then place)
+   * @param {string} oldOrderId - Order to cancel
+   * @param {Object} newOrderParams - New order parameters
+   * @param {number} newOrderParams.btcQty - BTC quantity
+   * @param {number} newOrderParams.price - Price
+   * @param {'entry' | 'take_profit'} newOrderParams.type - Order type
+   * @returns {Promise<{success: boolean, newOrderId?: string, reason?: string}>}
+   */
+  const atomicReplace = async (oldOrderId, newOrderParams) => {
+    // Step 1: Cancel old order
+    const cancelResult = await adapter.cancelOrder(oldOrderId);
+
+    // Step 2: Wait for cancel confirmation
+    let confirmed = false;
+    for (let i = 0; i < 5; i++) {
+      const status = await adapter.getOrder(oldOrderId);
+      if (status.status === 'CANCELLED' || status.status === 'FILLED') {
+        confirmed = true;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    if (!confirmed) {
+      return { success: false, reason: 'cancel_not_confirmed' };
+    }
+
+    // Step 3: Remove from internal state
+    pendingOrders.delete(oldOrderId);
+
+    // Step 4: Place new order
+    const { btcQty, price, type } = newOrderParams;
+
+    if (type === 'entry') {
+      const result = await adapter.placeLimitBuy(productId, btcQty, price, { postOnly: true });
+      if (result.success) {
+        pendingOrders.set(result.orderId, {
+          type: 'entry',
+          price,
+          size: btcQty,
+          sizeUsdc: btcQty * price,
+          placedAt: Date.now(),
+        });
+        return { success: true, newOrderId: result.orderId };
+      }
+    } else {
+      const result = await adapter.placeLimitSell(productId, btcQty, price);
+      if (result.success) {
+        activeTpOrderId = result.orderId;
+        lastTpPrice = price;
+        lastTpSize = btcQty;
+        pendingOrders.set(result.orderId, {
+          type: 'take_profit',
+          price,
+          size: btcQty,
+          sizeUsdc: btcQty * price,
+          placedAt: Date.now(),
+        });
+        return { success: true, newOrderId: result.orderId };
+      }
+    }
+
+    return { success: false, reason: 'new_order_failed' };
+  };
+
+  /**
+   * Cancel all entry orders (for SAFE mode)
+   * @returns {Promise<number>} Number of orders cancelled
+   */
+  const cancelAllEntries = async () => {
+    let cancelled = 0;
+
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type === 'entry') {
+        await adapter.cancelOrder(orderId);
+        pendingOrders.delete(orderId);
+        cancelled++;
+      }
+    }
+
+    console.log(`🚫 [${exchange}] Cancelled ${cancelled} entry orders`);
+    return cancelled;
+  };
+
+  /**
+   * Handle order fill notification
+   * @param {string} orderId - Filled order ID
+   */
+  const handleOrderFill = (orderId) => {
+    const order = pendingOrders.get(orderId);
+    if (order) {
+      pendingOrders.delete(orderId);
+
+      if (order.type === 'take_profit') {
+        activeTpOrderId = null;
+        lastTpPrice = 0;
+        lastTpSize = 0;
+      }
+    }
+  };
+
+  /**
+   * Handle order cancel notification
+   * @param {string} orderId - Cancelled order ID
+   */
+  const handleOrderCancel = (orderId) => {
+    const order = pendingOrders.get(orderId);
+    if (order) {
+      pendingOrders.delete(orderId);
+
+      if (order.type === 'take_profit' && orderId === activeTpOrderId) {
+        activeTpOrderId = null;
+        lastTpPrice = 0;
+        lastTpSize = 0;
+      }
+    }
+  };
+
+  /**
+   * Get pending orders count by type
+   * @returns {{entries: number, takeProfits: number, total: number}}
+   */
+  const getPendingCounts = () => {
+    let entries = 0;
+    let takeProfits = 0;
+
+    for (const order of pendingOrders.values()) {
+      if (order.type === 'entry') entries++;
+      else if (order.type === 'take_profit') takeProfits++;
+    }
+
+    return { entries, takeProfits, total: pendingOrders.size };
+  };
+
+  /**
+   * Check invariants (max open orders)
+   * @returns {{valid: boolean, reason?: string}}
+   */
+  const checkInvariants = () => {
+    if (pendingOrders.size > config.maxOpenOrders) {
+      return {
+        valid: false,
+        reason: `too_many_orders:${pendingOrders.size}>${config.maxOpenOrders}`,
+      };
+    }
+    return { valid: true };
+  };
+
+  /**
+   * Get active TP order ID
+   * @returns {string|null}
+   */
+  const getActiveTpOrderId = () => activeTpOrderId;
+
+  /**
+   * Get status summary for logging
+   * @returns {string}
+   */
+  const getSummary = () => {
+    const counts = getPendingCounts();
+    let summary = `pending=${counts.total}(entries=${counts.entries},tp=${counts.takeProfits})`;
+
+    if (activeTpOrderId) {
+      summary += ` active_tp=${activeTpOrderId.substring(0, 8)}@$${lastTpPrice}`;
+    }
+
+    return summary;
+  };
+
+  /**
+   * Clear all pending orders (for recovery)
+   */
+  const clearPendingOrders = () => {
+    pendingOrders.clear();
+    activeTpOrderId = null;
+    lastTpPrice = 0;
+    lastTpSize = 0;
+  };
+
+  /**
+   * Restore pending order (for recovery from exchange)
+   * @param {string} orderId - Order ID
+   * @param {PendingOrder} order - Order details
+   */
+  const restorePendingOrder = (orderId, order) => {
+    pendingOrders.set(orderId, order);
+
+    if (order.type === 'take_profit') {
+      activeTpOrderId = orderId;
+      lastTpPrice = order.price;
+      lastTpSize = order.size;
+    }
+  };
+
+  return {
+    placeEntryBid,
+    placeTakeProfitOrder,
+    cancelTpOrder,
+    refreshStaleOrders,
+    atomicReplace,
+    cancelAllEntries,
+    handleOrderFill,
+    handleOrderCancel,
+    getPendingCounts,
+    checkInvariants,
+    getActiveTpOrderId,
+    getSummary,
+    clearPendingOrders,
+    restorePendingOrder,
+  };
+};
+
+module.exports = {
+  createOrderExecutor,
+};

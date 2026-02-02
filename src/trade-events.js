@@ -93,6 +93,100 @@ class TradeEventEmitter extends EventEmitter {
       `Consolidated ${count} orders into 1 @ $${newPrice.toFixed(2)}`,
       { count, newOrderId, newPrice, totalBTC });
   }
+
+  // ============================================================================
+  // Regime Engine Events
+  // ============================================================================
+
+  regimeChange(exchange, prevMode, newMode, reason) {
+    this.emitTradeEvent('regime_change', exchange,
+      `Regime: ${prevMode} -> ${newMode}`,
+      { prevMode, newMode, reason });
+  }
+
+  entryTriggered(exchange, trigger, regime, step, sizeUsdc) {
+    this.emitTradeEvent('entry_triggered', exchange,
+      `Entry triggered: ${trigger} (${regime} step ${step})`,
+      { trigger, regime, step, sizeUsdc });
+  }
+
+  entryPlaced(exchange, orderId, btcAmount, price, regime) {
+    this.emitTradeEvent('entry_placed', exchange,
+      `Entry placed: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (${regime})`,
+      { orderId, btcAmount, price, regime });
+  }
+
+  entryFilled(exchange, btcAmount, price, avgCostBasis, ladderStep) {
+    this.emitTradeEvent('entry_filled', exchange,
+      `Entry filled: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (step ${ladderStep}, avg $${avgCostBasis.toFixed(2)})`,
+      { btcAmount, price, avgCostBasis, ladderStep });
+  }
+
+  tpPlaced(exchange, orderId, btcAmount, price) {
+    this.emitTradeEvent('tp_placed', exchange,
+      `TP placed: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)}`,
+      { orderId, btcAmount, price });
+  }
+
+  tpUpdated(exchange, orderId, btcAmount, price) {
+    this.emitTradeEvent('tp_updated', exchange,
+      `TP updated: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)}`,
+      { orderId, btcAmount, price });
+  }
+
+  tpFilled(exchange, btcAmount, price, pnl, cyclesCompleted) {
+    this.emitTradeEvent('tp_filled', exchange,
+      `TP filled: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)}, PnL: $${pnl.toFixed(2)}`,
+      { btcAmount, price, pnl, cyclesCompleted });
+  }
+
+  flashMove(exchange, delta, multiple) {
+    this.emitTradeEvent('flash_move', exchange,
+      `Flash move: ${multiple.toFixed(1)}x ATR`,
+      { delta, multiple });
+  }
+
+  spreadPause(exchange, spreadBps, threshold) {
+    this.emitTradeEvent('spread_pause', exchange,
+      `Spread pause: ${spreadBps.toFixed(1)} bps > ${threshold} bps`,
+      { spreadBps, threshold });
+  }
+
+  depthPause(exchange, depth, threshold) {
+    this.emitTradeEvent('depth_pause', exchange,
+      `Depth pause: $${depth.toFixed(0)} < $${threshold}`,
+      { depth, threshold });
+  }
+
+  safeMode(exchange, reason) {
+    this.emitTradeEvent('safe_mode', exchange,
+      `SAFE mode: ${reason}`,
+      { reason });
+  }
+
+  activeMode(exchange) {
+    this.emitTradeEvent('active_mode', exchange,
+      'Returned to ACTIVE mode',
+      {});
+  }
+
+  capReached(exchange, capType, current, limit) {
+    this.emitTradeEvent('cap_reached', exchange,
+      `${capType} cap reached: ${current}/${limit}`,
+      { capType, current, limit });
+  }
+
+  cycleReset(exchange, cyclesCompleted, realizedPnL) {
+    this.emitTradeEvent('cycle_reset', exchange,
+      `Cycle reset (${cyclesCompleted} completed, $${realizedPnL.toFixed(2)} realized)`,
+      { cyclesCompleted, realizedPnL });
+  }
+
+  regimeHourlySummary(exchange, regime, entries, exposure, drawdown) {
+    this.emitTradeEvent('regime_hourly', exchange,
+      `Hour: regime=${regime} entries=${entries} exposure=${exposure} drawdown=${drawdown}%`,
+      { regime, entries, exposure, drawdown });
+  }
 }
 
 // Singleton instance

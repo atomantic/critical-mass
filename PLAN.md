@@ -67,6 +67,88 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
   - Optimized for short-term mean reversion in low-to-moderate volatility regimes
   - Transitions to accumulation mode during trending/high-volatility periods
   - Configurable via `dcaStrategy: 'fibonacci'` and `fibBaseAmount` in config
+- **Regime Engine (v2.4)**: Advanced volatility-driven inventory cycling
+  - Replaces fixed-interval DCA with ATR-based volatility clock
+  - Three-mode regime state machine: HARVEST, CAUTION, TREND
+  - Liquidity-aware position sizing with ladder steps
+  - Dynamic take-profit based on recent volatility
+  - Hard exposure caps and drawdown protection
+  - WebSocket real-time data feed for Coinbase
+  - Health monitoring with automatic SAFE mode transitions
+
+### Regime Engine Architecture (v2.4)
+
+The Regime Engine is an advanced trading system that adapts to market conditions:
+
+**Core Components:**
+- `src/regime-engine.js` - Main orchestrator
+- `src/regime-detector.js` - Regime classification (HARVEST/CAUTION/TREND)
+- `src/volatility-utils.js` - ATR, realized volatility, VWAP calculations
+- `src/position-sizer.js` - Liquidity-aware sizing with ladder scaling
+- `src/order-executor.js` - Maker-prefer limit order placement
+- `src/health-monitor.js` - SAFE mode and system health tracking
+- `src/tail-events.js` - Flash move, spread widening, depth drop detection
+- `src/websocket-feed.js` - Coinbase WebSocket real-time data
+- `src/fill-ledger.js` - Idempotent fill tracking with cost basis
+- `src/recovery.js` - Startup state recovery from exchange
+
+**Regime Modes:**
+| Mode | Description | Entry Behavior | TP Behavior |
+|------|-------------|----------------|-------------|
+| HARVEST | Mean-reverting, normal volatility | Full ladder entries | Standard TP |
+| CAUTION | Elevated volatility or momentum | 50% reduced sizing | Wider TP (1.5x) |
+| TREND | Strong directional movement | No new entries | Tighter TP (0.8x) |
+
+**Volatility Clock:**
+- Entry triggers based on price moving k × ATR from anchor price
+- Minimum interval enforced (default: 60s)
+- Maximum interval fallback (default: 1hr)
+- ATR calculated from 1-minute and 5-minute candles
+
+**Safety Features:**
+- Automatic SAFE mode on: WebSocket disconnect, stale data, REST errors
+- Flash move detection pauses entries and disables scaling
+- Spread widening and depth drop pauses
+- Maximum exposure caps (BTC and USDC)
+- Maximum drawdown protection
+
+**Dry-Run Mode:**
+- Test regime engine against live market data without placing real orders
+- Simulates order placement, fills, and P&L tracking
+- Decision log tracks all hypothetical trades for analysis
+- Configurable via `dryRun: true` in regime config (default: true)
+- Visual indicators in admin UI show dry-run status
+- Reset capability to clear simulated state and start fresh
+- Useful for:
+  - Validating regime strategy parameters before going live
+  - Comparing different configurations against real market conditions
+  - Training and understanding the system behavior
+  - Stress testing under volatile market conditions
+
+**API Routes:**
+```
+GET  /api/:exchange/regime/config    - Get regime configuration
+PUT  /api/:exchange/regime/config    - Update regime configuration
+GET  /api/:exchange/regime/status    - Get regime engine status
+POST /api/:exchange/regime/start     - Start regime engine
+POST /api/:exchange/regime/stop      - Stop regime engine
+POST /api/:exchange/regime/pause     - Pause (enter SAFE mode)
+POST /api/:exchange/regime/resume    - Resume from SAFE mode
+POST /api/:exchange/regime/force-regime - Force regime transition
+GET  /api/:exchange/regime/fills     - Get fill ledger
+
+# Dry-Run specific routes
+GET  /api/:exchange/regime/dry-run/log   - Get decision log (hypothetical trades)
+GET  /api/:exchange/regime/dry-run/pnl   - Get simulated P&L summary
+GET  /api/:exchange/regime/dry-run/state - Get full dry-run state
+POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
+```
+
+**WebSocket Events:**
+- `trade:event` - Trade events (entries, fills, errors)
+- `regime:change` - Regime transitions
+- `regime:health` - Health mode changes
+- `regime:position` - Position updates
 
 ### Data Management
 - Exchange-namespaced data directories
@@ -107,7 +189,21 @@ src/
 ├── logger.js           # Transaction logging
 ├── migration.js        # Data structure migration
 ├── backtest-engine.js  # Historical simulation (fixed + fibonacci)
-└── optimizer-engine.js # Parameter optimization
+├── optimizer-engine.js # Parameter optimization
+│
+│ # Regime Engine Components (v2.4)
+├── regime-engine.js    # Main regime-aware trading engine
+├── regime-detector.js  # Regime classification (HARVEST/CAUTION/TREND)
+├── volatility-utils.js # ATR, RV, VWAP, swing calculations
+├── position-sizer.js   # Liquidity-aware position sizing
+├── order-executor.js   # Maker-prefer limit order placement
+├── dry-run-executor.js # Simulated order execution for dry-run mode
+├── health-monitor.js   # SAFE mode and system health
+├── tail-events.js      # Flash/spread/depth event detection
+├── websocket-feed.js   # Coinbase WebSocket real-time feed
+├── fill-ledger.js      # Idempotent fill tracking with cost basis
+├── recovery.js         # Startup state recovery from exchange
+└── trade-events.js     # Trade event emitter for WebSocket updates
 
 admin/src/components/
 ├── charts/             # D3.js chart components
@@ -143,7 +239,9 @@ data/
 ├── coinbase/
 │   ├── state.json
 │   ├── transactions.tsv
-│   └── btc-price-cache-*.json
+│   ├── btc-price-cache-*.json
+│   ├── fill-ledger.json     # Regime engine fill tracking
+│   └── regime-state.json    # Regime engine position state
 ├── gemini/
 │   ├── state.json
 │   └── transactions.tsv
