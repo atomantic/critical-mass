@@ -409,7 +409,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
         <>
           {/* Live Status Bar */}
           <div className="bg-gray-800 rounded-lg p-4">
-            <div className="grid grid-cols-5 3xl:grid-cols-6 gap-4">
+            <div className="grid grid-cols-5 xl:grid-cols-6 gap-4">
               {/* Live Price */}
               <div className="col-span-1">
                 <div className="flex items-center justify-between mb-1">
@@ -478,8 +478,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
 
-              {/* Mini Price Chart (3xl only) */}
-              <div className="hidden 3xl:block col-span-1">
+              {/* Mini Price Chart (xl+) */}
+              <div className="hidden xl:block col-span-1">
                 <div className="text-xs text-gray-500 mb-1">Price (5m)</div>
                 <MiniPriceSparkline
                   data={priceHistory}
@@ -493,7 +493,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 3xl:grid-cols-4 gap-6">
+          <div className="grid grid-cols-3 gap-6">
           {/* Left Column: Regime, Volatility & Risk */}
           <div className="space-y-4">
             {/* Regime Status */}
@@ -870,31 +870,34 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
           </div>
         </div>
 
-          {/* 4th Column: Charts (3xl only) */}
-          <div className="hidden 3xl:block space-y-4">
-            {/* Price Chart */}
-            <RegimePriceChart
-              priceData={priceHistory}
-              regimeData={regimeHistory}
-              currentPrice={market.lastPrice}
-              anchorPrice={position.anchorPrice}
-              atr={market.atr1m}
-              kFactor={config?.kFactor || 0.6}
-              height={280}
-            />
+        </div>
 
-            {/* Volatility Chart */}
-            <VolatilityChart
-              atrData={atrHistory}
-              regimeData={regimeHistory}
-              height={240}
-            />
+        {/* Live Charts Section */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 3xl:grid-cols-3 gap-6">
+          {/* Price Chart */}
+          <RegimePriceChart
+            priceData={priceHistory}
+            regimeData={regimeHistory}
+            currentPrice={market.lastPrice}
+            anchorPrice={position.anchorPrice}
+            atr={market.atr1m}
+            kFactor={config?.kFactor || 0.6}
+            height={280}
+          />
 
-            {/* Regime Timeline */}
+          {/* Volatility Chart */}
+          <VolatilityChart
+            atrData={atrHistory}
+            regimeData={regimeHistory}
+            height={240}
+          />
+
+          {/* Regime Timeline */}
+          <div className="lg:col-span-2 3xl:col-span-1">
             <RegimeTimeline
               data={regimeHistory}
               currentRegime={regime}
-              height={60}
+              height={80}
             />
           </div>
         </div>
