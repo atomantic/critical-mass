@@ -74,6 +74,27 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
     const result = await adapter.placeLimitBuy(productId, btcQty, bidPrice, { postOnly: true });
 
     if (result.success) {
+      // Verify order is actually open on exchange (post-only orders can be immediately cancelled)
+      const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
+
+      if (!orderStatus || orderStatus.status === 'CANCELLED') {
+        // Order was immediately cancelled (likely post-only crossed spread)
+        console.log(`⚠️ [${exchange}] Order ${result.orderId} was immediately cancelled by exchange`);
+
+        // Retry with fresh prices if we have retries remaining
+        const maxRetries = config.entryMaxRetries || 3;
+        if (retryCount < maxRetries) {
+          console.log(`🔄 [${exchange}] Retrying with fresh prices (retry ${retryCount + 1}/${maxRetries})`);
+          const freshPrices = await adapter.getBidAsk(productId);
+          return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1);
+        }
+
+        return {
+          success: false,
+          errorMessage: 'Order immediately cancelled by exchange (post-only)',
+        };
+      }
+
       pendingOrders.set(result.orderId, {
         type: 'entry',
         price: bidPrice,
