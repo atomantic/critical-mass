@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.17] - 2026-02-01
+
+### Added
+- APY and performance tracking for regime engine
+  - Tracks engine start time and initial capital
+  - Calculates total return, daily return %, estimated annual return, and compound APY
+  - Persists tracking across restarts
+  - UI displays performance metrics in Position section with highlighted APY/annual return
+
 ## [2.3.16] - 2026-02-01
 
 ### Added
