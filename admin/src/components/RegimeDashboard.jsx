@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useRegimeEvents, useTradeEvents } from '../hooks/useTradeEvents'
+import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
+import MiniPriceSparkline from './charts/MiniPriceSparkline'
+import RegimePriceChart from './charts/RegimePriceChart'
+import VolatilityChart from './charts/VolatilityChart'
+import RegimeTimeline from './charts/RegimeTimeline'
 
 // Format duration in human readable form
 const formatDuration = (ms) => {
@@ -189,6 +194,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Use socket status when available, fall back to local status (for initial load / when engine stopped)
   const status = socketStatus || localStatus
+
+  // Chart data buffering
+  const { priceHistory, atrHistory, regimeHistory } = useChartDataBuffer(status)
 
   // Track previous price for animation
   useEffect(() => {
@@ -401,7 +409,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
         <>
           {/* Live Status Bar */}
           <div className="bg-gray-800 rounded-lg p-4">
-            <div className="grid grid-cols-5 gap-4">
+            <div className="grid grid-cols-5 3xl:grid-cols-6 gap-4">
               {/* Live Price */}
               <div className="col-span-1">
                 <div className="flex items-center justify-between mb-1">
@@ -469,10 +477,23 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   </div>
                 </div>
               </div>
+
+              {/* Mini Price Chart (3xl only) */}
+              <div className="hidden 3xl:block col-span-1">
+                <div className="text-xs text-gray-500 mb-1">Price (5m)</div>
+                <MiniPriceSparkline
+                  data={priceHistory}
+                  width={200}
+                  height={60}
+                  currentPrice={market.lastPrice}
+                  atr={market.atr1m}
+                  kFactor={config?.kFactor || 0.6}
+                />
+              </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-6">
+          <div className="grid grid-cols-3 3xl:grid-cols-4 gap-6">
           {/* Left Column: Regime, Volatility & Risk */}
           <div className="space-y-4">
             {/* Regime Status */}
@@ -848,6 +869,34 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
             </div>
           </div>
         </div>
+
+          {/* 4th Column: Charts (3xl only) */}
+          <div className="hidden 3xl:block space-y-4">
+            {/* Price Chart */}
+            <RegimePriceChart
+              priceData={priceHistory}
+              regimeData={regimeHistory}
+              currentPrice={market.lastPrice}
+              anchorPrice={position.anchorPrice}
+              atr={market.atr1m}
+              kFactor={config?.kFactor || 0.6}
+              height={280}
+            />
+
+            {/* Volatility Chart */}
+            <VolatilityChart
+              atrData={atrHistory}
+              regimeData={regimeHistory}
+              height={240}
+            />
+
+            {/* Regime Timeline */}
+            <RegimeTimeline
+              data={regimeHistory}
+              currentRegime={regime}
+              height={60}
+            />
+          </div>
         </div>
 
         {/* Orders Section */}

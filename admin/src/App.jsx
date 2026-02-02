@@ -166,7 +166,7 @@ function AppContent() {
       <div className="min-h-screen">
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-7xl mx-auto px-4 py-4">
+          <div className="max-w-7xl 2xl:max-w-[1600px] 3xl:max-w-[1800px] mx-auto px-4 2xl:px-6 py-4">
             <div className="flex items-center justify-between">
               <Link to={buildPath('')} className="text-2xl font-bold text-white hover:text-gray-200">
                 DCA Trading Bot
@@ -185,7 +185,7 @@ function AppContent() {
 
         {/* Navigation */}
         <nav className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-7xl mx-auto px-4">
+          <div className="max-w-7xl 2xl:max-w-[1600px] 3xl:max-w-[1800px] mx-auto px-4 2xl:px-6">
             <div className="flex gap-1">
               {tabs.map(tab => (
                 <Link
@@ -207,7 +207,7 @@ function AppContent() {
         </nav>
 
         {/* Main Content */}
-        <main className="max-w-7xl mx-auto px-4 py-6">
+        <main className="max-w-7xl 2xl:max-w-[1600px] 3xl:max-w-[1800px] mx-auto px-4 2xl:px-6 py-6">
           {error && (
             <div className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200">
               Error: {error}
