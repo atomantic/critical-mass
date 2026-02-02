@@ -117,6 +117,10 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Auto-resumes when drawdown recovers to < 50% of limit
   - Auto-resets peak after configurable hours (default: 72h/3 days)
   - Manual "Resume Trading" button in UI to override pause
+- Ladder step limit with auto-reset:
+  - Pauses entries when ladder limit reached (default: 10 steps)
+  - Auto-resets after configurable hours (default: 72h/3 days)
+  - Prevents stuck positions in prolonged ATH markets
 
 **Position & P&L Tracking:**
 - BTC Held - Current cycle position
@@ -132,6 +136,10 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Configurable via `dryRun: true` in regime config (default: true)
 - Visual indicators in admin UI show dry-run status
 - Reset capability to clear simulated state and start fresh
+- **State persistence** - Simulation survives server restarts
+  - Saves state on fills, every 60s, and on graceful shutdown
+  - Restores position, filled orders, P&L tracking on restart
+  - State stored in `dry-run-state.json` (per-exchange)
 - Useful for:
   - Validating regime strategy parameters before going live
   - Comparing different configurations against real market conditions
@@ -211,6 +219,7 @@ src/
 ├── position-sizer.js   # Liquidity-aware position sizing
 ├── order-executor.js   # Maker-prefer limit order placement
 ├── dry-run-executor.js # Simulated order execution for dry-run mode
+├── dry-run-state.js    # State persistence for dry-run simulations
 ├── health-monitor.js   # SAFE mode and system health
 ├── tail-events.js      # Flash/spread/depth event detection
 ├── websocket-feed.js   # Coinbase WebSocket real-time feed

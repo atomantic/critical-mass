@@ -29,6 +29,7 @@ const createRiskManager = (exchange, config) => {
   let maxDrawdownSeen = 0;
   let isDrawdownPaused = false;
   let drawdownPausedAt = null; // Timestamp when drawdown pause started
+  let ladderLimitReachedAt = null; // Timestamp when ladder limit was first reached
 
   /**
    * Check if entry would exceed BTC exposure cap
@@ -85,23 +86,51 @@ const createRiskManager = (exchange, config) => {
   /**
    * Check if ladder step limit is reached
    * @param {number} currentStep - Current ladder step
-   * @returns {{allowed: boolean, reason: string|null, currentStep: number, maxSteps: number}}
+   * @returns {{allowed: boolean, reason: string|null, currentStep: number, maxSteps: number, shouldReset: boolean}}
    */
   const checkLadderLimit = (currentStep) => {
     if (currentStep >= config.maxLadderSteps) {
+      // Track when limit was first reached
+      if (!ladderLimitReachedAt) {
+        ladderLimitReachedAt = Date.now();
+        console.log(`⚠️ [${exchange}] Ladder limit reached: ${currentStep}/${config.maxLadderSteps}, waiting for TP or auto-reset`);
+      }
+
+      // Check for time-based auto-reset
+      if (ladderLimitReachedAt && config.ladderResetHours > 0) {
+        const atLimitMs = Date.now() - ladderLimitReachedAt;
+        const atLimitHours = atLimitMs / (1000 * 60 * 60);
+        if (atLimitHours >= config.ladderResetHours) {
+          console.log(`🔄 [${exchange}] Auto-resetting ladder after ${config.ladderResetHours}h at limit`);
+          ladderLimitReachedAt = null;
+          return {
+            allowed: true,
+            reason: null,
+            currentStep,
+            maxSteps: config.maxLadderSteps,
+            shouldReset: true, // Signal to regime engine to reset ladderStep
+          };
+        }
+      }
+
       return {
         allowed: false,
         reason: `ladder_limit_reached:${currentStep}>=${config.maxLadderSteps}`,
         currentStep,
         maxSteps: config.maxLadderSteps,
+        shouldReset: false,
       };
     }
+
+    // Not at limit, clear the timestamp
+    ladderLimitReachedAt = null;
 
     return {
       allowed: true,
       reason: null,
       currentStep,
       maxSteps: config.maxLadderSteps,
+      shouldReset: false,
     };
   };
 
@@ -172,10 +201,11 @@ const createRiskManager = (exchange, config) => {
    * @param {RegimePositionState} position - Current position state
    * @param {number} entryBTC - BTC to add (optional)
    * @param {number} entryUsdc - USDC to add (optional)
-   * @returns {{allowed: boolean, reasons: string[]}}
+   * @returns {{allowed: boolean, reasons: string[], shouldResetLadder: boolean}}
    */
   const checkAllCaps = (position, entryBTC = 0, entryUsdc = 0) => {
     const reasons = [];
+    let shouldResetLadder = false;
 
     const btcCheck = checkBTCCap(position.totalBTC, entryBTC);
     if (!btcCheck.allowed) {
@@ -191,6 +221,9 @@ const createRiskManager = (exchange, config) => {
     if (!ladderCheck.allowed) {
       reasons.push(ladderCheck.reason);
     }
+    if (ladderCheck.shouldReset) {
+      shouldResetLadder = true;
+    }
 
     if (isDrawdownPaused) {
       reasons.push(`drawdown_paused:${maxDrawdownSeen.toFixed(1)}%`);
@@ -199,6 +232,7 @@ const createRiskManager = (exchange, config) => {
     return {
       allowed: reasons.length === 0,
       reasons,
+      shouldResetLadder,
     };
   };
 
@@ -207,7 +241,7 @@ const createRiskManager = (exchange, config) => {
    * @param {RegimePositionState} position - Current position
    * @param {number} entryBTC - BTC to add
    * @param {number} entryUsdc - USDC to add
-   * @returns {{allowed: boolean, reason: string|null}}
+   * @returns {{allowed: boolean, reason: string|null, shouldResetLadder: boolean}}
    */
   const canPlaceEntry = (position, entryBTC, entryUsdc) => {
     const result = checkAllCaps(position, entryBTC, entryUsdc);
@@ -216,10 +250,11 @@ const createRiskManager = (exchange, config) => {
       return {
         allowed: false,
         reason: result.reasons.join(', '),
+        shouldResetLadder: result.shouldResetLadder,
       };
     }
 
-    return { allowed: true, reason: null };
+    return { allowed: true, reason: null, shouldResetLadder: result.shouldResetLadder };
   };
 
   /**

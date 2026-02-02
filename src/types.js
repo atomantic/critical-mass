@@ -497,6 +497,7 @@
  * @property {number} cautionScale - Size multiplier in CAUTION (default: 0.5)
  * @property {number} trendScale - Size multiplier in TREND (default: 0.0)
  * @property {number} maxLadderSteps - Maximum averaging-down steps (default: 10)
+ * @property {number} ladderResetHours - Hours after which to auto-reset ladder at max (default: 72, 0 to disable)
  * @property {number} liquidityFactorCap - Maximum liquidity multiplier (default: 2.0)
  *
  * Take-Profit Parameters

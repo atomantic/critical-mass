@@ -67,6 +67,7 @@ const REGIME_DEFAULTS = {
   cautionScale: 0.5,
   trendScale: 0.0,
   maxLadderSteps: 10,
+  ladderResetHours: 72, // Auto-reset ladder counter after 72 hours (3 days) at max, 0 to disable
   liquidityFactorCap: 2.0,
 
   // Take-Profit

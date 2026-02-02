@@ -28,6 +28,7 @@ const { createDryRunExecutor } = require('./dry-run-executor');
 const { createRecoveryModule } = require('./recovery');
 const { calculateAllMetrics, clamp, roundBTC, roundUSDC } = require('./volatility-utils');
 const { tradeEvents } = require('./trade-events');
+const dryRunState = require('./dry-run-state');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -170,6 +171,42 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
+  let stateSaveInterval = null;
+
+  /**
+   * Save dry-run state to disk
+   */
+  const saveDryRunState = () => {
+    if (!isDryRun || !orderExecutor.exportState) return;
+
+    dryRunState.saveState(exchange, {
+      isDryRun: true,
+      executor: orderExecutor.exportState(),
+      position: { ...positionState },
+    });
+  };
+
+  /**
+   * Load dry-run state from disk
+   * @returns {boolean} Whether state was loaded
+   */
+  const loadDryRunState = () => {
+    if (!isDryRun || !orderExecutor.importState) return false;
+
+    const savedState = dryRunState.loadState(exchange);
+    if (!savedState || !savedState.isDryRun) return false;
+
+    // Restore executor state
+    orderExecutor.importState(savedState.executor);
+
+    // Restore position state
+    if (savedState.position) {
+      positionState = { ...createInitialPositionState(), ...savedState.position };
+    }
+
+    console.log(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, PnL=$${positionState.realizedPnL.toFixed(2)}`);
+    return true;
+  };
 
   /**
    * Start the regime engine
@@ -188,8 +225,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const { position } = await recoveryModule.recoverState(fillLedger, orderExecutor);
       positionState = { ...createInitialPositionState(), ...position };
     } else {
-      console.log(`🧪 [${exchange}] [DRY-RUN] Skipping state recovery, starting fresh`);
-      positionState = createInitialPositionState();
+      // Try to load saved dry-run state
+      const loaded = loadDryRunState();
+      if (!loaded) {
+        console.log(`🧪 [${exchange}] [DRY-RUN] No saved state, starting fresh`);
+        positionState = createInitialPositionState();
+      }
     }
 
     // Start WebSocket feed
@@ -201,6 +242,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Start reconciliation (skip in dry-run mode)
     if (!isDryRun) {
       startReconciliation();
+    } else {
+      // Start periodic state saving for dry-run (every 60 seconds)
+      stateSaveInterval = setInterval(saveDryRunState, 60000);
     }
 
     isRunning = true;
@@ -217,6 +261,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     console.log(`🛑 [${exchange}] Stopping regime engine`);
 
+    // Save dry-run state before stopping
+    if (isDryRun) {
+      dryRunState.forceSave(exchange, {
+        isDryRun: true,
+        executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
+        position: { ...positionState },
+      });
+    }
+
     // Disconnect WebSocket
     if (wsFeed) {
       wsFeed.disconnect();
@@ -232,6 +285,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (reconcileInterval) {
       clearInterval(reconcileInterval);
       reconcileInterval = null;
+    }
+
+    if (stateSaveInterval) {
+      clearInterval(stateSaveInterval);
+      stateSaveInterval = null;
     }
 
     tailEvents.cleanup();
@@ -544,6 +602,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const btcQty = positionSizer.calculateBTCQuantity(sizing.sizeUsdc, marketState.bid);
     const riskCheck = riskManager.canPlaceEntry(positionState, btcQty, sizing.sizeUsdc);
 
+    // Handle ladder auto-reset (time-based reset after being at max limit)
+    if (riskCheck.shouldResetLadder) {
+      console.log(`🔄 [${exchange}] Ladder auto-reset triggered, resetting step ${positionState.ladderStep} -> 0`);
+      positionState.ladderStep = 0;
+    }
+
     if (!riskCheck.allowed) {
       console.log(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
       return;
@@ -682,6 +746,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         avgCostBasis: positionState.avgCostBasis,
         isDryRun: true,
       });
+
+      // Save state after buy fill
+      saveDryRunState();
     };
 
     dryRunCallbacks.onSellFill = (orderId, btcQty, price, proceeds, pnl) => {
@@ -704,6 +771,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       // Reset for next cycle
       resetCycle();
+
+      // Save state after TP fill
+      saveDryRunState();
     };
   }
 
@@ -806,6 +876,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (isDryRun && orderExecutor.resetDryRunState) {
       orderExecutor.resetDryRunState();
       positionState = createInitialPositionState();
+      // Clear saved state file
+      dryRunState.clearState(exchange);
       return true;
     }
     return false;
