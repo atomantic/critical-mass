@@ -186,6 +186,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let metricsInterval = null;
   let reconcileInterval = null;
   let stateSaveInterval = null;
+  let entryInProgress = false; // Lock to prevent concurrent entry evaluations
 
   /**
    * Handle TP optimizer adjustment
@@ -1032,6 +1033,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * Evaluate volatility-based entry trigger
    */
   const evaluateEntryTrigger = async () => {
+    // Prevent concurrent entry evaluations (race condition from rapid ticker updates)
+    if (entryInProgress) return;
+
     const now = Date.now();
     const timeSinceLastEntry = now - positionState.lastEntryTime;
 
@@ -1058,7 +1062,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const timeTrigger = timeSinceLastEntry >= config.maxIntervalMs;
 
     if (volTrigger || timeTrigger) {
-      await executeEntry(volTrigger ? 'volatility' : 'timer');
+      entryInProgress = true;
+      await executeEntry(volTrigger ? 'volatility' : 'timer').finally(() => {
+        entryInProgress = false;
+      });
     }
   };
 
@@ -1302,6 +1309,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     pause: tailEvents.getPauseState(),
     risk: riskManager.getState(),
     orders: orderExecutor.getPendingCounts(),
+    pendingOrders: !isDryRun && orderExecutor.getPendingOrdersList ? orderExecutor.getPendingOrdersList() : [],
     apy: calculateApyMetrics(),
     dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,
     tpOptimizer: tpOptimizer.getStatus(),

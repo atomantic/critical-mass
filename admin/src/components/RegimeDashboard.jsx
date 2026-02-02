@@ -322,6 +322,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const health = status?.health || {}
   const risk = status?.risk || {}
   const dryRunState = status?.dryRun || {}
+  // Use pendingOrders from dryRunState for dry-run, from status for live
+  const pendingOrdersList = isDryRun ? (dryRunState?.pendingOrders || []) : (status?.pendingOrders || [])
 
   const regimeStyle = REGIME_COLORS[regime.mode] || REGIME_COLORS.HARVEST
   const healthStyle = HEALTH_COLORS[health.mode] || HEALTH_COLORS.ACTIVE
@@ -1107,7 +1109,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               <h3 className="text-sm font-medium text-gray-400">Open Orders</h3>
               {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
             </div>
-            {(dryRunState?.pendingOrders?.length || 0) === 0 ? (
+            {pendingOrdersList.length === 0 ? (
               <div className="text-gray-500 text-sm text-center py-4">No open orders</div>
             ) : (
               <div className="overflow-x-auto">
@@ -1124,7 +1126,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {dryRunState.pendingOrders
+                    {pendingOrdersList
                       .filter(o => o.status === 'open')
                       .map((order) => {
                         const age = Date.now() - order.placedAt

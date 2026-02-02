@@ -390,6 +390,23 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
   };
 
   /**
+   * Get all pending orders as array for UI display
+   * @returns {Array<{orderId: string, type: string, price: number, size: number, sizeUsdc: number, placedAt: number, status: string}>}
+   */
+  const getPendingOrdersList = () => {
+    return Array.from(pendingOrders.entries()).map(([orderId, order]) => ({
+      orderId,
+      type: order.type,
+      side: order.type === 'entry' ? 'buy' : 'sell',
+      price: order.price,
+      size: order.size,
+      sizeUsdc: order.sizeUsdc,
+      placedAt: order.placedAt,
+      status: 'open',
+    }));
+  };
+
+  /**
    * Check invariants (max open orders)
    * @returns {{valid: boolean, reason?: string}}
    */
@@ -460,6 +477,7 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
     handleOrderCancel,
     getPendingCounts,
     getPendingEntries,
+    getPendingOrdersList,
     checkInvariants,
     getActiveTpOrderId,
     getSummary,
