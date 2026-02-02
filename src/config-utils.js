@@ -88,7 +88,6 @@ const REGIME_DEFAULTS = {
   entryMaxRetries: 3, // Max retries for post-only rejections in fast markets
   cancelRateLimitMs: 1000,
   orderStaleMs: 30000,
-  makerTimeoutMs: 10000,
 
   // System Health
   staleDataMs: 30000,
@@ -424,24 +423,24 @@ const validateRegimeConfig = (config) => {
   }
 
   // Position Sizing validation
-  if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 10 || config.baseSizeUsdc > 500)) {
-    errors.push('baseSizeUsdc must be between 10 and 500');
+  if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
+    errors.push('baseSizeUsdc must be between 1 and 1000');
   }
-  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 5 || config.maxLadderSteps > 20)) {
-    errors.push('maxLadderSteps must be between 5 and 20');
+  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 50)) {
+    errors.push('maxLadderSteps must be between 3 and 50');
   }
 
   // Take-Profit validation
-  if (config.tpMinPercent !== undefined && (config.tpMinPercent < 1.0 || config.tpMinPercent > 5.0)) {
-    errors.push('tpMinPercent must be between 1.0 and 5.0');
+  if (config.tpMinPercent !== undefined && (config.tpMinPercent < 0.01 || config.tpMinPercent > 10.0)) {
+    errors.push('tpMinPercent must be between 0.01 and 10.0');
   }
-  if (config.tpMaxPercent !== undefined && (config.tpMaxPercent < 8.0 || config.tpMaxPercent > 25.0)) {
-    errors.push('tpMaxPercent must be between 8.0 and 25.0');
+  if (config.tpMaxPercent !== undefined && (config.tpMaxPercent < 0.1 || config.tpMaxPercent > 50.0)) {
+    errors.push('tpMaxPercent must be between 0.1 and 50.0');
   }
 
   // Risk Caps validation
-  if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.1 || config.maxBtcExposure > 2.0)) {
-    errors.push('maxBtcExposure must be between 0.1 and 2.0');
+  if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.01 || config.maxBtcExposure > 10.0)) {
+    errors.push('maxBtcExposure must be between 0.01 and 10.0');
   }
   if (config.maxUsdcDeployed !== undefined && (config.maxUsdcDeployed < 1000 || config.maxUsdcDeployed > 100000)) {
     errors.push('maxUsdcDeployed must be between 1000 and 100000');
