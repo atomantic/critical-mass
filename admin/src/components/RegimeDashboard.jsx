@@ -187,6 +187,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [stopping, setStopping] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [error, setError] = useState(null)
+  const [liveFills, setLiveFills] = useState([])
   const prevPriceRef = useRef(null)
 
   const { connected, status: socketStatus, setStatus: setSocketStatus, regimeState, healthState, positionState, events: regimeEvents, clearEvents } = useRegimeEvents(exchange)
@@ -229,15 +230,24 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }
   }, [exchange])
 
+  // Fetch live fills from fill ledger
+  const fetchFills = useCallback(async () => {
+    const res = await fetch(`/api/${exchange}/regime/fills`)
+    if (res.ok) {
+      const data = await res.json()
+      setLiveFills(data.fills || [])
+    }
+  }, [exchange])
+
   // Initial load only - no polling needed, socket provides live updates
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      await Promise.all([fetchStatus(), fetchConfig()])
+      await Promise.all([fetchStatus(), fetchConfig(), fetchFills()])
       setLoading(false)
     }
     load()
-  }, [exchange, fetchStatus, fetchConfig])
+  }, [exchange, fetchStatus, fetchConfig, fetchFills])
 
   // Start engine
   const handleStart = async () => {
@@ -246,7 +256,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     const res = await fetch(`/api/${exchange}/regime/start`, { method: 'POST' })
     const data = await res.json()
     if (data.success) {
-      await fetchStatus()
+      await Promise.all([fetchStatus(), fetchFills()])
     } else {
       setError(data.error || 'Failed to start engine')
     }
@@ -1188,15 +1198,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
           <div className="bg-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-medium text-gray-400">Filled Orders</h3>
-              {isDryRun && dryRunState?.filledOrders?.length > 0 && (
+              {((isDryRun && dryRunState?.filledOrders?.length > 0) || (!isDryRun && liveFills?.length > 0)) && (
                 <span className="text-xs text-gray-500">
-                  {dryRunState.filledOrders.length} fills
+                  {isDryRun ? dryRunState.filledOrders.length : liveFills.length} fills
                 </span>
               )}
             </div>
-            {(dryRunState?.filledOrders?.length || 0) === 0 ? (
+            {(isDryRun ? (dryRunState?.filledOrders?.length || 0) : (liveFills?.length || 0)) === 0 ? (
               <div className="text-gray-500 text-sm text-center py-4">No filled orders yet</div>
-            ) : (
+            ) : isDryRun ? (
               <div className="overflow-x-auto max-h-64 overflow-y-auto">
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 bg-gray-800">
@@ -1248,6 +1258,49 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           </td>
                           <td className="text-right py-2 font-mono text-gray-500 text-xs">
                             {order.filledAt ? new Date(order.filledAt).toLocaleTimeString() : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              /* Live Mode Fills */
+              <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-gray-800">
+                    <tr className="text-gray-400 text-xs border-b border-gray-700">
+                      <th className="text-left py-2 pr-2">Side</th>
+                      <th className="text-right py-2 pr-2">Size (BTC)</th>
+                      <th className="text-right py-2 pr-2">Price</th>
+                      <th className="text-right py-2 pr-2">Value</th>
+                      <th className="text-right py-2 pr-2">Fee</th>
+                      <th className="text-right py-2">Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...liveFills]
+                      .sort((a, b) => b.timestamp - a.timestamp)
+                      .slice(0, 20)
+                      .map((fill, idx) => (
+                        <tr key={`${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                          <td className={`py-2 pr-2 ${fill.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
+                            {fill.side?.toUpperCase()}
+                          </td>
+                          <td className="text-right py-2 pr-2 font-mono text-white">
+                            {fill.size?.toFixed(8)}
+                          </td>
+                          <td className="text-right py-2 pr-2 font-mono text-white">
+                            ${fill.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="text-right py-2 pr-2 font-mono text-gray-400 text-xs">
+                            ${fill.quoteAmount?.toFixed(2)}
+                          </td>
+                          <td className="text-right py-2 pr-2 font-mono text-gray-500 text-xs">
+                            ${fill.fee?.toFixed(4)}
+                          </td>
+                          <td className="text-right py-2 font-mono text-gray-500 text-xs">
+                            {fill.timestamp ? new Date(fill.timestamp).toLocaleTimeString() : '-'}
                           </td>
                         </tr>
                       ))}

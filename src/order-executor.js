@@ -23,9 +23,11 @@ const { roundBTC, roundPrice } = require('./volatility-utils');
  * @param {RegimeStrategyConfig} config - Configuration
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @param {string} productId - Product to trade
+ * @param {Object} [callbacks] - Event callbacks
+ * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus)
  * @returns {Object} Order executor instance
  */
-const createOrderExecutor = (exchange, config, adapter, productId) => {
+const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {}) => {
   /** @type {Map<string, PendingOrder>} */
   const pendingOrders = new Map();
 
@@ -221,13 +223,28 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
 
       adapter.getOrder(orderId)
         .then(status => {
-          if (status.status === 'OPEN' && status.completionPercentage === 0) {
+          // Normalize status to uppercase for comparison
+          const normalizedStatus = (status.status || '').toUpperCase();
+
+          if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
+            // Order filled but WebSocket missed it - notify regime engine
+            console.log(`✅ [${exchange}] Stale check detected filled order ${orderId} (WebSocket missed)`);
+            pendingOrders.delete(orderId);
+            if (callbacks.onFillDetected) {
+              callbacks.onFillDetected(orderId, status);
+            }
+          } else if (normalizedStatus === 'CANCELLED') {
+            // Order was cancelled
+            console.log(`⏰ [${exchange}] Stale check found cancelled order ${orderId}`);
+            pendingOrders.delete(orderId);
+          } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
             // Not filled at all, cancel
             console.log(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`);
             return adapter.cancelOrder(orderId).then(() => {
               pendingOrders.delete(orderId);
             });
           }
+          // Partially filled orders are left alone - WebSocket should handle incremental fills
         })
         .catch(err => {
           console.log(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err.message}`);
@@ -255,8 +272,21 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
         }
 
         const status = await adapter.getOrder(orderId);
+        const normalizedStatus = (status.status || '').toUpperCase();
 
-        if (status.status === 'OPEN' && status.completionPercentage === 0) {
+        if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
+          // Order filled but WebSocket missed it
+          console.log(`✅ [${exchange}] Refresh detected filled order ${orderId}`);
+          pendingOrders.delete(orderId);
+          if (callbacks.onFillDetected) {
+            callbacks.onFillDetected(orderId, status);
+          }
+          refreshed++;
+        } else if (normalizedStatus === 'CANCELLED') {
+          console.log(`⏰ [${exchange}] Refresh found cancelled order ${orderId}`);
+          pendingOrders.delete(orderId);
+          refreshed++;
+        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
           await adapter.cancelOrder(orderId);
           lastCancelTime = now;
           pendingOrders.delete(orderId);
@@ -266,6 +296,40 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
     }
 
     return refreshed;
+  };
+
+  /**
+   * Check all pending entry orders for fills (backup fill detection)
+   * Call this periodically to catch fills that WebSocket missed
+   * @returns {Promise<{filled: number, cancelled: number}>}
+   */
+  const checkPendingOrderFills = async () => {
+    let filled = 0;
+    let cancelled = 0;
+
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type !== 'entry') continue;
+
+      const status = await adapter.getOrder(orderId).catch(() => null);
+      if (!status) continue;
+
+      const normalizedStatus = (status.status || '').toUpperCase();
+
+      if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
+        console.log(`✅ [${exchange}] Fill check detected filled order ${orderId}`);
+        pendingOrders.delete(orderId);
+        if (callbacks.onFillDetected) {
+          callbacks.onFillDetected(orderId, status);
+        }
+        filled++;
+      } else if (normalizedStatus === 'CANCELLED') {
+        console.log(`⏰ [${exchange}] Fill check found cancelled order ${orderId}`);
+        pendingOrders.delete(orderId);
+        cancelled++;
+      }
+    }
+
+    return { filled, cancelled };
   };
 
   /**
@@ -525,6 +589,7 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
     getSummary,
     clearPendingOrders,
     restorePendingOrder,
+    checkPendingOrderFills,
   };
 };
 
