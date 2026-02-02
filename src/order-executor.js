@@ -35,13 +35,28 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
   let activeTpOrderId = null;
 
   /**
+   * Check if error indicates a post-only rejection (price moved)
+   * @param {string} errorMessage - Error message from exchange
+   * @returns {boolean} True if post-only rejection
+   */
+  const isPostOnlyRejection = (errorMessage) => {
+    const msg = (errorMessage || '').toLowerCase();
+    return msg.includes('post_only') ||
+           msg.includes('post only') ||
+           msg.includes('would cross') ||
+           msg.includes('would immediately match') ||
+           msg.includes('price is too aggressive');
+  };
+
+  /**
    * Place entry bid (maker-prefer post-only)
    * @param {number} sizeUsdc - Order size in USDC
    * @param {number} currentBid - Current best bid
    * @param {number} currentAsk - Current best ask
+   * @param {number} [retryCount=0] - Current retry attempt
    * @returns {Promise<{success: boolean, orderId?: string, price?: number, btcQty?: number, errorMessage?: string}>}
    */
-  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk) => {
+  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0) => {
     // Calculate bid price with offset below current bid
     const offsetMultiplier = 1 - (config.entryOffsetBps / 10000);
     let bidPrice = currentBid * offsetMultiplier;
@@ -54,7 +69,7 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
     bidPrice = roundPrice(bidPrice);
     const btcQty = roundBTC(sizeUsdc / bidPrice);
 
-    console.log(`📝 [${exchange}] Placing entry bid: ${btcQty} BTC @ $${bidPrice} (size $${sizeUsdc})`);
+    console.log(`📝 [${exchange}] Placing entry bid: ${btcQty} BTC @ $${bidPrice} (size $${sizeUsdc})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
 
     const result = await adapter.placeLimitBuy(productId, btcQty, bidPrice, { postOnly: true });
 
@@ -76,6 +91,15 @@ const createOrderExecutor = (exchange, config, adapter, productId) => {
         price: bidPrice,
         btcQty,
       };
+    }
+
+    // Retry on post-only rejection if we have retries remaining
+    const maxRetries = config.entryMaxRetries || 3;
+    if (retryCount < maxRetries && isPostOnlyRejection(result.errorMessage)) {
+      console.log(`🔄 [${exchange}] Post-only rejected (market moved), fetching fresh prices (retry ${retryCount + 1}/${maxRetries})`);
+
+      const freshPrices = await adapter.getBidAsk(productId);
+      return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1);
     }
 
     return {

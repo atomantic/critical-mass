@@ -167,6 +167,20 @@ const createCoinbaseAdapter = (keysPath = null) => {
   };
 
   /**
+   * Get current bid/ask for a product
+   * @param {string} productId - Product ID (e.g., 'BTC-USDC')
+   * @returns {Promise<{bid: number, ask: number}>} Bid and ask prices
+   */
+  adapter.getBidAsk = async (productId) => {
+    const data = await makeRequest('GET', `/api/v3/brokerage/best_bid_ask?product_ids=${productId}`);
+    const pricebook = data.pricebooks?.[0];
+    return {
+      bid: parseFloat(pricebook?.bids?.[0]?.price || 0),
+      ask: parseFloat(pricebook?.asks?.[0]?.price || 0),
+    };
+  };
+
+  /**
    * Get product details including base/quote increments
    * @param {string} productId - Product ID
    * @returns {Promise<ProductDetails>} Product details
@@ -429,6 +443,7 @@ module.exports = {
   loadCredentials: defaultAdapter.loadCredentials,
   getAccountBalance: defaultAdapter.getAccountBalance,
   getCurrentPrice: defaultAdapter.getCurrentPrice,
+  getBidAsk: defaultAdapter.getBidAsk,
   getProductDetails: defaultAdapter.getProductDetails,
   placeMarketBuy: defaultAdapter.placeMarketBuy,
   placeLimitBuy: defaultAdapter.placeLimitBuy,

@@ -163,6 +163,20 @@ const createGeminiAdapter = (keysPath = null) => {
   };
 
   /**
+   * Get current bid/ask for a product
+   * @param {string} productId - Product ID (e.g., 'BTC-USD' or 'BTCUSD')
+   * @returns {Promise<{bid: number, ask: number}>} Bid and ask prices
+   */
+  adapter.getBidAsk = async (productId) => {
+    const symbol = toGeminiSymbol(productId);
+    const ticker = await makePublicRequest(`/v1/pubticker/${symbol}`);
+    return {
+      bid: parseFloat(ticker.bid),
+      ask: parseFloat(ticker.ask),
+    };
+  };
+
+  /**
    * Get product details
    * @param {string} productId - Product ID
    * @returns {Promise<ProductDetails>} Product details
