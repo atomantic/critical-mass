@@ -196,15 +196,24 @@ function VolatilityChart({
       .attr('fill', '#f59e0b')
       .attr('stroke', '#f59e0b')
 
-    // Legend
-    const legend = g.append('g')
-      .attr('transform', `translate(${innerWidth - 120}, 5)`)
-
+    // Legend (positioned at bottom-left with background)
     const legendItems = [
       { label: 'ATR 1m', color: '#3b82f6' },
       { label: 'ATR 5m', color: '#8b5cf6' },
       { label: 'Real Vol', color: '#f59e0b', dashed: true },
     ]
+
+    const legend = g.append('g')
+      .attr('transform', `translate(5, ${innerHeight - 50})`)
+
+    // Legend background
+    legend.append('rect')
+      .attr('x', -4)
+      .attr('y', -8)
+      .attr('width', 75)
+      .attr('height', 50)
+      .attr('fill', 'rgba(31, 41, 55, 0.9)')
+      .attr('rx', 4)
 
     legendItems.forEach((item, i) => {
       const legendItem = legend.append('g')
