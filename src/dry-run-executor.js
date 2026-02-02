@@ -348,6 +348,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       const estimatedFee = 0;
       const costBasis = (order.size * fillPrice) + estimatedFee;
 
+      // Store cost basis on order for UI display
+      order.costBasis = costBasis;
+
       // Start or update cycle tracking for optimal TP analysis
       if (!currentCycleTracking) {
         currentCycleTracking = {
@@ -392,14 +395,26 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       const pnl = netProceeds - costBasis;
       simulatedRealizedPnL += pnl;
 
+      // Calculate BTC holdback for this cycle
+      const holdbackPercent = config.holdbackPercent || 5;
+      const totalBtcBeforeSale = order.size / (1 - holdbackPercent / 100);
+      const holdbackBtc = totalBtcBeforeSale - order.size;
+      simulatedRealizedBtcPnL += holdbackBtc;
+
+      // Store P&L data on the order for UI display
+      order.pnl = pnl;
+      order.holdbackBtc = holdbackBtc;
+      order.avgCostBasis = avgBuyPrice;
+
       logDecision('tp_filled', 'N/A', fillPrice, {
         orderId,
         btcQty: order.size,
         fillPrice,
         pnl,
+        holdbackBtc,
         totalRealizedPnL: simulatedRealizedPnL,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} BTC @ $${fillPrice}, PnL=$${pnl.toFixed(2)}`);
+      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} BTC @ $${fillPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`);
 
       if (orderId === activeTpOrderId) {
         activeTpOrderId = null;
