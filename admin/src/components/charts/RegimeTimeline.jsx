@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react'
+import { useRef, useEffect, useMemo, useState } from 'react'
 import * as d3 from 'd3'
 
 // Regime colors
@@ -27,6 +27,7 @@ function RegimeTimeline({
 }) {
   const containerRef = useRef(null)
   const svgRef = useRef(null)
+  const [containerWidth, setContainerWidth] = useState(0)
 
   // Sort and prepare regime data
   const regimeData = useMemo(() => {
@@ -41,9 +42,7 @@ function RegimeTimeline({
   }, [data, currentRegime])
 
   useEffect(() => {
-    if (!svgRef.current || !containerRef.current) return
-
-    const containerWidth = containerRef.current.clientWidth
+    if (!svgRef.current || !containerRef.current || containerWidth === 0) return
     const svg = d3.select(svgRef.current)
     svg.selectAll('*').remove()
 
@@ -161,24 +160,23 @@ function RegimeTimeline({
       .attr('font-weight', '500')
       .text('Regime Timeline (15 min)')
 
-  }, [regimeData, height])
+  }, [regimeData, height, containerWidth])
 
   // Handle resize
   useEffect(() => {
-    const resizeObserver = new ResizeObserver(() => {
-      if (svgRef.current && containerRef.current) {
-        // Trigger re-render
-        const event = new Event('resize')
-        window.dispatchEvent(event)
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width)
       }
     })
 
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current)
+      setContainerWidth(containerRef.current.clientWidth)
     }
 
     return () => resizeObserver.disconnect()
-  }, [regimeData])
+  }, [])
 
   return (
     <div ref={containerRef} className={`bg-gray-800 rounded-lg p-3 ${className}`}>

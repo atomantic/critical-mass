@@ -36,7 +36,6 @@ const createMarketDataService = (exchange) => {
   let fillLedger = null;
   let isConnected = false;
   let metricsUpdateInterval = null;
-  let orderCheckInterval = null;
 
   // Market state (same structure as regime engine)
   const marketState = {
@@ -423,7 +422,7 @@ const getMarketDataService = (exchange) => {
  * Stop all market data services
  */
 const stopAllMarketDataServices = () => {
-  for (const [exchange, service] of marketDataServices) {
+  for (const [, service] of marketDataServices) {
     service.stop();
   }
   marketDataServices.clear();

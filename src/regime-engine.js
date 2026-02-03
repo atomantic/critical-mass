@@ -1013,10 +1013,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Get detailed fills
     const rawFills = await adapter.getOrderFills(fillData.orderId);
 
+    // Get order placement time for fill time tracking (entry orders only)
+    const orderPlacedAt = fillData.side.toLowerCase() === 'buy'
+      ? orderExecutor.getOrderPlacedAt(fillData.orderId)
+      : null;
+
     // Ingest each fill and collect the normalized fills
     const ingestedFills = [];
     for (const fill of rawFills) {
-      const result = fillLedger.ingestFill(fill);
+      const result = fillLedger.ingestFill(fill, orderPlacedAt);
       if (result.fill) {
         ingestedFills.push(result.fill);
       }
@@ -1200,6 +1205,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Classify regime with updated metrics
     regimeDetector.classify(marketState);
+
+    // Update stale order timeout based on regime
+    // HARVEST: normal timeout (1.0x)
+    // CAUTION: faster repricing (0.7x) - uncertain markets need quicker adjustments
+    // TREND: fastest repricing (0.5x) - trending markets move quickly
+    if (!isDryRun && orderExecutor.setStaleTimeoutMultiplier) {
+      const regime = regimeDetector.getMode();
+      const multiplier = regime === 'CAUTION' ? 0.7 : regime === 'TREND' ? 0.5 : 1.0;
+      orderExecutor.setStaleTimeoutMultiplier(multiplier);
+    }
 
     // Log hourly summary
     logHourlySummary();
@@ -1392,7 +1407,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const tpPrice = calculateDynamicTP();
 
     // Calculate sizing based on profit at TP price
-    const { sellQty, holdbackQty, profitUsdc, profitBtcValue } = positionSizer.calculateTakeProfitSize(
+    const { sellQty, holdbackQty, profitBtcValue } = positionSizer.calculateTakeProfitSize(
       positionState.totalBTC,
       positionState.avgCostBasis,
       tpPrice
@@ -1600,6 +1615,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,
     tpOptimizer: tpOptimizer.getStatus(),
     sizeOptimizer: sizeOptimizer.getStatus(),
+    fillTimeStats: fillLedger.getFillTimeStats ? fillLedger.getFillTimeStats(7) : null,
+    effectiveStaleMs: !isDryRun && orderExecutor.getEffectiveStaleMs ? orderExecutor.getEffectiveStaleMs() : config.orderStaleMs,
   });
 
   /**

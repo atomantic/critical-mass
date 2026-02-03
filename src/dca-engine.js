@@ -9,7 +9,7 @@ const { consolidatePendingOrders } = require('./order-manager');
 const { getExchangeConfig, getEnabledExchanges } = require('./config-utils');
 const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
-const { getFibonacciBuyAmount, getAverageCostBasis } = require('./fibonacci-utils');
+const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig

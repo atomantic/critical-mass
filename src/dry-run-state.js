@@ -14,6 +14,8 @@ const SAVE_DEBOUNCE_MS = 5000; // Debounce saves to avoid excessive disk writes
 
 let pendingSave = null;
 let lastSaveTime = 0;
+/** @type {Map<string, ExchangeDryRunState>} */
+const pendingStates = new Map();
 
 /**
  * @typedef {Object} DryRunExecutorState
@@ -131,6 +133,9 @@ const loadState = (exchange) => {
  * @param {ExchangeDryRunState} exchangeState - State to save
  */
 const saveState = (exchange, exchangeState) => {
+  // Always store the latest state for this exchange
+  pendingStates.set(exchange, exchangeState);
+
   // Debounce saves
   const now = Date.now();
   if (now - lastSaveTime < SAVE_DEBOUNCE_MS) {
@@ -138,13 +143,25 @@ const saveState = (exchange, exchangeState) => {
     if (!pendingSave) {
       pendingSave = setTimeout(() => {
         pendingSave = null;
-        saveState(exchange, exchangeState);
+        // Flush all pending states
+        const allState = loadAllState();
+        for (const [ex, state] of pendingStates) {
+          allState.exchanges[ex] = {
+            ...state,
+            savedAt: Date.now(),
+          };
+        }
+        pendingStates.clear();
+        saveAllState(allState);
+        lastSaveTime = Date.now();
+        console.log(`💾 Dry-run state saved for ${pendingStates.size || 1} exchange(s)`);
       }, SAVE_DEBOUNCE_MS);
     }
     return;
   }
 
   lastSaveTime = now;
+  pendingStates.clear();
 
   const allState = loadAllState();
   allState.exchanges[exchange] = {
