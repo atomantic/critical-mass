@@ -163,23 +163,23 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   // Chart data buffering with cache support
   const { priceHistory, atrHistory, regimeHistory, initializeFromCache } = useChartDataBuffer(status)
 
-  // Compute current cycle ID and filtered fills for display
-  const { currentCycleId, filteredFills } = useMemo(() => {
+  // Compute filtered fills for display based on cycle toggle
+  const filteredFills = useMemo(() => {
     if (!liveFills || liveFills.length === 0) {
-      return { currentCycleId: null, filteredFills: [] }
+      return []
+    }
+    if (showAllCycles) {
+      return liveFills
     }
     // Find the most recent cycleId by parsing the timestamp embedded in the cycleId
-    const cycleId = liveFills.reduce((latest, f) => {
+    const currentCycleId = liveFills.reduce((latest, f) => {
       if (!f.cycleId) return latest
       if (!latest) return f.cycleId
       const latestTime = parseInt(latest.split('-')[1]) || 0
       const fillTime = parseInt(f.cycleId.split('-')[1]) || 0
       return fillTime > latestTime ? f.cycleId : latest
     }, null)
-    const filtered = showAllCycles
-      ? liveFills
-      : liveFills.filter(f => f.cycleId === cycleId)
-    return { currentCycleId: cycleId, filteredFills: filtered }
+    return liveFills.filter(f => f.cycleId === currentCycleId)
   }, [liveFills, showAllCycles])
 
   // Track previous price for animation

@@ -73,10 +73,10 @@ const calculateATR = (candles, period = 14) => {
 
 /**
  * Calculate realized volatility from returns
- * Standard deviation of log returns over window
+ * Standard deviation of log returns over window, expressed as percentage
  * @param {Candle[]} candles - Array of candles
  * @param {number} window - Rolling window size (default: 30)
- * @returns {number} Realized volatility (annualized)
+ * @returns {number} Realized volatility as percentage (not annualized)
  */
 const calculateRealizedVol = (candles, window = 30) => {
   if (!candles || candles.length < 2) {
@@ -102,8 +102,8 @@ const calculateRealizedVol = (candles, window = 30) => {
   const variance = squaredDiffs.reduce((acc, d) => acc + d, 0) / (windowReturns.length - 1);
   const stdDev = Math.sqrt(variance);
 
-  // Annualize (assuming 1-minute candles, ~525600 minutes per year)
-  // For display, we'll return the raw std dev * 100 for percentage
+  // Return raw standard deviation as percentage (not annualized)
+  // This represents short-term volatility over the window period
   return stdDev * 100;
 };
 
