@@ -189,6 +189,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [error, setError] = useState(null)
   const [liveFills, setLiveFills] = useState([])
   const [showAllCycles, setShowAllCycles] = useState(false)
+  const [recalculating, setRecalculating] = useState(false)
+  const [recalcPreview, setRecalcPreview] = useState(null)
   const prevPriceRef = useRef(null)
 
   const { connected, status: socketStatus, setStatus: setSocketStatus, regimeState, healthState, positionState, events: regimeEvents, clearEvents } = useRegimeEvents(exchange)
@@ -317,6 +319,37 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       await fetchStatus()
     }
     setResetting(false)
+  }
+
+  // Preview recalculate
+  const handleRecalculatePreview = async () => {
+    setRecalculating(true)
+    const res = await fetch(`/api/${exchange}/regime/recalculate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apply: false }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      setRecalcPreview(data)
+    }
+    setRecalculating(false)
+  }
+
+  // Apply recalculate
+  const handleRecalculateApply = async () => {
+    setRecalculating(true)
+    const res = await fetch(`/api/${exchange}/regime/recalculate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apply: true }),
+    })
+    const data = await res.json()
+    if (data.success) {
+      setRecalcPreview(null)
+      await fetchStatus()
+    }
+    setRecalculating(false)
   }
 
   if (loading) {
@@ -735,9 +768,96 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   </div>
                 </div>
               </div>
-              <div className="mt-3 text-xs text-gray-500">
-                Cycles completed: {position.cyclesCompleted || 0}
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-xs text-gray-500">
+                  Cycles completed: {position.cyclesCompleted || 0}
+                </span>
+                <button
+                  onClick={handleRecalculatePreview}
+                  disabled={recalculating}
+                  className="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 disabled:opacity-50"
+                >
+                  {recalculating ? 'Checking...' : 'Recalculate'}
+                </button>
               </div>
+
+              {/* Recalculate Preview Modal */}
+              {recalcPreview && (
+                <div className="mt-3 p-3 bg-gray-900 rounded border border-yellow-600/50">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-yellow-400">Recalculate Preview</span>
+                    <button
+                      onClick={() => setRecalcPreview(null)}
+                      className="text-gray-400 hover:text-white"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  {recalcPreview.orphansFixed > 0 && (
+                    <div className="text-xs text-blue-400 mb-2">
+                      Will fix {recalcPreview.orphansFixed} fills with missing cycle ID
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-2 text-xs mb-3">
+                    <div className="text-gray-400">Field</div>
+                    <div className="text-gray-400">Before</div>
+                    <div className="text-gray-400">After</div>
+
+                    <div className="text-gray-300">Cycles</div>
+                    <div className="text-gray-500">{recalcPreview.changes?.cyclesCompleted?.before}</div>
+                    <div className={recalcPreview.changes?.cyclesCompleted?.before !== recalcPreview.changes?.cyclesCompleted?.after ? 'text-yellow-400' : 'text-gray-500'}>
+                      {recalcPreview.changes?.cyclesCompleted?.after}
+                    </div>
+
+                    <div className="text-gray-300">P&L</div>
+                    <div className="text-gray-500">${recalcPreview.changes?.realizedPnL?.before?.toFixed(2)}</div>
+                    <div className={recalcPreview.changes?.realizedPnL?.before !== recalcPreview.changes?.realizedPnL?.after ? 'text-yellow-400' : 'text-gray-500'}>
+                      ${recalcPreview.changes?.realizedPnL?.after?.toFixed(2)}
+                    </div>
+
+                    <div className="text-gray-300">BTC Reserves</div>
+                    <div className="text-gray-500">{recalcPreview.changes?.realizedBtcPnL?.before?.toFixed(8)}</div>
+                    <div className={recalcPreview.changes?.realizedBtcPnL?.before !== recalcPreview.changes?.realizedBtcPnL?.after ? 'text-cyan-400' : 'text-gray-500'}>
+                      {recalcPreview.changes?.realizedBtcPnL?.after?.toFixed(8)}
+                    </div>
+
+                    <div className="text-gray-300">Ladder Step</div>
+                    <div className="text-gray-500">{recalcPreview.changes?.ladderStep?.before}</div>
+                    <div className={recalcPreview.changes?.ladderStep?.before !== recalcPreview.changes?.ladderStep?.after ? 'text-yellow-400' : 'text-gray-500'}>
+                      {recalcPreview.changes?.ladderStep?.after}
+                    </div>
+                  </div>
+
+                  {recalcPreview.cycleDetails?.length > 0 && (
+                    <div className="mb-3">
+                      <div className="text-xs text-gray-400 mb-1">Completed Cycles:</div>
+                      {recalcPreview.cycleDetails.map((cycle, i) => (
+                        <div key={i} className="text-xs text-gray-500 pl-2">
+                          {cycle.cycleId?.slice(0, 20)}... - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackBtc?.toFixed(8)} BTC
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleRecalculateApply}
+                      disabled={recalculating}
+                      className="flex-1 text-xs px-3 py-1.5 rounded bg-yellow-600 hover:bg-yellow-500 text-white disabled:opacity-50"
+                    >
+                      {recalculating ? 'Applying...' : 'Apply Changes'}
+                    </button>
+                    <button
+                      onClick={() => setRecalcPreview(null)}
+                      className="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* APY & Returns Section */}
               {apy.engineStartTime && (

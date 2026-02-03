@@ -318,6 +318,135 @@ const createFillLedger = (exchange) => {
     };
   };
 
+  /**
+   * Recalculate cycles from fill history
+   * - Identifies completed cycles (cycles with sells)
+   * - Assigns orphan fills (cycleId: null) to cycles based on timestamp
+   * - Calculates BTC holdback per cycle and total reserves
+   * @returns {{cyclesCompleted: number, realizedPnL: number, realizedBtcPnL: number, cycleDetails: Array, orphansFixed: number}}
+   */
+  const recalculateCycles = () => {
+    const allFills = Array.from(fills.values()).sort((a, b) => a.timestamp - b.timestamp);
+
+    // Group fills by cycleId
+    const cycleMap = new Map();
+    const orphanFills = [];
+
+    for (const fill of allFills) {
+      if (!fill.cycleId) {
+        orphanFills.push(fill);
+      } else {
+        if (!cycleMap.has(fill.cycleId)) {
+          cycleMap.set(fill.cycleId, []);
+        }
+        cycleMap.get(fill.cycleId).push(fill);
+      }
+    }
+
+    // Identify completed cycles (have at least one sell)
+    const completedCycles = [];
+    const activeCycles = [];
+
+    for (const [cycleId, cycleFills] of cycleMap) {
+      const hasSell = cycleFills.some(f => f.side === 'sell');
+      if (hasSell) {
+        completedCycles.push({ cycleId, fills: cycleFills });
+      } else {
+        activeCycles.push({ cycleId, fills: cycleFills });
+      }
+    }
+
+    // Calculate P&L and holdback for each completed cycle
+    const cycleDetails = [];
+    let totalRealizedPnL = 0;
+    let totalRealizedBtcPnL = 0;
+
+    for (const { cycleId, fills: cycleFills } of completedCycles) {
+      let totalBTC = 0;
+      let totalCost = 0;
+      let sellProceeds = 0;
+      let btcSold = 0;
+
+      for (const fill of cycleFills) {
+        if (fill.side === 'buy') {
+          totalBTC += fill.size;
+          totalCost += fill.quoteAmount + fill.netFee;
+        } else if (fill.side === 'sell') {
+          sellProceeds += fill.quoteAmount - fill.netFee;
+          btcSold += fill.size;
+        }
+      }
+
+      const avgCost = totalBTC > 0 ? totalCost / totalBTC : 0;
+      const costBasisSold = avgCost * btcSold;
+      const pnl = sellProceeds - costBasisSold;
+      const holdbackBtc = roundBTC(totalBTC - btcSold);
+
+      cycleDetails.push({
+        cycleId,
+        buys: cycleFills.filter(f => f.side === 'buy').length,
+        sells: cycleFills.filter(f => f.side === 'sell').length,
+        totalBtcBought: roundBTC(totalBTC),
+        btcSold: roundBTC(btcSold),
+        holdbackBtc,
+        avgCost: roundUSDC(avgCost),
+        sellPrice: btcSold > 0 ? roundUSDC(sellProceeds / btcSold) : 0,
+        pnl: roundUSDC(pnl),
+      });
+
+      totalRealizedPnL += pnl;
+      totalRealizedBtcPnL += holdbackBtc;
+    }
+
+    // Assign orphan fills to the most recent active cycle, or create a new one
+    let orphansFixed = 0;
+    if (orphanFills.length > 0) {
+      // If there's an active (incomplete) cycle, assign orphans there
+      // Otherwise, they belong to a new current cycle
+      let targetCycleId = activeCycles.length > 0
+        ? activeCycles[activeCycles.length - 1].cycleId
+        : null;
+
+      // If no active cycle exists, these orphans ARE the current cycle - assign them an ID
+      if (!targetCycleId && orphanFills.length > 0) {
+        targetCycleId = `cycle-${orphanFills[0].timestamp}-recovered`;
+      }
+
+      for (const fill of orphanFills) {
+        fill.cycleId = targetCycleId;
+        fills.set(fill.tradeId, fill);
+        orphansFixed++;
+      }
+
+      if (orphansFixed > 0) {
+        currentCycleId = targetCycleId;
+        console.log(`🔧 [${exchange}] Assigned ${orphansFixed} orphan fills to cycle ${targetCycleId}`);
+      }
+    }
+
+    return {
+      cyclesCompleted: completedCycles.length,
+      realizedPnL: roundUSDC(totalRealizedPnL),
+      realizedBtcPnL: roundBTC(totalRealizedBtcPnL),
+      cycleDetails,
+      orphansFixed,
+      activeCycleId: currentCycleId,
+    };
+  };
+
+  /**
+   * Update a fill's cycleId
+   * @param {string} tradeId - Trade ID
+   * @param {string} cycleId - New cycle ID
+   */
+  const updateFillCycleId = (tradeId, cycleId) => {
+    const fill = fills.get(tradeId);
+    if (fill) {
+      fill.cycleId = cycleId;
+      fills.set(tradeId, fill);
+    }
+  };
+
   // Initialize by loading from disk
   load();
 
@@ -335,6 +464,8 @@ const createFillLedger = (exchange) => {
     getStats,
     getFillsSince,
     aggregateFills,
+    recalculateCycles,
+    updateFillCycleId,
     persist,
     load,
   };

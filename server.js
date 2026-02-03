@@ -880,6 +880,90 @@ app.get('/api/:exchange/regime/open-orders', async (req, res) => {
   });
 });
 
+// Recalculate regime state from fill history
+app.post('/api/:exchange/regime/recalculate', async (req, res) => {
+  const { exchange } = req.params;
+  const { apply = false } = req.body;
+
+  const { createFillLedger } = require('./src/fill-ledger');
+  const { loadRegimeState, saveRegimeState } = require('./src/state-tracker');
+
+  const fillLedger = createFillLedger(exchange);
+  const currentState = loadRegimeState(exchange);
+
+  // Recalculate cycles from fills
+  const recalcResult = fillLedger.recalculateCycles();
+
+  // Rebuild current position from current cycle fills only
+  const currentCycleFills = fillLedger.getCurrentCycleFills();
+  const currentPosition = fillLedger.rebuildPositionFromFills(currentCycleFills);
+
+  const changes = {
+    cyclesCompleted: {
+      before: currentState.position?.cyclesCompleted || 0,
+      after: recalcResult.cyclesCompleted,
+    },
+    realizedPnL: {
+      before: currentState.position?.realizedPnL || 0,
+      after: recalcResult.realizedPnL,
+    },
+    realizedBtcPnL: {
+      before: currentState.position?.realizedBtcPnL || 0,
+      after: recalcResult.realizedBtcPnL,
+    },
+    ladderStep: {
+      before: currentState.position?.ladderStep || 0,
+      after: currentPosition.ladderStep,
+    },
+    totalBTC: {
+      before: currentState.position?.totalBTC || 0,
+      after: currentPosition.totalBTC,
+    },
+    totalCostBasis: {
+      before: currentState.position?.totalCostBasis || 0,
+      after: currentPosition.totalCostBasis,
+    },
+  };
+
+  if (apply) {
+    // Apply changes to saved state
+    const updatedPosition = {
+      ...currentState.position,
+      ...currentPosition,
+      cyclesCompleted: recalcResult.cyclesCompleted,
+      realizedPnL: recalcResult.realizedPnL,
+      realizedBtcPnL: recalcResult.realizedBtcPnL,
+    };
+
+    saveRegimeState(exchange, {
+      ...currentState,
+      position: updatedPosition,
+    });
+
+    // Persist fill ledger with fixed cycle IDs
+    fillLedger.persist();
+
+    // If engine is running, update its state
+    const engine = regimeEngines.get(exchange);
+    if (engine?.updatePosition) {
+      engine.updatePosition(updatedPosition);
+    }
+
+    console.log(`🔧 [${exchange}] Regime state recalculated and applied: ${recalcResult.cyclesCompleted} cycles, $${recalcResult.realizedPnL} P&L, ${recalcResult.realizedBtcPnL} BTC reserves`);
+  }
+
+  res.json({
+    success: true,
+    exchange,
+    applied: apply,
+    changes,
+    cycleDetails: recalcResult.cycleDetails,
+    orphansFixed: recalcResult.orphansFixed,
+    activeCycleId: recalcResult.activeCycleId,
+    currentCycleFills: currentCycleFills.length,
+  });
+});
+
 // Get dry-run decision log
 app.get('/api/:exchange/regime/dry-run/log', (req, res) => {
   const { exchange } = req.params;
