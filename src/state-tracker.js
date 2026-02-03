@@ -398,12 +398,14 @@ const updateAfterFibBuy = (state, buyDetails, config) => {
  * @param {BotState} state - Current state
  * @param {SellOrder} sellOrder - Sell order details
  * @param {number} sellQuantityBTC - BTC quantity in sell order
- * @param {number} holdbackBTC - BTC held back as reserves
+ * @param {number} holdbackBTC - BTC held back as reserves (tracked but not added to reserves until cycle completes)
  * @returns {BotState} Updated state
  */
 const updateAfterFibSellOrder = (state, sellOrder, sellQuantityBTC, holdbackBTC) => {
   state.fibActiveSellOrderId = sellOrder.orderId;
-  state.btcReserves += holdbackBTC;
+  // Track cumulative holdback for this cycle, but don't add to reserves yet
+  // Reserves are only credited when the cycle sell fills (in updateAfterFibSellFill)
+  state.fibPendingHoldback = holdbackBTC;
   state.outstandingOrdersBTC = sellQuantityBTC; // Replace, not add (consolidated order)
   state.outstandingOrdersUSDC = sellQuantityBTC * sellOrder.limitPrice;
 
@@ -427,12 +429,17 @@ const updateAfterFibSellFill = (state, fillDetails) => {
   state.outstandingOrdersBTC -= fillDetails.filledSize;
   state.outstandingOrdersUSDC = Math.max(0, state.outstandingOrdersUSDC - fillDetails.fillValue);
 
+  // Credit holdback to reserves now that cycle is complete
+  if (state.fibPendingHoldback > 0) {
+    state.btcReserves += state.fibPendingHoldback;
+  }
+
   // Update cumulative fee tracking
   state.totalFees = (state.totalFees || 0) + sellFees;
   state.totalRebates = (state.totalRebates || 0) + sellRebates;
   state.netFees = (state.netFees || 0) + sellNetFees;
 
-  // Reset Fibonacci cycle state
+  // Reset Fibonacci cycle state (including fibPendingHoldback)
   const fibReset = resetFibState();
   Object.assign(state, fibReset);
 

@@ -327,8 +327,8 @@ const createRegimeDetector = (exchange, config, callbacks = {}) => {
     state = {
       ...createInitialRegimeState(),
       ...savedState,
-      // Don't restore 'since' timestamp - it's relative to current session
-      since: savedState.since || Date.now(),
+      // Reset 'since' timestamp to current session start
+      since: Date.now(),
     };
 
     console.log(`📂 [${exchange}] Restored regime state: mode=${state.mode}, transitions=${state.transitionCount}`);

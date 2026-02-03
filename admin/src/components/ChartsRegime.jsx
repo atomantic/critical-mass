@@ -59,15 +59,16 @@ function ChartsRegime({ exchange = 'coinbase' }) {
         })).reverse() // Oldest first
         setHistoricalPrices(prices)
 
-        // Calculate ATR from candles matching VolatilityChart schema
-        const atrData = data.candles.map(c => ({
+        // Calculate true range from candles (not smoothed ATR, just range per candle)
+        // This provides initial chart data until real-time ATR metrics arrive
+        const trueRangeData = data.candles.map(c => ({
           timestamp: c.timestamp,
-          atr1m: parseFloat(c.high) - parseFloat(c.low),
+          atr1m: parseFloat(c.high) - parseFloat(c.low), // True range, not ATR
           atr5m: null,
           realizedVol: null,
           volBaseline: null,
         })).reverse()
-        setHistoricalAtr(atrData)
+        setHistoricalAtr(trueRangeData)
       }
     }
     // Initialize chart data buffer from server cache (restores data across page reloads)
@@ -97,23 +98,6 @@ function ChartsRegime({ exchange = 'coinbase' }) {
   const market = status?.market || {}
   const position = status?.position || {}
   const regime = status?.regime || {}
-
-  // Build fill markers for price chart
-  const buyFills = fills
-    .filter(f => f.side === 'buy')
-    .map(f => ({
-      date: new Date(f.timestamp),
-      price: f.price,
-      size: f.size,
-    }))
-
-  const sellFills = fills
-    .filter(f => f.side === 'sell')
-    .map(f => ({
-      date: new Date(f.timestamp),
-      price: f.price,
-      size: f.size,
-    }))
 
   // Calculate P&L distribution from fills
   const pnlData = (() => {
@@ -234,8 +218,6 @@ function ChartsRegime({ exchange = 'coinbase' }) {
               anchorPrice={position.anchorPrice}
               atr={market.atr1m}
               kFactor={config?.kFactor || 0.6}
-              buyMarkers={buyFills}
-              sellMarkers={sellFills}
               height={320}
             />
           </div>

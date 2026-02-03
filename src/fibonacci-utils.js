@@ -88,6 +88,7 @@ const createInitialFibState = () => ({
   fibCumulativeCost: 0,
   fibCumulativeBTC: 0,
   fibActiveSellOrderId: null,
+  fibPendingHoldback: 0, // Holdback tracked during cycle, credited to reserves on fill
 });
 
 /**
@@ -100,6 +101,7 @@ const resetFibState = () => ({
   fibCumulativeCost: 0,
   fibCumulativeBTC: 0,
   fibActiveSellOrderId: null,
+  fibPendingHoldback: 0,
 });
 
 /**

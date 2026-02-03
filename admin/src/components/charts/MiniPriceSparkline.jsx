@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react'
+import { useRef, useEffect, useMemo, useId } from 'react'
 import * as d3 from 'd3'
 
 /**
@@ -15,6 +15,7 @@ function MiniPriceSparkline({
   className = '',
 }) {
   const svgRef = useRef(null)
+  const gradientId = useId() // Unique ID per instance to avoid gradient collisions
 
   // Filter to last 5 minutes of data
   const chartData = useMemo(() => {
@@ -98,10 +99,11 @@ function MiniPriceSparkline({
       .y(d => yScale(d.price))
       .curve(d3.curveMonotoneX)
 
-    // Gradient for line
+    // Gradient for line (use unique ID to avoid collisions with multiple instances)
+    const safeGradientId = `priceGradient-${gradientId.replace(/:/g, '')}`
     const gradient = svg.append('defs')
       .append('linearGradient')
-      .attr('id', 'priceGradient')
+      .attr('id', safeGradientId)
       .attr('x1', '0%')
       .attr('x2', '100%')
 
@@ -131,7 +133,7 @@ function MiniPriceSparkline({
       .datum(chartData)
       .attr('d', line)
       .attr('fill', 'none')
-      .attr('stroke', 'url(#priceGradient)')
+      .attr('stroke', `url(#${safeGradientId})`)
       .attr('stroke-width', 1.5)
 
     // Current price dot
@@ -146,7 +148,7 @@ function MiniPriceSparkline({
         .attr('stroke-width', 1)
     }
 
-  }, [chartData, width, height, currentPrice, atr, kFactor])
+  }, [chartData, width, height, currentPrice, atr, kFactor, gradientId])
 
   if (chartData.length < 2) {
     return (

@@ -193,8 +193,19 @@ const createWebSocketFeed = (exchange, config) => {
       console.log(`⚠️ [${exchange}] Received invalid JSON from WebSocket`);
       return;
     }
-    const { channel, events } = message;
+    const { channel, events, type } = message;
 
+    // Handle non-event messages (errors, heartbeats, subscription acks)
+    if (type === 'error') {
+      const errorMsg = message.message || message.reason || 'Unknown WebSocket error';
+      console.log(`❌ [${exchange}] WebSocket error: ${errorMsg}`);
+      if (config.onError) {
+        config.onError(new Error(errorMsg));
+      }
+      return;
+    }
+
+    // Skip heartbeat and subscription confirmation messages
     if (!events || events.length === 0) return;
 
     switch (channel) {
