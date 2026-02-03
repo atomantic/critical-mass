@@ -516,7 +516,7 @@ const createInitialRegimeState = () => ({
 /**
  * Load regime state from file
  * @param {string} exchange - Exchange name
- * @returns {{position: RegimePositionState, regime: RegimeState, tpOptimizer?: Object}}
+ * @returns {{position: RegimePositionState, regime: RegimeState, tpOptimizer?: Object, sizeOptimizer?: Object}}
  */
 const loadRegimeState = (exchange = 'coinbase') => {
   const stateFile = getRegimeStateFile(exchange);
@@ -526,6 +526,7 @@ const loadRegimeState = (exchange = 'coinbase') => {
       position: createInitialRegimePositionState(),
       regime: createInitialRegimeState(),
       tpOptimizer: null,
+      sizeOptimizer: null,
     };
   }
 
@@ -535,6 +536,7 @@ const loadRegimeState = (exchange = 'coinbase') => {
     position: { ...createInitialRegimePositionState(), ...data.position },
     regime: { ...createInitialRegimeState(), ...data.regime },
     tpOptimizer: data.tpOptimizer || null,
+    sizeOptimizer: data.sizeOptimizer || null,
   };
 };
 
@@ -544,8 +546,9 @@ const loadRegimeState = (exchange = 'coinbase') => {
  * @param {RegimeState} regime - Regime state
  * @param {string} exchange - Exchange name
  * @param {Object} [tpOptimizer] - Optional TP optimizer state
+ * @param {Object} [sizeOptimizer] - Optional Size optimizer state
  */
-const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null) => {
+const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null) => {
   const stateFile = getRegimeStateFile(exchange);
   const dir = path.dirname(stateFile);
 
@@ -556,6 +559,9 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   const stateData = { position, regime };
   if (tpOptimizer) {
     stateData.tpOptimizer = tpOptimizer;
+  }
+  if (sizeOptimizer) {
+    stateData.sizeOptimizer = sizeOptimizer;
   }
 
   fs.writeFileSync(stateFile, JSON.stringify(stateData, null, 2));

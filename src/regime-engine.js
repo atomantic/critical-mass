@@ -27,6 +27,7 @@ const { createOrderExecutor } = require('./order-executor');
 const { createDryRunExecutor } = require('./dry-run-executor');
 const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
+const { createSizeOptimizer } = require('./size-optimizer');
 const { calculateAllMetrics, clamp, roundBTC, roundUSDC } = require('./volatility-utils');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
@@ -189,6 +190,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     },
   });
 
+  // Create Size optimizer for dynamic position sizing
+  const sizeOptimizer = createSizeOptimizer(exchange, config, {
+    onAdjustment: (adjustment) => {
+      console.log(`📊 [${exchange}] ${modeLabel}Size auto-adjusted: ${adjustment.reason}`);
+    },
+  });
+
   let isRunning = false;
   let wsFeed = null;
   let metricsInterval = null;
@@ -223,6 +231,38 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
+   * Handle Size optimizer adjustment
+   * Updates in-memory config and persists to config.json
+   * @param {Object} adjustment - Adjustment from optimizer
+   */
+  const handleSizeAdjustment = (adjustment) => {
+    const updates = {
+      baseSizeUsdc: adjustment.baseSizeUsdc,
+      maxUsdcDeployed: adjustment.maxUsdcDeployed,
+    };
+
+    // Optionally update ladder steps
+    if (adjustment.maxLadderSteps !== undefined) {
+      updates.maxLadderSteps = adjustment.maxLadderSteps;
+      config.maxLadderSteps = adjustment.maxLadderSteps;
+    }
+
+    // Update in-memory config
+    config.baseSizeUsdc = adjustment.baseSizeUsdc;
+    config.maxUsdcDeployed = adjustment.maxUsdcDeployed;
+
+    // Persist to config.json
+    updateRegimeConfig(exchange, updates);
+
+    tradeEvents.emitTradeEvent('size_adjusted', exchange, `Size adjusted: base=$${adjustment.baseSizeUsdc}`, {
+      baseSizeUsdc: adjustment.baseSizeUsdc,
+      maxUsdcDeployed: adjustment.maxUsdcDeployed,
+      maxLadderSteps: adjustment.maxLadderSteps,
+      reason: adjustment.reason,
+    });
+  };
+
+  /**
    * Record cycle completion for TP optimizer
    * @param {Object} cycleData - Data about the completed cycle
    */
@@ -242,6 +282,26 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
+   * Record cycle completion for Size optimizer
+   * @param {Object} cycleData - Data about the completed cycle
+   * @param {number} availableBalance - Current available USDC balance
+   */
+  const recordCycleForSizeOptimizer = (cycleData, availableBalance) => {
+    if (!config.sizeAutoManaged) return;
+
+    const adjustment = sizeOptimizer.recordCycle({
+      stepsUsed: cycleData.stepsUsed || 0,
+      capitalDeployed: cycleData.capitalDeployed || 0,
+      completedAt: Date.now(),
+      availableBalance: availableBalance || 0,
+    });
+
+    if (adjustment) {
+      handleSizeAdjustment(adjustment);
+    }
+  };
+
+  /**
    * Save dry-run state to disk
    */
   const saveDryRunState = () => {
@@ -252,6 +312,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       executor: orderExecutor.exportState(),
       position: { ...positionState },
       tpOptimizer: tpOptimizer.exportState(),
+      sizeOptimizer: sizeOptimizer.exportState(),
     });
   };
 
@@ -278,6 +339,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       tpOptimizer.importState(savedState.tpOptimizer);
     }
 
+    // Restore Size optimizer state
+    if (savedState.sizeOptimizer) {
+      sizeOptimizer.importState(savedState.sizeOptimizer);
+    }
+
     // Log APY tracking state restoration
     const apyStatus = positionState.engineStartTime
       ? `APY from ${new Date(positionState.engineStartTime).toISOString()}`
@@ -294,8 +360,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (isDryRun) return;
 
     const regimeState = regimeDetector.getState();
-    const optimizerState = tpOptimizer.exportState();
-    saveRegimeState(positionState, regimeState, exchange, optimizerState);
+    const tpOptimizerState = tpOptimizer.exportState();
+    const sizeOptimizerState = sizeOptimizer.exportState();
+    saveRegimeState(positionState, regimeState, exchange, tpOptimizerState, sizeOptimizerState);
   };
 
   /**
@@ -308,9 +375,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const savedState = loadRegimeState(exchange);
     if (!savedState.position || savedState.position.totalBTC === 0) {
       console.log(`ℹ️ [${exchange}] No saved live state or empty position`);
-      // Still restore optimizer state even if no position
+      // Still restore optimizer states even if no position
       if (savedState.tpOptimizer) {
         tpOptimizer.importState(savedState.tpOptimizer);
+      }
+      if (savedState.sizeOptimizer) {
+        sizeOptimizer.importState(savedState.sizeOptimizer);
       }
       return false;
     }
@@ -321,6 +391,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
     if (savedState.tpOptimizer) {
       tpOptimizer.importState(savedState.tpOptimizer);
+    }
+    if (savedState.sizeOptimizer) {
+      sizeOptimizer.importState(savedState.sizeOptimizer);
     }
 
     console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, ${positionState.totalBTC.toFixed(6)} BTC`);
@@ -1026,6 +1099,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         actualTpPct,
       });
 
+      // Record cycle for Size optimizer
+      // Get current balance for size optimization (proceeds go back to available balance)
+      const postCycleBalance = config.maxUsdcDeployed; // After capital growth adjustment
+      recordCycleForSizeOptimizer({
+        stepsUsed: positionState.ladderStep,
+        capitalDeployed: soldCostBasis, // Cost basis of what we sold
+      }, postCycleBalance);
+
       // Reset for next cycle FIRST, then persist
       resetCycle();
 
@@ -1467,6 +1548,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         actualTpPct,
       });
 
+      // Record cycle for Size optimizer
+      const postCycleBalance = config.maxUsdcDeployed;
+      recordCycleForSizeOptimizer({
+        stepsUsed: positionState.ladderStep,
+        capitalDeployed: positionState.totalCostBasis,
+      }, postCycleBalance);
+
       // Reset for next cycle
       resetCycle();
 
@@ -1511,6 +1599,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     apy: calculateApyMetrics(),
     dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,
     tpOptimizer: tpOptimizer.getStatus(),
+    sizeOptimizer: sizeOptimizer.getStatus(),
   });
 
   /**
