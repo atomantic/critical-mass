@@ -99,15 +99,21 @@ const createFillLedger = (exchange) => {
   /**
    * Ingest a fill (idempotent)
    * @param {Object} fillData - Raw fill data from exchange
+   * @param {number} [orderPlacedAt] - Optional timestamp when the order was placed (for fill time tracking)
    * @returns {{ingested: boolean, fill: Fill|null}} Result
    */
-  const ingestFill = (fillData) => {
+  const ingestFill = (fillData, orderPlacedAt = null) => {
     const tradeId = fillData.tradeId || fillData.trade_id;
 
     // Idempotency check
     if (fills.has(tradeId)) {
       return { ingested: false, fill: null };
     }
+
+    const fillTimestamp = fillData.tradeTime ? new Date(fillData.tradeTime).getTime() : Date.now();
+
+    // Calculate fill time if we have order placement time
+    const fillTimeMs = orderPlacedAt && orderPlacedAt > 0 ? fillTimestamp - orderPlacedAt : null;
 
     const fill = {
       tradeId,
@@ -121,15 +127,19 @@ const createFillLedger = (exchange) => {
       rebate: parseFloat(fillData.rebate || 0),
       netFee: parseFloat(fillData.totalCommission || fillData.commission || 0) - parseFloat(fillData.rebate || 0),
       liquidityIndicator: fillData.liquidityIndicator || fillData.liquidity_indicator || 'TAKER',
-      timestamp: fillData.tradeTime ? new Date(fillData.tradeTime).getTime() : Date.now(),
+      timestamp: fillTimestamp,
       ingestedAt: Date.now(),
       cycleId: currentCycleId,
+      // Fill time tracking
+      orderPlacedAt: orderPlacedAt || null,
+      fillTimeMs: fillTimeMs,
     };
 
     fills.set(tradeId, fill);
     persist();
 
-    console.log(`📝 [${exchange}] Fill ingested: ${fill.side} ${fill.size} BTC @ $${fill.price} (fee: $${fill.netFee.toFixed(4)})`);
+    const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
+    console.log(`📝 [${exchange}] Fill ingested: ${fill.side} ${fill.size} BTC @ $${fill.price} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);
 
     return { ingested: true, fill };
   };
@@ -280,6 +290,56 @@ const createFillLedger = (exchange) => {
       netBTC: roundBTC(totalBuyBTC - totalSellBTC),
       totalFees: roundUSDC(totalFees),
       currentCycleId,
+    };
+  };
+
+  /**
+   * Get fill time statistics for entry orders
+   * @param {number} [sinceDays=7] - Only include fills from the last N days
+   * @returns {{count: number, avgMs: number, minMs: number, maxMs: number, p50Ms: number, p90Ms: number, staleCount: number, staleRate: number}}
+   */
+  const getFillTimeStats = (sinceDays = 7) => {
+    const cutoff = Date.now() - (sinceDays * 24 * 60 * 60 * 1000);
+
+    // Get buy fills with fill time data
+    const fillsWithTime = Array.from(fills.values())
+      .filter(f => f.side === 'buy' && f.fillTimeMs !== null && f.fillTimeMs !== undefined && f.timestamp >= cutoff)
+      .map(f => f.fillTimeMs)
+      .sort((a, b) => a - b);
+
+    if (fillsWithTime.length === 0) {
+      return {
+        count: 0,
+        avgMs: 0,
+        minMs: 0,
+        maxMs: 0,
+        p50Ms: 0,
+        p90Ms: 0,
+        staleCount: 0,
+        staleRate: 0,
+      };
+    }
+
+    const sum = fillsWithTime.reduce((acc, t) => acc + t, 0);
+    const avg = sum / fillsWithTime.length;
+
+    // Calculate percentiles
+    const p50Index = Math.floor(fillsWithTime.length * 0.5);
+    const p90Index = Math.floor(fillsWithTime.length * 0.9);
+
+    // Count "stale" fills (took longer than 30s default)
+    const staleThreshold = 30000; // 30 seconds
+    const staleCount = fillsWithTime.filter(t => t > staleThreshold).length;
+
+    return {
+      count: fillsWithTime.length,
+      avgMs: Math.round(avg),
+      minMs: fillsWithTime[0],
+      maxMs: fillsWithTime[fillsWithTime.length - 1],
+      p50Ms: fillsWithTime[p50Index],
+      p90Ms: fillsWithTime[Math.min(p90Index, fillsWithTime.length - 1)],
+      staleCount,
+      staleRate: roundUSDC((staleCount / fillsWithTime.length) * 100),
     };
   };
 
@@ -534,6 +594,7 @@ const createFillLedger = (exchange) => {
     getFillCount,
     getAllFills,
     getStats,
+    getFillTimeStats,
     getFillsSince,
     aggregateFills,
     recalculateCycles,

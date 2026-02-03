@@ -158,6 +158,23 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - `sizeEvaluationCycles: 5` - Evaluate every N cycles
   - `sizeEvaluationMaxHours: 24` - Or at least once per day
 
+**Fill Time Tracking (v2.3+):**
+- Records time from order placement to fill for all entry orders
+- Tracks `fillTimeMs` in fill ledger for analytics
+- Statistics calculated: avg, min, max, p50, p90, stale rate
+- Stale rate = % of orders that took >30s to fill
+- Dashboard panel shows fill time stats for last 7 days
+- Data useful for optimizing `orderStaleMs` and entry offsets
+
+**Regime-Based Stale Timeout (v2.3+):**
+- Automatically adjusts order stale timeout based on current regime
+- Multipliers applied to base `orderStaleMs`:
+  - HARVEST: 1.0x (default timeout)
+  - CAUTION: 0.7x (30% faster - uncertain markets need quicker repricing)
+  - TREND: 0.5x (50% faster - trending markets move quickly)
+- Effective timeout shown in dashboard with regime-adjustment indicator
+- Prevents stale orders lingering at suboptimal prices during volatility
+
 **Safety Features:**
 - Automatic SAFE mode on: WebSocket disconnect, stale data, REST errors
 - Flash move detection pauses entries and disables scaling
