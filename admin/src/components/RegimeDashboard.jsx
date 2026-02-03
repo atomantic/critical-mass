@@ -598,23 +598,18 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <span>Running: {apy.elapsedDays?.toFixed(1)}d</span>
                     <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="grid grid-cols-4 gap-2">
                     <div className="bg-gray-900/50 rounded p-1.5">
                       <div className="text-gray-500 text-[10px]">Return</div>
                       <div className={`font-mono ${(apy.totalLiquidValue || 0) >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
                         ${(apy.totalLiquidValue || 0).toFixed(2)}
                       </div>
                     </div>
-                    <div className="bg-gray-900/50 rounded p-1.5">
-                      <div className="text-gray-500 text-[10px]">Daily</div>
-                      <div className={`font-mono ${(apy.dailyReturnPercent || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {(apy.dailyReturnPercent || 0).toFixed(2)}%
-                      </div>
-                    </div>
-                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5">
-                      <div className="text-green-400/70 text-[10px]">Annual</div>
-                      <div className={`font-mono ${(apy.estimatedAnnualReturn || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {(apy.estimatedAnnualReturn || 0) > 9999 ? '>9999' : (apy.estimatedAnnualReturn || 0).toFixed(0)}%
+                    <div className="col-span-2 bg-green-900/20 border border-green-700/30 rounded p-1.5">
+                      <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
+                      <div className="flex gap-3 font-mono text-green-400">
+                        <span>${(apy.estimatedDailyUsdc || 0).toFixed(2)}</span>
+                        <span className="text-orange-400">{(apy.estimatedDailyBtc || 0).toFixed(6)} BTC</span>
                       </div>
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5">
