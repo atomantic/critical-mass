@@ -398,34 +398,106 @@ const createFillLedger = (exchange) => {
       totalRealizedBtcPnL += holdbackBtc;
     }
 
-    // Assign orphan fills to the most recent active cycle, or create a new one
+    // Assign orphan fills to cycles based on buy-sell pattern
+    // A sell ends a cycle, the next buy starts a new cycle
     let orphansFixed = 0;
     if (orphanFills.length > 0) {
-      // If there's an active (incomplete) cycle, assign orphans there
-      // Otherwise, they belong to a new current cycle
-      let targetCycleId = activeCycles.length > 0
-        ? activeCycles[activeCycles.length - 1].cycleId
-        : null;
+      // Sort orphans chronologically
+      orphanFills.sort((a, b) => a.timestamp - b.timestamp);
 
-      // If no active cycle exists, these orphans ARE the current cycle - assign them an ID
-      if (!targetCycleId && orphanFills.length > 0) {
-        targetCycleId = `cycle-${orphanFills[0].timestamp}-recovered`;
-      }
+      // Split orphans into cycles based on buy-sell pattern
+      const orphanCycles = [];
+      let currentOrphanCycle = [];
+      let lastWasSell = false;
 
       for (const fill of orphanFills) {
-        fill.cycleId = targetCycleId;
-        fills.set(fill.tradeId, fill);
-        orphansFixed++;
+        // If last fill was a sell and this is a buy, start new cycle
+        if (lastWasSell && fill.side === 'buy') {
+          if (currentOrphanCycle.length > 0) {
+            orphanCycles.push(currentOrphanCycle);
+          }
+          currentOrphanCycle = [];
+        }
+
+        currentOrphanCycle.push(fill);
+        lastWasSell = (fill.side === 'sell');
+      }
+
+      // Don't forget the last cycle
+      if (currentOrphanCycle.length > 0) {
+        orphanCycles.push(currentOrphanCycle);
+      }
+
+      console.log(`🔧 [${exchange}] Split ${orphanFills.length} orphan fills into ${orphanCycles.length} cycles`);
+
+      // Assign cycle IDs and calculate P&L for completed orphan cycles
+      for (let i = 0; i < orphanCycles.length; i++) {
+        const cycleFills = orphanCycles[i];
+        const hasSell = cycleFills.some(f => f.side === 'sell');
+        const cycleId = `cycle-${cycleFills[0].timestamp}-recovered-${i + 1}`;
+
+        // Assign cycle ID to all fills in this cycle
+        for (const fill of cycleFills) {
+          fill.cycleId = cycleId;
+          fills.set(fill.tradeId, fill);
+          orphansFixed++;
+        }
+
+        // If this is a completed cycle (has sell), calculate its P&L
+        if (hasSell) {
+          let totalBTC = 0;
+          let totalCost = 0;
+          let sellProceeds = 0;
+          let btcSold = 0;
+
+          for (const fill of cycleFills) {
+            if (fill.side === 'buy') {
+              totalBTC += fill.size;
+              totalCost += fill.quoteAmount + fill.netFee;
+            } else if (fill.side === 'sell') {
+              sellProceeds += fill.quoteAmount - fill.netFee;
+              btcSold += fill.size;
+            }
+          }
+
+          const avgCost = totalBTC > 0 ? totalCost / totalBTC : 0;
+          const costBasisSold = avgCost * btcSold;
+          const pnl = sellProceeds - costBasisSold;
+          const holdbackBtc = roundBTC(totalBTC - btcSold);
+
+          cycleDetails.push({
+            cycleId,
+            buys: cycleFills.filter(f => f.side === 'buy').length,
+            sells: cycleFills.filter(f => f.side === 'sell').length,
+            totalBtcBought: roundBTC(totalBTC),
+            btcSold: roundBTC(btcSold),
+            holdbackBtc,
+            avgCost: roundUSDC(avgCost),
+            sellPrice: btcSold > 0 ? roundUSDC(sellProceeds / btcSold) : 0,
+            pnl: roundUSDC(pnl),
+          });
+
+          totalRealizedPnL += pnl;
+          totalRealizedBtcPnL += holdbackBtc;
+          completedCycles.push({ cycleId, fills: cycleFills });
+        } else {
+          // This is the current active cycle
+          currentCycleId = cycleId;
+        }
       }
 
       if (orphansFixed > 0) {
-        currentCycleId = targetCycleId;
-        console.log(`🔧 [${exchange}] Assigned ${orphansFixed} orphan fills to cycle ${targetCycleId}`);
+        console.log(`🔧 [${exchange}] Assigned ${orphansFixed} orphan fills, found ${orphanCycles.filter(c => c.some(f => f.side === 'sell')).length} completed cycles`);
       }
     }
 
+    // Persist the cycle ID assignments
+    if (orphansFixed > 0) {
+      persist();
+    }
+
     return {
-      cyclesCompleted: completedCycles.length,
+      cyclesCompleted: cycleDetails.length,
       realizedPnL: roundUSDC(totalRealizedPnL),
       realizedBtcPnL: roundBTC(totalRealizedBtcPnL),
       cycleDetails,
