@@ -254,16 +254,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     if (res.ok) await fetchStatus()
   }
 
-  // Force regime
-  const handleForceRegime = async (regime) => {
-    const res = await fetch(`/api/${exchange}/regime/force-regime`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ regime, reason: 'Manual override from UI' }),
-    })
-    if (res.ok) await fetchStatus()
-  }
-
   // Preview recalculate
   const handleRecalculatePreview = async () => {
     setRecalculating(true)
@@ -331,19 +321,16 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       {isRunning ? (
         <>
           {/* Live Status Bar */}
-          <div className="bg-gray-800 rounded-lg p-3">
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="bg-gray-800 rounded-lg p-2 sm:p-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
               {/* Live Price */}
               <div className="col-span-1">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs text-gray-500">BTC Price</span>
-                  <DataFreshness lastUpdate={market.lastUpdate} />
-                </div>
+                <span className="text-[10px] text-gray-500">BTC Price</span>
                 <LivePriceTicker
                   price={market.lastPrice}
                   prevPrice={prevPriceRef.current}
                 />
-                <div className="text-xs text-gray-500 mt-1">
+                <div className="text-[10px] text-gray-500">
                   Spread: ${market.spread?.toFixed(2) || '-'} ({market.spread && market.lastPrice ? ((market.spread / market.lastPrice) * 10000).toFixed(1) : '-'} bps)
                 </div>
               </div>
@@ -389,15 +376,26 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div className="flex items-center gap-1">
                       <span className={`w-1.5 h-1.5 rounded-full ${regime.mode === 'TREND' ? 'bg-red-400' : 'bg-green-400'}`} />
                       <span className="text-xs text-gray-400">
-                        {regime.mode === 'TREND' ? 'Entries blocked' : 'Entries allowed'}
+                        {regime.mode === 'TREND' ? 'Blocked' : 'Allowed'}
                       </span>
                     </div>
-                    {status?.orders && (
-                      <div className="text-[10px] text-gray-500">
-                        Open: {status.orders.entries || 0} entry, {status.orders.takeProfits || 0} TP
-                      </div>
-                    )}
                   </div>
+                </div>
+              </div>
+
+              {/* Compact Current Regime */}
+              <div className={`col-span-1 ${regimeStyle.bg} border ${regimeStyle.border} rounded p-1.5`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-gray-400">Regime</span>
+                  <span className={`${healthStyle.bg} ${healthStyle.text} px-1 py-0.5 rounded text-[10px]`}>
+                    {health.mode || 'ACTIVE'}
+                  </span>
+                </div>
+                <div className={`text-xl font-bold ${regimeStyle.text}`}>
+                  {regime.mode || 'HARVEST'}
+                </div>
+                <div className="text-[10px] text-gray-500">
+                  Since {regime.since ? new Date(regime.since).toLocaleTimeString() : '-'}
                 </div>
               </div>
 
@@ -405,86 +403,95 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-6">
-          {/* Left Column: Regime, Volatility & Risk */}
+          {/* Left Column: Volatility, Risk & Timeline */}
           <div className="space-y-4">
-            {/* Regime Status */}
-            <div className={`${regimeStyle.bg} border ${regimeStyle.border} rounded-lg p-4`}>
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-medium text-gray-400">Current Regime</h3>
-                <span className={`${healthStyle.bg} ${healthStyle.text} px-2 py-0.5 rounded text-xs`}>
-                  {healthStyle.icon} {health.mode || 'ACTIVE'}
-                </span>
-              </div>
-              <div className={`text-3xl font-bold ${regimeStyle.text} mb-2`}>
-                {regime.mode || 'HARVEST'}
-              </div>
-              <div className="text-xs text-gray-400">
-                Since {regime.since ? new Date(regime.since).toLocaleTimeString() : '-'}
-              </div>
-              <div className="flex gap-1 mt-3">
-                {['HARVEST', 'CAUTION', 'TREND'].map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => handleForceRegime(r)}
-                    disabled={regime.mode === r}
-                    className={`px-2 py-1 text-xs rounded transition-colors ${
-                      regime.mode === r
-                        ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                        : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
-                    }`}
-                  >
-                    {r}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Volatility Metrics */}
-            <div className="bg-gray-800 rounded-lg p-4">
-              <h3 className="text-sm font-medium text-gray-400 mb-3">Volatility Metrics</h3>
-              <div className="space-y-2">
+            {/* Volatility Metrics - Compact */}
+            <div className="bg-gray-800 rounded-lg p-3">
+              <h3 className="text-xs font-medium text-gray-400 mb-2">Volatility</h3>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-gray-400">ATR (1m)</span>
+                  <span className="text-gray-500">ATR 1m</span>
                   <span className="text-white font-mono">${market.atr1m?.toFixed(2) || '-'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">ATR (5m)</span>
+                  <span className="text-gray-500">ATR 5m</span>
                   <span className="text-white font-mono">${market.atr5m?.toFixed(2) || '-'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">VWAP</span>
+                  <span className="text-gray-500">VWAP</span>
                   <span className="text-white font-mono">${market.vwap?.toFixed(2) || '-'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">VWAP Distance</span>
-                  <span className={`font-mono ${
-                    Math.abs(market.vwapDistance || 0) > 1 ? 'text-yellow-400' : 'text-white'
-                  }`}>
+                  <span className="text-gray-500">VWAP Dist</span>
+                  <span className={`font-mono ${Math.abs(market.vwapDistance || 0) > 1 ? 'text-yellow-400' : 'text-white'}`}>
                     {market.vwapDistance?.toFixed(2) || '-'} ATR
                   </span>
                 </div>
-                <div className="border-t border-gray-700 my-2" />
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Realized Vol</span>
+                  <span className="text-gray-500">RVol</span>
                   <span className="text-white font-mono">{market.realizedVol?.toFixed(2) || '-'}%</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Vol Baseline</span>
-                  <span className="text-white font-mono">{market.volBaseline?.toFixed(2) || '-'}%</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Vol Expansion</span>
-                  <span className={`font-mono ${
-                    (market.realizedVol / market.volBaseline) > 1.5 ? 'text-yellow-400' : 'text-white'
-                  }`}>
+                  <span className="text-gray-500">Expansion</span>
+                  <span className={`font-mono ${(market.realizedVol / market.volBaseline) > 1.5 ? 'text-yellow-400' : 'text-white'}`}>
                     {market.volBaseline ? (market.realizedVol / market.volBaseline).toFixed(2) : '-'}x
                   </span>
                 </div>
               </div>
             </div>
+
+            {/* Risk Limits */}
+            <div className="bg-gray-800 rounded-lg p-3">
+              <h3 className="text-xs font-medium text-gray-400 mb-2">Risk Limits</h3>
+              <div className="space-y-2">
+                <div>
+                  <div className="flex justify-between text-[10px] mb-1">
+                    <span className="text-gray-500">BTC Exposure</span>
+                    <span className="text-white">{position.totalBTC?.toFixed(4) || 0} / {config?.maxBtcExposure || 0.5}</span>
+                  </div>
+                  <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, ((position.totalBTC || 0) / (config?.maxBtcExposure || 0.5)) * 100)}%` }} />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-[10px] mb-1">
+                    <span className="text-gray-500">USDC Deployed</span>
+                    <span className="text-white">${position.totalCostBasis?.toFixed(0) || 0} / ${config?.maxUsdcDeployed || 10000}</span>
+                  </div>
+                  <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, ((position.totalCostBasis || 0) / (config?.maxUsdcDeployed || 10000)) * 100)}%` }} />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-[10px] mb-1">
+                    <span className="text-gray-500">Max Drawdown</span>
+                    <span className={position.maxDrawdownSeen > config?.maxDrawdownPercent * 0.8 ? 'text-yellow-400' : 'text-white'}>
+                      {position.maxDrawdownSeen?.toFixed(1) || 0}% / {config?.maxDrawdownPercent || 20}%
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full bg-red-500 transition-all" style={{ width: `${Math.min(100, ((position.maxDrawdownSeen || 0) / (config?.maxDrawdownPercent || 20)) * 100)}%` }} />
+                  </div>
+                </div>
+                {risk.isDrawdownPaused && (
+                  <div className="mt-2 p-2 bg-red-900/30 border border-red-500/50 rounded text-xs">
+                    <div className="text-red-400 font-medium flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
+                      Paused (Drawdown)
+                    </div>
+                    <button onClick={handleResumeDrawdown} className="mt-1 px-2 py-1 bg-green-600 hover:bg-green-700 text-white text-[10px] rounded">
+                      Resume
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Regime Timeline */}
+            <RegimeTimeline data={regimeHistory} currentRegime={regime} height={60} />
           </div>
 
-          {/* Middle Column: Position, Risk & Timeline */}
+          {/* Middle Column: Position */}
           <div className="space-y-4">
             {/* Position */}
             <div className="bg-gray-800 rounded-lg p-4">
@@ -677,89 +684,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               )}
             </div>
-
-            {/* Risk Limits */}
-            <div className="bg-gray-800 rounded-lg p-4">
-              <h3 className="text-sm font-medium text-gray-400 mb-3">Risk Limits</h3>
-              <div className="space-y-3">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-gray-400">BTC Exposure</span>
-                    <span className="text-white">
-                      {position.totalBTC?.toFixed(4) || 0} / {config?.maxBtcExposure || 0.5}
-                    </span>
-                  </div>
-                  <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-orange-500 transition-all"
-                      style={{ width: `${Math.min(100, ((position.totalBTC || 0) / (config?.maxBtcExposure || 0.5)) * 100)}%` }}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-gray-400">USDC Deployed</span>
-                    <span className="text-white">
-                      ${position.totalCostBasis?.toFixed(0) || 0} / ${config?.maxUsdcDeployed || 10000}
-                    </span>
-                  </div>
-                  <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-blue-500 transition-all"
-                      style={{ width: `${Math.min(100, ((position.totalCostBasis || 0) / (config?.maxUsdcDeployed || 10000)) * 100)}%` }}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-gray-400">Max Drawdown</span>
-                    <span className={position.maxDrawdownSeen > config?.maxDrawdownPercent * 0.8 ? 'text-yellow-400' : 'text-white'}>
-                      {position.maxDrawdownSeen?.toFixed(1) || 0}% / {config?.maxDrawdownPercent || 20}%
-                    </span>
-                  </div>
-                  <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-red-500 transition-all"
-                      style={{ width: `${Math.min(100, ((position.maxDrawdownSeen || 0) / (config?.maxDrawdownPercent || 20)) * 100)}%` }}
-                    />
-                  </div>
-                </div>
-                {/* Drawdown Pause Warning */}
-                {risk.isDrawdownPaused && (
-                  <div className="mt-3 p-3 bg-red-900/30 border border-red-500/50 rounded-lg">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-red-400 font-medium text-sm flex items-center gap-2">
-                          <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                          Entries Paused (Drawdown Limit)
-                        </div>
-                        <div className="text-xs text-gray-400 mt-1">
-                          Paused for {risk.drawdownPausedHours?.toFixed(1) || 0}h
-                          {risk.drawdownResetHours > 0 && (
-                            <span className="ml-2">
-                              (auto-reset in {Math.max(0, risk.drawdownResetHours - (risk.drawdownPausedHours || 0)).toFixed(1)}h)
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        onClick={handleResumeDrawdown}
-                        className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded transition-colors"
-                      >
-                        Resume Trading
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Regime Timeline */}
-            <RegimeTimeline
-              data={regimeHistory}
-              currentRegime={regime}
-              height={80}
-            />
           </div>
 
           {/* Right Column: Charts */}
