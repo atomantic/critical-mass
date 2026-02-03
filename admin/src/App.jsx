@@ -271,30 +271,45 @@ function AppContent() {
       <div className="min-h-screen">
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-7xl 2xl:max-w-[1600px] 3xl:max-w-[1800px] mx-auto px-4 2xl:px-6 py-4">
-            <div className="flex items-center justify-between">
-              <Link to={buildPath('')} className="text-2xl font-bold text-white hover:text-gray-200">
-                DCA Trading Bot
-              </Link>
-              <div className="flex items-center gap-4">
-                {/* Regime engine controls in header */}
+          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-3 sm:py-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              {/* Top row: Title + Exchange selector */}
+              <div className="flex items-center justify-between">
+                <Link to={buildPath('')} className="text-xl sm:text-2xl font-bold text-white hover:text-gray-200">
+                  DCA Bot
+                </Link>
+                {/* Exchange selector - visible on mobile in top row */}
+                <div className="sm:hidden">
+                  <ExchangeSelector
+                    currentExchange={currentExchange}
+                    currentStrategy={currentStrategy}
+                    exchanges={exchanges}
+                    onChange={handleExchangeStrategyChange}
+                    onRefresh={fetchExchanges}
+                  />
+                </div>
+              </div>
+
+              {/* Bottom row on mobile / Right side on desktop */}
+              <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-4">
+                {/* Regime engine controls */}
                 {currentStrategy === 'regime' && (
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                     {regimeDryRun && (
-                      <span className="px-2 py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-xs font-medium rounded">
+                      <span className="px-1.5 sm:px-2 py-0.5 sm:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] sm:text-xs font-medium rounded">
                         DRY-RUN
                       </span>
                     )}
-                    <div className="flex items-center gap-1.5 text-sm">
-                      <span className={`w-2 h-2 rounded-full ${regimeRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
+                    <div className="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm">
+                      <span className={`w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full ${regimeRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
                       <span className={regimeRunning ? 'text-green-400' : 'text-gray-400'}>
                         {regimeRunning ? 'Running' : 'Stopped'}
                       </span>
                     </div>
-                    <div className="flex items-center gap-1.5 text-sm">
-                      <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-blue-500' : 'bg-red-500'}`} />
+                    <div className="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm">
+                      <span className={`w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full ${wsConnected ? 'bg-blue-500' : 'bg-red-500'}`} />
                       <span className={wsConnected ? 'text-blue-400' : 'text-red-400'}>
-                        {wsConnected ? 'Connected' : 'Disconnected'}
+                        {wsConnected ? 'Live' : 'Offline'}
                       </span>
                     </div>
                     {regimeRunning ? (
@@ -303,58 +318,61 @@ function AppContent() {
                           <button
                             onClick={handleResetDryRun}
                             disabled={resetting}
-                            className="px-2 py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-xs transition-colors"
+                            className="px-1.5 sm:px-2 py-0.5 sm:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-[10px] sm:text-xs transition-colors"
                             title="Reset dry-run state"
                           >
-                            {resetting ? 'Resetting...' : 'Reset'}
+                            {resetting ? '...' : 'Reset'}
                           </button>
                         )}
                         <button
                           onClick={handleStopRegime}
                           disabled={stopping}
-                          className="px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-sm font-medium transition-colors"
+                          className="px-2 sm:px-3 py-1 sm:py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-xs sm:text-sm font-medium transition-colors"
                         >
-                          {stopping ? 'Stopping...' : 'Stop'}
+                          {stopping ? '...' : 'Stop'}
                         </button>
                       </>
                     ) : (
                       <button
                         onClick={handleStartRegime}
                         disabled={starting}
-                        className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-sm font-medium transition-colors"
+                        className="px-2 sm:px-3 py-1 sm:py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-xs sm:text-sm font-medium transition-colors"
                       >
-                        {starting ? 'Starting...' : 'Start'}
+                        {starting ? '...' : 'Start'}
                       </button>
                     )}
                   </div>
                 )}
                 <Link
                   to={`/${currentExchange}/keys`}
-                  className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
                 >
                   API Keys
                 </Link>
-                <ExchangeSelector
-                  currentExchange={currentExchange}
-                  currentStrategy={currentStrategy}
-                  exchanges={exchanges}
-                  onChange={handleExchangeStrategyChange}
-                  onRefresh={fetchExchanges}
-                />
+                {/* Exchange selector - hidden on mobile (shown in top row) */}
+                <div className="hidden sm:block">
+                  <ExchangeSelector
+                    currentExchange={currentExchange}
+                    currentStrategy={currentStrategy}
+                    exchanges={exchanges}
+                    onChange={handleExchangeStrategyChange}
+                    onRefresh={fetchExchanges}
+                  />
+                </div>
               </div>
             </div>
           </div>
         </header>
 
         {/* Navigation */}
-        <nav className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-7xl 2xl:max-w-[1600px] 3xl:max-w-[1800px] mx-auto px-4 2xl:px-6">
-            <div className="flex gap-1">
+        <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
+          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
+            <div className="flex gap-1 min-w-max">
               {tabs.map(tab => (
                 <Link
                   key={tab.path}
                   to={buildPath(tab.path)}
-                  className={`px-4 py-3 text-sm font-medium transition-colors ${
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
                     isActiveTab(tab.path)
                       ? 'text-white border-b-2 border-blue-500'
                       : 'text-gray-400 hover:text-white'
@@ -368,7 +386,7 @@ function AppContent() {
         </nav>
 
         {/* Main Content */}
-        <main className="max-w-7xl 2xl:max-w-[1600px] 3xl:max-w-[1800px] mx-auto px-4 2xl:px-6 py-6">
+        <main className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6">
           {error && (
             <div className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200">
               Error: {error}

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRegimeEvents, useTradeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
-import MiniPriceSparkline from './charts/MiniPriceSparkline'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
@@ -61,12 +60,12 @@ function LivePriceTicker({ price, prevPrice }) {
   }
 
   return (
-    <div className="flex items-center gap-2">
-      <span className={`text-2xl font-bold font-mono transition-colors duration-300 ${directionColors[direction]}`}>
+    <div className="flex items-center gap-1">
+      <span className={`text-lg font-bold font-mono transition-colors duration-300 ${directionColors[direction]}`}>
         ${price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '-'}
       </span>
       {direction !== 'none' && (
-        <span className={`text-lg ${directionColors[direction]} animate-pulse`}>
+        <span className={`text-sm ${directionColors[direction]} animate-pulse`}>
           {direction === 'up' ? '▲' : '▼'}
         </span>
       )}
@@ -88,14 +87,14 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
     const progress = total ? Math.min(100, ((total - remaining) / total) * 100) : 0
 
     return (
-      <div className="bg-gray-900 rounded p-2">
-        <div className="text-xs text-gray-500 mb-1">{label}</div>
-        <div className="flex items-center gap-2">
-          <span className="text-lg font-mono text-cyan-400">{formatCountdown(remaining)}</span>
-          {remaining === 0 && <span className="text-xs text-yellow-400 animate-pulse">Ready</span>}
+      <div className="bg-gray-900 rounded p-1.5">
+        <div className="text-[10px] text-gray-500 mb-0.5">{label}</div>
+        <div className="flex items-center gap-1">
+          <span className="text-sm font-mono text-cyan-400">{formatCountdown(remaining)}</span>
+          {remaining === 0 && <span className="text-[10px] text-yellow-400 animate-pulse">Ready</span>}
         </div>
         {total && (
-          <div className="h-1 bg-gray-700 rounded-full mt-1 overflow-hidden">
+          <div className="h-0.5 bg-gray-700 rounded-full mt-1 overflow-hidden">
             <div
               className="h-full bg-cyan-500 transition-all duration-1000"
               style={{ width: `${progress}%` }}
@@ -109,9 +108,9 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
   if (variant === 'elapsed' && elapsed !== undefined) {
     const elapsedMs = now - elapsed
     return (
-      <div className="bg-gray-900 rounded p-2">
-        <div className="text-xs text-gray-500 mb-1">{label}</div>
-        <span className="text-lg font-mono text-gray-300">{formatDuration(elapsedMs)}</span>
+      <div className="bg-gray-900 rounded p-1.5">
+        <div className="text-[10px] text-gray-500 mb-0.5">{label}</div>
+        <span className="text-sm font-mono text-gray-300">{formatDuration(elapsedMs)}</span>
       </div>
     )
   }
@@ -129,17 +128,17 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
   const distanceToTrigger = Math.max(0, triggerDistance - priceMove)
 
   return (
-    <div className="bg-gray-900 rounded p-2">
-      <div className="text-xs text-gray-500 mb-1">ATR Trigger Distance</div>
+    <div className="bg-gray-900 rounded p-1.5">
+      <div className="text-[10px] text-gray-500 mb-0.5">ATR Trigger Distance</div>
       <div className="flex items-center justify-between">
-        <span className="text-sm font-mono text-gray-300">
+        <span className="text-xs font-mono text-gray-300">
           ${distanceToTrigger.toFixed(2)} to go
         </span>
-        <span className="text-xs text-gray-500">
+        <span className="text-[10px] text-gray-500">
           ({progress.toFixed(0)}%)
         </span>
       </div>
-      <div className="h-1.5 bg-gray-700 rounded-full mt-1 overflow-hidden">
+      <div className="h-1 bg-gray-700 rounded-full mt-0.5 overflow-hidden">
         <div
           className={`h-full transition-all duration-300 ${
             progress >= 100 ? 'bg-green-500 animate-pulse' : progress >= 75 ? 'bg-yellow-500' : 'bg-blue-500'
@@ -147,7 +146,7 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
           style={{ width: `${progress}%` }}
         />
       </div>
-      <div className="flex justify-between text-xs text-gray-600 mt-0.5">
+      <div className="flex justify-between text-[10px] text-gray-600 mt-0.5">
         <span>Anchor: ${anchorPrice?.toFixed(2) || '-'}</span>
         <span>Target: ±${triggerDistance.toFixed(2)}</span>
       </div>
@@ -332,8 +331,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       {isRunning ? (
         <>
           {/* Live Status Bar */}
-          <div className="bg-gray-800 rounded-lg p-4">
-            <div className="grid grid-cols-5 xl:grid-cols-6 gap-4">
+          <div className="bg-gray-800 rounded-lg p-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
               {/* Live Price */}
               <div className="col-span-1">
                 <div className="flex items-center justify-between mb-1">
@@ -380,21 +379,21 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
               {/* Entry Status */}
               <div className="col-span-1">
-                <div className="bg-gray-900 rounded p-2 h-full">
-                  <div className="text-xs text-gray-500 mb-1">Entry Status</div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${health.mode === 'ACTIVE' ? 'bg-green-400' : 'bg-yellow-400'}`} />
-                      <span className="text-sm">{health.mode === 'ACTIVE' ? 'Ready' : health.mode}</span>
+                <div className="bg-gray-900 rounded p-1.5 h-full">
+                  <div className="text-[10px] text-gray-500 mb-0.5">Entry Status</div>
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1">
+                      <span className={`w-1.5 h-1.5 rounded-full ${health.mode === 'ACTIVE' ? 'bg-green-400' : 'bg-yellow-400'}`} />
+                      <span className="text-xs">{health.mode === 'ACTIVE' ? 'Ready' : health.mode}</span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${regime.mode === 'TREND' ? 'bg-red-400' : 'bg-green-400'}`} />
-                      <span className="text-sm text-gray-400">
+                    <div className="flex items-center gap-1">
+                      <span className={`w-1.5 h-1.5 rounded-full ${regime.mode === 'TREND' ? 'bg-red-400' : 'bg-green-400'}`} />
+                      <span className="text-xs text-gray-400">
                         {regime.mode === 'TREND' ? 'Entries blocked' : 'Entries allowed'}
                       </span>
                     </div>
                     {status?.orders && (
-                      <div className="text-xs text-gray-500">
+                      <div className="text-[10px] text-gray-500">
                         Open: {status.orders.entries || 0} entry, {status.orders.takeProfits || 0} TP
                       </div>
                     )}
@@ -402,22 +401,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
 
-              {/* Mini Price Chart (xl+) */}
-              <div className="hidden xl:block col-span-1">
-                <div className="text-xs text-gray-500 mb-1">Price (5m)</div>
-                <MiniPriceSparkline
-                  data={priceHistory}
-                  width={200}
-                  height={60}
-                  currentPrice={market.lastPrice}
-                  atr={market.atr1m}
-                  kFactor={config?.kFactor || 0.6}
-                />
-              </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-6">
           {/* Left Column: Regime, Volatility & Risk */}
           <div className="space-y-4">
             {/* Regime Status */}
@@ -494,6 +481,190 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   </span>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* Middle Column: Position, Risk & Timeline */}
+          <div className="space-y-4">
+            {/* Position */}
+            <div className="bg-gray-800 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-medium text-gray-400">Position</h3>
+                <div className="flex items-center gap-2">
+                  {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
+                  <span className="text-xs text-gray-500">Step {position.ladderStep || 0}/{config?.maxLadderSteps || 10}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                <div>
+                  <div className="text-gray-500">BTC Held</div>
+                  <div className="text-orange-400 font-mono">{position.totalBTC?.toFixed(8) || '0'}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">On Order</div>
+                  <div className="text-yellow-400 font-mono">{(isDryRun && dryRunState?.pnl?.btcOnOrder ? dryRunState.pnl.btcOnOrder : position.btcOnOrder || 0).toFixed(8)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Reserves</div>
+                  <div className="text-cyan-400 font-mono">{(position.realizedBtcPnL || 0).toFixed(8)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Cost Basis</div>
+                  <div className="text-white font-mono">${position.totalCostBasis?.toFixed(2) || '0'}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Avg Cost</div>
+                  <div className="text-white font-mono">${position.avgCostBasis?.toFixed(2) || '0'}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Cycles</div>
+                  <div className="text-white font-mono">{position.cyclesCompleted || 0}</div>
+                </div>
+              </div>
+              <div className="mt-2 pt-2 border-t border-gray-700 grid grid-cols-2 gap-2 text-xs">
+                <div className="bg-gray-900/50 rounded p-2">
+                  <div className="text-gray-500">Unrealized P&L</div>
+                  <div className={`font-mono text-base ${position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    ${position.unrealizedPnL?.toFixed(2) || '0'}
+                  </div>
+                </div>
+                <div className="bg-gray-900/50 rounded p-2">
+                  <div className="text-gray-500">Realized P&L</div>
+                  <div className={`font-mono text-base ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    ${position.realizedPnL?.toFixed(2) || '0'}
+                    {(position.realizedBtcPnL || 0) > 0 && <span className="text-cyan-400 text-xs ml-1">+{position.realizedBtcPnL?.toFixed(8)} BTC</span>}
+                  </div>
+                </div>
+              </div>
+              
+              {/* Recalculate Preview Modal */}
+              {recalcPreview && (
+                <div className="mt-3 p-3 bg-gray-900 rounded border border-yellow-600/50">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-yellow-400">Recalculate Preview</span>
+                    <button
+                      onClick={() => setRecalcPreview(null)}
+                      className="text-gray-400 hover:text-white"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  {recalcPreview.orphansFixed > 0 && (
+                    <div className="text-xs text-blue-400 mb-2">
+                      Will fix {recalcPreview.orphansFixed} fills with missing cycle ID
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-2 text-xs mb-3">
+                    <div className="text-gray-400">Field</div>
+                    <div className="text-gray-400">Before</div>
+                    <div className="text-gray-400">After</div>
+
+                    <div className="text-gray-300">Cycles</div>
+                    <div className="text-gray-500">{recalcPreview.changes?.cyclesCompleted?.before}</div>
+                    <div className={recalcPreview.changes?.cyclesCompleted?.before !== recalcPreview.changes?.cyclesCompleted?.after ? 'text-yellow-400' : 'text-gray-500'}>
+                      {recalcPreview.changes?.cyclesCompleted?.after}
+                    </div>
+
+                    <div className="text-gray-300">P&L</div>
+                    <div className="text-gray-500">${recalcPreview.changes?.realizedPnL?.before?.toFixed(2)}</div>
+                    <div className={recalcPreview.changes?.realizedPnL?.before !== recalcPreview.changes?.realizedPnL?.after ? 'text-yellow-400' : 'text-gray-500'}>
+                      ${recalcPreview.changes?.realizedPnL?.after?.toFixed(2)}
+                    </div>
+
+                    <div className="text-gray-300">BTC Reserves</div>
+                    <div className="text-gray-500">{recalcPreview.changes?.realizedBtcPnL?.before?.toFixed(8)}</div>
+                    <div className={recalcPreview.changes?.realizedBtcPnL?.before !== recalcPreview.changes?.realizedBtcPnL?.after ? 'text-cyan-400' : 'text-gray-500'}>
+                      {recalcPreview.changes?.realizedBtcPnL?.after?.toFixed(8)}
+                    </div>
+
+                    <div className="text-gray-300">Ladder Step</div>
+                    <div className="text-gray-500">{recalcPreview.changes?.ladderStep?.before}</div>
+                    <div className={recalcPreview.changes?.ladderStep?.before !== recalcPreview.changes?.ladderStep?.after ? 'text-yellow-400' : 'text-gray-500'}>
+                      {recalcPreview.changes?.ladderStep?.after}
+                    </div>
+                  </div>
+
+                  {recalcPreview.cycleDetails?.length > 0 && (
+                    <div className="mb-3">
+                      <div className="text-xs text-gray-400 mb-1">Completed Cycles:</div>
+                      {recalcPreview.cycleDetails.map((cycle, i) => (
+                        <div key={i} className="text-xs text-gray-500 pl-2">
+                          {cycle.cycleId?.slice(0, 20)}... - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackBtc?.toFixed(8)} BTC
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleRecalculateApply}
+                      disabled={recalculating}
+                      className="flex-1 text-xs px-3 py-1.5 rounded bg-yellow-600 hover:bg-yellow-500 text-white disabled:opacity-50"
+                    >
+                      {recalculating ? 'Applying...' : 'Apply Changes'}
+                    </button>
+                    <button
+                      onClick={() => setRecalcPreview(null)}
+                      className="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* APY & Returns Section */}
+              {apy.engineStartTime && (
+                <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-gray-500 mb-2">
+                    <span>Capital: ${apy.initialCapital?.toLocaleString()}</span>
+                    <span>Running: {apy.elapsedDays?.toFixed(1)}d</span>
+                    <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="bg-gray-900/50 rounded p-1.5">
+                      <div className="text-gray-500 text-[10px]">Return</div>
+                      <div className={`font-mono ${(apy.totalLiquidValue || 0) >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
+                        ${(apy.totalLiquidValue || 0).toFixed(2)}
+                      </div>
+                    </div>
+                    <div className="bg-gray-900/50 rounded p-1.5">
+                      <div className="text-gray-500 text-[10px]">Daily</div>
+                      <div className={`font-mono ${(apy.dailyReturnPercent || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {(apy.dailyReturnPercent || 0).toFixed(2)}%
+                      </div>
+                    </div>
+                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5">
+                      <div className="text-green-400/70 text-[10px]">Annual</div>
+                      <div className={`font-mono ${(apy.estimatedAnnualReturn || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {(apy.estimatedAnnualReturn || 0) > 9999 ? '>9999' : (apy.estimatedAnnualReturn || 0).toFixed(0)}%
+                      </div>
+                    </div>
+                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5">
+                      <div className="text-cyan-400/70 text-[10px]">APY</div>
+                      <div className={`font-mono ${(apy.estimatedApy || 0) >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
+                        {(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {isDryRun && dryRunState?.pnl && (
+                <div className="mt-3 pt-3 border-t border-gray-700 text-xs">
+                  <div className="text-purple-400 mb-1">Dry-Run Stats</div>
+                  <div className="grid grid-cols-2 gap-2 text-gray-400">
+                    <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(8) || 0} BTC</div>
+                    <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(8) || 0} BTC</div>
+                    <div>BTC on Order: <span className="text-yellow-400">{dryRunState.pnl.btcOnOrder?.toFixed(8) || 0}</span></div>
+                    <div>BTC Reserves: <span className="text-cyan-400">{position.realizedBtcPnL?.toFixed(8) || 0}</span></div>
+                    <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
+                    <div>Avg Entry: ${dryRunState.pnl.avgEntryPrice?.toFixed(2) || 0}</div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Risk Limits */}
@@ -580,503 +751,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
             />
           </div>
 
-          {/* Middle Column: Position */}
+          {/* Right Column: Charts */}
           <div className="space-y-4">
-            {/* Position */}
-            <div className="bg-gray-800 rounded-lg p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-medium text-gray-400">Position</h3>
-                {isDryRun && (
-                  <span className="text-xs text-purple-400">(Simulated)</span>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <StatCard
-                  label="BTC Held"
-                  value={position.totalBTC?.toFixed(8) || '0'}
-                  color="text-orange-400"
-                />
-                <StatCard
-                  label="BTC on Order"
-                  value={(isDryRun && dryRunState?.pnl?.btcOnOrder ? dryRunState.pnl.btcOnOrder : position.btcOnOrder || 0).toFixed(8)}
-                  subValue="in sell orders"
-                  color="text-yellow-400"
-                />
-                <StatCard
-                  label="Cost Basis"
-                  value={`$${position.totalCostBasis?.toFixed(2) || '0'}`}
-                />
-                <StatCard
-                  label="Avg Cost"
-                  value={`$${position.avgCostBasis?.toFixed(2) || '0'}`}
-                />
-                <StatCard
-                  label="Ladder Step"
-                  value={position.ladderStep || 0}
-                  subValue={`of ${config?.maxLadderSteps || 10}`}
-                />
-                <StatCard
-                  label="BTC Reserves"
-                  value={(position.realizedBtcPnL || 0).toFixed(8)}
-                  subValue="from holdback"
-                  color="text-cyan-400"
-                />
-              </div>
-              <div className="mt-3 pt-3 border-t border-gray-700">
-                <div className="grid grid-cols-2 gap-3">
-                  <StatCard
-                    label="Unrealized P&L"
-                    value={`$${position.unrealizedPnL?.toFixed(2) || '0'}`}
-                    color={position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}
-                  />
-                  <div className="bg-gray-800 rounded-lg p-3">
-                    <div className="text-xs text-gray-400 mb-1">Realized P&L</div>
-                    <div className={`text-lg font-semibold ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      ${position.realizedPnL?.toFixed(2) || '0'}
-                    </div>
-                    {(position.realizedBtcPnL || 0) > 0 && (
-                      <div className="text-xs text-cyan-400 mt-0.5">
-                        + {position.realizedBtcPnL?.toFixed(8)} BTC
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="mt-3 flex items-center justify-between">
-                <span className="text-xs text-gray-500">
-                  Cycles completed: {position.cyclesCompleted || 0}
-                </span>
-                <button
-                  onClick={handleRecalculatePreview}
-                  disabled={recalculating}
-                  className="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 disabled:opacity-50"
-                >
-                  {recalculating ? 'Checking...' : 'Recalculate'}
-                </button>
-              </div>
-
-              {/* Recalculate Preview Modal */}
-              {recalcPreview && (
-                <div className="mt-3 p-3 bg-gray-900 rounded border border-yellow-600/50">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-yellow-400">Recalculate Preview</span>
-                    <button
-                      onClick={() => setRecalcPreview(null)}
-                      className="text-gray-400 hover:text-white"
-                    >
-                      ×
-                    </button>
-                  </div>
-
-                  {recalcPreview.orphansFixed > 0 && (
-                    <div className="text-xs text-blue-400 mb-2">
-                      Will fix {recalcPreview.orphansFixed} fills with missing cycle ID
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-3 gap-2 text-xs mb-3">
-                    <div className="text-gray-400">Field</div>
-                    <div className="text-gray-400">Before</div>
-                    <div className="text-gray-400">After</div>
-
-                    <div className="text-gray-300">Cycles</div>
-                    <div className="text-gray-500">{recalcPreview.changes?.cyclesCompleted?.before}</div>
-                    <div className={recalcPreview.changes?.cyclesCompleted?.before !== recalcPreview.changes?.cyclesCompleted?.after ? 'text-yellow-400' : 'text-gray-500'}>
-                      {recalcPreview.changes?.cyclesCompleted?.after}
-                    </div>
-
-                    <div className="text-gray-300">P&L</div>
-                    <div className="text-gray-500">${recalcPreview.changes?.realizedPnL?.before?.toFixed(2)}</div>
-                    <div className={recalcPreview.changes?.realizedPnL?.before !== recalcPreview.changes?.realizedPnL?.after ? 'text-yellow-400' : 'text-gray-500'}>
-                      ${recalcPreview.changes?.realizedPnL?.after?.toFixed(2)}
-                    </div>
-
-                    <div className="text-gray-300">BTC Reserves</div>
-                    <div className="text-gray-500">{recalcPreview.changes?.realizedBtcPnL?.before?.toFixed(8)}</div>
-                    <div className={recalcPreview.changes?.realizedBtcPnL?.before !== recalcPreview.changes?.realizedBtcPnL?.after ? 'text-cyan-400' : 'text-gray-500'}>
-                      {recalcPreview.changes?.realizedBtcPnL?.after?.toFixed(8)}
-                    </div>
-
-                    <div className="text-gray-300">Ladder Step</div>
-                    <div className="text-gray-500">{recalcPreview.changes?.ladderStep?.before}</div>
-                    <div className={recalcPreview.changes?.ladderStep?.before !== recalcPreview.changes?.ladderStep?.after ? 'text-yellow-400' : 'text-gray-500'}>
-                      {recalcPreview.changes?.ladderStep?.after}
-                    </div>
-                  </div>
-
-                  {recalcPreview.cycleDetails?.length > 0 && (
-                    <div className="mb-3">
-                      <div className="text-xs text-gray-400 mb-1">Completed Cycles:</div>
-                      {recalcPreview.cycleDetails.map((cycle, i) => (
-                        <div key={i} className="text-xs text-gray-500 pl-2">
-                          {cycle.cycleId?.slice(0, 20)}... - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackBtc?.toFixed(8)} BTC
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleRecalculateApply}
-                      disabled={recalculating}
-                      className="flex-1 text-xs px-3 py-1.5 rounded bg-yellow-600 hover:bg-yellow-500 text-white disabled:opacity-50"
-                    >
-                      {recalculating ? 'Applying...' : 'Apply Changes'}
-                    </button>
-                    <button
-                      onClick={() => setRecalcPreview(null)}
-                      className="text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* APY & Returns Section */}
-              {apy.engineStartTime && (
-                <div className="mt-3 pt-3 border-t border-gray-700">
-                  <div className="text-xs text-gray-400 mb-2">Performance Metrics</div>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="bg-gray-900/50 rounded p-2">
-                      <div className="text-gray-500">Initial Capital</div>
-                      <div className="text-white font-mono">${apy.initialCapital?.toLocaleString()}</div>
-                    </div>
-                    <div className="bg-gray-900/50 rounded p-2">
-                      <div className="text-gray-500">Running For</div>
-                      <div className="text-white font-mono">{apy.elapsedDays?.toFixed(1)} days</div>
-                    </div>
-                  </div>
-
-                  {/* Returns Breakdown */}
-                  <div className="mt-2 p-2 bg-gray-900/50 rounded">
-                    <div className="text-gray-500 text-xs mb-2">Total Return</div>
-                    <div className="grid grid-cols-3 gap-2 text-xs">
-                      <div>
-                        <div className="text-gray-400">USDC</div>
-                        <div className={`font-mono ${(apy.totalUsdcReturn || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          ${(apy.totalUsdcReturn || 0).toFixed(2)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-gray-400">BTC</div>
-                        <div className="text-orange-400 font-mono">
-                          {(apy.totalBtcReturn || 0).toFixed(8)}
-                        </div>
-                        <div className="text-gray-500 text-xs">
-                          ≈ ${(apy.btcValueUsd || 0).toFixed(2)}
-                        </div>
-                      </div>
-                      <div className="border-l border-gray-700 pl-2">
-                        <div className="text-cyan-400/70">Live Total</div>
-                        <div className={`font-mono font-semibold ${(apy.totalLiquidValue || 0) >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
-                          ${(apy.totalLiquidValue || 0).toFixed(2)}
-                        </div>
-                        <div className="text-gray-500 text-xs">
-                          ({(apy.totalLiquidValuePercent || 0).toFixed(2)}%)
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Daily Return based on total liquid value */}
-                  <div className="mt-2 bg-gray-900/50 rounded p-2">
-                    <div className="text-gray-500 text-xs mb-1">Est. Daily Return (Live Value)</div>
-                    <div className="flex items-baseline gap-2">
-                      <div className={`font-mono text-lg ${apy.dailyReturnPercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {apy.dailyReturnPercent > 99 ? '>99' : apy.dailyReturnPercent?.toFixed(2)}%
-                      </div>
-                      <div className="text-gray-400 text-xs">
-                        (${(apy.estimatedDailyLiquid || 0).toFixed(2)}/day)
-                      </div>
-                    </div>
-                    <div className="text-gray-500 text-xs mt-1 flex gap-3">
-                      <span>${apy.estimatedDailyUsdc?.toFixed(2)} USDC</span>
-                      <span>+{((apy.estimatedDailyBtc || 0) * 1e8).toFixed(0)} sats</span>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-xs mt-2">
-                    <div className="bg-gradient-to-r from-green-900/30 to-green-800/20 border border-green-700/30 rounded p-2">
-                      <div className="text-green-400/70">Est. Annual Return</div>
-                      <div className={`font-mono text-lg ${apy.estimatedAnnualReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {apy.estimatedAnnualReturn > 9999 ? '>9999' : apy.estimatedAnnualReturn?.toFixed(0)}%
-                      </div>
-                    </div>
-                    <div className="bg-gradient-to-r from-cyan-900/30 to-cyan-800/20 border border-cyan-700/30 rounded p-2">
-                      <div className="text-cyan-400/70">Est. APY (Compound)</div>
-                      <div className={`font-mono text-lg ${apy.estimatedApy >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
-                        {apy.estimatedApy > 9999 ? '>9999' : apy.estimatedApy?.toFixed(0)}%
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex justify-between text-xs text-gray-500 mt-2">
-                    <span>Cycles/Day: {apy.cyclesPerDay?.toFixed(1)}</span>
-                    <span>Avg P&L/Cycle: ${apy.avgPnlPerCycle?.toFixed(2)}</span>
-                  </div>
-                </div>
-              )}
-
-              {isDryRun && dryRunState?.pnl && (
-                <div className="mt-3 pt-3 border-t border-gray-700 text-xs">
-                  <div className="text-purple-400 mb-1">Dry-Run Stats</div>
-                  <div className="grid grid-cols-2 gap-2 text-gray-400">
-                    <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(8) || 0} BTC</div>
-                    <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(8) || 0} BTC</div>
-                    <div>BTC on Order: <span className="text-yellow-400">{dryRunState.pnl.btcOnOrder?.toFixed(8) || 0}</span></div>
-                    <div>BTC Reserves: <span className="text-cyan-400">{position.realizedBtcPnL?.toFixed(8) || 0}</span></div>
-                    <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
-                    <div>Avg Entry: ${dryRunState.pnl.avgEntryPrice?.toFixed(2) || 0}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Right Column: Analytics & Activity */}
-          <div className="space-y-4">
-            {/* Optimal TP Analytics */}
-            {isDryRun && dryRunState?.optimalTpAnalytics && (
-              <div className="bg-gray-800 rounded-lg p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-gray-400">Optimal TP Analysis</h3>
-                  <span className="text-xs text-purple-400">
-                    {dryRunState.optimalTpAnalytics.cycleCount} cycles
-                  </span>
-                </div>
-
-                {/* Current Cycle (if in position) */}
-                {dryRunState.optimalTpAnalytics.currentCycle && (
-                  <div className="mb-3 p-2 bg-blue-900/30 border border-blue-700/50 rounded">
-                    <div className="text-xs text-blue-400 mb-1">Current Position</div>
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div>
-                        <span className="text-gray-500">Entry:</span>{' '}
-                        <span className="text-white font-mono">${dryRunState.optimalTpAnalytics.currentCycle.entryPrice?.toFixed(2)}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Max seen:</span>{' '}
-                        <span className="text-green-400 font-mono">${dryRunState.optimalTpAnalytics.currentCycle.currentMaxPrice?.toFixed(2)}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Min seen:</span>{' '}
-                        <span className="text-red-400 font-mono">${dryRunState.optimalTpAnalytics.currentCycle.currentMinPrice?.toFixed(2)}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Optimal TP:</span>{' '}
-                        <span className="text-cyan-400 font-mono">{dryRunState.optimalTpAnalytics.currentCycle.currentOptimalPct?.toFixed(2)}%</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Historical Analytics */}
-                {dryRunState.optimalTpAnalytics.cycleCount > 0 ? (
-                  <>
-                    <div className="space-y-2 text-xs">
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Avg Optimal TP</span>
-                        <span className="text-cyan-400 font-mono font-semibold">
-                          {dryRunState.optimalTpAnalytics.avgOptimalTpPct?.toFixed(2)}%
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Avg Actual TP</span>
-                        <span className="text-white font-mono">
-                          {dryRunState.optimalTpAnalytics.avgActualTpPct?.toFixed(2)}%
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Avg Missed Profit</span>
-                        <span className={`font-mono ${dryRunState.optimalTpAnalytics.avgMissedProfitPct > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
-                          {dryRunState.optimalTpAnalytics.avgMissedProfitPct?.toFixed(2)}%
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-400">Avg Time to Peak</span>
-                        <span className="text-gray-300 font-mono">
-                          {formatDuration(dryRunState.optimalTpAnalytics.avgTimeToMaxMs)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Recommended Range */}
-                    {dryRunState.optimalTpAnalytics.recommendedTpRange && (
-                      <div className="mt-3 pt-3 border-t border-gray-700">
-                        <div className="text-xs text-gray-400 mb-2">Recommended TP Range (based on observed data)</div>
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-3 bg-gray-700 rounded-full relative overflow-hidden">
-                            {/* Current config range indicator */}
-                            <div
-                              className="absolute h-full bg-blue-600/50"
-                              style={{
-                                left: `${Math.min(100, (config?.tpMinPercent || 0) / 5 * 100)}%`,
-                                width: `${Math.min(100, ((config?.tpMaxPercent || 5) - (config?.tpMinPercent || 0)) / 5 * 100)}%`,
-                              }}
-                            />
-                            {/* Observed range */}
-                            <div
-                              className="absolute h-full bg-cyan-500/70"
-                              style={{
-                                left: `${Math.min(100, (dryRunState.optimalTpAnalytics.recommendedTpRange.min || 0) / 5 * 100)}%`,
-                                width: `${Math.min(100, ((dryRunState.optimalTpAnalytics.recommendedTpRange.max || 0) - (dryRunState.optimalTpAnalytics.recommendedTpRange.min || 0)) / 5 * 100)}%`,
-                              }}
-                            />
-                            {/* Median marker */}
-                            <div
-                              className="absolute w-0.5 h-full bg-white"
-                              style={{
-                                left: `${Math.min(100, (dryRunState.optimalTpAnalytics.recommendedTpRange.median || 0) / 5 * 100)}%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-                        <div className="flex justify-between text-xs mt-1">
-                          <span className="text-gray-500">0%</span>
-                          <span className="text-cyan-400">
-                            {dryRunState.optimalTpAnalytics.recommendedTpRange.min?.toFixed(1)}% - {dryRunState.optimalTpAnalytics.recommendedTpRange.max?.toFixed(1)}%
-                          </span>
-                          <span className="text-gray-500">5%</span>
-                        </div>
-                        <div className="flex justify-between text-xs text-gray-500 mt-1">
-                          <span>Current config: {config?.tpMinPercent}%-{config?.tpMaxPercent}%</span>
-                          <span className="text-blue-400">■</span>
-                          <span>Observed</span>
-                          <span className="text-cyan-400">■</span>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="text-gray-500 text-xs text-center py-2">
-                    Complete at least one cycle to see analytics
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* TP Auto-Management Panel */}
-            {tpOptimizer.enabled && (
-              <div className="bg-gray-800 rounded-lg p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-medium text-gray-400">TP Auto-Management</h3>
-                  <span className="px-2 py-0.5 bg-green-900/50 text-green-400 text-xs rounded">
-                    Active
-                  </span>
-                </div>
-
-                <div className="space-y-2 text-xs">
-                  {/* Current Config */}
-                  <div className="p-2 bg-gray-900/50 rounded">
-                    <div className="text-gray-500 mb-1">Current TP Settings</div>
-                    <div className="grid grid-cols-3 gap-2">
-                      <div>
-                        <span className="text-gray-400">Min:</span>{' '}
-                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.tpMinPercent?.toFixed(2)}%</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-400">Max:</span>{' '}
-                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.tpMaxPercent?.toFixed(2)}%</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-400">Holdback Ratio:</span>{' '}
-                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.holdbackRatio?.toFixed(2)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Observed Percentiles */}
-                  {tpOptimizer.sampleCount >= 3 && (
-                    <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded">
-                      <div className="text-cyan-400/70 mb-1">Observed Percentiles ({tpOptimizer.sampleCount} samples)</div>
-                      <div className="grid grid-cols-3 gap-2">
-                        <div>
-                          <span className="text-gray-400">p25:</span>{' '}
-                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p25?.toFixed(2)}%</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-400">p50:</span>{' '}
-                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p50?.toFixed(2)}%</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-400">p75:</span>{' '}
-                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p75?.toFixed(2)}%</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Evaluation Status */}
-                  <div className="flex justify-between text-gray-500">
-                    <span>Cycles since eval: {tpOptimizer.cyclesSinceEval || 0}</span>
-                    <span>Samples: {tpOptimizer.sampleCount || 0}</span>
-                  </div>
-
-                  {/* Recent Adjustments */}
-                  {tpOptimizer.adjustmentHistory?.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-gray-700">
-                      <div className="text-gray-500 mb-1">Recent Adjustments</div>
-                      <div className="space-y-1 max-h-24 overflow-y-auto">
-                        {tpOptimizer.adjustmentHistory.slice(-3).reverse().map((adj, idx) => (
-                          <div key={idx} className="text-xs text-gray-400 flex justify-between">
-                            <span>{new Date(adj.timestamp).toLocaleTimeString()}</span>
-                            <span className="text-cyan-400">{adj.tpMin?.toFixed(1)}%-{adj.tpMax?.toFixed(1)}%</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Activity Feed */}
-            <div className="bg-gray-800 rounded-lg p-4 h-fit">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-medium text-gray-400">Activity</h3>
-              <button
-                onClick={clearEvents}
-                className="text-xs text-gray-500 hover:text-gray-400"
-              >
-                Clear
-              </button>
-            </div>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {allEvents.length === 0 ? (
-                <div className="text-gray-500 text-sm">No recent activity</div>
-              ) : (
-                allEvents.map((event, i) => {
-                  const time = new Date(event.timestamp).toLocaleTimeString()
-                  const typeColors = {
-                    regime_change: 'text-purple-400',
-                    health_change: 'text-yellow-400',
-                    entry_placed: 'text-blue-400',
-                    entry_filled: 'text-green-400',
-                    tp_placed: 'text-cyan-400',
-                    tp_filled: 'text-green-400',
-                    tp_adjusted: 'text-cyan-400',
-                    flash_move: 'text-red-400',
-                    safe_mode: 'text-yellow-400',
-                    error: 'text-red-400',
-                  }
-                  return (
-                    <div key={`${event.timestamp}-${i}`} className="text-xs border-l-2 border-gray-700 pl-2">
-                      <span className="text-gray-500">{time}</span>
-                      <span className={`ml-2 ${typeColors[event.type] || 'text-gray-400'}`}>
-                        {event.type?.replace(/_/g, ' ')}
-                      </span>
-                      <div className="text-gray-400 truncate">
-                        {event.message || JSON.stringify(event.data || {}).slice(0, 50)}
-                      </div>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Fourth Column: Charts (2xl+ only) */}
-          <div className="hidden 2xl:block space-y-4">
             <RegimePriceChart
               priceData={priceHistory}
               regimeData={regimeHistory}
@@ -1094,28 +770,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
           </div>
         </div>
 
-        </div>
-
-        {/* Charts Section (shown below on smaller screens) */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 2xl:hidden">
-          <RegimePriceChart
-            priceData={priceHistory}
-            regimeData={regimeHistory}
-            currentPrice={market.lastPrice}
-            anchorPrice={position.anchorPrice}
-            atr={market.atr1m}
-            kFactor={config?.kFactor || 0.6}
-            height={280}
-          />
-          <VolatilityChart
-            atrData={atrHistory}
-            regimeData={regimeHistory}
-            height={240}
-          />
-        </div>
-
         {/* Orders Section */}
-        <div className="grid grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
           {/* Open Orders */}
           <div className="bg-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
@@ -1126,38 +782,41 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               <div className="text-gray-500 text-sm text-center py-4">No open orders</div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-gray-400 text-xs border-b border-gray-700">
-                      <th className="text-left py-2 pr-2">Type</th>
-                      <th className="text-left py-2 pr-2">Side</th>
-                      <th className="text-right py-2 pr-2">Size (BTC)</th>
-                      <th className="text-right py-2 pr-2">Price</th>
-                      <th className="text-right py-2 pr-2">Est. P&L</th>
-                      <th className="text-right py-2 pr-2">Holdback</th>
-                      <th className="text-right py-2">Age</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pendingOrdersList
-                      .filter(o => o.status === 'open')
-                      .map((order) => {
-                        const age = Date.now() - order.placedAt
-                        // Calculate expected P&L for TP orders
-                        const avgCost = position.avgCostBasis || 0
-                        const estPnl = order.type === 'take_profit' && avgCost > 0
-                          ? (order.price - avgCost) * order.size
-                          : null
-                        // Calculate expected profit-based BTC holdback for TP orders
-                        // holdbackQty = sellQty * profitPerBTC * ratio / (price * (1-ratio) + cost * ratio)
-                        const holdbackRatio = config?.holdbackRatio ?? 0.5
-                        const profitPerBTC = order.price - avgCost
-                        const denominator = order.price * (1 - holdbackRatio) + avgCost * holdbackRatio
-                        const estHoldback = order.type === 'take_profit' && profitPerBTC > 0 && denominator > 0
-                          ? order.size * profitPerBTC * holdbackRatio / denominator
-                          : null
-                        const estHoldbackValue = estHoldback ? estHoldback * order.price : null
-                        return (
+                {(() => {
+                  const openOrders = pendingOrdersList.filter(o => o.status === 'open')
+                  const avgCost = position.avgCostBasis || 0
+                  const holdbackRatio = config?.holdbackRatio ?? 0.5
+
+                  const ordersWithCalcs = openOrders.map(order => {
+                    const age = Date.now() - order.placedAt
+                    const estPnl = order.type === 'take_profit' && avgCost > 0
+                      ? (order.price - avgCost) * order.size
+                      : null
+                    const profitPerBTC = order.price - avgCost
+                    const denominator = order.price * (1 - holdbackRatio) + avgCost * holdbackRatio
+                    const estHoldback = order.type === 'take_profit' && profitPerBTC > 0 && denominator > 0
+                      ? order.size * profitPerBTC * holdbackRatio / denominator
+                      : null
+                    const estHoldbackValue = estHoldback ? estHoldback * order.price : null
+
+                    return { ...order, age, estPnl, estHoldback, estHoldbackValue }
+                  })
+
+                  return (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-gray-400 text-xs border-b border-gray-700">
+                          <th className="text-left py-2 pr-2">Type</th>
+                          <th className="text-left py-2 pr-2">Side</th>
+                          <th className="text-right py-2 pr-2">Size (BTC)</th>
+                          <th className="text-right py-2 pr-2">Price</th>
+                          <th className="text-right py-2 pr-2">Est. P&L</th>
+                          <th className="text-right py-2 pr-2">Holdback</th>
+                          <th className="text-right py-2">Age</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ordersWithCalcs.map((order) => (
                           <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">
                             <td className="py-2 pr-2">
                               <span className={`px-1.5 py-0.5 rounded text-xs ${
@@ -1175,22 +834,23 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <td className="text-right py-2 pr-2 font-mono text-white">
                               ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
-                            <td className={`text-right py-2 pr-2 font-mono text-xs ${estPnl !== null ? (estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`}>
-                              {estPnl !== null ? `${estPnl >= 0 ? '+' : ''}$${estPnl.toFixed(2)}` : '—'}
+                            <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`}>
+                              {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}$${order.estPnl.toFixed(2)}` : '—'}
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                              {estHoldback !== null ? (
-                                <span title={`≈$${estHoldbackValue?.toFixed(2)}`}>+{estHoldback.toFixed(8)}</span>
+                              {order.estHoldback !== null ? (
+                                <span title={`≈$${order.estHoldbackValue?.toFixed(2)}`}>+{order.estHoldback.toFixed(8)}</span>
                               ) : '—'}
                             </td>
                             <td className="text-right py-2 font-mono text-gray-500 text-xs">
-                              {formatDuration(age)}
+                              {formatDuration(order.age)}
                             </td>
                           </tr>
-                        )
-                      })}
-                  </tbody>
-                </table>
+                        ))}
+                      </tbody>
+                    </table>
+                  )
+                })()}
               </div>
             )}
           </div>
@@ -1239,151 +899,277 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 }
               </div>
             ) : isDryRun ? (
-              <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-gray-800">
-                    <tr className="text-gray-400 text-xs border-b border-gray-700">
-                      <th className="text-left py-2 pr-2">Type</th>
-                      <th className="text-left py-2 pr-2">Side</th>
-                      <th className="text-right py-2 pr-2">Size (BTC)</th>
-                      <th className="text-right py-2 pr-2">Fill Price</th>
-                      <th className="text-right py-2 pr-2">USD P&L</th>
-                      <th className="text-right py-2 pr-2">BTC Hold</th>
-                      <th className="text-right py-2">Time</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...dryRunState.filledOrders]
-                      .reverse()
-                      .slice(0, 20)
-                      .map((order, idx) => (
-                        <tr key={`${order.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                          <td className="py-2 pr-2">
-                            <span className={`px-1.5 py-0.5 rounded text-xs ${
-                              order.type === 'entry' ? 'bg-blue-900/50 text-blue-400' : 'bg-cyan-900/50 text-cyan-400'
-                            }`}>
-                              {order.type === 'entry' ? 'Entry' : 'TP'}
-                            </span>
-                          </td>
-                          <td className={`py-2 pr-2 ${order.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
-                            {order.side?.toUpperCase()}
-                          </td>
-                          <td className="text-right py-2 pr-2 font-mono text-white">
-                            {order.size?.toFixed(8)}
-                          </td>
-                          <td className="text-right py-2 pr-2 font-mono text-white">
-                            ${order.fillPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </td>
-                          <td className={`text-right py-2 pr-2 font-mono text-xs ${
-                            order.type === 'take_profit'
-                              ? (order.pnl >= 0 ? 'text-green-400' : 'text-red-400')
-                              : 'text-gray-500'
-                          }`}>
-                            {order.type === 'take_profit' && order.pnl !== undefined
-                              ? `${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}`
-                              : '—'}
-                          </td>
-                          <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                            {order.type === 'take_profit' && order.holdbackBtc !== undefined
-                              ? `+${order.holdbackBtc.toFixed(8)}`
-                              : '—'}
-                          </td>
-                          <td className="text-right py-2 font-mono text-gray-500 text-xs">
-                            {order.filledAt ? new Date(order.filledAt).toLocaleTimeString() : '-'}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+              /* Dry Run Mode - Split Buy/Sell Tables */
+              <div className="space-y-3">
+                {(() => {
+                  const allOrders = [...dryRunState.filledOrders].reverse().slice(0, 40)
+                  const buyOrders = allOrders.filter(o => o.side === 'buy')
+                  const sellOrders = allOrders.filter(o => o.side === 'sell')
+
+                  // Calculate buy totals
+                  let totalBuySize = 0
+                  let totalBuyValue = 0
+                  buyOrders.forEach(order => {
+                    totalBuySize += order.size || 0
+                    totalBuyValue += (order.size || 0) * (order.fillPrice || 0)
+                  })
+
+                  return (
+                    <>
+                      {/* Buys Table */}
+                      <div>
+                        <div className="text-xs text-green-400 mb-1 font-medium">Buys ({buyOrders.length})</div>
+                        <div className="overflow-x-auto max-h-32 overflow-y-auto">
+                          <table className="w-full text-sm">
+                            <thead className="sticky top-0 bg-gray-800">
+                              <tr className="text-gray-400 text-xs border-b border-gray-700">
+                                <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                                <th className="text-right py-1.5 pr-2">Price</th>
+                                <th className="text-right py-1.5 pr-2">Value</th>
+                                <th className="text-right py-1.5">Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {buyOrders.length > 1 && (
+                                <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    {totalBuySize.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 text-gray-400 text-xs">
+                                    avg ${totalBuySize > 0 ? (totalBuyValue / totalBuySize).toFixed(2) : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    ${totalBuyValue.toFixed(2)}
+                                  </td>
+                                  <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
+                                </tr>
+                              )}
+                              {buyOrders.map((order, idx) => (
+                                <tr key={`buy-${order.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    {order.size?.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    ${order.fillPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
+                                    ${((order.size || 0) * (order.fillPrice || 0)).toFixed(2)}
+                                  </td>
+                                  <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
+                                    {order.filledAt ? new Date(order.filledAt).toLocaleTimeString() : '-'}
+                                  </td>
+                                </tr>
+                              ))}
+                              {buyOrders.length === 0 && (
+                                <tr><td colSpan={4} className="text-center py-2 text-gray-500 text-xs">No buys yet</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Sells Table */}
+                      <div>
+                        <div className="text-xs text-red-400 mb-1 font-medium">Sells ({sellOrders.length})</div>
+                        <div className="overflow-x-auto max-h-32 overflow-y-auto">
+                          <table className="w-full text-sm">
+                            <thead className="sticky top-0 bg-gray-800">
+                              <tr className="text-gray-400 text-xs border-b border-gray-700">
+                                <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                                <th className="text-right py-1.5 pr-2">Price</th>
+                                <th className="text-right py-1.5 pr-2">P&L</th>
+                                <th className="text-right py-1.5 pr-2">Holdback</th>
+                                <th className="text-right py-1.5">Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sellOrders.map((order, idx) => (
+                                <tr key={`sell-${order.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    {order.size?.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    ${order.fillPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </td>
+                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
+                                    order.pnl >= 0 ? 'text-green-400' : 'text-red-400'
+                                  }`}>
+                                    {order.pnl !== undefined ? `${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}` : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
+                                    {order.holdbackBtc !== undefined ? `+${order.holdbackBtc.toFixed(8)}` : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
+                                    {order.filledAt ? new Date(order.filledAt).toLocaleTimeString() : '-'}
+                                  </td>
+                                </tr>
+                              ))}
+                              {sellOrders.length === 0 && (
+                                <tr><td colSpan={5} className="text-center py-2 text-gray-500 text-xs">No sells yet</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  )
+                })()}
               </div>
             ) : (
-              /* Live Mode Fills */
-              <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-gray-800">
-                    <tr className="text-gray-400 text-xs border-b border-gray-700">
-                      {showAllCycles && <th className="text-left py-2 pr-2">Cycle</th>}
-                      <th className="text-left py-2 pr-2">Side</th>
-                      <th className="text-right py-2 pr-2">Size (BTC)</th>
-                      <th className="text-right py-2 pr-2">Price</th>
-                      <th className="text-right py-2 pr-2">Value</th>
-                      <th className="text-right py-2 pr-2">P&L</th>
-                      <th className="text-right py-2 pr-2">Holdback</th>
-                      <th className="text-right py-2">Time</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      // Filter fills based on cycle toggle
-                      const filteredFills = showAllCycles
-                        ? liveFills
-                        : liveFills.filter(f => !f.cycleId || !f.cycleId.startsWith('cycle-'))
-                      // Calculate running avg cost basis and P&L for sells
-                      const sortedFills = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
-                      let totalBtc = 0
-                      let totalCost = 0
-                      const fillsWithPnl = sortedFills.map(fill => {
-                        if (fill.side === 'buy') {
-                          totalBtc += fill.size
-                          totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
-                          return { ...fill, pnl: null, holdback: null }
-                        } else {
-                          // Sell fill - calculate P&L
-                          const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
-                          const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
-                          const costBasis = avgCost * fill.size
-                          const pnl = proceeds - costBasis
-                          const holdback = totalBtc - fill.size
-                          // Reset position after sell
-                          totalBtc = holdback > 0 ? holdback : 0
-                          totalCost = holdback > 0 ? avgCost * holdback : 0
-                          return { ...fill, pnl, holdback: holdback > 0 ? holdback : 0, avgCost }
-                        }
-                      })
-                      return fillsWithPnl
-                        .sort((a, b) => b.timestamp - a.timestamp)
-                        .slice(0, showAllCycles ? 50 : 20)
-                        .map((fill, idx) => (
-                          <tr key={`${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                            {showAllCycles && (
-                              <td className="py-2 pr-2 text-xs text-gray-500">
-                                {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
-                              </td>
-                            )}
-                            <td className={`py-2 pr-2 ${fill.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
-                              {fill.side?.toUpperCase()}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-white">
-                              {fill.size?.toFixed(8)}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-white">
-                              ${fill.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-gray-400 text-xs">
-                              ${fill.quoteAmount?.toFixed(2)}
-                            </td>
-                            <td className={`text-right py-2 pr-2 font-mono text-xs ${
-                              fill.side === 'sell'
-                                ? (fill.pnl >= 0 ? 'text-green-400' : 'text-red-400')
-                                : 'text-gray-500'
-                            }`}>
-                              {fill.side === 'sell' && fill.pnl !== null
-                                ? `${fill.pnl >= 0 ? '+' : ''}$${fill.pnl.toFixed(2)}`
-                                : '—'}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                              {fill.side === 'sell' && fill.holdback > 0
-                                ? `+${fill.holdback.toFixed(8)}`
-                                : '—'}
-                            </td>
-                            <td className="text-right py-2 font-mono text-gray-500 text-xs">
-                              {fill.timestamp ? new Date(fill.timestamp).toLocaleTimeString() : '-'}
-                            </td>
-                          </tr>
-                        ))
-                    })()}
-                  </tbody>
-                </table>
+              /* Live Mode Fills - Split Buy/Sell Tables */
+              <div className="space-y-3">
+                {(() => {
+                  // Filter fills based on cycle toggle
+                  const filteredFills = showAllCycles
+                    ? liveFills
+                    : liveFills.filter(f => !f.cycleId || !f.cycleId.startsWith('cycle-'))
+
+                  // Calculate running avg cost basis and P&L for sells
+                  const sortedFills = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
+                  let runningBtc = 0
+                  let runningCost = 0
+                  const fillsWithPnl = sortedFills.map(fill => {
+                    if (fill.side === 'buy') {
+                      runningBtc += fill.size
+                      runningCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
+                      return { ...fill, pnl: null, holdback: null }
+                    } else {
+                      const avgCost = runningBtc > 0 ? runningCost / runningBtc : 0
+                      const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
+                      const costBasis = avgCost * fill.size
+                      const pnl = proceeds - costBasis
+                      const holdback = runningBtc - fill.size
+                      runningBtc = holdback > 0 ? holdback : 0
+                      runningCost = holdback > 0 ? avgCost * holdback : 0
+                      return { ...fill, pnl, holdback: holdback > 0 ? holdback : 0, avgCost }
+                    }
+                  })
+
+                  const allFills = fillsWithPnl.sort((a, b) => b.timestamp - a.timestamp)
+                  const buyFills = allFills.filter(f => f.side === 'buy').slice(0, showAllCycles ? 25 : 10)
+                  const sellFills = allFills.filter(f => f.side === 'sell').slice(0, showAllCycles ? 25 : 10)
+
+                  // Calculate buy totals
+                  let totalBuySize = 0
+                  let totalBuyValue = 0
+                  buyFills.forEach(fill => {
+                    totalBuySize += fill.size || 0
+                    totalBuyValue += fill.quoteAmount || 0
+                  })
+
+                  return (
+                    <>
+                      {/* Buys Table */}
+                      <div>
+                        <div className="text-xs text-green-400 mb-1 font-medium">Buys ({buyFills.length})</div>
+                        <div className="overflow-x-auto max-h-32 overflow-y-auto">
+                          <table className="w-full text-sm">
+                            <thead className="sticky top-0 bg-gray-800">
+                              <tr className="text-gray-400 text-xs border-b border-gray-700">
+                                {showAllCycles && <th className="text-left py-1.5 pr-2">Cycle</th>}
+                                <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                                <th className="text-right py-1.5 pr-2">Price</th>
+                                <th className="text-right py-1.5 pr-2">Value</th>
+                                <th className="text-right py-1.5">Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {buyFills.length > 1 && (
+                                <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
+                                  {showAllCycles && <td className="py-1.5 pr-2"></td>}
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    {totalBuySize.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 text-gray-400 text-xs">
+                                    avg ${totalBuySize > 0 ? (totalBuyValue / totalBuySize).toFixed(2) : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    ${totalBuyValue.toFixed(2)}
+                                  </td>
+                                  <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
+                                </tr>
+                              )}
+                              {buyFills.map((fill, idx) => (
+                                <tr key={`buy-${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                  {showAllCycles && (
+                                    <td className="py-1.5 pr-2 text-xs text-gray-500">
+                                      {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
+                                    </td>
+                                  )}
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    {fill.size?.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    ${fill.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
+                                    ${fill.quoteAmount?.toFixed(2)}
+                                  </td>
+                                  <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
+                                    {fill.timestamp ? new Date(fill.timestamp).toLocaleTimeString() : '-'}
+                                  </td>
+                                </tr>
+                              ))}
+                              {buyFills.length === 0 && (
+                                <tr><td colSpan={showAllCycles ? 5 : 4} className="text-center py-2 text-gray-500 text-xs">No buys yet</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Sells Table */}
+                      <div>
+                        <div className="text-xs text-red-400 mb-1 font-medium">Sells ({sellFills.length})</div>
+                        <div className="overflow-x-auto max-h-32 overflow-y-auto">
+                          <table className="w-full text-sm">
+                            <thead className="sticky top-0 bg-gray-800">
+                              <tr className="text-gray-400 text-xs border-b border-gray-700">
+                                {showAllCycles && <th className="text-left py-1.5 pr-2">Cycle</th>}
+                                <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                                <th className="text-right py-1.5 pr-2">Price</th>
+                                <th className="text-right py-1.5 pr-2">P&L</th>
+                                <th className="text-right py-1.5 pr-2">Holdback</th>
+                                <th className="text-right py-1.5">Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sellFills.map((fill, idx) => (
+                                <tr key={`sell-${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                  {showAllCycles && (
+                                    <td className="py-1.5 pr-2 text-xs text-gray-500">
+                                      {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
+                                    </td>
+                                  )}
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    {fill.size?.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    ${fill.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </td>
+                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
+                                    fill.pnl >= 0 ? 'text-green-400' : 'text-red-400'
+                                  }`}>
+                                    {fill.pnl !== null ? `${fill.pnl >= 0 ? '+' : ''}$${fill.pnl.toFixed(2)}` : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
+                                    {fill.holdback > 0 ? `+${fill.holdback.toFixed(8)}` : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
+                                    {fill.timestamp ? new Date(fill.timestamp).toLocaleTimeString() : '-'}
+                                  </td>
+                                </tr>
+                              ))}
+                              {sellFills.length === 0 && (
+                                <tr><td colSpan={showAllCycles ? 6 : 5} className="text-center py-2 text-gray-500 text-xs">No sells yet</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  )
+                })()}
               </div>
             )}
           </div>
@@ -1422,7 +1208,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               </span>
             )}
           </div>
-          <div className="grid grid-cols-6 gap-4 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 text-xs">
             <div>
               <span className="text-gray-500">Mode</span>
               <div className={config.dryRun ? 'text-purple-400' : 'text-green-400'}>
