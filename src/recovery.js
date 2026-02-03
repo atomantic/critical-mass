@@ -64,9 +64,11 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     console.log(`📝 [${exchange}] Ingested ${newFillsIngested} new fills`);
 
     // 5. Rebuild position state from fill ledger
-    // Use ALL fills (not just current cycle) since we're recovering from scratch
-    const allFills = fillLedger.getAllFills();
-    const position = fillLedger.rebuildPositionFromFills(allFills);
+    // Use CURRENT CYCLE fills only - completed cycles should not affect current position
+    // The fill ledger tracks cycle IDs, so getCurrentCycleFills() returns only active cycle
+    const currentCycleFills = fillLedger.getCurrentCycleFills();
+    const position = fillLedger.rebuildPositionFromFills(currentCycleFills);
+    console.log(`📊 [${exchange}] Rebuilt position from ${currentCycleFills.length} current cycle fills`);
 
     // 6. Note: We do NOT restore all exchange orders to the order executor
     // The regime engine should only track orders IT places, not orders from other engines (like DCA)

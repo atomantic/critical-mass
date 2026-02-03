@@ -1623,6 +1623,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     return { success: true, message: `Resumed, peak reset to $${currentEquity.toFixed(2)}` };
   };
 
+  /**
+   * Update position state externally (e.g., from recalculate)
+   * @param {Object} newPosition - New position values to merge
+   */
+  const updatePosition = (newPosition) => {
+    positionState = {
+      ...positionState,
+      ...newPosition,
+    };
+    saveLiveState();
+    console.log(`🔄 [${exchange}] Position updated externally: step=${positionState.ladderStep}, cycles=${positionState.cyclesCompleted}, BTC reserves=${positionState.realizedBtcPnL}`);
+  };
+
   return {
     start,
     stop,
@@ -1632,6 +1645,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     pause,
     resume,
     updateConfig,
+    updatePosition,
     getFills,
     getFillStats,
     forceResumeDrawdown,
