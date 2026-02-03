@@ -24,9 +24,18 @@ A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 
 ### Admin Dashboard
 - React-based web UI at port 5563
-- Exchange selector for multi-exchange management
+- URL pattern: `/:exchange/:strategy/[tab]` (e.g., `/coinbase/regime/dashboard`)
+  - DCA routes: `/coinbase/dca`, `/coinbase/dca/cost-basis`, `/coinbase/dca/transactions`, etc.
+  - Regime routes: `/coinbase/regime`, `/coinbase/regime/cost-basis`, `/coinbase/regime/transactions`, etc.
+  - API Keys: `/:exchange/keys` (shared per exchange)
+- Exchange + Strategy selector showing both strategies per exchange with status indicators
+  - DCA: Active/Dry-Run/Off status
+  - Regime: Running/Dry-Run/Ready/Off status
+- Strategy-specific views:
+  - DCA: Order-based cost basis, TSV transactions, Backtest/Optimizer pages
+  - Regime: Cycle-based cost basis, fill ledger transactions (no Backtest/Optimizer)
 - Real-time dashboard with WebSocket updates
-- Configuration editor with validation
+- Configuration editor with validation (strategy-aware fields)
 - API keys management (masked display)
 - Transaction history and cost basis reports
 - Backtesting with historical price data (supports any trading pair from config)
@@ -297,10 +306,17 @@ admin/src/components/
 │   ├── RegimePriceChart.jsx    # Price chart with ATR trigger bands
 │   ├── VolatilityChart.jsx     # ATR/volatility area chart
 │   └── RegimeTimeline.jsx      # Horizontal regime history bar
-├── Charts.jsx          # Charts page using D3 components
-├── Dashboard.jsx       # Main dashboard view
-├── RegimeDashboard.jsx # Regime engine control panel with live charts
-└── ...                 # Other components
+├── ChartsDCA.jsx          # DCA strategy charts page
+├── ChartsRegime.jsx       # Regime strategy charts page
+├── CostBasisDCA.jsx       # DCA order-based cost basis view
+├── CostBasisRegime.jsx    # Regime cycle-based cost basis view
+├── TransactionsDCA.jsx    # DCA TSV-based transaction log
+├── TransactionsRegime.jsx # Regime fill ledger transactions
+├── Dashboard.jsx          # DCA main dashboard view
+├── RegimeDashboard.jsx    # Regime engine control panel with live charts
+├── ConfigEditor.jsx       # Strategy-aware configuration editor
+├── ExchangeSelector.jsx   # Exchange + Strategy selector dropdown
+└── ...                    # Other components
 
 admin/src/hooks/
 ├── useTradeEvents.js    # WebSocket event subscriptions

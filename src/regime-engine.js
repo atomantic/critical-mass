@@ -664,14 +664,31 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Then recover/validate from exchange (source of truth)
       const { position } = await recoveryModule.recoverState(fillLedger, orderExecutor);
 
-      // Merge recovered position with any saved state (exchange is authoritative for BTC balance)
-      // Preserve activeTpOrderId and lastTpPrice from saved state - these are engine tracking state
+      // Merge recovered position with any saved state
+      // IMPORTANT: If saved state shows totalBTC=0 with cyclesCompleted>0, this means
+      // a cycle was properly completed and reset. The recovery from fills will show
+      // the "holdback" BTC as position (sum of buys minus sells), but this is NOT
+      // an active position - it's accumulated BTC reserves from completed cycles.
+      // Trust the saved state in this case.
       const savedTpOrderId = positionState.activeTpOrderId;
       const savedTpPrice = positionState.lastTpPrice;
+      const savedTotalBTC = positionState.totalBTC;
+      const savedCyclesCompleted = positionState.cyclesCompleted;
+      const cycleWasCompleted = hasSavedState && savedTotalBTC === 0 && savedCyclesCompleted > 0;
+
+      if (cycleWasCompleted) {
+        console.log(`ℹ️ [${exchange}] Saved state shows completed cycle (${savedCyclesCompleted} cycles, 0 BTC position) - trusting saved state over recovery`);
+      }
+
       positionState = {
         ...createInitialPositionState(),
         ...positionState, // Keep saved fields like realizedPnL, cyclesCompleted
         ...position,      // Override with exchange-recovered values
+        // BUT: if cycle was completed, preserve the zero position from saved state
+        totalBTC: cycleWasCompleted ? 0 : position.totalBTC,
+        totalCostBasis: cycleWasCompleted ? 0 : position.totalCostBasis,
+        avgCostBasis: cycleWasCompleted ? 0 : position.avgCostBasis,
+        ladderStep: cycleWasCompleted ? 0 : position.ladderStep,
         activeTpOrderId: savedTpOrderId, // Restore TP tracking (not in fills)
         lastTpPrice: savedTpPrice,
       };
@@ -1009,12 +1026,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         actualTpPct,
       });
 
-      // Persist state immediately after TP fill to prevent loss on crash
+      // Reset for next cycle FIRST, then persist
+      resetCycle();
+
+      // Persist state AFTER reset to ensure cycle reset is saved
       saveLiveState();
       fillLedger.persist();
-
-      // Reset for next cycle
-      resetCycle();
     }
 
     orderExecutor.handleOrderFill(fillData.orderId);
@@ -1066,8 +1083,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const oneHourAgo = now - 3600;
     const fourHoursAgo = now - 14400;
 
-    const candles1m = await adapter.getCandles(productId, oneHourAgo, now, 'ONE_MINUTE');
-    const candles5m = await adapter.getCandles(productId, fourHoursAgo, now, 'FIVE_MINUTE');
+    // Fetch candles with error handling - metrics update is non-critical
+    let candles1m, candles5m;
+    let fetchFailed = false;
+
+    await (async () => {
+      candles1m = await adapter.getCandles(productId, oneHourAgo, now, 'ONE_MINUTE');
+      candles5m = await adapter.getCandles(productId, fourHoursAgo, now, 'FIVE_MINUTE');
+    })().catch(err => {
+      console.log(`⚠️ [${exchange}] Metrics update failed (using cached): ${err.message}`);
+      fetchFailed = true;
+    });
+
+    // If fetch failed, skip metrics update but continue with regime classification using cached values
+    if (fetchFailed) {
+      // Still log hourly summary with cached metrics
+      logHourlySummary();
+      return;
+    }
 
     const metrics = calculateAllMetrics(candles1m, candles5m, marketState.volBaseline, config);
 
@@ -1104,7 +1137,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     reconcileInterval = setInterval(() => {
       if (!isRunning) return; // Guard against firing after stop
 
-      // Check for fills that WebSocket might have missed
+      // Check for entry fills that WebSocket might have missed
       if (!isDryRun && orderExecutor.checkPendingOrderFills) {
         orderExecutor.checkPendingOrderFills()
           .then(result => {
@@ -1114,6 +1147,36 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           })
           .catch(err => {
             console.log(`❌ [${exchange}] Fill check failed: ${err.message}`);
+          });
+      }
+
+      // Check for TP order fill that WebSocket might have missed
+      if (!isDryRun && positionState.activeTpOrderId) {
+        adapter.getOrder(positionState.activeTpOrderId)
+          .then(async (orderStatus) => {
+            if (orderStatus.status === 'FILLED') {
+              console.log(`✅ [${exchange}] Reconcile detected TP order ${positionState.activeTpOrderId} filled (WebSocket missed)`);
+              // Build fill data in the format handleOrderFill expects
+              const fillData = {
+                orderId: positionState.activeTpOrderId,
+                side: 'sell',
+                status: 'FILLED',
+                filledSize: parseFloat(orderStatus.filledSize || 0),
+                filledValue: parseFloat(orderStatus.filledValue || 0),
+                averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
+              };
+              await handleOrderFill(fillData);
+            }
+          })
+          .catch(err => {
+            // Order not found might mean it was cancelled or doesn't exist
+            if (err.message?.includes('not found') || err.response?.status === 404) {
+              console.log(`⚠️ [${exchange}] TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
+              positionState.activeTpOrderId = null;
+              orderExecutor.handleOrderCancel(positionState.activeTpOrderId);
+            } else {
+              console.log(`❌ [${exchange}] TP order check failed: ${err.message}`);
+            }
           });
       }
 

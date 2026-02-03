@@ -86,6 +86,7 @@ const getAuthHeaders = (apiKey, apiSecret, requestMethod, requestPath) => ({
 });
 
 module.exports = {
+  preparePrivateKey,
   generateJWT,
   getAuthHeaders,
 };

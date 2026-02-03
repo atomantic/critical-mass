@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import { Link } from 'react-router-dom'
 import { getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
@@ -34,21 +33,27 @@ function FormSelect({ label, value, onChange, options, className = '' }) {
   )
 }
 
-function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) {
+function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', strategy = 'dca' }) {
   const [config, setConfig] = useState(initialConfig || {})
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null)
   const [isDirty, setIsDirty] = useState(false)
   const prevExchangeRef = useRef(exchange)
+  const prevStrategyRef = useRef(strategy)
 
-  // Only sync with initialConfig when exchange changes (not on every refresh)
+  // Determine if showing regime config based on URL strategy prop
+  const isRegime = strategy === 'regime'
+  const isFibonacci = !isRegime && config.dcaStrategy === 'fibonacci'
+
+  // Only sync with initialConfig when exchange or strategy changes (not on every refresh)
   useEffect(() => {
-    if (initialConfig && (prevExchangeRef.current !== exchange || !isDirty)) {
+    if (initialConfig && (prevExchangeRef.current !== exchange || prevStrategyRef.current !== strategy || !isDirty)) {
       setConfig(initialConfig)
       setIsDirty(false)
       prevExchangeRef.current = exchange
+      prevStrategyRef.current = strategy
     }
-  }, [initialConfig, exchange, isDirty])
+  }, [initialConfig, exchange, strategy, isDirty])
 
   const handleChange = (key, value) => {
     setConfig(prev => ({ ...prev, [key]: value }))
@@ -109,14 +114,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
     { value: 'weekly', label: 'Weekly' },
   ]
 
-  const STRATEGY_OPTIONS = [
+  const DCA_STRATEGY_OPTIONS = [
     { value: 'fixed', label: 'Fixed Amount DCA' },
     { value: 'fibonacci', label: 'Fibonacci DCA' },
-    { value: 'regime', label: 'Regime Engine' },
   ]
-
-  const isFibonacci = config.dcaStrategy === 'fibonacci'
-  const isRegime = config.dcaStrategy === 'regime'
 
   // Generate Fibonacci preview sequence
   const getFibPreview = (baseAmount, count = 8) => {
@@ -152,13 +153,22 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
               <span className="text-gray-400">Enabled</span>
               <button
                 type="button"
-                onClick={() => handleChange('enabled', !config.enabled)}
+                onClick={() => {
+                  // Strategy-specific enabled toggle
+                  if (isRegime) {
+                    handleRegimeChange('enabled', !regimeConfig.enabled)
+                  } else {
+                    handleChange('enabled', !config.enabled)
+                  }
+                }}
                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                  config.enabled ? 'bg-green-500' : 'bg-gray-600'
+                  (isRegime ? regimeConfig.enabled : config.enabled)
+                    ? 'bg-green-500' : 'bg-gray-600'
                 }`}
               >
                 <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                  config.enabled ? 'translate-x-5' : 'translate-x-1'
+                  (isRegime ? regimeConfig.enabled : config.enabled)
+                    ? 'translate-x-5' : 'translate-x-1'
                 }`} />
               </button>
             </label>
@@ -189,56 +199,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
           </div>
         )}
 
-        {/* DCA Strategy Selection */}
+        {/* Strategy Header */}
         <div className="border-b border-gray-700 pb-3 mb-4">
-          <div className="flex items-center gap-4 mb-2">
-            <FormSelect
-              label="DCA Strategy"
-              value={config.dcaStrategy || 'fixed'}
-              onChange={(v) => handleChange('dcaStrategy', v)}
-              options={STRATEGY_OPTIONS}
-              className="w-48"
-            />
-            {isFibonacci && (
-              <FormInput
-                label="Fib Base Amount"
-                value={config.fibBaseAmount || 10}
-                onChange={(v) => handleChange('fibBaseAmount', v)}
-                type="number"
-                className="w-32"
-              />
-            )}
-          </div>
-          {isFibonacci && (
-            <div className="bg-gray-900/50 rounded p-3 text-xs">
-              <div className="text-gray-400 mb-1">
-                <span className="text-yellow-400 font-medium">Fibonacci Sequence:</span>{' '}
-                <span className="text-white font-mono">{getFibPreview(config.fibBaseAmount || 10)}</span>
-              </div>
-              <p className="text-gray-500 leading-relaxed">
-                This strategy is a volatility-harvesting accumulation system that incrementally builds a BTC position using
-                Fibonacci-sized buys on a fixed cadence during sideways conditions, continuously resetting a limit-sell order
-                based on the updated weighted cost basis while retaining a small percentage as long-term inventory.
-                It relies on short-term mean reversion within low-to-moderate volatility regimes to capture small, repeated
-                price oscillations that exceed the effective fee floor (~0.045% per entry), making modest profit targets
-                (sub-1%) more structurally aligned than large moves. There is no directional edge; the mechanism is position
-                sizing plus inventory cycling, and during trending or volatility expansion regimes it transitions from a
-                trading system into a BTC accumulation engine, concentrating capital over a short window (Fibonacci ramp)
-                and potentially locking funds into drawdowns, which is acceptable under the assumption of long-term BTC
-                conviction and no need for near-term capital liquidity.
-              </p>
-            </div>
-          )}
-          {isRegime && (
+          {isRegime ? (
             <div className="bg-purple-900/30 border border-purple-700/50 rounded p-3 text-xs">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-purple-400 font-medium">Regime-Aware Volatility Engine</span>
-                <Link
-                  to={`/${exchange}/regime`}
-                  className="px-3 py-1 bg-purple-600 hover:bg-purple-700 rounded text-white transition-colors"
-                >
-                  Open Dashboard →
-                </Link>
+                <span className="text-purple-400 font-medium">Regime-Aware Volatility Engine Configuration</span>
               </div>
               <p className="text-gray-400 leading-relaxed mb-3">
                 An advanced volatility-driven trading system that replaces fixed-interval DCA with ATR-based triggers.
@@ -261,11 +227,48 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
                   <span className="ml-1 text-white">Dynamic volatility-based</span>
                 </div>
               </div>
-              <div className="mt-3 pt-3 border-t border-purple-700/30 text-gray-500">
-                <strong className="text-gray-400">Note:</strong> Regime Engine runs independently from the timer-based DCA scheduler.
-                Disable "Enabled" toggle above to prevent conflicts, then start the engine from the Regime Dashboard.
-              </div>
             </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-4 mb-2">
+                <FormSelect
+                  label="DCA Strategy"
+                  value={config.dcaStrategy || 'fixed'}
+                  onChange={(v) => handleChange('dcaStrategy', v)}
+                  options={DCA_STRATEGY_OPTIONS}
+                  className="w-48"
+                />
+                {isFibonacci && (
+                  <FormInput
+                    label="Fib Base Amount"
+                    value={config.fibBaseAmount || 10}
+                    onChange={(v) => handleChange('fibBaseAmount', v)}
+                    type="number"
+                    className="w-32"
+                  />
+                )}
+              </div>
+              {isFibonacci && (
+                <div className="bg-gray-900/50 rounded p-3 text-xs">
+                  <div className="text-gray-400 mb-1">
+                    <span className="text-yellow-400 font-medium">Fibonacci Sequence:</span>{' '}
+                    <span className="text-white font-mono">{getFibPreview(config.fibBaseAmount || 10)}</span>
+                  </div>
+                  <p className="text-gray-500 leading-relaxed">
+                    This strategy is a volatility-harvesting accumulation system that incrementally builds a BTC position using
+                    Fibonacci-sized buys on a fixed cadence during sideways conditions, continuously resetting a limit-sell order
+                    based on the updated weighted cost basis while retaining a small percentage as long-term inventory.
+                    It relies on short-term mean reversion within low-to-moderate volatility regimes to capture small, repeated
+                    price oscillations that exceed the effective fee floor (~0.045% per entry), making modest profit targets
+                    (sub-1%) more structurally aligned than large moves. There is no directional edge; the mechanism is position
+                    sizing plus inventory cycling, and during trending or volatility expansion regimes it transitions from a
+                    trading system into a BTC accumulation engine, concentrating capital over a short window (Fibonacci ramp)
+                    and potentially locking funds into drawdowns, which is acceptable under the assumption of long-term BTC
+                    conviction and no need for near-term capital liquidity.
+                  </p>
+                </div>
+              )}
+            </>
           )}
         </div>
 

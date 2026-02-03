@@ -31,6 +31,7 @@ const {
 } = require('./src/interval-utils');
 const { createRegimeEngine } = require('./src/regime-engine');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig } = require('./src/config-utils');
+const { startMarketDataService, stopMarketDataService, getMarketDataService, stopAllMarketDataServices } = require('./src/market-data-service');
 
 // Active regime engines by exchange
 const regimeEngines = new Map();
@@ -128,11 +129,20 @@ app.get('/api/exchanges', (req, res) => {
 
   const exchanges = configured.map(name => {
     const config = getExchangeConfig(name);
+    const regimeEngine = regimeEngines.get(name);
+    const strategy = config.dcaStrategy || 'fixed';
+    const regimeConfig = config.regime || {};
+    // Check if regime config has any meaningful settings (not just empty object)
+    const hasRegimeConfig = !!(config.regime && Object.keys(config.regime).length > 0);
     return {
       name,
       enabled: config.enabled,
       dryRun: config.dryRun,
       productId: config.productId,
+      strategy,
+      regimeEnabled: regimeConfig.enabled || false,
+      regimeRunning: regimeEngine?.getState?.()?.isRunning || false,
+      hasRegimeConfig,
     };
   });
 
@@ -406,6 +416,37 @@ app.get('/api/:exchange/summary', (req, res) => {
   });
 });
 
+// Get candles for an exchange (for charts)
+app.get('/api/:exchange/candles', async (req, res) => {
+  const { exchange } = req.params;
+  const { granularity = 'ONE_MINUTE', limit = 60 } = req.query;
+  const config = getExchangeConfig(exchange);
+  const { getAdapter } = require('./src/adapters');
+  const adapter = getAdapter(exchange);
+
+  const productId = config.productId || 'BTC-USDC';
+  const now = Math.floor(Date.now() / 1000);
+
+  // Calculate start time based on granularity and limit
+  const granularitySeconds = {
+    'ONE_MINUTE': 60,
+    'FIVE_MINUTE': 300,
+    'FIFTEEN_MINUTE': 900,
+    'ONE_HOUR': 3600,
+    'SIX_HOUR': 21600,
+    'ONE_DAY': 86400,
+  };
+  const seconds = granularitySeconds[granularity] || 60;
+  const start = now - (parseInt(limit, 10) * seconds);
+
+  const result = await adapter.getCandles(productId, start, now, granularity);
+  if (!result || result.error) {
+    return res.status(500).json({ success: false, error: result?.error || 'Failed to fetch candles' });
+  }
+
+  res.json({ success: true, candles: result });
+});
+
 // Sync pending orders for an exchange
 app.post('/api/:exchange/sync', async (req, res) => {
   const { exchange } = req.params;
@@ -506,11 +547,27 @@ app.get('/api/:exchange/regime/status', (req, res) => {
   const engine = regimeEngines.get(exchange);
 
   if (!engine) {
+    // Load saved state from disk for historical data (P&L, cycles completed, etc.)
+    const { loadRegimeState } = require('./src/state-tracker');
+    const savedState = loadRegimeState(exchange);
+
+    // Fall back to market data service for live price/regime info
+    const marketService = getMarketDataService(exchange);
+    const serviceStatus = marketService ? marketService.getStatus() : null;
+
     return res.json({
       success: true,
       exchange,
       running: false,
-      status: null,
+      status: {
+        isRunning: false,
+        market: serviceStatus?.market || null,
+        regime: serviceStatus?.regime || null,
+        position: savedState?.position || null,
+        health: { mode: 'INACTIVE' },
+        // Include dry-run state if applicable
+        isDryRun: savedState?.isDryRun || false,
+      },
     });
   }
 
@@ -546,6 +603,9 @@ app.post('/api/:exchange/regime/start', async (req, res) => {
       error: 'API keys not configured for this exchange',
     });
   }
+
+  // Stop market data service to avoid duplicate WebSocket connections
+  stopMarketDataService(exchange);
 
   // Create and start the engine
   const engine = createRegimeEngine(exchange, exchangeConfig, {
@@ -610,6 +670,9 @@ app.post('/api/:exchange/regime/stop', async (req, res) => {
 
   // Remove running flag (user intentionally stopped)
   saveRegimeRunningFlag(exchange, false);
+
+  // Restart market data service for passive price streaming
+  startMarketDataService(exchange);
 
   log('INFO', `✅ [${exchange}] Regime engine stopped successfully`);
 
@@ -758,6 +821,62 @@ app.get('/api/:exchange/regime/fills', (req, res) => {
     running: true,
     fills,
     stats,
+  });
+});
+
+// Get open orders for regime engine (works even when engine is stopped)
+app.get('/api/:exchange/regime/open-orders', async (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  // If engine is running, get orders from it
+  if (engine) {
+    const openOrders = engine.getOpenOrders ? engine.getOpenOrders() : [];
+    return res.json({
+      success: true,
+      exchange,
+      running: true,
+      orders: openOrders,
+    });
+  }
+
+  // Engine not running - check market data service and saved state
+  const marketService = getMarketDataService(exchange);
+  const { loadRegimeState } = require('./src/state-tracker');
+  const savedState = loadRegimeState(exchange);
+
+  const orders = [];
+
+  // Get orders from market data service
+  if (marketService?.getOpenOrders) {
+    orders.push(...marketService.getOpenOrders());
+  }
+
+  // If no orders from service, check saved state for active TP order
+  if (orders.length === 0 && savedState.position?.activeTpOrderId) {
+    const { getAdapter } = require('./src/adapters');
+    const adapter = getAdapter(exchange);
+
+    // Verify order still exists on exchange
+    const orderStatus = await adapter.getOrder(savedState.position.activeTpOrderId).catch(() => null);
+    if (orderStatus && orderStatus.status === 'OPEN') {
+      orders.push({
+        orderId: savedState.position.activeTpOrderId,
+        type: 'take_profit',
+        side: 'sell',
+        price: savedState.position.lastTpPrice || 0,
+        size: savedState.position.btcOnOrder || savedState.position.totalBTC || 0,
+        status: 'open',
+        placedAt: savedState.position.lastEntryTime || null,
+      });
+    }
+  }
+
+  res.json({
+    success: true,
+    exchange,
+    running: false,
+    orders,
   });
 });
 
@@ -1521,6 +1640,18 @@ server.listen(PORT, async () => {
     }
   }
 
+  // Start market data services for exchanges with regime config (but not running engines)
+  for (const exchange of configuredExchanges) {
+    const regimeConfig = getRegimeConfig(exchange);
+    // Start market data service if regime config exists and engine not already running
+    if (regimeConfig && Object.keys(regimeConfig).length > 0 && !regimeEngines.has(exchange)) {
+      log('INFO', `📊 [${exchange}] Starting market data service for live price streaming...`);
+      startMarketDataService(exchange).catch(err => {
+        log('WARN', `⚠️ [${exchange}] Failed to start market data service: ${err.message}`);
+      });
+    }
+  }
+
   // Check for scheduled trades every 30 seconds
   const globalConfig = getGlobalConfig();
   setInterval(checkAndRunIntervalTrade, globalConfig.schedulerInterval || 30000);
@@ -1533,6 +1664,10 @@ server.listen(PORT, async () => {
 
 const gracefulShutdown = async (signal) => {
   log('INFO', `Received ${signal}, shutting down gracefully...`);
+
+  // Stop all market data services
+  log('INFO', 'Stopping market data services...');
+  stopAllMarketDataServices();
 
   // Stop all regime engines (this saves dry-run state)
   const stopPromises = [];

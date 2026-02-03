@@ -188,6 +188,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [resetting, setResetting] = useState(false)
   const [error, setError] = useState(null)
   const [liveFills, setLiveFills] = useState([])
+  const [showAllCycles, setShowAllCycles] = useState(false)
   const prevPriceRef = useRef(null)
 
   const { connected, status: socketStatus, setStatus: setSocketStatus, regimeState, healthState, positionState, events: regimeEvents, clearEvents } = useRegimeEvents(exchange)
@@ -1198,14 +1199,45 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
           <div className="bg-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-medium text-gray-400">Filled Orders</h3>
-              {((isDryRun && dryRunState?.filledOrders?.length > 0) || (!isDryRun && liveFills?.length > 0)) && (
-                <span className="text-xs text-gray-500">
-                  {isDryRun ? dryRunState.filledOrders.length : liveFills.length} fills
-                </span>
-              )}
+              <div className="flex items-center gap-3">
+                {!isDryRun && liveFills?.length > 0 && (
+                  <button
+                    onClick={() => setShowAllCycles(!showAllCycles)}
+                    className={`text-xs px-2 py-1 rounded transition-colors ${
+                      showAllCycles
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                    }`}
+                  >
+                    {showAllCycles ? 'All Cycles' : 'Current Cycle'}
+                  </button>
+                )}
+                {((isDryRun && dryRunState?.filledOrders?.length > 0) || (!isDryRun && liveFills?.length > 0)) && (
+                  <span className="text-xs text-gray-500">
+                    {isDryRun
+                      ? dryRunState.filledOrders.length
+                      : (showAllCycles
+                          ? liveFills.length
+                          : liveFills.filter(f => !f.cycleId || f.cycleId.startsWith('cycle-') === false).length
+                        )
+                    } fills
+                  </span>
+                )}
+              </div>
             </div>
-            {(isDryRun ? (dryRunState?.filledOrders?.length || 0) : (liveFills?.length || 0)) === 0 ? (
-              <div className="text-gray-500 text-sm text-center py-4">No filled orders yet</div>
+            {(isDryRun
+              ? (dryRunState?.filledOrders?.length || 0)
+              : (showAllCycles
+                  ? liveFills?.length
+                  : liveFills?.filter(f => !f.cycleId || !f.cycleId.startsWith('cycle-')).length
+                ) || 0
+            ) === 0 ? (
+              <div className="text-gray-500 text-sm text-center py-4">
+                {!isDryRun && liveFills?.length > 0 && !showAllCycles
+                  ? 'No fills in current cycle (toggle to see all cycles)'
+                  : 'No filled orders yet'
+                }
+              </div>
             ) : isDryRun ? (
               <div className="overflow-x-auto max-h-64 overflow-y-auto">
                 <table className="w-full text-sm">
@@ -1270,40 +1302,86 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 bg-gray-800">
                     <tr className="text-gray-400 text-xs border-b border-gray-700">
+                      {showAllCycles && <th className="text-left py-2 pr-2">Cycle</th>}
                       <th className="text-left py-2 pr-2">Side</th>
                       <th className="text-right py-2 pr-2">Size (BTC)</th>
                       <th className="text-right py-2 pr-2">Price</th>
                       <th className="text-right py-2 pr-2">Value</th>
-                      <th className="text-right py-2 pr-2">Fee</th>
+                      <th className="text-right py-2 pr-2">P&L</th>
+                      <th className="text-right py-2 pr-2">Holdback</th>
                       <th className="text-right py-2">Time</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {[...liveFills]
-                      .sort((a, b) => b.timestamp - a.timestamp)
-                      .slice(0, 20)
-                      .map((fill, idx) => (
-                        <tr key={`${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                          <td className={`py-2 pr-2 ${fill.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
-                            {fill.side?.toUpperCase()}
-                          </td>
-                          <td className="text-right py-2 pr-2 font-mono text-white">
-                            {fill.size?.toFixed(8)}
-                          </td>
-                          <td className="text-right py-2 pr-2 font-mono text-white">
-                            ${fill.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </td>
-                          <td className="text-right py-2 pr-2 font-mono text-gray-400 text-xs">
-                            ${fill.quoteAmount?.toFixed(2)}
-                          </td>
-                          <td className="text-right py-2 pr-2 font-mono text-gray-500 text-xs">
-                            ${fill.fee?.toFixed(4)}
-                          </td>
-                          <td className="text-right py-2 font-mono text-gray-500 text-xs">
-                            {fill.timestamp ? new Date(fill.timestamp).toLocaleTimeString() : '-'}
-                          </td>
-                        </tr>
-                      ))}
+                    {(() => {
+                      // Filter fills based on cycle toggle
+                      const filteredFills = showAllCycles
+                        ? liveFills
+                        : liveFills.filter(f => !f.cycleId || !f.cycleId.startsWith('cycle-'))
+                      // Calculate running avg cost basis and P&L for sells
+                      const sortedFills = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
+                      let totalBtc = 0
+                      let totalCost = 0
+                      const fillsWithPnl = sortedFills.map(fill => {
+                        if (fill.side === 'buy') {
+                          totalBtc += fill.size
+                          totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
+                          return { ...fill, pnl: null, holdback: null }
+                        } else {
+                          // Sell fill - calculate P&L
+                          const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
+                          const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
+                          const costBasis = avgCost * fill.size
+                          const pnl = proceeds - costBasis
+                          const holdback = totalBtc - fill.size
+                          // Reset position after sell
+                          totalBtc = holdback > 0 ? holdback : 0
+                          totalCost = holdback > 0 ? avgCost * holdback : 0
+                          return { ...fill, pnl, holdback: holdback > 0 ? holdback : 0, avgCost }
+                        }
+                      })
+                      return fillsWithPnl
+                        .sort((a, b) => b.timestamp - a.timestamp)
+                        .slice(0, showAllCycles ? 50 : 20)
+                        .map((fill, idx) => (
+                          <tr key={`${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                            {showAllCycles && (
+                              <td className="py-2 pr-2 text-xs text-gray-500">
+                                {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
+                              </td>
+                            )}
+                            <td className={`py-2 pr-2 ${fill.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
+                              {fill.side?.toUpperCase()}
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-white">
+                              {fill.size?.toFixed(8)}
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-white">
+                              ${fill.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-gray-400 text-xs">
+                              ${fill.quoteAmount?.toFixed(2)}
+                            </td>
+                            <td className={`text-right py-2 pr-2 font-mono text-xs ${
+                              fill.side === 'sell'
+                                ? (fill.pnl >= 0 ? 'text-green-400' : 'text-red-400')
+                                : 'text-gray-500'
+                            }`}>
+                              {fill.side === 'sell' && fill.pnl !== null
+                                ? `${fill.pnl >= 0 ? '+' : ''}$${fill.pnl.toFixed(2)}`
+                                : '—'}
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
+                              {fill.side === 'sell' && fill.holdback > 0
+                                ? `+${fill.holdback.toFixed(8)}`
+                                : '—'}
+                            </td>
+                            <td className="text-right py-2 font-mono text-gray-500 text-xs">
+                              {fill.timestamp ? new Date(fill.timestamp).toLocaleTimeString() : '-'}
+                            </td>
+                          </tr>
+                        ))
+                    })()}
                   </tbody>
                 </table>
               </div>
