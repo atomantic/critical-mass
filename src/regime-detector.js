@@ -54,7 +54,7 @@ const createRegimeDetector = (exchange, config, callbacks = {}) => {
    * @returns {RegimeMode} Detected regime
    */
   const classify = (marketState) => {
-    const { realizedVol, volBaseline, atr1m, vwap, lastPrice, tradeImbalance } = marketState;
+    const { realizedVol, volBaseline, atr1m, vwap, lastPrice } = marketState;
 
     // Calculate key metrics
     const volExpansion = calculateVolExpansion(realizedVol, volBaseline);

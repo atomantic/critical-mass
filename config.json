@@ -36,8 +36,8 @@
         "tpUpdateThresholdPct": 0.5,
         "holdbackRatio": 0.5,
         "maxBtcExposure": 5,
-        "maxUsdcDeployed": 10000.6,
-        "maxDrawdownPercent": 40,
+        "maxUsdcDeployed": 10005.18,
+        "maxDrawdownPercent": 30,
         "entryOffsetBps": 12,
         "cancelRateLimitMs": 1000,
         "orderStaleMs": 60000,
@@ -60,7 +60,7 @@
         "ladderResetHours": 32,
         "tpAutoManaged": true
       },
-      "dcaStrategy": "regime",
+      "dcaStrategy": "fixed",
       "fibBaseAmount": 10,
       "schedulerInterval": 30000
     },

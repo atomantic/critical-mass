@@ -42,7 +42,6 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
   }
 
   const position = status?.position || {}
-  const dryRunState = status?.dryRun || {}
   const isDryRun = status?.isDryRun
 
   // Calculate cycle-based P&L from fills

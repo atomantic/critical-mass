@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react'
+import { useRef, useEffect, useMemo, useState } from 'react'
 import * as d3 from 'd3'
 
 // Regime colors for background zones
@@ -20,6 +20,7 @@ function VolatilityChart({
 }) {
   const containerRef = useRef(null)
   const svgRef = useRef(null)
+  const [containerWidth, setContainerWidth] = useState(0)
 
   // Filter to last 15 minutes
   const chartData = useMemo(() => {
@@ -28,9 +29,7 @@ function VolatilityChart({
   }, [atrData])
 
   useEffect(() => {
-    if (!svgRef.current || !containerRef.current || chartData.length < 2) return
-
-    const containerWidth = containerRef.current.clientWidth
+    if (!svgRef.current || !containerRef.current || chartData.length < 2 || containerWidth === 0) return
     const svg = d3.select(svgRef.current)
     svg.selectAll('*').remove()
 
@@ -236,25 +235,23 @@ function VolatilityChart({
         .text(item.label)
     })
 
-  }, [chartData, regimeData, height])
+  }, [chartData, regimeData, height, containerWidth])
 
   // Handle resize
   useEffect(() => {
-    const handleResize = () => {
-      if (svgRef.current && containerRef.current && chartData.length >= 2) {
-        // Trigger re-render by updating a state or using a resize observer
-        const event = new Event('resize')
-        window.dispatchEvent(event)
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width)
       }
-    }
+    })
 
-    const resizeObserver = new ResizeObserver(handleResize)
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current)
+      setContainerWidth(containerRef.current.clientWidth)
     }
 
     return () => resizeObserver.disconnect()
-  }, [chartData])
+  }, [])
 
   if (chartData.length < 2) {
     return (

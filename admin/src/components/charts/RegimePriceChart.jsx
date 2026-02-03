@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react'
+import { useRef, useEffect, useMemo, useState } from 'react'
 import * as d3 from 'd3'
 
 // Regime colors for background zones
@@ -24,6 +24,7 @@ function RegimePriceChart({
 }) {
   const containerRef = useRef(null)
   const svgRef = useRef(null)
+  const [containerWidth, setContainerWidth] = useState(0)
 
   // Filter to last 15 minutes
   const chartData = useMemo(() => {
@@ -32,9 +33,7 @@ function RegimePriceChart({
   }, [priceData])
 
   useEffect(() => {
-    if (!svgRef.current || !containerRef.current || chartData.length < 2) return
-
-    const containerWidth = containerRef.current.clientWidth
+    if (!svgRef.current || !containerRef.current || chartData.length < 2 || containerWidth === 0) return
     const svg = d3.select(svgRef.current)
     svg.selectAll('*').remove()
 
@@ -249,23 +248,23 @@ function RegimePriceChart({
     g.selectAll('g:last-child line, g:last-child path')
       .attr('stroke', '#60a5fa')
 
-  }, [chartData, regimeData, height, anchorPrice, atr, kFactor, currentPrice])
+  }, [chartData, regimeData, height, anchorPrice, atr, kFactor, currentPrice, containerWidth])
 
   // Handle resize
   useEffect(() => {
-    const resizeObserver = new ResizeObserver(() => {
-      if (svgRef.current && containerRef.current && chartData.length >= 2) {
-        const event = new Event('resize')
-        window.dispatchEvent(event)
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width)
       }
     })
 
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current)
+      setContainerWidth(containerRef.current.clientWidth)
     }
 
     return () => resizeObserver.disconnect()
-  }, [chartData])
+  }, [])
 
   if (chartData.length < 2) {
     return (

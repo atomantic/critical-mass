@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useRegimeEvents, useTradeEvents } from '../hooks/useTradeEvents'
+import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
@@ -38,16 +38,6 @@ const HEALTH_COLORS = {
   ACTIVE: { bg: 'bg-green-900/50', text: 'text-green-400', icon: '●' },
   SAFE: { bg: 'bg-yellow-900/50', text: 'text-yellow-400', icon: '◐' },
   PAUSED: { bg: 'bg-gray-700', text: 'text-gray-400', icon: '○' },
-}
-
-function StatCard({ label, value, subValue, color = 'text-white' }) {
-  return (
-    <div className="bg-gray-800 rounded-lg p-3">
-      <div className="text-xs text-gray-400 mb-1">{label}</div>
-      <div className={`text-lg font-semibold ${color}`}>{value}</div>
-      {subValue && <div className="text-xs text-gray-500">{subValue}</div>}
-    </div>
-  )
 }
 
 // Live price ticker with animation
@@ -154,29 +144,6 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
   )
 }
 
-// Data freshness indicator
-function DataFreshness({ lastUpdate }) {
-  const [now, setNow] = useState(Date.now())
-
-  useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(interval)
-  }, [])
-
-  if (!lastUpdate) return null
-
-  const age = now - lastUpdate
-  const isStale = age > 30000
-  const isWarning = age > 10000
-
-  return (
-    <div className={`flex items-center gap-1 text-xs ${isStale ? 'text-red-400' : isWarning ? 'text-yellow-400' : 'text-green-400'}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${isStale ? 'bg-red-400' : isWarning ? 'bg-yellow-400' : 'bg-green-400 animate-pulse'}`} />
-      <span>{age < 1000 ? 'Live' : `${(age / 1000).toFixed(0)}s ago`}</span>
-    </div>
-  )
-}
-
 function RegimeDashboard({ exchange = 'coinbase' }) {
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
@@ -188,8 +155,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [recalcPreview, setRecalcPreview] = useState(null)
   const prevPriceRef = useRef(null)
 
-  const { connected, status: socketStatus, regimeState, healthState, positionState, events: regimeEvents, clearEvents } = useRegimeEvents(exchange)
-  const { events: tradeEvents } = useTradeEvents(exchange)
+  const { status: socketStatus } = useRegimeEvents(exchange)
 
   // Use socket status when available, fall back to local status (for initial load / when engine stopped)
   const status = socketStatus || localStatus
@@ -204,10 +170,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }
   }, [status?.market?.lastPrice])
 
-  // Combine and filter regime-related trade events
-  const allEvents = [...regimeEvents, ...tradeEvents.filter(e =>
-    ['regime_change', 'entry_placed', 'entry_filled', 'tp_placed', 'tp_filled', 'tp_adjusted', 'flash_move', 'safe_mode', 'active_mode'].includes(e.type)
-  )].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 30)
 
   // Fetch status (only used for initial load and when engine is stopped)
   const fetchStatus = useCallback(async () => {
@@ -603,6 +565,53 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           </div>
                         ))}
                       </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Fill Time Stats */}
+            {status?.fillTimeStats?.count > 0 && (
+              <div className="bg-gray-800 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-medium text-gray-400">Fill Time Stats (7d)</h3>
+                  <span className="text-[10px] text-gray-500">
+                    {status.fillTimeStats.count} fills
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <span className="text-gray-400">Avg:</span>{' '}
+                      <span className="text-white font-mono">{(status.fillTimeStats.avgMs / 1000).toFixed(1)}s</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400">P50:</span>{' '}
+                      <span className="text-white font-mono">{(status.fillTimeStats.p50Ms / 1000).toFixed(1)}s</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400">P90:</span>{' '}
+                      <span className="text-yellow-400 font-mono">{(status.fillTimeStats.p90Ms / 1000).toFixed(1)}s</span>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-gray-500">
+                      Range: {(status.fillTimeStats.minMs / 1000).toFixed(1)}s - {(status.fillTimeStats.maxMs / 1000).toFixed(1)}s
+                    </span>
+                    <span className={status.fillTimeStats.staleRate > 10 ? 'text-red-400' : 'text-gray-500'}>
+                      Stale: {status.fillTimeStats.staleRate}%
+                    </span>
+                  </div>
+
+                  {status.effectiveStaleMs && (
+                    <div className="text-[10px] text-gray-500 pt-1 border-t border-gray-700">
+                      Timeout: {(status.effectiveStaleMs / 1000).toFixed(1)}s
+                      {status.effectiveStaleMs !== config?.orderStaleMs && (
+                        <span className="text-purple-400 ml-1">(regime-adjusted)</span>
+                      )}
                     </div>
                   )}
                 </div>

@@ -35,6 +35,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   let lastTpPrice = 0;
   let lastTpSize = 0;
   let activeTpOrderId = null;
+  let staleTimeoutMultiplier = 1.0; // Can be adjusted by regime
 
   /**
    * Check if error indicates a post-only rejection (price moved)
@@ -212,11 +213,38 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
+   * Get the placedAt timestamp for an order
+   * @param {string} orderId - Order ID
+   * @returns {number|null} Timestamp when order was placed, or null if not found
+   */
+  const getOrderPlacedAt = (orderId) => {
+    const order = pendingOrders.get(orderId);
+    return order ? order.placedAt : null;
+  };
+
+  /**
+   * Set stale timeout multiplier (for regime-based adjustment)
+   * @param {number} multiplier - Multiplier to apply to orderStaleMs (e.g., 0.7 for faster timeout)
+   */
+  const setStaleTimeoutMultiplier = (multiplier) => {
+    staleTimeoutMultiplier = Math.max(0.3, Math.min(2.0, multiplier)); // Clamp between 0.3x and 2x
+  };
+
+  /**
+   * Get current effective stale timeout
+   * @returns {number} Effective timeout in ms
+   */
+  const getEffectiveStaleMs = () => {
+    return Math.round(config.orderStaleMs * staleTimeoutMultiplier);
+  };
+
+  /**
    * Schedule stale order timeout for entry order
-   * Uses orderStaleMs for consistency with dry-run simulation
+   * Uses orderStaleMs * staleTimeoutMultiplier for regime-aware timeout
    * @param {string} orderId - Order ID to check
    */
   const scheduleStaleOrderTimeout = (orderId) => {
+    const effectiveStaleMs = getEffectiveStaleMs();
     setTimeout(() => {
       const order = pendingOrders.get(orderId);
       if (!order || order.type !== 'entry') return;
@@ -260,12 +288,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const now = Date.now();
     let refreshed = 0;
 
+    const effectiveStaleMs = getEffectiveStaleMs();
     for (const [orderId, order] of pendingOrders) {
       // Skip TP orders - they should stay
       if (order.type === 'take_profit') continue;
 
-      // Check if order is stale
-      if (now - order.placedAt > config.orderStaleMs) {
+      // Check if order is stale (using regime-adjusted timeout)
+      if (now - order.placedAt > effectiveStaleMs) {
         // Rate limit cancels
         if (now - lastCancelTime < config.cancelRateLimitMs) {
           continue;
@@ -343,7 +372,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    */
   const atomicReplace = async (oldOrderId, newOrderParams) => {
     // Step 1: Cancel old order
-    const cancelResult = await adapter.cancelOrder(oldOrderId);
+    await adapter.cancelOrder(oldOrderId);
 
     // Step 2: Wait for cancel confirmation
     let confirmed = false;
@@ -590,6 +619,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     clearPendingOrders,
     restorePendingOrder,
     checkPendingOrderFills,
+    // Fill time tracking
+    getOrderPlacedAt,
+    // Regime-based stale timeout
+    setStaleTimeoutMultiplier,
+    getEffectiveStaleMs,
   };
 };
 

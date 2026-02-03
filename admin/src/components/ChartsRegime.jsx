@@ -14,7 +14,7 @@ function ChartsRegime({ exchange = 'coinbase' }) {
   const [historicalPrices, setHistoricalPrices] = useState([])
   const [historicalAtr, setHistoricalAtr] = useState([])
 
-  const { connected, status: socketStatus, regimeState, healthState } = useRegimeEvents(exchange)
+  const { connected, status: socketStatus } = useRegimeEvents(exchange)
 
   // Use socket status when available, fall back to local status
   const status = socketStatus || localStatus
@@ -50,19 +50,22 @@ function ChartsRegime({ exchange = 'coinbase' }) {
     if (candlesRes.ok) {
       const data = await candlesRes.json()
       if (data.candles && data.candles.length > 0) {
-        // Convert candles to price history format (timestamp is already in ms)
+        // Convert candles to price history format matching useChartDataBuffer schema
         const prices = data.candles.map(c => ({
-          date: new Date(c.timestamp),
+          timestamp: c.timestamp,
           price: parseFloat(c.close),
           high: parseFloat(c.high),
           low: parseFloat(c.low),
         })).reverse() // Oldest first
         setHistoricalPrices(prices)
 
-        // Calculate ATR from candles (simplified: use high-low range)
+        // Calculate ATR from candles matching VolatilityChart schema
         const atrData = data.candles.map(c => ({
-          date: new Date(c.timestamp),
-          atr: parseFloat(c.high) - parseFloat(c.low),
+          timestamp: c.timestamp,
+          atr1m: parseFloat(c.high) - parseFloat(c.low),
+          atr5m: null,
+          realizedVol: null,
+          volBaseline: null,
         })).reverse()
         setHistoricalAtr(atrData)
       }
