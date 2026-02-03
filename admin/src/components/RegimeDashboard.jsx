@@ -440,58 +440,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               </div>
             </div>
 
-            {/* Risk Limits */}
-            <div className="bg-gray-800 rounded-lg p-3">
-              <h3 className="text-xs font-medium text-gray-400 mb-2">Risk Limits</h3>
-              <div className="space-y-2">
-                <div>
-                  <div className="flex justify-between text-[10px] mb-1">
-                    <span className="text-gray-500">BTC Exposure</span>
-                    <span className="text-white">{position.totalBTC?.toFixed(4) || 0} / {config?.maxBtcExposure || 0.5}</span>
-                  </div>
-                  <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                    <div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, ((position.totalBTC || 0) / (config?.maxBtcExposure || 0.5)) * 100)}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-[10px] mb-1">
-                    <span className="text-gray-500">USDC Deployed</span>
-                    <span className="text-white">${position.totalCostBasis?.toFixed(0) || 0} / ${config?.maxUsdcDeployed || 10000}</span>
-                  </div>
-                  <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, ((position.totalCostBasis || 0) / (config?.maxUsdcDeployed || 10000)) * 100)}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-[10px] mb-1">
-                    <span className="text-gray-500">Max Drawdown</span>
-                    <span className={position.maxDrawdownSeen > config?.maxDrawdownPercent * 0.8 ? 'text-yellow-400' : 'text-white'}>
-                      {position.maxDrawdownSeen?.toFixed(1) || 0}% / {config?.maxDrawdownPercent || 20}%
-                    </span>
-                  </div>
-                  <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                    <div className="h-full bg-red-500 transition-all" style={{ width: `${Math.min(100, ((position.maxDrawdownSeen || 0) / (config?.maxDrawdownPercent || 20)) * 100)}%` }} />
-                  </div>
-                </div>
-                {risk.isDrawdownPaused && (
-                  <div className="mt-2 p-2 bg-red-900/30 border border-red-500/50 rounded text-xs">
-                    <div className="text-red-400 font-medium flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
-                      Paused (Drawdown)
-                    </div>
-                    <button onClick={handleResumeDrawdown} className="mt-1 px-2 py-1 bg-green-600 hover:bg-green-700 text-white text-[10px] rounded">
-                      Resume
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Regime Timeline */}
-            <RegimeTimeline data={regimeHistory} currentRegime={regime} height={60} />
+            {/* Volatility Chart */}
+            <VolatilityChart
+              atrData={atrHistory}
+              regimeData={regimeHistory}
+              height={200}
+            />
           </div>
 
-          {/* Middle Column: Position */}
+          {/* Middle Column: Position & Risk */}
           <div className="space-y-4">
             {/* Position */}
             <div className="bg-gray-800 rounded-lg p-4">
@@ -684,10 +641,54 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               )}
             </div>
+
+            {/* Risk Limits - Horizontal */}
+            <div className="bg-gray-800 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-medium text-gray-400">Risk Limits</h3>
+                {risk.isDrawdownPaused && (
+                  <button onClick={handleResumeDrawdown} className="px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] rounded flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
+                    Resume
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="text-center">
+                  <div className="text-[10px] text-gray-500 mb-1">BTC</div>
+                  <div className="text-xs text-white font-mono">{position.totalBTC?.toFixed(4) || 0}</div>
+                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, ((position.totalBTC || 0) / (config?.maxBtcExposure || 0.5)) * 100)}%` }} />
+                  </div>
+                  <div className="text-[9px] text-gray-600">/ {config?.maxBtcExposure || 0.5}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-[10px] text-gray-500 mb-1">USDC</div>
+                  <div className="text-xs text-white font-mono">${position.totalCostBasis?.toFixed(0) || 0}</div>
+                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, ((position.totalCostBasis || 0) / (config?.maxUsdcDeployed || 10000)) * 100)}%` }} />
+                  </div>
+                  <div className="text-[9px] text-gray-600">/ ${config?.maxUsdcDeployed || 10000}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-[10px] text-gray-500 mb-1">Drawdown</div>
+                  <div className={`text-xs font-mono ${position.maxDrawdownSeen > config?.maxDrawdownPercent * 0.8 ? 'text-yellow-400' : 'text-white'}`}>
+                    {position.maxDrawdownSeen?.toFixed(1) || 0}%
+                  </div>
+                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-red-500 transition-all" style={{ width: `${Math.min(100, ((position.maxDrawdownSeen || 0) / (config?.maxDrawdownPercent || 20)) * 100)}%` }} />
+                  </div>
+                  <div className="text-[9px] text-gray-600">/ {config?.maxDrawdownPercent || 20}%</div>
+                </div>
+              </div>
+            </div>
           </div>
 
-          {/* Right Column: Charts */}
+          {/* Right Column: Timeline & Price Chart */}
           <div className="space-y-4">
+            {/* Regime Timeline */}
+            <RegimeTimeline data={regimeHistory} currentRegime={regime} height={60} />
+
             <RegimePriceChart
               priceData={priceHistory}
               regimeData={regimeHistory}
@@ -696,11 +697,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               atr={market.atr1m}
               kFactor={config?.kFactor || 0.6}
               height={280}
-            />
-            <VolatilityChart
-              atrData={atrHistory}
-              regimeData={regimeHistory}
-              height={240}
             />
           </div>
         </div>
