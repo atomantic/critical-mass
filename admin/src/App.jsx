@@ -14,7 +14,7 @@ import ExchangeSelector from './components/ExchangeSelector'
 import KeysConfig from './components/KeysConfig'
 import RegimeDashboard from './components/RegimeDashboard'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
-import { useTradeEvents } from './hooks/useTradeEvents'
+import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -98,6 +98,14 @@ function AppContent() {
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [regimeRunning, setRegimeRunning] = useState(false)
+  const [regimeDryRun, setRegimeDryRun] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const [resetting, setResetting] = useState(false)
+
+  // WebSocket connection for regime strategy
+  const { connected: wsConnected } = useRegimeEvents(currentStrategy === 'regime' ? currentExchange : null)
 
   // Get tabs based on current strategy
   const tabs = getTabsForStrategy(currentStrategy)
@@ -162,6 +170,45 @@ function AppContent() {
     fetchExchanges()
   }
 
+  // Fetch regime status (for header controls)
+  const fetchRegimeStatus = async () => {
+    if (currentStrategy !== 'regime') return
+    const res = await fetch(`/api/${currentExchange}/regime/status`)
+    if (res.ok) {
+      const data = await res.json()
+      setRegimeRunning(data.status?.isRunning || false)
+      setRegimeDryRun(data.status?.isDryRun || false)
+    }
+  }
+
+  // Start regime engine
+  const handleStartRegime = async () => {
+    setStarting(true)
+    const res = await fetch(`/api/${currentExchange}/regime/start`, { method: 'POST' })
+    if (res.ok) {
+      setRegimeRunning(true)
+      fetchRegimeStatus()
+    }
+    setStarting(false)
+  }
+
+  // Stop regime engine
+  const handleStopRegime = async () => {
+    setStopping(true)
+    const res = await fetch(`/api/${currentExchange}/regime/stop`, { method: 'POST' })
+    if (res.ok) {
+      setRegimeRunning(false)
+    }
+    setStopping(false)
+  }
+
+  // Reset dry-run state
+  const handleResetDryRun = async () => {
+    setResetting(true)
+    await fetch(`/api/${currentExchange}/regime/dry-run/reset`, { method: 'POST' })
+    setResetting(false)
+  }
+
   // Initial load of exchanges (with auto-select on first load)
   useEffect(() => {
     fetchExchanges(true)
@@ -186,6 +233,17 @@ function AppContent() {
       return () => clearInterval(interval)
     }
   }, [currentExchange])
+
+  // Fetch regime status when on regime strategy
+  useEffect(() => {
+    if (currentStrategy === 'regime' && currentExchange) {
+      fetchRegimeStatus()
+      const interval = setInterval(fetchRegimeStatus, 5000)
+      return () => clearInterval(interval)
+    } else {
+      setRegimeRunning(false)
+    }
+  }, [currentExchange, currentStrategy])
 
   // Get the current sub-path (tab) without the exchange/strategy prefix
   const getSubPath = () => {
@@ -219,6 +277,57 @@ function AppContent() {
                 DCA Trading Bot
               </Link>
               <div className="flex items-center gap-4">
+                {/* Regime engine controls in header */}
+                {currentStrategy === 'regime' && (
+                  <div className="flex items-center gap-3">
+                    {regimeDryRun && (
+                      <span className="px-2 py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-xs font-medium rounded">
+                        DRY-RUN
+                      </span>
+                    )}
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <span className={`w-2 h-2 rounded-full ${regimeRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
+                      <span className={regimeRunning ? 'text-green-400' : 'text-gray-400'}>
+                        {regimeRunning ? 'Running' : 'Stopped'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-blue-500' : 'bg-red-500'}`} />
+                      <span className={wsConnected ? 'text-blue-400' : 'text-red-400'}>
+                        {wsConnected ? 'Connected' : 'Disconnected'}
+                      </span>
+                    </div>
+                    {regimeRunning ? (
+                      <>
+                        {regimeDryRun && (
+                          <button
+                            onClick={handleResetDryRun}
+                            disabled={resetting}
+                            className="px-2 py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-xs transition-colors"
+                            title="Reset dry-run state"
+                          >
+                            {resetting ? 'Resetting...' : 'Reset'}
+                          </button>
+                        )}
+                        <button
+                          onClick={handleStopRegime}
+                          disabled={stopping}
+                          className="px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-sm font-medium transition-colors"
+                        >
+                          {stopping ? 'Stopping...' : 'Stop'}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={handleStartRegime}
+                        disabled={starting}
+                        className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-sm font-medium transition-colors"
+                      >
+                        {starting ? 'Starting...' : 'Start'}
+                      </button>
+                    )}
+                  </div>
+                )}
                 <Link
                   to={`/${currentExchange}/keys`}
                   className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"

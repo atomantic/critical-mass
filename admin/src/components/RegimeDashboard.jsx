@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Link } from 'react-router-dom'
 import { useRegimeEvents, useTradeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import MiniPriceSparkline from './charts/MiniPriceSparkline'
@@ -183,9 +182,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [starting, setStarting] = useState(false)
-  const [stopping, setStopping] = useState(false)
-  const [resetting, setResetting] = useState(false)
   const [error, setError] = useState(null)
   const [liveFills, setLiveFills] = useState([])
   const [showAllCycles, setShowAllCycles] = useState(false)
@@ -193,7 +189,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [recalcPreview, setRecalcPreview] = useState(null)
   const prevPriceRef = useRef(null)
 
-  const { connected, status: socketStatus, setStatus: setSocketStatus, regimeState, healthState, positionState, events: regimeEvents, clearEvents } = useRegimeEvents(exchange)
+  const { connected, status: socketStatus, regimeState, healthState, positionState, events: regimeEvents, clearEvents } = useRegimeEvents(exchange)
   const { events: tradeEvents } = useTradeEvents(exchange)
 
   // Use socket status when available, fall back to local status (for initial load / when engine stopped)
@@ -252,47 +248,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     load()
   }, [exchange, fetchStatus, fetchConfig, fetchFills])
 
-  // Start engine
-  const handleStart = async () => {
-    setStarting(true)
-    setError(null)
-    const res = await fetch(`/api/${exchange}/regime/start`, { method: 'POST' })
-    const data = await res.json()
-    if (data.success) {
-      await Promise.all([fetchStatus(), fetchFills()])
-    } else {
-      setError(data.error || 'Failed to start engine')
-    }
-    setStarting(false)
-  }
-
-  // Stop engine
-  const handleStop = async () => {
-    setStopping(true)
-    const res = await fetch(`/api/${exchange}/regime/stop`, { method: 'POST' })
-    if (res.ok) {
-      // Clear socket status so localStatus takes precedence (shows stopped state)
-      setSocketStatus(null)
-      await fetchStatus()
-    }
-    setStopping(false)
-  }
-
-  // Pause/Resume
-  const handlePause = async () => {
-    const res = await fetch(`/api/${exchange}/regime/pause`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: 'Manual pause from UI' }),
-    })
-    if (res.ok) await fetchStatus()
-  }
-
-  const handleResume = async () => {
-    const res = await fetch(`/api/${exchange}/regime/resume`, { method: 'POST' })
-    if (res.ok) await fetchStatus()
-  }
-
   // Resume from drawdown pause
   const handleResumeDrawdown = async () => {
     if (!confirm('Resume trading from drawdown pause? This will reset the peak equity to current levels.')) return
@@ -308,17 +263,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       body: JSON.stringify({ regime, reason: 'Manual override from UI' }),
     })
     if (res.ok) await fetchStatus()
-  }
-
-  // Reset dry-run state
-  const handleResetDryRun = async () => {
-    if (!confirm('Reset all dry-run state? This will clear simulated orders, fills, and P&L.')) return
-    setResetting(true)
-    const res = await fetch(`/api/${exchange}/regime/dry-run/reset`, { method: 'POST' })
-    if (res.ok) {
-      await fetchStatus()
-    }
-    setResetting(false)
   }
 
   // Preview recalculate
@@ -378,89 +322,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   return (
     <div className="space-y-6">
-      {/* Header with Controls */}
-      <div className="bg-gray-800 rounded-lg p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h2 className="text-xl font-bold">Regime Engine</h2>
-            {isDryRun && (
-              <span className="px-2 py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-xs font-medium rounded">
-                🧪 DRY-RUN MODE
-              </span>
-            )}
-            <div className="flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
-              <span className={isRunning ? 'text-green-400' : 'text-gray-400'}>
-                {isRunning ? 'Running' : 'Stopped'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              <span className={`w-2 h-2 rounded-full ${connected ? 'bg-blue-500' : 'bg-red-500'}`} />
-              <span className={connected ? 'text-blue-400' : 'text-red-400'}>
-                WebSocket {connected ? 'Connected' : 'Disconnected'}
-              </span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {!isRunning ? (
-              <button
-                onClick={handleStart}
-                disabled={starting}
-                className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded font-medium transition-colors"
-              >
-                {starting ? 'Starting...' : isDryRun ? 'Start Dry-Run' : 'Start Engine'}
-              </button>
-            ) : (
-              <>
-                {isDryRun && (
-                  <button
-                    onClick={handleResetDryRun}
-                    disabled={resetting}
-                    className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-sm transition-colors"
-                    title="Reset dry-run state (clear simulated orders and P&L)"
-                  >
-                    {resetting ? 'Resetting...' : 'Reset'}
-                  </button>
-                )}
-                {health.mode === 'PAUSED' ? (
-                  <button
-                    onClick={handleResume}
-                    className="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm transition-colors"
-                  >
-                    Resume
-                  </button>
-                ) : (
-                  <button
-                    onClick={handlePause}
-                    className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 rounded text-sm transition-colors"
-                  >
-                    Pause
-                  </button>
-                )}
-                <button
-                  onClick={handleStop}
-                  disabled={stopping}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded font-medium transition-colors"
-                >
-                  {stopping ? 'Stopping...' : 'Stop Engine'}
-                </button>
-              </>
-            )}
-            <Link
-              to={`/${exchange}/config`}
-              className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
-            >
-              Configure
-            </Link>
-          </div>
+      {/* Error display */}
+      {error && (
+        <div className="p-3 bg-red-900/50 border border-red-700 rounded text-red-200 text-sm">
+          {error}
         </div>
-
-        {error && (
-          <div className="mt-3 p-3 bg-red-900/50 border border-red-700 rounded text-red-200 text-sm">
-            {error}
-          </div>
-        )}
-      </div>
+      )}
 
       {isRunning ? (
         <>
@@ -704,6 +571,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 )}
               </div>
             </div>
+
+            {/* Regime Timeline */}
+            <RegimeTimeline
+              data={regimeHistory}
+              currentRegime={regime}
+              height={80}
+            />
           </div>
 
           {/* Middle Column: Position */}
@@ -1200,13 +1074,30 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               )}
             </div>
           </div>
+
+          {/* Fourth Column: Charts (2xl+ only) */}
+          <div className="hidden 2xl:block space-y-4">
+            <RegimePriceChart
+              priceData={priceHistory}
+              regimeData={regimeHistory}
+              currentPrice={market.lastPrice}
+              anchorPrice={position.anchorPrice}
+              atr={market.atr1m}
+              kFactor={config?.kFactor || 0.6}
+              height={280}
+            />
+            <VolatilityChart
+              atrData={atrHistory}
+              regimeData={regimeHistory}
+              height={240}
+            />
+          </div>
         </div>
 
         </div>
 
-        {/* Live Charts Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 3xl:grid-cols-3 gap-6">
-          {/* Price Chart */}
+        {/* Charts Section (shown below on smaller screens) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 2xl:hidden">
           <RegimePriceChart
             priceData={priceHistory}
             regimeData={regimeHistory}
@@ -1216,22 +1107,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
             kFactor={config?.kFactor || 0.6}
             height={280}
           />
-
-          {/* Volatility Chart */}
           <VolatilityChart
             atrData={atrHistory}
             regimeData={regimeHistory}
             height={240}
           />
-
-          {/* Regime Timeline */}
-          <div className="lg:col-span-2 3xl:col-span-1">
-            <RegimeTimeline
-              data={regimeHistory}
-              currentRegime={regime}
-              height={80}
-            />
-          </div>
         </div>
 
         {/* Orders Section */}
@@ -1512,7 +1392,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       ) : (
         /* Not Running State */
         <div className="bg-gray-800 rounded-lg p-8 text-center">
-          <div className="text-gray-400 mb-4">
+          <div className="text-gray-400">
             <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
@@ -1521,20 +1401,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               The regime engine uses volatility-driven entries instead of fixed intervals.
               {isDryRun ? (
                 <span className="block mt-1 text-purple-400">
-                  🧪 Dry-run mode is enabled - trades will be simulated against live data.
+                  Dry-run mode is enabled - trades will be simulated against live data.
                 </span>
               ) : (
-                ' Start the engine to begin adaptive trading.'
+                ' Click Start in the header to begin adaptive trading.'
               )}
             </p>
           </div>
-          <button
-            onClick={handleStart}
-            disabled={starting}
-            className={`px-6 py-3 ${isDryRun ? 'bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800' : 'bg-green-600 hover:bg-green-700 disabled:bg-green-800'} rounded-lg font-medium transition-colors`}
-          >
-            {starting ? 'Starting...' : isDryRun ? '🧪 Start Dry-Run Mode' : 'Start Regime Engine'}
-          </button>
         </div>
       )}
 
