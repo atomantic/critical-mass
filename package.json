@@ -1,6 +1,6 @@
 {
   "name": "dca_bot",
-  "version": "2.3.41",
+  "version": "2.3.42",
   "description": "Multi-exchange Dollar Cost Average trading bot for BTC",
   "main": "index.js",
   "scripts": {
