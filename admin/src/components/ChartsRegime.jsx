@@ -19,19 +19,20 @@ function ChartsRegime({ exchange = 'coinbase' }) {
   // Use socket status when available, fall back to local status
   const status = socketStatus || localStatus
 
-  // Chart data buffering (for real-time updates)
-  const { priceHistory: realtimePrices, atrHistory: realtimeAtr, regimeHistory } = useChartDataBuffer(status)
+  // Chart data buffering (for real-time updates) with cache support
+  const { priceHistory: realtimePrices, atrHistory: realtimeAtr, regimeHistory, initializeFromCache } = useChartDataBuffer(status)
 
   // Combine historical + real-time data
   const priceHistory = historicalPrices.length > 0 ? [...historicalPrices, ...realtimePrices] : realtimePrices
   const atrHistory = historicalAtr.length > 0 ? [...historicalAtr, ...realtimeAtr] : realtimeAtr
 
   const fetchData = useCallback(async () => {
-    const [statusRes, configRes, fillsRes, candlesRes] = await Promise.all([
+    const [statusRes, configRes, fillsRes, candlesRes, chartDataRes] = await Promise.all([
       fetch(`/api/${exchange}/regime/status`),
       fetch(`/api/${exchange}/regime/config`),
       fetch(`/api/${exchange}/regime/fills`),
       fetch(`/api/${exchange}/candles?granularity=ONE_MINUTE&limit=60`),
+      fetch(`/api/${exchange}/regime/chart-data`),
     ])
 
     if (statusRes.ok) {
@@ -66,8 +67,15 @@ function ChartsRegime({ exchange = 'coinbase' }) {
         setHistoricalAtr(atrData)
       }
     }
+    // Initialize chart data buffer from server cache (restores data across page reloads)
+    if (chartDataRes.ok) {
+      const data = await chartDataRes.json()
+      if (data.data) {
+        initializeFromCache(data.data)
+      }
+    }
     setLoading(false)
-  }, [exchange])
+  }, [exchange, initializeFromCache])
 
   useEffect(() => {
     fetchData()

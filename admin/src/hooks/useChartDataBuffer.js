@@ -14,12 +14,14 @@ const MAX_POINTS = 1000
  * - Stores last 15 minutes of data points
  * - Deduplicates by timestamp
  * - Auto-trims old data
- * - Returns: { priceHistory, atrHistory, regimeHistory }
+ * - Can be initialized with cached data from server
+ * - Returns: { priceHistory, atrHistory, regimeHistory, initializeFromCache }
  */
 export function useChartDataBuffer(status) {
   const [priceHistory, setPriceHistory] = useState([])
   const [atrHistory, setAtrHistory] = useState([])
   const [regimeHistory, setRegimeHistory] = useState([])
+  const [initialized, setInitialized] = useState(false)
 
   const lastSampleTimeRef = useRef(0)
 
@@ -113,13 +115,50 @@ export function useChartDataBuffer(status) {
     setPriceHistory([])
     setAtrHistory([])
     setRegimeHistory([])
+    setInitialized(false)
   }, [])
+
+  // Initialize from cached server data
+  const initializeFromCache = useCallback((cachedData) => {
+    if (!cachedData || initialized) return
+
+    const now = Date.now()
+    const cutoff = now - MAX_RETENTION_MS
+
+    // Filter and set price history from cache
+    if (cachedData.priceHistory?.length > 0) {
+      const validPrices = cachedData.priceHistory.filter(p => p.timestamp > cutoff)
+      if (validPrices.length > 0) {
+        setPriceHistory(validPrices)
+      }
+    }
+
+    // Filter and set ATR history from cache
+    if (cachedData.atrHistory?.length > 0) {
+      const validAtr = cachedData.atrHistory.filter(a => a.timestamp > cutoff)
+      if (validAtr.length > 0) {
+        setAtrHistory(validAtr)
+      }
+    }
+
+    // Filter and set regime history from cache
+    if (cachedData.regimeHistory?.length > 0) {
+      const validRegime = cachedData.regimeHistory.filter(r => r.timestamp > cutoff)
+      if (validRegime.length > 0) {
+        setRegimeHistory(validRegime)
+      }
+    }
+
+    setInitialized(true)
+  }, [initialized])
 
   return {
     priceHistory,
     atrHistory,
     regimeHistory,
     clearData,
+    initializeFromCache,
+    initialized,
   }
 }
 

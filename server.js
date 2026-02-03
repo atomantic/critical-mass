@@ -32,6 +32,7 @@ const {
 const { createRegimeEngine } = require('./src/regime-engine');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig } = require('./src/config-utils');
 const { startMarketDataService, stopMarketDataService, getMarketDataService, stopAllMarketDataServices } = require('./src/market-data-service');
+const { getChartDataBuffer, getChartData, clearChartDataBuffer } = require('./src/chart-data-buffer');
 
 // Active regime engines by exchange
 const regimeEngines = new Map();
@@ -580,6 +581,32 @@ app.get('/api/:exchange/regime/status', (req, res) => {
   });
 });
 
+// Get cached chart data for regime dashboard
+app.get('/api/:exchange/regime/chart-data', (req, res) => {
+  const { exchange } = req.params;
+  const chartData = getChartData(exchange);
+
+  if (!chartData) {
+    return res.json({
+      success: true,
+      exchange,
+      data: {
+        priceHistory: [],
+        atrHistory: [],
+        regimeHistory: [],
+        exchange,
+        timestamp: Date.now(),
+      },
+    });
+  }
+
+  res.json({
+    success: true,
+    exchange,
+    data: chartData,
+  });
+});
+
 // Start regime engine for an exchange
 app.post('/api/:exchange/regime/start', async (req, res) => {
   const { exchange } = req.params;
@@ -613,7 +640,11 @@ app.post('/api/:exchange/regime/start', async (req, res) => {
     onRegimeChange: (prevMode, newMode, reason) => io.emit('regime:change', { exchange, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
     onHealthChange: (mode, reason) => io.emit('regime:health', { exchange, mode, reason, message: reason || `Health: ${mode}` }),
     onPositionUpdate: (data) => io.emit('regime:position', { exchange, ...data }),
-    onStatusUpdate: (status) => io.emit('regime:status', { exchange, status }),
+    onStatusUpdate: (status) => {
+      // Buffer chart data for persistence across page reloads
+      getChartDataBuffer(exchange).processStatus(status);
+      io.emit('regime:status', { exchange, status });
+    },
   });
 
   regimeEngines.set(exchange, engine);
@@ -1704,7 +1735,10 @@ server.listen(PORT, async () => {
           onRegimeChange: (prevMode, newMode, reason) => io.emit('regime:change', { exchange, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
           onHealthChange: (mode, reason) => io.emit('regime:health', { exchange, mode, reason, message: reason || `Health: ${mode}` }),
           onPositionUpdate: (data) => io.emit('regime:position', { exchange, ...data }),
-          onStatusUpdate: (status) => io.emit('regime:status', { exchange, status }),
+          onStatusUpdate: (status) => {
+            getChartDataBuffer(exchange).processStatus(status);
+            io.emit('regime:status', { exchange, status });
+          },
         });
 
         regimeEngines.set(exchange, engine);

@@ -194,8 +194,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   // Use socket status when available, fall back to local status (for initial load / when engine stopped)
   const status = socketStatus || localStatus
 
-  // Chart data buffering
-  const { priceHistory, atrHistory, regimeHistory } = useChartDataBuffer(status)
+  // Chart data buffering with cache support
+  const { priceHistory, atrHistory, regimeHistory, initializeFromCache } = useChartDataBuffer(status)
 
   // Track previous price for animation
   useEffect(() => {
@@ -237,15 +237,26 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }
   }, [exchange])
 
+  // Fetch cached chart data from server
+  const fetchCachedChartData = useCallback(async () => {
+    const res = await fetch(`/api/${exchange}/regime/chart-data`)
+    if (res.ok) {
+      const data = await res.json()
+      if (data.data) {
+        initializeFromCache(data.data)
+      }
+    }
+  }, [exchange, initializeFromCache])
+
   // Initial load only - no polling needed, socket provides live updates
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      await Promise.all([fetchStatus(), fetchConfig(), fetchFills()])
+      await Promise.all([fetchStatus(), fetchConfig(), fetchFills(), fetchCachedChartData()])
       setLoading(false)
     }
     load()
-  }, [exchange, fetchStatus, fetchConfig, fetchFills])
+  }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData])
 
   // Resume from drawdown pause
   const handleResumeDrawdown = async () => {
@@ -446,6 +457,201 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               regimeData={regimeHistory}
               height={200}
             />
+
+            {/* TP Auto-Management Panel */}
+            {tpOptimizer.enabled && (
+              <div className="bg-gray-800 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-medium text-gray-400">TP Auto-Management</h3>
+                  <span className="px-1.5 py-0.5 bg-green-900/50 text-green-400 text-[10px] rounded">
+                    Active
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  {/* Current Config */}
+                  <div className="p-2 bg-gray-900/50 rounded">
+                    <div className="text-gray-500 text-[10px] mb-1">Current TP Settings</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <span className="text-gray-400">Min:</span>{' '}
+                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.tpMinPercent?.toFixed(2)}%</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Max:</span>{' '}
+                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.tpMaxPercent?.toFixed(2)}%</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Holdback:</span>{' '}
+                        <span className="text-white font-mono">{tpOptimizer.currentConfig?.holdbackRatio?.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Observed Percentiles */}
+                  {tpOptimizer.sampleCount >= 3 && (
+                    <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded">
+                      <div className="text-cyan-400/70 text-[10px] mb-1">Observed Percentiles ({tpOptimizer.sampleCount} samples)</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <span className="text-gray-400">p25:</span>{' '}
+                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p25?.toFixed(2)}%</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-400">p50:</span>{' '}
+                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p50?.toFixed(2)}%</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-400">p75:</span>{' '}
+                          <span className="text-cyan-400 font-mono">{tpOptimizer.percentiles?.p75?.toFixed(2)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Evaluation Status */}
+                  <div className="flex justify-between text-gray-500 text-[10px]">
+                    <span>Cycles since eval: {tpOptimizer.cyclesSinceEval || 0}</span>
+                    <span>Samples: {tpOptimizer.sampleCount || 0}</span>
+                  </div>
+
+                  {/* Recent Adjustments */}
+                  {tpOptimizer.adjustmentHistory?.length > 0 && (
+                    <div className="pt-2 border-t border-gray-700">
+                      <div className="text-gray-500 text-[10px] mb-1">Recent Adjustments</div>
+                      <div className="space-y-0.5 max-h-16 overflow-y-auto">
+                        {tpOptimizer.adjustmentHistory.slice(-3).reverse().map((adj, idx) => (
+                          <div key={idx} className="text-[10px] text-gray-400 flex justify-between">
+                            <span>{new Date(adj.timestamp).toLocaleTimeString()}</span>
+                            <span className="text-cyan-400">{adj.tpMin?.toFixed(1)}%-{adj.tpMax?.toFixed(1)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Optimal TP Analytics (dry-run) */}
+            {isDryRun && dryRunState?.optimalTpAnalytics && (
+              <div className="bg-gray-800 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-medium text-gray-400">Optimal TP Analysis</h3>
+                  <span className="text-[10px] text-purple-400">
+                    {dryRunState.optimalTpAnalytics.cycleCount} cycles
+                  </span>
+                </div>
+
+                {/* Current Cycle (if in position) */}
+                {dryRunState.optimalTpAnalytics.currentCycle && (
+                  <div className="mb-2 p-2 bg-blue-900/30 border border-blue-700/50 rounded">
+                    <div className="text-[10px] text-blue-400 mb-1">Current Position</div>
+                    <div className="grid grid-cols-2 gap-1 text-[10px]">
+                      <div>
+                        <span className="text-gray-500">Entry:</span>{' '}
+                        <span className="text-white font-mono">${dryRunState.optimalTpAnalytics.currentCycle.entryPrice?.toFixed(2)}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Max seen:</span>{' '}
+                        <span className="text-green-400 font-mono">${dryRunState.optimalTpAnalytics.currentCycle.currentMaxPrice?.toFixed(2)}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Min seen:</span>{' '}
+                        <span className="text-red-400 font-mono">${dryRunState.optimalTpAnalytics.currentCycle.currentMinPrice?.toFixed(2)}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Optimal TP:</span>{' '}
+                        <span className="text-cyan-400 font-mono">{dryRunState.optimalTpAnalytics.currentCycle.currentOptimalPct?.toFixed(2)}%</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Historical Analytics */}
+                {dryRunState.optimalTpAnalytics.cycleCount > 0 ? (
+                  <>
+                    <div className="space-y-1 text-[10px]">
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Avg Optimal TP</span>
+                        <span className="text-cyan-400 font-mono font-semibold">
+                          {dryRunState.optimalTpAnalytics.avgOptimalTpPct?.toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Avg Actual TP</span>
+                        <span className="text-white font-mono">
+                          {dryRunState.optimalTpAnalytics.avgActualTpPct?.toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Avg Missed Profit</span>
+                        <span className={`font-mono ${dryRunState.optimalTpAnalytics.avgMissedProfitPct > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
+                          {dryRunState.optimalTpAnalytics.avgMissedProfitPct?.toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Avg Time to Peak</span>
+                        <span className="text-gray-300 font-mono">
+                          {formatDuration(dryRunState.optimalTpAnalytics.avgTimeToMaxMs)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Recommended Range */}
+                    {dryRunState.optimalTpAnalytics.recommendedTpRange && (
+                      <div className="mt-2 pt-2 border-t border-gray-700">
+                        <div className="text-[10px] text-gray-400 mb-1">Recommended TP Range</div>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-2 bg-gray-700 rounded-full relative overflow-hidden">
+                            {/* Current config range indicator */}
+                            <div
+                              className="absolute h-full bg-blue-600/50"
+                              style={{
+                                left: `${Math.min(100, (config?.tpMinPercent || 0) / 5 * 100)}%`,
+                                width: `${Math.min(100, ((config?.tpMaxPercent || 5) - (config?.tpMinPercent || 0)) / 5 * 100)}%`,
+                              }}
+                            />
+                            {/* Observed range */}
+                            <div
+                              className="absolute h-full bg-cyan-500/70"
+                              style={{
+                                left: `${Math.min(100, (dryRunState.optimalTpAnalytics.recommendedTpRange.min || 0) / 5 * 100)}%`,
+                                width: `${Math.min(100, ((dryRunState.optimalTpAnalytics.recommendedTpRange.max || 0) - (dryRunState.optimalTpAnalytics.recommendedTpRange.min || 0)) / 5 * 100)}%`,
+                              }}
+                            />
+                            {/* Median marker */}
+                            <div
+                              className="absolute w-0.5 h-full bg-white"
+                              style={{
+                                left: `${Math.min(100, (dryRunState.optimalTpAnalytics.recommendedTpRange.median || 0) / 5 * 100)}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex justify-between text-[10px] mt-1">
+                          <span className="text-gray-500">0%</span>
+                          <span className="text-cyan-400">
+                            {dryRunState.optimalTpAnalytics.recommendedTpRange.min?.toFixed(1)}% - {dryRunState.optimalTpAnalytics.recommendedTpRange.max?.toFixed(1)}%
+                          </span>
+                          <span className="text-gray-500">5%</span>
+                        </div>
+                        <div className="flex justify-between text-[9px] text-gray-500 mt-0.5">
+                          <span>Config: {config?.tpMinPercent}%-{config?.tpMaxPercent}%</span>
+                          <span className="text-blue-400">|</span>
+                          <span>Observed</span>
+                          <span className="text-cyan-400">|</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-gray-500 text-[10px] text-center py-2">
+                    Complete at least one cycle to see analytics
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Middle Column: Position & Risk */}
@@ -677,6 +883,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
             </div>
+
           </div>
 
           {/* Right Column: Timeline & Price Chart */}
