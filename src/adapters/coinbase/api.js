@@ -297,14 +297,18 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
+    // Derive decimal precision from increments
+    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+    const quotePrecision = Math.max(0, -Math.floor(Math.log10(quoteIncrement)));
+
     const orderData = {
       client_order_id: clientOrderId,
       product_id: productId,
       side: 'SELL',
       order_configuration: {
         limit_limit_gtc: {
-          base_size: roundedAmount.toFixed(8),
-          limit_price: roundedPrice.toFixed(2),
+          base_size: roundedAmount.toFixed(basePrecision),
+          limit_price: roundedPrice.toFixed(quotePrecision),
           post_only: true,
         },
       },
@@ -345,14 +349,18 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
+    // Derive decimal precision from increments
+    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+    const quotePrecision = Math.max(0, -Math.floor(Math.log10(quoteIncrement)));
+
     const orderData = {
       client_order_id: clientOrderId,
       product_id: productId,
       side: 'BUY',
       order_configuration: {
         limit_limit_gtc: {
-          base_size: roundedAmount.toFixed(8),
-          limit_price: roundedPrice.toFixed(2),
+          base_size: roundedAmount.toFixed(basePrecision),
+          limit_price: roundedPrice.toFixed(quotePrecision),
           post_only: postOnly,
         },
       },

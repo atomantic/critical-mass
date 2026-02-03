@@ -145,6 +145,7 @@ const saveState = (exchange, exchangeState) => {
         pendingSave = null;
         // Flush all pending states
         const allState = loadAllState();
+        const exchangeCount = pendingStates.size;
         for (const [ex, state] of pendingStates) {
           allState.exchanges[ex] = {
             ...state,
@@ -154,7 +155,7 @@ const saveState = (exchange, exchangeState) => {
         pendingStates.clear();
         saveAllState(allState);
         lastSaveTime = Date.now();
-        console.log(`💾 Dry-run state saved for ${pendingStates.size || 1} exchange(s)`);
+        console.log(`💾 Dry-run state saved for ${exchangeCount} exchange(s)`);
       }, SAVE_DEBOUNCE_MS);
     }
     return;

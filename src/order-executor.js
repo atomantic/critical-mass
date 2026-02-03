@@ -244,7 +244,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @param {string} orderId - Order ID to check
    */
   const scheduleStaleOrderTimeout = (orderId) => {
-    const effectiveStaleMs = getEffectiveStaleMs();
+    const staleMs = getEffectiveStaleMs();
     setTimeout(() => {
       const order = pendingOrders.get(orderId);
       if (!order || order.type !== 'entry') return;

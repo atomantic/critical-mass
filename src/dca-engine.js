@@ -271,20 +271,33 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
 
     logger.log('INFO', `[${exchange}] Fibonacci position ${fibPosition}: target buy amount $${fibAmount.toFixed(2)}`);
 
-    // Wait if insufficient funds for next Fibonacci amount
-    if (balance.available < fibAmount) {
-      logger.log('INFO', `[${exchange}] Waiting for funds: need $${fibAmount.toFixed(2)}, have $${balance.available.toFixed(2)}`);
-      tradeEvents.skipped(exchange, `Waiting for funds: need $${fibAmount.toFixed(2)}`);
+    // Check allocation cap (same as fixed strategy)
+    const { remaining } = stateTracker.checkAllocationRemaining(state, config);
+    if (remaining <= 0) {
+      logger.log('INFO', `[${exchange}] Full allocation has been used`);
+      return { status: 'fully_allocated', totalAllocated: state.totalAllocated, exchange };
+    }
+
+    // Cap Fibonacci amount to remaining allocation
+    const cappedFibAmount = Math.min(fibAmount, remaining);
+    if (cappedFibAmount < fibAmount) {
+      logger.log('INFO', `[${exchange}] Fibonacci amount capped to remaining allocation: $${cappedFibAmount.toFixed(2)} (was $${fibAmount.toFixed(2)})`);
+    }
+
+    // Wait if insufficient funds for (capped) Fibonacci amount
+    if (balance.available < cappedFibAmount) {
+      logger.log('INFO', `[${exchange}] Waiting for funds: need $${cappedFibAmount.toFixed(2)}, have $${balance.available.toFixed(2)}`);
+      tradeEvents.skipped(exchange, `Waiting for funds: need $${cappedFibAmount.toFixed(2)}`);
       return {
         status: 'waiting_funds',
-        required: fibAmount,
+        required: cappedFibAmount,
         available: balance.available,
         fibPosition,
         exchange,
       };
     }
 
-    actualBuyAmount = fibAmount;
+    actualBuyAmount = cappedFibAmount;
   } else {
     // Fixed strategy: use allocation-based amounts
     const { remaining, intervalAmount } = stateTracker.checkAllocationRemaining(state, config);
