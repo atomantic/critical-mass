@@ -50,6 +50,32 @@ const createFillLedger = (exchange) => {
     for (const fill of data) {
       fills.set(fill.tradeId, fill);
     }
+
+    // Restore currentCycleId from loaded fills
+    // Find the most recent cycle that's still active (has buys but no sell)
+    const cycleStats = new Map(); // cycleId -> { buys: number, sells: number }
+    for (const fill of fills.values()) {
+      if (!fill.cycleId) continue;
+      if (!cycleStats.has(fill.cycleId)) {
+        cycleStats.set(fill.cycleId, { buys: 0, sells: 0 });
+      }
+      const stats = cycleStats.get(fill.cycleId);
+      if (fill.side === 'buy') stats.buys++;
+      else if (fill.side === 'sell') stats.sells++;
+    }
+
+    // Find an active cycle (has buys, no sells) - prefer most recent
+    const allFills = Array.from(fills.values()).sort((a, b) => b.timestamp - a.timestamp);
+    for (const fill of allFills) {
+      if (!fill.cycleId) continue;
+      const stats = cycleStats.get(fill.cycleId);
+      if (stats && stats.buys > 0 && stats.sells === 0) {
+        currentCycleId = fill.cycleId;
+        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId}`);
+        break;
+      }
+    }
+
     console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
   };
 

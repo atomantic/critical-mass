@@ -90,13 +90,37 @@ const createCoinbaseAdapter = (keysPath = null) => {
   };
 
   /**
-   * Make authenticated request to Coinbase API
+   * Check if error is a transient network error that should be retried
+   * @param {Error} err - Error object
+   * @returns {boolean}
+   */
+  const isTransientNetworkError = (err) => {
+    const msg = err.message || '';
+    const code = err.code || '';
+    // Network errors that are transient and should be retried
+    return code === 'ETIMEDOUT' ||
+           code === 'ECONNRESET' ||
+           code === 'ECONNREFUSED' ||
+           code === 'ENOTFOUND' ||
+           code === 'EPIPE' ||
+           msg.includes('ETIMEDOUT') ||
+           msg.includes('ECONNRESET') ||
+           msg.includes('socket disconnected') ||
+           msg.includes('TLS connection') ||
+           msg.includes('network socket') ||
+           msg.includes('timeout') ||
+           msg.includes('aborted');
+  };
+
+  /**
+   * Make authenticated request to Coinbase API with retry logic
    * @param {string} method - HTTP method
    * @param {string} apiPath - API path
    * @param {Object|null} [data] - Request body (for POST)
+   * @param {number} [retries=3] - Number of retries for transient errors
    * @returns {Promise<any>} API response data
    */
-  const makeRequest = async (method, apiPath, data = null) => {
+  const makeRequest = async (method, apiPath, data = null, retries = 3) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
 
@@ -104,23 +128,41 @@ const createCoinbaseAdapter = (keysPath = null) => {
       method,
       url: `${BASE_URL}${apiPath}`,
       headers,
+      timeout: 30000, // 30 second timeout
     };
 
     if (data) {
       config.data = data;
     }
 
-    const response = await axios(config).catch(err => {
-      // Extract clean error info instead of dumping full axios error object
-      const status = err.response?.status || 'unknown';
-      const message = err.response?.data?.message || err.response?.data?.error_details || err.message;
-      const errorData = err.response?.data?.error || '';
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const response = await axios(config).catch(err => {
+        lastError = err;
+        return null;
+      });
+
+      if (response) {
+        return response.data;
+      }
+
+      // Check if we should retry
+      if (attempt < retries && isTransientNetworkError(lastError)) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
+        console.log(`⚠️ [coinbase] Network error on ${method} ${apiPath.split('?')[0]}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      // Non-retryable error or out of retries, throw clean error
+      const status = lastError.response?.status || 'unknown';
+      const message = lastError.response?.data?.message || lastError.response?.data?.error_details || lastError.message;
+      const errorData = lastError.response?.data?.error || '';
       const cleanError = new Error(`Coinbase API ${status}: ${message}${errorData ? ` (${errorData})` : ''}`);
       cleanError.status = status;
       cleanError.endpoint = `${method} ${apiPath}`;
       throw cleanError;
-    });
-    return response.data;
+    }
   };
 
   /**

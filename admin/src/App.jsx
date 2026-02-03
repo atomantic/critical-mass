@@ -2,9 +2,12 @@ import { useState, useEffect, createContext, useContext } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, useParams, Navigate } from 'react-router-dom'
 import Dashboard from './components/Dashboard'
 import ConfigEditor from './components/ConfigEditor'
-import Transactions from './components/Transactions'
-import Charts from './components/Charts'
-import CostBasis from './components/CostBasis'
+import TransactionsDCA from './components/TransactionsDCA'
+import TransactionsRegime from './components/TransactionsRegime'
+import ChartsDCA from './components/ChartsDCA'
+import ChartsRegime from './components/ChartsRegime'
+import CostBasisDCA from './components/CostBasisDCA'
+import CostBasisRegime from './components/CostBasisRegime'
 import Backtest from './components/Backtest'
 import Optimizer from './components/Optimizer'
 import ExchangeSelector from './components/ExchangeSelector'
@@ -23,29 +26,44 @@ export function getQuoteCurrency(productId) {
   return productId.replace(/^BTC/, '') || 'USD'
 }
 
-// Exchange context for sharing current exchange across components
+// Exchange context for sharing current exchange and strategy across components
 export const ExchangeContext = createContext({
   exchange: 'coinbase',
+  strategy: 'dca',
   setExchange: () => {},
+  setStrategy: () => {},
   exchanges: [],
 })
 
 export const useExchange = () => useContext(ExchangeContext)
 
-const tabs = [
-  { name: 'Dashboard', path: '' },
-  { name: 'Cost Basis', path: '/cost-basis' },
-  { name: 'Transactions', path: '/transactions' },
-  { name: 'Charts', path: '/charts' },
-  { name: 'Backtest', path: '/backtest' },
-  { name: 'Optimizer', path: '/optimizer' },
-  { name: 'Regime', path: '/regime', highlight: true },
-  { name: 'Config', path: '/config' },
-  { name: 'API Keys', path: '/keys' },
-]
+// Strategy-aware tab configuration
+const getTabsForStrategy = (strategy) => {
+  const commonTabs = [
+    { name: 'Dashboard', path: '' },
+    { name: 'Cost Basis', path: '/cost-basis' },
+    { name: 'Transactions', path: '/transactions' },
+    { name: 'Charts', path: '/charts' },
+    { name: 'Config', path: '/config' },
+  ]
 
-// Valid exchange names
+  if (strategy === 'regime') {
+    // Regime strategy: no backtest/optimizer
+    return commonTabs
+  }
+
+  // DCA strategies get backtest and optimizer
+  return [
+    ...commonTabs.slice(0, 4), // Dashboard, Cost Basis, Transactions, Charts
+    { name: 'Backtest', path: '/backtest' },
+    { name: 'Optimizer', path: '/optimizer' },
+    ...commonTabs.slice(4), // Config
+  ]
+}
+
+// Valid exchange names and strategies
 const VALID_EXCHANGES = ['coinbase', 'gemini']
+const VALID_STRATEGIES = ['dca', 'regime']
 
 // Component that listens to trade events and shows toasts
 function TradeEventListener() {
@@ -69,15 +87,20 @@ function AppContent() {
   const location = useLocation()
   const navigate = useNavigate()
 
-  // Extract exchange from URL path (e.g., /coinbase/config -> coinbase)
+  // Extract exchange and strategy from URL path (e.g., /coinbase/regime/config -> coinbase, regime)
   const pathParts = location.pathname.split('/').filter(Boolean)
   const urlExchange = VALID_EXCHANGES.includes(pathParts[0]) ? pathParts[0] : null
+  const urlStrategy = VALID_STRATEGIES.includes(pathParts[1]) ? pathParts[1] : null
 
   const [currentExchange, setCurrentExchange] = useState(urlExchange || 'coinbase')
+  const [currentStrategy, setCurrentStrategy] = useState(urlStrategy || 'dca')
   const [exchanges, setExchanges] = useState([])
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
+  // Get tabs based on current strategy
+  const tabs = getTabsForStrategy(currentStrategy)
 
   // Fetch list of configured exchanges
   const fetchExchanges = async (autoSelect = false) => {
@@ -87,24 +110,39 @@ function AppContent() {
       setExchanges(data.exchanges || [])
       // Only auto-select exchange on initial load if not already in URL
       if (autoSelect && !urlExchange) {
-        const enabled = data.exchanges?.find(e => e.enabled)
+        const enabled = data.exchanges?.find(e => e.enabled || e.regimeEnabled)
         const first = data.exchanges?.[0]
         const targetExchange = enabled?.name || first?.name || 'coinbase'
+        // Determine strategy based on exchange config
+        const exchangeConfig = enabled || first
+        const targetStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
         setCurrentExchange(targetExchange)
-        navigate(`/${targetExchange}`, { replace: true })
-      } else if (autoSelect && urlExchange) {
-        // URL already has exchange, just use it
+        setCurrentStrategy(targetStrategy)
+        navigate(`/${targetExchange}/${targetStrategy}`, { replace: true })
+      } else if (autoSelect && urlExchange && !urlStrategy) {
+        // URL has exchange but no strategy - redirect to strategy path
+        const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
+        const targetStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
         setCurrentExchange(urlExchange)
+        setCurrentStrategy(targetStrategy)
+        navigate(`/${urlExchange}/${targetStrategy}`, { replace: true })
+      } else if (autoSelect && urlExchange && urlStrategy) {
+        // URL already has exchange and strategy
+        setCurrentExchange(urlExchange)
+        setCurrentStrategy(urlStrategy)
       }
     }
   }
 
-  // Handle exchange change - update URL
-  const handleExchangeChange = (newExchange) => {
+  // Handle exchange/strategy change from selector - update URL
+  const handleExchangeStrategyChange = (newExchange, newStrategy) => {
     setCurrentExchange(newExchange)
-    // Get current sub-path (everything after exchange)
-    const subPath = urlExchange ? location.pathname.replace(`/${urlExchange}`, '') : location.pathname
-    navigate(`/${newExchange}${subPath || ''}`)
+    setCurrentStrategy(newStrategy)
+    // Navigate to new exchange/strategy, preserving current tab if valid
+    const currentTab = pathParts[2] || ''
+    const newTabs = getTabsForStrategy(newStrategy)
+    const tabValid = currentTab === '' || newTabs.some(t => t.path === `/${currentTab}`)
+    navigate(`/${newExchange}/${newStrategy}${tabValid && currentTab ? `/${currentTab}` : ''}`)
   }
 
   const fetchData = async () => {
@@ -129,12 +167,15 @@ function AppContent() {
     fetchExchanges(true)
   }, [])
 
-  // Sync exchange from URL when it changes
+  // Sync exchange and strategy from URL when they change
   useEffect(() => {
     if (urlExchange && urlExchange !== currentExchange) {
       setCurrentExchange(urlExchange)
     }
-  }, [urlExchange])
+    if (urlStrategy && urlStrategy !== currentStrategy) {
+      setCurrentStrategy(urlStrategy)
+    }
+  }, [urlExchange, urlStrategy])
 
   // Fetch data when exchange changes
   useEffect(() => {
@@ -146,10 +187,10 @@ function AppContent() {
     }
   }, [currentExchange])
 
-  // Get the current sub-path (tab) without the exchange prefix
+  // Get the current sub-path (tab) without the exchange/strategy prefix
   const getSubPath = () => {
-    if (!urlExchange) return location.pathname
-    return location.pathname.replace(`/${urlExchange}`, '') || ''
+    if (!urlExchange || !urlStrategy) return location.pathname
+    return location.pathname.replace(`/${urlExchange}/${urlStrategy}`, '') || ''
   }
 
   const isActiveTab = (tabPath) => {
@@ -158,11 +199,17 @@ function AppContent() {
     return subPath.startsWith(tabPath)
   }
 
-  // Build full path with exchange prefix
-  const buildPath = (tabPath) => `/${currentExchange}${tabPath}`
+  // Build full path with exchange and strategy prefix
+  const buildPath = (tabPath) => `/${currentExchange}/${currentStrategy}${tabPath}`
 
   return (
-    <ExchangeContext.Provider value={{ exchange: currentExchange, setExchange: setCurrentExchange, exchanges }}>
+    <ExchangeContext.Provider value={{
+      exchange: currentExchange,
+      strategy: currentStrategy,
+      setExchange: setCurrentExchange,
+      setStrategy: setCurrentStrategy,
+      exchanges
+    }}>
       <div className="min-h-screen">
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
@@ -172,10 +219,17 @@ function AppContent() {
                 DCA Trading Bot
               </Link>
               <div className="flex items-center gap-4">
+                <Link
+                  to={`/${currentExchange}/keys`}
+                  className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  API Keys
+                </Link>
                 <ExchangeSelector
                   currentExchange={currentExchange}
+                  currentStrategy={currentStrategy}
                   exchanges={exchanges}
-                  onChange={handleExchangeChange}
+                  onChange={handleExchangeStrategyChange}
                   onRefresh={fetchExchanges}
                 />
               </div>
@@ -194,9 +248,7 @@ function AppContent() {
                   className={`px-4 py-3 text-sm font-medium transition-colors ${
                     isActiveTab(tab.path)
                       ? 'text-white border-b-2 border-blue-500'
-                      : tab.highlight
-                        ? 'text-purple-400 hover:text-purple-300'
-                        : 'text-gray-400 hover:text-white'
+                      : 'text-gray-400 hover:text-white'
                   }`}
                 >
                   {tab.name}
@@ -220,22 +272,33 @@ function AppContent() {
             </div>
           ) : (
             <Routes>
-              {/* Redirect root to default exchange */}
-              <Route path="/" element={<Navigate to={`/${currentExchange}`} replace />} />
+              {/* Redirect root to default exchange/strategy */}
+              <Route path="/" element={<Navigate to={`/${currentExchange}/${currentStrategy}`} replace />} />
 
-              {/* Exchange-prefixed routes */}
-              <Route path="/:exchange" element={<Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />} />
-              <Route path="/:exchange/cost-basis" element={<CostBasis summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/transactions" element={<Transactions transactions={summary?.transactions} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/charts" element={<Charts summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/optimizer" element={<Optimizer exchange={currentExchange} />} />
+              {/* DCA strategy routes */}
+              <Route path="/:exchange/dca" element={<Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />} />
+              <Route path="/:exchange/dca/cost-basis" element={<CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/dca/transactions" element={<TransactionsDCA transactions={summary?.transactions} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/dca/charts" element={<ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/dca/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/dca/optimizer" element={<Optimizer exchange={currentExchange} />} />
+              <Route path="/:exchange/dca/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy="dca" />} />
+
+              {/* Regime strategy routes */}
               <Route path="/:exchange/regime" element={<RegimeDashboard exchange={currentExchange} />} />
-              <Route path="/:exchange/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} />} />
+              <Route path="/:exchange/regime/cost-basis" element={<CostBasisRegime exchange={currentExchange} />} />
+              <Route path="/:exchange/regime/transactions" element={<TransactionsRegime exchange={currentExchange} />} />
+              <Route path="/:exchange/regime/charts" element={<ChartsRegime exchange={currentExchange} />} />
+              <Route path="/:exchange/regime/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy="regime" />} />
+
+              {/* API Keys - shared per exchange (not strategy-specific) */}
               <Route path="/:exchange/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
 
-              {/* Catch invalid routes - redirect to current exchange */}
-              <Route path="*" element={<Navigate to={`/${currentExchange}`} replace />} />
+              {/* Legacy route - redirect old /:exchange (without strategy) to new /:exchange/:strategy */}
+              <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentStrategy}`} replace />} />
+
+              {/* Catch invalid routes - redirect to current exchange/strategy */}
+              <Route path="*" element={<Navigate to={`/${currentExchange}/${currentStrategy}`} replace />} />
             </Routes>
           )}
         </main>

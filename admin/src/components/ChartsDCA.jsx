@@ -9,7 +9,7 @@ import {
   colors,
 } from './charts/index'
 
-function Charts({ summary, quoteCurrency = 'USDC' }) {
+function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
   const [chartResize, setChartResize] = useState(0)
 
   // Handle window resize for responsive D3 charts
@@ -271,4 +271,4 @@ function Charts({ summary, quoteCurrency = 'USDC' }) {
   )
 }
 
-export default Charts
+export default ChartsDCA

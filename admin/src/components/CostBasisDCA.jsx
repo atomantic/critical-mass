@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 
-function CostBasis({ summary, quoteCurrency = 'USDC' }) {
+function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
   const { exchange = 'coinbase' } = useParams()
   const [currentPrice, setCurrentPrice] = useState(0)
 
@@ -265,4 +265,4 @@ function CostBasis({ summary, quoteCurrency = 'USDC' }) {
   )
 }
 
-export default CostBasis
+export default CostBasisDCA

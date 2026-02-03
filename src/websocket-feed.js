@@ -17,12 +17,14 @@
 const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const { preparePrivateKey } = require('./adapters/coinbase/auth');
 
 /**
  * @typedef {Object} WebSocketConfig
  * @property {string} productId - Product to subscribe to
- * @property {string} apiKey - API key for authentication
- * @property {string} apiSecret - API secret (private key)
+ * @property {string} [apiKey] - API key for authentication (optional for public-only mode)
+ * @property {string} [apiSecret] - API secret (private key, optional for public-only mode)
+ * @property {boolean} [publicOnly] - If true, only subscribe to public channels (ticker, market_trades)
  * @property {Function} [onTicker] - Ticker update callback
  * @property {Function} [onTrade] - Trade callback
  * @property {Function} [onOrderUpdate] - Order update callback
@@ -35,31 +37,6 @@ const COINBASE_WS_URL = 'wss://advanced-trade-ws.coinbase.com';
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const RECONNECT_BASE_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 60000;
-
-/**
- * Prepare private key for JWT signing
- * @param {string} rawKey - Private key
- * @returns {string} Normalized key
- */
-const preparePrivateKey = (rawKey) => {
-  if (!rawKey.includes('-----BEGIN')) {
-    return rawKey;
-  }
-
-  const pemMatch = rawKey.match(/(-----BEGIN [A-Z ]+-----)(.+)(-----END [A-Z ]+-----)/s);
-  if (!pemMatch) {
-    return rawKey;
-  }
-
-  const [, header, content, footer] = pemMatch;
-  const cleanContent = content.replace(/[\s\n\r]/g, '');
-  const lines = [];
-  for (let i = 0; i < cleanContent.length; i += 64) {
-    lines.push(cleanContent.substring(i, i + 64));
-  }
-
-  return `${header}\n${lines.join('\n')}\n${footer}\n`;
-};
 
 /**
  * Generate JWT for WebSocket authentication
@@ -166,7 +143,6 @@ const createWebSocketFeed = (exchange, config) => {
   const subscribe = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-    const timestamp = Math.floor(Date.now() / 1000).toString();
     const productIds = [config.productId];
 
     // Subscribe to ticker channel (public)
@@ -183,20 +159,28 @@ const createWebSocketFeed = (exchange, config) => {
       channel: 'market_trades',
     };
 
-    // Subscribe to user channel (authenticated)
-    const jwtToken = generateWsJWT(config.apiKey, config.apiSecret);
-    const userSub = {
-      type: 'subscribe',
-      product_ids: productIds,
-      channel: 'user',
-      jwt: jwtToken,
-    };
-
     ws.send(JSON.stringify(tickerSub));
     ws.send(JSON.stringify(tradesSub));
-    ws.send(JSON.stringify(userSub));
 
-    console.log(`📡 [${exchange}] Subscribed to ticker, market_trades, user channels for ${config.productId}`);
+    // Subscribe to user channel (authenticated) - only if not public-only mode
+    if (!config.publicOnly && config.apiKey && config.apiSecret) {
+      try {
+        const jwtToken = generateWsJWT(config.apiKey, config.apiSecret);
+        const userSub = {
+          type: 'subscribe',
+          product_ids: productIds,
+          channel: 'user',
+          jwt: jwtToken,
+        };
+        ws.send(JSON.stringify(userSub));
+        console.log(`📡 [${exchange}] Subscribed to ticker, market_trades, user channels for ${config.productId}`);
+      } catch (err) {
+        console.log(`⚠️ [${exchange}] Failed to subscribe to user channel (JWT error): ${err.message}`);
+        console.log(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`);
+      }
+    } else {
+      console.log(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`);
+    }
   };
 
   /**
