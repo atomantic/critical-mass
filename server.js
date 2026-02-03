@@ -29,6 +29,36 @@ const {
   getTimeUntilNext,
   getIntervalConfig
 } = require('./src/interval-utils');
+const { createRegimeEngine } = require('./src/regime-engine');
+const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig } = require('./src/config-utils');
+const { startMarketDataService, stopMarketDataService, getMarketDataService, stopAllMarketDataServices } = require('./src/market-data-service');
+const { getChartDataBuffer, getChartData } = require('./src/chart-data-buffer');
+
+// Active regime engines by exchange
+const regimeEngines = new Map();
+
+// Path for regime engine running state
+const getRegimeRunningFlagPath = (exchange) => path.join(__dirname, 'data', exchange, 'regime-engine-running.json');
+
+// Save running state flag for auto-resume
+const saveRegimeRunningFlag = (exchange, isRunning) => {
+  const flagPath = getRegimeRunningFlagPath(exchange);
+  const dir = path.dirname(flagPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  if (isRunning) {
+    fs.writeFileSync(flagPath, JSON.stringify({ running: true, startedAt: new Date().toISOString() }));
+  } else if (fs.existsSync(flagPath)) {
+    fs.unlinkSync(flagPath);
+  }
+};
+
+// Check if regime engine should auto-resume
+const shouldAutoResumeRegime = (exchange) => {
+  const flagPath = getRegimeRunningFlagPath(exchange);
+  return fs.existsSync(flagPath);
+};
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -100,11 +130,20 @@ app.get('/api/exchanges', (req, res) => {
 
   const exchanges = configured.map(name => {
     const config = getExchangeConfig(name);
+    const regimeEngine = regimeEngines.get(name);
+    const strategy = config.dcaStrategy || 'fixed';
+    const regimeConfig = config.regime || {};
+    // Check if regime config has any meaningful settings (not just empty object)
+    const hasRegimeConfig = !!(config.regime && Object.keys(config.regime).length > 0);
     return {
       name,
       enabled: config.enabled,
       dryRun: config.dryRun,
       productId: config.productId,
+      strategy,
+      regimeEnabled: regimeConfig.enabled || false,
+      regimeRunning: regimeEngine?.getState?.()?.isRunning || false,
+      hasRegimeConfig,
     };
   });
 
@@ -378,6 +417,37 @@ app.get('/api/:exchange/summary', (req, res) => {
   });
 });
 
+// Get candles for an exchange (for charts)
+app.get('/api/:exchange/candles', async (req, res) => {
+  const { exchange } = req.params;
+  const { granularity = 'ONE_MINUTE', limit = 60 } = req.query;
+  const config = getExchangeConfig(exchange);
+  const { getAdapter } = require('./src/adapters');
+  const adapter = getAdapter(exchange);
+
+  const productId = config.productId || 'BTC-USDC';
+  const now = Math.floor(Date.now() / 1000);
+
+  // Calculate start time based on granularity and limit
+  const granularitySeconds = {
+    'ONE_MINUTE': 60,
+    'FIVE_MINUTE': 300,
+    'FIFTEEN_MINUTE': 900,
+    'ONE_HOUR': 3600,
+    'SIX_HOUR': 21600,
+    'ONE_DAY': 86400,
+  };
+  const seconds = granularitySeconds[granularity] || 60;
+  const start = now - (parseInt(limit, 10) * seconds);
+
+  const result = await adapter.getCandles(productId, start, now, granularity);
+  if (!result || result.error) {
+    return res.status(500).json({ success: false, error: result?.error || 'Failed to fetch candles' });
+  }
+
+  res.json({ success: true, candles: result });
+});
+
 // Sync pending orders for an exchange
 app.post('/api/:exchange/sync', async (req, res) => {
   const { exchange } = req.params;
@@ -435,6 +505,616 @@ app.post('/api/:exchange/consolidate', async (req, res) => {
     ...result,
     triggeredAt: new Date().toISOString(),
     trigger: 'manual',
+  });
+});
+
+// ============ Regime Engine API ============
+
+// Get regime configuration for an exchange
+app.get('/api/:exchange/regime/config', (req, res) => {
+  const { exchange } = req.params;
+  const regimeConfig = getRegimeConfig(exchange);
+  const exchangeConfig = getExchangeConfig(exchange);
+  // Include exchange-level dryRun for UI display
+  const config = { ...regimeConfig, dryRun: exchangeConfig.dryRun };
+  res.json({ success: true, exchange, config });
+});
+
+// Update regime configuration for an exchange
+app.put('/api/:exchange/regime/config', (req, res) => {
+  const { exchange } = req.params;
+  const updates = req.body;
+
+  const validation = validateRegimeConfig({ ...getRegimeConfig(exchange), ...updates });
+  if (!validation.valid) {
+    return res.status(400).json({ success: false, errors: validation.errors });
+  }
+
+  const config = updateRegimeConfig(exchange, updates);
+  log('INFO', `🔧 [${exchange}] Regime config updated`);
+
+  // If engine is running, notify it of config change
+  const engine = regimeEngines.get(exchange);
+  if (engine) {
+    engine.updateConfig(updates);
+  }
+
+  res.json({ success: true, exchange, config });
+});
+
+// Get regime engine status
+app.get('/api/:exchange/regime/status', (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    // Load saved state from disk for historical data (P&L, cycles completed, etc.)
+    const { loadRegimeState } = require('./src/state-tracker');
+    const savedState = loadRegimeState(exchange);
+
+    // Fall back to market data service for live price/regime info
+    const marketService = getMarketDataService(exchange);
+    const serviceStatus = marketService ? marketService.getStatus() : null;
+
+    return res.json({
+      success: true,
+      exchange,
+      running: false,
+      status: {
+        isRunning: false,
+        market: serviceStatus?.market || null,
+        regime: serviceStatus?.regime || null,
+        position: savedState?.position || null,
+        health: { mode: 'INACTIVE' },
+        // Include dry-run state if applicable
+        isDryRun: savedState?.isDryRun || false,
+      },
+    });
+  }
+
+  const status = engine.getStatus();
+  res.json({
+    success: true,
+    exchange,
+    running: true,
+    status,
+  });
+});
+
+// Get cached chart data for regime dashboard
+app.get('/api/:exchange/regime/chart-data', (req, res) => {
+  const { exchange } = req.params;
+  const chartData = getChartData(exchange);
+
+  if (!chartData) {
+    return res.json({
+      success: true,
+      exchange,
+      data: {
+        priceHistory: [],
+        atrHistory: [],
+        regimeHistory: [],
+        exchange,
+        timestamp: Date.now(),
+      },
+    });
+  }
+
+  res.json({
+    success: true,
+    exchange,
+    data: chartData,
+  });
+});
+
+// Start regime engine for an exchange
+app.post('/api/:exchange/regime/start', async (req, res) => {
+  const { exchange } = req.params;
+  const { getAdapter } = require('./src/adapters');
+
+  // Check if already running
+  if (regimeEngines.has(exchange)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine already running for this exchange',
+    });
+  }
+
+  const exchangeConfig = getExchangeConfig(exchange);
+  const adapter = getAdapter(exchange);
+
+  // Check if keys are configured
+  if (!adapter.hasValidKeys || !adapter.hasValidKeys()) {
+    return res.status(400).json({
+      success: false,
+      error: 'API keys not configured for this exchange',
+    });
+  }
+
+  // Stop market data service to avoid duplicate WebSocket connections
+  stopMarketDataService(exchange);
+
+  // Create and start the engine
+  const engine = createRegimeEngine(exchange, exchangeConfig, {
+    onTradeEvent: (event) => io.emit('trade:event', event),
+    onRegimeChange: (prevMode, newMode, reason) => io.emit('regime:change', { exchange, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
+    onHealthChange: (mode, reason) => io.emit('regime:health', { exchange, mode, reason, message: reason || `Health: ${mode}` }),
+    onPositionUpdate: (data) => io.emit('regime:position', { exchange, ...data }),
+    onStatusUpdate: (status) => {
+      // Buffer chart data for persistence across page reloads
+      getChartDataBuffer(exchange).processStatus(status);
+      io.emit('regime:status', { exchange, status });
+    },
+  });
+
+  regimeEngines.set(exchange, engine);
+
+  const startResult = await engine.start();
+
+  if (!startResult.success) {
+    regimeEngines.delete(exchange);
+    return res.status(500).json({
+      success: false,
+      error: startResult.error || 'Failed to start regime engine',
+    });
+  }
+
+  // Save running flag for auto-resume on restart
+  saveRegimeRunningFlag(exchange, true);
+
+  log('INFO', `🚀 [${exchange}] Regime engine started`);
+
+  res.json({
+    success: true,
+    exchange,
+    status: engine.getStatus(),
+  });
+});
+
+// Stop regime engine for an exchange
+app.post('/api/:exchange/regime/stop', async (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running for this exchange',
+    });
+  }
+
+  log('INFO', `🛑 [${exchange}] Stopping regime engine...`);
+
+  const stopResult = await engine.stop().catch(err => {
+    log('ERROR', `❌ [${exchange}] Error stopping engine: ${err.message}`);
+    return { error: err.message };
+  });
+
+  if (stopResult?.error) {
+    return res.status(500).json({
+      success: false,
+      error: stopResult.error,
+    });
+  }
+
+  regimeEngines.delete(exchange);
+
+  // Remove running flag (user intentionally stopped)
+  saveRegimeRunningFlag(exchange, false);
+
+  // Restart market data service for passive price streaming
+  startMarketDataService(exchange);
+
+  log('INFO', `✅ [${exchange}] Regime engine stopped successfully`);
+
+  res.json({
+    success: true,
+    exchange,
+    stopped: true,
+  });
+});
+
+// Pause regime engine (enter SAFE mode)
+app.post('/api/:exchange/regime/pause', (req, res) => {
+  const { exchange } = req.params;
+  const { reason } = req.body;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running for this exchange',
+    });
+  }
+
+  engine.pause(reason || 'Manual pause via API');
+
+  log('INFO', `⏸️ [${exchange}] Regime engine paused: ${reason || 'manual'}`);
+
+  res.json({
+    success: true,
+    exchange,
+    paused: true,
+    status: engine.getStatus(),
+  });
+});
+
+// Resume regime engine (exit SAFE mode)
+app.post('/api/:exchange/regime/resume', (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running for this exchange',
+    });
+  }
+
+  engine.resume();
+
+  log('INFO', `▶️ [${exchange}] Regime engine resumed`);
+
+  res.json({
+    success: true,
+    exchange,
+    resumed: true,
+    status: engine.getStatus(),
+  });
+});
+
+// Force regime transition
+app.post('/api/:exchange/regime/force-regime', (req, res) => {
+  const { exchange } = req.params;
+  const { regime, reason } = req.body;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running for this exchange',
+    });
+  }
+
+  const validRegimes = ['HARVEST', 'CAUTION', 'TREND'];
+  if (!regime || !validRegimes.includes(regime.toUpperCase())) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid regime. Must be one of: ${validRegimes.join(', ')}`,
+    });
+  }
+
+  engine.forceRegime(regime.toUpperCase(), reason || 'Forced via API');
+
+  log('INFO', `🔄 [${exchange}] Regime forced to ${regime.toUpperCase()}: ${reason || 'manual'}`);
+
+  res.json({
+    success: true,
+    exchange,
+    regime: regime.toUpperCase(),
+    status: engine.getStatus(),
+  });
+});
+
+// Force resume from drawdown pause
+app.post('/api/:exchange/regime/resume-drawdown', (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running for this exchange',
+    });
+  }
+
+  const result = engine.forceResumeDrawdown();
+
+  if (result.success) {
+    log('INFO', `▶️ [${exchange}] Drawdown pause manually resumed: ${result.message}`);
+  }
+
+  res.json({
+    success: result.success,
+    exchange,
+    message: result.message,
+    status: engine.getStatus(),
+  });
+});
+
+// Get regime engine fill ledger
+app.get('/api/:exchange/regime/fills', (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    // Try to load from disk if engine not running
+    const { createFillLedger } = require('./src/fill-ledger');
+    const ledger = createFillLedger(exchange);
+    const fills = ledger.getAllFills();
+    const stats = ledger.getStats();
+
+    return res.json({
+      success: true,
+      exchange,
+      running: false,
+      fills,
+      stats,
+    });
+  }
+
+  const fills = engine.getFills();
+  const stats = engine.getFillStats();
+
+  res.json({
+    success: true,
+    exchange,
+    running: true,
+    fills,
+    stats,
+  });
+});
+
+// Get open orders for regime engine (works even when engine is stopped)
+app.get('/api/:exchange/regime/open-orders', async (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  // If engine is running, get orders from it
+  if (engine) {
+    const openOrders = engine.getOpenOrders ? engine.getOpenOrders() : [];
+    return res.json({
+      success: true,
+      exchange,
+      running: true,
+      orders: openOrders,
+    });
+  }
+
+  // Engine not running - check market data service and saved state
+  const marketService = getMarketDataService(exchange);
+  const { loadRegimeState } = require('./src/state-tracker');
+  const savedState = loadRegimeState(exchange);
+
+  const orders = [];
+
+  // Get orders from market data service
+  if (marketService?.getOpenOrders) {
+    orders.push(...marketService.getOpenOrders());
+  }
+
+  // If no orders from service, check saved state for active TP order
+  if (orders.length === 0 && savedState.position?.activeTpOrderId) {
+    const { getAdapter } = require('./src/adapters');
+    const adapter = getAdapter(exchange);
+
+    // Verify order still exists on exchange
+    const orderStatus = await adapter.getOrder(savedState.position.activeTpOrderId).catch(() => null);
+    if (orderStatus && orderStatus.status === 'OPEN') {
+      orders.push({
+        orderId: savedState.position.activeTpOrderId,
+        type: 'take_profit',
+        side: 'sell',
+        price: savedState.position.lastTpPrice || 0,
+        size: savedState.position.btcOnOrder || savedState.position.totalBTC || 0,
+        status: 'open',
+        placedAt: savedState.position.lastEntryTime || null,
+      });
+    }
+  }
+
+  res.json({
+    success: true,
+    exchange,
+    running: false,
+    orders,
+  });
+});
+
+// Recalculate regime state from fill history
+app.post('/api/:exchange/regime/recalculate', async (req, res) => {
+  const { exchange } = req.params;
+  const { apply = false } = req.body;
+
+  const { createFillLedger } = require('./src/fill-ledger');
+  const { loadRegimeState, saveRegimeState } = require('./src/state-tracker');
+
+  const fillLedger = createFillLedger(exchange);
+  const currentState = loadRegimeState(exchange);
+
+  // Recalculate cycles from fills
+  const recalcResult = fillLedger.recalculateCycles();
+
+  // Rebuild current position from current cycle fills only
+  const currentCycleFills = fillLedger.getCurrentCycleFills();
+  const currentPosition = fillLedger.rebuildPositionFromFills(currentCycleFills);
+
+  const changes = {
+    cyclesCompleted: {
+      before: currentState.position?.cyclesCompleted || 0,
+      after: recalcResult.cyclesCompleted,
+    },
+    realizedPnL: {
+      before: currentState.position?.realizedPnL || 0,
+      after: recalcResult.realizedPnL,
+    },
+    realizedBtcPnL: {
+      before: currentState.position?.realizedBtcPnL || 0,
+      after: recalcResult.realizedBtcPnL,
+    },
+    ladderStep: {
+      before: currentState.position?.ladderStep || 0,
+      after: currentPosition.ladderStep,
+    },
+    totalBTC: {
+      before: currentState.position?.totalBTC || 0,
+      after: currentPosition.totalBTC,
+    },
+    totalCostBasis: {
+      before: currentState.position?.totalCostBasis || 0,
+      after: currentPosition.totalCostBasis,
+    },
+  };
+
+  if (apply) {
+    // Apply changes to saved state
+    const updatedPosition = {
+      ...currentState.position,
+      ...currentPosition,
+      cyclesCompleted: recalcResult.cyclesCompleted,
+      realizedPnL: recalcResult.realizedPnL,
+      realizedBtcPnL: recalcResult.realizedBtcPnL,
+    };
+
+    saveRegimeState(exchange, {
+      ...currentState,
+      position: updatedPosition,
+    });
+
+    // Persist fill ledger with fixed cycle IDs
+    fillLedger.persist();
+
+    // If engine is running, update its state
+    const engine = regimeEngines.get(exchange);
+    if (engine?.updatePosition) {
+      engine.updatePosition(updatedPosition);
+    }
+
+    console.log(`🔧 [${exchange}] Regime state recalculated and applied: ${recalcResult.cyclesCompleted} cycles, $${recalcResult.realizedPnL} P&L, ${recalcResult.realizedBtcPnL} BTC reserves`);
+  }
+
+  res.json({
+    success: true,
+    exchange,
+    applied: apply,
+    changes,
+    cycleDetails: recalcResult.cycleDetails,
+    orphansFixed: recalcResult.orphansFixed,
+    activeCycleId: recalcResult.activeCycleId,
+    currentCycleFills: currentCycleFills.length,
+  });
+});
+
+// Get dry-run decision log
+app.get('/api/:exchange/regime/dry-run/log', (req, res) => {
+  const { exchange } = req.params;
+  const limit = parseInt(req.query.limit) || 100;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running',
+    });
+  }
+
+  if (!engine.isDryRun) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine is not in dry-run mode',
+    });
+  }
+
+  const log = engine.getDryRunLog(limit);
+  res.json({
+    success: true,
+    exchange,
+    isDryRun: true,
+    log,
+  });
+});
+
+// Get dry-run P&L summary
+app.get('/api/:exchange/regime/dry-run/pnl', (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running',
+    });
+  }
+
+  if (!engine.isDryRun) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine is not in dry-run mode',
+    });
+  }
+
+  const pnl = engine.getDryRunPnL();
+  const state = engine.getState();
+
+  res.json({
+    success: true,
+    exchange,
+    isDryRun: true,
+    pnl,
+    position: state.position,
+    cyclesCompleted: state.position.cyclesCompleted,
+    realizedPnL: state.position.realizedPnL,
+    unrealizedPnL: state.position.unrealizedPnL,
+  });
+});
+
+// Reset dry-run state
+app.post('/api/:exchange/regime/dry-run/reset', (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running',
+    });
+  }
+
+  if (!engine.isDryRun) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine is not in dry-run mode',
+    });
+  }
+
+  const reset = engine.resetDryRun();
+  res.json({
+    success: reset,
+    exchange,
+    message: reset ? 'Dry-run state reset successfully' : 'Failed to reset dry-run state',
+    status: engine.getStatus(),
+  });
+});
+
+// Get full dry-run state (orders, fills, log, pnl)
+app.get('/api/:exchange/regime/dry-run/state', (req, res) => {
+  const { exchange } = req.params;
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine not running',
+    });
+  }
+
+  const state = engine.getState();
+
+  if (!state.isDryRun) {
+    return res.status(400).json({
+      success: false,
+      error: 'Regime engine is not in dry-run mode',
+    });
+  }
+
+  res.json({
+    success: true,
+    exchange,
+    isDryRun: true,
+    dryRunState: state.dryRun,
+    position: state.position,
+    regime: state.regime,
+    market: state.market,
   });
 });
 
@@ -1023,7 +1703,7 @@ const checkAndRunIntervalTrade = () => {
 
 // ============ Start Server ============
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   const enabledExchanges = getEnabledExchanges();
 
   log('INFO', `DCA Trading Bot running on http://localhost:${PORT}`);
@@ -1038,6 +1718,58 @@ server.listen(PORT, () => {
     log('INFO', `[${exchange}] Interval: ${intervalLabel}, next trade in ${timeUntilNext.formatted}`);
   }
 
+  // Auto-resume regime engines that were running before restart
+  const configuredExchanges = getConfiguredExchanges();
+  for (const exchange of configuredExchanges) {
+    if (shouldAutoResumeRegime(exchange)) {
+      log('INFO', `🔄 [${exchange}] Auto-resuming regime engine from previous session...`);
+
+      const { getAdapter } = require('./src/adapters');
+      const exchangeConfig = getExchangeConfig(exchange);
+      const adapter = getAdapter(exchange);
+
+      // Only auto-resume if keys are still valid
+      if (adapter.hasValidKeys && adapter.hasValidKeys()) {
+        const engine = createRegimeEngine(exchange, exchangeConfig, {
+          onTradeEvent: (event) => io.emit('trade:event', event),
+          onRegimeChange: (prevMode, newMode, reason) => io.emit('regime:change', { exchange, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
+          onHealthChange: (mode, reason) => io.emit('regime:health', { exchange, mode, reason, message: reason || `Health: ${mode}` }),
+          onPositionUpdate: (data) => io.emit('regime:position', { exchange, ...data }),
+          onStatusUpdate: (status) => {
+            getChartDataBuffer(exchange).processStatus(status);
+            io.emit('regime:status', { exchange, status });
+          },
+        });
+
+        regimeEngines.set(exchange, engine);
+
+        const startResult = await engine.start();
+        if (startResult.success) {
+          log('INFO', `✅ [${exchange}] Regime engine auto-resumed successfully`);
+        } else {
+          log('ERROR', `❌ [${exchange}] Failed to auto-resume regime engine: ${startResult.error}`);
+          regimeEngines.delete(exchange);
+          saveRegimeRunningFlag(exchange, false);
+        }
+      } else {
+        log('WARN', `⚠️ [${exchange}] Cannot auto-resume regime engine: API keys not configured`);
+        saveRegimeRunningFlag(exchange, false);
+      }
+    }
+  }
+
+  // Start market data services for exchanges with regime config (but not running engines)
+  for (const exchange of configuredExchanges) {
+    const regimeConfig = getRegimeConfig(exchange);
+    // Start market data service if regime config exists and engine not already running
+    if (regimeConfig && Object.keys(regimeConfig).length > 0 && !regimeEngines.has(exchange)) {
+      log('INFO', `📊 [${exchange}] Starting market data service for live price streaming...`);
+      startMarketDataService(exchange).catch(err => {
+        log('WARN', `⚠️ [${exchange}] Failed to start market data service: ${err.message}`);
+      });
+    }
+  }
+
   // Check for scheduled trades every 30 seconds
   const globalConfig = getGlobalConfig();
   setInterval(checkAndRunIntervalTrade, globalConfig.schedulerInterval || 30000);
@@ -1045,3 +1777,38 @@ server.listen(PORT, () => {
   // Check immediately on startup
   checkAndRunIntervalTrade();
 });
+
+// ============ Graceful Shutdown ============
+
+const gracefulShutdown = async (signal) => {
+  log('INFO', `Received ${signal}, shutting down gracefully...`);
+
+  // Stop all market data services
+  log('INFO', 'Stopping market data services...');
+  stopAllMarketDataServices();
+
+  // Stop all regime engines (this saves dry-run state)
+  const stopPromises = [];
+  for (const [exchange, engine] of regimeEngines) {
+    log('INFO', `Stopping regime engine for ${exchange}...`);
+    stopPromises.push(engine.stop());
+  }
+
+  await Promise.all(stopPromises);
+  log('INFO', 'All regime engines stopped');
+
+  // Close server
+  server.close(() => {
+    log('INFO', 'Server closed');
+    process.exit(0);
+  });
+
+  // Force exit after 5 seconds if graceful shutdown fails
+  setTimeout(() => {
+    log('WARN', 'Forcing exit after timeout');
+    process.exit(1);
+  }, 5000);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

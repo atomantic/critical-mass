@@ -44,6 +44,8 @@
  * @property {boolean} dryRun - Whether to simulate trades
  * @property {number} [consolidateAfterOrders] - Auto-consolidate when pending orders exceed this count (0 = disabled)
  * @property {ConsolidateIntervalType} [consolidateInterval] - How often to run interval-based consolidation ('never', 'daily', 'weekly')
+ * @property {'fixed' | 'fibonacci'} [dcaStrategy] - DCA strategy (default: 'fixed')
+ * @property {number} [fibBaseAmount] - Base amount for Fibonacci multiplier (default: 10)
  */
 
 /**
@@ -116,6 +118,11 @@
  * @property {TrackedOrder[]} orders - List of tracked orders
  * @property {string|null} [lastConsolidationId] - Identifier for last consolidation run
  * @property {number|null} [lastConsolidationTimestamp] - Timestamp of last consolidation
+ * @property {number} [fibPosition] - Current Fibonacci sequence position (0-indexed)
+ * @property {number} [fibCycleStartTime] - Timestamp when Fibonacci cycle started
+ * @property {number} [fibCumulativeCost] - Total cost basis for current Fibonacci cycle
+ * @property {number} [fibCumulativeBTC] - Total BTC accumulated in current Fibonacci cycle
+ * @property {string|null} [fibActiveSellOrderId] - Active consolidated sell order ID for Fibonacci cycle
  */
 
 /**
@@ -316,6 +323,254 @@
  */
 
 // ============================================================================
+// Fibonacci Strategy Types
+// ============================================================================
+
+/**
+ * @typedef {Object} FibonacciFillDetails
+ * @property {string} orderId - Order ID
+ * @property {number} filledSize - Amount of BTC filled
+ * @property {number} fillValue - Value of fill in quote currency
+ * @property {number} averageFilledPrice - Average fill price
+ * @property {number} fees - Fees paid
+ * @property {number} rebates - Rebates received
+ * @property {number} netFees - Net fees
+ * @property {number} netProceeds - Net proceeds after fees
+ * @property {number} realizedProfit - Profit from cycle
+ * @property {number} cyclePosition - Final Fibonacci position of cycle
+ * @property {number} cycleBuys - Number of buys in cycle
+ */
+
+/**
+ * @typedef {Object} FibonacciCycleInfo
+ * @property {number} position - Current Fibonacci sequence position
+ * @property {number} cumulativeCost - Total cost basis
+ * @property {number} cumulativeBTC - Total BTC accumulated
+ * @property {number} avgCostBasis - Weighted average cost basis per BTC
+ * @property {string|null} activeSellOrderId - Active sell order ID
+ * @property {number|null} cycleStartTime - When cycle started
+ */
+
+// ============================================================================
+// Regime Strategy Types
+// ============================================================================
+
+/**
+ * @typedef {'HARVEST' | 'CAUTION' | 'TREND'} RegimeMode
+ * Three trading modes based on market conditions:
+ * - HARVEST: Mean-reverting, full inventory cycling
+ * - CAUTION: Volatility rising, reduced scaling, wider TP
+ * - TREND: Strong momentum, exit/manage only, no averaging down
+ */
+
+/**
+ * @typedef {'ACTIVE' | 'SAFE' | 'PAUSED'} HealthMode
+ * System health states:
+ * - ACTIVE: Normal operation, entries allowed
+ * - SAFE: Degraded conditions, entries blocked, TP orders maintained
+ * - PAUSED: Manually paused by operator
+ */
+
+/**
+ * @typedef {Object} MarketState
+ * @property {number} lastPrice - Most recent trade price
+ * @property {number} bid - Current best bid price
+ * @property {number} ask - Current best ask price
+ * @property {number} spread - Current spread (ask - bid)
+ * @property {number} atr1m - 1-minute ATR value
+ * @property {number} atr5m - 5-minute ATR value
+ * @property {number} realizedVol - Rolling realized volatility
+ * @property {number} volBaseline - EMA baseline of realized volatility
+ * @property {number} vwap - Volume-weighted average price
+ * @property {number} vwapDistance - Distance from VWAP in ATR units
+ * @property {number} recentSwing - Recent price swing range
+ * @property {number} tradeImbalance - Buy/sell imbalance (-1 to +1)
+ * @property {{magnitude: number, direction: 'up' | 'down' | 'neutral'}} momentum - Price momentum indicator
+ * @property {Array<{price: number, size: number, side: string, timestamp: number}>} trades - Recent trades
+ * @property {number} lastUpdate - Timestamp of last market data update
+ */
+
+/**
+ * @typedef {Object} RegimeState
+ * @property {RegimeMode} mode - Current regime mode
+ * @property {number} since - Timestamp when current regime started
+ * @property {number} transitionCount - Number of regime transitions
+ * @property {'up' | 'down' | null} trendDirection - Trend direction if in TREND mode
+ * @property {number} lastVolExpansion - Last computed volatility expansion ratio
+ * @property {number} lastMomentumMag - Last computed momentum magnitude
+ * @property {number} trendConfirmationCount - Consecutive trend confirmations
+ */
+
+/**
+ * @typedef {Object} RegimePositionState
+ * @property {number} totalBTC - Total BTC in current cycle
+ * @property {number} totalCostBasis - Total cost including fees
+ * @property {number} avgCostBasis - Average cost per BTC
+ * @property {number} ladderStep - Current averaging-down step (0-indexed)
+ * @property {number} lastEntryPrice - Price of last entry
+ * @property {number} lastEntryTime - Timestamp of last entry
+ * @property {number} anchorPrice - Price anchor for volatility clock
+ * @property {string|null} activeTpOrderId - Active take-profit order ID
+ * @property {number} lastTpPrice - Last take-profit price placed
+ * @property {number} cyclesCompleted - Number of completed inventory cycles
+ * @property {number} unrealizedPnL - Current unrealized P&L
+ * @property {number} realizedPnL - Cumulative realized P&L in USD
+ * @property {number} realizedBtcPnL - Cumulative realized P&L in BTC (holdback reserves)
+ * @property {number} btcOnOrder - BTC currently in open sell orders
+ * @property {number} maxDrawdownSeen - Maximum drawdown observed
+ * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
+ * @property {string|null} scalingDisabledReason - Reason scaling is disabled
+ */
+
+/**
+ * @typedef {Object} HealthState
+ * @property {HealthMode} mode - Current health mode
+ * @property {number} since - Timestamp when current mode started
+ * @property {string|null} reason - Reason for current mode
+ * @property {Object} healthChecks - Health check statuses
+ * @property {boolean} healthChecks.wsConnected - WebSocket connection status
+ * @property {number} healthChecks.lastTickerMs - Age of last ticker in ms
+ * @property {number} healthChecks.lastOrderUpdateMs - Age of last order update in ms
+ * @property {number} healthChecks.restErrorCount - REST errors in window
+ * @property {number} healthChecks.rateLimitCount - Rate limits in window
+ * @property {number} healthChecks.avgLatencyMs - Average REST latency
+ */
+
+/**
+ * @typedef {Object} PauseState
+ * @property {boolean} spreadPaused - Paused due to wide spread
+ * @property {number} spreadPausedUntil - Resume timestamp for spread pause
+ * @property {number} lastSpreadBps - Last observed spread in bps
+ * @property {boolean} depthPaused - Paused due to thin depth
+ * @property {number} depthPausedUntil - Resume timestamp for depth pause
+ */
+
+/**
+ * @typedef {Object} Fill
+ * @property {string} tradeId - Exchange trade ID (primary key)
+ * @property {string} orderId - Order ID
+ * @property {'buy' | 'sell'} side - Trade side
+ * @property {number} price - Fill price
+ * @property {number} size - Fill size in BTC
+ * @property {number} quoteAmount - Fill amount in USDC
+ * @property {number} fee - Fee charged
+ * @property {string} feeAsset - Fee asset ('USDC' or 'BTC')
+ * @property {number} rebate - Maker rebate if any
+ * @property {number} netFee - Net fee (fee - rebate)
+ * @property {'MAKER' | 'TAKER'} liquidityIndicator - Maker or taker
+ * @property {number} timestamp - Exchange timestamp
+ * @property {number} ingestedAt - When fill was ingested
+ * @property {string|null} cycleId - Trading cycle ID
+ */
+
+/**
+ * @typedef {Object} PendingOrder
+ * @property {'entry' | 'take_profit'} type - Order type
+ * @property {number} price - Order price
+ * @property {number} size - Order size
+ * @property {number} sizeUsdc - Order size in USDC (for entries)
+ * @property {number} placedAt - Timestamp when placed
+ * @property {boolean} [recoveredFromExchange] - Whether recovered on startup
+ */
+
+/**
+ * @typedef {Object} RegimeStrategyConfig
+ * Mode Flags
+ * @property {boolean} enabled - Whether regime engine is enabled (default: false)
+ * Note: dryRun is read from exchange-level config (ExchangeConfig.dryRun), not here
+ *
+ * Volatility Clock Parameters
+ * @property {number} atrPeriod - Periods for ATR calculation (default: 14)
+ * @property {number} kFactor - ATR multiplier for entry trigger (default: 0.6)
+ * @property {number} minIntervalMs - Minimum time between entries (default: 60000)
+ * @property {number} maxIntervalMs - Maximum time between entries (default: 3600000)
+ *
+ * Regime Detection Parameters
+ * @property {number} momentumMult - Momentum threshold multiplier (default: 1.5)
+ * @property {number} volExpansionMult - RV/baseline for CAUTION (default: 1.5)
+ * @property {number} volContractionMult - RV/baseline to return to HARVEST (default: 1.2)
+ * @property {number} vwapPeriodHours - VWAP calculation window (default: 4)
+ * @property {number} trendConfirmationPeriods - Periods to confirm TREND (default: 5)
+ *
+ * Position Sizing Parameters
+ * @property {number} baseSizeUsdc - Base order size in USDC (default: 50)
+ * @property {number} harvestScale - Size multiplier in HARVEST (default: 1.0)
+ * @property {number} cautionScale - Size multiplier in CAUTION (default: 0.5)
+ * @property {number} trendScale - Size multiplier in TREND (default: 0.0)
+ * @property {number} maxLadderSteps - Maximum averaging-down steps (default: 10)
+ * @property {number} ladderResetHours - Hours after which to auto-reset ladder at max (default: 72, 0 to disable)
+ * @property {number} liquidityFactorCap - Maximum liquidity multiplier (default: 2.0)
+ *
+ * Take-Profit Parameters
+ * @property {number} tpMult - TP distance multiplier (default: 1.0)
+ * @property {number} tpMinPercent - Minimum TP percentage (default: 2.0)
+ * @property {number} tpMaxPercent - Maximum TP percentage (default: 15.0)
+ * @property {number} tpUpdateThresholdPct - Min % change to update TP (default: 0.5)
+ * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0, default: 0.5)
+ *
+ * Risk Cap Parameters
+ * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)
+ * @property {number} maxUsdcDeployed - Maximum USDC deployed (default: 10000)
+ * @property {number} maxDrawdownPercent - Pause threshold (default: 20)
+ * @property {number} drawdownResetHours - Hours after which to auto-reset peak during drawdown pause (default: 72, 0 to disable)
+ *
+ * Order Execution Parameters
+ * @property {number} entryOffsetBps - Offset below mid for bids when momentum is neutral (default: 10)
+ * @property {number} entryOffsetUpBps - Offset when momentum is UP, smaller to get fills before price rises (default: 5)
+ * @property {number} entryOffsetDownBps - Offset when momentum is DOWN, larger to catch falling price (default: 15)
+ * @property {number} entryMaxRetries - Max retries for post-only rejections in fast markets (default: 3)
+ * @property {number} cancelRateLimitMs - Min time between cancels (default: 1000)
+ * @property {number} orderStaleMs - Timeout for stale entry orders (default: 30000)
+ *
+ * System Health Parameters
+ * @property {number} staleDataMs - Max age of market data (default: 30000)
+ * @property {number} staleOrdersMs - Max age of order updates (default: 60000)
+ * @property {number} maxRestErrors - REST errors to trigger SAFE (default: 5)
+ * @property {number} maxRateLimits - Rate limits to trigger SAFE (default: 3)
+ * @property {number} maxLatencyMs - Latency to trigger SAFE (default: 5000)
+ * @property {number} safeRecoveryMs - Time healthy to exit SAFE (default: 60000)
+ *
+ * Invariant Parameters
+ * @property {number} maxOpenOrders - Maximum concurrent orders (default: 3)
+ * @property {number} reconcileIntervalMs - State reconciliation frequency (default: 300000)
+ *
+ * Tail Event Parameters
+ * @property {number} maxSpreadBps - Spread pause threshold (default: 50)
+ * @property {number} spreadPauseMs - Spread pause duration (default: 300000)
+ * @property {number} minDepthUsdc - Minimum depth for entries (default: 10000)
+ * @property {number} depthPauseMs - Depth pause duration (default: 300000)
+ * @property {number} flashMoveMult - ATR multiple for flash detection (default: 3.0)
+ * @property {number} flashCooldownMs - Flash move cooldown (default: 600000)
+ * @property {boolean} cancelEntriesOnFlash - Cancel entries on flash (default: true)
+ */
+
+/**
+ * @typedef {Object} LimitBuyResult
+ * @property {string} orderId - Order ID from exchange
+ * @property {string} clientOrderId - Client-generated order ID
+ * @property {boolean} success - Whether order was placed successfully
+ * @property {string} [errorMessage] - Error message if order failed
+ * @property {number} baseSize - Amount of base currency in order
+ * @property {number} limitPrice - Limit price for the order
+ * @property {boolean} [postOnly] - Whether order was post-only
+ */
+
+/**
+ * @typedef {Object} EntryCheckResult
+ * @property {boolean} allowed - Whether entry is allowed
+ * @property {string|null} reason - Reason if not allowed
+ */
+
+/**
+ * @typedef {Object} VolatilityMetrics
+ * @property {number} atr - Average True Range
+ * @property {number} realizedVol - Realized volatility
+ * @property {number} volExpansion - Volatility expansion ratio
+ * @property {number} vwap - Volume-weighted average price
+ * @property {number} recentSwing - Recent swing range
+ */
+
+// ============================================================================
 // API Credentials Types
 // ============================================================================
 
@@ -330,7 +585,7 @@
 // ============================================================================
 
 /**
- * @typedef {'BUY' | 'SELL_ORDER' | 'SELL_FILLED' | 'CONSOLIDATE'} TransactionType
+ * @typedef {'BUY' | 'SELL_ORDER' | 'SELL_FILLED' | 'CONSOLIDATE' | 'FIB_BUY' | 'FIB_SELL_ORDER' | 'FIB_SELL_FILLED'} TransactionType
  */
 
 /**
@@ -374,6 +629,7 @@
  * @property {() => ApiCredentials} loadCredentials - Load API credentials
  * @property {(currency: string) => Promise<AccountBalance>} getAccountBalance - Get account balance
  * @property {(productId: string) => Promise<number>} getCurrentPrice - Get current price
+ * @property {(productId: string) => Promise<{bid: number, ask: number}>} getBidAsk - Get current bid/ask
  * @property {(productId: string) => Promise<ProductDetails>} getProductDetails - Get product details
  * @property {(productId: string, quoteAmount: number) => Promise<MarketBuyResult>} placeMarketBuy - Place market buy
  * @property {(productId: string, baseAmount: number, price: number) => Promise<LimitSellResult>} placeLimitSell - Place limit sell

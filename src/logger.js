@@ -12,6 +12,8 @@ const { getExchangeDataDir } = require('./migration');
  * @typedef {import('./types').TransactionDetails} TransactionDetails
  * @typedef {import('./types').TransactionRecord} TransactionRecord
  * @typedef {import('./types').ConsolidationResult} ConsolidationResult
+ * @typedef {import('./types').FibonacciFillDetails} FibonacciFillDetails
+ * @typedef {import('./types').FibonacciCycleInfo} FibonacciCycleInfo
  */
 
 /**
@@ -249,6 +251,69 @@ const logConsolidation = (consolidation, state, exchange = 'coinbase') => {
   }, state, exchange);
 };
 
+/**
+ * Log a Fibonacci buy transaction
+ * @param {BuyResult} buyDetails - Buy order details with fees
+ * @param {BotState} state - Current state
+ * @param {FibonacciCycleInfo} cycleInfo - Fibonacci cycle information
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
+ */
+const logFibBuy = (buyDetails, state, cycleInfo, exchange = 'coinbase') => {
+  logTransaction('FIB_BUY', {
+    price: buyDetails.price,
+    btcAmount: buyDetails.btcAmount,
+    usdcAmount: -buyDetails.usdcAmount,
+    fees: buyDetails.fees || 0,
+    rebates: buyDetails.rebates || 0,
+    netFees: buyDetails.netFees || 0,
+    orderId: buyDetails.orderId,
+  }, state, exchange);
+
+  log('INFO', `[${exchange}] Fib position ${cycleInfo.position}: bought ${buyDetails.btcAmount.toFixed(8)} @ $${buyDetails.price.toFixed(2)}, cycle total: ${cycleInfo.cumulativeBTC.toFixed(8)} BTC, avg cost: $${cycleInfo.avgCostBasis.toFixed(2)}`);
+};
+
+/**
+ * Log a Fibonacci sell order placement
+ * @param {SellOrder} sellOrder - Sell order details
+ * @param {BotState} state - Current state
+ * @param {FibonacciCycleInfo} cycleInfo - Fibonacci cycle information
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
+ */
+const logFibSellOrder = (sellOrder, state, cycleInfo, exchange = 'coinbase') => {
+  logTransaction('FIB_SELL_ORDER', {
+    price: sellOrder.limitPrice,
+    btcAmount: -sellOrder.baseSize,
+    usdcAmount: sellOrder.baseSize * sellOrder.limitPrice,
+    orderId: sellOrder.orderId,
+  }, state, exchange);
+
+  log('INFO', `[${exchange}] Fib cycle sell order: ${sellOrder.baseSize.toFixed(8)} BTC @ $${sellOrder.limitPrice.toFixed(2)} (position ${cycleInfo.position})`);
+};
+
+/**
+ * Log a filled Fibonacci cycle sell order
+ * @param {FibonacciFillDetails} fillDetails - Fill details with fees
+ * @param {BotState} state - Current state
+ * @param {number} cyclePosition - Final position of the cycle
+ * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @returns {void}
+ */
+const logFibSellFilled = (fillDetails, state, cyclePosition, exchange = 'coinbase') => {
+  logTransaction('FIB_SELL_FILLED', {
+    price: fillDetails.averageFilledPrice,
+    btcAmount: -fillDetails.filledSize,
+    usdcAmount: fillDetails.netProceeds || fillDetails.fillValue,
+    fees: fillDetails.fees || 0,
+    rebates: fillDetails.rebates || 0,
+    netFees: fillDetails.netFees || 0,
+    orderId: fillDetails.orderId,
+  }, state, exchange);
+
+  log('INFO', `[${exchange}] Fib cycle complete! Sold ${fillDetails.filledSize.toFixed(8)} BTC @ $${fillDetails.averageFilledPrice.toFixed(2)} for $${fillDetails.netProceeds.toFixed(2)} (${cyclePosition} buys in cycle)`);
+};
+
 module.exports = {
   logTransaction,
   logBuy,
@@ -258,4 +323,8 @@ module.exports = {
   loadTransactionHistory,
   log,
   getLogFile,
+  // Fibonacci logging
+  logFibBuy,
+  logFibSellOrder,
+  logFibSellFilled,
 };

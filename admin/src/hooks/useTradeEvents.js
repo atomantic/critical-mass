@@ -65,6 +65,83 @@ export function useTradeEvents(exchange = null) {
   }
 }
 
+export function useRegimeEvents(exchange = null) {
+  const [status, setStatus] = useState(null)
+  const [regimeState, setRegimeState] = useState(null)
+  const [healthState, setHealthState] = useState(null)
+  const [positionState, setPositionState] = useState(null)
+  const [connected, setConnected] = useState(false)
+  const [events, setEvents] = useState([])
+
+  useEffect(() => {
+    const socket = getSocket()
+
+    const handleConnect = () => setConnected(true)
+    const handleDisconnect = () => setConnected(false)
+
+    const handleStatusUpdate = (data) => {
+      if (exchange && data.exchange !== exchange) return
+      setStatus(data.status)
+    }
+
+    const handleRegimeChange = (data) => {
+      if (exchange && data.exchange !== exchange) return
+      setRegimeState(data)
+      setEvents((prev) => [{
+        type: 'regime_change',
+        ...data,
+        timestamp: new Date().toISOString(),
+      }, ...prev].slice(0, MAX_EVENTS))
+    }
+
+    const handleHealthChange = (data) => {
+      if (exchange && data.exchange !== exchange) return
+      setHealthState(data)
+      setEvents((prev) => [{
+        type: 'health_change',
+        ...data,
+        timestamp: new Date().toISOString(),
+      }, ...prev].slice(0, MAX_EVENTS))
+    }
+
+    const handlePositionUpdate = (data) => {
+      if (exchange && data.exchange !== exchange) return
+      setPositionState(data)
+    }
+
+    socket.on('connect', handleConnect)
+    socket.on('disconnect', handleDisconnect)
+    socket.on('regime:status', handleStatusUpdate)
+    socket.on('regime:change', handleRegimeChange)
+    socket.on('regime:health', handleHealthChange)
+    socket.on('regime:position', handlePositionUpdate)
+
+    setConnected(socket.connected)
+
+    return () => {
+      socket.off('connect', handleConnect)
+      socket.off('disconnect', handleDisconnect)
+      socket.off('regime:status', handleStatusUpdate)
+      socket.off('regime:change', handleRegimeChange)
+      socket.off('regime:health', handleHealthChange)
+      socket.off('regime:position', handlePositionUpdate)
+    }
+  }, [exchange])
+
+  const clearEvents = useCallback(() => setEvents([]), [])
+
+  return {
+    status,
+    setStatus,
+    regimeState,
+    healthState,
+    positionState,
+    connected,
+    events,
+    clearEvents,
+  }
+}
+
 export function useOptimizerEvents() {
   const [progress, setProgress] = useState(null)
   const [bestResult, setBestResult] = useState(null)
