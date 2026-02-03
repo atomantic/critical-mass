@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.47] - 2026-02-03
+
+### Fixed
+- **Fills not showing in UI** - Fixed broken filter that was excluding all fills with cycleIds
+  - The filter `!f.cycleId.startsWith('cycle-')` incorrectly excluded all fills since all have cycleIds starting with 'cycle-'
+  - Now correctly identifies current cycle by finding the most recent cycleId timestamp
+- **Holdback display showing cumulative totals** - Changed holdback to show per-cycle BTC profit instead of running total
+  - Each sell row now shows `totalBought - totalSold` for that specific cycle
+  - Partial fills are aggregated by orderId for cleaner display
+- **Position/P&L not calculated on startup** - Engine now auto-recalculates cycles from fill ledger on startup
+  - Ensures accurate P&L tracking without requiring manual "Recalculate from Fills" click
+- **APY metrics showing 0 after restart** - Backfills engineStartTime from earliest fill in ledger
+  - APY calculations now work correctly even after engine restarts
+
 ## [2.3.25] - 2026-02-02
 
 ### Fixed

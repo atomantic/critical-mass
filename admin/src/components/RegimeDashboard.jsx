@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import RegimePriceChart from './charts/RegimePriceChart'
@@ -162,6 +162,25 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Chart data buffering with cache support
   const { priceHistory, atrHistory, regimeHistory, initializeFromCache } = useChartDataBuffer(status)
+
+  // Compute current cycle ID and filtered fills for display
+  const { currentCycleId, filteredFills } = useMemo(() => {
+    if (!liveFills || liveFills.length === 0) {
+      return { currentCycleId: null, filteredFills: [] }
+    }
+    // Find the most recent cycleId by parsing the timestamp embedded in the cycleId
+    const cycleId = liveFills.reduce((latest, f) => {
+      if (!f.cycleId) return latest
+      if (!latest) return f.cycleId
+      const latestTime = parseInt(latest.split('-')[1]) || 0
+      const fillTime = parseInt(f.cycleId.split('-')[1]) || 0
+      return fillTime > latestTime ? f.cycleId : latest
+    }, null)
+    const filtered = showAllCycles
+      ? liveFills
+      : liveFills.filter(f => f.cycleId === cycleId)
+    return { currentCycleId: cycleId, filteredFills: filtered }
+  }, [liveFills, showAllCycles])
 
   // Track previous price for animation
   useEffect(() => {
@@ -900,7 +919,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
                       <div className="flex gap-3 font-mono text-green-400">
                         <span>${(apy.estimatedDailyUsdc || 0).toFixed(2)}</span>
-                        <span className="text-orange-400">{(apy.estimatedDailyBtc || 0).toFixed(6)} BTC</span>
+                        <span className="text-orange-400">{(apy.estimatedDailyBtc || 0).toFixed(8)} BTC</span>
                       </div>
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5">
@@ -1090,14 +1109,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     {showAllCycles ? 'All Cycles' : 'Current Cycle'}
                   </button>
                 )}
-                {((isDryRun && dryRunState?.filledOrders?.length > 0) || (!isDryRun && liveFills?.length > 0)) && (
+                {((isDryRun && dryRunState?.filledOrders?.length > 0) || (!isDryRun && filteredFills.length > 0)) && (
                   <span className="text-xs text-gray-500">
                     {isDryRun
                       ? dryRunState.filledOrders.length
-                      : (showAllCycles
-                          ? liveFills.length
-                          : liveFills.filter(f => !f.cycleId || f.cycleId.startsWith('cycle-') === false).length
-                        )
+                      : filteredFills.length
                     } fills
                   </span>
                 )}
@@ -1105,10 +1121,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
             </div>
             {(isDryRun
               ? (dryRunState?.filledOrders?.length || 0)
-              : (showAllCycles
-                  ? liveFills?.length
-                  : liveFills?.filter(f => !f.cycleId || !f.cycleId.startsWith('cycle-')).length
-                ) || 0
+              : filteredFills.length
             ) === 0 ? (
               <div className="text-gray-500 text-sm text-center py-4">
                 {!isDryRun && liveFills?.length > 0 && !showAllCycles
@@ -1262,12 +1275,24 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               /* Live Mode Fills - Split Buy/Sell Tables */
               <div className="space-y-3">
                 {(() => {
-                  // Filter fills based on cycle toggle
-                  const filteredFills = showAllCycles
-                    ? liveFills
-                    : liveFills.filter(f => !f.cycleId || !f.cycleId.startsWith('cycle-'))
+                  // Group fills by cycleId to calculate per-cycle holdback
+                  const cycleMap = new Map()
+                  filteredFills.forEach(fill => {
+                    const cycleId = fill.cycleId || 'unknown'
+                    if (!cycleMap.has(cycleId)) {
+                      cycleMap.set(cycleId, { buys: [], sells: [], totalBought: 0, totalSold: 0 })
+                    }
+                    const cycle = cycleMap.get(cycleId)
+                    if (fill.side === 'buy') {
+                      cycle.buys.push(fill)
+                      cycle.totalBought += fill.size
+                    } else {
+                      cycle.sells.push(fill)
+                      cycle.totalSold += fill.size
+                    }
+                  })
 
-                  // Calculate running avg cost basis and P&L for sells
+                  // Calculate P&L and per-cycle holdback for sells
                   const sortedFills = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
                   let runningBtc = 0
                   let runningCost = 0
@@ -1281,16 +1306,42 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
                       const costBasis = avgCost * fill.size
                       const pnl = proceeds - costBasis
-                      const holdback = runningBtc - fill.size
-                      runningBtc = holdback > 0 ? holdback : 0
-                      runningCost = holdback > 0 ? avgCost * holdback : 0
-                      return { ...fill, pnl, holdback: holdback > 0 ? holdback : 0, avgCost }
+                      // Calculate per-cycle holdback: buys - sells for this cycle
+                      const cycleData = cycleMap.get(fill.cycleId || 'unknown')
+                      const cycleHoldback = cycleData ? Math.max(0, cycleData.totalBought - cycleData.totalSold) : 0
+                      // Update running totals for next iteration
+                      const remaining = runningBtc - fill.size
+                      runningBtc = remaining > 0 ? remaining : 0
+                      runningCost = remaining > 0 ? avgCost * remaining : 0
+                      return { ...fill, pnl, holdback: cycleHoldback, avgCost }
                     }
                   })
 
+                  // Aggregate partial fills by orderId for display
+                  const aggregateByOrderId = (fills) => {
+                    const orderMap = new Map()
+                    fills.forEach(fill => {
+                      const existing = orderMap.get(fill.orderId)
+                      if (existing) {
+                        existing.size += fill.size
+                        existing.quoteAmount = (existing.quoteAmount || 0) + (fill.quoteAmount || 0)
+                        existing.pnl = (existing.pnl || 0) + (fill.pnl || 0)
+                        existing.netFee = (existing.netFee || 0) + (fill.netFee || 0)
+                        // Holdback is per-cycle, so keep the same value (don't sum partials)
+                        existing.partialCount = (existing.partialCount || 1) + 1
+                      } else {
+                        orderMap.set(fill.orderId, { ...fill, partialCount: 1 })
+                      }
+                    })
+                    return Array.from(orderMap.values())
+                  }
+
                   const allFills = fillsWithPnl.sort((a, b) => b.timestamp - a.timestamp)
-                  const buyFills = allFills.filter(f => f.side === 'buy').slice(0, showAllCycles ? 25 : 10)
-                  const sellFills = allFills.filter(f => f.side === 'sell').slice(0, showAllCycles ? 25 : 10)
+                  // Aggregate buys and sells separately by orderId
+                  const buyFillsRaw = allFills.filter(f => f.side === 'buy')
+                  const sellFillsRaw = allFills.filter(f => f.side === 'sell')
+                  const buyFills = aggregateByOrderId(buyFillsRaw).slice(0, showAllCycles ? 25 : 10)
+                  const sellFills = aggregateByOrderId(sellFillsRaw).slice(0, showAllCycles ? 25 : 10)
 
                   // Calculate buy totals
                   let totalBuySize = 0
@@ -1300,14 +1351,20 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     totalBuyValue += fill.quoteAmount || 0
                   })
 
-                  // Calculate sell totals
+                  // Calculate sell totals - sum holdback from each cycle (not running total)
                   let totalSellSize = 0
                   let totalSellPnl = 0
-                  let totalSellHoldback = 0
+                  let totalHoldback = 0
+                  // Track unique cycles to avoid double-counting holdback
+                  const countedCycles = new Set()
                   sellFills.forEach(fill => {
                     totalSellSize += fill.size || 0
                     if (fill.pnl !== null) totalSellPnl += fill.pnl
-                    if (fill.holdback > 0) totalSellHoldback += fill.holdback
+                    // Only count holdback once per cycle
+                    if (fill.cycleId && !countedCycles.has(fill.cycleId)) {
+                      totalHoldback += fill.holdback || 0
+                      countedCycles.add(fill.cycleId)
+                    }
                   })
 
                   return (
@@ -1398,13 +1455,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     {totalSellPnl !== 0 ? `${totalSellPnl >= 0 ? '+' : ''}$${totalSellPnl.toFixed(2)}` : '—'}
                                   </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
-                                    {totalSellHoldback > 0 ? `+${totalSellHoldback.toFixed(8)}` : '—'}
+                                    {totalHoldback > 0 ? `+${totalHoldback.toFixed(8)}` : '—'}
                                   </td>
                                   <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
                                 </tr>
                               )}
                               {sellFills.map((fill, idx) => (
-                                <tr key={`sell-${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                <tr key={`sell-${fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
                                   {showAllCycles && (
                                     <td className="py-1.5 pr-2 text-xs text-gray-500">
                                       {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
