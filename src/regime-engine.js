@@ -810,6 +810,29 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         }
       }
 
+      // Recalculate cycles from fill ledger to ensure accurate P&L tracking
+      // This catches any discrepancies between saved state and actual fills
+      const recalcResult = fillLedger.recalculateCycles();
+      if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
+        console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, PnL=$${recalcResult.realizedPnL.toFixed(2)}, BTC reserves=${recalcResult.realizedBtcPnL.toFixed(6)}`);
+        positionState.cyclesCompleted = recalcResult.cyclesCompleted;
+        positionState.realizedPnL = recalcResult.realizedPnL;
+        positionState.realizedBtcPnL = recalcResult.realizedBtcPnL;
+      }
+
+      // Backfill APY tracking start time from earliest fill in ledger
+      const allFills = fillLedger.getAllFills();
+      if (allFills.length > 0) {
+        const earliestFillTime = allFills.reduce((earliest, fill) => {
+          return fill.timestamp < earliest ? fill.timestamp : earliest;
+        }, Infinity);
+        if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
+          positionState.engineStartTime = earliestFillTime;
+          positionState.initialCapital = config.maxUsdcDeployed || 10000;
+          console.log(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}`);
+        }
+      }
+
       // Save initial state after recovery
       saveLiveState();
     } else {
