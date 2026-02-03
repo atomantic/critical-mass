@@ -1,6 +1,7 @@
 // @ts-check
 const { getAdapter } = require('./adapters');
 const { log } = require('./logger');
+const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -102,7 +103,8 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
   // Calculate sell price (plus markup)
   const sellPrice = buyDetails.price * (1 + config.sellMarkupPercent / 100);
 
-  log('INFO', `Placing post-only sell for ${sellQuantity} BTC at ${sellPrice}`);
+  const baseCurrency = config.productId.split(/[-_]/)[0];
+  log('INFO', `Placing post-only sell for ${sellQuantity} ${baseCurrency} at ${sellPrice}`);
 
   const sellResult = await adapter.placeLimitSell(config.productId, sellQuantity, sellPrice);
 
@@ -246,8 +248,9 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   const totalBTC = eligibleOrders.reduce((sum, o) => sum + o.sellQuantityBTC, 0);
   const weightedPriceSum = eligibleOrders.reduce((sum, o) => sum + (o.sellQuantityBTC * o.sellPrice), 0);
   const consolidatedPrice = weightedPriceSum / totalBTC;
+  const baseCurrency = config.productId.split(/[-_]/)[0];
 
-  log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalBTC.toFixed(8)} BTC @ ${consolidatedPrice.toFixed(2)}`);
+  log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalBTC.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
 
   // Step 3: Cancel all eligible orders
   log('INFO', `Cancelling ${eligibleOrders.length} orders...`);
@@ -266,7 +269,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   }
 
   // Step 4: Place new consolidated order
-  log('INFO', `Placing consolidated sell order: ${totalBTC.toFixed(8)} BTC @ ${consolidatedPrice.toFixed(2)}`);
+  log('INFO', `Placing consolidated sell order: ${totalBTC.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
   const sellResult = await adapter.placeLimitSell(config.productId, totalBTC, consolidatedPrice);
 
   if (!sellResult.success) {
@@ -291,6 +294,92 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   };
 };
 
+/**
+ * Place or update a Fibonacci cycle consolidated sell order
+ * Cancels previous sell order if exists and not filled, then places new order
+ * @param {ExchangeConfig} config - Configuration
+ * @param {number} cumulativeBTC - Total BTC accumulated in cycle
+ * @param {number} avgCostBasis - Weighted average cost basis per BTC
+ * @param {string|null} prevOrderId - Previous sell order ID to cancel
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @returns {Promise<{sellOrder: SellOrder, sellQuantityBTC: number, holdbackBTC: number}>} Sell order result
+ */
+const placeFibonacciSellOrder = async (config, cumulativeBTC, avgCostBasis, prevOrderId, adapter) => {
+  const baseCurrency = config.productId.split(/[-_]/)[0];
+
+  // Cancel previous order if it exists and is not filled
+  if (prevOrderId) {
+    const prevOrderStatus = await adapter.getOrder(prevOrderId);
+
+    if (prevOrderStatus.status === 'OPEN' || prevOrderStatus.status === 'PENDING') {
+      log('INFO', `Cancelling previous Fibonacci sell order ${prevOrderId}`);
+      await adapter.cancelOrder(prevOrderId);
+    } else if (prevOrderStatus.status === 'FILLED') {
+      // Order already filled - this should trigger cycle reset
+      log('INFO', `Previous Fibonacci sell order ${prevOrderId} already filled`);
+      return { sellOrder: null, sellQuantityBTC: 0, holdbackBTC: 0, alreadyFilled: true };
+    }
+  }
+
+  // Calculate sell quantity and price
+  const holdbackBTC = cumulativeBTC * (config.holdbackPercent / 100);
+  const sellQuantityBTC = getFibonacciSellQuantity(cumulativeBTC, config.holdbackPercent);
+  const sellPrice = getFibonacciSellPrice(avgCostBasis, config.sellMarkupPercent);
+
+  log('INFO', `Placing Fibonacci sell: ${sellQuantityBTC.toFixed(8)} ${baseCurrency} at $${sellPrice.toFixed(2)} (avg cost: $${avgCostBasis.toFixed(2)})`);
+
+  // Ensure sell price is above current market for post-only
+  const currentPrice = await adapter.getCurrentPrice(config.productId);
+  let adjustedPrice = sellPrice;
+
+  if (sellPrice <= currentPrice) {
+    adjustedPrice = currentPrice * 1.01; // 1% above current price minimum
+    log('WARN', `Fibonacci sell price $${sellPrice.toFixed(2)} below market $${currentPrice.toFixed(2)}, adjusting to $${adjustedPrice.toFixed(2)}`);
+  }
+
+  const sellResult = await adapter.placeLimitSell(config.productId, sellQuantityBTC, adjustedPrice);
+
+  if (!sellResult.success) {
+    throw new Error(`Fibonacci sell order failed: ${sellResult.errorMessage}`);
+  }
+
+  log('INFO', `Fibonacci sell order placed: ${sellResult.orderId}`);
+
+  return {
+    sellOrder: sellResult,
+    sellQuantityBTC,
+    holdbackBTC,
+    alreadyFilled: false,
+  };
+};
+
+/**
+ * Check if a Fibonacci cycle sell order has filled
+ * @param {string} orderId - Order ID to check
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @returns {Promise<FibonacciFillDetails|null>} Fill details if filled, null otherwise
+ */
+const checkFibonacciSellFill = async (orderId, adapter) => {
+  const orderStatus = await adapter.getOrder(orderId);
+
+  if (orderStatus.status !== 'FILLED') {
+    return null;
+  }
+
+  const fillSummary = await adapter.getOrderFillSummary(orderId);
+
+  return {
+    orderId,
+    filledSize: orderStatus.filledSize,
+    fillValue: orderStatus.filledValue,
+    averageFilledPrice: orderStatus.averageFilledPrice,
+    fees: fillSummary.totalFees,
+    rebates: fillSummary.totalRebates,
+    netFees: fillSummary.netFees,
+    netProceeds: orderStatus.filledValue - fillSummary.netFees,
+  };
+};
+
 module.exports = {
   executeDailyBuy,
   placeSellOrder,
@@ -298,4 +387,7 @@ module.exports = {
   checkFilledOrders,
   waitForBuyFill,
   consolidatePendingOrders,
+  // Fibonacci order management
+  placeFibonacciSellOrder,
+  checkFibonacciSellFill,
 };

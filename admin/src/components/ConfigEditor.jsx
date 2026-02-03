@@ -33,26 +33,44 @@ function FormSelect({ label, value, onChange, options, className = '' }) {
   )
 }
 
-function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) {
+function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', strategy = 'dca' }) {
   const [config, setConfig] = useState(initialConfig || {})
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null)
   const [isDirty, setIsDirty] = useState(false)
   const prevExchangeRef = useRef(exchange)
+  const prevStrategyRef = useRef(strategy)
 
-  // Only sync with initialConfig when exchange changes (not on every refresh)
+  // Determine if showing regime config based on URL strategy prop
+  const isRegime = strategy === 'regime'
+  const isFibonacci = !isRegime && config.dcaStrategy === 'fibonacci'
+
+  // Only sync with initialConfig when exchange or strategy changes (not on every refresh)
   useEffect(() => {
-    if (initialConfig && (prevExchangeRef.current !== exchange || !isDirty)) {
+    if (initialConfig && (prevExchangeRef.current !== exchange || prevStrategyRef.current !== strategy || !isDirty)) {
       setConfig(initialConfig)
       setIsDirty(false)
       prevExchangeRef.current = exchange
+      prevStrategyRef.current = strategy
     }
-  }, [initialConfig, exchange, isDirty])
+  }, [initialConfig, exchange, strategy, isDirty])
 
   const handleChange = (key, value) => {
     setConfig(prev => ({ ...prev, [key]: value }))
     setIsDirty(true)
   }
+
+  // Handler for nested regime config changes
+  const handleRegimeChange = (key, value) => {
+    setConfig(prev => ({
+      ...prev,
+      regime: { ...prev.regime, [key]: value }
+    }))
+    setIsDirty(true)
+  }
+
+  // Get regime config with defaults
+  const regimeConfig = config.regime || {}
 
   const handleSave = async () => {
     setSaving(true)
@@ -96,6 +114,18 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
     { value: 'weekly', label: 'Weekly' },
   ]
 
+  const DCA_STRATEGY_OPTIONS = [
+    { value: 'fixed', label: 'Fixed Amount DCA' },
+    { value: 'fibonacci', label: 'Fibonacci DCA' },
+  ]
+
+  // Generate Fibonacci preview sequence
+  const getFibPreview = (baseAmount, count = 8) => {
+    const fib = [1, 1]
+    for (let i = 2; i < count; i++) fib.push(fib[i-1] + fib[i-2])
+    return fib.map(n => `$${(n * baseAmount).toFixed(0)}`).join(' → ')
+  }
+
   const quoteCurrency = getQuoteCurrency(config.productId)
   const intervalsToSpread = config.intervalsToSpread || config.daysToSpread || 1
   const intervalAmount = intervalsToSpread ? (config.totalAllocation / intervalsToSpread) : 0
@@ -123,13 +153,22 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
               <span className="text-gray-400">Enabled</span>
               <button
                 type="button"
-                onClick={() => handleChange('enabled', !config.enabled)}
+                onClick={() => {
+                  // Strategy-specific enabled toggle
+                  if (isRegime) {
+                    handleRegimeChange('enabled', !regimeConfig.enabled)
+                  } else {
+                    handleChange('enabled', !config.enabled)
+                  }
+                }}
                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                  config.enabled ? 'bg-green-500' : 'bg-gray-600'
+                  (isRegime ? regimeConfig.enabled : config.enabled)
+                    ? 'bg-green-500' : 'bg-gray-600'
                 }`}
               >
                 <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                  config.enabled ? 'translate-x-5' : 'translate-x-1'
+                  (isRegime ? regimeConfig.enabled : config.enabled)
+                    ? 'translate-x-5' : 'translate-x-1'
                 }`} />
               </button>
             </label>
@@ -160,72 +199,376 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase' }) 
           </div>
         )}
 
-        {/* Trading Settings - 3 column grid */}
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          <FormInput label="Product ID" value={config.productId} onChange={(v) => handleChange('productId', v)} />
-          <FormInput label={`Allocation (${quoteCurrency})`} value={config.totalAllocation} onChange={(v) => handleChange('totalAllocation', v)} type="number" />
-          <FormSelect label="Interval" value={config.intervalType} onChange={(v) => handleChange('intervalType', v)} options={INTERVAL_OPTIONS} />
-          <FormInput label="Intervals" value={config.intervalsToSpread} onChange={(v) => handleChange('intervalsToSpread', v)} type="number" />
-          <FormInput label="Markup %" value={config.sellMarkupPercent} onChange={(v) => handleChange('sellMarkupPercent', v)} type="number" />
-          <FormInput label="Holdback %" value={config.holdbackPercent} onChange={(v) => handleChange('holdbackPercent', v)} type="number" />
-          <FormInput label={`Min Order (${quoteCurrency})`} value={config.minOrderSize} onChange={(v) => handleChange('minOrderSize', v)} type="number" />
-          <FormInput label={`Max Price (${quoteCurrency})`} value={config.maxBuyPrice} onChange={(v) => handleChange('maxBuyPrice', v)} type="number" />
+        {/* Strategy Header */}
+        <div className="border-b border-gray-700 pb-3 mb-4">
+          {isRegime ? (
+            <div className="bg-purple-900/30 border border-purple-700/50 rounded p-3 text-xs">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-purple-400 font-medium">Regime-Aware Volatility Engine Configuration</span>
+              </div>
+              <p className="text-gray-400 leading-relaxed mb-3">
+                An advanced volatility-driven trading system that replaces fixed-interval DCA with ATR-based triggers.
+                It adapts to three market regimes: <span className="text-green-400">HARVEST</span> (mean-reverting, full entries),
+                <span className="text-yellow-400"> CAUTION</span> (elevated volatility, reduced sizing), and
+                <span className="text-red-400"> TREND</span> (strong momentum, exit only). Uses real-time WebSocket data,
+                dynamic take-profit based on recent volatility, and automatic safety modes.
+              </p>
+              <div className="grid grid-cols-3 gap-3 text-gray-400">
+                <div>
+                  <span className="text-gray-500">Entry Trigger:</span>
+                  <span className="ml-1 text-white">k × ATR price move</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Position Sizing:</span>
+                  <span className="ml-1 text-white">Liquidity-aware ladder</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Take-Profit:</span>
+                  <span className="ml-1 text-white">Dynamic volatility-based</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-4 mb-2">
+                <FormSelect
+                  label="DCA Strategy"
+                  value={config.dcaStrategy || 'fixed'}
+                  onChange={(v) => handleChange('dcaStrategy', v)}
+                  options={DCA_STRATEGY_OPTIONS}
+                  className="w-48"
+                />
+                {isFibonacci && (
+                  <FormInput
+                    label="Fib Base Amount"
+                    value={config.fibBaseAmount || 10}
+                    onChange={(v) => handleChange('fibBaseAmount', v)}
+                    type="number"
+                    className="w-32"
+                  />
+                )}
+              </div>
+              {isFibonacci && (
+                <div className="bg-gray-900/50 rounded p-3 text-xs">
+                  <div className="text-gray-400 mb-1">
+                    <span className="text-yellow-400 font-medium">Fibonacci Sequence:</span>{' '}
+                    <span className="text-white font-mono">{getFibPreview(config.fibBaseAmount || 10)}</span>
+                  </div>
+                  <p className="text-gray-500 leading-relaxed">
+                    This strategy is a volatility-harvesting accumulation system that incrementally builds a BTC position using
+                    Fibonacci-sized buys on a fixed cadence during sideways conditions, continuously resetting a limit-sell order
+                    based on the updated weighted cost basis while retaining a small percentage as long-term inventory.
+                    It relies on short-term mean reversion within low-to-moderate volatility regimes to capture small, repeated
+                    price oscillations that exceed the effective fee floor (~0.045% per entry), making modest profit targets
+                    (sub-1%) more structurally aligned than large moves. There is no directional edge; the mechanism is position
+                    sizing plus inventory cycling, and during trending or volatility expansion regimes it transitions from a
+                    trading system into a BTC accumulation engine, concentrating capital over a short window (Fibonacci ramp)
+                    and potentially locking funds into drawdowns, which is acceptable under the assumption of long-term BTC
+                    conviction and no need for near-term capital liquidity.
+                  </p>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
-        {/* Consolidation - inline row */}
-        <div className="border-t border-gray-700 pt-3 mb-4">
-          <div className="flex items-center gap-4">
-            <span className="text-xs text-gray-400 whitespace-nowrap">Auto-Consolidate:</span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">When orders &gt;</span>
-              <input
-                type="number"
-                value={config.consolidateAfterOrders || 0}
-                onChange={(e) => handleChange('consolidateAfterOrders', parseInt(e.target.value) || 0)}
-                className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
-              />
+        {/* Regular DCA Trading Settings - 3 column grid */}
+        {!isRegime && (
+          <>
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <FormInput label="Product ID" value={config.productId} onChange={(v) => handleChange('productId', v)} />
+              {!isFibonacci && (
+                <>
+                  <FormInput label={`Allocation (${quoteCurrency})`} value={config.totalAllocation} onChange={(v) => handleChange('totalAllocation', v)} type="number" />
+                  <FormInput label="Intervals" value={config.intervalsToSpread} onChange={(v) => handleChange('intervalsToSpread', v)} type="number" />
+                </>
+              )}
+              <FormSelect label="Interval" value={config.intervalType} onChange={(v) => handleChange('intervalType', v)} options={INTERVAL_OPTIONS} />
+              <FormInput label="Markup %" value={config.sellMarkupPercent} onChange={(v) => handleChange('sellMarkupPercent', v)} type="number" />
+              <FormInput label="Holdback %" value={config.holdbackPercent} onChange={(v) => handleChange('holdbackPercent', v)} type="number" />
+              <FormInput label={`Min Order (${quoteCurrency})`} value={config.minOrderSize} onChange={(v) => handleChange('minOrderSize', v)} type="number" />
+              <FormInput label={`Max Price (${quoteCurrency})`} value={config.maxBuyPrice} onChange={(v) => handleChange('maxBuyPrice', v)} type="number" />
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">or on schedule:</span>
-              <select
-                value={config.consolidateInterval || 'never'}
-                onChange={(e) => handleChange('consolidateInterval', e.target.value)}
-                className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
-              >
-                {CONSOLIDATE_INTERVAL_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            <span className="text-xs text-gray-500 ml-auto">
-              Active: <span className="text-white">{getConsolidationStatus()}</span>
-            </span>
-          </div>
-        </div>
+            {/* Holdback vs Markup validation warning */}
+            {(() => {
+              const holdback = config.holdbackPercent || 0;
+              const markup = config.sellMarkupPercent || 1;
+              const cashReturn = (1 - holdback / 100) * (1 + markup / 100) * 100 - 100;
+              const maxHoldbackForCashBreakeven = (markup / (1 + markup / 100)).toFixed(2);
 
-        {/* Calculated Values - compact */}
-        <div className="border-t border-gray-700 pt-3 mb-4">
-          <div className="grid grid-cols-4 gap-3 text-xs">
-            <div>
-              <span className="text-gray-500">Buy per {intervalLabel}:</span>
-              <span className="ml-1 text-white">${intervalAmount.toFixed(2)}</span>
+              if (holdback > markup && holdback > 0) {
+                return (
+                  <div className="mb-4 p-2 bg-amber-900/30 border border-amber-600/50 rounded text-xs">
+                    <div className="text-amber-400 font-medium mb-1">⚠️ Holdback exceeds Markup</div>
+                    <div className="text-gray-300">
+                      Each cycle returns{' '}
+                      <span className="text-red-400 font-medium">{cashReturn.toFixed(2)}% cash</span>
+                      {' '}but gains{' '}
+                      <span className="text-green-400 font-medium">+{holdback}% BTC</span>.
+                      <div className="mt-1 text-gray-400">
+                        For cash-neutral cycles at {markup}% markup, set holdback ≤ {maxHoldbackForCashBreakeven}%.
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
+            {/* Consolidation - inline row (hidden for Fibonacci which handles its own consolidation) */}
+            {!isFibonacci && (
+              <div className="border-t border-gray-700 pt-3 mb-4">
+                <div className="flex items-center gap-4">
+                  <span className="text-xs text-gray-400 whitespace-nowrap">Auto-Consolidate:</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">When orders &gt;</span>
+                    <input
+                      type="number"
+                      value={config.consolidateAfterOrders || 0}
+                      onChange={(e) => handleChange('consolidateAfterOrders', parseInt(e.target.value) || 0)}
+                      className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">or on schedule:</span>
+                    <select
+                      value={config.consolidateInterval || 'never'}
+                      onChange={(e) => handleChange('consolidateInterval', e.target.value)}
+                      className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
+                    >
+                      {CONSOLIDATE_INTERVAL_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <span className="text-xs text-gray-500 ml-auto">
+                    Active: <span className="text-white">{getConsolidationStatus()}</span>
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Calculated Values - compact */}
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <div className="grid grid-cols-4 gap-3 text-xs">
+                {!isFibonacci && (
+                  <div>
+                    <span className="text-gray-500">Buy per {intervalLabel}:</span>
+                    <span className="ml-1 text-white">${intervalAmount.toFixed(2)}</span>
+                  </div>
+                )}
+                {isFibonacci && (
+                  <div>
+                    <span className="text-gray-500">Strategy:</span>
+                    <span className="ml-1 text-yellow-400">Fibonacci</span>
+                  </div>
+                )}
+                <div>
+                  <span className="text-gray-500">Return/Cycle:</span>
+                  <span className="ml-1 text-green-400">
+                    +{((1 - config.holdbackPercent / 100) * (1 + config.sellMarkupPercent / 100) * 100 - 100).toFixed(2)}%
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Holdback:</span>
+                  <span className="ml-1 text-white">{config.holdbackPercent}%</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Sell Multiplier:</span>
+                  <span className="ml-1 text-white">{(1 + config.sellMarkupPercent / 100).toFixed(2)}x</span>
+                </div>
+              </div>
             </div>
-            <div>
-              <span className="text-gray-500">Return/Cycle:</span>
-              <span className="ml-1 text-green-400">
-                +{((1 - config.holdbackPercent / 100) * (1 + config.sellMarkupPercent / 100) * 100 - 100).toFixed(2)}%
-              </span>
+          </>
+        )}
+
+        {/* Regime Engine Settings */}
+        {isRegime && (
+          <>
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Volatility Clock</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Product ID" value={config.productId} onChange={(v) => handleChange('productId', v)} />
+                <FormInput label="Base Size (USDC)" value={regimeConfig.baseSizeUsdc || 50} onChange={(v) => handleRegimeChange('baseSizeUsdc', v)} type="number" />
+                <FormInput label="k Factor (ATR mult)" value={regimeConfig.kFactor || 0.6} onChange={(v) => handleRegimeChange('kFactor', v)} type="number" />
+                <FormInput label="ATR Period" value={regimeConfig.atrPeriod || 14} onChange={(v) => handleRegimeChange('atrPeriod', v)} type="number" />
+                <FormInput label="Min Interval (ms)" value={regimeConfig.minIntervalMs || 60000} onChange={(v) => handleRegimeChange('minIntervalMs', v)} type="number" />
+                <FormInput label="Max Interval (ms)" value={regimeConfig.maxIntervalMs || 3600000} onChange={(v) => handleRegimeChange('maxIntervalMs', v)} type="number" />
+              </div>
             </div>
-            <div>
-              <span className="text-gray-500">Holdback:</span>
-              <span className="ml-1 text-white">{config.holdbackPercent}%</span>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Regime Scaling</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Harvest Scale" value={regimeConfig.harvestScale || 1.0} onChange={(v) => handleRegimeChange('harvestScale', v)} type="number" />
+                <FormInput label="Caution Scale" value={regimeConfig.cautionScale || 0.5} onChange={(v) => handleRegimeChange('cautionScale', v)} type="number" />
+                <FormInput label="Trend Scale" value={regimeConfig.trendScale || 0.0} onChange={(v) => handleRegimeChange('trendScale', v)} type="number" />
+                <FormInput label="Max Ladder Steps" value={regimeConfig.maxLadderSteps || 10} onChange={(v) => handleRegimeChange('maxLadderSteps', v)} type="number" />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Scaling: HARVEST={regimeConfig.harvestScale || 1.0}x, CAUTION={regimeConfig.cautionScale || 0.5}x, TREND={regimeConfig.trendScale || 0.0}x base size
+              </div>
             </div>
-            <div>
-              <span className="text-gray-500">Sell Multiplier:</span>
-              <span className="ml-1 text-white">{(1 + config.sellMarkupPercent / 100).toFixed(2)}x</span>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Take-Profit</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="TP Multiplier" value={regimeConfig.tpMult || 1.0} onChange={(v) => handleRegimeChange('tpMult', v)} type="number" />
+                <FormInput label="TP Min %" value={regimeConfig.tpMinPercent || 2.0} onChange={(v) => handleRegimeChange('tpMinPercent', v)} type="number" />
+                <FormInput label="TP Max %" value={regimeConfig.tpMaxPercent || 15.0} onChange={(v) => handleRegimeChange('tpMaxPercent', v)} type="number" />
+                <FormInput label="Holdback Ratio" value={regimeConfig.holdbackRatio ?? 0.5} onChange={(v) => handleRegimeChange('holdbackRatio', v)} type="number" />
+              </div>
+              {/* Holdback ratio explanation */}
+              {(() => {
+                const holdbackRatio = regimeConfig.holdbackRatio ?? 0.5;
+                const sellRatio = 1 - holdbackRatio;
+                const tpMin = regimeConfig.tpMinPercent || 0.1;
+                const usdcProfitPct = (sellRatio * tpMin).toFixed(2);
+                const btcProfitPct = (holdbackRatio * tpMin).toFixed(2);
+
+                return (
+                  <div className="mt-2 text-xs text-gray-500">
+                    Sell <span className="text-white font-medium">{(sellRatio * 100).toFixed(0)}%</span>, hold <span className="text-white font-medium">{(holdbackRatio * 100).toFixed(0)}%</span> of position.
+                    {' '}At min TP ({tpMin}%): <span className="text-green-400">+{usdcProfitPct}% USDC</span>, <span className="text-blue-400">+{btcProfitPct}% BTC value</span>
+                  </div>
+                );
+              })()}
             </div>
-          </div>
-        </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">TP Auto-Management</h3>
+              <div className="flex items-center gap-4 mb-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <span className="text-gray-400">Enable Auto-Management</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRegimeChange('tpAutoManaged', !regimeConfig.tpAutoManaged)}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                      regimeConfig.tpAutoManaged ? 'bg-cyan-500' : 'bg-gray-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                      regimeConfig.tpAutoManaged ? 'translate-x-5' : 'translate-x-1'
+                    }`} />
+                  </button>
+                </label>
+                {regimeConfig.tpAutoManaged && (
+                  <span className="text-xs text-cyan-400">
+                    TP values will be dynamically adjusted based on observed cycle data
+                  </span>
+                )}
+              </div>
+              {regimeConfig.tpAutoManaged && (
+                <>
+                  <div className="grid grid-cols-4 gap-3">
+                    <FormInput label="Evaluation Cycles" value={regimeConfig.tpEvaluationCycles || 5} onChange={(v) => handleRegimeChange('tpEvaluationCycles', v)} type="number" />
+                    <FormInput label="Eval Max Hours" value={regimeConfig.tpEvaluationMaxHours || 24} onChange={(v) => handleRegimeChange('tpEvaluationMaxHours', v)} type="number" />
+                    <FormInput label="Min Sample Size" value={regimeConfig.tpMinSampleSize || 10} onChange={(v) => handleRegimeChange('tpMinSampleSize', v)} type="number" />
+                    <FormInput label="Max Change %" value={regimeConfig.tpMaxChangePercent || 25} onChange={(v) => handleRegimeChange('tpMaxChangePercent', v)} type="number" />
+                  </div>
+                  <div className="grid grid-cols-4 gap-3 mt-3">
+                    <FormInput label="Absolute Min %" value={regimeConfig.tpAbsoluteMin || 0.05} onChange={(v) => handleRegimeChange('tpAbsoluteMin', v)} type="number" />
+                    <FormInput label="Absolute Max %" value={regimeConfig.tpAbsoluteMax || 5.0} onChange={(v) => handleRegimeChange('tpAbsoluteMax', v)} type="number" />
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">
+                    Auto-adjusts TP range every {regimeConfig.tpEvaluationCycles || 5} cycles or {regimeConfig.tpEvaluationMaxHours || 24}h.
+                    Requires {regimeConfig.tpMinSampleSize || 10} samples before first adjustment.
+                    Holdback auto-set to half of TP Min.
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Risk Caps</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Max BTC Exposure" value={regimeConfig.maxBtcExposure || 0.5} onChange={(v) => handleRegimeChange('maxBtcExposure', v)} type="number" />
+                <FormInput label="Max USDC Deployed" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
+                <FormInput label="Max Drawdown %" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
+                <FormInput label="Liquidity Factor Cap" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Drawdown Reset (hrs)" value={regimeConfig.drawdownResetHours || 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
+                <FormInput label="Ladder Reset (hrs)" value={regimeConfig.ladderResetHours || 72} onChange={(v) => handleRegimeChange('ladderResetHours', v)} type="number" />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Auto-reset hours: 0 = disabled. After this time at a limit, the engine resumes with reset counters.
+              </div>
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Regime Detection</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Momentum Mult" value={regimeConfig.momentumMult || 1.5} onChange={(v) => handleRegimeChange('momentumMult', v)} type="number" />
+                <FormInput label="Vol Expansion" value={regimeConfig.volExpansionMult || 1.5} onChange={(v) => handleRegimeChange('volExpansionMult', v)} type="number" />
+                <FormInput label="Vol Contraction" value={regimeConfig.volContractionMult || 1.2} onChange={(v) => handleRegimeChange('volContractionMult', v)} type="number" />
+                <FormInput label="VWAP Hours" value={regimeConfig.vwapPeriodHours || 4} onChange={(v) => handleRegimeChange('vwapPeriodHours', v)} type="number" />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Trend Confirm Periods" value={regimeConfig.trendConfirmationPeriods || 5} onChange={(v) => handleRegimeChange('trendConfirmationPeriods', v)} type="number" />
+              </div>
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Order Execution</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Entry Offset (bps)" value={regimeConfig.entryOffsetBps || 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
+                <FormInput label="Entry Max Retries" value={regimeConfig.entryMaxRetries || 3} onChange={(v) => handleRegimeChange('entryMaxRetries', v)} type="number" />
+                <FormInput label="Order Stale (ms)" value={regimeConfig.orderStaleMs || 30000} onChange={(v) => handleRegimeChange('orderStaleMs', v)} type="number" />
+                <FormInput label="Cancel Rate Limit (ms)" value={regimeConfig.cancelRateLimitMs || 1000} onChange={(v) => handleRegimeChange('cancelRateLimitMs', v)} type="number" />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Max Open Orders" value={regimeConfig.maxOpenOrders || 3} onChange={(v) => handleRegimeChange('maxOpenOrders', v)} type="number" />
+                <FormInput label="TP Update Threshold %" value={regimeConfig.tpUpdateThresholdPct || 0.5} onChange={(v) => handleRegimeChange('tpUpdateThresholdPct', v)} type="number" />
+                <FormInput label="Reconcile Interval (ms)" value={regimeConfig.reconcileIntervalMs || 300000} onChange={(v) => handleRegimeChange('reconcileIntervalMs', v)} type="number" />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Order Stale: Time before unfilled entry orders are cancelled. TP Update Threshold: Min % change to update TP order.
+              </div>
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Safety & Tail Events</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Max Spread (bps)" value={regimeConfig.maxSpreadBps || 50} onChange={(v) => handleRegimeChange('maxSpreadBps', v)} type="number" />
+                <FormInput label="Spread Pause (ms)" value={regimeConfig.spreadPauseMs || 300000} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} type="number" />
+                <FormInput label="Min Depth (USDC)" value={regimeConfig.minDepthUsdc || 10000} onChange={(v) => handleRegimeChange('minDepthUsdc', v)} type="number" />
+                <FormInput label="Depth Pause (ms)" value={regimeConfig.depthPauseMs || 300000} onChange={(v) => handleRegimeChange('depthPauseMs', v)} type="number" />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Flash Move Mult" value={regimeConfig.flashMoveMult || 3.0} onChange={(v) => handleRegimeChange('flashMoveMult', v)} type="number" />
+                <FormInput label="Flash Cooldown (ms)" value={regimeConfig.flashCooldownMs || 600000} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} type="number" />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="cancelEntriesOnFlash"
+                    checked={regimeConfig.cancelEntriesOnFlash !== false}
+                    onChange={(e) => handleRegimeChange('cancelEntriesOnFlash', e.target.checked)}
+                    className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                  />
+                  <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">System Health</h3>
+              <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Stale Data (ms)" value={regimeConfig.staleDataMs || 30000} onChange={(v) => handleRegimeChange('staleDataMs', v)} type="number" />
+                <FormInput label="Stale Orders (ms)" value={regimeConfig.staleOrdersMs || 60000} onChange={(v) => handleRegimeChange('staleOrdersMs', v)} type="number" />
+                <FormInput label="Max Latency (ms)" value={regimeConfig.maxLatencyMs || 5000} onChange={(v) => handleRegimeChange('maxLatencyMs', v)} type="number" />
+                <FormInput label="Safe Recovery (ms)" value={regimeConfig.safeRecoveryMs || 60000} onChange={(v) => handleRegimeChange('safeRecoveryMs', v)} type="number" />
+              </div>
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                <FormInput label="Max REST Errors" value={regimeConfig.maxRestErrors || 5} onChange={(v) => handleRegimeChange('maxRestErrors', v)} type="number" />
+                <FormInput label="Max Rate Limits" value={regimeConfig.maxRateLimits || 3} onChange={(v) => handleRegimeChange('maxRateLimits', v)} type="number" />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                System enters SAFE mode when health thresholds are exceeded. Safe Recovery is time healthy before exiting SAFE.
+              </div>
+            </div>
+          </>
+        )}
 
         {/* Save Button */}
         <div className="flex gap-2">

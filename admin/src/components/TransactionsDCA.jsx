@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 
-function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
+function TransactionsDCA({ transactions = [], quoteCurrency = 'USDC' }) {
   const [filter, setFilter] = useState('all')
   const [sortField, setSortField] = useState('Date')
   const [sortDir, setSortDir] = useState('desc')
@@ -181,4 +181,4 @@ function Transactions({ transactions = [], quoteCurrency = 'USDC' }) {
   )
 }
 
-export default Transactions
+export default TransactionsDCA

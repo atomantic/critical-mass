@@ -2,6 +2,190 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.47] - 2026-02-03
+
+### Fixed
+- **Fills not showing in UI** - Fixed broken filter that was excluding all fills with cycleIds
+  - The filter `!f.cycleId.startsWith('cycle-')` incorrectly excluded all fills since all have cycleIds starting with 'cycle-'
+  - Now correctly identifies current cycle by finding the most recent cycleId timestamp
+- **Holdback display showing cumulative totals** - Changed holdback to show per-cycle BTC profit instead of running total
+  - Each sell row now shows `totalBought - totalSold` for that specific cycle
+  - Partial fills are aggregated by orderId for cleaner display
+- **Position/P&L not calculated on startup** - Engine now auto-recalculates cycles from fill ledger on startup
+  - Ensures accurate P&L tracking without requiring manual "Recalculate from Fills" click
+- **APY metrics showing 0 after restart** - Backfills engineStartTime from earliest fill in ledger
+  - APY calculations now work correctly even after engine restarts
+
+## [2.3.25] - 2026-02-02
+
+### Fixed
+- **NaN position state corruption after fill processing** - Fixed critical bug where position state (avgCostBasis, totalCostBasis) became NaN after processing fills
+  - Root cause: `aggregateFills()` was called with raw adapter fills (which have `sizeInQuote`) instead of ingested fills (which have `quoteAmount`)
+  - Fixed in `handleOrderFill()`, `checkOfflineOrderFills()` for both TP and entry orders
+- **Ghost TP orders after restart** - Engine now validates saved TP order exists on Coinbase before restoring
+  - If order was cancelled/failed, clears tracking so a new TP order gets placed
+  - Prevents UI showing orders that don't exist on exchange
+- **Auto-TP placement after recovery** - Engine now places TP order after metrics update when position exists but no active TP order
+  - Previously, TP orders were only placed after buy fills, leaving recovered positions without TP protection
+- **Recovery now uses all fills** - Changed recovery to use `fillLedger.getAllFills()` instead of just current cycle fills
+  - Fixes issue where restored state showed no fills because `currentCycleId` was null
+
+### Added
+- **TP order validation on startup** - Validates saved TP order exists on exchange before restoring tracking
+- **restorePendingOrder API** - Added to order executor to restore TP order tracking after recovery
+
+## [2.3.24] - 2026-02-02
+
+### Fixed
+- **Regime engine dryRun config path** - Regime engine now reads `dryRun` from exchange-level config (same as DCA engine)
+  - Previously, UI toggle modified `exchanges.coinbase.dryRun` but regime engine read from `exchanges.coinbase.regime.dryRun`
+  - This caused the "Dry Run" toggle to not affect the regime engine
+  - Both engines now use the same config path, making the UI toggle work correctly for all strategies
+- **Regime Dashboard not reflecting dryRun toggle changes** - Dashboard now receives dryRun from exchange config
+  - `/api/:exchange/regime/config` endpoint now includes exchange-level dryRun value
+  - UI correctly displays "Dry-Run Mode" or "Live" based on current config
+- **Coinbase API endpoint change** - Updated list orders endpoint to use new batch endpoint
+  - Old: `/api/v3/brokerage/orders/historical?product_id=X`
+  - New: `/api/v3/brokerage/orders/historical/batch?product_ids=X`
+  - This fixes 404 errors when starting the regime engine in live mode
+- **Recovery no longer absorbs full account balance** - Position only tracks what regime engine traded
+  - Previously, recovery would overwrite position with full account BTC balance
+  - Now only fills from regime engine trades are tracked
+  - Account having extra BTC from other sources is logged but not absorbed into position
+- **Stop endpoint error handling** - Added proper error handling and logging for stop requests
+- **Duplicate entry orders race condition** - Added lock to prevent concurrent entry evaluations from rapid ticker updates
+- **Pending orders not showing in live mode UI** - Added `getPendingOrdersList()` to order executor and updated dashboard to show orders for both live and dry-run modes
+- **Unhandled promise in reconciliation interval** - Reconciliation now catches errors and continues operating
+  - Added `isRunning` guard to prevent reconciliation after engine stop
+  - Errors are logged instead of causing unhandled rejections
+- **Unhandled promise in stale order timeout** - Stale order checks now catch errors gracefully
+  - Converted async/await to Promise chain with `.catch()` for proper error handling
+- **WebSocket malformed JSON crash** - Added safe JSON parsing for WebSocket messages
+  - Invalid JSON now logs a warning and is ignored instead of crashing
+- **Cancel all entries partial failure** - Cancel loop now continues on individual failures
+  - Uses `Promise.allSettled()` to attempt all cancels even if some fail
+  - Failed cancels are logged and orders removed from tracking (may have already filled/cancelled)
+- **State not persisted immediately after fills** - Added immediate state persistence on order fills
+  - Both buy fills and TP fills now trigger immediate state save and fill ledger persist
+  - Prevents data loss if process crashes after a fill but before next periodic save
+- **Offline fills check failure blocking startup** - Startup continues even if offline fill check fails
+  - Error is logged but doesn't prevent engine from starting
+  - Fills will be detected on next reconciliation cycle
+- **Regime engine showing DCA orders in Open Orders** - Fixed order isolation between engines
+  - Regime engine was absorbing ALL open orders from Coinbase during recovery
+  - Now only tracks orders it places itself, ignoring orders from DCA engine
+  - Orders from other engines (like standard DCA) are no longer displayed or tracked
+- **Stop Engine button not updating UI** - UI now properly reflects stopped state
+  - Socket status was taking precedence over fetched status after stop
+  - Now clears socket status when engine stops so UI shows correct state
+- **Ghost orders in UI** - Orders that exist in UI but not on exchange
+  - Post-only orders can be immediately cancelled by Coinbase if they would cross the spread
+  - Now verifies order status after placement before adding to pending orders
+  - If order was immediately cancelled, retries with fresh prices
+- **Filled orders not detected** - Orders would fill but engine didn't process them
+  - Stale order timeout now detects FILLED status and triggers fill processing
+  - Added `checkPendingOrderFills()` method for periodic fill detection backup
+  - Reconciliation interval now checks for missed fills every 5 minutes
+  - `onFillDetected` callback wired up to handle fills detected via polling
+  - Status comparison now case-insensitive to handle varying API response formats
+
+### Added
+- **Dynamic entry offset based on momentum** - Entry bid offset now adapts to market direction
+  - When momentum is UP: uses smaller offset (`entryOffsetUpBps`, default 5bps) to get fills before price rises
+  - When momentum is DOWN: uses larger offset (`entryOffsetDownBps`, default 15bps) to catch falling price
+  - When momentum is NEUTRAL: uses default offset (`entryOffsetBps`, default 10bps)
+  - Momentum calculated from 1-minute candles (short and long period price returns)
+  - Logs now show `momentum=up/down/neutral offset=Xbps` for debugging
+
+### Changed
+- Removed redundant `dryRun` field from regime config defaults (now inherited from exchange config)
+
+## [2.3.20] - 2026-02-01
+
+### Added
+- **Auto-resume regime engine on server restart** - Engine automatically resumes if it was running before restart
+  - Running flag saved when engine starts, removed when manually stopped
+  - Server restarts preserve flag to enable auto-resume
+- **Total liquid value for APY calculations** - APY now based on combined USDC + BTC (at current price)
+  - `totalUsdcReturn` - USDC realized P&L from trading
+  - `totalBtcReturn` - BTC holdback accumulated
+  - `btcValueUsd` - BTC holdings valued at current market price
+  - `totalLiquidValue` - Combined value (USDC + BTC at live price) used for APY projections
+  - UI shows breakdown: USDC return, BTC return with USD equivalent, and combined "Live Total"
+- **Dynamic TP Auto-Management** - Opt-in feature for automatic take-profit parameter adjustment
+  - Records cycle analytics (optimal TP %, actual TP %, volatility context)
+  - Compresses historical data into histogram buckets with time-weighted decay
+  - Calculates percentiles (p25, p50, p75) from compressed + recent data
+  - Periodic evaluation every N cycles (default: 5) or daily (whichever first)
+  - Rate-limited adjustments (max 25% change per evaluation)
+  - Safety bounds: absolute min (0.05%), absolute max (5.0%)
+  - Auto-holdback set to half of tpMinPercent when auto-adjusted
+  - State persisted across restarts
+  - Dashboard panel shows current settings, observed percentiles, adjustment history
+  - Config UI with enable toggle and all adjustment parameters
+
+### Changed
+- Performance Metrics UI redesigned to show USDC, BTC, and total liquid value separately
+- Est. Daily Return now labeled "(Live Value)" to indicate it's based on combined liquid value
+- BTC values now displayed with 8 decimal places for precision
+
+## [2.3.19] - 2026-02-01
+
+### Added
+- Estimated daily USDC and BTC returns in APY metrics
+  - `estimatedDailyUsdc` - projected daily USD return based on current performance
+  - `estimatedDailyBtc` - projected daily BTC return (holdback accumulation rate)
+  - UI displays both values alongside daily return percentage (in sats for BTC)
+
+## [2.3.17] - 2026-02-01
+
+### Added
+- APY and performance tracking for regime engine
+  - Tracks engine start time and initial capital
+  - Calculates total return, daily return %, estimated annual return, and compound APY
+  - Persists tracking across restarts
+  - UI displays performance metrics in Position section with highlighted APY/annual return
+
+### Fixed
+- APY tracking now properly persists `engineStartTime` across restarts
+- APY backfill logic: if engine started before APY tracking was added, automatically backfills start time from first filled order
+- Added `engineStartTime` and `initialCapital` to PositionState typedef for proper type checking
+
+## [2.3.16] - 2026-02-01
+
+### Added
+- Live state persistence for regime engine - saves position and regime state to `regime-state.json` for faster recovery on restarts
+- Offline order fill detection - checks for TP and entry orders that filled while the engine was offline
+- Market re-evaluation on startup - re-anchors volatility triggers after downtime and logs price movement warnings
+- `restoreState()` method to regime-detector for restoring regime mode on restart
+- `getPendingEntries()` method to both order-executor and dry-run-executor for tracking pending entry orders
+
+### Changed
+- Live mode startup now: loads saved state → recovers from exchange → checks offline fills → re-evaluates position
+- Periodic state saves every 5 minutes for live mode (dry-run unchanged at 60 seconds)
+
+## [2.3.5] - 2026-02-01
+
+### Added
+- Responsive layout for admin dashboard (1280px → 1600px → 1800px breakpoints)
+- Live D3.js charts for Regime Dashboard: price sparkline, volatility chart, regime timeline
+- `useChartDataBuffer` hook for 15-minute rolling WebSocket data accumulation
+- 4-column layout on 3xl screens (1920px+) with dedicated charts column
+
+## [2.3.0] - 2026-01-31
+
+### Added
+- Fibonacci DCA strategy - alternative to fixed-amount DCA using Fibonacci sequence for buy amounts (1, 1, 2, 3, 5, 8, 13... × base amount)
+- Consolidated sell order per Fibonacci cycle with weighted-average cost basis pricing
+- Automatic cycle reset when consolidated sell fills, enabling continuous volatility harvesting
+- Fibonacci backtest simulation with cycle tracking and Fibonacci-specific metrics
+- Strategy selector in admin UI with detailed risk disclosure about the volatility-harvesting approach
+
+## [2.2.1] - 2026-01-31
+
+### Fixed
+- Hardcoded "BTC" in order consolidation logs now dynamically uses actual trading pair currency (e.g., CRO)
+
 ## [2.2.0] - 2025-01-31
 
 ### Fixed

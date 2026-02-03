@@ -15,6 +15,7 @@ const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils')
  * @typedef {import('./types').GlobalConfig} GlobalConfig
  * @typedef {import('./types').MultiExchangeConfig} MultiExchangeConfig
  * @typedef {import('./types').ValidationResult} ValidationResult
+ * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
  */
 
 const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
@@ -34,6 +35,104 @@ const DEFAULTS = {
   maxBuyPrice: 500000,
   enabled: false,
   dryRun: true,
+  dcaStrategy: 'fixed',
+  fibBaseAmount: 10,
+};
+
+/**
+ * Default regime strategy configuration
+ * @type {RegimeStrategyConfig}
+ */
+const REGIME_DEFAULTS = {
+  // Mode flags
+  enabled: false,
+  // Note: dryRun is read from exchange-level config, not regime config
+
+  // Volatility Clock
+  atrPeriod: 14,
+  kFactor: 0.6,
+  minIntervalMs: 60000,
+  maxIntervalMs: 3600000,
+
+  // Regime Detection
+  momentumMult: 1.5,
+  volExpansionMult: 1.5,
+  volContractionMult: 1.2,
+  vwapPeriodHours: 4,
+  trendConfirmationPeriods: 5,
+
+  // Position Sizing
+  baseSizeUsdc: 50,
+  harvestScale: 1.0,
+  cautionScale: 0.5,
+  trendScale: 0.0,
+  maxLadderSteps: 10,
+  ladderResetHours: 72, // Auto-reset ladder counter after 72 hours (3 days) at max, 0 to disable
+  liquidityFactorCap: 2.0,
+
+  // Take-Profit
+  tpMult: 1.0,
+  tpMinPercent: 2.0,
+  tpMaxPercent: 15.0,
+  tpUpdateThresholdPct: 0.5,
+  holdbackRatio: 0.5,
+
+  // TP Auto-Management
+  tpAutoManaged: false,         // Opt-in flag for dynamic TP adjustment
+  tpEvaluationCycles: 5,        // Evaluate every N cycles
+  tpEvaluationMaxHours: 24,     // Or at least once per day
+  tpMinSampleSize: 10,          // Minimum cycles before adjusting
+  tpAbsoluteMin: 0.05,          // Floor for tpMinPercent
+  tpAbsoluteMax: 5.0,           // Ceiling for tpMaxPercent
+  tpMaxChangePercent: 25,       // Max % change per adjustment
+
+  // Size Auto-Management
+  sizeAutoManaged: false,       // Opt-in flag for dynamic position sizing
+  sizeEvaluationCycles: 5,      // Evaluate every N cycles
+  sizeEvaluationMaxHours: 24,   // Or at least once per day
+  sizeMinSampleSize: 5,         // Minimum cycles before adjusting
+  sizeAbsoluteMinBase: 10,      // Floor for baseSizeUsdc
+  sizeAbsoluteMaxBase: 500,     // Ceiling for baseSizeUsdc
+  sizeTargetUtilization: 0.90,  // Target 90% capital utilization
+  sizeMaxChangePercent: 25,     // Max % change per adjustment
+  sizeAutoLadderSteps: false,   // Also auto-adjust maxLadderSteps
+  sizeMinLadderSteps: 10,       // Min ladder steps if auto-adjusting
+  sizeMaxLadderSteps: 100,      // Max ladder steps if auto-adjusting
+
+  // Risk Caps
+  maxBtcExposure: 0.5,
+  maxUsdcDeployed: 10000,
+  maxDrawdownPercent: 20,
+  drawdownResetHours: 72, // Auto-reset peak after 72 hours (3 days) of drawdown pause
+
+  // Order Execution
+  entryOffsetBps: 10,
+  entryOffsetUpBps: 5, // Smaller offset when momentum is UP (get fills before price rises)
+  entryOffsetDownBps: 15, // Larger offset when momentum is DOWN (catch falling price)
+  entryMaxRetries: 3, // Max retries for post-only rejections in fast markets
+  cancelRateLimitMs: 1000,
+  orderStaleMs: 30000,
+
+  // System Health
+  staleDataMs: 30000,
+  staleOrdersMs: 60000,
+  maxRestErrors: 5,
+  maxRateLimits: 3,
+  maxLatencyMs: 5000,
+  safeRecoveryMs: 60000,
+
+  // Invariants
+  maxOpenOrders: 3,
+  reconcileIntervalMs: 300000,
+
+  // Tail Events
+  maxSpreadBps: 50,
+  spreadPauseMs: 300000,
+  minDepthUsdc: 10000,
+  depthPauseMs: 300000,
+  flashMoveMult: 3.0,
+  flashCooldownMs: 600000,
+  cancelEntriesOnFlash: true,
 };
 
 /**
@@ -250,6 +349,17 @@ const validateExchangeConfig = (config) => {
     errors.push('maxBuyPrice must be a positive number');
   }
 
+  // Fibonacci strategy validation
+  if (config.dcaStrategy !== undefined && !['fixed', 'fibonacci'].includes(config.dcaStrategy)) {
+    errors.push('dcaStrategy must be "fixed" or "fibonacci"');
+  }
+
+  if (config.dcaStrategy === 'fibonacci') {
+    if (typeof config.fibBaseAmount !== 'number' || config.fibBaseAmount <= 0) {
+      errors.push('fibBaseAmount must be a positive number when using Fibonacci strategy');
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -268,6 +378,162 @@ const getGlobalConfig = () => {
   };
 };
 
+/**
+ * Get regime strategy configuration for an exchange
+ * @param {string} exchange - Exchange name
+ * @returns {RegimeStrategyConfig} Regime configuration with defaults applied
+ */
+const getRegimeConfig = (exchange) => {
+  const config = loadConfig();
+  const exchangeConfig = config.exchanges?.[exchange] || {};
+  const regimeConfig = exchangeConfig.regime || {};
+
+  return {
+    ...REGIME_DEFAULTS,
+    ...regimeConfig,
+  };
+};
+
+/**
+ * Update regime configuration for an exchange
+ * @param {string} exchange - Exchange name
+ * @param {Partial<RegimeStrategyConfig>} updates - Regime config updates
+ * @returns {MultiExchangeConfig} Updated full configuration
+ */
+const updateRegimeConfig = (exchange, updates) => {
+  const config = loadConfig();
+
+  if (!config.exchanges[exchange]) {
+    config.exchanges[exchange] = { ...DEFAULTS };
+  }
+
+  config.exchanges[exchange].regime = {
+    ...(config.exchanges[exchange].regime || {}),
+    ...updates,
+  };
+
+  saveConfig(config);
+  return config;
+};
+
+/**
+ * Validate regime strategy configuration
+ * @param {Partial<RegimeStrategyConfig>} config - Regime config to validate
+ * @returns {ValidationResult}
+ */
+const validateRegimeConfig = (config) => {
+  const errors = [];
+
+  // Volatility Clock validation
+  if (config.atrPeriod !== undefined && (config.atrPeriod < 5 || config.atrPeriod > 30)) {
+    errors.push('atrPeriod must be between 5 and 30');
+  }
+  if (config.kFactor !== undefined && (config.kFactor < 0.4 || config.kFactor > 0.8)) {
+    errors.push('kFactor must be between 0.4 and 0.8');
+  }
+  if (config.minIntervalMs !== undefined && config.minIntervalMs < 30000) {
+    errors.push('minIntervalMs must be at least 30000 (30 seconds)');
+  }
+  if (config.maxIntervalMs !== undefined && config.maxIntervalMs > 14400000) {
+    errors.push('maxIntervalMs must not exceed 14400000 (4 hours)');
+  }
+
+  // Regime Detection validation
+  if (config.momentumMult !== undefined && (config.momentumMult < 1.0 || config.momentumMult > 2.5)) {
+    errors.push('momentumMult must be between 1.0 and 2.5');
+  }
+  if (config.volExpansionMult !== undefined && (config.volExpansionMult < 1.2 || config.volExpansionMult > 2.0)) {
+    errors.push('volExpansionMult must be between 1.2 and 2.0');
+  }
+
+  // Position Sizing validation
+  if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
+    errors.push('baseSizeUsdc must be between 1 and 1000');
+  }
+  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 50)) {
+    errors.push('maxLadderSteps must be between 3 and 50');
+  }
+
+  // Take-Profit validation
+  if (config.tpMinPercent !== undefined && (config.tpMinPercent < 0.01 || config.tpMinPercent > 10.0)) {
+    errors.push('tpMinPercent must be between 0.01 and 10.0');
+  }
+  if (config.tpMaxPercent !== undefined && (config.tpMaxPercent < 0.1 || config.tpMaxPercent > 50.0)) {
+    errors.push('tpMaxPercent must be between 0.1 and 50.0');
+  }
+  if (config.holdbackRatio !== undefined && (config.holdbackRatio < 0.0 || config.holdbackRatio > 1.0)) {
+    errors.push('holdbackRatio must be between 0.0 and 1.0');
+  }
+
+  // TP Auto-Management validation
+  if (config.tpEvaluationCycles !== undefined && (config.tpEvaluationCycles < 1 || config.tpEvaluationCycles > 100)) {
+    errors.push('tpEvaluationCycles must be between 1 and 100');
+  }
+  if (config.tpEvaluationMaxHours !== undefined && (config.tpEvaluationMaxHours < 1 || config.tpEvaluationMaxHours > 168)) {
+    errors.push('tpEvaluationMaxHours must be between 1 and 168 (1 week)');
+  }
+  if (config.tpMinSampleSize !== undefined && (config.tpMinSampleSize < 3 || config.tpMinSampleSize > 100)) {
+    errors.push('tpMinSampleSize must be between 3 and 100');
+  }
+  if (config.tpAbsoluteMin !== undefined && (config.tpAbsoluteMin < 0.01 || config.tpAbsoluteMin > 1.0)) {
+    errors.push('tpAbsoluteMin must be between 0.01 and 1.0');
+  }
+  if (config.tpAbsoluteMax !== undefined && (config.tpAbsoluteMax < 1.0 || config.tpAbsoluteMax > 10.0)) {
+    errors.push('tpAbsoluteMax must be between 1.0 and 10.0');
+  }
+  if (config.tpMaxChangePercent !== undefined && (config.tpMaxChangePercent < 5 || config.tpMaxChangePercent > 50)) {
+    errors.push('tpMaxChangePercent must be between 5 and 50');
+  }
+
+  // Size Auto-Management validation
+  if (config.sizeEvaluationCycles !== undefined && (config.sizeEvaluationCycles < 1 || config.sizeEvaluationCycles > 100)) {
+    errors.push('sizeEvaluationCycles must be between 1 and 100');
+  }
+  if (config.sizeEvaluationMaxHours !== undefined && (config.sizeEvaluationMaxHours < 1 || config.sizeEvaluationMaxHours > 168)) {
+    errors.push('sizeEvaluationMaxHours must be between 1 and 168 (1 week)');
+  }
+  if (config.sizeMinSampleSize !== undefined && (config.sizeMinSampleSize < 1 || config.sizeMinSampleSize > 50)) {
+    errors.push('sizeMinSampleSize must be between 1 and 50');
+  }
+  if (config.sizeAbsoluteMinBase !== undefined && (config.sizeAbsoluteMinBase < 1 || config.sizeAbsoluteMinBase > 100)) {
+    errors.push('sizeAbsoluteMinBase must be between 1 and 100');
+  }
+  if (config.sizeAbsoluteMaxBase !== undefined && (config.sizeAbsoluteMaxBase < 50 || config.sizeAbsoluteMaxBase > 2000)) {
+    errors.push('sizeAbsoluteMaxBase must be between 50 and 2000');
+  }
+  if (config.sizeTargetUtilization !== undefined && (config.sizeTargetUtilization < 0.5 || config.sizeTargetUtilization > 0.99)) {
+    errors.push('sizeTargetUtilization must be between 0.5 and 0.99');
+  }
+  if (config.sizeMaxChangePercent !== undefined && (config.sizeMaxChangePercent < 5 || config.sizeMaxChangePercent > 50)) {
+    errors.push('sizeMaxChangePercent must be between 5 and 50');
+  }
+  if (config.sizeMinLadderSteps !== undefined && (config.sizeMinLadderSteps < 5 || config.sizeMinLadderSteps > 50)) {
+    errors.push('sizeMinLadderSteps must be between 5 and 50');
+  }
+  if (config.sizeMaxLadderSteps !== undefined && (config.sizeMaxLadderSteps < 20 || config.sizeMaxLadderSteps > 200)) {
+    errors.push('sizeMaxLadderSteps must be between 20 and 200');
+  }
+
+  // Risk Caps validation
+  if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.01 || config.maxBtcExposure > 10.0)) {
+    errors.push('maxBtcExposure must be between 0.01 and 10.0');
+  }
+  if (config.maxUsdcDeployed !== undefined && (config.maxUsdcDeployed < 1000 || config.maxUsdcDeployed > 100000)) {
+    errors.push('maxUsdcDeployed must be between 1000 and 100000');
+  }
+  if (config.maxDrawdownPercent !== undefined && (config.maxDrawdownPercent < 10 || config.maxDrawdownPercent > 30)) {
+    errors.push('maxDrawdownPercent must be between 10 and 30');
+  }
+  if (config.drawdownResetHours !== undefined && (config.drawdownResetHours < 0 || config.drawdownResetHours > 720)) {
+    errors.push('drawdownResetHours must be between 0 (disabled) and 720 (30 days)');
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+};
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -283,6 +549,11 @@ module.exports = {
   getGlobalConfig,
   isMultiExchangeConfig,
   normalizeToMultiExchange,
+  // Regime strategy
+  getRegimeConfig,
+  updateRegimeConfig,
+  validateRegimeConfig,
   DEFAULTS,
   GLOBAL_DEFAULTS,
+  REGIME_DEFAULTS,
 };

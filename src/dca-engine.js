@@ -9,6 +9,7 @@ const { consolidatePendingOrders } = require('./order-manager');
 const { getExchangeConfig, getEnabledExchanges } = require('./config-utils');
 const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
+const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -190,6 +191,12 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   const state = stateTracker.loadState(config, exchange);
   const intervalLabel = formatInterval(config.intervalType);
   const adapter = getAdapter(exchange);
+  const isFibonacci = config.dcaStrategy === 'fibonacci';
+
+  // Initialize Fibonacci state if needed
+  if (isFibonacci) {
+    stateTracker.initFibonacciState(state, config);
+  }
 
   // Emit starting event
   tradeEvents.starting(exchange, intervalLabel);
@@ -208,12 +215,28 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     return { status: 'already_ran', lastRunId: state.lastRunId, intervalType: config.intervalType, exchange };
   }
 
-  // Sync order statuses (check for filled sells)
-  const filledOrders = await syncOrderStatuses(state, exchange);
+  // Check Fibonacci sell fill FIRST (before buying more)
+  if (isFibonacci && state.fibActiveSellOrderId) {
+    const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
+    if (fibFill) {
+      const cyclePosition = state.fibPosition || 0;
+      stateTracker.updateAfterFibSellFill(state, fibFill);
+      logger.logFibSellFilled(fibFill, state, cyclePosition, exchange);
+      stateTracker.saveState(state, exchange);
+      logger.log('INFO', `[${exchange}] Fibonacci cycle complete - resetting to position 0`);
+      tradeEvents.cycleComplete(exchange, 'fib_cycle_complete', { profit: fibFill.netProceeds, buysInCycle: cyclePosition });
+    }
+  }
 
-  if (filledOrders.length > 0) {
-    logger.log('INFO', `[${exchange}] ${filledOrders.length} orders filled since last run`);
-    stateTracker.saveState(state, exchange);
+  // Sync order statuses (check for filled sells) - for fixed strategy
+  let filledOrders = [];
+  if (!isFibonacci) {
+    filledOrders = await syncOrderStatuses(state, exchange);
+
+    if (filledOrders.length > 0) {
+      logger.log('INFO', `[${exchange}] ${filledOrders.length} orders filled since last run`);
+      stateTracker.saveState(state, exchange);
+    }
   }
 
   // Check current price against max threshold
@@ -232,32 +255,70 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     };
   }
 
-  // Check allocation remaining
-  const { remaining, intervalAmount } = stateTracker.checkAllocationRemaining(state, config);
-
-  if (remaining <= 0) {
-    logger.log('INFO', `[${exchange}] Full allocation has been used`);
-    return { status: 'fully_allocated', totalAllocated: state.totalAllocated, exchange };
-  }
-
-  if (intervalAmount < config.minOrderSize) {
-    logger.log('INFO', `[${exchange}] Interval amount ${intervalAmount} below minimum ${config.minOrderSize}`);
-    return { status: 'below_minimum', intervalAmount, minOrderSize: config.minOrderSize, exchange };
-  }
-
-  // Check balance and determine actual buy amount
-  // Extract quote currency from product ID (e.g., BTC-USDC -> USDC, CRO_USD -> USD)
+  // Check balance first
   const quoteCurrency = getQuoteCurrency(config.productId);
   const balance = await adapter.getAccountBalance(quoteCurrency);
   logger.log('INFO', `[${exchange}] ${quoteCurrency} balance: ${balance.available.toFixed(2)} available, ${balance.hold.toFixed(2)} on hold`);
   tradeEvents.balanceCheck(exchange, quoteCurrency, balance.available);
 
-  // Use the minimum of: interval amount, remaining allocation, or available balance
-  let actualBuyAmount = Math.min(intervalAmount, remaining, balance.available);
+  // Calculate buy amount based on strategy
+  let actualBuyAmount;
 
-  // If balance is below interval amount, use what's available
-  if (balance.available < intervalAmount) {
-    logger.log('WARN', `[${exchange}] Balance ${balance.available.toFixed(2)} below interval amount ${intervalAmount.toFixed(2)}, using what's available`);
+  if (isFibonacci) {
+    // Fibonacci strategy: use Fibonacci sequence for buy amounts
+    const fibPosition = state.fibPosition || 0;
+    const fibAmount = getFibonacciBuyAmount(fibPosition, config.fibBaseAmount);
+
+    logger.log('INFO', `[${exchange}] Fibonacci position ${fibPosition}: target buy amount $${fibAmount.toFixed(2)}`);
+
+    // Check allocation cap (same as fixed strategy)
+    const { remaining } = stateTracker.checkAllocationRemaining(state, config);
+    if (remaining <= 0) {
+      logger.log('INFO', `[${exchange}] Full allocation has been used`);
+      return { status: 'fully_allocated', totalAllocated: state.totalAllocated, exchange };
+    }
+
+    // Cap Fibonacci amount to remaining allocation
+    const cappedFibAmount = Math.min(fibAmount, remaining);
+    if (cappedFibAmount < fibAmount) {
+      logger.log('INFO', `[${exchange}] Fibonacci amount capped to remaining allocation: $${cappedFibAmount.toFixed(2)} (was $${fibAmount.toFixed(2)})`);
+    }
+
+    // Wait if insufficient funds for (capped) Fibonacci amount
+    if (balance.available < cappedFibAmount) {
+      logger.log('INFO', `[${exchange}] Waiting for funds: need $${cappedFibAmount.toFixed(2)}, have $${balance.available.toFixed(2)}`);
+      tradeEvents.skipped(exchange, `Waiting for funds: need $${cappedFibAmount.toFixed(2)}`);
+      return {
+        status: 'waiting_funds',
+        required: cappedFibAmount,
+        available: balance.available,
+        fibPosition,
+        exchange,
+      };
+    }
+
+    actualBuyAmount = cappedFibAmount;
+  } else {
+    // Fixed strategy: use allocation-based amounts
+    const { remaining, intervalAmount } = stateTracker.checkAllocationRemaining(state, config);
+
+    if (remaining <= 0) {
+      logger.log('INFO', `[${exchange}] Full allocation has been used`);
+      return { status: 'fully_allocated', totalAllocated: state.totalAllocated, exchange };
+    }
+
+    if (intervalAmount < config.minOrderSize) {
+      logger.log('INFO', `[${exchange}] Interval amount ${intervalAmount} below minimum ${config.minOrderSize}`);
+      return { status: 'below_minimum', intervalAmount, minOrderSize: config.minOrderSize, exchange };
+    }
+
+    // Use the minimum of: interval amount, remaining allocation, or available balance
+    actualBuyAmount = Math.min(intervalAmount, remaining, balance.available);
+
+    // If balance is below interval amount, use what's available
+    if (balance.available < intervalAmount) {
+      logger.log('WARN', `[${exchange}] Balance ${balance.available.toFixed(2)} below interval amount ${intervalAmount.toFixed(2)}, using what's available`);
+    }
   }
 
   // Check if we have enough to meet minimum order size
@@ -282,6 +343,8 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   // Emit buy placing event
   tradeEvents.buyPlacing(exchange, actualBuyAmount, config.productId);
 
+  let holdbackBTC;
+
   if (isDryRun) {
     // Simulate the trade without executing
     const simulatedBtcAmount = actualBuyAmount / currentPrice;
@@ -300,44 +363,108 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       status: 'SIMULATED',
     };
 
-    const sellQuantity = simulatedBtcAmount * (1 - config.holdbackPercent / 100);
-    const sellPrice = currentPrice * (1 + config.sellMarkupPercent / 100);
-
-    sellOrder = {
-      orderId: `dry-run-sell-${Date.now()}`,
-      success: true,
-      baseSize: sellQuantity,
-      limitPrice: sellPrice,
-      status: 'SIMULATED',
-    };
-
     const baseCcy = getBaseCurrency(config.productId);
     logger.log('INFO', `[${exchange}] ${modeLabel}Simulated buy: ${buyResult.btcAmount.toFixed(8)} ${baseCcy} at ${buyResult.price.toFixed(2)}`);
-    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} ${baseCcy} at ${sellOrder.limitPrice.toFixed(2)}`);
-
-    // Emit events for dry run
     tradeEvents.buyFilled(exchange, buyResult.btcAmount, buyResult.price, buyResult.fees);
+
+    if (isFibonacci) {
+      // Fibonacci dry run: update state first to get cumulative values
+      stateTracker.updateAfterFibBuy(state, buyResult, config);
+      const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+
+      const sellQuantity = cycleInfo.cumulativeBTC * (1 - config.holdbackPercent / 100);
+      const sellPrice = cycleInfo.avgCostBasis * (1 + config.sellMarkupPercent / 100);
+      holdbackBTC = cycleInfo.cumulativeBTC * (config.holdbackPercent / 100);
+
+      sellOrder = {
+        orderId: `dry-run-fib-sell-${Date.now()}`,
+        success: true,
+        baseSize: sellQuantity,
+        limitPrice: sellPrice,
+        status: 'SIMULATED',
+      };
+
+      stateTracker.updateAfterFibSellOrder(state, sellOrder, sellQuantity, holdbackBTC);
+      logger.logFibBuy(buyResult, state, cycleInfo, exchange);
+      logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange);
+    } else {
+      // Fixed dry run
+      const sellQuantity = simulatedBtcAmount * (1 - config.holdbackPercent / 100);
+      const sellPrice = currentPrice * (1 + config.sellMarkupPercent / 100);
+      holdbackBTC = simulatedBtcAmount * (config.holdbackPercent / 100);
+
+      sellOrder = {
+        orderId: `dry-run-sell-${Date.now()}`,
+        success: true,
+        baseSize: sellQuantity,
+        limitPrice: sellPrice,
+        status: 'SIMULATED',
+      };
+
+      stateTracker.updateAfterBuy(state, buyResult, sellOrder, config);
+      logger.logBuy(buyResult, state, exchange);
+      logger.logSellOrder(sellOrder, state, exchange);
+    }
+
+    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} ${baseCcy} at ${sellOrder.limitPrice.toFixed(2)}`);
     tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
   } else {
     // Execute real trades
     buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter);
     tradeEvents.buyFilled(exchange, buyResult.btcAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
 
-    sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter);
-    tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
+    if (isFibonacci) {
+      // Fibonacci strategy: consolidated sell order
+      stateTracker.updateAfterFibBuy(state, buyResult, config);
+      const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+
+      const fibSellResult = await orderManager.placeFibonacciSellOrder(
+        config,
+        cycleInfo.cumulativeBTC,
+        cycleInfo.avgCostBasis,
+        state.fibActiveSellOrderId,
+        adapter
+      );
+
+      if (fibSellResult.alreadyFilled) {
+        // Rare case: previous order filled between check and now
+        const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
+        stateTracker.updateAfterFibSellFill(state, fibFill);
+        logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange);
+        // Now place new sell order for this buy
+        const newFibSellResult = await orderManager.placeFibonacciSellOrder(
+          config,
+          buyResult.btcAmount,
+          buyResult.price + (buyResult.netFees || 0) / buyResult.btcAmount,
+          null,
+          adapter
+        );
+        sellOrder = newFibSellResult.sellOrder;
+        holdbackBTC = newFibSellResult.holdbackBTC;
+        stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantityBTC, holdbackBTC);
+      } else {
+        sellOrder = fibSellResult.sellOrder;
+        holdbackBTC = fibSellResult.holdbackBTC;
+        stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantityBTC, holdbackBTC);
+      }
+
+      logger.logFibBuy(buyResult, state, cycleInfo, exchange);
+      logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange);
+      tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
+    } else {
+      // Fixed strategy: individual sell order
+      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter);
+      holdbackBTC = buyResult.btcAmount * (config.holdbackPercent / 100);
+      stateTracker.updateAfterBuy(state, buyResult, sellOrder, config);
+      logger.logBuy(buyResult, state, exchange);
+      logger.logSellOrder(sellOrder, state, exchange);
+      tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
+    }
   }
-
-  // Update state (even in dry-run to track what would have happened)
-  stateTracker.updateAfterBuy(state, buyResult, sellOrder, config);
-
-  // Log transactions
-  logger.logBuy(buyResult, state, exchange);
-  logger.logSellOrder(sellOrder, state, exchange);
 
   // Save state
   stateTracker.saveState(state, exchange);
 
-  const holdbackBTC = buyResult.btcAmount * (config.holdbackPercent / 100);
   const baseCurrency = getBaseCurrency(config.productId);
 
   logger.log('INFO', `[${exchange}] ${modeLabel}=== ${intervalLabel} Cycle Complete ===`);
@@ -357,8 +484,9 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     outstandingOrdersUSDC: state.outstandingOrdersUSDC,
   });
 
-  // Check if auto-consolidation is needed (only for non-dry-run)
-  if (!isDryRun) {
+  // Check if auto-consolidation is needed (only for non-dry-run, fixed strategy only)
+  // Fibonacci strategy handles its own consolidated sell orders
+  if (!isDryRun && !isFibonacci) {
     const pendingCount = stateTracker.getPendingOrders(state).length;
 
     // Threshold-based consolidation
@@ -373,7 +501,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     }
   }
 
-  return {
+  const result = {
     status: isDryRun ? 'dry_run_success' : 'success',
     dryRun: isDryRun,
     intervalType: config.intervalType,
@@ -388,6 +516,20 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       intervalsRun: state.totalIntervalsRun,
     },
   };
+
+  // Add Fibonacci-specific info if using that strategy
+  if (isFibonacci) {
+    const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+    result.fibonacci = {
+      position: cycleInfo.position,
+      cumulativeCost: cycleInfo.cumulativeCost,
+      cumulativeBTC: cycleInfo.cumulativeBTC,
+      avgCostBasis: cycleInfo.avgCostBasis,
+      activeSellOrderId: cycleInfo.activeSellOrderId,
+    };
+  }
+
+  return result;
 };
 
 /**

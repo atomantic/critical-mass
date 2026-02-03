@@ -3,19 +3,35 @@ const crypto = require('crypto');
 
 /**
  * Prepare private key for JWT signing
+ * Normalizes PEM format to ensure proper structure for ES256
  * @param {string} rawKey - Private key (PEM format or base64)
- * @returns {string|Buffer} Key ready for JWT signing
+ * @returns {string} Key ready for JWT signing
  */
 const preparePrivateKey = (rawKey) => {
-  // Check if already in PEM format
-  if (rawKey.includes('-----BEGIN')) {
+  // If not PEM format, return as-is (will fail with descriptive error)
+  if (!rawKey.includes('-----BEGIN')) {
     return rawKey;
   }
 
-  // New Coinbase format: The base64 string might be the hex-encoded private key
-  // Try decoding as hex first, then as base64
-  // The new API might use the raw key directly
-  return rawKey;
+  // Normalize PEM format - extract header, content, and footer
+  const pemMatch = rawKey.match(/(-----BEGIN [A-Z ]+-----)(.+)(-----END [A-Z ]+-----)/s);
+  if (!pemMatch) {
+    return rawKey;
+  }
+
+  const [, header, content, footer] = pemMatch;
+
+  // Clean the content: remove all whitespace/newlines, then format properly
+  const cleanContent = content.replace(/[\s\n\r]/g, '');
+
+  // Split into 64-character lines (standard PEM line length)
+  const lines = [];
+  for (let i = 0; i < cleanContent.length; i += 64) {
+    lines.push(cleanContent.substring(i, i + 64));
+  }
+
+  // Reconstruct proper PEM format
+  return `${header}\n${lines.join('\n')}\n${footer}\n`;
 };
 
 /**
@@ -70,6 +86,7 @@ const getAuthHeaders = (apiKey, apiSecret, requestMethod, requestPath) => ({
 });
 
 module.exports = {
+  preparePrivateKey,
   generateJWT,
   getAuthHeaders,
 };

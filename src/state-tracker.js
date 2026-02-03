@@ -17,7 +17,13 @@ const { getExchangeDataDir } = require('./migration');
  * @typedef {import('./types').SellOrder} SellOrder
  * @typedef {import('./types').FilledSellOrder} FilledSellOrder
  * @typedef {import('./types').IntervalType} IntervalType
+ * @typedef {import('./types').FibonacciFillDetails} FibonacciFillDetails
+ * @typedef {import('./types').FibonacciCycleInfo} FibonacciCycleInfo
+ * @typedef {import('./types').RegimePositionState} RegimePositionState
+ * @typedef {import('./types').RegimeState} RegimeState
  */
+
+const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
@@ -326,6 +332,300 @@ const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSell
   return state;
 };
 
+/**
+ * Initialize Fibonacci state fields if not present
+ * @param {BotState} state - Current state
+ * @param {ExchangeConfig} config - Configuration
+ * @returns {BotState} State with Fibonacci fields initialized
+ */
+const initFibonacciState = (state, config) => {
+  if (config.dcaStrategy !== 'fibonacci') return state;
+
+  // Initialize Fibonacci fields if they don't exist
+  if (state.fibPosition === undefined) {
+    const fibState = createInitialFibState();
+    Object.assign(state, fibState);
+  }
+
+  return state;
+};
+
+/**
+ * Update state after a Fibonacci buy order
+ * @param {BotState} state - Current state
+ * @param {BuyResult} buyDetails - Buy order details
+ * @param {ExchangeConfig} config - Configuration
+ * @returns {BotState} Updated state
+ */
+const updateAfterFibBuy = (state, buyDetails, config) => {
+  const normalized = normalizeConfig(config);
+
+  // Extract fee details
+  const buyFees = buyDetails.fees || 0;
+  const buyRebates = buyDetails.rebates || 0;
+  const buyNetFees = buyDetails.netFees || 0;
+  const costBasis = buyDetails.usdcAmount + buyNetFees;
+
+  // Start cycle if this is the first buy
+  if (state.fibCycleStartTime === null) {
+    state.fibCycleStartTime = Date.now();
+  }
+
+  // Update cumulative tracking
+  state.fibCumulativeCost = (state.fibCumulativeCost || 0) + costBasis;
+  state.fibCumulativeBTC = (state.fibCumulativeBTC || 0) + buyDetails.btcAmount;
+
+  // Increment position for next buy
+  state.fibPosition = (state.fibPosition || 0) + 1;
+
+  // Update standard tracking
+  state.totalAllocated += buyDetails.usdcAmount;
+  state.totalIntervalsRun += 1;
+  state.usdcFundSize -= (buyDetails.usdcAmount + buyNetFees);
+  state.lastRunId = getRunIdentifier(normalized.intervalType);
+  state.lastRunTimestamp = Date.now();
+
+  // Update cumulative fee tracking
+  state.totalFees = (state.totalFees || 0) + buyFees;
+  state.totalRebates = (state.totalRebates || 0) + buyRebates;
+  state.netFees = (state.netFees || 0) + buyNetFees;
+
+  return state;
+};
+
+/**
+ * Update state after placing a Fibonacci sell order
+ * @param {BotState} state - Current state
+ * @param {SellOrder} sellOrder - Sell order details
+ * @param {number} sellQuantityBTC - BTC quantity in sell order
+ * @param {number} holdbackBTC - BTC held back as reserves (tracked but not added to reserves until cycle completes)
+ * @returns {BotState} Updated state
+ */
+const updateAfterFibSellOrder = (state, sellOrder, sellQuantityBTC, holdbackBTC) => {
+  state.fibActiveSellOrderId = sellOrder.orderId;
+  // Track cumulative holdback for this cycle, but don't add to reserves yet
+  // Reserves are only credited when the cycle sell fills (in updateAfterFibSellFill)
+  state.fibPendingHoldback = holdbackBTC;
+  state.outstandingOrdersBTC = sellQuantityBTC; // Replace, not add (consolidated order)
+  state.outstandingOrdersUSDC = sellQuantityBTC * sellOrder.limitPrice;
+
+  return state;
+};
+
+/**
+ * Update state when a Fibonacci cycle sell fills
+ * @param {BotState} state - Current state
+ * @param {FibonacciFillDetails} fillDetails - Fill details
+ * @returns {BotState} Updated state with cycle reset
+ */
+const updateAfterFibSellFill = (state, fillDetails) => {
+  const sellFees = fillDetails.fees || 0;
+  const sellRebates = fillDetails.rebates || 0;
+  const sellNetFees = fillDetails.netFees || 0;
+  const netProceeds = fillDetails.netProceeds || (fillDetails.fillValue - sellNetFees);
+
+  // Return proceeds to fund
+  state.usdcFundSize += netProceeds;
+  state.outstandingOrdersBTC -= fillDetails.filledSize;
+  state.outstandingOrdersUSDC = Math.max(0, state.outstandingOrdersUSDC - fillDetails.fillValue);
+
+  // Credit holdback to reserves now that cycle is complete
+  if (state.fibPendingHoldback > 0) {
+    state.btcReserves += state.fibPendingHoldback;
+  }
+
+  // Update cumulative fee tracking
+  state.totalFees = (state.totalFees || 0) + sellFees;
+  state.totalRebates = (state.totalRebates || 0) + sellRebates;
+  state.netFees = (state.netFees || 0) + sellNetFees;
+
+  // Reset Fibonacci cycle state (including fibPendingHoldback)
+  const fibReset = resetFibState();
+  Object.assign(state, fibReset);
+
+  return state;
+};
+
+/**
+ * Get current Fibonacci cycle information
+ * @param {BotState} state - Current state
+ * @returns {FibonacciCycleInfo} Cycle information
+ */
+const getFibonacciCycleInfo = (state) => {
+  const cumulativeCost = state.fibCumulativeCost || 0;
+  const cumulativeBTC = state.fibCumulativeBTC || 0;
+
+  return {
+    position: state.fibPosition || 0,
+    cumulativeCost,
+    cumulativeBTC,
+    avgCostBasis: getAverageCostBasis(cumulativeCost, cumulativeBTC),
+    activeSellOrderId: state.fibActiveSellOrderId || null,
+    cycleStartTime: state.fibCycleStartTime || null,
+  };
+};
+
+// ============================================================================
+// Regime State Management
+// ============================================================================
+
+/**
+ * Get regime state file path
+ * @param {string} exchange - Exchange name
+ * @returns {string} Path to regime state file
+ */
+const getRegimeStateFile = (exchange = 'coinbase') => {
+  const dir = getExchangeDataDir(exchange);
+  return path.join(dir, 'regime-state.json');
+};
+
+/**
+ * Create initial regime position state
+ * @returns {RegimePositionState}
+ */
+const createInitialRegimePositionState = () => ({
+  totalBTC: 0,
+  totalCostBasis: 0,
+  avgCostBasis: 0,
+  ladderStep: 0,
+  lastEntryPrice: 0,
+  lastEntryTime: 0,
+  anchorPrice: 0,
+  activeTpOrderId: null,
+  lastTpPrice: 0,
+  cyclesCompleted: 0,
+  unrealizedPnL: 0,
+  realizedPnL: 0,
+  realizedBtcPnL: 0,
+  btcOnOrder: 0,
+  maxDrawdownSeen: 0,
+  scalingDisabled: false,
+  scalingDisabledReason: null,
+  // APY tracking fields
+  engineStartTime: null,
+  initialCapital: 0,
+});
+
+/**
+ * Create initial regime state
+ * @returns {RegimeState}
+ */
+const createInitialRegimeState = () => ({
+  mode: 'HARVEST',
+  since: Date.now(),
+  transitionCount: 0,
+  trendDirection: null,
+  lastVolExpansion: 1.0,
+  lastMomentumMag: 0,
+  trendConfirmationCount: 0,
+});
+
+/**
+ * Load regime state from file
+ * @param {string} exchange - Exchange name
+ * @returns {{position: RegimePositionState, regime: RegimeState, tpOptimizer?: Object, sizeOptimizer?: Object}}
+ */
+const loadRegimeState = (exchange = 'coinbase') => {
+  const stateFile = getRegimeStateFile(exchange);
+
+  if (!fs.existsSync(stateFile)) {
+    return {
+      position: createInitialRegimePositionState(),
+      regime: createInitialRegimeState(),
+      tpOptimizer: null,
+      sizeOptimizer: null,
+    };
+  }
+
+  const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+
+  return {
+    position: { ...createInitialRegimePositionState(), ...data.position },
+    regime: { ...createInitialRegimeState(), ...data.regime },
+    tpOptimizer: data.tpOptimizer || null,
+    sizeOptimizer: data.sizeOptimizer || null,
+  };
+};
+
+/**
+ * Save regime state to file
+ * @param {RegimePositionState} position - Position state
+ * @param {RegimeState} regime - Regime state
+ * @param {string} exchange - Exchange name
+ * @param {Object} [tpOptimizer] - Optional TP optimizer state
+ * @param {Object} [sizeOptimizer] - Optional Size optimizer state
+ */
+const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null) => {
+  const stateFile = getRegimeStateFile(exchange);
+  const dir = path.dirname(stateFile);
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  const stateData = { position, regime };
+  if (tpOptimizer) {
+    stateData.tpOptimizer = tpOptimizer;
+  }
+  if (sizeOptimizer) {
+    stateData.sizeOptimizer = sizeOptimizer;
+  }
+
+  fs.writeFileSync(stateFile, JSON.stringify(stateData, null, 2));
+};
+
+/**
+ * Update regime position state after entry
+ * @param {RegimePositionState} state - Current state
+ * @param {Object} entryDetails - Entry details
+ * @param {number} entryDetails.btcAmount - BTC purchased
+ * @param {number} entryDetails.costBasis - Cost including fees
+ * @param {number} entryDetails.price - Entry price
+ * @returns {RegimePositionState} Updated state
+ */
+const updateRegimeStateAfterEntry = (state, entryDetails) => {
+  const { btcAmount, costBasis, price } = entryDetails;
+
+  state.totalBTC += btcAmount;
+  state.totalCostBasis += costBasis;
+  state.avgCostBasis = state.totalBTC > 0 ? state.totalCostBasis / state.totalBTC : 0;
+  state.ladderStep += 1;
+  state.lastEntryPrice = price;
+  state.lastEntryTime = Date.now();
+  state.anchorPrice = price;
+
+  return state;
+};
+
+/**
+ * Update regime position state after TP fill
+ * @param {RegimePositionState} state - Current state
+ * @param {Object} fillDetails - Fill details
+ * @param {number} fillDetails.btcAmount - BTC sold
+ * @param {number} fillDetails.proceeds - Net proceeds
+ * @param {number} fillDetails.pnl - Realized P&L
+ * @returns {RegimePositionState} Updated state
+ */
+const updateRegimeStateAfterTP = (state, fillDetails) => {
+  const { pnl } = fillDetails;
+
+  state.realizedPnL += pnl;
+  state.cyclesCompleted += 1;
+
+  // Reset cycle
+  state.totalBTC = 0;
+  state.totalCostBasis = 0;
+  state.avgCostBasis = 0;
+  state.ladderStep = 0;
+  state.activeTpOrderId = null;
+  state.lastTpPrice = 0;
+  state.anchorPrice = 0;
+  state.scalingDisabled = false;
+  state.scalingDisabledReason = null;
+
+  return state;
+};
+
 module.exports = {
   loadState,
   saveState,
@@ -338,4 +638,18 @@ module.exports = {
   updateAfterConsolidation,
   getPendingOrders,
   getStateFile,
+  // Fibonacci state management
+  initFibonacciState,
+  updateAfterFibBuy,
+  updateAfterFibSellOrder,
+  updateAfterFibSellFill,
+  getFibonacciCycleInfo,
+  // Regime state management
+  getRegimeStateFile,
+  createInitialRegimePositionState,
+  createInitialRegimeState,
+  loadRegimeState,
+  saveRegimeState,
+  updateRegimeStateAfterEntry,
+  updateRegimeStateAfterTP,
 };

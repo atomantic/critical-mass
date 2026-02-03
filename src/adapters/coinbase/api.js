@@ -11,6 +11,7 @@ const { createBaseAdapter } = require('../base-adapter');
  * @typedef {import('../../types').ProductDetails} ProductDetails
  * @typedef {import('../../types').MarketBuyResult} MarketBuyResult
  * @typedef {import('../../types').LimitSellResult} LimitSellResult
+ * @typedef {import('../../types').LimitBuyResult} LimitBuyResult
  * @typedef {import('../../types').OrderDetails} OrderDetails
  * @typedef {import('../../types').OpenOrder} OpenOrder
  * @typedef {import('../../types').CancelResult} CancelResult
@@ -89,13 +90,37 @@ const createCoinbaseAdapter = (keysPath = null) => {
   };
 
   /**
-   * Make authenticated request to Coinbase API
+   * Check if error is a transient network error that should be retried
+   * @param {Error} err - Error object
+   * @returns {boolean}
+   */
+  const isTransientNetworkError = (err) => {
+    const msg = err.message || '';
+    const code = err.code || '';
+    // Network errors that are transient and should be retried
+    return code === 'ETIMEDOUT' ||
+           code === 'ECONNRESET' ||
+           code === 'ECONNREFUSED' ||
+           code === 'ENOTFOUND' ||
+           code === 'EPIPE' ||
+           msg.includes('ETIMEDOUT') ||
+           msg.includes('ECONNRESET') ||
+           msg.includes('socket disconnected') ||
+           msg.includes('TLS connection') ||
+           msg.includes('network socket') ||
+           msg.includes('timeout') ||
+           msg.includes('aborted');
+  };
+
+  /**
+   * Make authenticated request to Coinbase API with retry logic
    * @param {string} method - HTTP method
    * @param {string} apiPath - API path
    * @param {Object|null} [data] - Request body (for POST)
+   * @param {number} [retries=3] - Number of retries for transient errors
    * @returns {Promise<any>} API response data
    */
-  const makeRequest = async (method, apiPath, data = null) => {
+  const makeRequest = async (method, apiPath, data = null, retries = 3) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
 
@@ -103,14 +128,41 @@ const createCoinbaseAdapter = (keysPath = null) => {
       method,
       url: `${BASE_URL}${apiPath}`,
       headers,
+      timeout: 30000, // 30 second timeout
     };
 
     if (data) {
       config.data = data;
     }
 
-    const response = await axios(config);
-    return response.data;
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const response = await axios(config).catch(err => {
+        lastError = err;
+        return null;
+      });
+
+      if (response) {
+        return response.data;
+      }
+
+      // Check if we should retry
+      if (attempt < retries && isTransientNetworkError(lastError)) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
+        console.log(`⚠️ [coinbase] Network error on ${method} ${apiPath.split('?')[0]}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      // Non-retryable error or out of retries, throw clean error
+      const status = lastError.response?.status || 'unknown';
+      const message = lastError.response?.data?.message || lastError.response?.data?.error_details || lastError.message;
+      const errorData = lastError.response?.data?.error || '';
+      const cleanError = new Error(`Coinbase API ${status}: ${message}${errorData ? ` (${errorData})` : ''}`);
+      cleanError.status = status;
+      cleanError.endpoint = `${method} ${apiPath}`;
+      throw cleanError;
+    }
   };
 
   /**
@@ -163,6 +215,20 @@ const createCoinbaseAdapter = (keysPath = null) => {
   adapter.getCurrentPrice = async (productId) => {
     const data = await makeRequest('GET', `/api/v3/brokerage/products/${productId}`);
     return parseFloat(data.price);
+  };
+
+  /**
+   * Get current bid/ask for a product
+   * @param {string} productId - Product ID (e.g., 'BTC-USDC')
+   * @returns {Promise<{bid: number, ask: number}>} Bid and ask prices
+   */
+  adapter.getBidAsk = async (productId) => {
+    const data = await makeRequest('GET', `/api/v3/brokerage/best_bid_ask?product_ids=${productId}`);
+    const pricebook = data.pricebooks?.[0];
+    return {
+      bid: parseFloat(pricebook?.bids?.[0]?.price || 0),
+      ask: parseFloat(pricebook?.asks?.[0]?.price || 0),
+    };
   };
 
   /**
@@ -231,14 +297,18 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
+    // Derive decimal precision from increments
+    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+    const quotePrecision = Math.max(0, -Math.floor(Math.log10(quoteIncrement)));
+
     const orderData = {
       client_order_id: clientOrderId,
       product_id: productId,
       side: 'SELL',
       order_configuration: {
         limit_limit_gtc: {
-          base_size: roundedAmount.toFixed(8),
-          limit_price: roundedPrice.toFixed(2),
+          base_size: roundedAmount.toFixed(basePrecision),
+          limit_price: roundedPrice.toFixed(quotePrecision),
           post_only: true,
         },
       },
@@ -253,6 +323,59 @@ const createCoinbaseAdapter = (keysPath = null) => {
       errorMessage: result.error_response?.message,
       baseSize: roundedAmount,
       limitPrice: roundedPrice,
+    };
+  };
+
+  /**
+   * Place a post-only limit buy order (maker-prefer)
+   * @param {string} productId - Product ID
+   * @param {number} baseAmount - Amount of base currency to buy
+   * @param {number} price - Limit price in quote currency
+   * @param {Object} [options] - Order options
+   * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
+   * @returns {Promise<LimitBuyResult>} Order result
+   */
+  adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
+    const clientOrderId = uuidv4();
+    const postOnly = options.postOnly !== false; // Default to true
+
+    // Get product details for proper rounding
+    const product = await adapter.getProductDetails(productId);
+
+    // Round to proper increments
+    const baseIncrement = parseFloat(product.baseIncrement);
+    const quoteIncrement = parseFloat(product.quoteIncrement);
+
+    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
+    const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
+
+    // Derive decimal precision from increments
+    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+    const quotePrecision = Math.max(0, -Math.floor(Math.log10(quoteIncrement)));
+
+    const orderData = {
+      client_order_id: clientOrderId,
+      product_id: productId,
+      side: 'BUY',
+      order_configuration: {
+        limit_limit_gtc: {
+          base_size: roundedAmount.toFixed(basePrecision),
+          limit_price: roundedPrice.toFixed(quotePrecision),
+          post_only: postOnly,
+        },
+      },
+    };
+
+    const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
+
+    return {
+      orderId: result.order_id || result.success_response?.order_id,
+      clientOrderId,
+      success: result.success || !!result.success_response,
+      errorMessage: result.error_response?.message,
+      baseSize: roundedAmount,
+      limitPrice: roundedPrice,
+      postOnly,
     };
   };
 
@@ -285,7 +408,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<OpenOrder[]>} List of open orders
    */
   adapter.getOpenOrders = async (productId) => {
-    const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical?product_id=${productId}&order_status=OPEN`);
+    const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/batch?product_ids=${productId}&order_status=OPEN`);
 
     return (data.orders || []).map(order => ({
       orderId: order.order_id,
@@ -379,8 +502,10 @@ module.exports = {
   loadCredentials: defaultAdapter.loadCredentials,
   getAccountBalance: defaultAdapter.getAccountBalance,
   getCurrentPrice: defaultAdapter.getCurrentPrice,
+  getBidAsk: defaultAdapter.getBidAsk,
   getProductDetails: defaultAdapter.getProductDetails,
   placeMarketBuy: defaultAdapter.placeMarketBuy,
+  placeLimitBuy: defaultAdapter.placeLimitBuy,
   placeLimitSell: defaultAdapter.placeLimitSell,
   getOrder: defaultAdapter.getOrder,
   getOpenOrders: defaultAdapter.getOpenOrders,
