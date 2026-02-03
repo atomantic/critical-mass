@@ -132,6 +132,32 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - State persisted across restarts (in regime-state.json / dry-run-state.json)
 - Dashboard panel shows current settings, observed percentiles, adjustment history
 
+**Dynamic Size Auto-Management (v2.3+):**
+- Opt-in feature (`sizeAutoManaged: true`) for automatic position sizing adjustment
+- Dynamically calculates optimal `baseSizeUsdc` based on available USDC balance
+- Calculates total ladder multiplier accounting for geometric scaling (1 + step*0.1, capped)
+- Formula: `baseSizeUsdc = (availableUsdc * targetUtilization) / totalLadderMultiplier`
+- Records cycle data (steps used, capital deployed, available balance)
+- Triggers recalculation on:
+  - Cycle completion (every N cycles, default: 5)
+  - Significant balance change (>10%)
+  - Maximum hours elapsed (default: 24)
+- Rate-limited adjustments (max 25% change per evaluation)
+- Safety bounds: absolute min base ($10), absolute max base ($500)
+- Target utilization default: 90% of available capital
+- Optionally auto-adjusts `maxLadderSteps` based on p90 historical step usage
+- State persisted across restarts
+- Dashboard panel shows current sizing, step usage stats, adjustment history
+- Configuration options:
+  - `sizeAutoManaged: true/false` - Enable/disable feature
+  - `sizeTargetUtilization: 0.90` - Target % of capital to utilize
+  - `sizeAbsoluteMinBase: 10` - Floor for baseSizeUsdc
+  - `sizeAbsoluteMaxBase: 500` - Ceiling for baseSizeUsdc
+  - `sizeMaxChangePercent: 25` - Max % change per adjustment
+  - `sizeAutoLadderSteps: false` - Also auto-adjust maxLadderSteps
+  - `sizeEvaluationCycles: 5` - Evaluate every N cycles
+  - `sizeEvaluationMaxHours: 24` - Or at least once per day
+
 **Safety Features:**
 - Automatic SAFE mode on: WebSocket disconnect, stale data, REST errors
 - Flash move detection pauses entries and disables scaling
@@ -286,6 +312,7 @@ src/
 ├── dry-run-executor.js # Simulated order execution for dry-run mode
 ├── dry-run-state.js    # State persistence for dry-run simulations
 ├── tp-optimizer.js     # Dynamic TP auto-management with histogram compression
+├── size-optimizer.js   # Dynamic position sizing based on available capital
 ├── health-monitor.js   # SAFE mode and system health
 ├── tail-events.js      # Flash/spread/depth event detection
 ├── websocket-feed.js   # Coinbase WebSocket real-time feed

@@ -86,6 +86,19 @@ const REGIME_DEFAULTS = {
   tpAbsoluteMax: 5.0,           // Ceiling for tpMaxPercent
   tpMaxChangePercent: 25,       // Max % change per adjustment
 
+  // Size Auto-Management
+  sizeAutoManaged: false,       // Opt-in flag for dynamic position sizing
+  sizeEvaluationCycles: 5,      // Evaluate every N cycles
+  sizeEvaluationMaxHours: 24,   // Or at least once per day
+  sizeMinSampleSize: 5,         // Minimum cycles before adjusting
+  sizeAbsoluteMinBase: 10,      // Floor for baseSizeUsdc
+  sizeAbsoluteMaxBase: 500,     // Ceiling for baseSizeUsdc
+  sizeTargetUtilization: 0.90,  // Target 90% capital utilization
+  sizeMaxChangePercent: 25,     // Max % change per adjustment
+  sizeAutoLadderSteps: false,   // Also auto-adjust maxLadderSteps
+  sizeMinLadderSteps: 10,       // Min ladder steps if auto-adjusting
+  sizeMaxLadderSteps: 100,      // Max ladder steps if auto-adjusting
+
   // Risk Caps
   maxBtcExposure: 0.5,
   maxUsdcDeployed: 10000,
@@ -470,6 +483,35 @@ const validateRegimeConfig = (config) => {
   }
   if (config.tpMaxChangePercent !== undefined && (config.tpMaxChangePercent < 5 || config.tpMaxChangePercent > 50)) {
     errors.push('tpMaxChangePercent must be between 5 and 50');
+  }
+
+  // Size Auto-Management validation
+  if (config.sizeEvaluationCycles !== undefined && (config.sizeEvaluationCycles < 1 || config.sizeEvaluationCycles > 100)) {
+    errors.push('sizeEvaluationCycles must be between 1 and 100');
+  }
+  if (config.sizeEvaluationMaxHours !== undefined && (config.sizeEvaluationMaxHours < 1 || config.sizeEvaluationMaxHours > 168)) {
+    errors.push('sizeEvaluationMaxHours must be between 1 and 168 (1 week)');
+  }
+  if (config.sizeMinSampleSize !== undefined && (config.sizeMinSampleSize < 1 || config.sizeMinSampleSize > 50)) {
+    errors.push('sizeMinSampleSize must be between 1 and 50');
+  }
+  if (config.sizeAbsoluteMinBase !== undefined && (config.sizeAbsoluteMinBase < 1 || config.sizeAbsoluteMinBase > 100)) {
+    errors.push('sizeAbsoluteMinBase must be between 1 and 100');
+  }
+  if (config.sizeAbsoluteMaxBase !== undefined && (config.sizeAbsoluteMaxBase < 50 || config.sizeAbsoluteMaxBase > 2000)) {
+    errors.push('sizeAbsoluteMaxBase must be between 50 and 2000');
+  }
+  if (config.sizeTargetUtilization !== undefined && (config.sizeTargetUtilization < 0.5 || config.sizeTargetUtilization > 0.99)) {
+    errors.push('sizeTargetUtilization must be between 0.5 and 0.99');
+  }
+  if (config.sizeMaxChangePercent !== undefined && (config.sizeMaxChangePercent < 5 || config.sizeMaxChangePercent > 50)) {
+    errors.push('sizeMaxChangePercent must be between 5 and 50');
+  }
+  if (config.sizeMinLadderSteps !== undefined && (config.sizeMinLadderSteps < 5 || config.sizeMinLadderSteps > 50)) {
+    errors.push('sizeMinLadderSteps must be between 5 and 50');
+  }
+  if (config.sizeMaxLadderSteps !== undefined && (config.sizeMaxLadderSteps < 20 || config.sizeMaxLadderSteps > 200)) {
+    errors.push('sizeMaxLadderSteps must be between 20 and 200');
   }
 
   // Risk Caps validation
