@@ -2,7 +2,7 @@
   "exchanges": {
     "coinbase": {
       "enabled": false,
-      "dryRun": false,
+      "dryRun": true,
       "productId": "BTC-USDC",
       "totalAllocation": 30000,
       "intervalsToSpread": 60,
@@ -66,7 +66,7 @@
     },
     "gemini": {
       "enabled": true,
-      "dryRun": false,
+      "dryRun": true,
       "productId": "BTCUSD",
       "totalAllocation": 5000,
       "intervalsToSpread": 50,
@@ -81,7 +81,7 @@
     },
     "cryptocom": {
       "enabled": true,
-      "dryRun": false,
+      "dryRun": true,
       "productId": "CRO_USD",
       "totalAllocation": 5000,
       "intervalsToSpread": 100,

@@ -25,7 +25,7 @@ const { roundBTC, roundUSDC } = require('./volatility-utils');
  * @returns {Object} Risk manager instance
  */
 const createRiskManager = (exchange, config) => {
-  let peakEquity = 0;
+  let peakEquity = null; // null = uninitialized, will be set to first observed equity
   let maxDrawdownSeen = 0;
   let isDrawdownPaused = false;
   let drawdownPausedAt = null; // Timestamp when drawdown pause started
@@ -142,9 +142,25 @@ const createRiskManager = (exchange, config) => {
    * @returns {{drawdownPercent: number, isPaused: boolean, peakEquity: number}}
    */
   const updateDrawdown = (totalBTC, currentPrice, totalCostBasis) => {
-    // Calculate current equity value
-    const currentValue = totalBTC * currentPrice;
-    const currentEquity = currentValue - totalCostBasis;
+    // Calculate current equity as position market value (not P&L)
+    // This ensures we track drawdown from the actual capital at risk
+    const currentEquity = totalBTC * currentPrice;
+
+    // Skip drawdown tracking if no position
+    if (totalBTC <= 0 || currentEquity <= 0) {
+      return {
+        drawdownPercent: 0,
+        isPaused: isDrawdownPaused,
+        peakEquity: peakEquity || 0,
+        drawdownPausedAt,
+      };
+    }
+
+    // Initialize peakEquity on first observation with a position
+    if (peakEquity === null) {
+      peakEquity = currentEquity;
+      console.log(`📊 [${exchange}] Initialized peak equity to $${peakEquity.toFixed(2)}`);
+    }
 
     // Check for time-based reset if paused and configured
     if (isDrawdownPaused && drawdownPausedAt && config.drawdownResetHours > 0) {
@@ -164,10 +180,7 @@ const createRiskManager = (exchange, config) => {
     }
 
     // Calculate drawdown from peak
-    let drawdownPercent = 0;
-    if (peakEquity > 0) {
-      drawdownPercent = ((peakEquity - currentEquity) / peakEquity) * 100;
-    }
+    const drawdownPercent = ((peakEquity - currentEquity) / peakEquity) * 100;
 
     // Track max drawdown
     if (drawdownPercent > maxDrawdownSeen) {
@@ -321,7 +334,7 @@ const createRiskManager = (exchange, config) => {
    * Reset risk tracking (for new cycle)
    */
   const resetCycleTracking = () => {
-    peakEquity = 0;
+    peakEquity = null; // Reset to uninitialized
     // Don't reset maxDrawdownSeen - it's a session metric
   };
 
