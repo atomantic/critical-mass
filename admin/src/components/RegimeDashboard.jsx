@@ -536,7 +536,18 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   </div>
                 </div>
               </div>
-              
+
+              {/* Recalculate Button */}
+              {!recalcPreview && (
+                <button
+                  onClick={handleRecalculatePreview}
+                  disabled={recalculating}
+                  className="mt-2 w-full text-xs px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 disabled:opacity-50 transition-colors"
+                >
+                  {recalculating ? 'Calculating...' : 'Recalculate from Fills'}
+                </button>
+              )}
+
               {/* Recalculate Preview Modal */}
               {recalcPreview && (
                 <div className="mt-3 p-3 bg-gray-900 rounded border border-yellow-600/50">
@@ -914,6 +925,16 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     totalBuyValue += (order.size || 0) * (order.fillPrice || 0)
                   })
 
+                  // Calculate sell totals
+                  let totalSellSize = 0
+                  let totalSellPnl = 0
+                  let totalSellHoldback = 0
+                  sellOrders.forEach(order => {
+                    totalSellSize += order.size || 0
+                    if (order.pnl !== undefined) totalSellPnl += order.pnl
+                    if (order.holdbackBtc !== undefined) totalSellHoldback += order.holdbackBtc
+                  })
+
                   return (
                     <>
                       {/* Buys Table */}
@@ -983,6 +1004,21 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               </tr>
                             </thead>
                             <tbody>
+                              {sellOrders.length > 1 && (
+                                <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    {totalSellSize.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2"></td>
+                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                    {totalSellPnl !== 0 ? `${totalSellPnl >= 0 ? '+' : ''}$${totalSellPnl.toFixed(2)}` : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
+                                    {totalSellHoldback > 0 ? `+${totalSellHoldback.toFixed(8)}` : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
+                                </tr>
+                              )}
                               {sellOrders.map((order, idx) => (
                                 <tr key={`sell-${order.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
@@ -1055,6 +1091,16 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   buyFills.forEach(fill => {
                     totalBuySize += fill.size || 0
                     totalBuyValue += fill.quoteAmount || 0
+                  })
+
+                  // Calculate sell totals
+                  let totalSellSize = 0
+                  let totalSellPnl = 0
+                  let totalSellHoldback = 0
+                  sellFills.forEach(fill => {
+                    totalSellSize += fill.size || 0
+                    if (fill.pnl !== null) totalSellPnl += fill.pnl
+                    if (fill.holdback > 0) totalSellHoldback += fill.holdback
                   })
 
                   return (
@@ -1134,6 +1180,22 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               </tr>
                             </thead>
                             <tbody>
+                              {sellFills.length > 1 && (
+                                <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
+                                  {showAllCycles && <td className="py-1.5 pr-2"></td>}
+                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                                    {totalSellSize.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2"></td>
+                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                    {totalSellPnl !== 0 ? `${totalSellPnl >= 0 ? '+' : ''}$${totalSellPnl.toFixed(2)}` : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
+                                    {totalSellHoldback > 0 ? `+${totalSellHoldback.toFixed(8)}` : '—'}
+                                  </td>
+                                  <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
+                                </tr>
+                              )}
                               {sellFills.map((fill, idx) => (
                                 <tr key={`sell-${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
                                   {showAllCycles && (
