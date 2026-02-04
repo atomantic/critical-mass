@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.4] - 2026-02-04
+
+### Fixed
+- **Ladder limit log spam** - Fixed repeated warning messages when ladder limit is reached
+  - The warning `Entry blocked: ladder_limit_reached` was logging multiple times per second
+  - Now logs only once when the limit is first reached
+  - Resets to log again after ladder auto-reset or cycle completion
+
 ## [2.4.2] - 2026-02-03
 
 ### Added

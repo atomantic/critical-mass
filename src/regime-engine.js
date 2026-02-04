@@ -160,6 +160,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let marketState = createInitialMarketState();
   let positionState = createInitialPositionState();
 
+  // Track if ladder limit warning has been logged (to avoid log spam)
+  let ladderLimitWarningLogged = false;
+
   // Callbacks container for dry-run (populated after functions are defined)
   const dryRunCallbacks = {
     onBuyFill: null,
@@ -1503,10 +1506,18 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (riskCheck.shouldResetLadder) {
       console.log(`🔄 [${exchange}] Ladder auto-reset triggered, resetting step ${positionState.ladderStep} -> 0`);
       positionState.ladderStep = 0;
+      ladderLimitWarningLogged = false;
     }
 
     if (!riskCheck.allowed) {
-      console.log(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
+      // Only log ladder limit warning once until it resets
+      const isLadderLimit = riskCheck.reason.startsWith('ladder_limit_reached');
+      if (!isLadderLimit || !ladderLimitWarningLogged) {
+        console.log(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
+        if (isLadderLimit) {
+          ladderLimitWarningLogged = true;
+        }
+      }
       return;
     }
 
@@ -1634,6 +1645,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.anchorPrice = 0;
     positionState.scalingDisabled = false;
     positionState.scalingDisabledReason = null;
+    ladderLimitWarningLogged = false;
 
     // Start new cycle in fill ledger
     fillLedger.startNewCycle();
