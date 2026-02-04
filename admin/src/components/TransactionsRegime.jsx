@@ -88,7 +88,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
       if (fill.side === 'buy') {
         totalBtc += fill.size
         totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
-        return { ...fill, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0, pnl: null }
+        return { ...fill, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0, pnl: null, holdbackBtc: null, holdbackValue: null }
       }
       // Sell fill - calculate P&L
       const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
@@ -96,8 +96,12 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
       const costBasis = avgCost * fill.size
       const pnl = proceeds - costBasis
 
-      // Update position after sell
+      // Calculate holdback (BTC kept as reserves)
       const btcSold = fill.size
+      const holdbackBtc = totalBtc - btcSold
+      const holdbackValue = holdbackBtc > 0 ? holdbackBtc * fill.price : 0
+
+      // Update position after sell
       const remainingBtc = totalBtc - btcSold
       if (remainingBtc > 0) {
         totalBtc = remainingBtc
@@ -107,7 +111,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
         totalCost = 0
       }
 
-      return { ...fill, avgCost, pnl }
+      return { ...fill, avgCost, pnl, holdbackBtc: holdbackBtc > 0 ? holdbackBtc : null, holdbackValue: holdbackValue > 0 ? holdbackValue : null }
     })
   })()
 
@@ -133,6 +137,12 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
   const totalPnL = fillsWithPnL
     .filter(f => f.pnl !== null)
     .reduce((sum, f) => sum + f.pnl, 0)
+  const totalHoldbackBtc = fillsWithPnL
+    .filter(f => f.holdbackBtc !== null)
+    .reduce((sum, f) => sum + f.holdbackBtc, 0)
+  const totalHoldbackValue = fillsWithPnL
+    .filter(f => f.holdbackValue !== null)
+    .reduce((sum, f) => sum + f.holdbackValue, 0)
 
   if (loading) {
     return (
@@ -259,6 +269,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
                   { key: 'price', label: 'Price' },
                   { key: 'quoteAmount', label: 'Value' },
                   { key: 'fee', label: 'Fee' },
+                  { key: 'holdbackBtc', label: 'Holdback' },
                   { key: 'pnl', label: 'P&L' },
                 ].map(col => (
                   <th
@@ -279,7 +290,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
             <tbody>
               {displayFills.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
                     No transactions found. Start the regime engine to begin trading.
                   </td>
                 </tr>
@@ -316,6 +327,15 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
                       {formatCurrency(fill.netFee || fill.fee || 0)}
                     </td>
                     <td className="px-4 py-3">
+                      {fill.holdbackBtc !== null ? (
+                        <span className="text-cyan-400" title={`≈${formatCurrency(fill.holdbackValue)}`}>
+                          +{formatBTC(fill.holdbackBtc)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-500">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
                       {fill.pnl !== null ? (
                         <span className={fill.pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
                           {fill.pnl >= 0 ? '+' : ''}{formatCurrency(fill.pnl)}
@@ -336,7 +356,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
       {displayFills.length > 0 && (
         <div className="bg-gray-800 rounded-lg p-4">
           <h3 className="text-sm font-medium text-gray-400 mb-3">Summary</h3>
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-4 text-sm">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
               <span className="text-gray-500">Buy Orders:</span>
               <span className="ml-2 text-green-400">{totalBuys}</span>
@@ -356,6 +376,16 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
             <div>
               <span className="text-gray-500">Total Fees:</span>
               <span className="ml-2 text-gray-400">{formatCurrency(totalFees)}</span>
+            </div>
+            <div>
+              <span className="text-gray-500">BTC Holdback:</span>
+              <span className="ml-2 text-cyan-400 font-mono" title={`≈${formatCurrency(totalHoldbackValue)}`}>
+                +{formatBTC(totalHoldbackBtc)}
+              </span>
+            </div>
+            <div>
+              <span className="text-gray-500">Holdback Value:</span>
+              <span className="ml-2 text-cyan-400">{formatCurrency(totalHoldbackValue)}</span>
             </div>
             <div>
               <span className="text-gray-500">Total P&L:</span>

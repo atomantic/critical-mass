@@ -12,6 +12,11 @@ All notable changes to this project will be documented in this file.
   - Tooltip on net fee shows raw fee and rebate breakdown
   - Renamed "Time" column to "Filled" for clarity
   - Full order IDs displayed (removed truncation)
+- **Holdback tracking in Transactions page** - Better visibility into BTC reserves
+  - Added "Holdback" column showing BTC kept as reserves on sell transactions
+  - Tooltip displays holdback value in USD
+  - Summary section shows total holdback BTC and value across all filtered transactions
+  - Helps explain P&L calculations when holdback value contributes to total returns
 
 ### Fixed
 - **Polling-detected fills showing 0 BTC @ $0** - Fixed bug where fills detected via polling had missing data
