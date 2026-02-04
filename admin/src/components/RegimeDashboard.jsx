@@ -40,6 +40,101 @@ const HEALTH_COLORS = {
   PAUSED: { bg: 'bg-gray-700', text: 'text-gray-400', icon: '○' },
 }
 
+// Aggressiveness level definitions with exact parameter values from the plan
+const AGGRESSIVENESS_LEVELS = [
+  {
+    id: 'conservative',
+    label: 'Conservative',
+    color: 'green',
+    params: {
+      kFactor: 0.8,
+      minIntervalMs: 120000,  // 2min
+      maxIntervalMs: 3600000, // 1hr
+      entryOffsetBps: 20,
+      baseSizeUsdc: 50,
+      cautionScale: 0.25,
+      trendScale: 0,
+    },
+  },
+  {
+    id: 'moderate',
+    label: 'Moderate',
+    color: 'blue',
+    params: {
+      kFactor: 0.6,
+      minIntervalMs: 90000,   // 90s
+      maxIntervalMs: 2400000, // 40min
+      entryOffsetBps: 15,
+      baseSizeUsdc: 100,
+      cautionScale: 0.5,
+      trendScale: 0.15,
+    },
+  },
+  {
+    id: 'aggressive',
+    label: 'Aggressive',
+    color: 'yellow',
+    params: {
+      kFactor: 0.45,
+      minIntervalMs: 60000,   // 1min
+      maxIntervalMs: 1800000, // 30min
+      entryOffsetBps: 12,
+      baseSizeUsdc: 150,
+      cautionScale: 0.75,
+      trendScale: 0.35,
+    },
+  },
+  {
+    id: 'maximum',
+    label: 'Maximum',
+    color: 'red',
+    params: {
+      kFactor: 0.3,
+      minIntervalMs: 30000,   // 30s
+      maxIntervalMs: 900000,  // 15min
+      entryOffsetBps: 5,
+      baseSizeUsdc: 200,
+      cautionScale: 1.0,
+      trendScale: 0.5,
+    },
+  },
+]
+
+// Get parameter values for a given level
+const computeAggressivenessParams = (levelId) => {
+  const level = AGGRESSIVENESS_LEVELS.find(l => l.id === levelId)
+  return level ? { ...level.params } : null
+}
+
+// Detect current aggressiveness level from config
+const detectAggressivenessLevel = (config) => {
+  if (!config) return null
+
+  // If explicitly set, use it
+  if (config.aggressiveness) return config.aggressiveness
+
+  // Otherwise, check if current values match any preset
+  for (const level of AGGRESSIVENESS_LEVELS) {
+    const expected = level.params
+    const allMatch = Object.entries(expected).every(([key, value]) => {
+      const current = config[key]
+      if (current === undefined) return true
+      // Allow small tolerance for floating point
+      return Math.abs(current - value) < 0.01 || (key.endsWith('Ms') && current === value)
+    })
+    if (allMatch) return level.id
+  }
+
+  return 'custom'
+}
+
+// Format interval in human readable form
+const formatInterval = (ms) => {
+  if (ms >= 3600000) return `${ms / 3600000}hr`
+  if (ms >= 60000) return `${ms / 60000}min`
+  return `${ms / 1000}s`
+}
+
 // Live price ticker with animation
 function LivePriceTicker({ price, prevPrice }) {
   const direction = price > prevPrice ? 'up' : price < prevPrice ? 'down' : 'none'
@@ -106,6 +201,152 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
   }
 
   return null
+}
+
+// Aggressiveness control component
+function AggressivenessControl({ config, exchange, onConfigUpdate }) {
+  const [updating, setUpdating] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
+  const [previewLevel, setPreviewLevel] = useState(null)
+
+  const currentLevel = detectAggressivenessLevel(config)
+
+  const handleLevelChange = async (level) => {
+    if (level === currentLevel || updating) return
+
+    setUpdating(true)
+    const params = computeAggressivenessParams(level)
+    const updates = { aggressiveness: level, ...params }
+
+    const res = await fetch(`/api/${exchange}/regime/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    })
+
+    if (res.ok) {
+      onConfigUpdate()
+    }
+    setUpdating(false)
+  }
+
+  const handlePreview = (level) => {
+    setPreviewLevel(level)
+    setShowPreview(true)
+  }
+
+  const previewParams = previewLevel
+    ? computeAggressivenessParams(previewLevel)
+    : null
+
+  const colorClasses = {
+    green: {
+      active: 'bg-green-600 text-white border-green-500',
+      inactive: 'bg-gray-700 text-green-400 border-green-600/50 hover:bg-green-900/50',
+    },
+    blue: {
+      active: 'bg-blue-600 text-white border-blue-500',
+      inactive: 'bg-gray-700 text-blue-400 border-blue-600/50 hover:bg-blue-900/50',
+    },
+    yellow: {
+      active: 'bg-yellow-600 text-white border-yellow-500',
+      inactive: 'bg-gray-700 text-yellow-400 border-yellow-600/50 hover:bg-yellow-900/50',
+    },
+    red: {
+      active: 'bg-red-600 text-white border-red-500',
+      inactive: 'bg-gray-700 text-red-400 border-red-600/50 hover:bg-red-900/50',
+    },
+  }
+
+  return (
+    <div className="mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-400">Aggressiveness Level</span>
+        {currentLevel === 'custom' && (
+          <span className="px-1.5 py-0.5 bg-purple-900/50 text-purple-400 text-[10px] rounded">
+            Custom
+          </span>
+        )}
+      </div>
+
+      {/* Level buttons */}
+      <div className="flex gap-1 mb-2">
+        {AGGRESSIVENESS_LEVELS.map((level) => {
+          const isActive = currentLevel === level.id
+          const classes = colorClasses[level.color]
+          return (
+            <button
+              key={level.id}
+              onClick={() => handleLevelChange(level.id)}
+              onMouseEnter={() => handlePreview(level.id)}
+              onMouseLeave={() => setShowPreview(false)}
+              disabled={updating}
+              className={`flex-1 px-2 py-1.5 text-xs font-medium rounded border transition-all ${
+                isActive ? classes.active : classes.inactive
+              } ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            >
+              {level.label}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Preview panel */}
+      {showPreview && previewParams && (
+        <div className="bg-gray-900 rounded p-2 text-xs">
+          <div className="grid grid-cols-4 gap-x-3 gap-y-1">
+            <div className="flex justify-between">
+              <span className="text-gray-500">kFactor</span>
+              <span className={config?.kFactor !== previewParams.kFactor ? 'text-yellow-400' : 'text-gray-300'}>
+                {previewParams.kFactor}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">minInterval</span>
+              <span className={config?.minIntervalMs !== previewParams.minIntervalMs ? 'text-yellow-400' : 'text-gray-300'}>
+                {formatInterval(previewParams.minIntervalMs)}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">maxInterval</span>
+              <span className={config?.maxIntervalMs !== previewParams.maxIntervalMs ? 'text-yellow-400' : 'text-gray-300'}>
+                {formatInterval(previewParams.maxIntervalMs)}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">entryOffset</span>
+              <span className={config?.entryOffsetBps !== previewParams.entryOffsetBps ? 'text-yellow-400' : 'text-gray-300'}>
+                {previewParams.entryOffsetBps}bps
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">baseSize</span>
+              <span className={config?.baseSizeUsdc !== previewParams.baseSizeUsdc ? 'text-yellow-400' : 'text-gray-300'}>
+                ${previewParams.baseSizeUsdc}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">cautionScale</span>
+              <span className={config?.cautionScale !== previewParams.cautionScale ? 'text-yellow-400' : 'text-gray-300'}>
+                {previewParams.cautionScale}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">trendScale</span>
+              <span className={config?.trendScale !== previewParams.trendScale ? 'text-yellow-400' : 'text-gray-300'}>
+                {previewParams.trendScale}
+              </span>
+            </div>
+          </div>
+          {config?.sizeAutoManaged && (
+            <div className="mt-1 text-[10px] text-purple-400">
+              Note: baseSizeUsdc may be overridden by auto-sizer
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // Trigger distance indicator
@@ -1003,11 +1244,71 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               kFactor={config?.kFactor || 0.6}
               height={280}
             />
+
+            {/* Configuration Summary */}
+            {config && (
+              <div className="bg-gray-800 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-gray-400">Configuration Summary</h3>
+                  {config.dryRun && (
+                    <span className="px-2 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded">
+                      Dry-Run Enabled
+                    </span>
+                  )}
+                </div>
+
+                {/* Aggressiveness Control */}
+                <AggressivenessControl
+                  config={config}
+                  exchange={exchange}
+                  onConfigUpdate={fetchConfig}
+                />
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
+                  <div>
+                    <span className="text-gray-500">Mode</span>
+                    <div className={config.dryRun ? 'text-purple-400' : 'text-green-400'}>
+                      {config.dryRun ? 'Dry-Run' : 'Live'}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Base Size</span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-white">${config.baseSizeUsdc}</span>
+                      {config.sizeAutoManaged && (
+                        <span className="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded">Auto</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">k Factor</span>
+                    <div className="text-white">{config.kFactor}</div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Min Interval</span>
+                    <div className="text-white">{config.minIntervalMs / 1000}s</div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Max Interval</span>
+                    <div className="text-white">{config.maxIntervalMs / 60000}m</div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">TP Range</span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-white">{config.tpMinPercent}% - {config.tpMaxPercent}%</span>
+                      {config.tpAutoManaged && (
+                        <span className="px-1 py-0.5 bg-cyan-900/50 text-cyan-400 text-xs rounded">Auto</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Orders Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 lg:gap-6">
+        {/* Orders Section - Stacked vertically */}
+        <div className="space-y-4">
           {/* Open Orders */}
           <div className="bg-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
@@ -1163,7 +1464,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       {/* Buys Table */}
                       <div>
                         <div className="text-xs text-green-400 mb-1 font-medium">Buys ({buyOrders.length})</div>
-                        <div className="overflow-x-auto max-h-32 overflow-y-auto">
+                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
                           <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-gray-800">
                               <tr className="text-gray-400 text-xs border-b border-gray-700">
@@ -1215,7 +1516,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       {/* Sells Table */}
                       <div>
                         <div className="text-xs text-red-400 mb-1 font-medium">Sells ({sellOrders.length})</div>
-                        <div className="overflow-x-auto max-h-32 overflow-y-auto">
+                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
                           <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-gray-800">
                               <tr className="text-gray-400 text-xs border-b border-gray-700">
@@ -1343,24 +1644,27 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   // Aggregate buys and sells separately by orderId
                   const buyFillsRaw = allFills.filter(f => f.side === 'buy')
                   const sellFillsRaw = allFills.filter(f => f.side === 'sell')
-                  const buyFills = aggregateByOrderId(buyFillsRaw).slice(0, showAllCycles ? 25 : 10)
-                  const sellFills = aggregateByOrderId(sellFillsRaw).slice(0, showAllCycles ? 25 : 10)
+                  const allBuyFills = aggregateByOrderId(buyFillsRaw)
+                  const allSellFills = aggregateByOrderId(sellFillsRaw)
+                  // Show all fills (table has scrolling)
+                  const buyFills = allBuyFills
+                  const sellFills = allSellFills
 
-                  // Calculate buy totals
+                  // Calculate buy totals from ALL fills, not just displayed ones
                   let totalBuySize = 0
                   let totalBuyValue = 0
-                  buyFills.forEach(fill => {
+                  allBuyFills.forEach(fill => {
                     totalBuySize += fill.size || 0
                     totalBuyValue += fill.quoteAmount || 0
                   })
 
-                  // Calculate sell totals - sum holdback from each cycle (not running total)
+                  // Calculate sell totals from ALL fills - sum holdback from each cycle (not running total)
                   let totalSellSize = 0
                   let totalSellPnl = 0
                   let totalHoldback = 0
                   // Track unique cycles to avoid double-counting holdback
                   const countedCycles = new Set()
-                  sellFills.forEach(fill => {
+                  allSellFills.forEach(fill => {
                     totalSellSize += fill.size || 0
                     if (fill.pnl !== null) totalSellPnl += fill.pnl
                     // Only count holdback once per cycle
@@ -1374,8 +1678,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <>
                       {/* Buys Table */}
                       <div>
-                        <div className="text-xs text-green-400 mb-1 font-medium">Buys ({buyFills.length})</div>
-                        <div className="overflow-x-auto max-h-32 overflow-y-auto">
+                        <div className="text-xs text-green-400 mb-1 font-medium">Buys ({allBuyFills.length})</div>
+                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
                           <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-gray-800">
                               <tr className="text-gray-400 text-xs border-b border-gray-700">
@@ -1433,8 +1737,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                       {/* Sells Table */}
                       <div>
-                        <div className="text-xs text-red-400 mb-1 font-medium">Sells ({sellFills.length})</div>
-                        <div className="overflow-x-auto max-h-32 overflow-y-auto">
+                        <div className="text-xs text-red-400 mb-1 font-medium">Sells ({allSellFills.length})</div>
+                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
                           <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-gray-800">
                               <tr className="text-gray-400 text-xs border-b border-gray-700">
@@ -1522,58 +1826,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 ' Click Start in the header to begin adaptive trading.'
               )}
             </p>
-          </div>
-        </div>
-      )}
-
-      {/* Configuration Summary */}
-      {config && (
-        <div className="bg-gray-800 rounded-lg p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium text-gray-400">Configuration Summary</h3>
-            {config.dryRun && (
-              <span className="px-2 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded">
-                Dry-Run Enabled
-              </span>
-            )}
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 text-xs">
-            <div>
-              <span className="text-gray-500">Mode</span>
-              <div className={config.dryRun ? 'text-purple-400' : 'text-green-400'}>
-                {config.dryRun ? 'Dry-Run' : 'Live'}
-              </div>
-            </div>
-            <div>
-              <span className="text-gray-500">Base Size</span>
-              <div className="flex items-center gap-1">
-                <span className="text-white">${config.baseSizeUsdc}</span>
-                {config.sizeAutoManaged && (
-                  <span className="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-xs rounded">Auto</span>
-                )}
-              </div>
-            </div>
-            <div>
-              <span className="text-gray-500">k Factor</span>
-              <div className="text-white">{config.kFactor}</div>
-            </div>
-            <div>
-              <span className="text-gray-500">Min Interval</span>
-              <div className="text-white">{config.minIntervalMs / 1000}s</div>
-            </div>
-            <div>
-              <span className="text-gray-500">Max Interval</span>
-              <div className="text-white">{config.maxIntervalMs / 60000}m</div>
-            </div>
-            <div>
-              <span className="text-gray-500">TP Range</span>
-              <div className="flex items-center gap-1">
-                <span className="text-white">{config.tpMinPercent}% - {config.tpMaxPercent}%</span>
-                {config.tpAutoManaged && (
-                  <span className="px-1 py-0.5 bg-cyan-900/50 text-cyan-400 text-xs rounded">Auto</span>
-                )}
-              </div>
-            </div>
           </div>
         </div>
       )}
