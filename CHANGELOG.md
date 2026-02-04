@@ -4,11 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [2.4.4] - 2026-02-04
 
+### Changed
+- **Regime Dashboard layout reorganization** - Improved UI layout for better information hierarchy
+  - Configuration Summary moved into 3rd column under Price & ATR chart
+  - Orders section changed from side-by-side to vertically stacked layout
+  - Filled Orders tables height doubled (128px → 256px) to show more fills
+  - Open Orders stays compact (only 1-2 orders at a time)
+
 ### Fixed
 - **Ladder limit log spam** - Fixed repeated warning messages when ladder limit is reached
   - The warning `Entry blocked: ladder_limit_reached` was logging multiple times per second
   - Now logs only once when the limit is first reached
   - Resets to log again after ladder auto-reset or cycle completion
+- **Fills totals calculated from only displayed rows** - Fixed buy/sell totals in UI using sliced array
+  - Totals were calculated from only the 10 displayed fills instead of all fills in the cycle
+  - Now calculates totals from all fills, then slices for display
+  - Headers now show total count (e.g., "Buys (58, showing 10)")
 
 ## [2.4.2] - 2026-02-03
 
