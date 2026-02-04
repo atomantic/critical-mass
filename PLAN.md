@@ -2,7 +2,7 @@
 
 A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 
-**Version:** 2.3.0
+**Version:** 2.4.2
 **Ports:** 5563 (API), 5564 (UI dev)
 
 ---
@@ -237,18 +237,27 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - State persistence for faster recovery on restarts:
   - Saves regime state to `data/{exchange}/regime-state.json` every 5 minutes
   - Saves fill ledger to `data/{exchange}/fill-ledger.json` on shutdown
+  - **Pending entry orders** saved immediately when placed for recovery
   - Restores state on startup, then validates against exchange
 - **Restart recovery flow:**
   1. Load saved state from disk (if exists)
   2. Recover state from exchange (fills, open orders, balances)
   3. Merge saved state with exchange-recovered values
   4. Check for orders that filled while offline (TP orders, entry orders)
-  5. Re-evaluate position based on current market price
-  6. Re-anchor volatility triggers to current price
-  7. Resume trading with validated state
+  5. **Restore pending entry orders** from saved state (instead of canceling)
+  6. Ingest any partial fills that occurred while offline
+  7. Re-evaluate position based on current market price
+  8. Re-anchor volatility triggers to current price
+  9. Resume trading with validated state
+- **Pending entry order persistence:**
+  - Entry orders saved to `positionState.pendingEntryOrders` immediately when placed
+  - Orders restored to order executor tracking on restart
+  - Partial fills ingested and position updated accordingly
+  - Orders not belonging to regime engine are ignored (e.g., from DCA engine)
+  - Prevents lost opportunities when good limit orders were placed before restart
 - Offline order detection handles:
   - TP orders that filled while offline → completes cycle, calculates P&L
-  - Entry orders that filled while offline → updates position
+  - Entry orders that filled while offline → updates position, places/updates TP order
 - Market position re-evaluation on startup:
   - Logs price movement since last entry
   - Re-anchors price for volatility triggers

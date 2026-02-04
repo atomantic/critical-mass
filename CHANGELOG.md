@@ -4,12 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [2.4.2] - 2026-02-03
 
+### Added
+- **Capital tracking improvements** - Better visibility into capital allocation
+  - `originalCapital` - True starting capital that never changes, preserved across restarts
+  - `availableCapital` - Current cap minus deployed capital (maxUsdcDeployed - totalCostBasis)
+  - Dashboard now shows "Original" and "Available" capital in the APY section
+  - Helps track how much capital is currently deployable vs locked in positions
+
 ### Fixed
+- **Crypto.com dry-run orders causing API errors on restart** - Fixed error when checking pending orders on startup
+  - Dry-run orders (with IDs like `dry-run-sell-*`) were being passed to the Crypto.com API
+  - API returned 40003 "Invalid order_id" since these orders don't exist on the exchange
+  - Now filters out dry-run orders before attempting to check their status
 - **Health monitor stuck in SAFE mode** - Fixed critical bug where system would never auto-recover from SAFE mode
   - Root cause: `checkHealth()` was never called in regime-engine, preventing automatic exit from SAFE mode
   - Added periodic health check call in metrics updater (runs every 60 seconds)
   - Also fixed `resume()` to work with SAFE mode (previously only worked for PAUSED mode)
   - This caused entries to be blocked indefinitely after WebSocket disconnects
+- **TP order not updated after offline buy fills** - Fixed bug where TP order size wasn't updated when buy orders filled while engine was offline
+  - Root cause: `checkOfflineOrderFills()` updated position but didn't call `placeTakeProfitOrder()`
+  - This caused the TP to sell at its original size, leaving excess BTC as unintended holdback
+  - Now properly places/updates TP order after processing offline buy fills
+- **Entry orders preserved across restarts** - Entry orders are now persisted and restored instead of being canceled
+  - Pending entry orders are saved to `positionState.pendingEntryOrders` immediately when placed
+  - On restart, saved entries are restored to order tracking and allowed to fill naturally
+  - Partial fills during offline periods are properly ingested
+  - Orders not belonging to the regime engine (e.g., from DCA engine) are ignored, not canceled
+  - This prevents lost opportunities when good limit orders were placed before restart
 
 ## [2.3.47] - 2026-02-03
 
