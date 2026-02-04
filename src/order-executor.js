@@ -358,9 +358,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
         console.log(`✅ [${exchange}] Fill check detected filled order ${orderId}`);
+        // Capture placedAt BEFORE deleting from pendingOrders
+        const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
         if (callbacks.onFillDetected) {
-          callbacks.onFillDetected(orderId, status);
+          // Pass placedAt in status so handleOrderFill can use it for fill time tracking
+          callbacks.onFillDetected(orderId, { ...status, placedAt });
         }
         filled++;
       } else if (normalizedStatus === 'CANCELLED') {

@@ -197,7 +197,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
                       </span>
                     </td>
                     <td className="px-4 py-2 text-gray-500 text-xs font-mono">
-                      {order.orderId?.slice(0, 8)}...
+                      {order.orderId}
                     </td>
                   </tr>
                 ))}

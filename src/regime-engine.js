@@ -1189,11 +1189,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    */
   const handleOrderFill = async (fillData) => {
     // Get detailed fills
-    const rawFills = await adapter.getOrderFills(fillData.orderId);
+    let rawFills = await adapter.getOrderFills(fillData.orderId);
+
+    // If getOrderFills returns empty but we have fill data from order status (polling detection),
+    // retry once after a short delay - Coinbase has eventual consistency
+    if (rawFills.length === 0 && fillData.filledSize > 0) {
+      console.log(`⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`);
+      await new Promise(r => setTimeout(r, 2000));
+      rawFills = await adapter.getOrderFills(fillData.orderId);
+    }
 
     // Get order placement time for fill time tracking (entry orders only)
+    // Use placedAt from fillData (polling callback) or fall back to order executor lookup
     const orderPlacedAt = fillData.side.toLowerCase() === 'buy'
-      ? orderExecutor.getOrderPlacedAt(fillData.orderId)
+      ? (fillData.placedAt || orderExecutor.getOrderPlacedAt(fillData.orderId))
       : null;
 
     // Ingest each fill and collect the normalized fills
@@ -1207,9 +1216,28 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Use ingested fills (which have quoteAmount) for aggregation
     // Fall back to getting fills from ledger if all were duplicates
-    const fillsToAggregate = ingestedFills.length > 0
+    let fillsToAggregate = ingestedFills.length > 0
       ? ingestedFills
       : fillLedger.getFillsForOrder(fillData.orderId);
+
+    // Last resort: if still no fills but order status has data, create synthetic fill
+    // This handles Coinbase eventual consistency where fills API lags behind order status
+    if (fillsToAggregate.length === 0 && fillData.filledSize > 0 && fillData.averageFilledPrice > 0) {
+      console.log(`⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: ${fillData.filledSize} @ $${fillData.averageFilledPrice}`);
+      const syntheticFill = {
+        tradeId: `synthetic-${fillData.orderId}`,
+        orderId: fillData.orderId,
+        side: fillData.side.toLowerCase(),
+        price: fillData.averageFilledPrice,
+        size: fillData.filledSize,
+        quoteAmount: fillData.filledSize * fillData.averageFilledPrice,
+        netFee: fillData.totalFees || 0,
+        timestamp: Date.now(),
+      };
+      // Ingest synthetic fill into ledger so it's not lost
+      const result = fillLedger.ingestFill(syntheticFill, orderPlacedAt);
+      fillsToAggregate = result.fill ? [result.fill] : [syntheticFill];
+    }
 
     // Determine if buy or sell
     if (fillData.side.toLowerCase() === 'buy') {
@@ -1801,6 +1829,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         filledValue: status.filledValue,
         averageFilledPrice: status.averageFilledPrice,
         totalFees: status.totalFees,
+        placedAt: status.placedAt, // Passed from order executor for fill time tracking
       };
       await handleOrderFill(fillData);
     };

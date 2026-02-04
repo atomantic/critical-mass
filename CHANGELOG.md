@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.8] - 2026-02-04
+
+### Added
+- **Enhanced filled orders tables** - More detailed fill information in UI
+  - Added "Fill Time" column showing duration from order placement to fill (e.g., "20s", "1m 30s")
+  - Added "Net Fee" column for live fills showing fee minus rebate
+  - Green highlight when rebate exceeds fee (you earned money!)
+  - Tooltip on net fee shows raw fee and rebate breakdown
+  - Renamed "Time" column to "Filled" for clarity
+  - Full order IDs displayed (removed truncation)
+
+### Fixed
+- **Polling-detected fills showing 0 BTC @ $0** - Fixed bug where fills detected via polling had missing data
+  - Root cause: Coinbase eventual consistency - fills API can lag behind order status API
+  - Added 2-second retry when getOrderFills returns empty but order status shows filled
+  - Added fallback to create synthetic fill from order status data if retry still empty
+  - Ensures fill data is captured even when Coinbase fills API is slow to propagate
+- **Fill time not captured for polling-detected fills** - Fixed order placedAt not being passed to fill handler
+  - Order was deleted from pendingOrders before callback, losing the placedAt timestamp
+  - Now captures and passes placedAt in the callback for fill time tracking
+- **Total fees shown in totals row** - Added total net fees to buy/sell summary rows for cost visibility
+
 ## [2.4.4] - 2026-02-04
 
 ### Changed
