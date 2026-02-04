@@ -487,7 +487,7 @@ const createInitialRegimePositionState = () => ({
   totalBTC: 0,
   totalCostBasis: 0,
   avgCostBasis: 0,
-  ladderStep: 0,
+  cycleBuys: 0,
   lastEntryPrice: 0,
   lastEntryTime: 0,
   anchorPrice: 0,
@@ -541,6 +541,12 @@ const loadRegimeState = (exchange = 'coinbase') => {
 
   const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
 
+  // Migrate ladderStep -> cycleBuys if needed
+  if (data.position && data.position.ladderStep !== undefined && data.position.cycleBuys === undefined) {
+    data.position.cycleBuys = data.position.ladderStep;
+    delete data.position.ladderStep;
+  }
+
   return {
     position: { ...createInitialRegimePositionState(), ...data.position },
     regime: { ...createInitialRegimeState(), ...data.regime },
@@ -591,7 +597,7 @@ const updateRegimeStateAfterEntry = (state, entryDetails) => {
   state.totalBTC += btcAmount;
   state.totalCostBasis += costBasis;
   state.avgCostBasis = state.totalBTC > 0 ? state.totalCostBasis / state.totalBTC : 0;
-  state.ladderStep += 1;
+  state.cycleBuys += 1;
   state.lastEntryPrice = price;
   state.lastEntryTime = Date.now();
   state.anchorPrice = price;
@@ -618,7 +624,7 @@ const updateRegimeStateAfterTP = (state, fillDetails) => {
   state.totalBTC = 0;
   state.totalCostBasis = 0;
   state.avgCostBasis = 0;
-  state.ladderStep = 0;
+  state.cycleBuys = 0;
   state.activeTpOrderId = null;
   state.lastTpPrice = 0;
   state.anchorPrice = 0;

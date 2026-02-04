@@ -406,7 +406,7 @@
  * @property {number} totalBTC - Total BTC in current cycle
  * @property {number} totalCostBasis - Total cost including fees
  * @property {number} avgCostBasis - Average cost per BTC
- * @property {number} ladderStep - Current averaging-down step (0-indexed)
+ * @property {number} cycleBuys - Number of buy orders filled in current cycle
  * @property {number} lastEntryPrice - Price of last entry
  * @property {number} lastEntryTime - Timestamp of last entry
  * @property {number} anchorPrice - Price anchor for volatility clock
