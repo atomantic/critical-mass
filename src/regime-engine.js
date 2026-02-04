@@ -87,7 +87,8 @@ const createInitialPositionState = () => ({
   scalingDisabledReason: null,
   // APY tracking fields
   engineStartTime: null,    // Timestamp when engine first started with capital
-  initialCapital: 0,        // Initial capital (maxUsdcDeployed from config)
+  initialCapital: 0,        // Initial capital (maxUsdcDeployed from config) - may be updated on restart
+  originalCapital: 0,       // True original capital - never changes once set
 });
 
 /**
@@ -491,7 +492,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           positionState.lastEntryPrice = summary.avgPrice;
           positionState.lastEntryTime = Date.now();
 
+          // Remove filled entry from persisted pending orders
+          if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
+            positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
+              e => e.orderId !== orderId
+            );
+          }
+
           orderExecutor.handleOrderFill(orderId);
+
+          // Place/update TP order to reflect new position size
+          await placeTakeProfitOrder();
 
           tradeEvents.emitTradeEvent('buy_filled', exchange, `[OFFLINE] ${summary.totalSize} BTC @ $${summary.avgPrice}`, {
             btcAmount: summary.totalSize,
@@ -549,15 +560,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const calculateApyMetrics = () => {
     const now = Date.now();
     const startTime = positionState.engineStartTime;
+    // currentCapital = maxUsdcDeployed (grows with profits)
+    const currentCapital = config.maxUsdcDeployed || 10000;
+    // Total USDC return (realized P&L from trading)
+    const totalUsdcReturn = positionState.realizedPnL || 0;
+    // originalCapital = true starting amount (derive from current - realized if not set)
+    // This ensures we get the true original even if the field was added after trading started
+    const originalCapital = positionState.originalCapital > 0
+      ? positionState.originalCapital
+      : roundUSDC(currentCapital - totalUsdcReturn);
     const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+    // availableCapital = current cap - deployed in position
+    const deployedCapital = positionState.totalCostBasis || 0;
+    const availableCapital = currentCapital - deployedCapital;
     const currentPrice = marketState.lastPrice || 0;
 
     // Calculate BTC value in USD terms
     const totalBtcReturn = positionState.realizedBtcPnL || 0;
     const btcValueUsd = totalBtcReturn * currentPrice;
-
-    // Total USDC return (realized P&L from trading)
-    const totalUsdcReturn = positionState.realizedPnL || 0;
 
     // Total liquid value = USDC return + BTC holdings at current market price
     const totalLiquidValue = totalUsdcReturn + btcValueUsd;
@@ -566,7 +586,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (!startTime || (totalUsdcReturn === 0 && totalBtcReturn === 0)) {
       return {
         engineStartTime: startTime,
+        originalCapital,
         initialCapital,
+        currentCapital,
+        deployedCapital,
+        availableCapital,
         elapsedMs: startTime ? now - startTime : 0,
         elapsedDays: 0,
         // USDC returns
@@ -648,7 +672,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     return {
       engineStartTime: startTime,
+      originalCapital,
       initialCapital,
+      currentCapital,
+      deployedCapital: roundUSDC(deployedCapital),
+      availableCapital: roundUSDC(availableCapital),
       elapsedMs,
       elapsedDays: roundUSDC(elapsedDays * 100) / 100, // 2 decimal places
       // USDC returns
@@ -697,24 +725,37 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       if (!positionState.engineStartTime || positionState.engineStartTime > earliestOrderTime) {
         positionState.engineStartTime = earliestOrderTime;
         positionState.initialCapital = config.maxUsdcDeployed || 10000;
-        console.log(`📊 [${exchange}] APY tracking backfilled to first order: ${new Date(earliestOrderTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+        // Only set originalCapital if not already set (preserve true starting value)
+        if (!positionState.originalCapital) {
+          positionState.originalCapital = positionState.initialCapital;
+        }
+        console.log(`📊 [${exchange}] APY tracking backfilled to first order: ${new Date(earliestOrderTime).toISOString()}, original=$${positionState.originalCapital} current=$${config.maxUsdcDeployed}`);
         return;
       }
       // Preserved existing start time that's earlier than first order
-      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+      // Ensure originalCapital is set
+      if (!positionState.originalCapital) {
+        positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+      }
+      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, original=$${positionState.originalCapital} current=$${config.maxUsdcDeployed}`);
       return;
     }
 
     // No filled orders - preserve existing or start fresh
     if (positionState.engineStartTime) {
-      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+      // Ensure originalCapital is set
+      if (!positionState.originalCapital) {
+        positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+      }
+      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, original=$${positionState.originalCapital} current=$${config.maxUsdcDeployed}`);
       return;
     }
 
     // No existing state or orders, start fresh
     positionState.engineStartTime = Date.now();
     positionState.initialCapital = config.maxUsdcDeployed || 10000;
-    console.log(`📊 [${exchange}] APY tracking started fresh: $${positionState.initialCapital} initial capital`);
+    positionState.originalCapital = positionState.initialCapital; // First time, set original
+    console.log(`📊 [${exchange}] APY tracking started fresh: original=$${positionState.originalCapital}`);
   };
 
   /**
@@ -829,8 +870,76 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
           positionState.engineStartTime = earliestFillTime;
           positionState.initialCapital = config.maxUsdcDeployed || 10000;
-          console.log(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}`);
+          // Only set originalCapital if not already set (preserve true starting value)
+          if (!positionState.originalCapital) {
+            positionState.originalCapital = positionState.initialCapital;
+          }
+          console.log(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}, original=$${positionState.originalCapital}`);
         }
+      }
+
+      // Restore pending entry orders from saved state (instead of canceling them)
+      const savedPendingEntries = positionState.pendingEntryOrders || [];
+      const savedOrderIds = new Set(savedPendingEntries.map(e => e.orderId));
+
+      const openOrders = await adapter.getOpenOrders(productId);
+      const openEntries = openOrders.filter(o => o.side.toUpperCase() === 'BUY');
+
+      let restoredEntries = 0;
+      let orphanedEntries = 0;
+
+      for (const order of openEntries) {
+        if (savedOrderIds.has(order.orderId)) {
+          // This is our order - restore tracking instead of canceling
+          const savedEntry = savedPendingEntries.find(e => e.orderId === order.orderId);
+          if (orderExecutor.restorePendingOrder) {
+            orderExecutor.restorePendingOrder(order.orderId, {
+              type: 'entry',
+              price: savedEntry.price,
+              size: savedEntry.btcQty,
+              sizeUsdc: savedEntry.sizeUsdc,
+              placedAt: savedEntry.placedAt,
+            });
+            restoredEntries++;
+            console.log(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ $${savedEntry.price}`);
+          }
+
+          // Check if order has any fills while offline (partial fills)
+          if (order.filledSize && order.filledSize > 0) {
+            console.log(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
+            const rawFills = await adapter.getOrderFills(order.orderId);
+            for (const fill of rawFills) {
+              const result = fillLedger.ingestFill(fill);
+              if (result.ingested) {
+                positionState.totalBTC = roundBTC(positionState.totalBTC + fill.size);
+                positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + (fill.size * fill.price) + fill.netFee);
+                positionState.avgCostBasis = positionState.totalBTC > 0
+                  ? positionState.totalCostBasis / positionState.totalBTC
+                  : 0;
+                positionState.ladderStep += 1;
+                positionState.lastEntryPrice = fill.price;
+                positionState.lastEntryTime = fill.timestamp;
+                console.log(`📝 [${exchange}] Ingested partial fill: ${fill.size} BTC @ $${fill.price}`);
+              }
+            }
+          }
+        } else {
+          // True orphan - not in our saved state, must be from another engine
+          orphanedEntries++;
+          console.log(`⚠️ [${exchange}] Found orphan entry order ${order.orderId} (not from regime engine), ignoring`);
+        }
+      }
+
+      if (restoredEntries > 0) {
+        console.log(`✅ [${exchange}] Restored ${restoredEntries} pending entry orders from state`);
+      }
+      if (orphanedEntries > 0) {
+        console.log(`ℹ️ [${exchange}] Ignored ${orphanedEntries} entry orders not belonging to regime engine`);
+      }
+
+      // Update TP if we have position
+      if (positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
+        await placeTakeProfitOrder();
       }
 
       // Save initial state after recovery
@@ -1025,6 +1134,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       await handleOrderFill(data);
     } else if (data.status === 'CANCELLED') {
       orderExecutor.handleOrderCancel(data.orderId);
+      // Remove cancelled entry from persisted pending orders
+      if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
+        const before = positionState.pendingEntryOrders.length;
+        positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
+          e => e.orderId !== data.orderId
+        );
+        if (positionState.pendingEntryOrders.length < before) {
+          saveLiveState();
+        }
+      }
     }
   };
 
@@ -1068,6 +1187,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.ladderStep += 1;
       positionState.lastEntryPrice = summary.avgPrice;
       positionState.lastEntryTime = Date.now();
+
+      // Remove filled entry from persisted pending orders
+      if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
+        positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
+          e => e.orderId !== fillData.orderId
+        );
+      }
 
       // Place/update TP order
       await placeTakeProfitOrder();
@@ -1410,6 +1536,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (result.success) {
       positionState.lastEntryTime = Date.now();
       positionState.anchorPrice = marketState.lastPrice;
+
+      // Persist entry order to state for recovery across restarts
+      if (!isDryRun) {
+        if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
+        positionState.pendingEntryOrders.push({
+          orderId: result.orderId,
+          price: result.price,
+          btcQty: result.btcQty,
+          sizeUsdc: sizing.sizeUsdc,
+          placedAt: Date.now(),
+        });
+        saveLiveState();
+      }
 
       console.log(`📝 [${exchange}] Entry placed: regime=${regime} step=${positionState.ladderStep} size=$${sizing.sizeUsdc} price=$${result.price} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
 

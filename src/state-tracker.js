@@ -504,6 +504,8 @@ const createInitialRegimePositionState = () => ({
   // APY tracking fields
   engineStartTime: null,
   initialCapital: 0,
+  // Pending entry orders (persisted across restarts)
+  pendingEntryOrders: [],
 });
 
 /**

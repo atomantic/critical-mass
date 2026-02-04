@@ -803,10 +803,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   </div>
                 </div>
                 <div className="bg-gray-900/50 rounded p-2">
-                  <div className="text-gray-500">Realized P&L</div>
+                  <div className="text-gray-500">Realized P&L {apy.totalLiquidValuePercent ? `(${apy.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
                   <div className={`font-mono text-base ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     ${position.realizedPnL?.toFixed(2) || '0'}
-                    {(position.realizedBtcPnL || 0) > 0 && <span className="text-cyan-400 text-xs ml-1">+{position.realizedBtcPnL?.toFixed(8)} BTC</span>}
+                    {(position.realizedBtcPnL || 0) > 0 && <span className="text-orange-400 text-xs ml-1">+{position.realizedBtcPnL?.toFixed(8)} BTC</span>}
+                    {apy.totalLiquidValue !== undefined && (
+                      <span className="text-white text-xs ml-1">= <span className="text-cyan-400">${apy.totalLiquidValue?.toFixed(2)}</span></span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -904,28 +907,24 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               {apy.engineStartTime && (
                 <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-gray-500 mb-2">
-                    <span>Capital: ${apy.initialCapital?.toLocaleString()}</span>
+                    <span>Original: ${(apy.originalCapital || apy.initialCapital)?.toLocaleString()}</span>
+                    <span className="text-cyan-400">Available: ${apy.availableCapital?.toLocaleString()}</span>
                     <span>Running: {apy.elapsedDays?.toFixed(1)}d</span>
                     <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
                   </div>
-                  <div className="grid grid-cols-4 gap-2">
-                    <div className="bg-gray-900/50 rounded p-1.5">
-                      <div className="text-gray-500 text-[10px]">Return</div>
-                      <div className={`font-mono ${(apy.totalLiquidValue || 0) >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
-                        ${(apy.totalLiquidValue || 0).toFixed(2)}
-                      </div>
-                    </div>
-                    <div className="col-span-2 bg-green-900/20 border border-green-700/30 rounded p-1.5">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5">
                       <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
-                      <div className="flex gap-3 font-mono text-green-400">
-                        <span>${(apy.estimatedDailyUsdc || 0).toFixed(2)}</span>
-                        <span className="text-orange-400">{(apy.estimatedDailyBtc || 0).toFixed(8)} BTC</span>
+                      <div className="flex flex-col font-mono text-xs">
+                        <span className="text-green-400">${(apy.estimatedDailyUsdc || 0).toFixed(2)} + <span className="text-orange-400">{(apy.estimatedDailyBtc || 0).toFixed(8)}</span></span>
+                        <span className="text-green-400">= ${((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyBtc || 0) * (market.lastPrice || 0)).toFixed(2)}</span>
                       </div>
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5">
-                      <div className="text-cyan-400/70 text-[10px]">APY</div>
-                      <div className={`font-mono ${(apy.estimatedApy || 0) >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
-                        {(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}%
+                      <div className="text-cyan-400/70 text-[10px]">Annual ({(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}% APY)</div>
+                      <div className="flex flex-col font-mono text-xs">
+                        <span className="text-green-400">${((apy.estimatedDailyUsdc || 0) * 365).toFixed(2)} + <span className="text-orange-400">{((apy.estimatedDailyBtc || 0) * 365).toFixed(6)} BTC</span></span>
+                        <span className="text-cyan-400">= ${(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyBtc || 0) * (market.lastPrice || 0)) * 365).toFixed(2)}</span>
                       </div>
                     </div>
                   </div>
@@ -1046,6 +1045,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           <th className="text-left py-2 pr-2">Type</th>
                           <th className="text-left py-2 pr-2">Side</th>
                           <th className="text-right py-2 pr-2">Size (BTC)</th>
+                          <th className="text-right py-2 pr-2">Value</th>
                           <th className="text-right py-2 pr-2">Price</th>
                           <th className="text-right py-2 pr-2">Est. P&L</th>
                           <th className="text-right py-2 pr-2">Holdback</th>
@@ -1067,6 +1067,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-white">
                               {order.size?.toFixed(8)}
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-yellow-400">
+                              ${((order.size || 0) * (order.price || 0)).toFixed(2)}
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-white">
                               ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
