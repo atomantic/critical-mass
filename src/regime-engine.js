@@ -163,6 +163,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   // Track if ladder limit warning has been logged (to avoid log spam)
   let ladderLimitWarningLogged = false;
+  // Track if budget exhausted warning has been logged (to avoid log spam)
+  let budgetExhaustedWarningLogged = false;
 
   // Callbacks container for dry-run (populated after functions are defined)
   const dryRunCallbacks = {
@@ -1598,9 +1600,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return;
     }
 
-    // Check minimum size
+    // Check minimum size (with spam protection for budget exhausted)
     if (!positionSizer.meetsMinimum(sizing.sizeUsdc, exchangeConfig.minOrderSize || 1)) {
-      console.log(`ℹ️ [${exchange}] Size $${sizing.sizeUsdc} below minimum`);
+      const isBudgetExhausted = sizing.sizeUsdc <= 0;
+      if (!isBudgetExhausted || !budgetExhaustedWarningLogged) {
+        console.log(`ℹ️ [${exchange}] ${isBudgetExhausted ? 'Budget exhausted' : `Size $${sizing.sizeUsdc} below minimum`}`);
+        if (isBudgetExhausted) {
+          budgetExhaustedWarningLogged = true;
+        }
+      }
       return;
     }
 
@@ -1725,6 +1733,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.scalingDisabled = false;
     positionState.scalingDisabledReason = null;
     ladderLimitWarningLogged = false;
+    budgetExhaustedWarningLogged = false;
 
     // Start new cycle in fill ledger
     fillLedger.startNewCycle();
