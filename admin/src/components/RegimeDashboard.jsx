@@ -1332,8 +1332,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                   const ordersWithCalcs = openOrders.map(order => {
                     const age = Date.now() - order.placedAt
+                    // Estimate sell-side fees (~0.06% net for maker orders on Coinbase)
+                    const sellValue = order.size * order.price
+                    const estSellFee = sellValue * 0.0006 // 0.06% estimated maker fee
+                    // Est P&L = proceeds - cost basis = (sellValue - sellFee) - (avgCost * size)
                     const estPnl = order.type === 'take_profit' && avgCost > 0
-                      ? (order.price - avgCost) * order.size
+                      ? (sellValue - estSellFee) - (avgCost * order.size)
                       : null
                     const profitPerBTC = order.price - avgCost
                     const denominator = order.price * (1 - holdbackRatio) + avgCost * holdbackRatio
@@ -1342,7 +1346,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       : null
                     const estHoldbackValue = estHoldback ? estHoldback * order.price : null
 
-                    return { ...order, age, estPnl, estHoldback, estHoldbackValue }
+                    return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue }
                   })
 
                   return (
@@ -1385,7 +1389,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <td className="text-right py-2 pr-2 font-mono text-white">
                               ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
-                            <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`}>
+                            <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
                               {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}$${order.estPnl.toFixed(2)}` : '—'}
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
