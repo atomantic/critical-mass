@@ -177,16 +177,18 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
   };
 
   /**
-   * Resume system from pause
+   * Resume system from pause or SAFE mode (manual override)
    */
   const resume = () => {
-    if (state.mode !== 'PAUSED') return;
+    if (state.mode === 'ACTIVE') return;
 
+    const previousMode = state.mode;
     state.mode = 'ACTIVE';
     state.since = Date.now();
     state.reason = null;
+    lastHealthyTimestamp = Date.now();
 
-    console.log(`▶️ [${exchange}] System resumed`);
+    console.log(`▶️ [${exchange}] System resumed from ${previousMode}`);
   };
 
   /**
