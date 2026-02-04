@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.11] - 2026-02-04
+
+### Fixed
+- **USDC cap exceeded log spam** - Fixed repeated warning messages when USDC cap is exceeded
+  - The warning `Entry blocked: usdc_cap_exceeded` was logging multiple times per second
+  - Now logs only once when the cap is first exceeded
+  - Resets to log again after cycle completion
+
 ## [2.4.8] - 2026-02-04
 
 ### Added
