@@ -2,7 +2,7 @@
 
 A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 
-**Version:** 2.4.6
+**Version:** 2.4.11
 **Ports:** 5563 (API), 5564 (UI dev)
 
 ---
@@ -193,6 +193,46 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Detects "Custom" when values don't match any preset
 - Note: baseSizeUsdc may be overridden by auto-sizer if enabled
 
+**Pre-Positioned Liquidity Ladder Mode (v2.5) ✅ Implemented:**
+- Alternative entry strategy that pre-positions multiple limit buy orders
+- Complements reactive mode by capturing liquidity shocks and fat-tail events
+- Two-engine system:
+  | Engine | Extracts Value From | Best For |
+  |--------|---------------------|----------|
+  | Reactive | Oscillation frequency | Tight chop |
+  | Ladder | Liquidity shocks & panic selling | Fat-tail dips, wicks |
+- Configuration:
+  - `entryMode: 'reactive' | 'ladder'` - Entry strategy mode
+  - `ladderLevels: 10` - Number of rungs in the ladder
+  - `ladderLowerBoundPct: 15` - Base lower bound (% below current price)
+  - `ladderLowerBoundAthAdjust: true` - Widen ladder based on ATH distance
+  - `ladderSpacingMode: 'linear' | 'sqrt' | 'exponential'` - Price level distribution
+  - `ladderSizeMode: 'flat' | 'linear' | 'sqrt'` - Size allocation mode
+  - `ladderAutoSwitch: false` - Auto-switch to ladder on high volatility
+  - `ladderAutoSwitchVolMult: 2.0` - Vol expansion threshold for auto-switch
+  - `ladderMinSpacingPct: 0.5` - Minimum % between rungs
+- Adaptive lower bound:
+  - Base percentage from config (default 15%)
+  - ATH adjustment: widens when further from ATH (e.g., 43% below ATH → 1.43x multiplier)
+  - Volatility adjustment: widens during high volatility (capped at 2x)
+  - Maximum adjustment capped at 50%
+- Spacing modes:
+  - `sqrt`: Denser near top (current price), sparser at bottom (default)
+  - `linear`: Even spacing throughout
+  - `exponential`: Sparser near top, denser at bottom
+- Ladder cycle flow:
+  1. Build ladder with adaptive lower bound based on ATH distance and volatility
+  2. Place N limit buy orders spanning from current price to lower bound
+  3. On fill: update position, update TP, reprice remaining ladder from current price
+  4. On TP fill: cancel all unfilled ladder orders, reset cycle
+- Risk safeguards:
+  - Budget cap: Total ladder allocation ≤ maxUsdcDeployed - totalCostBasis
+  - BTC cap: Checks maxBtcExposure on each fill
+  - Min order size: Skips levels where allocation < minOrderSize
+  - Spacing minimum: Enforces ladderMinSpacingPct between levels
+  - Order limit: Validates maxOpenOrders ≥ ladderLevels + 1
+  - Mode switch protection: Doesn't switch modes mid-cycle with active position
+
 **Safety Features:**
 - Automatic SAFE mode on: WebSocket disconnect, stale data, REST errors
 - Flash move detection pauses entries and disables scaling
@@ -347,12 +387,13 @@ src/
 ├── backtest-engine.js  # Historical simulation (fixed + fibonacci)
 ├── optimizer-engine.js # Parameter optimization
 │
-│ # Regime Engine Components (v2.4)
+│ # Regime Engine Components (v2.4/2.5)
 ├── regime-engine.js    # Main regime-aware trading engine
 ├── regime-detector.js  # Regime classification (HARVEST/CAUTION/TREND)
 ├── volatility-utils.js # ATR, RV, VWAP, swing calculations
 ├── position-sizer.js   # Liquidity-aware position sizing
-├── order-executor.js   # Maker-prefer limit order placement
+├── order-executor.js   # Maker-prefer limit order placement + ladder orders
+├── ladder-calculator.js # Ladder mode calculations (levels, sizing, ATH)
 ├── dry-run-executor.js # Simulated order execution for dry-run mode
 ├── dry-run-state.js    # State persistence for dry-run simulations
 ├── tp-optimizer.js     # Dynamic TP auto-management with histogram compression

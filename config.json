@@ -36,7 +36,7 @@
         "tpUpdateThresholdPct": 0.5,
         "holdbackRatio": 0.5,
         "maxBtcExposure": 5,
-        "maxUsdcDeployed": 20024.31,
+        "maxUsdcDeployed": 20024.36,
         "maxDrawdownPercent": 30,
         "entryOffsetBps": 15,
         "cancelRateLimitMs": 1000,
@@ -48,7 +48,7 @@
         "maxLatencyMs": 5000,
         "safeRecoveryMs": 60000,
         "reconcileIntervalMs": 300000,
-        "maxOpenOrders": 3,
+        "maxOpenOrders": 12,
         "maxSpreadBps": 50,
         "spreadPauseMs": 300000,
         "minDepthUsdc": 10000,
@@ -59,7 +59,8 @@
         "drawdownResetHours": 32,
         "ladderResetHours": 32,
         "tpAutoManaged": true,
-        "aggressiveness": "moderate"
+        "aggressiveness": "moderate",
+        "ladderAutoSwitch": true
       },
       "dcaStrategy": "fixed",
       "fibBaseAmount": 10,

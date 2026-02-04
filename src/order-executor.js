@@ -622,6 +622,127 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     }
   };
 
+  // ============================================================================
+  // Ladder Mode Functions
+  // ============================================================================
+
+  /**
+   * Sleep utility for rate limiting
+   * @param {number} ms - Milliseconds to sleep
+   * @returns {Promise<void>}
+   */
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  /**
+   * Place multiple ladder entry orders
+   * @param {Array<{index: number, price: number, sizeUsdc: number, btcQty: number}>} levels - Ladder levels
+   * @returns {Promise<{orders: Array<{orderId: string, index: number, price: number, sizeUsdc: number, btcQty: number}>, failedCount: number}>}
+   */
+  const placeLadderOrders = async (levels) => {
+    const results = [];
+    let failedCount = 0;
+
+    for (const level of levels) {
+      const result = await adapter.placeLimitBuy(productId, level.btcQty, level.price, { postOnly: true });
+
+      if (result.success) {
+        // Verify order is actually open (post-only can be immediately cancelled)
+        const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
+
+        if (!orderStatus || orderStatus.status === 'CANCELLED') {
+          console.log(`⚠️ [${exchange}] Ladder order at $${level.price} was immediately cancelled`);
+          failedCount++;
+          continue;
+        }
+
+        pendingOrders.set(result.orderId, {
+          type: 'ladder_entry',
+          price: level.price,
+          size: level.btcQty,
+          sizeUsdc: level.sizeUsdc,
+          ladderIndex: level.index,
+          placedAt: Date.now(),
+        });
+
+        results.push({
+          orderId: result.orderId,
+          index: level.index,
+          price: level.price,
+          sizeUsdc: level.sizeUsdc,
+          btcQty: level.btcQty,
+        });
+      } else {
+        console.log(`⚠️ [${exchange}] Failed to place ladder order at $${level.price}: ${result.errorMessage}`);
+        failedCount++;
+      }
+
+      // Rate limit between orders
+      await sleep(100);
+    }
+
+    return { orders: results, failedCount };
+  };
+
+  /**
+   * Cancel all unfilled ladder orders
+   * @returns {Promise<number>} Number of orders cancelled
+   */
+  const cancelAllLadderOrders = async () => {
+    let cancelled = 0;
+
+    const ladderOrders = Array.from(pendingOrders.entries())
+      .filter(([, order]) => order.type === 'ladder_entry');
+
+    const results = await Promise.allSettled(
+      ladderOrders.map(([orderId]) => adapter.cancelOrder(orderId))
+    );
+
+    results.forEach((result, index) => {
+      const [orderId] = ladderOrders[index];
+      if (result.status === 'fulfilled') {
+        pendingOrders.delete(orderId);
+        cancelled++;
+      } else {
+        console.log(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId}: ${result.reason?.message || 'unknown'}`);
+        // Still remove from tracking
+        pendingOrders.delete(orderId);
+      }
+    });
+
+    return cancelled;
+  };
+
+  /**
+   * Get all pending ladder orders
+   * @returns {Array<{orderId: string, price: number, sizeUsdc: number, ladderIndex: number, placedAt: number}>}
+   */
+  const getPendingLadderOrders = () => {
+    const ladderOrders = [];
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type === 'ladder_entry') {
+        ladderOrders.push({
+          orderId,
+          price: order.price,
+          size: order.size,
+          sizeUsdc: order.sizeUsdc,
+          ladderIndex: order.ladderIndex,
+          placedAt: order.placedAt,
+        });
+      }
+    }
+    return ladderOrders.sort((a, b) => b.price - a.price); // Sort by price descending (top of ladder first)
+  };
+
+  /**
+   * Check if an order is a ladder entry order
+   * @param {string} orderId - Order ID to check
+   * @returns {boolean}
+   */
+  const isLadderOrder = (orderId) => {
+    const order = pendingOrders.get(orderId);
+    return order?.type === 'ladder_entry';
+  };
+
   return {
     placeEntryBid,
     placeTakeProfitOrder,
@@ -645,6 +766,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // Regime-based stale timeout
     setStaleTimeoutMultiplier,
     getEffectiveStaleMs,
+    // Ladder mode functions
+    placeLadderOrders,
+    cancelAllLadderOrders,
+    getPendingLadderOrders,
+    isLadderOrder,
   };
 };
 

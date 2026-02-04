@@ -388,6 +388,9 @@
  * @property {{magnitude: number, direction: 'up' | 'down' | 'neutral'}} momentum - Price momentum indicator
  * @property {Array<{price: number, size: number, side: string, timestamp: number}>} trades - Recent trades
  * @property {number} lastUpdate - Timestamp of last market data update
+ * @property {number} [ath] - All-time high price (for ladder mode)
+ * @property {number} [athDistance] - Current distance from ATH (negative when below)
+ * @property {number} [athLastUpdate] - Timestamp of last ATH fetch
  */
 
 /**
@@ -421,6 +424,10 @@
  * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
  * @property {Array<{orderId: string, price: number, btcQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
+ * @property {boolean} [ladderActive] - Whether ladder mode is active
+ * @property {number|null} [ladderPlacedAt] - Timestamp when ladder was placed
+ * @property {number} [ladderLowerBound] - Current ladder lower bound price
+ * @property {Array<{orderId: string, price: number, sizeUsdc: number, ladderIndex: number}>} [pendingLadderOrders] - Pending ladder orders
  */
 
 /**
@@ -544,6 +551,19 @@
  * @property {number} flashMoveMult - ATR multiple for flash detection (default: 3.0)
  * @property {number} flashCooldownMs - Flash move cooldown (default: 600000)
  * @property {boolean} cancelEntriesOnFlash - Cancel entries on flash (default: true)
+ *
+ * Entry Mode Parameters
+ * @property {'reactive' | 'ladder'} [entryMode] - Entry strategy mode (default: 'reactive')
+ *
+ * Ladder Parameters (when entryMode: 'ladder')
+ * @property {number} [ladderLevels] - Number of ladder rungs (default: 10)
+ * @property {number} [ladderLowerBoundPct] - Base lower bound % below current price (default: 15)
+ * @property {boolean} [ladderLowerBoundAthAdjust] - Widen based on ATH distance (default: true)
+ * @property {'linear' | 'sqrt' | 'exponential'} [ladderSpacingMode] - Price level spacing (default: 'sqrt')
+ * @property {'flat' | 'linear' | 'sqrt'} [ladderSizeMode] - Size allocation mode (default: 'flat')
+ * @property {boolean} [ladderAutoSwitch] - Auto-switch to ladder on high vol (default: false)
+ * @property {number} [ladderAutoSwitchVolMult] - Vol expansion threshold for auto-switch (default: 2.0)
+ * @property {number} [ladderMinSpacingPct] - Min % between rungs (default: 0.5)
  */
 
 /**

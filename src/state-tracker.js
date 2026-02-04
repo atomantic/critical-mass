@@ -506,6 +506,11 @@ const createInitialRegimePositionState = () => ({
   initialCapital: 0,
   // Pending entry orders (persisted across restarts)
   pendingEntryOrders: [],
+  // Ladder mode state
+  ladderActive: false,
+  ladderPlacedAt: null,
+  ladderLowerBound: 0,
+  pendingLadderOrders: [],  // [{orderId, price, sizeUsdc, ladderIndex}]
 });
 
 /**

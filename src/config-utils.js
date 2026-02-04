@@ -136,6 +136,19 @@ const REGIME_DEFAULTS = {
   flashMoveMult: 3.0,
   flashCooldownMs: 600000,
   cancelEntriesOnFlash: true,
+
+  // Entry Mode
+  entryMode: 'reactive',              // 'reactive' | 'ladder'
+
+  // Ladder Parameters (only when entryMode: 'ladder')
+  ladderLevels: 10,                   // Number of rungs
+  ladderLowerBoundPct: 15,            // Base lower bound (% below current)
+  ladderLowerBoundAthAdjust: true,    // Widen based on ATH distance
+  ladderSpacingMode: 'sqrt',          // 'linear' | 'sqrt' | 'exponential'
+  ladderSizeMode: 'flat',             // 'flat' | 'linear' | 'sqrt'
+  ladderAutoSwitch: false,            // Auto-switch based on volatility
+  ladderAutoSwitchVolMult: 2.0,       // Vol expansion threshold
+  ladderMinSpacingPct: 0.5,           // Min % between rungs
 };
 
 /**
