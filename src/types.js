@@ -479,6 +479,7 @@
  * Mode Flags
  * @property {boolean} enabled - Whether regime engine is enabled (default: false)
  * Note: dryRun is read from exchange-level config (ExchangeConfig.dryRun), not here
+ * @property {'conservative'|'moderate'|'aggressive'|'maximum'} [aggressiveness] - Aggressiveness preset (default: 'moderate')
  *
  * Volatility Clock Parameters
  * @property {number} atrPeriod - Periods for ATR calculation (default: 14)
