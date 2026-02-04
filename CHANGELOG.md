@@ -31,6 +31,10 @@ All notable changes to this project will be documented in this file.
   - Partial fills during offline periods are properly ingested
   - Orders not belonging to the regime engine (e.g., from DCA engine) are ignored, not canceled
   - This prevents lost opportunities when good limit orders were placed before restart
+- **Orphaned TP orders from failed cancels** - Fixed silent failure when canceling old TP before placing new one
+  - Cancel failures were ignored, causing new TP to be placed while old one remained on exchange
+  - Now logs warning when cancel fails and clears tracking state to prevent duplicate attempts
+  - Orphaned orders will be visible in exchange UI for manual cleanup
 
 ## [2.3.47] - 2026-02-03
 

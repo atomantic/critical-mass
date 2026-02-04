@@ -157,7 +157,16 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     // Cancel existing TP order if present
     if (activeTpOrderId) {
-      await cancelTpOrder();
+      const oldTpId = activeTpOrderId;
+      const cancelSuccess = await cancelTpOrder();
+      if (!cancelSuccess) {
+        console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, it may remain orphaned on exchange`);
+        // Clear tracking anyway - we can't keep retrying forever
+        // The orphaned order will eventually fill or need manual cancellation
+        pendingOrders.delete(oldTpId);
+        activeTpOrderId = null;
+        lastTpSize = 0;
+      }
     }
 
     const roundedPrice = roundPrice(tpPrice);
@@ -200,15 +209,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   const cancelTpOrder = async () => {
     if (!activeTpOrderId) return true;
 
-    const result = await adapter.cancelOrder(activeTpOrderId);
+    const orderToCancel = activeTpOrderId;
+    const result = await adapter.cancelOrder(orderToCancel);
 
     if (result.success) {
-      pendingOrders.delete(activeTpOrderId);
+      console.log(`🗑️ [${exchange}] Cancelled TP order: ${orderToCancel}`);
+      pendingOrders.delete(orderToCancel);
       activeTpOrderId = null;
       lastTpSize = 0;
       return true;
     }
 
+    console.log(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: ${result.errorMessage || 'unknown error'}`);
     return false;
   };
 
