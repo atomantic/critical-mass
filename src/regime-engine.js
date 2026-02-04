@@ -1188,6 +1188,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * Update volatility metrics via REST API
    */
   const updateMetrics = async () => {
+    // Check health status (allows auto-recovery from SAFE mode)
+    healthMonitor.checkHealth();
+
     const now = Math.floor(Date.now() / 1000);
     const oneHourAgo = now - 3600;
     const fourHoursAgo = now - 14400;

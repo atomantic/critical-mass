@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.2] - 2026-02-03
+
+### Fixed
+- **Health monitor stuck in SAFE mode** - Fixed critical bug where system would never auto-recover from SAFE mode
+  - Root cause: `checkHealth()` was never called in regime-engine, preventing automatic exit from SAFE mode
+  - Added periodic health check call in metrics updater (runs every 60 seconds)
+  - Also fixed `resume()` to work with SAFE mode (previously only worked for PAUSED mode)
+  - This caused entries to be blocked indefinitely after WebSocket disconnects
+
 ## [2.3.47] - 2026-02-03
 
 ### Fixed
