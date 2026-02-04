@@ -638,6 +638,24 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
 
+              {/* Entry Mode */}
+              <div className={`col-span-1 ${status?.entryMode === 'ladder' ? 'bg-indigo-900/30 border-indigo-700/50' : 'bg-gray-800 border-gray-700'} border rounded p-1.5`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-gray-400">Entry</span>
+                  {config?.ladderAutoSwitch && (
+                    <span className="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-[10px] rounded">Auto</span>
+                  )}
+                </div>
+                <div className={`text-xl font-bold ${status?.entryMode === 'ladder' ? 'text-indigo-400' : 'text-gray-300'}`}>
+                  {status?.entryMode === 'ladder' ? 'LADDER' : 'REACTIVE'}
+                </div>
+                <div className="text-[10px] text-gray-500">
+                  {status?.ladder?.active
+                    ? `${status.ladder.pendingOrders} orders pending`
+                    : status?.entryMode === 'ladder' ? 'Waiting for trigger' : 'Single order mode'}
+                </div>
+              </div>
+
             </div>
           </div>
 
