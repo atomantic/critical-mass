@@ -163,6 +163,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   // Track if ladder limit warning has been logged (to avoid log spam)
   let ladderLimitWarningLogged = false;
+  // Track if USDC cap exceeded warning has been logged (to avoid log spam)
+  let usdcCapWarningLogged = false;
   // Track if budget exhausted warning has been logged (to avoid log spam)
   let budgetExhaustedWarningLogged = false;
 
@@ -1589,13 +1591,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     if (!riskCheck.allowed) {
-      // Only log ladder limit warning once until it resets
+      // Only log certain warnings once until they reset (to avoid log spam)
       const isLadderLimit = riskCheck.reason.startsWith('ladder_limit_reached');
-      if (!isLadderLimit || !ladderLimitWarningLogged) {
+      const isUsdcCap = riskCheck.reason.startsWith('usdc_cap_exceeded');
+      const shouldSkipLog = (isLadderLimit && ladderLimitWarningLogged) || (isUsdcCap && usdcCapWarningLogged);
+      if (!shouldSkipLog) {
         console.log(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
-        if (isLadderLimit) {
-          ladderLimitWarningLogged = true;
-        }
+        if (isLadderLimit) ladderLimitWarningLogged = true;
+        if (isUsdcCap) usdcCapWarningLogged = true;
       }
       return;
     }
@@ -1733,6 +1736,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.scalingDisabled = false;
     positionState.scalingDisabledReason = null;
     ladderLimitWarningLogged = false;
+    usdcCapWarningLogged = false;
     budgetExhaustedWarningLogged = false;
 
     // Start new cycle in fill ledger
