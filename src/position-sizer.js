@@ -48,8 +48,8 @@ const createPositionSizer = (exchange, config) => {
     // Calculate raw size
     let sizeUsdc = config.baseSizeUsdc * regimeScale * liquidityFactor;
 
-    // Check remaining budget
-    const remainingBudget = config.maxUsdcDeployed - totalCostBasis;
+    // Check remaining budget (cap at 0 to prevent negative sizes)
+    const remainingBudget = Math.max(0, config.maxUsdcDeployed - totalCostBasis);
     sizeUsdc = Math.min(sizeUsdc, remainingBudget);
 
     // Round to 2 decimals
