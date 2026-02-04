@@ -106,14 +106,12 @@ const computeAggressivenessParams = (levelId) => {
   return level ? { ...level.params } : null
 }
 
-// Detect current aggressiveness level from config
+// Detect current aggressiveness level from config based on actual parameter values
 const detectAggressivenessLevel = (config) => {
   if (!config) return null
 
-  // If explicitly set, use it
-  if (config.aggressiveness) return config.aggressiveness
-
-  // Otherwise, check if current values match any preset
+  // Always detect based on actual parameter values (not the stored aggressiveness field)
+  // This ensures the UI reflects reality even if the field is out of sync
   for (const level of AGGRESSIVENESS_LEVELS) {
     const expected = level.params
     const allMatch = Object.entries(expected).every(([key, value]) => {
@@ -241,20 +239,20 @@ function AggressivenessControl({ config, exchange, onConfigUpdate }) {
 
   const colorClasses = {
     green: {
-      active: 'bg-green-600 text-white border-green-500',
-      inactive: 'bg-gray-700 text-green-400 border-green-600/50 hover:bg-green-900/50',
+      active: 'bg-green-600 text-white border-green-400 ring-2 ring-green-400 ring-offset-1 ring-offset-gray-800',
+      inactive: 'bg-gray-800 text-gray-400 border-gray-600 hover:text-green-400 hover:border-green-600/50',
     },
     blue: {
-      active: 'bg-blue-600 text-white border-blue-500',
-      inactive: 'bg-gray-700 text-blue-400 border-blue-600/50 hover:bg-blue-900/50',
+      active: 'bg-blue-600 text-white border-blue-400 ring-2 ring-blue-400 ring-offset-1 ring-offset-gray-800',
+      inactive: 'bg-gray-800 text-gray-400 border-gray-600 hover:text-blue-400 hover:border-blue-600/50',
     },
     yellow: {
-      active: 'bg-yellow-600 text-white border-yellow-500',
-      inactive: 'bg-gray-700 text-yellow-400 border-yellow-600/50 hover:bg-yellow-900/50',
+      active: 'bg-yellow-600 text-white border-yellow-400 ring-2 ring-yellow-400 ring-offset-1 ring-offset-gray-800',
+      inactive: 'bg-gray-800 text-gray-400 border-gray-600 hover:text-yellow-400 hover:border-yellow-600/50',
     },
     red: {
-      active: 'bg-red-600 text-white border-red-500',
-      inactive: 'bg-gray-700 text-red-400 border-red-600/50 hover:bg-red-900/50',
+      active: 'bg-red-600 text-white border-red-400 ring-2 ring-red-400 ring-offset-1 ring-offset-gray-800',
+      inactive: 'bg-gray-800 text-gray-400 border-gray-600 hover:text-red-400 hover:border-red-600/50',
     },
   }
 
@@ -403,6 +401,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Chart data buffering with cache support
   const { priceHistory, atrHistory, regimeHistory, initializeFromCache } = useChartDataBuffer(status)
+
+  // Sync config from status updates (hot-reload without refresh)
+  useEffect(() => {
+    if (status?.config) {
+      setConfig(prev => prev ? { ...prev, ...status.config } : status.config)
+    }
+  }, [status?.config])
 
   // Compute filtered fills for display based on cycle toggle
   const filteredFills = useMemo(() => {
@@ -1148,7 +1153,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               {apy.engineStartTime && (
                 <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-gray-500 mb-2">
-                    <span>Original: ${(apy.originalCapital || apy.initialCapital)?.toLocaleString()}</span>
+                    <span>Deposited: ${(apy.depositedCapital || apy.originalCapital || apy.initialCapital)?.toLocaleString()}</span>
+                    <span className="text-green-400">Max: ${(apy.maxUsdcDeployed || apy.currentCapital)?.toLocaleString()}</span>
                     <span className="text-cyan-400">Available: ${apy.availableCapital?.toLocaleString()}</span>
                     <span>Running: {apy.elapsedDays?.toFixed(1)}d</span>
                     <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
@@ -1343,6 +1349,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-gray-400 text-xs border-b border-gray-700">
+                          <th className="text-left py-2 pr-2">Order ID</th>
                           <th className="text-left py-2 pr-2">Type</th>
                           <th className="text-left py-2 pr-2">Side</th>
                           <th className="text-right py-2 pr-2">Size (BTC)</th>
@@ -1356,6 +1363,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <tbody>
                         {ordersWithCalcs.map((order) => (
                           <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                            <td className="py-2 pr-2 font-mono text-gray-500 text-xs">
+                              <span title={order.orderId} className="cursor-help">
+                                {order.orderId?.slice(0, 8)}…
+                              </span>
+                            </td>
                             <td className="py-2 pr-2">
                               <span className={`px-1.5 py-0.5 rounded text-xs ${
                                 order.type === 'entry' ? 'bg-blue-900/50 text-blue-400' : 'bg-cyan-900/50 text-cyan-400'
@@ -1468,6 +1480,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-gray-800">
                               <tr className="text-gray-400 text-xs border-b border-gray-700">
+                                <th className="text-left py-1.5 pr-2">Order ID</th>
                                 <th className="text-right py-1.5 pr-2">Size (BTC)</th>
                                 <th className="text-right py-1.5 pr-2">Price</th>
                                 <th className="text-right py-1.5 pr-2">Value</th>
@@ -1477,6 +1490,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <tbody>
                               {buyOrders.length > 1 && (
                                 <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
+                                  <td className="py-1.5 pr-2"></td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                                     {totalBuySize.toFixed(8)}
                                   </td>
@@ -1491,6 +1505,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               )}
                               {buyOrders.map((order, idx) => (
                                 <tr key={`buy-${order.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                  <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
+                                    <span title={order.orderId} className="cursor-help">
+                                      {order.orderId?.slice(0, 8)}…
+                                    </span>
+                                  </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                                     {order.size?.toFixed(8)}
                                   </td>
@@ -1506,7 +1525,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 </tr>
                               ))}
                               {buyOrders.length === 0 && (
-                                <tr><td colSpan={4} className="text-center py-2 text-gray-500 text-xs">No buys yet</td></tr>
+                                <tr><td colSpan={5} className="text-center py-2 text-gray-500 text-xs">No buys yet</td></tr>
                               )}
                             </tbody>
                           </table>
@@ -1520,6 +1539,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-gray-800">
                               <tr className="text-gray-400 text-xs border-b border-gray-700">
+                                <th className="text-left py-1.5 pr-2">Order ID</th>
                                 <th className="text-right py-1.5 pr-2">Size (BTC)</th>
                                 <th className="text-right py-1.5 pr-2">Price</th>
                                 <th className="text-right py-1.5 pr-2">P&L</th>
@@ -1530,6 +1550,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <tbody>
                               {sellOrders.length > 1 && (
                                 <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
+                                  <td className="py-1.5 pr-2"></td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                                     {totalSellSize.toFixed(8)}
                                   </td>
@@ -1545,6 +1566,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               )}
                               {sellOrders.map((order, idx) => (
                                 <tr key={`sell-${order.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                                  <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
+                                    <span title={order.orderId} className="cursor-help">
+                                      {order.orderId?.slice(0, 8)}…
+                                    </span>
+                                  </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                                     {order.size?.toFixed(8)}
                                   </td>
@@ -1565,7 +1591,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 </tr>
                               ))}
                               {sellOrders.length === 0 && (
-                                <tr><td colSpan={5} className="text-center py-2 text-gray-500 text-xs">No sells yet</td></tr>
+                                <tr><td colSpan={6} className="text-center py-2 text-gray-500 text-xs">No sells yet</td></tr>
                               )}
                             </tbody>
                           </table>
@@ -1684,6 +1710,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <thead className="sticky top-0 bg-gray-800">
                               <tr className="text-gray-400 text-xs border-b border-gray-700">
                                 {showAllCycles && <th className="text-left py-1.5 pr-2">Cycle</th>}
+                                <th className="text-left py-1.5 pr-2">Order ID</th>
                                 <th className="text-right py-1.5 pr-2">Size (BTC)</th>
                                 <th className="text-right py-1.5 pr-2">Price</th>
                                 <th className="text-right py-1.5 pr-2">Value</th>
@@ -1694,6 +1721,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               {buyFills.length > 1 && (
                                 <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
                                   {showAllCycles && <td className="py-1.5 pr-2"></td>}
+                                  <td className="py-1.5 pr-2"></td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                                     {totalBuySize.toFixed(8)}
                                   </td>
@@ -1713,6 +1741,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                       {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
                                     </td>
                                   )}
+                                  <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
+                                    <span title={fill.orderId} className="cursor-help">
+                                      {fill.orderId?.slice(0, 8)}…
+                                    </span>
+                                  </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                                     {fill.size?.toFixed(8)}
                                   </td>
@@ -1728,7 +1761,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 </tr>
                               ))}
                               {buyFills.length === 0 && (
-                                <tr><td colSpan={showAllCycles ? 5 : 4} className="text-center py-2 text-gray-500 text-xs">No buys yet</td></tr>
+                                <tr><td colSpan={showAllCycles ? 6 : 5} className="text-center py-2 text-gray-500 text-xs">No buys yet</td></tr>
                               )}
                             </tbody>
                           </table>
@@ -1743,6 +1776,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <thead className="sticky top-0 bg-gray-800">
                               <tr className="text-gray-400 text-xs border-b border-gray-700">
                                 {showAllCycles && <th className="text-left py-1.5 pr-2">Cycle</th>}
+                                <th className="text-left py-1.5 pr-2">Order ID</th>
                                 <th className="text-right py-1.5 pr-2">Size (BTC)</th>
                                 <th className="text-right py-1.5 pr-2">Price</th>
                                 <th className="text-right py-1.5 pr-2">P&L</th>
@@ -1754,6 +1788,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               {sellFills.length > 1 && (
                                 <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
                                   {showAllCycles && <td className="py-1.5 pr-2"></td>}
+                                  <td className="py-1.5 pr-2"></td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                                     {totalSellSize.toFixed(8)}
                                   </td>
@@ -1774,6 +1809,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                       {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
                                     </td>
                                   )}
+                                  <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
+                                    <span title={fill.orderId} className="cursor-help">
+                                      {fill.orderId?.slice(0, 8)}…
+                                    </span>
+                                  </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                                     {fill.size?.toFixed(8)}
                                   </td>
@@ -1794,7 +1834,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 </tr>
                               ))}
                               {sellFills.length === 0 && (
-                                <tr><td colSpan={showAllCycles ? 6 : 5} className="text-center py-2 text-gray-500 text-xs">No sells yet</td></tr>
+                                <tr><td colSpan={showAllCycles ? 7 : 6} className="text-center py-2 text-gray-500 text-xs">No sells yet</td></tr>
                               )}
                             </tbody>
                           </table>

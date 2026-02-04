@@ -2,7 +2,7 @@
 
 A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 
-**Version:** 2.4.2
+**Version:** 2.4.6
 **Ports:** 5563 (API), 5564 (UI dev)
 
 ---
@@ -174,6 +174,24 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - TREND: 0.5x (50% faster - trending markets move quickly)
 - Effective timeout shown in dashboard with regime-adjustment indicator
 - Prevents stale orders lingering at suboptimal prices during volatility
+
+**Aggressiveness Control (v2.4+):**
+- Dashboard control with 4 preset levels: Conservative, Moderate, Aggressive, Maximum
+- Single-click changes apply immediately without restart
+- Controls 7 trading parameters simultaneously:
+  | Parameter | Conservative | Moderate | Aggressive | Maximum |
+  |-----------|-------------|----------|------------|---------|
+  | kFactor | 0.8 | 0.6 | 0.45 | 0.3 |
+  | minIntervalMs | 120000 (2min) | 90000 (90s) | 60000 (1min) | 30000 (30s) |
+  | maxIntervalMs | 3600000 (1hr) | 2400000 (40m) | 1800000 (30m) | 900000 (15m) |
+  | entryOffsetBps | 20 | 15 | 12 | 5 |
+  | baseSizeUsdc | 50 | 100 | 150 | 200 |
+  | cautionScale | 0.25 | 0.5 | 0.75 | 1.0 |
+  | trendScale | 0 | 0.15 | 0.35 | 0.5 |
+- Color-coded buttons (green/blue/yellow/red)
+- Hover preview shows computed values with diff highlighting
+- Detects "Custom" when values don't match any preset
+- Note: baseSizeUsdc may be overridden by auto-sizer if enabled
 
 **Safety Features:**
 - Automatic SAFE mode on: WebSocket disconnect, stale data, REST errors

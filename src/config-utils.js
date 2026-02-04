@@ -48,6 +48,9 @@ const REGIME_DEFAULTS = {
   enabled: false,
   // Note: dryRun is read from exchange-level config, not regime config
 
+  // Aggressiveness preset (conservative, moderate, aggressive, maximum)
+  aggressiveness: 'moderate',
+
   // Volatility Clock
   atrPeriod: 14,
   kFactor: 0.6,
@@ -424,6 +427,14 @@ const updateRegimeConfig = (exchange, updates) => {
 const validateRegimeConfig = (config) => {
   const errors = [];
 
+  // Aggressiveness level validation
+  if (config.aggressiveness !== undefined) {
+    const validLevels = ['conservative', 'moderate', 'aggressive', 'maximum'];
+    if (!validLevels.includes(config.aggressiveness)) {
+      errors.push('aggressiveness must be one of: conservative, moderate, aggressive, maximum');
+    }
+  }
+
   // Volatility Clock validation
   if (config.atrPeriod !== undefined && (config.atrPeriod < 5 || config.atrPeriod > 30)) {
     errors.push('atrPeriod must be between 5 and 30');
@@ -450,8 +461,8 @@ const validateRegimeConfig = (config) => {
   if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
     errors.push('baseSizeUsdc must be between 1 and 1000');
   }
-  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 50)) {
-    errors.push('maxLadderSteps must be between 3 and 50');
+  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 200)) {
+    errors.push('maxLadderSteps must be between 3 and 200');
   }
 
   // Take-Profit validation

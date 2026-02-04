@@ -88,7 +88,8 @@ const createInitialPositionState = () => ({
   // APY tracking fields
   engineStartTime: null,    // Timestamp when engine first started with capital
   initialCapital: 0,        // Initial capital (maxUsdcDeployed from config) - may be updated on restart
-  originalCapital: 0,       // True original capital - never changes once set
+  originalCapital: 0,       // DEPRECATED: use depositedCapital instead
+  depositedCapital: 0,      // Total user deposits (excludes profits) - updated when user adds capital
 });
 
 /**
@@ -563,20 +564,28 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const calculateApyMetrics = () => {
     const now = Date.now();
     const startTime = positionState.engineStartTime;
-    // currentCapital = maxUsdcDeployed (grows with profits)
-    const currentCapital = config.maxUsdcDeployed || 10000;
+    // maxUsdcDeployed = total capital cap (deposits + profits)
+    const maxUsdcDeployed = config.maxUsdcDeployed || 10000;
     // Total USDC return (realized P&L from trading)
     const totalUsdcReturn = positionState.realizedPnL || 0;
-    // originalCapital = true starting amount (derive from current - realized if not set)
-    // This ensures we get the true original even if the field was added after trading started
-    const originalCapital = positionState.originalCapital > 0
-      ? positionState.originalCapital
-      : roundUSDC(currentCapital - totalUsdcReturn);
+    // depositedCapital = total user deposits (excludes profits)
+    // Fall back to deriving from maxUsdc - profits if not set
+    const depositedCapital = positionState.depositedCapital > 0
+      ? positionState.depositedCapital
+      : (positionState.originalCapital > 0
+          ? positionState.originalCapital
+          : roundUSDC(maxUsdcDeployed - totalUsdcReturn));
+    // initialCapital for APY calculations (first deposit amount)
     const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
-    // availableCapital = current cap - deployed in position
-    const deployedCapital = positionState.totalCostBasis || 0;
-    const availableCapital = currentCapital - deployedCapital;
+    // deployedInPosition = capital currently in open positions
+    const deployedInPosition = positionState.totalCostBasis || 0;
+    // availableCapital = maxUsdc - deployed in positions
+    const availableCapital = maxUsdcDeployed - deployedInPosition;
     const currentPrice = marketState.lastPrice || 0;
+    // Legacy aliases for backwards compatibility
+    const currentCapital = maxUsdcDeployed;
+    const deployedCapital = deployedInPosition;
+    const originalCapital = depositedCapital;
 
     // Calculate BTC value in USD terms
     const totalBtcReturn = positionState.realizedBtcPnL || 0;
@@ -589,11 +598,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (!startTime || (totalUsdcReturn === 0 && totalBtcReturn === 0)) {
       return {
         engineStartTime: startTime,
+        // Capital breakdown: deposited (user contributions) vs max (deposits + profits)
+        depositedCapital,
+        maxUsdcDeployed,
+        deployedInPosition,
+        availableCapital,
+        // Legacy aliases for backwards compatibility
         originalCapital,
         initialCapital,
         currentCapital,
         deployedCapital,
-        availableCapital,
         elapsedMs: startTime ? now - startTime : 0,
         elapsedDays: 0,
         // USDC returns
@@ -675,11 +689,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     return {
       engineStartTime: startTime,
-      originalCapital,
-      initialCapital,
-      currentCapital,
-      deployedCapital: roundUSDC(deployedCapital),
+      // Capital breakdown: deposited (user contributions) vs max (deposits + profits)
+      depositedCapital: roundUSDC(depositedCapital),
+      maxUsdcDeployed: roundUSDC(maxUsdcDeployed),
+      deployedInPosition: roundUSDC(deployedInPosition),
       availableCapital: roundUSDC(availableCapital),
+      // Legacy aliases for backwards compatibility
+      originalCapital: roundUSDC(originalCapital),
+      initialCapital: roundUSDC(initialCapital),
+      currentCapital: roundUSDC(currentCapital),
+      deployedCapital: roundUSDC(deployedCapital),
       elapsedMs,
       elapsedDays: roundUSDC(elapsedDays * 100) / 100, // 2 decimal places
       // USDC returns
@@ -723,6 +742,18 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }, Infinity);
     }
 
+    // Helper to ensure depositedCapital is set
+    const ensureDepositedCapital = () => {
+      if (!positionState.depositedCapital || positionState.depositedCapital === 0) {
+        // Migrate from originalCapital if set, otherwise derive from maxUsdc - profits
+        const maxUsdc = config.maxUsdcDeployed || 10000;
+        const profits = positionState.realizedPnL || 0;
+        positionState.depositedCapital = positionState.originalCapital > 0
+          ? positionState.originalCapital
+          : roundUSDC(maxUsdc - profits);
+      }
+    };
+
     // If we have filled orders and the saved start time is after the first order, backfill
     if (earliestOrderTime !== Infinity) {
       if (!positionState.engineStartTime || positionState.engineStartTime > earliestOrderTime) {
@@ -732,33 +763,35 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         if (!positionState.originalCapital) {
           positionState.originalCapital = positionState.initialCapital;
         }
-        console.log(`📊 [${exchange}] APY tracking backfilled to first order: ${new Date(earliestOrderTime).toISOString()}, original=$${positionState.originalCapital} current=$${config.maxUsdcDeployed}`);
+        ensureDepositedCapital();
+        console.log(`📊 [${exchange}] APY tracking backfilled: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
         return;
       }
       // Preserved existing start time that's earlier than first order
-      // Ensure originalCapital is set
       if (!positionState.originalCapital) {
         positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
       }
-      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, original=$${positionState.originalCapital} current=$${config.maxUsdcDeployed}`);
+      ensureDepositedCapital();
+      console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
       return;
     }
 
     // No filled orders - preserve existing or start fresh
     if (positionState.engineStartTime) {
-      // Ensure originalCapital is set
       if (!positionState.originalCapital) {
         positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
       }
-      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, original=$${positionState.originalCapital} current=$${config.maxUsdcDeployed}`);
+      ensureDepositedCapital();
+      console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
       return;
     }
 
     // No existing state or orders, start fresh
     positionState.engineStartTime = Date.now();
     positionState.initialCapital = config.maxUsdcDeployed || 10000;
-    positionState.originalCapital = positionState.initialCapital; // First time, set original
-    console.log(`📊 [${exchange}] APY tracking started fresh: original=$${positionState.originalCapital}`);
+    positionState.originalCapital = positionState.initialCapital;
+    positionState.depositedCapital = positionState.initialCapital;
+    console.log(`📊 [${exchange}] APY tracking started fresh: deposited=$${positionState.depositedCapital}`);
   };
 
   /**
@@ -1198,10 +1231,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         );
       }
 
+      console.log(`✅ [${exchange}] Buy filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, avg_cost=$${positionState.avgCostBasis.toFixed(2)}`);
+
       // Place/update TP order
       await placeTakeProfitOrder();
-
-      console.log(`✅ [${exchange}] Buy filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, avg_cost=$${positionState.avgCostBasis.toFixed(2)}`);
 
       tradeEvents.emitTradeEvent('buy_filled', exchange, `${summary.totalSize} BTC @ $${summary.avgPrice}`, {
         btcAmount: summary.totalSize,
@@ -1794,6 +1827,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     sizeOptimizer: sizeOptimizer.getStatus(),
     fillTimeStats: fillLedger.getFillTimeStats ? fillLedger.getFillTimeStats(7) : null,
     effectiveStaleMs: !isDryRun && orderExecutor.getEffectiveStaleMs ? orderExecutor.getEffectiveStaleMs() : config.orderStaleMs,
+    // Include current config for real-time dashboard updates
+    config: {
+      maxUsdcDeployed: config.maxUsdcDeployed,
+      baseSizeUsdc: config.baseSizeUsdc,
+      maxLadderSteps: config.maxLadderSteps,
+      tpMinPercent: config.tpMinPercent,
+      tpMaxPercent: config.tpMaxPercent,
+      holdbackRatio: config.holdbackRatio,
+    },
   });
 
   /**
@@ -1828,9 +1870,30 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   /**
    * Update configuration
+   * Tracks manual capital additions to depositedCapital
    * @param {Object} updates - Config updates
    */
   const updateConfig = (updates) => {
+    // Track manual capital additions (user deposits, not profits)
+    if (updates.maxUsdcDeployed !== undefined && updates.maxUsdcDeployed !== config.maxUsdcDeployed) {
+      const capitalChange = updates.maxUsdcDeployed - config.maxUsdcDeployed;
+      if (capitalChange > 0) {
+        // User added capital - update depositedCapital
+        const prevDeposited = positionState.depositedCapital || positionState.originalCapital || config.maxUsdcDeployed;
+        positionState.depositedCapital = roundUSDC(prevDeposited + capitalChange);
+        console.log(`💵 [${exchange}] Capital deposit: +$${capitalChange.toFixed(2)} (deposited: $${positionState.depositedCapital.toFixed(2)})`);
+        // Save state to persist the deposit tracking
+        if (!isDryRun) saveLiveState();
+        else saveDryRunState();
+      } else if (capitalChange < 0) {
+        // User withdrew capital - reduce depositedCapital (but floor at 0)
+        const prevDeposited = positionState.depositedCapital || positionState.originalCapital || config.maxUsdcDeployed;
+        positionState.depositedCapital = roundUSDC(Math.max(0, prevDeposited + capitalChange));
+        console.log(`💸 [${exchange}] Capital withdrawal: $${Math.abs(capitalChange).toFixed(2)} (deposited: $${positionState.depositedCapital.toFixed(2)})`);
+        if (!isDryRun) saveLiveState();
+        else saveDryRunState();
+      }
+    }
     Object.assign(config, updates);
     console.log(`🔧 [${exchange}] Regime engine config updated`);
   };
