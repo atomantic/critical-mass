@@ -1012,7 +1012,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 <h3 className="text-sm font-medium text-gray-400">Position</h3>
                 <div className="flex items-center gap-2">
                   {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
-                  <span className="text-xs text-gray-500">Step {position.ladderStep || 0}/{config?.maxLadderSteps || 10}</span>
+                  <span className="text-xs text-gray-500">Buys {position.cycleBuys || position.ladderStep || 0}/{config?.maxLadderSteps || 10}</span>
                 </div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
@@ -1113,10 +1113,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       {recalcPreview.changes?.realizedBtcPnL?.after?.toFixed(8)}
                     </div>
 
-                    <div className="text-gray-300">Ladder Step</div>
-                    <div className="text-gray-500">{recalcPreview.changes?.ladderStep?.before}</div>
-                    <div className={recalcPreview.changes?.ladderStep?.before !== recalcPreview.changes?.ladderStep?.after ? 'text-yellow-400' : 'text-gray-500'}>
-                      {recalcPreview.changes?.ladderStep?.after}
+                    <div className="text-gray-300">Cycle Buys</div>
+                    <div className="text-gray-500">{recalcPreview.changes?.cycleBuys?.before ?? recalcPreview.changes?.ladderStep?.before}</div>
+                    <div className={(recalcPreview.changes?.cycleBuys?.before ?? recalcPreview.changes?.ladderStep?.before) !== (recalcPreview.changes?.cycleBuys?.after ?? recalcPreview.changes?.ladderStep?.after) ? 'text-yellow-400' : 'text-gray-500'}>
+                      {recalcPreview.changes?.cycleBuys?.after ?? recalcPreview.changes?.ladderStep?.after}
                     </div>
                   </div>
 
@@ -1355,6 +1355,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         <tr className="text-gray-400 text-xs border-b border-gray-700">
                           <th className="text-left py-2 pr-2">Order ID</th>
                           <th className="text-left py-2 pr-2">Type</th>
+                          <th className="text-right py-2 pr-2">TP%</th>
                           <th className="text-left py-2 pr-2">Side</th>
                           <th className="text-right py-2 pr-2">Size (BTC)</th>
                           <th className="text-right py-2 pr-2">Value</th>
@@ -1376,6 +1377,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               }`}>
                                 {order.type === 'entry' ? 'Entry' : 'TP'}
                               </span>
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
+                              {order.tpPercent ? `${order.tpPercent}%` : '—'}
                             </td>
                             <td className={`py-2 pr-2 ${order.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
                               {order.side?.toUpperCase()}

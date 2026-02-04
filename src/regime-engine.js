@@ -71,7 +71,7 @@ const createInitialPositionState = () => ({
   totalBTC: 0,
   totalCostBasis: 0,
   avgCostBasis: 0,
-  ladderStep: 0,
+  cycleBuys: 0,
   lastEntryPrice: 0,
   lastEntryTime: 0,
   anchorPrice: 0,
@@ -354,7 +354,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       ? `APY from ${new Date(positionState.engineStartTime).toISOString()}`
       : 'APY not tracked yet';
 
-    console.log(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, PnL=$${positionState.realizedPnL.toFixed(2)}, ${apyStatus}`);
+    console.log(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, PnL=$${positionState.realizedPnL.toFixed(2)}, ${apyStatus}`);
     return true;
   };
 
@@ -401,7 +401,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       sizeOptimizer.importState(savedState.sizeOptimizer);
     }
 
-    console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, ${positionState.totalBTC.toFixed(6)} BTC`);
+    console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, ${positionState.totalBTC.toFixed(6)} BTC`);
     return true;
   };
 
@@ -492,7 +492,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           positionState.avgCostBasis = positionState.totalBTC > 0
             ? positionState.totalCostBasis / positionState.totalBTC
             : 0;
-          positionState.ladderStep += 1;
+          positionState.cycleBuys += 1;
           positionState.lastEntryPrice = summary.avgPrice;
           positionState.lastEntryTime = Date.now();
 
@@ -505,8 +505,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
           orderExecutor.handleOrderFill(orderId);
 
-          // Place/update TP order to reflect new position size
-          await placeTakeProfitOrder();
+          // Place/update TP order to reflect new position size (force update to bypass anti-churn)
+          await placeTakeProfitOrder({ forceUpdate: true });
 
           tradeEvents.emitTradeEvent('buy_filled', exchange, `[OFFLINE] ${summary.totalSize} BTC @ $${summary.avgPrice}`, {
             btcAmount: summary.totalSize,
@@ -838,10 +838,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         totalBTC: cycleWasCompleted ? 0 : position.totalBTC,
         totalCostBasis: cycleWasCompleted ? 0 : position.totalCostBasis,
         avgCostBasis: cycleWasCompleted ? 0 : position.avgCostBasis,
-        ladderStep: cycleWasCompleted ? 0 : position.ladderStep,
+        cycleBuys: cycleWasCompleted ? 0 : position.cycleBuys,
         activeTpOrderId: savedTpOrderId, // Restore TP tracking (not in fills)
         lastTpPrice: savedTpPrice,
       };
+
+      // Auto-correct cycleBuys from fill ledger (source of truth)
+      const actualCycleBuys = fillLedger.getCurrentCycleBuysCount();
+      if (positionState.cycleBuys !== actualCycleBuys) {
+        console.log(`🔧 [${exchange}] Auto-correcting cycleBuys: ${positionState.cycleBuys} -> ${actualCycleBuys} (from fill ledger)`);
+        positionState.cycleBuys = actualCycleBuys;
+      }
 
       // Check for orders that filled while we were offline (non-critical, continue on error)
       const offlineFills = await checkOfflineOrderFills().catch(err => {
@@ -944,6 +951,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           if (order.filledSize && order.filledSize > 0) {
             console.log(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
             const rawFills = await adapter.getOrderFills(order.orderId);
+            let orderHadNewFills = false;
+            let lastFillPrice = 0;
+            let lastFillTime = 0;
             for (const fill of rawFills) {
               const result = fillLedger.ingestFill(fill);
               if (result.ingested) {
@@ -952,11 +962,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 positionState.avgCostBasis = positionState.totalBTC > 0
                   ? positionState.totalCostBasis / positionState.totalBTC
                   : 0;
-                positionState.ladderStep += 1;
-                positionState.lastEntryPrice = fill.price;
-                positionState.lastEntryTime = fill.timestamp;
+                orderHadNewFills = true;
+                lastFillPrice = fill.price;
+                lastFillTime = fill.timestamp;
                 console.log(`📝 [${exchange}] Ingested partial fill: ${fill.size} BTC @ $${fill.price}`);
               }
+            }
+            // Increment step once per order, not per fill
+            if (orderHadNewFills) {
+              positionState.cycleBuys += 1;
+              positionState.lastEntryPrice = lastFillPrice;
+              positionState.lastEntryTime = lastFillTime;
             }
           }
         } else {
@@ -1248,7 +1264,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.avgCostBasis = positionState.totalBTC > 0
         ? positionState.totalCostBasis / positionState.totalBTC
         : 0;
-      positionState.ladderStep += 1;
+      positionState.cycleBuys += 1;
       positionState.lastEntryPrice = summary.avgPrice;
       positionState.lastEntryTime = Date.now();
 
@@ -1261,8 +1277,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       console.log(`✅ [${exchange}] Buy filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, avg_cost=$${positionState.avgCostBasis.toFixed(2)}`);
 
-      // Place/update TP order
-      await placeTakeProfitOrder();
+      // Place/update TP order (force update to bypass anti-churn after buy fill)
+      await placeTakeProfitOrder({ forceUpdate: true });
 
       tradeEvents.emitTradeEvent('buy_filled', exchange, `${summary.totalSize} BTC @ $${summary.avgPrice}`, {
         btcAmount: summary.totalSize,
@@ -1321,7 +1337,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Get current balance for size optimization (proceeds go back to available balance)
       const postCycleBalance = config.maxUsdcDeployed; // After capital growth adjustment
       recordCycleForSizeOptimizer({
-        stepsUsed: positionState.ladderStep,
+        stepsUsed: positionState.cycleBuys,
         capitalDeployed: soldCostBasis, // Cost basis of what we sold
       }, postCycleBalance);
 
@@ -1523,7 +1539,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (!healthCheck.allowed) return;
 
     // Check tail events
-    const tailCheck = tailEvents.canPlaceEntry(positionState.ladderStep);
+    const tailCheck = tailEvents.canPlaceEntry(positionState.cycleBuys);
     if (!tailCheck.allowed) return;
 
     // Check regime allows entries
@@ -1555,7 +1571,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Calculate size
     const sizing = positionSizer.calculateEntrySize({
       regime,
-      ladderStep: positionState.ladderStep,
+      cycleBuys: positionState.cycleBuys,
       totalCostBasis: positionState.totalCostBasis,
     });
 
@@ -1565,8 +1581,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Handle ladder auto-reset (time-based reset after being at max limit)
     if (riskCheck.shouldResetLadder) {
-      console.log(`🔄 [${exchange}] Ladder auto-reset triggered, resetting step ${positionState.ladderStep} -> 0`);
-      positionState.ladderStep = 0;
+      console.log(`🔄 [${exchange}] Ladder auto-reset triggered, resetting buys ${positionState.cycleBuys} -> 0`);
+      positionState.cycleBuys = 0;
       ladderLimitWarningLogged = false;
     }
 
@@ -1622,11 +1638,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         saveLiveState();
       }
 
-      console.log(`📝 [${exchange}] Entry placed: regime=${regime} step=${positionState.ladderStep} size=$${sizing.sizeUsdc} price=$${result.price} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
+      console.log(`📝 [${exchange}] Entry placed: regime=${regime} buys=${positionState.cycleBuys} size=$${sizing.sizeUsdc} price=$${result.price} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
 
       tradeEvents.emitTradeEvent('entry_placed', exchange, `$${sizing.sizeUsdc} @ $${result.price}`, {
         regime,
-        step: positionState.ladderStep,
+        step: positionState.cycleBuys,
         sizeUsdc: sizing.sizeUsdc,
         price: result.price,
         trigger: triggerType,
@@ -1638,8 +1654,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   /**
    * Place or update take-profit order
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
    */
-  const placeTakeProfitOrder = async () => {
+  const placeTakeProfitOrder = async (options = {}) => {
     // Calculate TP price first (needed for profit-based holdback calculation)
     const tpPrice = calculateDynamicTP();
 
@@ -1652,7 +1670,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     if (sellQty <= 0) return;
 
-    const result = await orderExecutor.placeTakeProfitOrder(sellQty, tpPrice);
+    const result = await orderExecutor.placeTakeProfitOrder(sellQty, tpPrice, options);
 
     if (result.success) {
       positionState.activeTpOrderId = result.orderId;
@@ -1699,7 +1717,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.totalBTC = 0;
     positionState.totalCostBasis = 0;
     positionState.avgCostBasis = 0;
-    positionState.ladderStep = 0;
+    positionState.cycleBuys = 0;
     positionState.activeTpOrderId = null;
     positionState.lastTpPrice = 0;
     positionState.btcOnOrder = 0;
@@ -1738,12 +1756,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.avgCostBasis = positionState.totalBTC > 0
         ? positionState.totalCostBasis / positionState.totalBTC
         : 0;
-      positionState.ladderStep += 1;
+      positionState.cycleBuys += 1;
       positionState.lastEntryPrice = price;
       positionState.lastEntryTime = Date.now();
 
-      // Place/update TP order (simulated)
-      await placeTakeProfitOrder();
+      // Place/update TP order (simulated, force update after buy fill)
+      await placeTakeProfitOrder({ forceUpdate: true });
 
       tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}`, {
         btcAmount: btcQty,
@@ -1804,7 +1822,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Record cycle for Size optimizer
       const postCycleBalance = config.maxUsdcDeployed;
       recordCycleForSizeOptimizer({
-        stepsUsed: positionState.ladderStep,
+        stepsUsed: positionState.cycleBuys,
         capitalDeployed: positionState.totalCostBasis,
       }, postCycleBalance);
 
@@ -1849,7 +1867,18 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     pause: tailEvents.getPauseState(),
     risk: riskManager.getState(),
     orders: orderExecutor.getPendingCounts(),
-    pendingOrders: !isDryRun && orderExecutor.getPendingOrdersList ? orderExecutor.getPendingOrdersList() : [],
+    pendingOrders: !isDryRun && orderExecutor.getPendingOrdersList
+      ? orderExecutor.getPendingOrdersList().map(order => {
+        // Add TP% for take_profit orders
+        if (order.type === 'take_profit' && positionState.avgCostBasis > 0) {
+          return {
+            ...order,
+            tpPercent: ((order.price - positionState.avgCostBasis) / positionState.avgCostBasis * 100).toFixed(2),
+          };
+        }
+        return order;
+      })
+      : [],
     apy: calculateApyMetrics(),
     dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,
     tpOptimizer: tpOptimizer.getStatus(),
@@ -2008,7 +2037,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       ...newPosition,
     };
     saveLiveState();
-    console.log(`🔄 [${exchange}] Position updated externally: step=${positionState.ladderStep}, cycles=${positionState.cyclesCompleted}, BTC reserves=${positionState.realizedBtcPnL}`);
+    console.log(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, BTC reserves=${positionState.realizedBtcPnL}`);
+  };
+
+  /**
+   * Force rebuild of TP sell order with current position
+   * Useful when position state was corrected manually
+   * @returns {Promise<{success: boolean, message: string}>}
+   */
+  const rebuildTP = async () => {
+    if (!isRunning) {
+      return { success: false, message: 'Engine not running' };
+    }
+    if (positionState.totalBTC <= 0) {
+      return { success: false, message: 'No position to protect' };
+    }
+    console.log(`🔄 [${exchange}] Manual TP rebuild requested for ${positionState.totalBTC.toFixed(8)} BTC`);
+    await placeTakeProfitOrder({ forceUpdate: true });
+    return { success: true, message: `TP rebuilt for ${positionState.totalBTC.toFixed(8)} BTC @ $${positionState.lastTpPrice}` };
   };
 
   return {
@@ -2024,6 +2070,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     getFills,
     getFillStats,
     forceResumeDrawdown,
+    rebuildTP,
     // Dry-run specific methods
     isDryRun,
     getDryRunLog,

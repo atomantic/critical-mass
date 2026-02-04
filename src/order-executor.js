@@ -138,11 +138,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * Place or update take-profit sell order
    * @param {number} btcQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
    * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, errorMessage?: string}>}
    */
-  const placeTakeProfitOrder = async (btcQty, tpPrice) => {
-    // Anti-churn: check if price OR size change is significant
-    if (activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
+  const placeTakeProfitOrder = async (btcQty, tpPrice, options = {}) => {
+    // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
+    if (!options.forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
       const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
       const sizeChange = Math.abs(btcQty - lastTpSize) / lastTpSize * 100;
       // Update if neither price nor size changed significantly
@@ -269,9 +271,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
             // Order filled but WebSocket missed it - notify regime engine
             console.log(`✅ [${exchange}] Stale check detected filled order ${orderId} (WebSocket missed)`);
+            // Capture placedAt BEFORE deleting from pendingOrders
+            const placedAt = order.placedAt;
             pendingOrders.delete(orderId);
             if (callbacks.onFillDetected) {
-              callbacks.onFillDetected(orderId, status);
+              callbacks.onFillDetected(orderId, { ...status, placedAt });
             }
           } else if (normalizedStatus === 'CANCELLED') {
             // Order was cancelled
@@ -318,9 +322,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
           // Order filled but WebSocket missed it
           console.log(`✅ [${exchange}] Refresh detected filled order ${orderId}`);
+          // Capture placedAt BEFORE deleting from pendingOrders
+          const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
           if (callbacks.onFillDetected) {
-            callbacks.onFillDetected(orderId, status);
+            callbacks.onFillDetected(orderId, { ...status, placedAt });
           }
           refreshed++;
         } else if (normalizedStatus === 'CANCELLED') {
