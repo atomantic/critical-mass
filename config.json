@@ -36,7 +36,7 @@
         "tpUpdateThresholdPct": 0.5,
         "holdbackRatio": 0.5,
         "maxBtcExposure": 5,
-        "maxUsdcDeployed": 10005.18,
+        "maxUsdcDeployed": 10015.36,
         "maxDrawdownPercent": 30,
         "entryOffsetBps": 12,
         "cancelRateLimitMs": 1000,
@@ -66,7 +66,7 @@
     },
     "gemini": {
       "enabled": true,
-      "dryRun": true,
+      "dryRun": false,
       "productId": "BTCUSD",
       "totalAllocation": 5000,
       "intervalsToSpread": 50,
@@ -81,7 +81,7 @@
     },
     "cryptocom": {
       "enabled": true,
-      "dryRun": true,
+      "dryRun": false,
       "productId": "CRO_USD",
       "totalAllocation": 5000,
       "intervalsToSpread": 100,

@@ -451,6 +451,286 @@ Required methods for each adapter:
 
 ---
 
+## Prediction Market Arbitrage System (Proposed Feature)
+
+### Overview
+
+Extension to support prediction market arbitrage on platforms like **Kalshi** (US-regulated) and **Polymarket** (crypto-based). Unlike spot crypto trading which requires directional prediction, prediction market arbitrage exploits mathematical pricing inefficiencies for risk-free or low-risk returns.
+
+**Key Insight**: Prediction markets often misprice correlated events, allowing traders to lock in guaranteed profits by buying combinations that must collectively pay out more than their total cost.
+
+### Five Arbitrage Strategy Types
+
+Based on analysis of successful prediction market traders:
+
+#### 1. Basic Arbitrage (Same-Market Spread)
+- **Concept**: Buy both YES and NO shares on the same market when total cost < $1
+- **Example**: YES @ $0.45 + NO @ $0.51 = $0.96 → Guaranteed $1 payout
+- **Profit**: 4.2% return regardless of outcome
+- **Risk**: Zero (one side MUST pay $1)
+- **Detection**: Monitor bid/ask spreads on single markets
+
+#### 2. Mutually Exclusive Arbitrage
+- **Concept**: Two events where exactly one must be true
+- **Example**: "Winner is A" vs "Winner is NOT A" across different markets
+- **Opportunity**: Combined YES positions < $1 total
+- **Risk**: Near-zero (definitional exclusivity)
+- **Detection**: Identify markets with logical mutual exclusivity
+
+#### 3. Contradiction Arbitrage
+- **Concept**: Two markets make opposing claims about the same event
+- **Example**: Market A says "X will happen", Market B says "X won't happen"
+- **Trade**: Buy YES on one, buy equivalent position on other
+- **Risk**: Low (depends on settlement consistency)
+- **Detection**: NLP/semantic analysis of market descriptions
+
+#### 4. One-of-Many (Multi-Date) Arbitrage ⭐ *Primary Strategy*
+- **Concept**: Event markets with different date thresholds where earlier events trigger later ones
+- **Example**: "US strikes Iran by March/April/June" - if March YES, then April and June also YES
+- **Trade**: Buy NO on multiple dates where total NO cost < $1
+- **Math**: If event happens in March → lose March NO, but didn't buy April/June NO
+         If event never happens → ALL NO positions pay $1 each
+- **Optimal**: Buy NO positions whose combined cost guarantees profit either way
+- **Risk**: Minimal if positions properly sized
+- **Detection**: Find related markets with cascading logic
+
+#### 5. Must-Happen (Exhaustive) Arbitrage
+- **Concept**: Set of outcomes where exactly one MUST occur
+- **Example**: "Election winner: A, B, C, D" where all YES positions < $1 total
+- **Trade**: Buy YES on all outcomes
+- **Risk**: Zero (one outcome must win)
+- **Detection**: Markets with exhaustive, mutually exclusive outcomes
+
+### Proposed Architecture
+
+```
+src/
+├── adapters/
+│   ├── kalshi/                    # Kalshi API adapter
+│   │   ├── index.js               # Main adapter
+│   │   ├── auth.js                # Kalshi authentication
+│   │   ├── markets.js             # Market data fetching
+│   │   └── orders.js              # Order placement
+│   └── polymarket/                # Polymarket adapter (optional)
+│       ├── index.js
+│       └── ...
+├── arbitrage/
+│   ├── arbitrage-engine.js        # Main orchestrator
+│   ├── arbitrage-detector.js      # Opportunity detection
+│   ├── arbitrage-types.js         # Strategy implementations
+│   │   ├── basic-spread.js        # Type 1: Same-market spread
+│   │   ├── mutual-exclusive.js    # Type 2: Mutually exclusive events
+│   │   ├── contradiction.js       # Type 3: Contradicting markets
+│   │   ├── multi-date.js          # Type 4: Date-cascading events
+│   │   └── exhaustive.js          # Type 5: Must-happen sets
+│   ├── market-correlator.js       # Find related/correlated markets
+│   ├── profit-calculator.js       # ROI and risk calculations
+│   ├── position-tracker.js        # Track open arb positions
+│   └── settlement-monitor.js      # Monitor settlements/payouts
+└── types/
+    └── kalshi.d.ts                # Kalshi API types
+
+admin/src/components/
+├── arbitrage/
+│   ├── ArbitrageDashboard.jsx     # Main arbitrage control panel
+│   ├── OpportunityScanner.jsx     # Real-time opportunity display
+│   ├── ActivePositions.jsx        # Current arbitrage positions
+│   ├── ProfitTracker.jsx          # Historical profits
+│   └── MarketCorrelations.jsx     # Visualize correlated markets
+```
+
+### Data Models
+
+```javascript
+// Arbitrage Opportunity
+{
+  id: string,
+  type: 'basic' | 'mutual_exclusive' | 'contradiction' | 'multi_date' | 'exhaustive',
+  markets: [{
+    marketId: string,
+    ticker: string,
+    title: string,
+    side: 'YES' | 'NO',
+    price: number,      // Cost per share (0.01-0.99)
+    shares: number,     // Recommended position size
+    cost: number        // Total cost for position
+  }],
+  totalCost: number,    // Combined cost of all positions
+  guaranteedPayout: number,  // Minimum payout regardless of outcome
+  profit: number,       // Guaranteed profit (payout - cost)
+  roi: number,          // Return on investment percentage
+  confidence: number,   // 0-1 confidence in correlation logic
+  expiresAt: Date,      // Earliest market expiration
+  detectedAt: Date
+}
+
+// Arbitrage Position
+{
+  id: string,
+  opportunityId: string,
+  type: string,
+  legs: [{
+    orderId: string,
+    marketId: string,
+    side: 'YES' | 'NO',
+    shares: number,
+    fillPrice: number,
+    status: 'open' | 'settled' | 'expired'
+  }],
+  totalInvested: number,
+  realizedPayout: number,
+  realizedProfit: number,
+  status: 'open' | 'partial_settle' | 'complete',
+  openedAt: Date,
+  settledAt: Date
+}
+```
+
+### Configuration
+
+```json
+{
+  "exchanges": {
+    "kalshi": {
+      "enabled": true,
+      "dryRun": true,
+      "apiEndpoint": "https://trading-api.kalshi.com",
+      "strategies": {
+        "arbitrage": {
+          "enabled": true,
+          "types": ["basic", "multi_date", "exhaustive"],
+          "minRoiPercent": 2.0,
+          "maxPositionUsd": 1000,
+          "maxTotalExposure": 10000,
+          "minConfidence": 0.95,
+          "autoExecute": false,
+          "scanIntervalMs": 60000,
+          "categories": ["politics", "economics", "crypto"]
+        }
+      }
+    }
+  }
+}
+```
+
+### API Endpoints
+
+```
+# Market Data
+GET  /api/kalshi/markets                    - List available markets
+GET  /api/kalshi/markets/:id                - Get market details
+GET  /api/kalshi/markets/correlated         - Find correlated market groups
+
+# Arbitrage
+GET  /api/kalshi/arbitrage/opportunities    - Current arbitrage opportunities
+GET  /api/kalshi/arbitrage/opportunities/:type  - Filter by strategy type
+POST /api/kalshi/arbitrage/execute          - Execute arbitrage opportunity
+GET  /api/kalshi/arbitrage/positions        - Active arbitrage positions
+GET  /api/kalshi/arbitrage/history          - Historical arbitrage trades
+GET  /api/kalshi/arbitrage/pnl              - Profit/loss summary
+
+# Monitoring
+GET  /api/kalshi/arbitrage/alerts           - Active opportunity alerts
+POST /api/kalshi/arbitrage/watch            - Add market to watchlist
+GET  /api/kalshi/arbitrage/correlations     - Market correlation analysis
+```
+
+### Detection Algorithms
+
+#### Multi-Date Event Detection (Primary)
+1. Fetch all markets in a category (e.g., geopolitics)
+2. Group by underlying event using NLP on titles:
+   - Extract entity (e.g., "Iran", "Russia", "Bitcoin")
+   - Extract action (e.g., "strikes", "reaches", "passes")
+   - Extract date threshold (e.g., "by March", "before April")
+3. For each event group with multiple dates:
+   - Sort markets by date threshold
+   - Calculate: if NO on all later dates, what's the max loss if event happens at each date?
+   - Find optimal NO combination where: sum(NO_costs) < $1 guaranteed
+4. Alert when ROI > minRoiPercent
+
+#### Pricing Inefficiency Detection
+1. For each market, continuously track:
+   - Best bid/ask for YES and NO
+   - Implied probability (YES price ≈ probability)
+2. Alert when: best_ask_YES + best_ask_NO < 0.98 (2%+ guaranteed return)
+3. Account for fees in calculations
+
+### Execution Logic
+
+```javascript
+async function executeArbitrageOpportunity(opportunity) {
+  // 1. Validate opportunity still exists at expected prices
+  const currentPrices = await fetchCurrentPrices(opportunity.markets);
+  const stillProfitable = validateProfitability(opportunity, currentPrices);
+
+  if (!stillProfitable) {
+    return { success: false, reason: 'prices_moved' };
+  }
+
+  // 2. Calculate optimal order sizes based on liquidity
+  const orders = calculateOptimalOrders(opportunity, currentPrices);
+
+  // 3. Execute all legs atomically (as close as possible)
+  const results = await Promise.all(
+    orders.map(order => placeOrder(order))
+  );
+
+  // 4. Track position
+  const position = createPosition(opportunity, results);
+  await savePosition(position);
+
+  // 5. Set up settlement monitoring
+  monitorSettlement(position);
+
+  return { success: true, position };
+}
+```
+
+### Risk Considerations
+
+1. **Liquidity Risk**: Large orders may not fill at expected prices
+2. **Timing Risk**: Prices move between leg executions
+3. **Settlement Risk**: Unclear market resolutions
+4. **Platform Risk**: Exchange downtime, withdrawal issues
+5. **Regulatory Risk**: Changing rules on prediction markets
+
+### Mitigation Strategies
+
+1. **Slippage Protection**: Only execute if current prices still profitable after fees
+2. **Size Limits**: Cap individual position and total exposure
+3. **Confidence Thresholds**: Only trade high-confidence correlations
+4. **Diversification**: Spread across multiple uncorrelated opportunities
+5. **Manual Review Mode**: Alert but don't auto-execute for review
+
+### Implementation Phases
+
+**Phase 1: Foundation**
+- [ ] Kalshi API adapter (auth, markets, orders)
+- [ ] Basic arbitrage detector (Type 1: spread monitoring)
+- [ ] Manual execution via admin UI
+- [ ] Position tracking
+
+**Phase 2: Multi-Date Strategy**
+- [ ] Market correlation engine
+- [ ] Multi-date event grouping
+- [ ] Type 4 arbitrage detection
+- [ ] Profit/risk calculator
+
+**Phase 3: Automation**
+- [ ] Auto-execution with safeguards
+- [ ] Real-time monitoring
+- [ ] Telegram/Discord alerts
+- [ ] Settlement tracking
+
+**Phase 4: Advanced Strategies**
+- [ ] Types 2, 3, 5 detection
+- [ ] NLP for market relationship inference
+- [ ] Historical backtesting
+- [ ] Portfolio optimization
+
+---
+
 ## Exchange-Specific Notes
 
 ### Crypto.com Exchange
