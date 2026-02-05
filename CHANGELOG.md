@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.12] - 2026-02-04
+
+### Changed
+- **Extended chart windows to 1 hour** - Regime dashboard now shows more history
+  - Regime Timeline expanded from 15 minutes to 1 hour
+  - Price & ATR Triggers chart expanded from 15 minutes to 1 hour
+  - Backend data buffer increased to retain 1 hour of data (4000 points max)
+
 ## [2.4.11] - 2026-02-04
 
 ### Fixed
