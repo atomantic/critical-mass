@@ -58,9 +58,9 @@ function RegimeTimeline({
       .append('g')
       .attr('transform', `translate(${margin.left},${margin.top})`)
 
-    // Time range: last 15 minutes
+    // Time range: last 1 hour
     const now = Date.now()
-    const timeStart = now - 15 * 60 * 1000
+    const timeStart = now - 60 * 60 * 1000
 
     const xScale = d3.scaleTime()
       .domain([timeStart, now])
@@ -158,7 +158,7 @@ function RegimeTimeline({
       .attr('fill', '#9ca3af')
       .attr('font-size', '11px')
       .attr('font-weight', '500')
-      .text('Regime Timeline (15 min)')
+      .text('Regime Timeline (1 hour)')
 
   }, [regimeData, height, containerWidth])
 
