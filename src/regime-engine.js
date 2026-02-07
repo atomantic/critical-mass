@@ -586,12 +586,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Total USDC return (realized P&L from trading)
     const totalUsdcReturn = positionState.realizedPnL || 0;
     // depositedCapital = total user deposits (excludes profits)
-    // Fall back to deriving from maxUsdc - profits if not set
-    const depositedCapital = positionState.depositedCapital > 0
-      ? positionState.depositedCapital
-      : (positionState.originalCapital > 0
-          ? positionState.originalCapital
-          : roundUSDC(maxUsdcDeployed - totalUsdcReturn));
+    // Priority: config.depositedCapital > positionState.depositedCapital > derive from maxUsdc - profits
+    const depositedCapital = config.depositedCapital > 0
+      ? config.depositedCapital
+      : (positionState.depositedCapital > 0
+          ? positionState.depositedCapital
+          : (positionState.originalCapital > 0
+              ? positionState.originalCapital
+              : roundUSDC(maxUsdcDeployed - totalUsdcReturn)));
     // initialCapital for APY calculations (first deposit amount)
     const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
     // deployedInPosition = capital currently in open positions
@@ -1442,9 +1444,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return;
     }
 
-    // Fetch 365 days of daily candles
+    // Fetch 349 days of daily candles (Coinbase API limits to <350 candles per request)
     const nowSec = Math.floor(now / 1000);
-    const oneYearAgoSec = nowSec - (365 * 24 * 60 * 60);
+    const oneYearAgoSec = nowSec - (349 * 24 * 60 * 60);
 
     const dailyCandles = await adapter.getCandles(productId, oneYearAgoSec, nowSec, 'ONE_DAY').catch(err => {
       console.log(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`);
@@ -2223,6 +2225,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * @param {Object} updates - Config updates
    */
   const updateConfig = (updates) => {
+    // Direct depositedCapital edit - sync to position state
+    if (updates.depositedCapital !== undefined && updates.depositedCapital !== config.depositedCapital) {
+      positionState.depositedCapital = updates.depositedCapital > 0 ? roundUSDC(updates.depositedCapital) : 0;
+      console.log(`💵 [${exchange}] Deposited capital set to $${updates.depositedCapital > 0 ? updates.depositedCapital.toFixed(2) : 'auto-derive'}`);
+      if (!isDryRun) saveLiveState();
+      else saveDryRunState();
+    }
     // Track manual capital additions (user deposits, not profits)
     if (updates.maxUsdcDeployed !== undefined && updates.maxUsdcDeployed !== config.maxUsdcDeployed) {
       const capitalChange = updates.maxUsdcDeployed - config.maxUsdcDeployed;
