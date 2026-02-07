@@ -562,8 +562,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
             <div className="border-t border-gray-700 pt-3 mb-4">
               <h3 className="text-sm font-medium text-purple-400 mb-3">Risk Caps</h3>
               <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Deposited Capital" value={regimeConfig.depositedCapital || 0} onChange={(v) => handleRegimeChange('depositedCapital', v)} type="number" />
                 <FormInput label="Max BTC Exposure" value={regimeConfig.maxBtcExposure || 0.5} onChange={(v) => handleRegimeChange('maxBtcExposure', v)} type="number" />
-                <FormInput label="Max USDC Deployed" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
+                <FormInput label="Max USDC Cap" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
                 <FormInput label="Max Drawdown %" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
                 <FormInput label="Liquidity Factor Cap" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
               </div>
@@ -572,6 +573,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 <FormInput label="Ladder Reset (hrs)" value={regimeConfig.ladderResetHours || 72} onChange={(v) => handleRegimeChange('ladderResetHours', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-500">
+                Deposited Capital: your actual cash deposits (0 = auto-derive). Max USDC Cap: trading limit (grows with profits).
                 Auto-reset hours: 0 = disabled. After this time at a limit, the engine resumes with reset counters.
               </div>
             </div>
