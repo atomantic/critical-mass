@@ -525,7 +525,7 @@ app.put('/api/:exchange/regime/config', (req, res) => {
   const { exchange } = req.params;
   const updates = req.body;
 
-  const validation = validateRegimeConfig({ ...getRegimeConfig(exchange), ...updates });
+  const validation = validateRegimeConfig(updates);
   if (!validation.valid) {
     return res.status(400).json({ success: false, errors: validation.errors });
   }
