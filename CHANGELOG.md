@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.14] - 2026-02-06
+
+### Fixed
+- **ATH fetch fails on Coinbase** - Reduced daily candle request from 365 to 349 days to stay under Coinbase API's 350-candle limit
+
 ## [2.4.12] - 2026-02-04
 
 ### Changed
