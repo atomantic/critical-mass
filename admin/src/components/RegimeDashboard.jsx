@@ -48,12 +48,13 @@ const AGGRESSIVENESS_LEVELS = [
     color: 'green',
     params: {
       kFactor: 0.8,
-      minIntervalMs: 120000,  // 2min
-      maxIntervalMs: 3600000, // 1hr
-      entryOffsetBps: 20,
-      baseSizeUsdc: 50,
-      cautionScale: 0.25,
+      minIntervalMs: 180000,  // 3min
+      maxIntervalMs: 7200000, // 2hr
+      entryOffsetBps: 25,
+      baseSizeUsdc: 25,
+      cautionScale: 0.15,
       trendScale: 0,
+      maxLadderSteps: 10,
     },
   },
   {
@@ -61,13 +62,14 @@ const AGGRESSIVENESS_LEVELS = [
     label: 'Moderate',
     color: 'blue',
     params: {
-      kFactor: 0.6,
-      minIntervalMs: 90000,   // 90s
-      maxIntervalMs: 2400000, // 40min
-      entryOffsetBps: 15,
-      baseSizeUsdc: 100,
-      cautionScale: 0.5,
-      trendScale: 0.15,
+      kFactor: 0.65,
+      minIntervalMs: 120000,  // 2min
+      maxIntervalMs: 3600000, // 1hr
+      entryOffsetBps: 18,
+      baseSizeUsdc: 50,
+      cautionScale: 0.35,
+      trendScale: 0.1,
+      maxLadderSteps: 15,
     },
   },
   {
@@ -75,13 +77,14 @@ const AGGRESSIVENESS_LEVELS = [
     label: 'Aggressive',
     color: 'yellow',
     params: {
-      kFactor: 0.45,
-      minIntervalMs: 60000,   // 1min
-      maxIntervalMs: 1800000, // 30min
+      kFactor: 0.5,
+      minIntervalMs: 90000,   // 90s
+      maxIntervalMs: 2400000, // 40min
       entryOffsetBps: 12,
-      baseSizeUsdc: 150,
-      cautionScale: 0.75,
-      trendScale: 0.35,
+      baseSizeUsdc: 100,
+      cautionScale: 0.6,
+      trendScale: 0.25,
+      maxLadderSteps: 25,
     },
   },
   {
@@ -90,12 +93,13 @@ const AGGRESSIVENESS_LEVELS = [
     color: 'red',
     params: {
       kFactor: 0.3,
-      minIntervalMs: 30000,   // 30s
-      maxIntervalMs: 900000,  // 15min
+      minIntervalMs: 60000,   // 1min
+      maxIntervalMs: 1200000, // 20min
       entryOffsetBps: 5,
       baseSizeUsdc: 200,
       cautionScale: 1.0,
       trendScale: 0.5,
+      maxLadderSteps: 50,
     },
   },
 ]
@@ -561,7 +565,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
         <>
           {/* Live Status Bar */}
           <div className="bg-gray-800 rounded-lg p-2 sm:p-3">
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 sm:gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 sm:gap-3">
               {/* Live Price */}
               <div className="col-span-1">
                 <span className="text-[10px] text-gray-500">BTC Price</span>

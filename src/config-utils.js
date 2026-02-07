@@ -53,8 +53,8 @@ const REGIME_DEFAULTS = {
 
   // Volatility Clock
   atrPeriod: 14,
-  kFactor: 0.6,
-  minIntervalMs: 60000,
+  kFactor: 0.65,
+  minIntervalMs: 120000,
   maxIntervalMs: 3600000,
 
   // Regime Detection
@@ -69,7 +69,7 @@ const REGIME_DEFAULTS = {
   harvestScale: 1.0,
   cautionScale: 0.5,
   trendScale: 0.0,
-  maxLadderSteps: 10,
+  maxLadderSteps: 15,
   ladderResetHours: 72, // Auto-reset ladder counter after 72 hours (3 days) at max, 0 to disable
   liquidityFactorCap: 2.0,
 
