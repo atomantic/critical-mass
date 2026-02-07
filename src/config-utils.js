@@ -104,6 +104,7 @@ const REGIME_DEFAULTS = {
 
   // Risk Caps
   maxBtcExposure: 0.5,
+  depositedCapital: 0,  // Total user deposits (0 = auto-derive from maxUsdcDeployed - realizedPnL)
   maxUsdcDeployed: 10000,
   maxDrawdownPercent: 20,
   drawdownResetHours: 72, // Auto-reset peak after 72 hours (3 days) of drawdown pause
@@ -452,8 +453,8 @@ const validateRegimeConfig = (config) => {
   if (config.atrPeriod !== undefined && (config.atrPeriod < 5 || config.atrPeriod > 30)) {
     errors.push('atrPeriod must be between 5 and 30');
   }
-  if (config.kFactor !== undefined && (config.kFactor < 0.4 || config.kFactor > 0.8)) {
-    errors.push('kFactor must be between 0.4 and 0.8');
+  if (config.kFactor !== undefined && (config.kFactor < 0.2 || config.kFactor > 0.8)) {
+    errors.push('kFactor must be between 0.2 and 0.8');
   }
   if (config.minIntervalMs !== undefined && config.minIntervalMs < 30000) {
     errors.push('minIntervalMs must be at least 30000 (30 seconds)');
@@ -474,8 +475,8 @@ const validateRegimeConfig = (config) => {
   if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
     errors.push('baseSizeUsdc must be between 1 and 1000');
   }
-  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 200)) {
-    errors.push('maxLadderSteps must be between 3 and 200');
+  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 1000)) {
+    errors.push('maxLadderSteps must be between 3 and 1000');
   }
 
   // Take-Profit validation
@@ -541,6 +542,9 @@ const validateRegimeConfig = (config) => {
   // Risk Caps validation
   if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.01 || config.maxBtcExposure > 10.0)) {
     errors.push('maxBtcExposure must be between 0.01 and 10.0');
+  }
+  if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && (config.depositedCapital < 100 || config.depositedCapital > 100000)) {
+    errors.push('depositedCapital must be 0 (auto-derive) or between 100 and 100000');
   }
   if (config.maxUsdcDeployed !== undefined && (config.maxUsdcDeployed < 1000 || config.maxUsdcDeployed > 100000)) {
     errors.push('maxUsdcDeployed must be between 1000 and 100000');
