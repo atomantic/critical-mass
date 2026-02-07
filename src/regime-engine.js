@@ -1444,21 +1444,37 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return;
     }
 
-    // Fetch 349 days of daily candles (Coinbase API limits to <350 candles per request)
+    // Fetch full daily history in paginated batches (Coinbase API limits <350 candles per request)
     const nowSec = Math.floor(now / 1000);
-    const oneYearAgoSec = nowSec - (349 * 24 * 60 * 60);
+    const maxCandlesPerRequest = 349;
+    const daySec = 24 * 60 * 60;
 
-    const dailyCandles = await adapter.getCandles(productId, oneYearAgoSec, nowSec, 'ONE_DAY').catch(err => {
-      console.log(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`);
-      return null;
-    });
+    const allCandles = [];
+    let endSec = nowSec;
 
-    if (!dailyCandles || dailyCandles.length === 0) {
+    while (true) {
+      const startSec = endSec - (maxCandlesPerRequest * daySec);
+      const batch = await adapter.getCandles(productId, startSec, endSec, 'ONE_DAY').catch(err => {
+        console.log(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`);
+        return null;
+      });
+
+      if (!batch || batch.length === 0) break;
+      allCandles.push(...batch);
+
+      // If we received fewer than max candles, we've reached the earliest available data
+      if (batch.length < maxCandlesPerRequest) break;
+
+      // Move window back in time for next batch
+      endSec = startSec;
+    }
+
+    if (allCandles.length === 0) {
       return;
     }
 
-    // Calculate ATH
-    const ath = ladderCalculator.calculateATHFromCandles(dailyCandles);
+    // Calculate ATH over full fetched history
+    const ath = ladderCalculator.calculateATHFromCandles(allCandles);
     const athDistance = ladderCalculator.calculateATHDistance(marketState.lastPrice, ath);
 
     marketState.ath = ath;
@@ -1722,44 +1738,48 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     entryInProgress = true;
 
-    // Build ladder
-    const ladder = ladderCalculator.buildLadder(
-      marketState.lastPrice,
-      remainingBudget,
-      {
-        atr: marketState.atr1m,
-        volBaseline: marketState.volBaseline,
-        realizedVol: marketState.realizedVol,
-        athDistance: marketState.athDistance || 0,
-      }
-    );
+    const placeLadder = async () => {
+      // Build ladder
+      const ladder = ladderCalculator.buildLadder(
+        marketState.lastPrice,
+        remainingBudget,
+        {
+          atr: marketState.atr1m,
+          volBaseline: marketState.volBaseline,
+          realizedVol: marketState.realizedVol,
+          athDistance: marketState.athDistance || 0,
+        }
+      );
 
-    console.log(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
+      console.log(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
 
-    // Place ladder orders
-    const result = await orderExecutor.placeLadderOrders(ladder.levels);
+      // Place ladder orders
+      const result = await orderExecutor.placeLadderOrders(ladder.levels);
 
-    // Update position state
-    positionState.ladderActive = true;
-    positionState.ladderPlacedAt = Date.now();
-    positionState.ladderLowerBound = ladder.lowerBound;
-    positionState.pendingLadderOrders = result.orders;
+      // Update position state
+      positionState.ladderActive = true;
+      positionState.ladderPlacedAt = Date.now();
+      positionState.ladderLowerBound = ladder.lowerBound;
+      positionState.pendingLadderOrders = result.orders;
 
-    console.log(`📊 [${exchange}] Ladder placed: ${result.orders.length} levels from $${marketState.lastPrice.toFixed(2)} to $${ladder.lowerBound.toFixed(2)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`);
+      console.log(`📊 [${exchange}] Ladder placed: ${result.orders.length} levels from $${marketState.lastPrice.toFixed(2)} to $${ladder.lowerBound.toFixed(2)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`);
 
-    tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to $${ladder.lowerBound.toFixed(2)}`, {
-      levels: result.orders.length,
-      topPrice: marketState.lastPrice,
-      bottomPrice: ladder.lowerBound,
-      lowerBoundPct: ladder.lowerBoundPct,
-      totalBudget: ladder.totalBudget,
-      failedCount: result.failedCount,
+      tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to $${ladder.lowerBound.toFixed(2)}`, {
+        levels: result.orders.length,
+        topPrice: marketState.lastPrice,
+        bottomPrice: ladder.lowerBound,
+        lowerBoundPct: ladder.lowerBoundPct,
+        totalBudget: ladder.totalBudget,
+        failedCount: result.failedCount,
+      });
+
+      // Persist state
+      saveLiveState();
+    };
+
+    await placeLadder().finally(() => {
+      entryInProgress = false;
     });
-
-    // Persist state
-    saveLiveState();
-
-    entryInProgress = false;
   };
 
   /**
