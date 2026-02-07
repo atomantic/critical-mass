@@ -162,12 +162,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const oldTpId = activeTpOrderId;
       const cancelSuccess = await cancelTpOrder();
       if (!cancelSuccess) {
-        console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, it may remain orphaned on exchange`);
-        // Clear tracking anyway - we can't keep retrying forever
-        // The orphaned order will eventually fill or need manual cancellation
-        pendingOrders.delete(oldTpId);
-        activeTpOrderId = null;
-        lastTpSize = 0;
+        console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, keeping it tracked to avoid duplicate sells`);
+        // Do NOT clear tracking or place a new TP - risk of two live TP orders causing oversell
+        return {
+          success: false,
+          errorMessage: `Cannot place new TP: failed to cancel existing TP order ${oldTpId}`,
+        };
       }
     }
 
@@ -649,10 +649,16 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // Verify order is actually open (post-only can be immediately cancelled)
         const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
 
-        if (!orderStatus || orderStatus.status === 'CANCELLED') {
+        // Only treat as immediately cancelled when we positively know it's cancelled.
+        // If we failed to fetch status (null), track the order and let later refresh reconcile.
+        if (orderStatus && orderStatus.status === 'CANCELLED') {
           console.log(`⚠️ [${exchange}] Ladder order at $${level.price} was immediately cancelled`);
           failedCount++;
           continue;
+        }
+
+        if (!orderStatus) {
+          console.log(`⚠️ [${exchange}] Could not verify ladder order at $${level.price}, tracking it for reconciliation`);
         }
 
         pendingOrders.set(result.orderId, {
@@ -700,12 +706,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     results.forEach((result, index) => {
       const [orderId] = ladderOrders[index];
       if (result.status === 'fulfilled') {
-        pendingOrders.delete(orderId);
-        cancelled++;
+        const cancelResult = result.value;
+        if (cancelResult && cancelResult.success) {
+          pendingOrders.delete(orderId);
+          cancelled++;
+        } else if (cancelResult && (cancelResult.alreadyCancelled || cancelResult.alreadyFilled)) {
+          // Order is no longer active, stop tracking but don't count as fresh cancel
+          pendingOrders.delete(orderId);
+        } else {
+          console.log(`⚠️ [${exchange}] Cancel request for ladder order ${orderId} did not succeed: ${cancelResult?.errorMessage || 'unknown reason'}`);
+        }
       } else {
         console.log(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId}: ${result.reason?.message || 'unknown'}`);
-        // Still remove from tracking
-        pendingOrders.delete(orderId);
+        // Do not remove from tracking - order may still be live
       }
     });
 

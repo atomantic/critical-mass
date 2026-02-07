@@ -55,7 +55,7 @@ const createLadderCalculator = (exchange, config) => {
    * Calculate adaptive lower bound based on market conditions
    * @param {number} currentPrice - Current market price
    * @param {MarketContext} context - Market context
-   * @returns {{lowerBound: number, lowerBoundPct: number, athMultiplier: number, volMultiplier: number}}
+   * @returns {{lowerBound: number, lowerBoundPct: number, volMultiplier: number}}
    */
   const calculateLowerBound = (currentPrice, context) => {
     const { athDistance = 0, realizedVol = 0, volBaseline = 0 } = context;
@@ -198,8 +198,7 @@ const createLadderCalculator = (exchange, config) => {
         break;
     }
 
-    // Filter out levels that are too small
-    return sizes.filter(size => size >= minOrderSize);
+    return sizes;
   };
 
   /**
@@ -215,7 +214,7 @@ const createLadderCalculator = (exchange, config) => {
     const sizeMode = config.ladderSizeMode || 'flat';
 
     // Calculate adaptive lower bound
-    const { lowerBound, lowerBoundPct, athMultiplier, volMultiplier } = calculateLowerBound(
+    const { lowerBound, lowerBoundPct, volMultiplier } = calculateLowerBound(
       currentPrice,
       context
     );
@@ -223,21 +222,22 @@ const createLadderCalculator = (exchange, config) => {
     // Calculate price levels
     const priceLevels = calculateLadderLevels(currentPrice, lowerBound, numLevels, spacingMode);
 
-    // Calculate size allocations (may return fewer if some are below minimum)
+    // Calculate size allocations
     const sizesRaw = calculateLevelSizes(totalBudget, priceLevels.length, sizeMode);
 
-    // Combine prices and sizes into levels
+    // Combine prices and sizes, filtering out levels below minimum order size together
     const levels = [];
-    const usableLevels = Math.min(priceLevels.length, sizesRaw.length);
+    const minSize = config.baseSizeUsdc || 50;
 
-    for (let i = 0; i < usableLevels; i++) {
+    for (let i = 0; i < priceLevels.length; i++) {
       const price = priceLevels[i];
       const sizeUsdc = sizesRaw[i];
+      if (sizeUsdc < minSize) continue;
       const btcQty = roundBTC(sizeUsdc / price);
       const distancePct = roundUSDC(((currentPrice - price) / currentPrice) * 100);
 
       levels.push({
-        index: i,
+        index: levels.length,
         price,
         sizeUsdc,
         btcQty,
