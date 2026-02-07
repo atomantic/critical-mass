@@ -112,7 +112,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 
 **Volatility Clock:**
 - Entry triggers based on price moving k × ATR from anchor price
-- Minimum interval enforced (default: 60s)
+- Minimum interval enforced (default: 2min)
 - Maximum interval fallback (default: 1hr)
 - ATR calculated from 1-minute and 5-minute candles
 
@@ -178,16 +178,18 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 **Aggressiveness Control (v2.4+):**
 - Dashboard control with 4 preset levels: Conservative, Moderate, Aggressive, Maximum
 - Single-click changes apply immediately without restart
-- Controls 7 trading parameters simultaneously:
+- Controls 8 trading parameters simultaneously (including maxLadderSteps):
   | Parameter | Conservative | Moderate | Aggressive | Maximum |
   |-----------|-------------|----------|------------|---------|
-  | kFactor | 0.8 | 0.6 | 0.45 | 0.3 |
-  | minIntervalMs | 120000 (2min) | 90000 (90s) | 60000 (1min) | 30000 (30s) |
-  | maxIntervalMs | 3600000 (1hr) | 2400000 (40m) | 1800000 (30m) | 900000 (15m) |
-  | entryOffsetBps | 20 | 15 | 12 | 5 |
-  | baseSizeUsdc | 50 | 100 | 150 | 200 |
-  | cautionScale | 0.25 | 0.5 | 0.75 | 1.0 |
-  | trendScale | 0 | 0.15 | 0.35 | 0.5 |
+  | baseSizeUsdc | 25 | 50 | 100 | 200 |
+  | kFactor | 0.8 | 0.65 | 0.5 | 0.3 |
+  | minIntervalMs | 180000 (3min) | 120000 (2min) | 90000 (90s) | 60000 (1min) |
+  | maxIntervalMs | 7200000 (2hr) | 3600000 (1hr) | 2400000 (40m) | 1200000 (20m) |
+  | cautionScale | 0.15 | 0.35 | 0.6 | 1.0 |
+  | trendScale | 0 | 0.1 | 0.25 | 0.5 |
+  | entryOffsetBps | 25 | 18 | 12 | 5 |
+  | maxLadderSteps | 10 | 15 | 25 | 50 |
+- Estimated $25k deployment: Conservative ~23-34 days, Moderate ~10-20 days, Aggressive ~3-6 days, Maximum ~1-1.3 days
 - Color-coded buttons (green/blue/yellow/red)
 - Hover preview shows computed values with diff highlighting
 - Detects "Custom" when values don't match any preset
@@ -244,7 +246,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Auto-resets peak after configurable hours (default: 72h/3 days)
   - Manual "Resume Trading" button in UI to override pause
 - Ladder step limit with auto-reset:
-  - Pauses entries when ladder limit reached (default: 10 steps)
+  - Pauses entries when ladder limit reached (default: 15 steps)
   - Auto-resets after configurable hours (default: 72h/3 days)
   - Prevents stuck positions in prolonged ATH markets
 
