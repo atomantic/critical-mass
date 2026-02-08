@@ -177,16 +177,16 @@ const createFillLedger = (exchange) => {
     let totalBTC = 0;
     let totalCostBasis = 0;
     let realizedPnL = 0;
-    let ladderStep = 0;
     let lastEntryPrice = 0;
     let lastEntryTime = 0;
+    const uniqueBuyOrders = new Set();
 
     for (const fill of targetFills) {
       if (fill.side === 'buy') {
         const costBasis = fill.quoteAmount + fill.netFee;
         totalBTC = roundBTC(totalBTC + fill.size);
         totalCostBasis = roundUSDC(totalCostBasis + costBasis);
-        ladderStep += 1;
+        uniqueBuyOrders.add(fill.orderId);
         lastEntryPrice = fill.price;
         lastEntryTime = fill.timestamp;
       } else if (fill.side === 'sell') {
@@ -206,7 +206,7 @@ const createFillLedger = (exchange) => {
       totalBTC,
       totalCostBasis,
       avgCostBasis,
-      ladderStep,
+      cycleBuys: uniqueBuyOrders.size,
       lastEntryPrice,
       lastEntryTime,
       anchorPrice: lastEntryPrice,
@@ -579,6 +579,21 @@ const createFillLedger = (exchange) => {
     }
   };
 
+  /**
+   * Get the count of unique buy orders in the current cycle
+   * @returns {number} Unique buy order count
+   */
+  const getCurrentCycleBuysCount = () => {
+    const cycleFills = getCurrentCycleFills();
+    const uniqueBuyOrders = new Set();
+    for (const fill of cycleFills) {
+      if (fill.side === 'buy') {
+        uniqueBuyOrders.add(fill.orderId);
+      }
+    }
+    return uniqueBuyOrders.size;
+  };
+
   // Initialize by loading from disk
   load();
 
@@ -586,6 +601,7 @@ const createFillLedger = (exchange) => {
     ingestFill,
     getFillsForOrder,
     getCurrentCycleFills,
+    getCurrentCycleBuysCount,
     rebuildPositionFromFills,
     startNewCycle,
     getCurrentCycleId,

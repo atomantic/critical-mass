@@ -48,10 +48,13 @@ const REGIME_DEFAULTS = {
   enabled: false,
   // Note: dryRun is read from exchange-level config, not regime config
 
+  // Aggressiveness preset (conservative, moderate, aggressive, maximum)
+  aggressiveness: 'moderate',
+
   // Volatility Clock
   atrPeriod: 14,
-  kFactor: 0.6,
-  minIntervalMs: 60000,
+  kFactor: 0.65,
+  minIntervalMs: 120000,
   maxIntervalMs: 3600000,
 
   // Regime Detection
@@ -66,7 +69,7 @@ const REGIME_DEFAULTS = {
   harvestScale: 1.0,
   cautionScale: 0.5,
   trendScale: 0.0,
-  maxLadderSteps: 10,
+  maxLadderSteps: 15,
   ladderResetHours: 72, // Auto-reset ladder counter after 72 hours (3 days) at max, 0 to disable
   liquidityFactorCap: 2.0,
 
@@ -101,6 +104,7 @@ const REGIME_DEFAULTS = {
 
   // Risk Caps
   maxBtcExposure: 0.5,
+  depositedCapital: 0,  // Total user deposits (0 = auto-derive from maxUsdcDeployed - realizedPnL)
   maxUsdcDeployed: 10000,
   maxDrawdownPercent: 20,
   drawdownResetHours: 72, // Auto-reset peak after 72 hours (3 days) of drawdown pause
@@ -133,6 +137,19 @@ const REGIME_DEFAULTS = {
   flashMoveMult: 3.0,
   flashCooldownMs: 600000,
   cancelEntriesOnFlash: true,
+
+  // Entry Mode
+  entryMode: 'reactive',              // 'reactive' | 'ladder'
+
+  // Ladder Parameters (only when entryMode: 'ladder')
+  ladderLevels: 10,                   // Number of rungs
+  ladderLowerBoundPct: 15,            // Base lower bound (% below current)
+  ladderLowerBoundAthAdjust: true,    // Widen based on ATH distance
+  ladderSpacingMode: 'sqrt',          // 'linear' | 'sqrt' | 'exponential'
+  ladderSizeMode: 'flat',             // 'flat' | 'linear' | 'sqrt'
+  ladderAutoSwitch: false,            // Auto-switch based on volatility
+  ladderAutoSwitchVolMult: 2.0,       // Vol expansion threshold
+  ladderMinSpacingPct: 0.5,           // Min % between rungs
 };
 
 /**
@@ -424,12 +441,20 @@ const updateRegimeConfig = (exchange, updates) => {
 const validateRegimeConfig = (config) => {
   const errors = [];
 
+  // Aggressiveness level validation
+  if (config.aggressiveness !== undefined) {
+    const validLevels = ['conservative', 'moderate', 'aggressive', 'maximum'];
+    if (!validLevels.includes(config.aggressiveness)) {
+      errors.push('aggressiveness must be one of: conservative, moderate, aggressive, maximum');
+    }
+  }
+
   // Volatility Clock validation
   if (config.atrPeriod !== undefined && (config.atrPeriod < 5 || config.atrPeriod > 30)) {
     errors.push('atrPeriod must be between 5 and 30');
   }
-  if (config.kFactor !== undefined && (config.kFactor < 0.4 || config.kFactor > 0.8)) {
-    errors.push('kFactor must be between 0.4 and 0.8');
+  if (config.kFactor !== undefined && (config.kFactor < 0.2 || config.kFactor > 0.8)) {
+    errors.push('kFactor must be between 0.2 and 0.8');
   }
   if (config.minIntervalMs !== undefined && config.minIntervalMs < 30000) {
     errors.push('minIntervalMs must be at least 30000 (30 seconds)');
@@ -450,8 +475,8 @@ const validateRegimeConfig = (config) => {
   if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
     errors.push('baseSizeUsdc must be between 1 and 1000');
   }
-  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 50)) {
-    errors.push('maxLadderSteps must be between 3 and 50');
+  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 1000)) {
+    errors.push('maxLadderSteps must be between 3 and 1000');
   }
 
   // Take-Profit validation
@@ -514,9 +539,41 @@ const validateRegimeConfig = (config) => {
     errors.push('sizeMaxLadderSteps must be between 20 and 200');
   }
 
+  // Ladder / Entry Mode validation
+  if (config.entryMode !== undefined) {
+    const allowedEntryModes = ['reactive', 'ladder'];
+    if (!allowedEntryModes.includes(config.entryMode)) {
+      errors.push(`entryMode must be one of: ${allowedEntryModes.join(', ')}`);
+    }
+  }
+  if (config.ladderLevels !== undefined && (!Number.isInteger(config.ladderLevels) || config.ladderLevels < 2 || config.ladderLevels > 50)) {
+    errors.push('ladderLevels must be an integer between 2 and 50');
+  }
+  if (config.ladderLowerBoundPct !== undefined && (config.ladderLowerBoundPct < 1 || config.ladderLowerBoundPct > 50)) {
+    errors.push('ladderLowerBoundPct must be between 1 and 50');
+  }
+  if (config.ladderSpacingMode !== undefined) {
+    const allowedSpacing = ['linear', 'sqrt', 'exponential'];
+    if (!allowedSpacing.includes(config.ladderSpacingMode)) {
+      errors.push(`ladderSpacingMode must be one of: ${allowedSpacing.join(', ')}`);
+    }
+  }
+  if (config.ladderSizeMode !== undefined) {
+    const allowedSizing = ['flat', 'linear', 'sqrt'];
+    if (!allowedSizing.includes(config.ladderSizeMode)) {
+      errors.push(`ladderSizeMode must be one of: ${allowedSizing.join(', ')}`);
+    }
+  }
+  if (config.ladderMinSpacingPct !== undefined && (config.ladderMinSpacingPct < 0.01 || config.ladderMinSpacingPct > 5.0)) {
+    errors.push('ladderMinSpacingPct must be between 0.01 and 5.0');
+  }
+
   // Risk Caps validation
   if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.01 || config.maxBtcExposure > 10.0)) {
     errors.push('maxBtcExposure must be between 0.01 and 10.0');
+  }
+  if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && (config.depositedCapital < 100 || config.depositedCapital > 100000)) {
+    errors.push('depositedCapital must be 0 (auto-derive) or between 100 and 100000');
   }
   if (config.maxUsdcDeployed !== undefined && (config.maxUsdcDeployed < 1000 || config.maxUsdcDeployed > 100000)) {
     errors.push('maxUsdcDeployed must be between 1000 and 100000');

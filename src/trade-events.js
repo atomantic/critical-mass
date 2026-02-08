@@ -104,10 +104,10 @@ class TradeEventEmitter extends EventEmitter {
       { prevMode, newMode, reason });
   }
 
-  entryTriggered(exchange, trigger, regime, step, sizeUsdc) {
+  entryTriggered(exchange, trigger, regime, buys, sizeUsdc) {
     this.emitTradeEvent('entry_triggered', exchange,
-      `Entry triggered: ${trigger} (${regime} step ${step})`,
-      { trigger, regime, step, sizeUsdc });
+      `Entry triggered: ${trigger} (${regime} buys ${buys})`,
+      { trigger, regime, buys, sizeUsdc });
   }
 
   entryPlaced(exchange, orderId, btcAmount, price, regime) {
@@ -116,10 +116,10 @@ class TradeEventEmitter extends EventEmitter {
       { orderId, btcAmount, price, regime });
   }
 
-  entryFilled(exchange, btcAmount, price, avgCostBasis, ladderStep) {
+  entryFilled(exchange, btcAmount, price, avgCostBasis, cycleBuys) {
     this.emitTradeEvent('entry_filled', exchange,
-      `Entry filled: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (step ${ladderStep}, avg $${avgCostBasis.toFixed(2)})`,
-      { btcAmount, price, avgCostBasis, ladderStep });
+      `Entry filled: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (buy ${cycleBuys}, avg $${avgCostBasis.toFixed(2)})`,
+      { btcAmount, price, avgCostBasis, cycleBuys });
   }
 
   tpPlaced(exchange, orderId, btcAmount, price) {

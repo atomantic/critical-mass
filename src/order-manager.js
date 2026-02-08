@@ -127,7 +127,10 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
   adapter = adapter || getAdapter('coinbase');
   const filledOrders = [];
 
-  for (const pendingOrder of pendingOrders) {
+  // Filter out dry-run orders - they don't exist on the exchange
+  const realOrders = pendingOrders.filter(o => !o.orderId.startsWith('dry-run-'));
+
+  for (const pendingOrder of realOrders) {
     const orderStatus = await adapter.getOrder(pendingOrder.orderId);
 
     if (orderStatus.status === 'FILLED') {

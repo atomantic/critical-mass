@@ -108,7 +108,7 @@ const createRiskManager = (exchange, config) => {
             reason: null,
             currentStep,
             maxSteps: config.maxLadderSteps,
-            shouldReset: true, // Signal to regime engine to reset ladderStep
+            shouldReset: true, // Signal to regime engine to reset cycleBuys
           };
         }
       }
@@ -230,7 +230,7 @@ const createRiskManager = (exchange, config) => {
       reasons.push(usdcCheck.reason);
     }
 
-    const ladderCheck = checkLadderLimit(position.ladderStep);
+    const ladderCheck = checkLadderLimit(position.cycleBuys);
     if (!ladderCheck.allowed) {
       reasons.push(ladderCheck.reason);
     }
@@ -279,7 +279,7 @@ const createRiskManager = (exchange, config) => {
   const getRemainingCapacity = (position, currentPrice) => {
     const remainingBTC = roundBTC(config.maxBtcExposure - position.totalBTC);
     const remainingUsdc = roundUSDC(config.maxUsdcDeployed - position.totalCostBasis);
-    const remainingSteps = config.maxLadderSteps - position.ladderStep;
+    const remainingSteps = config.maxLadderSteps - position.cycleBuys;
 
     return {
       remainingBTC: Math.max(0, remainingBTC),
@@ -297,7 +297,7 @@ const createRiskManager = (exchange, config) => {
     return {
       btcUtilization: (position.totalBTC / config.maxBtcExposure) * 100,
       usdcUtilization: (position.totalCostBasis / config.maxUsdcDeployed) * 100,
-      ladderUtilization: (position.ladderStep / config.maxLadderSteps) * 100,
+      ladderUtilization: (position.cycleBuys / config.maxLadderSteps) * 100,
     };
   };
 
@@ -311,7 +311,7 @@ const createRiskManager = (exchange, config) => {
     const parts = [
       `btc=${position.totalBTC.toFixed(4)}/${config.maxBtcExposure}(${util.btcUtilization.toFixed(0)}%)`,
       `usdc=$${position.totalCostBasis.toFixed(0)}/${config.maxUsdcDeployed}(${util.usdcUtilization.toFixed(0)}%)`,
-      `steps=${position.ladderStep}/${config.maxLadderSteps}`,
+      `buys=${position.cycleBuys}/${config.maxLadderSteps}`,
     ];
 
     if (maxDrawdownSeen > 0) {

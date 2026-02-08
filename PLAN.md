@@ -2,7 +2,7 @@
 
 A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 
-**Version:** 2.3.0
+**Version:** 2.4.21
 **Ports:** 5563 (API), 5564 (UI dev)
 
 ---
@@ -112,7 +112,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 
 **Volatility Clock:**
 - Entry triggers based on price moving k × ATR from anchor price
-- Minimum interval enforced (default: 60s)
+- Minimum interval enforced (default: 2min)
 - Maximum interval fallback (default: 1hr)
 - ATR calculated from 1-minute and 5-minute candles
 
@@ -175,6 +175,66 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Effective timeout shown in dashboard with regime-adjustment indicator
 - Prevents stale orders lingering at suboptimal prices during volatility
 
+**Aggressiveness Control (v2.4+):**
+- Dashboard control with 4 preset levels: Conservative, Moderate, Aggressive, Maximum
+- Single-click changes apply immediately without restart
+- Controls 8 trading parameters simultaneously (including maxLadderSteps):
+  | Parameter | Conservative | Moderate | Aggressive | Maximum |
+  |-----------|-------------|----------|------------|---------|
+  | baseSizeUsdc | 25 | 50 | 100 | 200 |
+  | kFactor | 0.8 | 0.65 | 0.5 | 0.3 |
+  | minIntervalMs | 180000 (3min) | 120000 (2min) | 90000 (90s) | 60000 (1min) |
+  | maxIntervalMs | 7200000 (2hr) | 3600000 (1hr) | 2400000 (40m) | 1200000 (20m) |
+  | cautionScale | 0.15 | 0.35 | 0.6 | 1.0 |
+  | trendScale | 0 | 0.1 | 0.25 | 0.5 |
+  | entryOffsetBps | 25 | 18 | 12 | 5 |
+  | maxLadderSteps | 10 | 15 | 25 | 50 |
+- Estimated $25k deployment: Conservative ~23-34 days, Moderate ~10-20 days, Aggressive ~3-6 days, Maximum ~1-1.3 days
+- Color-coded buttons (green/blue/yellow/red)
+- Hover preview shows computed values with diff highlighting
+- Detects "Custom" when values don't match any preset
+- Note: baseSizeUsdc may be overridden by auto-sizer if enabled
+
+**Pre-Positioned Liquidity Ladder Mode (v2.4) ✅ Implemented:**
+- Alternative entry strategy that pre-positions multiple limit buy orders
+- Complements reactive mode by capturing liquidity shocks and fat-tail events
+- Two-engine system:
+  | Engine | Extracts Value From | Best For |
+  |--------|---------------------|----------|
+  | Reactive | Oscillation frequency | Tight chop |
+  | Ladder | Liquidity shocks & panic selling | Fat-tail dips, wicks |
+- Configuration:
+  - `entryMode: 'reactive' | 'ladder'` - Entry strategy mode
+  - `ladderLevels: 10` - Number of rungs in the ladder
+  - `ladderLowerBoundPct: 15` - Base lower bound (% below current price)
+  - `ladderLowerBoundAthAdjust: true` - Widen ladder based on ATH distance
+  - `ladderSpacingMode: 'linear' | 'sqrt' | 'exponential'` - Price level distribution
+  - `ladderSizeMode: 'flat' | 'linear' | 'sqrt'` - Size allocation mode
+  - `ladderAutoSwitch: false` - Auto-switch to ladder on high volatility
+  - `ladderAutoSwitchVolMult: 2.0` - Vol expansion threshold for auto-switch
+  - `ladderMinSpacingPct: 0.5` - Minimum % between rungs
+- Adaptive lower bound:
+  - Base percentage from config (default 15%)
+  - ATH adjustment: widens when further from ATH (e.g., 43% below ATH → 1.43x multiplier)
+  - Volatility adjustment: widens during high volatility (capped at 2x)
+  - Maximum adjustment capped at 50%
+- Spacing modes:
+  - `sqrt`: Denser near top (current price), sparser at bottom (default)
+  - `linear`: Even spacing throughout
+  - `exponential`: Sparser near top, denser at bottom
+- Ladder cycle flow:
+  1. Build ladder with adaptive lower bound based on ATH distance and volatility
+  2. Place N limit buy orders spanning from current price to lower bound
+  3. On fill: update position, update TP, reprice remaining ladder from current price
+  4. On TP fill: cancel all unfilled ladder orders, reset cycle
+- Risk safeguards:
+  - Budget cap: Total ladder allocation ≤ maxUsdcDeployed - totalCostBasis
+  - BTC cap: Checks maxBtcExposure on each fill
+  - Min order size: Skips levels where allocation < minOrderSize
+  - Spacing minimum: Enforces ladderMinSpacingPct between levels
+  - Order limit: Validates maxOpenOrders ≥ ladderLevels + 1
+  - Mode switch protection: Doesn't switch modes mid-cycle with active position
+
 **Safety Features:**
 - Automatic SAFE mode on: WebSocket disconnect, stale data, REST errors
 - Flash move detection pauses entries and disables scaling
@@ -186,7 +246,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Auto-resets peak after configurable hours (default: 72h/3 days)
   - Manual "Resume Trading" button in UI to override pause
 - Ladder step limit with auto-reset:
-  - Pauses entries when ladder limit reached (default: 10 steps)
+  - Pauses entries when ladder limit reached (default: 15 steps)
   - Auto-resets after configurable hours (default: 72h/3 days)
   - Prevents stuck positions in prolonged ATH markets
 
@@ -237,18 +297,27 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - State persistence for faster recovery on restarts:
   - Saves regime state to `data/{exchange}/regime-state.json` every 5 minutes
   - Saves fill ledger to `data/{exchange}/fill-ledger.json` on shutdown
+  - **Pending entry orders** saved immediately when placed for recovery
   - Restores state on startup, then validates against exchange
 - **Restart recovery flow:**
   1. Load saved state from disk (if exists)
   2. Recover state from exchange (fills, open orders, balances)
   3. Merge saved state with exchange-recovered values
   4. Check for orders that filled while offline (TP orders, entry orders)
-  5. Re-evaluate position based on current market price
-  6. Re-anchor volatility triggers to current price
-  7. Resume trading with validated state
+  5. **Restore pending entry orders** from saved state (instead of canceling)
+  6. Ingest any partial fills that occurred while offline
+  7. Re-evaluate position based on current market price
+  8. Re-anchor volatility triggers to current price
+  9. Resume trading with validated state
+- **Pending entry order persistence:**
+  - Entry orders saved to `positionState.pendingEntryOrders` immediately when placed
+  - Orders restored to order executor tracking on restart
+  - Partial fills ingested and position updated accordingly
+  - Orders not belonging to regime engine are ignored (e.g., from DCA engine)
+  - Prevents lost opportunities when good limit orders were placed before restart
 - Offline order detection handles:
   - TP orders that filled while offline → completes cycle, calculates P&L
-  - Entry orders that filled while offline → updates position
+  - Entry orders that filled while offline → updates position, places/updates TP order
 - Market position re-evaluation on startup:
   - Logs price movement since last entry
   - Re-anchors price for volatility triggers
@@ -320,12 +389,13 @@ src/
 ├── backtest-engine.js  # Historical simulation (fixed + fibonacci)
 ├── optimizer-engine.js # Parameter optimization
 │
-│ # Regime Engine Components (v2.4)
+│ # Regime Engine Components (v2.4/2.5)
 ├── regime-engine.js    # Main regime-aware trading engine
 ├── regime-detector.js  # Regime classification (HARVEST/CAUTION/TREND)
 ├── volatility-utils.js # ATR, RV, VWAP, swing calculations
 ├── position-sizer.js   # Liquidity-aware position sizing
-├── order-executor.js   # Maker-prefer limit order placement
+├── order-executor.js   # Maker-prefer limit order placement + ladder orders
+├── ladder-calculator.js # Ladder mode calculations (levels, sizing, ATH)
 ├── dry-run-executor.js # Simulated order execution for dry-run mode
 ├── dry-run-state.js    # State persistence for dry-run simulations
 ├── tp-optimizer.js     # Dynamic TP auto-management with histogram compression
@@ -448,6 +518,286 @@ Required methods for each adapter:
 - Portfolio rebalancing
 - Tax reporting exports
 - Mobile notifications
+
+---
+
+## Prediction Market Arbitrage System (Proposed Feature)
+
+### Overview
+
+Extension to support prediction market arbitrage on platforms like **Kalshi** (US-regulated) and **Polymarket** (crypto-based). Unlike spot crypto trading which requires directional prediction, prediction market arbitrage exploits mathematical pricing inefficiencies for risk-free or low-risk returns.
+
+**Key Insight**: Prediction markets often misprice correlated events, allowing traders to lock in guaranteed profits by buying combinations that must collectively pay out more than their total cost.
+
+### Five Arbitrage Strategy Types
+
+Based on analysis of successful prediction market traders:
+
+#### 1. Basic Arbitrage (Same-Market Spread)
+- **Concept**: Buy both YES and NO shares on the same market when total cost < $1
+- **Example**: YES @ $0.45 + NO @ $0.51 = $0.96 → Guaranteed $1 payout
+- **Profit**: 4.2% return regardless of outcome
+- **Risk**: Zero (one side MUST pay $1)
+- **Detection**: Monitor bid/ask spreads on single markets
+
+#### 2. Mutually Exclusive Arbitrage
+- **Concept**: Two events where exactly one must be true
+- **Example**: "Winner is A" vs "Winner is NOT A" across different markets
+- **Opportunity**: Combined YES positions < $1 total
+- **Risk**: Near-zero (definitional exclusivity)
+- **Detection**: Identify markets with logical mutual exclusivity
+
+#### 3. Contradiction Arbitrage
+- **Concept**: Two markets make opposing claims about the same event
+- **Example**: Market A says "X will happen", Market B says "X won't happen"
+- **Trade**: Buy YES on one, buy equivalent position on other
+- **Risk**: Low (depends on settlement consistency)
+- **Detection**: NLP/semantic analysis of market descriptions
+
+#### 4. One-of-Many (Multi-Date) Arbitrage ⭐ *Primary Strategy*
+- **Concept**: Event markets with different date thresholds where earlier events trigger later ones
+- **Example**: "US strikes Iran by March/April/June" - if March YES, then April and June also YES
+- **Trade**: Buy NO on multiple dates where total NO cost < $1
+- **Math**: If event happens in March → lose March NO, but didn't buy April/June NO
+         If event never happens → ALL NO positions pay $1 each
+- **Optimal**: Buy NO positions whose combined cost guarantees profit either way
+- **Risk**: Minimal if positions properly sized
+- **Detection**: Find related markets with cascading logic
+
+#### 5. Must-Happen (Exhaustive) Arbitrage
+- **Concept**: Set of outcomes where exactly one MUST occur
+- **Example**: "Election winner: A, B, C, D" where all YES positions < $1 total
+- **Trade**: Buy YES on all outcomes
+- **Risk**: Zero (one outcome must win)
+- **Detection**: Markets with exhaustive, mutually exclusive outcomes
+
+### Proposed Architecture
+
+```
+src/
+├── adapters/
+│   ├── kalshi/                    # Kalshi API adapter
+│   │   ├── index.js               # Main adapter
+│   │   ├── auth.js                # Kalshi authentication
+│   │   ├── markets.js             # Market data fetching
+│   │   └── orders.js              # Order placement
+│   └── polymarket/                # Polymarket adapter (optional)
+│       ├── index.js
+│       └── ...
+├── arbitrage/
+│   ├── arbitrage-engine.js        # Main orchestrator
+│   ├── arbitrage-detector.js      # Opportunity detection
+│   ├── arbitrage-types.js         # Strategy implementations
+│   │   ├── basic-spread.js        # Type 1: Same-market spread
+│   │   ├── mutual-exclusive.js    # Type 2: Mutually exclusive events
+│   │   ├── contradiction.js       # Type 3: Contradicting markets
+│   │   ├── multi-date.js          # Type 4: Date-cascading events
+│   │   └── exhaustive.js          # Type 5: Must-happen sets
+│   ├── market-correlator.js       # Find related/correlated markets
+│   ├── profit-calculator.js       # ROI and risk calculations
+│   ├── position-tracker.js        # Track open arb positions
+│   └── settlement-monitor.js      # Monitor settlements/payouts
+└── types/
+    └── kalshi.d.ts                # Kalshi API types
+
+admin/src/components/
+├── arbitrage/
+│   ├── ArbitrageDashboard.jsx     # Main arbitrage control panel
+│   ├── OpportunityScanner.jsx     # Real-time opportunity display
+│   ├── ActivePositions.jsx        # Current arbitrage positions
+│   ├── ProfitTracker.jsx          # Historical profits
+│   └── MarketCorrelations.jsx     # Visualize correlated markets
+```
+
+### Data Models
+
+```javascript
+// Arbitrage Opportunity
+{
+  id: string,
+  type: 'basic' | 'mutual_exclusive' | 'contradiction' | 'multi_date' | 'exhaustive',
+  markets: [{
+    marketId: string,
+    ticker: string,
+    title: string,
+    side: 'YES' | 'NO',
+    price: number,      // Cost per share (0.01-0.99)
+    shares: number,     // Recommended position size
+    cost: number        // Total cost for position
+  }],
+  totalCost: number,    // Combined cost of all positions
+  guaranteedPayout: number,  // Minimum payout regardless of outcome
+  profit: number,       // Guaranteed profit (payout - cost)
+  roi: number,          // Return on investment percentage
+  confidence: number,   // 0-1 confidence in correlation logic
+  expiresAt: Date,      // Earliest market expiration
+  detectedAt: Date
+}
+
+// Arbitrage Position
+{
+  id: string,
+  opportunityId: string,
+  type: string,
+  legs: [{
+    orderId: string,
+    marketId: string,
+    side: 'YES' | 'NO',
+    shares: number,
+    fillPrice: number,
+    status: 'open' | 'settled' | 'expired'
+  }],
+  totalInvested: number,
+  realizedPayout: number,
+  realizedProfit: number,
+  status: 'open' | 'partial_settle' | 'complete',
+  openedAt: Date,
+  settledAt: Date
+}
+```
+
+### Configuration
+
+```json
+{
+  "exchanges": {
+    "kalshi": {
+      "enabled": true,
+      "dryRun": true,
+      "apiEndpoint": "https://trading-api.kalshi.com",
+      "strategies": {
+        "arbitrage": {
+          "enabled": true,
+          "types": ["basic", "multi_date", "exhaustive"],
+          "minRoiPercent": 2.0,
+          "maxPositionUsd": 1000,
+          "maxTotalExposure": 10000,
+          "minConfidence": 0.95,
+          "autoExecute": false,
+          "scanIntervalMs": 60000,
+          "categories": ["politics", "economics", "crypto"]
+        }
+      }
+    }
+  }
+}
+```
+
+### API Endpoints
+
+```
+# Market Data
+GET  /api/kalshi/markets                    - List available markets
+GET  /api/kalshi/markets/:id                - Get market details
+GET  /api/kalshi/markets/correlated         - Find correlated market groups
+
+# Arbitrage
+GET  /api/kalshi/arbitrage/opportunities    - Current arbitrage opportunities
+GET  /api/kalshi/arbitrage/opportunities/:type  - Filter by strategy type
+POST /api/kalshi/arbitrage/execute          - Execute arbitrage opportunity
+GET  /api/kalshi/arbitrage/positions        - Active arbitrage positions
+GET  /api/kalshi/arbitrage/history          - Historical arbitrage trades
+GET  /api/kalshi/arbitrage/pnl              - Profit/loss summary
+
+# Monitoring
+GET  /api/kalshi/arbitrage/alerts           - Active opportunity alerts
+POST /api/kalshi/arbitrage/watch            - Add market to watchlist
+GET  /api/kalshi/arbitrage/correlations     - Market correlation analysis
+```
+
+### Detection Algorithms
+
+#### Multi-Date Event Detection (Primary)
+1. Fetch all markets in a category (e.g., geopolitics)
+2. Group by underlying event using NLP on titles:
+   - Extract entity (e.g., "Iran", "Russia", "Bitcoin")
+   - Extract action (e.g., "strikes", "reaches", "passes")
+   - Extract date threshold (e.g., "by March", "before April")
+3. For each event group with multiple dates:
+   - Sort markets by date threshold
+   - Calculate: if NO on all later dates, what's the max loss if event happens at each date?
+   - Find optimal NO combination where: sum(NO_costs) < $1 guaranteed
+4. Alert when ROI > minRoiPercent
+
+#### Pricing Inefficiency Detection
+1. For each market, continuously track:
+   - Best bid/ask for YES and NO
+   - Implied probability (YES price ≈ probability)
+2. Alert when: best_ask_YES + best_ask_NO < 0.98 (2%+ guaranteed return)
+3. Account for fees in calculations
+
+### Execution Logic
+
+```javascript
+async function executeArbitrageOpportunity(opportunity) {
+  // 1. Validate opportunity still exists at expected prices
+  const currentPrices = await fetchCurrentPrices(opportunity.markets);
+  const stillProfitable = validateProfitability(opportunity, currentPrices);
+
+  if (!stillProfitable) {
+    return { success: false, reason: 'prices_moved' };
+  }
+
+  // 2. Calculate optimal order sizes based on liquidity
+  const orders = calculateOptimalOrders(opportunity, currentPrices);
+
+  // 3. Execute all legs atomically (as close as possible)
+  const results = await Promise.all(
+    orders.map(order => placeOrder(order))
+  );
+
+  // 4. Track position
+  const position = createPosition(opportunity, results);
+  await savePosition(position);
+
+  // 5. Set up settlement monitoring
+  monitorSettlement(position);
+
+  return { success: true, position };
+}
+```
+
+### Risk Considerations
+
+1. **Liquidity Risk**: Large orders may not fill at expected prices
+2. **Timing Risk**: Prices move between leg executions
+3. **Settlement Risk**: Unclear market resolutions
+4. **Platform Risk**: Exchange downtime, withdrawal issues
+5. **Regulatory Risk**: Changing rules on prediction markets
+
+### Mitigation Strategies
+
+1. **Slippage Protection**: Only execute if current prices still profitable after fees
+2. **Size Limits**: Cap individual position and total exposure
+3. **Confidence Thresholds**: Only trade high-confidence correlations
+4. **Diversification**: Spread across multiple uncorrelated opportunities
+5. **Manual Review Mode**: Alert but don't auto-execute for review
+
+### Implementation Phases
+
+**Phase 1: Foundation**
+- [ ] Kalshi API adapter (auth, markets, orders)
+- [ ] Basic arbitrage detector (Type 1: spread monitoring)
+- [ ] Manual execution via admin UI
+- [ ] Position tracking
+
+**Phase 2: Multi-Date Strategy**
+- [ ] Market correlation engine
+- [ ] Multi-date event grouping
+- [ ] Type 4 arbitrage detection
+- [ ] Profit/risk calculator
+
+**Phase 3: Automation**
+- [ ] Auto-execution with safeguards
+- [ ] Real-time monitoring
+- [ ] Telegram/Discord alerts
+- [ ] Settlement tracking
+
+**Phase 4: Advanced Strategies**
+- [ ] Types 2, 3, 5 detection
+- [ ] NLP for market relationship inference
+- [ ] Historical backtesting
+- [ ] Portfolio optimization
 
 ---
 

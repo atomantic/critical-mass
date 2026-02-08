@@ -2,6 +2,106 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.14] - 2026-02-06
+
+### Fixed
+- **ATH fetch fails on Coinbase** - Reduced daily candle request from 365 to 349 days to stay under Coinbase API's 350-candle limit
+
+## [2.4.12] - 2026-02-04
+
+### Changed
+- **Extended chart windows to 1 hour** - Regime dashboard now shows more history
+  - Regime Timeline expanded from 15 minutes to 1 hour
+  - Price & ATR Triggers chart expanded from 15 minutes to 1 hour
+  - Backend data buffer increased to retain 1 hour of data (4000 points max)
+
+## [2.4.11] - 2026-02-04
+
+### Fixed
+- **USDC cap exceeded log spam** - Fixed repeated warning messages when USDC cap is exceeded
+  - The warning `Entry blocked: usdc_cap_exceeded` was logging multiple times per second
+  - Now logs only once when the cap is first exceeded
+  - Resets to log again after cycle completion
+
+## [2.4.8] - 2026-02-04
+
+### Added
+- **Enhanced filled orders tables** - More detailed fill information in UI
+  - Added "Fill Time" column showing duration from order placement to fill (e.g., "20s", "1m 30s")
+  - Added "Net Fee" column for live fills showing fee minus rebate
+  - Green highlight when rebate exceeds fee (you earned money!)
+  - Tooltip on net fee shows raw fee and rebate breakdown
+  - Renamed "Time" column to "Filled" for clarity
+  - Full order IDs displayed (removed truncation)
+- **Holdback tracking in Transactions page** - Better visibility into BTC reserves
+  - Added "Holdback" column showing BTC kept as reserves on sell transactions
+  - Tooltip displays holdback value in USD
+  - Summary section shows total holdback BTC and value across all filtered transactions
+  - Helps explain P&L calculations when holdback value contributes to total returns
+
+### Fixed
+- **Polling-detected fills showing 0 BTC @ $0** - Fixed bug where fills detected via polling had missing data
+  - Root cause: Coinbase eventual consistency - fills API can lag behind order status API
+  - Added 2-second retry when getOrderFills returns empty but order status shows filled
+  - Added fallback to create synthetic fill from order status data if retry still empty
+  - Ensures fill data is captured even when Coinbase fills API is slow to propagate
+- **Fill time not captured for polling-detected fills** - Fixed order placedAt not being passed to fill handler
+  - Order was deleted from pendingOrders before callback, losing the placedAt timestamp
+  - Now captures and passes placedAt in the callback for fill time tracking
+- **Total fees shown in totals row** - Added total net fees to buy/sell summary rows for cost visibility
+
+## [2.4.4] - 2026-02-04
+
+### Changed
+- **Regime Dashboard layout reorganization** - Improved UI layout for better information hierarchy
+  - Configuration Summary moved into 3rd column under Price & ATR chart
+  - Orders section changed from side-by-side to vertically stacked layout
+  - Filled Orders tables height doubled (128px → 256px) to show more fills
+  - Open Orders stays compact (only 1-2 orders at a time)
+
+### Fixed
+- **Ladder limit log spam** - Fixed repeated warning messages when ladder limit is reached
+  - The warning `Entry blocked: ladder_limit_reached` was logging multiple times per second
+  - Now logs only once when the limit is first reached
+  - Resets to log again after ladder auto-reset or cycle completion
+- **Fills totals calculated from only displayed rows** - Fixed buy/sell totals in UI using sliced array
+  - Totals were calculated from only the 10 displayed fills instead of all fills in the cycle
+  - Now calculates totals from all fills, then slices for display
+  - Headers now show total count (e.g., "Buys (58, showing 10)")
+
+## [2.4.2] - 2026-02-03
+
+### Added
+- **Capital tracking improvements** - Better visibility into capital allocation
+  - `originalCapital` - True starting capital that never changes, preserved across restarts
+  - `availableCapital` - Current cap minus deployed capital (maxUsdcDeployed - totalCostBasis)
+  - Dashboard now shows "Original" and "Available" capital in the APY section
+  - Helps track how much capital is currently deployable vs locked in positions
+
+### Fixed
+- **Crypto.com dry-run orders causing API errors on restart** - Fixed error when checking pending orders on startup
+  - Dry-run orders (with IDs like `dry-run-sell-*`) were being passed to the Crypto.com API
+  - API returned 40003 "Invalid order_id" since these orders don't exist on the exchange
+  - Now filters out dry-run orders before attempting to check their status
+- **Health monitor stuck in SAFE mode** - Fixed critical bug where system would never auto-recover from SAFE mode
+  - Root cause: `checkHealth()` was never called in regime-engine, preventing automatic exit from SAFE mode
+  - Added periodic health check call in metrics updater (runs every 60 seconds)
+  - Also fixed `resume()` to work with SAFE mode (previously only worked for PAUSED mode)
+  - This caused entries to be blocked indefinitely after WebSocket disconnects
+- **TP order not updated after offline buy fills** - Fixed bug where TP order size wasn't updated when buy orders filled while engine was offline
+  - Root cause: `checkOfflineOrderFills()` updated position but didn't call `placeTakeProfitOrder()`
+  - This caused the TP to sell at its original size, leaving excess BTC as unintended holdback
+  - Now properly places/updates TP order after processing offline buy fills
+- **Entry orders preserved across restarts** - Entry orders are now persisted and restored instead of being canceled
+  - Pending entry orders are saved to `positionState.pendingEntryOrders` immediately when placed
+  - On restart, saved entries are restored to order tracking and allowed to fill naturally
+  - Partial fills during offline periods are properly ingested
+  - Orders not belonging to the regime engine (e.g., from DCA engine) are ignored, not canceled
+  - This prevents lost opportunities when good limit orders were placed before restart
+- **Orphaned TP orders from failed cancels** - Fixed silent failure when canceling old TP before placing new one
+  - Cancel failures were ignored, causing new TP to be placed while old one remained on exchange
+  - Now logs a warning when cancel fails and keeps the existing TP tracked, refusing to place a new one to avoid duplicate sells
+
 ## [2.3.47] - 2026-02-03
 
 ### Fixed

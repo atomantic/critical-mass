@@ -10,7 +10,7 @@ const REGIME_COLORS = {
 
 /**
  * Price chart with ATR bands for the regime dashboard
- * Shows 15 minutes of price data with trigger zones
+ * Shows 1 hour of price data with trigger zones
  */
 function RegimePriceChart({
   priceData = [],
@@ -26,9 +26,9 @@ function RegimePriceChart({
   const svgRef = useRef(null)
   const [containerWidth, setContainerWidth] = useState(0)
 
-  // Filter to last 15 minutes
+  // Filter to last 1 hour
   const chartData = useMemo(() => {
-    const cutoff = Date.now() - 15 * 60 * 1000
+    const cutoff = Date.now() - 60 * 60 * 1000
     return priceData.filter(d => d.timestamp > cutoff)
   }, [priceData])
 

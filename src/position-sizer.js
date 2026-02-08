@@ -30,26 +30,26 @@ const createPositionSizer = (exchange, config) => {
    * Calculate entry size in USDC
    * @param {Object} params - Sizing parameters
    * @param {RegimeMode} params.regime - Current regime mode
-   * @param {number} params.ladderStep - Current ladder step (0-indexed)
+   * @param {number} params.cycleBuys - Current ladder step (0-indexed)
    * @param {number} params.totalCostBasis - Current cost basis
    * @param {number} [params.bidDepthUsdc] - Bid depth in USDC (optional)
    * @param {number} [params.baselineDepth] - Baseline depth for comparison (optional)
    * @returns {{sizeUsdc: number, sizeBTC: number, factors: Object}}
    */
   const calculateEntrySize = (params) => {
-    const { regime, ladderStep, totalCostBasis, bidDepthUsdc, baselineDepth } = params;
+    const { regime, cycleBuys, totalCostBasis, bidDepthUsdc, baselineDepth } = params;
 
     // Get regime scale factor
     const regimeScale = getRegimeScale(regime);
 
     // Get liquidity factor
-    const liquidityFactor = calculateLiquidityFactor(ladderStep, bidDepthUsdc, baselineDepth);
+    const liquidityFactor = calculateLiquidityFactor(cycleBuys, bidDepthUsdc, baselineDepth);
 
     // Calculate raw size
     let sizeUsdc = config.baseSizeUsdc * regimeScale * liquidityFactor;
 
-    // Check remaining budget
-    const remainingBudget = config.maxUsdcDeployed - totalCostBasis;
+    // Check remaining budget (cap at 0 to prevent negative sizes)
+    const remainingBudget = Math.max(0, config.maxUsdcDeployed - totalCostBasis);
     sizeUsdc = Math.min(sizeUsdc, remainingBudget);
 
     // Round to 2 decimals
@@ -64,7 +64,7 @@ const createPositionSizer = (exchange, config) => {
         liquidityFactor,
         remainingBudget,
         regime,
-        ladderStep,
+        cycleBuys,
       },
     };
   };
@@ -91,12 +91,12 @@ const createPositionSizer = (exchange, config) => {
    * Calculate liquidity factor
    * If L2 depth available: sqrt(depth / baseline)
    * Fallback: geometric scaling based on ladder step
-   * @param {number} ladderStep - Current ladder step
+   * @param {number} cycleBuys - Current ladder step
    * @param {number} [bidDepthUsdc] - Current bid depth
    * @param {number} [baselineDepth] - Baseline depth
    * @returns {number} Liquidity factor
    */
-  const calculateLiquidityFactor = (ladderStep, bidDepthUsdc, baselineDepth) => {
+  const calculateLiquidityFactor = (cycleBuys, bidDepthUsdc, baselineDepth) => {
     // If L2 depth is available, use sqrt scaling
     if (bidDepthUsdc !== undefined && baselineDepth !== undefined && baselineDepth > 0) {
       const depthRatio = bidDepthUsdc / baselineDepth;
@@ -106,7 +106,7 @@ const createPositionSizer = (exchange, config) => {
 
     // Fallback: geometric scaling based on ladder step
     // factor = 1 + (step * 0.1), capped
-    const stepFactor = 1 + (ladderStep * 0.1);
+    const stepFactor = 1 + (cycleBuys * 0.1);
     return Math.min(stepFactor, config.liquidityFactorCap);
   };
 
@@ -173,8 +173,8 @@ const createPositionSizer = (exchange, config) => {
    * @returns {string}
    */
   const getSizingSummary = (factors) => {
-    const { base, regimeScale, liquidityFactor, remainingBudget, regime, ladderStep } = factors;
-    return `base=$${base} regime=${regime}(${regimeScale}) liq=${liquidityFactor.toFixed(2)} step=${ladderStep} budget=$${remainingBudget.toFixed(0)}`;
+    const { base, regimeScale, liquidityFactor, remainingBudget, regime, cycleBuys } = factors;
+    return `base=$${base} regime=${regime}(${regimeScale}) liq=${liquidityFactor.toFixed(2)} buys=${cycleBuys} budget=$${remainingBudget.toFixed(0)}`;
   };
 
   /**
@@ -191,7 +191,7 @@ const createPositionSizer = (exchange, config) => {
     for (let step = 0; step < maxSteps; step++) {
       const result = calculateEntrySize({
         regime,
-        ladderStep: step,
+        cycleBuys: step,
         totalCostBasis: cumulativeCost,
       });
 
