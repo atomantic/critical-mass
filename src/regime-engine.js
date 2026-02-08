@@ -177,6 +177,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let usdcCapWarningLogged = false;
   // Track if budget exhausted warning has been logged (to avoid log spam)
   let budgetExhaustedWarningLogged = false;
+  // Guard against concurrent ATH backfill requests
+  let athUpdateInProgress = false;
 
   // Callbacks container for dry-run (populated after functions are defined)
   const dryRunCallbacks = {
@@ -1146,8 +1148,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Process tail event checks
     tailEvents.processTicker(data, marketState.atr1m);
 
-    // Evaluate entry trigger
-    evaluateEntryTrigger();
+    // Evaluate entry trigger (fire-and-forget, catch to prevent unhandled rejection)
+    evaluateEntryTrigger().catch(err => console.log(`⚠️ [${exchange}] Entry evaluation failed: ${err.message}`));
 
     // In dry-run mode, check if any orders should fill based on current price
     if (isDryRun) {
@@ -1276,8 +1278,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Determine if buy or sell
     if (fillData.side.toLowerCase() === 'buy') {
-      // Check if this is a ladder order fill
-      const isLadderFill = orderExecutor.isLadderOrder && orderExecutor.isLadderOrder(fillData.orderId);
+      // Check if this is a ladder order fill (use positionState since polling may delete from pendingOrders before callback)
+      const isLadderFill =
+        (positionState.pendingLadderOrders &&
+          positionState.pendingLadderOrders.some(o => o.orderId === fillData.orderId)) ||
+        (orderExecutor.isLadderOrder && orderExecutor.isLadderOrder(fillData.orderId));
 
       // Update position
       const summary = fillLedger.aggregateFills(fillsToAggregate);
@@ -1437,12 +1442,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return;
     }
 
+    // Prevent concurrent ATH backfills
+    if (athUpdateInProgress) return;
+
     // Check if ATH data is fresh enough (refresh daily)
     const now = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
     if (marketState.athLastUpdate && (now - marketState.athLastUpdate) < dayMs) {
       return;
     }
+
+    athUpdateInProgress = true;
 
     // Fetch full daily history in paginated batches (Coinbase API limits <350 candles per request)
     const nowSec = Math.floor(now / 1000);
@@ -1470,6 +1480,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     if (allCandles.length === 0) {
+      athUpdateInProgress = false;
       return;
     }
 
@@ -1480,9 +1491,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     marketState.ath = ath;
     marketState.athDistance = athDistance;
     marketState.athLastUpdate = now;
+    athUpdateInProgress = false;
 
     const distancePct = (Math.abs(athDistance) * 100).toFixed(1);
-    console.log(`📊 [${exchange}] ATH updated: $${ath.toFixed(2)}, current price ${athDistance < 0 ? `${distancePct}% below` : `${distancePct}% above`} ATH`);
+    console.log(`📊 [${exchange}] ATH updated: $${ath.toFixed(2)} (${allCandles.length} candles), current price ${athDistance < 0 ? `${distancePct}% below` : `${distancePct}% above`} ATH`);
   };
 
   /**
@@ -1716,30 +1728,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Calculate remaining budget
     const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
-    const minLadderBudget = config.baseSizeUsdc * (config.ladderLevels || 10);
 
-    if (remainingBudget < minLadderBudget) {
+    // Quick sanity check - need at least 1 order worth of budget
+    if (remainingBudget < config.baseSizeUsdc) {
       if (!budgetExhaustedWarningLogged) {
-        console.log(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} < $${minLadderBudget}`);
+        console.log(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} < $${config.baseSizeUsdc}`);
         budgetExhaustedWarningLogged = true;
       }
-      return;
-    }
-
-    // Check order limit
-    const pendingCounts = orderExecutor.getPendingCounts();
-    const ladderLevels = config.ladderLevels || 10;
-    const requiredSlots = ladderLevels + 1; // +1 for TP order
-
-    if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
-      console.log(`⚠️ [${exchange}] Insufficient order slots for ladder: need ${requiredSlots}, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
       return;
     }
 
     entryInProgress = true;
 
     const placeLadder = async () => {
-      // Build ladder
+      // Build ladder first to determine actual level count (may be fewer than config due to min-size filtering)
       const ladder = ladderCalculator.buildLadder(
         marketState.lastPrice,
         remainingBudget,
@@ -1750,6 +1752,23 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           athDistance: marketState.athDistance || 0,
         }
       );
+
+      if (ladder.levels.length === 0) {
+        if (!budgetExhaustedWarningLogged) {
+          console.log(`ℹ️ [${exchange}] Ladder build produced 0 levels for budget $${remainingBudget.toFixed(2)}`);
+          budgetExhaustedWarningLogged = true;
+        }
+        return;
+      }
+
+      // Check order limit using actual built level count
+      const pendingCounts = orderExecutor.getPendingCounts();
+      const requiredSlots = ladder.levels.length + 1; // +1 for TP order
+
+      if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
+        console.log(`⚠️ [${exchange}] Insufficient order slots for ladder: need ${requiredSlots}, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
+        return;
+      }
 
       console.log(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
 

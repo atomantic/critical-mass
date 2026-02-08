@@ -643,7 +643,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     let failedCount = 0;
 
     for (const level of levels) {
-      const result = await adapter.placeLimitBuy(productId, level.btcQty, level.price, { postOnly: true });
+      const result = await adapter.placeLimitBuy(productId, level.btcQty, level.price, { postOnly: true }).catch(err => {
+        console.log(`⚠️ [${exchange}] Error placing ladder order at $${level.price}: ${err.message}`);
+        return { success: false, errorMessage: err.message };
+      });
 
       if (result.success) {
         // Verify order is actually open (post-only can be immediately cancelled)

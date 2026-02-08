@@ -2,7 +2,7 @@
 
 A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
 
-**Version:** 2.4.20
+**Version:** 2.4.21
 **Ports:** 5563 (API), 5564 (UI dev)
 
 ---
