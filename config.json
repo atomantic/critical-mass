@@ -14,7 +14,7 @@
       "consolidateAfterOrders": 0,
       "consolidateInterval": "never",
       "regime": {
-        "enabled": true,
+        "enabled": false,
         "atrPeriod": 14,
         "kFactor": 0.8,
         "minIntervalMs": 180000,
@@ -68,8 +68,8 @@
       "schedulerInterval": 30000
     },
     "gemini": {
-      "enabled": true,
-      "dryRun": false,
+      "enabled": false,
+      "dryRun": true,
       "productId": "BTCUSD",
       "totalAllocation": 5000,
       "intervalsToSpread": 50,
@@ -83,8 +83,8 @@
       "consolidateInterval": "never"
     },
     "cryptocom": {
-      "enabled": true,
-      "dryRun": false,
+      "enabled": false,
+      "dryRun": true,
       "productId": "CRO_USD",
       "totalAllocation": 5000,
       "intervalsToSpread": 100,
