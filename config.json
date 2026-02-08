@@ -2,7 +2,7 @@
   "exchanges": {
     "coinbase": {
       "enabled": false,
-      "dryRun": true,
+      "dryRun": false,
       "productId": "BTC-USDC",
       "totalAllocation": 30000,
       "intervalsToSpread": 60,
@@ -14,7 +14,7 @@
       "consolidateAfterOrders": 0,
       "consolidateInterval": "never",
       "regime": {
-        "enabled": false,
+        "enabled": true,
         "atrPeriod": 14,
         "kFactor": 0.8,
         "minIntervalMs": 180000,
@@ -61,7 +61,8 @@
         "ladderResetHours": 6,
         "tpAutoManaged": true,
         "aggressiveness": "conservative",
-        "ladderAutoSwitch": true
+        "ladderAutoSwitch": true,
+        "entryMode": "reactive"
       },
       "dcaStrategy": "fixed",
       "fibBaseAmount": 10,

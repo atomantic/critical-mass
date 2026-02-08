@@ -1686,7 +1686,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Auto-switch to ladder mode if enabled and volatility is expanded
     if (config.ladderAutoSwitch && marketState.volBaseline > 0) {
       const volExpansion = marketState.realizedVol / marketState.volBaseline;
-      if (volExpansion >= (config.ladderAutoSwitchVolMult || 2.0)) {
+      const volThreshold = config.ladderAutoSwitchVolMult || 2.0;
+      if (volExpansion >= volThreshold) {
+        if (effectiveMode !== 'ladder') {
+          console.log(`🔀 [${exchange}] Auto-switch: reactive→ladder (volExpansion=${volExpansion.toFixed(2)}x >= ${volThreshold}x threshold, rVol=${marketState.realizedVol.toFixed(4)} baseline=${marketState.volBaseline.toFixed(4)})`);
+        }
         effectiveMode = 'ladder';
       }
     }
@@ -2278,6 +2282,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }
       return mode;
     })(),
+    // Auto-switch debug info
+    autoSwitch: config.ladderAutoSwitch ? {
+      volExpansion: marketState.volBaseline > 0 ? parseFloat((marketState.realizedVol / marketState.volBaseline).toFixed(2)) : 0,
+      threshold: config.ladderAutoSwitchVolMult || 2.0,
+      wouldTrigger: marketState.volBaseline > 0 && (marketState.realizedVol / marketState.volBaseline) >= (config.ladderAutoSwitchVolMult || 2.0),
+    } : null,
     ladder: positionState.ladderActive ? {
       active: true,
       placedAt: positionState.ladderPlacedAt,

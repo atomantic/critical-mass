@@ -663,6 +663,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     ? `${status.ladder.pendingOrders} orders pending`
                     : status?.entryMode === 'ladder' ? 'Waiting for trigger' : 'Single order mode'}
                 </div>
+                {status?.autoSwitch && (
+                  <div className="text-[10px] text-gray-500 mt-0.5">
+                    Vol: <span className={status.autoSwitch.volExpansion >= status.autoSwitch.threshold ? 'text-purple-400' : 'text-gray-400'}>{status.autoSwitch.volExpansion}x</span>
+                    <span className="text-gray-600"> / {status.autoSwitch.threshold}x</span>
+                  </div>
+                )}
               </div>
 
             </div>
