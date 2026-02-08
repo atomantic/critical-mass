@@ -114,13 +114,18 @@ const computeAggressivenessParams = (levelId) => {
 const detectAggressivenessLevel = (config) => {
   if (!config) return null
 
-  // Always detect based on actual parameter values (not the stored aggressiveness field)
+  // When config is partial (e.g. initial load), fall back to stored aggressiveness field
+  const firstPreset = AGGRESSIVENESS_LEVELS[0]
+  const presetKeys = Object.keys(firstPreset.params)
+  const hasAllKeys = presetKeys.every(key => config[key] !== undefined)
+  if (!hasAllKeys) return config.aggressiveness || null
+
+  // Detect based on actual parameter values (not the stored aggressiveness field)
   // This ensures the UI reflects reality even if the field is out of sync
   for (const level of AGGRESSIVENESS_LEVELS) {
     const expected = level.params
     const allMatch = Object.entries(expected).every(([key, value]) => {
       const current = config[key]
-      if (current === undefined) return true
       // Allow small tolerance for floating point
       return Math.abs(current - value) < 0.01 || (key.endsWith('Ms') && current === value)
     })
