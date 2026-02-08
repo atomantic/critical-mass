@@ -525,7 +525,9 @@ app.put('/api/:exchange/regime/config', (req, res) => {
   const { exchange } = req.params;
   const updates = req.body;
 
-  // Validate against merged config to catch cross-field issues (e.g., tpMin > tpMax)
+  // Validate updates merged with current config to catch cross-field invariants
+  // (e.g., setting tpMinPercent > existing tpMaxPercent)
+  // Individual field range checks apply to updated values; cross-field checks use merged result
   const currentConfig = getRegimeConfig(exchange);
   const mergedConfig = { ...currentConfig, ...updates };
   const validation = validateRegimeConfig(mergedConfig);

@@ -694,7 +694,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Cancel all unfilled ladder orders
-   * @returns {Promise<number>} Number of orders cancelled
+   * @returns {Promise<{cancelled: number, remainingTracked: number}>} Cancel results
    */
   const cancelAllLadderOrders = async () => {
     let cancelled = 0;

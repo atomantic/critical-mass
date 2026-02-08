@@ -1011,6 +1011,44 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         console.log(`ℹ️ [${exchange}] Ignored ${orphanedEntries} entry orders not belonging to regime engine`);
       }
 
+      // Restore or cancel persisted ladder orders
+      const savedLadderOrders = positionState.pendingLadderOrders || [];
+      if (positionState.ladderActive && savedLadderOrders.length > 0) {
+        const savedLadderIds = new Set(savedLadderOrders.map(o => o.orderId));
+        let restoredLadder = 0;
+        let cancelledLadder = 0;
+
+        for (const order of openEntries) {
+          if (savedLadderIds.has(order.orderId)) {
+            const savedOrder = savedLadderOrders.find(o => o.orderId === order.orderId);
+            if (orderExecutor.restorePendingOrder) {
+              orderExecutor.restorePendingOrder(order.orderId, {
+                type: 'ladder_entry',
+                price: savedOrder.price,
+                size: savedOrder.btcQty,
+                sizeUsdc: savedOrder.sizeUsdc,
+                ladderIndex: savedOrder.ladderIndex,
+                placedAt: savedOrder.placedAt || Date.now(),
+              });
+              restoredLadder++;
+            }
+          }
+        }
+
+        // Remove any saved ladder orders that are no longer open on the exchange
+        const openOrderIds = new Set(openEntries.map(o => o.orderId));
+        positionState.pendingLadderOrders = savedLadderOrders.filter(o => openOrderIds.has(o.orderId));
+
+        cancelledLadder = savedLadderOrders.length - positionState.pendingLadderOrders.length;
+
+        if (positionState.pendingLadderOrders.length === 0) {
+          positionState.ladderActive = false;
+        }
+
+        if (restoredLadder > 0) console.log(`✅ [${exchange}] Restored ${restoredLadder} pending ladder orders`);
+        if (cancelledLadder > 0) console.log(`ℹ️ [${exchange}] ${cancelledLadder} saved ladder orders no longer open on exchange`);
+      }
+
       // Update TP if we have position
       if (positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
         await placeTakeProfitOrder();

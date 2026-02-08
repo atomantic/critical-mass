@@ -160,7 +160,6 @@ const createLadderCalculator = (exchange, config) => {
       case 'linear':
         // Linear: larger sizes at lower prices (more capital at bottom)
         {
-          // Weights: 1, 2, 3, ..., numLevels
           const totalWeight = (numLevels * (numLevels + 1)) / 2;
           for (let i = 0; i < numLevels; i++) {
             const weight = i + 1;
@@ -195,6 +194,13 @@ const createLadderCalculator = (exchange, config) => {
           }
         }
         break;
+    }
+
+    // Correct rounding drift: adjust final level so total doesn't exceed budget
+    const sizeSum = sizes.reduce((s, v) => s + v, 0);
+    if (sizeSum > totalBudget && sizes.length > 0) {
+      const overshoot = roundUSDC(sizeSum - totalBudget);
+      sizes[sizes.length - 1] = roundUSDC(sizes[sizes.length - 1] - overshoot);
     }
 
     return sizes;

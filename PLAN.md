@@ -195,7 +195,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Detects "Custom" when values don't match any preset
 - Note: baseSizeUsdc may be overridden by auto-sizer if enabled
 
-**Pre-Positioned Liquidity Ladder Mode (v2.5) ✅ Implemented:**
+**Pre-Positioned Liquidity Ladder Mode (v2.4) ✅ Implemented:**
 - Alternative entry strategy that pre-positions multiple limit buy orders
 - Complements reactive mode by capturing liquidity shocks and fat-tail events
 - Two-engine system:
