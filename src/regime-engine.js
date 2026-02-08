@@ -1845,6 +1845,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }
     );
 
+    // Check order slot capacity before placing
+    const pendingCounts = orderExecutor.getPendingCounts();
+    const requiredSlots = ladder.levels.length + 1; // +1 for TP order
+    if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
+      console.log(`⚠️ [${exchange}] Cannot reprice ladder: need ${requiredSlots} slots, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
+      positionState.pendingLadderOrders = [];
+      return;
+    }
+
     // Place repriced orders
     const result = await orderExecutor.placeLadderOrders(ladder.levels);
     positionState.pendingLadderOrders = result.orders;

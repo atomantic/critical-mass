@@ -553,7 +553,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     return Array.from(pendingOrders.entries()).map(([orderId, order]) => ({
       orderId,
       type: order.type,
-      side: order.type === 'entry' ? 'buy' : 'sell',
+      side: (order.type === 'entry' || order.type === 'ladder_entry') ? 'buy' : 'sell',
       price: order.price,
       size: order.size,
       sizeUsdc: order.sizeUsdc,
