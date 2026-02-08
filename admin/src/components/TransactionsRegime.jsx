@@ -139,10 +139,10 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
     .reduce((sum, f) => sum + f.pnl, 0)
   const totalHoldbackBtc = fillsWithPnL
     .filter(f => f.holdbackBtc !== null)
-    .reduce((sum, f) => sum + f.holdbackBtc, 0)
+    .reduce((max, f) => Math.max(max, f.holdbackBtc), 0)
   const totalHoldbackValue = fillsWithPnL
     .filter(f => f.holdbackValue !== null)
-    .reduce((sum, f) => sum + f.holdbackValue, 0)
+    .reduce((max, f) => Math.max(max, f.holdbackValue), 0)
 
   if (loading) {
     return (

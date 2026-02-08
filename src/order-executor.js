@@ -675,7 +675,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
         results.push({
           orderId: result.orderId,
-          index: level.index,
+          ladderIndex: level.index,
           price: level.price,
           sizeUsdc: level.sizeUsdc,
           btcQty: level.btcQty,
@@ -725,7 +725,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
     });
 
-    return cancelled;
+    // Count remaining tracked ladder orders (failed cancels)
+    const remainingTracked = Array.from(pendingOrders.values())
+      .filter(o => o.type === 'ladder_entry').length;
+
+    return { cancelled, remainingTracked };
   };
 
   /**

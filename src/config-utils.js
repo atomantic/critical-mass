@@ -539,6 +539,35 @@ const validateRegimeConfig = (config) => {
     errors.push('sizeMaxLadderSteps must be between 20 and 200');
   }
 
+  // Ladder / Entry Mode validation
+  if (config.entryMode !== undefined) {
+    const allowedEntryModes = ['reactive', 'ladder'];
+    if (!allowedEntryModes.includes(config.entryMode)) {
+      errors.push(`entryMode must be one of: ${allowedEntryModes.join(', ')}`);
+    }
+  }
+  if (config.ladderLevels !== undefined && (!Number.isInteger(config.ladderLevels) || config.ladderLevels < 2 || config.ladderLevels > 50)) {
+    errors.push('ladderLevels must be an integer between 2 and 50');
+  }
+  if (config.ladderLowerBoundPct !== undefined && (config.ladderLowerBoundPct < 1 || config.ladderLowerBoundPct > 50)) {
+    errors.push('ladderLowerBoundPct must be between 1 and 50');
+  }
+  if (config.ladderSpacingMode !== undefined) {
+    const allowedSpacing = ['linear', 'sqrt', 'exponential'];
+    if (!allowedSpacing.includes(config.ladderSpacingMode)) {
+      errors.push(`ladderSpacingMode must be one of: ${allowedSpacing.join(', ')}`);
+    }
+  }
+  if (config.ladderSizeMode !== undefined) {
+    const allowedSizing = ['flat', 'linear', 'sqrt'];
+    if (!allowedSizing.includes(config.ladderSizeMode)) {
+      errors.push(`ladderSizeMode must be one of: ${allowedSizing.join(', ')}`);
+    }
+  }
+  if (config.ladderMinSpacingPct !== undefined && (config.ladderMinSpacingPct < 0.01 || config.ladderMinSpacingPct > 5.0)) {
+    errors.push('ladderMinSpacingPct must be between 0.01 and 5.0');
+  }
+
   // Risk Caps validation
   if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.01 || config.maxBtcExposure > 10.0)) {
     errors.push('maxBtcExposure must be between 0.01 and 10.0');
