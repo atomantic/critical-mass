@@ -38,7 +38,7 @@ const pendingStates = new Map();
  * @property {number} totalBTC - Total BTC position
  * @property {number} totalCostBasis - Total cost basis in USD
  * @property {number} avgCostBasis - Average cost basis per BTC
- * @property {number} ladderStep - Current ladder step
+ * @property {number} cycleBuys - Current ladder step
  * @property {number} lastEntryPrice - Last entry price
  * @property {number} lastEntryTime - Last entry timestamp
  * @property {number} anchorPrice - Anchor price for volatility trigger

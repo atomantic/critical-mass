@@ -28,6 +28,7 @@ const { createDryRunExecutor } = require('./dry-run-executor');
 const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
+const { createLadderCalculator } = require('./ladder-calculator');
 const { calculateAllMetrics, clamp, roundBTC, roundUSDC } = require('./volatility-utils');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
@@ -61,6 +62,10 @@ const createInitialMarketState = () => ({
   momentum: { magnitude: 0, direction: 'neutral' },
   trades: [],
   lastUpdate: 0,
+  // ATH tracking for ladder mode
+  ath: 0,
+  athDistance: 0,
+  athLastUpdate: 0,
 });
 
 /**
@@ -71,7 +76,7 @@ const createInitialPositionState = () => ({
   totalBTC: 0,
   totalCostBasis: 0,
   avgCostBasis: 0,
-  ladderStep: 0,
+  cycleBuys: 0,
   lastEntryPrice: 0,
   lastEntryTime: 0,
   anchorPrice: 0,
@@ -87,7 +92,14 @@ const createInitialPositionState = () => ({
   scalingDisabledReason: null,
   // APY tracking fields
   engineStartTime: null,    // Timestamp when engine first started with capital
-  initialCapital: 0,        // Initial capital (maxUsdcDeployed from config)
+  initialCapital: 0,        // Initial capital (maxUsdcDeployed from config) - may be updated on restart
+  originalCapital: 0,       // DEPRECATED: use depositedCapital instead
+  depositedCapital: 0,      // Total user deposits (excludes profits) - updated when user adds capital
+  // Ladder mode state
+  ladderActive: false,
+  ladderPlacedAt: null,
+  ladderLowerBound: 0,
+  pendingLadderOrders: [],  // [{orderId, price, sizeUsdc, ladderIndex}]
 });
 
 /**
@@ -159,6 +171,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let marketState = createInitialMarketState();
   let positionState = createInitialPositionState();
 
+  // Track if ladder limit warning has been logged (to avoid log spam)
+  let ladderLimitWarningLogged = false;
+  // Track if USDC cap exceeded warning has been logged (to avoid log spam)
+  let usdcCapWarningLogged = false;
+  // Track if budget exhausted warning has been logged (to avoid log spam)
+  let budgetExhaustedWarningLogged = false;
+  // Guard against concurrent ATH backfill requests
+  let athUpdateInProgress = false;
+
   // Callbacks container for dry-run (populated after functions are defined)
   const dryRunCallbacks = {
     onBuyFill: null,
@@ -196,6 +217,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       console.log(`📊 [${exchange}] ${modeLabel}Size auto-adjusted: ${adjustment.reason}`);
     },
   });
+
+  // Create Ladder calculator for pre-positioned liquidity ladder mode
+  const ladderCalculator = createLadderCalculator(exchange, config);
 
   let isRunning = false;
   let wsFeed = null;
@@ -349,7 +373,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       ? `APY from ${new Date(positionState.engineStartTime).toISOString()}`
       : 'APY not tracked yet';
 
-    console.log(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, PnL=$${positionState.realizedPnL.toFixed(2)}, ${apyStatus}`);
+    console.log(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, PnL=$${positionState.realizedPnL.toFixed(2)}, ${apyStatus}`);
     return true;
   };
 
@@ -396,7 +420,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       sizeOptimizer.importState(savedState.sizeOptimizer);
     }
 
-    console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, step ${positionState.ladderStep}, ${positionState.totalBTC.toFixed(6)} BTC`);
+    console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, ${positionState.totalBTC.toFixed(6)} BTC`);
     return true;
   };
 
@@ -454,7 +478,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         });
 
         // Reset cycle
-        resetCycle();
+        await resetCycle();
       }
     }
 
@@ -487,11 +511,21 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           positionState.avgCostBasis = positionState.totalBTC > 0
             ? positionState.totalCostBasis / positionState.totalBTC
             : 0;
-          positionState.ladderStep += 1;
+          positionState.cycleBuys += 1;
           positionState.lastEntryPrice = summary.avgPrice;
           positionState.lastEntryTime = Date.now();
 
+          // Remove filled entry from persisted pending orders
+          if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
+            positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
+              e => e.orderId !== orderId
+            );
+          }
+
           orderExecutor.handleOrderFill(orderId);
+
+          // Place/update TP order to reflect new position size (force update to bypass anti-churn)
+          await placeTakeProfitOrder({ forceUpdate: true });
 
           tradeEvents.emitTradeEvent('buy_filled', exchange, `[OFFLINE] ${summary.totalSize} BTC @ $${summary.avgPrice}`, {
             btcAmount: summary.totalSize,
@@ -549,15 +583,35 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const calculateApyMetrics = () => {
     const now = Date.now();
     const startTime = positionState.engineStartTime;
+    // maxUsdcDeployed = total capital cap (deposits + profits)
+    const maxUsdcDeployed = config.maxUsdcDeployed || 10000;
+    // Total USDC return (realized P&L from trading)
+    const totalUsdcReturn = positionState.realizedPnL || 0;
+    // depositedCapital = total user deposits (excludes profits)
+    // Priority: config.depositedCapital > positionState.depositedCapital > derive from maxUsdc - profits
+    const autoDerivedCapital = Math.max(0, roundUSDC(maxUsdcDeployed - totalUsdcReturn));
+    const depositedCapital = config.depositedCapital > 0
+      ? config.depositedCapital
+      : (positionState.depositedCapital > 0
+          ? positionState.depositedCapital
+          : (positionState.originalCapital > 0
+              ? positionState.originalCapital
+              : autoDerivedCapital));
+    // initialCapital for APY calculations (first deposit amount)
     const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+    // deployedInPosition = capital currently in open positions
+    const deployedInPosition = positionState.totalCostBasis || 0;
+    // availableCapital = maxUsdc - deployed in positions (clamped at 0 for reporting)
+    const availableCapital = Math.max(0, maxUsdcDeployed - deployedInPosition);
     const currentPrice = marketState.lastPrice || 0;
+    // Legacy aliases for backwards compatibility
+    const currentCapital = maxUsdcDeployed;
+    const deployedCapital = deployedInPosition;
+    const originalCapital = depositedCapital;
 
     // Calculate BTC value in USD terms
     const totalBtcReturn = positionState.realizedBtcPnL || 0;
     const btcValueUsd = totalBtcReturn * currentPrice;
-
-    // Total USDC return (realized P&L from trading)
-    const totalUsdcReturn = positionState.realizedPnL || 0;
 
     // Total liquid value = USDC return + BTC holdings at current market price
     const totalLiquidValue = totalUsdcReturn + btcValueUsd;
@@ -566,7 +620,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (!startTime || (totalUsdcReturn === 0 && totalBtcReturn === 0)) {
       return {
         engineStartTime: startTime,
+        // Capital breakdown: deposited (user contributions) vs max (deposits + profits)
+        depositedCapital,
+        maxUsdcDeployed,
+        deployedInPosition,
+        availableCapital,
+        // Legacy aliases for backwards compatibility
+        originalCapital,
         initialCapital,
+        currentCapital,
+        deployedCapital,
         elapsedMs: startTime ? now - startTime : 0,
         elapsedDays: 0,
         // USDC returns
@@ -648,7 +711,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     return {
       engineStartTime: startTime,
-      initialCapital,
+      // Capital breakdown: deposited (user contributions) vs max (deposits + profits)
+      depositedCapital: roundUSDC(depositedCapital),
+      maxUsdcDeployed: roundUSDC(maxUsdcDeployed),
+      deployedInPosition: roundUSDC(deployedInPosition),
+      availableCapital: roundUSDC(availableCapital),
+      // Legacy aliases for backwards compatibility
+      originalCapital: roundUSDC(originalCapital),
+      initialCapital: roundUSDC(initialCapital),
+      currentCapital: roundUSDC(currentCapital),
+      deployedCapital: roundUSDC(deployedCapital),
       elapsedMs,
       elapsedDays: roundUSDC(elapsedDays * 100) / 100, // 2 decimal places
       // USDC returns
@@ -692,29 +764,56 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }, Infinity);
     }
 
+    // Helper to ensure depositedCapital is set
+    const ensureDepositedCapital = () => {
+      if (!positionState.depositedCapital || positionState.depositedCapital === 0) {
+        // Migrate from originalCapital if set, otherwise derive from maxUsdc - profits (clamped at 0)
+        const maxUsdc = config.maxUsdcDeployed || 10000;
+        const profits = positionState.realizedPnL || 0;
+        positionState.depositedCapital = positionState.originalCapital > 0
+          ? positionState.originalCapital
+          : roundUSDC(Math.max(0, maxUsdc - profits));
+      }
+    };
+
     // If we have filled orders and the saved start time is after the first order, backfill
     if (earliestOrderTime !== Infinity) {
       if (!positionState.engineStartTime || positionState.engineStartTime > earliestOrderTime) {
         positionState.engineStartTime = earliestOrderTime;
         positionState.initialCapital = config.maxUsdcDeployed || 10000;
-        console.log(`📊 [${exchange}] APY tracking backfilled to first order: ${new Date(earliestOrderTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+        // Only set originalCapital if not already set (preserve true starting value)
+        if (!positionState.originalCapital) {
+          positionState.originalCapital = positionState.initialCapital;
+        }
+        ensureDepositedCapital();
+        console.log(`📊 [${exchange}] APY tracking backfilled: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
         return;
       }
       // Preserved existing start time that's earlier than first order
-      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+      if (!positionState.originalCapital) {
+        positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+      }
+      ensureDepositedCapital();
+      console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
       return;
     }
 
     // No filled orders - preserve existing or start fresh
     if (positionState.engineStartTime) {
-      console.log(`📊 [${exchange}] APY tracking restored: started ${new Date(positionState.engineStartTime).toISOString()}, $${positionState.initialCapital} initial capital`);
+      if (!positionState.originalCapital) {
+        positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
+      }
+      ensureDepositedCapital();
+      console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
       return;
     }
 
     // No existing state or orders, start fresh
     positionState.engineStartTime = Date.now();
     positionState.initialCapital = config.maxUsdcDeployed || 10000;
-    console.log(`📊 [${exchange}] APY tracking started fresh: $${positionState.initialCapital} initial capital`);
+    positionState.originalCapital = positionState.initialCapital;
+    positionState.depositedCapital = positionState.initialCapital;
+    console.log(`📊 [${exchange}] APY tracking started fresh: deposited=$${positionState.depositedCapital}`);
   };
 
   /**
@@ -761,10 +860,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         totalBTC: cycleWasCompleted ? 0 : position.totalBTC,
         totalCostBasis: cycleWasCompleted ? 0 : position.totalCostBasis,
         avgCostBasis: cycleWasCompleted ? 0 : position.avgCostBasis,
-        ladderStep: cycleWasCompleted ? 0 : position.ladderStep,
+        cycleBuys: cycleWasCompleted ? 0 : position.cycleBuys,
         activeTpOrderId: savedTpOrderId, // Restore TP tracking (not in fills)
         lastTpPrice: savedTpPrice,
       };
+
+      // Auto-correct cycleBuys from fill ledger (source of truth)
+      const actualCycleBuys = fillLedger.getCurrentCycleBuysCount();
+      if (positionState.cycleBuys !== actualCycleBuys) {
+        console.log(`🔧 [${exchange}] Auto-correcting cycleBuys: ${positionState.cycleBuys} -> ${actualCycleBuys} (from fill ledger)`);
+        positionState.cycleBuys = actualCycleBuys;
+      }
 
       // Check for orders that filled while we were offline (non-critical, continue on error)
       const offlineFills = await checkOfflineOrderFills().catch(err => {
@@ -829,8 +935,123 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         if (earliestFillTime !== Infinity && (!positionState.engineStartTime || positionState.engineStartTime > earliestFillTime)) {
           positionState.engineStartTime = earliestFillTime;
           positionState.initialCapital = config.maxUsdcDeployed || 10000;
-          console.log(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}`);
+          // Only set originalCapital if not already set (preserve true starting value)
+          if (!positionState.originalCapital) {
+            positionState.originalCapital = positionState.initialCapital;
+          }
+          console.log(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}, original=$${positionState.originalCapital}`);
         }
+      }
+
+      // Restore pending entry orders from saved state (instead of canceling them)
+      const savedPendingEntries = positionState.pendingEntryOrders || [];
+      const savedOrderIds = new Set(savedPendingEntries.map(e => e.orderId));
+
+      const openOrders = await adapter.getOpenOrders(productId);
+      const openEntries = openOrders.filter(o => o.side.toUpperCase() === 'BUY');
+
+      let restoredEntries = 0;
+      let orphanedEntries = 0;
+
+      for (const order of openEntries) {
+        if (savedOrderIds.has(order.orderId)) {
+          // This is our order - restore tracking instead of canceling
+          const savedEntry = savedPendingEntries.find(e => e.orderId === order.orderId);
+          if (orderExecutor.restorePendingOrder) {
+            orderExecutor.restorePendingOrder(order.orderId, {
+              type: 'entry',
+              price: savedEntry.price,
+              size: savedEntry.btcQty,
+              sizeUsdc: savedEntry.sizeUsdc,
+              placedAt: savedEntry.placedAt,
+            });
+            restoredEntries++;
+            console.log(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ $${savedEntry.price}`);
+          }
+
+          // Check if order has any fills while offline (partial fills)
+          if (order.filledSize && order.filledSize > 0) {
+            console.log(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
+            const rawFills = await adapter.getOrderFills(order.orderId);
+            let orderHadNewFills = false;
+            let lastFillPrice = 0;
+            let lastFillTime = 0;
+            for (const fill of rawFills) {
+              const result = fillLedger.ingestFill(fill);
+              if (result.ingested) {
+                positionState.totalBTC = roundBTC(positionState.totalBTC + fill.size);
+                positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + (fill.size * fill.price) + fill.netFee);
+                positionState.avgCostBasis = positionState.totalBTC > 0
+                  ? positionState.totalCostBasis / positionState.totalBTC
+                  : 0;
+                orderHadNewFills = true;
+                lastFillPrice = fill.price;
+                lastFillTime = fill.timestamp;
+                console.log(`📝 [${exchange}] Ingested partial fill: ${fill.size} BTC @ $${fill.price}`);
+              }
+            }
+            // Increment step once per order, not per fill
+            if (orderHadNewFills) {
+              positionState.cycleBuys += 1;
+              positionState.lastEntryPrice = lastFillPrice;
+              positionState.lastEntryTime = lastFillTime;
+            }
+          }
+        } else {
+          // True orphan - not in our saved state, must be from another engine
+          orphanedEntries++;
+          console.log(`⚠️ [${exchange}] Found orphan entry order ${order.orderId} (not from regime engine), ignoring`);
+        }
+      }
+
+      if (restoredEntries > 0) {
+        console.log(`✅ [${exchange}] Restored ${restoredEntries} pending entry orders from state`);
+      }
+      if (orphanedEntries > 0) {
+        console.log(`ℹ️ [${exchange}] Ignored ${orphanedEntries} entry orders not belonging to regime engine`);
+      }
+
+      // Restore or cancel persisted ladder orders
+      const savedLadderOrders = positionState.pendingLadderOrders || [];
+      if (positionState.ladderActive && savedLadderOrders.length > 0) {
+        const savedLadderIds = new Set(savedLadderOrders.map(o => o.orderId));
+        let restoredLadder = 0;
+        let cancelledLadder = 0;
+
+        for (const order of openEntries) {
+          if (savedLadderIds.has(order.orderId)) {
+            const savedOrder = savedLadderOrders.find(o => o.orderId === order.orderId);
+            if (orderExecutor.restorePendingOrder) {
+              orderExecutor.restorePendingOrder(order.orderId, {
+                type: 'ladder_entry',
+                price: savedOrder.price,
+                size: savedOrder.btcQty,
+                sizeUsdc: savedOrder.sizeUsdc,
+                ladderIndex: savedOrder.ladderIndex,
+                placedAt: savedOrder.placedAt || Date.now(),
+              });
+              restoredLadder++;
+            }
+          }
+        }
+
+        // Remove any saved ladder orders that are no longer open on the exchange
+        const openOrderIds = new Set(openEntries.map(o => o.orderId));
+        positionState.pendingLadderOrders = savedLadderOrders.filter(o => openOrderIds.has(o.orderId));
+
+        cancelledLadder = savedLadderOrders.length - positionState.pendingLadderOrders.length;
+
+        if (positionState.pendingLadderOrders.length === 0) {
+          positionState.ladderActive = false;
+        }
+
+        if (restoredLadder > 0) console.log(`✅ [${exchange}] Restored ${restoredLadder} pending ladder orders`);
+        if (cancelledLadder > 0) console.log(`ℹ️ [${exchange}] ${cancelledLadder} saved ladder orders no longer open on exchange`);
+      }
+
+      // Update TP if we have position
+      if (positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
+        await placeTakeProfitOrder();
       }
 
       // Save initial state after recovery
@@ -966,8 +1187,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Process tail event checks
     tailEvents.processTicker(data, marketState.atr1m);
 
-    // Evaluate entry trigger
-    evaluateEntryTrigger();
+    // Evaluate entry trigger (fire-and-forget, catch to prevent unhandled rejection)
+    evaluateEntryTrigger().catch(err => console.log(`⚠️ [${exchange}] Entry evaluation failed: ${err.message}`));
 
     // In dry-run mode, check if any orders should fill based on current price
     if (isDryRun) {
@@ -1025,6 +1246,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       await handleOrderFill(data);
     } else if (data.status === 'CANCELLED') {
       orderExecutor.handleOrderCancel(data.orderId);
+      // Remove cancelled entry from persisted pending orders
+      if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
+        const before = positionState.pendingEntryOrders.length;
+        positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
+          e => e.orderId !== data.orderId
+        );
+        if (positionState.pendingEntryOrders.length < before) {
+          saveLiveState();
+        }
+      }
     }
   };
 
@@ -1034,11 +1265,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    */
   const handleOrderFill = async (fillData) => {
     // Get detailed fills
-    const rawFills = await adapter.getOrderFills(fillData.orderId);
+    let rawFills = await adapter.getOrderFills(fillData.orderId);
+
+    // If getOrderFills returns empty but we have fill data from order status (polling detection),
+    // retry once after a short delay - Coinbase has eventual consistency
+    if (rawFills.length === 0 && fillData.filledSize > 0) {
+      console.log(`⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`);
+      await new Promise(r => setTimeout(r, 2000));
+      rawFills = await adapter.getOrderFills(fillData.orderId);
+    }
 
     // Get order placement time for fill time tracking (entry orders only)
+    // Use placedAt from fillData (polling callback) or fall back to order executor lookup
     const orderPlacedAt = fillData.side.toLowerCase() === 'buy'
-      ? orderExecutor.getOrderPlacedAt(fillData.orderId)
+      ? (fillData.placedAt || orderExecutor.getOrderPlacedAt(fillData.orderId))
       : null;
 
     // Ingest each fill and collect the normalized fills
@@ -1052,12 +1292,37 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Use ingested fills (which have quoteAmount) for aggregation
     // Fall back to getting fills from ledger if all were duplicates
-    const fillsToAggregate = ingestedFills.length > 0
+    let fillsToAggregate = ingestedFills.length > 0
       ? ingestedFills
       : fillLedger.getFillsForOrder(fillData.orderId);
 
+    // Last resort: if still no fills but order status has data, create synthetic fill
+    // This handles Coinbase eventual consistency where fills API lags behind order status
+    if (fillsToAggregate.length === 0 && fillData.filledSize > 0 && fillData.averageFilledPrice > 0) {
+      console.log(`⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: ${fillData.filledSize} @ $${fillData.averageFilledPrice}`);
+      const syntheticFill = {
+        tradeId: `synthetic-${fillData.orderId}`,
+        orderId: fillData.orderId,
+        side: fillData.side.toLowerCase(),
+        price: fillData.averageFilledPrice,
+        size: fillData.filledSize,
+        quoteAmount: fillData.filledSize * fillData.averageFilledPrice,
+        netFee: fillData.totalFees || 0,
+        timestamp: Date.now(),
+      };
+      // Ingest synthetic fill into ledger so it's not lost
+      const result = fillLedger.ingestFill(syntheticFill, orderPlacedAt);
+      fillsToAggregate = result.fill ? [result.fill] : [syntheticFill];
+    }
+
     // Determine if buy or sell
     if (fillData.side.toLowerCase() === 'buy') {
+      // Check if this is a ladder order fill (use positionState since polling may delete from pendingOrders before callback)
+      const isLadderFill =
+        (positionState.pendingLadderOrders &&
+          positionState.pendingLadderOrders.some(o => o.orderId === fillData.orderId)) ||
+        (orderExecutor.isLadderOrder && orderExecutor.isLadderOrder(fillData.orderId));
+
       // Update position
       const summary = fillLedger.aggregateFills(fillsToAggregate);
       positionState.totalBTC = roundBTC(positionState.totalBTC + summary.totalSize);
@@ -1065,20 +1330,41 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.avgCostBasis = positionState.totalBTC > 0
         ? positionState.totalCostBasis / positionState.totalBTC
         : 0;
-      positionState.ladderStep += 1;
+      positionState.cycleBuys += 1;
       positionState.lastEntryPrice = summary.avgPrice;
       positionState.lastEntryTime = Date.now();
 
-      // Place/update TP order
-      await placeTakeProfitOrder();
+      // Remove filled entry from persisted pending orders
+      if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
+        positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
+          e => e.orderId !== fillData.orderId
+        );
+      }
 
-      console.log(`✅ [${exchange}] Buy filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, avg_cost=$${positionState.avgCostBasis.toFixed(2)}`);
+      // Remove from ladder tracking if it was a ladder order
+      if (isLadderFill && positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) {
+        positionState.pendingLadderOrders = positionState.pendingLadderOrders.filter(
+          o => o.orderId !== fillData.orderId
+        );
+      }
 
-      tradeEvents.emitTradeEvent('buy_filled', exchange, `${summary.totalSize} BTC @ $${summary.avgPrice}`, {
+      const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
+      console.log(`✅ [${exchange}] ${fillTypeLabel}Buy filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, avg_cost=$${positionState.avgCostBasis.toFixed(2)}`);
+
+      // Place/update TP order (force update to bypass anti-churn after buy fill)
+      await placeTakeProfitOrder({ forceUpdate: true });
+
+      tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} BTC @ $${summary.avgPrice}`, {
         btcAmount: summary.totalSize,
         price: summary.avgPrice,
         avgCostBasis: positionState.avgCostBasis,
+        isLadderFill,
       });
+
+      // If this was a ladder fill, reprice the remaining ladder orders
+      if (isLadderFill && positionState.ladderActive) {
+        await repriceLadderOrders();
+      }
 
       // Persist state immediately after buy fill to prevent loss on crash
       saveLiveState();
@@ -1131,12 +1417,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Get current balance for size optimization (proceeds go back to available balance)
       const postCycleBalance = config.maxUsdcDeployed; // After capital growth adjustment
       recordCycleForSizeOptimizer({
-        stepsUsed: positionState.ladderStep,
+        stepsUsed: positionState.cycleBuys,
         capitalDeployed: soldCostBasis, // Cost basis of what we sold
       }, postCycleBalance);
 
       // Reset for next cycle FIRST, then persist
-      resetCycle();
+      await resetCycle();
 
       // Persist state AFTER reset to ensure cycle reset is saved
       saveLiveState();
@@ -1185,9 +1471,80 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
+   * Fetch and update ATH (All-Time High) for ladder mode
+   * Only fetches if in ladder mode and data is stale (>24 hours old)
+   */
+  const updateATH = async () => {
+    // Only fetch ATH for ladder mode
+    const effectiveMode = config.entryMode || 'reactive';
+    if (effectiveMode !== 'ladder' && !config.ladderAutoSwitch) {
+      return;
+    }
+
+    // Prevent concurrent ATH backfills
+    if (athUpdateInProgress) return;
+
+    // Check if ATH data is fresh enough (refresh daily)
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    if (marketState.athLastUpdate && (now - marketState.athLastUpdate) < dayMs) {
+      return;
+    }
+
+    athUpdateInProgress = true;
+
+    const fetchAndComputeATH = async () => {
+      // Fetch full daily history in paginated batches (Coinbase API limits <350 candles per request)
+      const nowSec = Math.floor(now / 1000);
+      const maxCandlesPerRequest = 349;
+      const daySec = 24 * 60 * 60;
+
+      const allCandles = [];
+      let endSec = nowSec;
+
+      while (true) {
+        const startSec = endSec - (maxCandlesPerRequest * daySec);
+        const batch = await adapter.getCandles(productId, startSec, endSec, 'ONE_DAY').catch(err => {
+          console.log(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`);
+          return null;
+        });
+
+        if (!batch || batch.length === 0) break;
+        allCandles.push(...batch);
+
+        // If we received fewer than max candles, we've reached the earliest available data
+        if (batch.length < maxCandlesPerRequest) break;
+
+        // Move window back in time for next batch
+        endSec = startSec;
+      }
+
+      if (allCandles.length === 0) return;
+
+      // Calculate ATH over full fetched history
+      const ath = ladderCalculator.calculateATHFromCandles(allCandles);
+      const athDistance = ladderCalculator.calculateATHDistance(marketState.lastPrice, ath);
+
+      marketState.ath = ath;
+      marketState.athDistance = athDistance;
+      marketState.athLastUpdate = now;
+
+      const distancePct = (Math.abs(athDistance) * 100).toFixed(1);
+      console.log(`📊 [${exchange}] ATH updated: $${ath.toFixed(2)} (${allCandles.length} candles), current price ${athDistance < 0 ? `${distancePct}% below` : `${distancePct}% above`} ATH`);
+    };
+
+    await fetchAndComputeATH().finally(() => {
+      athUpdateInProgress = false;
+    });
+  };
+
+  /**
    * Update volatility metrics via REST API
    */
   const updateMetrics = async () => {
+    // Check health status (allows auto-recovery from SAFE mode)
+    healthMonitor.checkHealth();
+
     const now = Math.floor(Date.now() / 1000);
     const oneHourAgo = now - 3600;
     const fourHoursAgo = now - 14400;
@@ -1225,6 +1582,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (marketState.lastPrice > 0 && marketState.atr1m > 0) {
       marketState.vwapDistance = (marketState.lastPrice - marketState.vwap) / marketState.atr1m;
     }
+
+    // Update ATH for ladder mode (daily refresh) - run async to avoid blocking metrics interval
+    updateATH().catch(err => console.log(`⚠️ [${exchange}] ATH update failed: ${err.message}`));
 
     // Classify regime with updated metrics
     regimeDetector.classify(marketState);
@@ -1313,12 +1673,47 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
-   * Evaluate volatility-based entry trigger
+   * Evaluate volatility-based entry trigger (mode-aware)
+   * Delegates to either reactive or ladder entry evaluation based on config
    */
   const evaluateEntryTrigger = async () => {
     // Prevent concurrent entry evaluations (race condition from rapid ticker updates)
     if (entryInProgress) return;
 
+    // Determine effective entry mode
+    let effectiveMode = config.entryMode || 'reactive';
+
+    // Auto-switch to ladder mode if enabled and volatility is expanded
+    if (config.ladderAutoSwitch && marketState.volBaseline > 0) {
+      const volExpansion = marketState.realizedVol / marketState.volBaseline;
+      if (volExpansion >= (config.ladderAutoSwitchVolMult || 2.0)) {
+        effectiveMode = 'ladder';
+      }
+    }
+
+    // Don't switch modes mid-cycle if we have an active position
+    // (prevents inconsistent behavior during a trade cycle)
+    if (positionState.totalBTC > 0) {
+      // If ladder is active, stay in ladder mode
+      if (positionState.ladderActive) {
+        effectiveMode = 'ladder';
+      } else {
+        // Otherwise stay in reactive mode
+        effectiveMode = 'reactive';
+      }
+    }
+
+    if (effectiveMode === 'ladder') {
+      await evaluateLadderEntry();
+    } else {
+      await evaluateReactiveEntry();
+    }
+  };
+
+  /**
+   * Evaluate reactive entry trigger (original volatility-based logic)
+   */
+  const evaluateReactiveEntry = async () => {
     const now = Date.now();
     const timeSinceLastEntry = now - positionState.lastEntryTime;
 
@@ -1330,7 +1725,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (!healthCheck.allowed) return;
 
     // Check tail events
-    const tailCheck = tailEvents.canPlaceEntry(positionState.ladderStep);
+    const tailCheck = tailEvents.canPlaceEntry(positionState.cycleBuys);
     if (!tailCheck.allowed) return;
 
     // Check regime allows entries
@@ -1353,6 +1748,166 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
+   * Evaluate ladder entry - pre-position liquidity ladder
+   */
+  const evaluateLadderEntry = async () => {
+    // Skip if ladder already active with pending orders
+    if (positionState.ladderActive && positionState.pendingLadderOrders.length > 0) {
+      return;
+    }
+
+    // Check health
+    const healthCheck = healthMonitor.canPlaceEntry();
+    if (!healthCheck.allowed) return;
+
+    // Check tail events
+    const tailCheck = tailEvents.canPlaceEntry(positionState.cycleBuys);
+    if (!tailCheck.allowed) return;
+
+    // Check regime allows entries
+    if (!regimeDetector.allowsEntries()) return;
+
+    // Calculate remaining budget
+    const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+
+    // Quick sanity check - need at least 1 order worth of budget
+    if (remainingBudget < config.baseSizeUsdc) {
+      if (!budgetExhaustedWarningLogged) {
+        console.log(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} < $${config.baseSizeUsdc}`);
+        budgetExhaustedWarningLogged = true;
+      }
+      return;
+    }
+
+    entryInProgress = true;
+
+    const placeLadder = async () => {
+      // Build ladder first to determine actual level count (may be fewer than config due to min-size filtering)
+      const ladder = ladderCalculator.buildLadder(
+        marketState.lastPrice,
+        remainingBudget,
+        {
+          atr: marketState.atr1m,
+          volBaseline: marketState.volBaseline,
+          realizedVol: marketState.realizedVol,
+          athDistance: marketState.athDistance || 0,
+        }
+      );
+
+      if (ladder.levels.length === 0) {
+        if (!budgetExhaustedWarningLogged) {
+          console.log(`ℹ️ [${exchange}] Ladder build produced 0 levels for budget $${remainingBudget.toFixed(2)}`);
+          budgetExhaustedWarningLogged = true;
+        }
+        return;
+      }
+
+      // Check order limit using actual built level count
+      const pendingCounts = orderExecutor.getPendingCounts();
+      const requiredSlots = ladder.levels.length + 1; // +1 for TP order
+
+      if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
+        console.log(`⚠️ [${exchange}] Insufficient order slots for ladder: need ${requiredSlots}, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
+        return;
+      }
+
+      console.log(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
+
+      // Place ladder orders
+      const result = await orderExecutor.placeLadderOrders(ladder.levels);
+
+      // Update position state
+      positionState.ladderActive = true;
+      positionState.ladderPlacedAt = Date.now();
+      positionState.ladderLowerBound = ladder.lowerBound;
+      positionState.pendingLadderOrders = result.orders;
+
+      console.log(`📊 [${exchange}] Ladder placed: ${result.orders.length} levels from $${marketState.lastPrice.toFixed(2)} to $${ladder.lowerBound.toFixed(2)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`);
+
+      tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to $${ladder.lowerBound.toFixed(2)}`, {
+        levels: result.orders.length,
+        topPrice: marketState.lastPrice,
+        bottomPrice: ladder.lowerBound,
+        lowerBoundPct: ladder.lowerBoundPct,
+        totalBudget: ladder.totalBudget,
+        failedCount: result.failedCount,
+      });
+
+      // Persist state
+      saveLiveState();
+    };
+
+    await placeLadder().finally(() => {
+      entryInProgress = false;
+    });
+  };
+
+  /**
+   * Reprice ladder orders after a fill
+   * Cancels remaining unfilled orders and rebuilds ladder from current price with remaining budget
+   */
+  const repriceLadderOrders = async () => {
+    if (!positionState.pendingLadderOrders || positionState.pendingLadderOrders.length === 0) {
+      return;
+    }
+
+    // Cancel existing unfilled ladder orders
+    const { cancelled, remainingTracked } = await orderExecutor.cancelAllLadderOrders();
+    console.log(`🔄 [${exchange}] Cancelled ${cancelled} unfilled ladder orders for repricing${remainingTracked > 0 ? `, ${remainingTracked} still tracked` : ''}`);
+
+    // Abort reprice if some orders couldn't be cancelled (risk of exceeding maxOpenOrders)
+    if (remainingTracked > 0) {
+      console.log(`⚠️ [${exchange}] Aborting ladder reprice: ${remainingTracked} orders still live on exchange, waiting for reconciliation`);
+      return;
+    }
+
+    // Recalculate remaining budget
+    const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+    const minBudget = config.baseSizeUsdc || 50;
+
+    if (remainingBudget < minBudget) {
+      console.log(`ℹ️ [${exchange}] Insufficient budget to rebuild ladder: $${remainingBudget.toFixed(2)}`);
+      positionState.pendingLadderOrders = [];
+      return;
+    }
+
+    // Build new ladder from current price
+    const ladder = ladderCalculator.buildLadder(
+      marketState.lastPrice,
+      remainingBudget,
+      {
+        atr: marketState.atr1m,
+        volBaseline: marketState.volBaseline,
+        realizedVol: marketState.realizedVol,
+        athDistance: marketState.athDistance || 0,
+      }
+    );
+
+    // Check order slot capacity before placing
+    const pendingCounts = orderExecutor.getPendingCounts();
+    const requiredSlots = ladder.levels.length + 1; // +1 for TP order
+    if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
+      console.log(`⚠️ [${exchange}] Cannot reprice ladder: need ${requiredSlots} slots, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
+      positionState.pendingLadderOrders = [];
+      return;
+    }
+
+    // Place repriced orders
+    const result = await orderExecutor.placeLadderOrders(ladder.levels);
+    positionState.pendingLadderOrders = result.orders;
+    positionState.ladderLowerBound = ladder.lowerBound;
+
+    console.log(`🔄 [${exchange}] Ladder repriced: ${result.orders.length} levels from $${marketState.lastPrice.toFixed(2)} to $${ladder.lowerBound.toFixed(2)}`);
+
+    tradeEvents.emitTradeEvent('ladder_repriced', exchange, `${result.orders.length} levels to $${ladder.lowerBound.toFixed(2)}`, {
+      levels: result.orders.length,
+      topPrice: marketState.lastPrice,
+      bottomPrice: ladder.lowerBound,
+      remainingBudget,
+    });
+  };
+
+  /**
    * Execute entry
    * @param {string} triggerType - What triggered the entry
    */
@@ -1362,7 +1917,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Calculate size
     const sizing = positionSizer.calculateEntrySize({
       regime,
-      ladderStep: positionState.ladderStep,
+      cycleBuys: positionState.cycleBuys,
       totalCostBasis: positionState.totalCostBasis,
     });
 
@@ -1372,18 +1927,33 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Handle ladder auto-reset (time-based reset after being at max limit)
     if (riskCheck.shouldResetLadder) {
-      console.log(`🔄 [${exchange}] Ladder auto-reset triggered, resetting step ${positionState.ladderStep} -> 0`);
-      positionState.ladderStep = 0;
+      console.log(`🔄 [${exchange}] Ladder auto-reset triggered, resetting buys ${positionState.cycleBuys} -> 0`);
+      positionState.cycleBuys = 0;
+      ladderLimitWarningLogged = false;
     }
 
     if (!riskCheck.allowed) {
-      console.log(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
+      // Only log certain warnings once until they reset (to avoid log spam)
+      const isLadderLimit = riskCheck.reason.startsWith('ladder_limit_reached');
+      const isUsdcCap = riskCheck.reason.startsWith('usdc_cap_exceeded');
+      const shouldSkipLog = (isLadderLimit && ladderLimitWarningLogged) || (isUsdcCap && usdcCapWarningLogged);
+      if (!shouldSkipLog) {
+        console.log(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
+        if (isLadderLimit) ladderLimitWarningLogged = true;
+        if (isUsdcCap) usdcCapWarningLogged = true;
+      }
       return;
     }
 
-    // Check minimum size
+    // Check minimum size (with spam protection for budget exhausted)
     if (!positionSizer.meetsMinimum(sizing.sizeUsdc, exchangeConfig.minOrderSize || 1)) {
-      console.log(`ℹ️ [${exchange}] Size $${sizing.sizeUsdc} below minimum`);
+      const isBudgetExhausted = sizing.sizeUsdc <= 0;
+      if (!isBudgetExhausted || !budgetExhaustedWarningLogged) {
+        console.log(`ℹ️ [${exchange}] ${isBudgetExhausted ? 'Budget exhausted' : `Size $${sizing.sizeUsdc} below minimum`}`);
+        if (isBudgetExhausted) {
+          budgetExhaustedWarningLogged = true;
+        }
+      }
       return;
     }
 
@@ -1408,11 +1978,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.lastEntryTime = Date.now();
       positionState.anchorPrice = marketState.lastPrice;
 
-      console.log(`📝 [${exchange}] Entry placed: regime=${regime} step=${positionState.ladderStep} size=$${sizing.sizeUsdc} price=$${result.price} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
+      // Persist entry order to state for recovery across restarts
+      if (!isDryRun) {
+        if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
+        positionState.pendingEntryOrders.push({
+          orderId: result.orderId,
+          price: result.price,
+          btcQty: result.btcQty,
+          sizeUsdc: sizing.sizeUsdc,
+          placedAt: Date.now(),
+        });
+        saveLiveState();
+      }
+
+      console.log(`📝 [${exchange}] Entry placed: regime=${regime} buys=${positionState.cycleBuys} size=$${sizing.sizeUsdc} price=$${result.price} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
 
       tradeEvents.emitTradeEvent('entry_placed', exchange, `$${sizing.sizeUsdc} @ $${result.price}`, {
         regime,
-        step: positionState.ladderStep,
+        step: positionState.cycleBuys,
         sizeUsdc: sizing.sizeUsdc,
         price: result.price,
         trigger: triggerType,
@@ -1424,8 +2007,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   /**
    * Place or update take-profit order
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
    */
-  const placeTakeProfitOrder = async () => {
+  const placeTakeProfitOrder = async (options = {}) => {
     // Calculate TP price first (needed for profit-based holdback calculation)
     const tpPrice = calculateDynamicTP();
 
@@ -1438,7 +2023,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     if (sellQty <= 0) return;
 
-    const result = await orderExecutor.placeTakeProfitOrder(sellQty, tpPrice);
+    const result = await orderExecutor.placeTakeProfitOrder(sellQty, tpPrice, options);
 
     if (result.success) {
       positionState.activeTpOrderId = result.orderId;
@@ -1481,17 +2066,35 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   /**
    * Reset for new cycle
    */
-  const resetCycle = () => {
+  const resetCycle = async () => {
+    // Cancel remaining ladder orders - check both positionState and executor tracking
+    const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
+    const hasTrackedLadder = (positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) || executorLadderOrders.length > 0;
+    if (positionState.ladderActive || hasTrackedLadder) {
+      const { cancelled } = await orderExecutor.cancelAllLadderOrders();
+      if (cancelled > 0) console.log(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders`);
+    }
+
+    // Reset ladder state
+    positionState.ladderActive = false;
+    positionState.ladderPlacedAt = null;
+    positionState.ladderLowerBound = 0;
+    positionState.pendingLadderOrders = [];
+
+    // Reset position state
     positionState.totalBTC = 0;
     positionState.totalCostBasis = 0;
     positionState.avgCostBasis = 0;
-    positionState.ladderStep = 0;
+    positionState.cycleBuys = 0;
     positionState.activeTpOrderId = null;
     positionState.lastTpPrice = 0;
     positionState.btcOnOrder = 0;
     positionState.anchorPrice = 0;
     positionState.scalingDisabled = false;
     positionState.scalingDisabledReason = null;
+    ladderLimitWarningLogged = false;
+    usdcCapWarningLogged = false;
+    budgetExhaustedWarningLogged = false;
 
     // Start new cycle in fill ledger
     fillLedger.startNewCycle();
@@ -1523,12 +2126,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.avgCostBasis = positionState.totalBTC > 0
         ? positionState.totalCostBasis / positionState.totalBTC
         : 0;
-      positionState.ladderStep += 1;
+      positionState.cycleBuys += 1;
       positionState.lastEntryPrice = price;
       positionState.lastEntryTime = Date.now();
 
-      // Place/update TP order (simulated)
-      await placeTakeProfitOrder();
+      // Place/update TP order (simulated, force update after buy fill)
+      await placeTakeProfitOrder({ forceUpdate: true });
 
       tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}`, {
         btcAmount: btcQty,
@@ -1541,7 +2144,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       saveDryRunState();
     };
 
-    dryRunCallbacks.onSellFill = (orderId, btcQty, price, proceeds, pnl) => {
+    dryRunCallbacks.onSellFill = async (orderId, btcQty, price, proceeds, pnl) => {
       // Calculate BTC holdback (the BTC we kept as reserves from this cycle)
       const holdbackBtc = roundBTC(positionState.totalBTC - btcQty);
 
@@ -1589,12 +2192,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Record cycle for Size optimizer
       const postCycleBalance = config.maxUsdcDeployed;
       recordCycleForSizeOptimizer({
-        stepsUsed: positionState.ladderStep,
+        stepsUsed: positionState.cycleBuys,
         capitalDeployed: positionState.totalCostBasis,
       }, postCycleBalance);
 
       // Reset for next cycle
-      resetCycle();
+      await resetCycle();
 
       // Save state after TP fill
       saveDryRunState();
@@ -1614,6 +2217,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         filledValue: status.filledValue,
         averageFilledPrice: status.averageFilledPrice,
         totalFees: status.totalFees,
+        placedAt: status.placedAt, // Passed from order executor for fill time tracking
       };
       await handleOrderFill(fillData);
     };
@@ -1633,13 +2237,53 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     pause: tailEvents.getPauseState(),
     risk: riskManager.getState(),
     orders: orderExecutor.getPendingCounts(),
-    pendingOrders: !isDryRun && orderExecutor.getPendingOrdersList ? orderExecutor.getPendingOrdersList() : [],
+    pendingOrders: !isDryRun && orderExecutor.getPendingOrdersList
+      ? orderExecutor.getPendingOrdersList().map(order => {
+        // Add TP% for take_profit orders
+        if (order.type === 'take_profit' && positionState.avgCostBasis > 0) {
+          return {
+            ...order,
+            tpPercent: ((order.price - positionState.avgCostBasis) / positionState.avgCostBasis * 100).toFixed(2),
+          };
+        }
+        return order;
+      })
+      : [],
     apy: calculateApyMetrics(),
     dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,
     tpOptimizer: tpOptimizer.getStatus(),
     sizeOptimizer: sizeOptimizer.getStatus(),
     fillTimeStats: fillLedger.getFillTimeStats ? fillLedger.getFillTimeStats(7) : null,
     effectiveStaleMs: !isDryRun && orderExecutor.getEffectiveStaleMs ? orderExecutor.getEffectiveStaleMs() : config.orderStaleMs,
+    // Include current config for real-time dashboard updates
+    config: {
+      maxUsdcDeployed: config.maxUsdcDeployed,
+      baseSizeUsdc: config.baseSizeUsdc,
+      maxLadderSteps: config.maxLadderSteps,
+      tpMinPercent: config.tpMinPercent,
+      tpMaxPercent: config.tpMaxPercent,
+      holdbackRatio: config.holdbackRatio,
+      entryMode: config.entryMode || 'reactive',
+      ladderAutoSwitch: config.ladderAutoSwitch || false,
+      ladderLevels: config.ladderLevels || 10,
+    },
+    // Effective entry mode (may differ from config due to auto-switch)
+    entryMode: (() => {
+      let mode = config.entryMode || 'reactive';
+      if (config.ladderAutoSwitch && marketState.volBaseline > 0) {
+        const volExpansion = marketState.realizedVol / marketState.volBaseline;
+        if (volExpansion >= (config.ladderAutoSwitchVolMult || 2.0)) {
+          mode = 'ladder';
+        }
+      }
+      return mode;
+    })(),
+    ladder: positionState.ladderActive ? {
+      active: true,
+      placedAt: positionState.ladderPlacedAt,
+      lowerBound: positionState.ladderLowerBound,
+      pendingOrders: positionState.pendingLadderOrders?.length || 0,
+    } : null,
   });
 
   /**
@@ -1674,9 +2318,37 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   /**
    * Update configuration
+   * Tracks manual capital additions to depositedCapital
    * @param {Object} updates - Config updates
    */
   const updateConfig = (updates) => {
+    // Direct depositedCapital edit - sync to position state
+    if (updates.depositedCapital !== undefined && updates.depositedCapital !== config.depositedCapital) {
+      positionState.depositedCapital = updates.depositedCapital > 0 ? roundUSDC(updates.depositedCapital) : 0;
+      console.log(`💵 [${exchange}] Deposited capital set to $${updates.depositedCapital > 0 ? updates.depositedCapital.toFixed(2) : 'auto-derive'}`);
+      if (!isDryRun) saveLiveState();
+      else saveDryRunState();
+    }
+    // Track manual capital additions (user deposits, not profits)
+    if (updates.maxUsdcDeployed !== undefined && updates.maxUsdcDeployed !== config.maxUsdcDeployed) {
+      const capitalChange = updates.maxUsdcDeployed - config.maxUsdcDeployed;
+      if (capitalChange > 0) {
+        // User added capital - update depositedCapital
+        const prevDeposited = positionState.depositedCapital || positionState.originalCapital || config.maxUsdcDeployed;
+        positionState.depositedCapital = roundUSDC(prevDeposited + capitalChange);
+        console.log(`💵 [${exchange}] Capital deposit: +$${capitalChange.toFixed(2)} (deposited: $${positionState.depositedCapital.toFixed(2)})`);
+        // Save state to persist the deposit tracking
+        if (!isDryRun) saveLiveState();
+        else saveDryRunState();
+      } else if (capitalChange < 0) {
+        // User withdrew capital - reduce depositedCapital (but floor at 0)
+        const prevDeposited = positionState.depositedCapital || positionState.originalCapital || config.maxUsdcDeployed;
+        positionState.depositedCapital = roundUSDC(Math.max(0, prevDeposited + capitalChange));
+        console.log(`💸 [${exchange}] Capital withdrawal: $${Math.abs(capitalChange).toFixed(2)} (deposited: $${positionState.depositedCapital.toFixed(2)})`);
+        if (!isDryRun) saveLiveState();
+        else saveDryRunState();
+      }
+    }
     Object.assign(config, updates);
     console.log(`🔧 [${exchange}] Regime engine config updated`);
   };
@@ -1762,7 +2434,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       ...newPosition,
     };
     saveLiveState();
-    console.log(`🔄 [${exchange}] Position updated externally: step=${positionState.ladderStep}, cycles=${positionState.cyclesCompleted}, BTC reserves=${positionState.realizedBtcPnL}`);
+    console.log(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, BTC reserves=${positionState.realizedBtcPnL}`);
+  };
+
+  /**
+   * Force rebuild of TP sell order with current position
+   * Useful when position state was corrected manually
+   * @returns {Promise<{success: boolean, message: string}>}
+   */
+  const rebuildTP = async () => {
+    if (!isRunning) {
+      return { success: false, message: 'Engine not running' };
+    }
+    if (positionState.totalBTC <= 0) {
+      return { success: false, message: 'No position to protect' };
+    }
+    console.log(`🔄 [${exchange}] Manual TP rebuild requested for ${positionState.totalBTC.toFixed(8)} BTC`);
+    await placeTakeProfitOrder({ forceUpdate: true });
+    return { success: true, message: `TP rebuilt for ${positionState.totalBTC.toFixed(8)} BTC @ $${positionState.lastTpPrice}` };
   };
 
   return {
@@ -1778,6 +2467,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     getFills,
     getFillStats,
     forceResumeDrawdown,
+    rebuildTP,
     // Dry-run specific methods
     isDryRun,
     getDryRunLog,

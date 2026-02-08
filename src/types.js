@@ -388,6 +388,9 @@
  * @property {{magnitude: number, direction: 'up' | 'down' | 'neutral'}} momentum - Price momentum indicator
  * @property {Array<{price: number, size: number, side: string, timestamp: number}>} trades - Recent trades
  * @property {number} lastUpdate - Timestamp of last market data update
+ * @property {number} [ath] - All-time high price (for ladder mode)
+ * @property {number} [athDistance] - Current distance from ATH (negative when below)
+ * @property {number} [athLastUpdate] - Timestamp of last ATH fetch
  */
 
 /**
@@ -406,7 +409,7 @@
  * @property {number} totalBTC - Total BTC in current cycle
  * @property {number} totalCostBasis - Total cost including fees
  * @property {number} avgCostBasis - Average cost per BTC
- * @property {number} ladderStep - Current averaging-down step (0-indexed)
+ * @property {number} cycleBuys - Number of buy orders filled in current cycle
  * @property {number} lastEntryPrice - Price of last entry
  * @property {number} lastEntryTime - Timestamp of last entry
  * @property {number} anchorPrice - Price anchor for volatility clock
@@ -420,6 +423,11 @@
  * @property {number} maxDrawdownSeen - Maximum drawdown observed
  * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
+ * @property {Array<{orderId: string, price: number, btcQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
+ * @property {boolean} [ladderActive] - Whether ladder mode is active
+ * @property {number|null} [ladderPlacedAt] - Timestamp when ladder was placed
+ * @property {number} [ladderLowerBound] - Current ladder lower bound price
+ * @property {Array<{orderId: string, price: number, sizeUsdc: number, ladderIndex: number}>} [pendingLadderOrders] - Pending ladder orders
  */
 
 /**
@@ -478,6 +486,7 @@
  * Mode Flags
  * @property {boolean} enabled - Whether regime engine is enabled (default: false)
  * Note: dryRun is read from exchange-level config (ExchangeConfig.dryRun), not here
+ * @property {'conservative'|'moderate'|'aggressive'|'maximum'} [aggressiveness] - Aggressiveness preset (default: 'moderate')
  *
  * Volatility Clock Parameters
  * @property {number} atrPeriod - Periods for ATR calculation (default: 14)
@@ -510,7 +519,8 @@
  *
  * Risk Cap Parameters
  * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)
- * @property {number} maxUsdcDeployed - Maximum USDC deployed (default: 10000)
+ * @property {number} depositedCapital - Total user deposits, 0 = auto-derive from maxUsdcDeployed - realizedPnL (default: 0)
+ * @property {number} maxUsdcDeployed - Maximum USDC cap for trading, grows with profits (default: 10000)
  * @property {number} maxDrawdownPercent - Pause threshold (default: 20)
  * @property {number} drawdownResetHours - Hours after which to auto-reset peak during drawdown pause (default: 72, 0 to disable)
  *
@@ -542,6 +552,19 @@
  * @property {number} flashMoveMult - ATR multiple for flash detection (default: 3.0)
  * @property {number} flashCooldownMs - Flash move cooldown (default: 600000)
  * @property {boolean} cancelEntriesOnFlash - Cancel entries on flash (default: true)
+ *
+ * Entry Mode Parameters
+ * @property {'reactive' | 'ladder'} [entryMode] - Entry strategy mode (default: 'reactive')
+ *
+ * Ladder Parameters (when entryMode: 'ladder')
+ * @property {number} [ladderLevels] - Number of ladder rungs (default: 10)
+ * @property {number} [ladderLowerBoundPct] - Base lower bound % below current price (default: 15)
+ * @property {boolean} [ladderLowerBoundAthAdjust] - Widen based on ATH distance (default: true)
+ * @property {'linear' | 'sqrt' | 'exponential'} [ladderSpacingMode] - Price level spacing (default: 'sqrt')
+ * @property {'flat' | 'linear' | 'sqrt'} [ladderSizeMode] - Size allocation mode (default: 'flat')
+ * @property {boolean} [ladderAutoSwitch] - Auto-switch to ladder on high vol (default: false)
+ * @property {number} [ladderAutoSwitchVolMult] - Vol expansion threshold for auto-switch (default: 2.0)
+ * @property {number} [ladderMinSpacingPct] - Min % between rungs (default: 0.5)
  */
 
 /**

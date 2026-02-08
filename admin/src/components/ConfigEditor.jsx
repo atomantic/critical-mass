@@ -398,6 +398,86 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
             </div>
 
             <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Entry Mode & Ladder</h3>
+              <div className="grid grid-cols-4 gap-3 mb-3">
+                <FormSelect
+                  label="Entry Mode"
+                  value={regimeConfig.entryMode || 'reactive'}
+                  onChange={(v) => handleRegimeChange('entryMode', v)}
+                  options={[
+                    { value: 'reactive', label: 'Reactive (single order)' },
+                    { value: 'ladder', label: 'Ladder (pre-positioned)' }
+                  ]}
+                />
+                <div className="flex items-center gap-2 pt-5">
+                  <input
+                    type="checkbox"
+                    id="ladderAutoSwitch"
+                    checked={regimeConfig.ladderAutoSwitch || false}
+                    onChange={(e) => handleRegimeChange('ladderAutoSwitch', e.target.checked)}
+                    className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                  />
+                  <label htmlFor="ladderAutoSwitch" className="text-sm text-gray-300">Auto-Switch on Vol</label>
+                </div>
+                {regimeConfig.ladderAutoSwitch && (
+                  <FormInput label="Auto-Switch Vol Mult" value={regimeConfig.ladderAutoSwitchVolMult || 2.0} onChange={(v) => handleRegimeChange('ladderAutoSwitchVolMult', v)} type="number" />
+                )}
+              </div>
+              {(regimeConfig.entryMode === 'ladder' || regimeConfig.ladderAutoSwitch) && (
+                <>
+                  <div className="bg-indigo-900/20 border border-indigo-700/30 rounded p-3 mb-3">
+                    <div className="text-xs text-indigo-300 mb-2">
+                      <span className="font-medium">Ladder Mode:</span> Pre-positions multiple limit buy orders from current price down to a calculated lower bound.
+                      Captures liquidity shocks and fat-tail events that single-order reactive mode misses.
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-4 gap-3">
+                    <FormInput label="Ladder Levels" value={regimeConfig.ladderLevels || 10} onChange={(v) => handleRegimeChange('ladderLevels', v)} type="number" />
+                    <FormInput label="Lower Bound %" value={regimeConfig.ladderLowerBoundPct || 15} onChange={(v) => handleRegimeChange('ladderLowerBoundPct', v)} type="number" />
+                    <FormInput label="Min Spacing %" value={regimeConfig.ladderMinSpacingPct || 0.5} onChange={(v) => handleRegimeChange('ladderMinSpacingPct', v)} type="number" />
+                    <div className="flex items-center gap-2 pt-5">
+                      <input
+                        type="checkbox"
+                        id="ladderLowerBoundAthAdjust"
+                        checked={regimeConfig.ladderLowerBoundAthAdjust !== false}
+                        onChange={(e) => handleRegimeChange('ladderLowerBoundAthAdjust', e.target.checked)}
+                        className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                      />
+                      <label htmlFor="ladderLowerBoundAthAdjust" className="text-sm text-gray-300">ATH Adjust</label>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-4 gap-3 mt-3">
+                    <FormSelect
+                      label="Spacing Mode"
+                      value={regimeConfig.ladderSpacingMode || 'sqrt'}
+                      onChange={(v) => handleRegimeChange('ladderSpacingMode', v)}
+                      options={[
+                        { value: 'linear', label: 'Linear (even spacing)' },
+                        { value: 'sqrt', label: 'Sqrt (denser near top)' },
+                        { value: 'exponential', label: 'Exponential (denser at bottom)' }
+                      ]}
+                    />
+                    <FormSelect
+                      label="Size Mode"
+                      value={regimeConfig.ladderSizeMode || 'flat'}
+                      onChange={(v) => handleRegimeChange('ladderSizeMode', v)}
+                      options={[
+                        { value: 'flat', label: 'Flat (equal sizes)' },
+                        { value: 'linear', label: 'Linear (larger at bottom)' },
+                        { value: 'sqrt', label: 'Sqrt (moderate scaling)' }
+                      ]}
+                    />
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">
+                    {regimeConfig.ladderLevels || 10} orders spanning {regimeConfig.ladderLowerBoundPct || 15}% below current price.
+                    {regimeConfig.ladderLowerBoundAthAdjust !== false && ' Lower bound widens based on ATH distance.'}
+                    {regimeConfig.ladderAutoSwitch && ` Auto-switches to ladder when vol expands ${regimeConfig.ladderAutoSwitchVolMult || 2.0}x.`}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
               <h3 className="text-sm font-medium text-purple-400 mb-3">Regime Scaling</h3>
               <div className="grid grid-cols-4 gap-3">
                 <FormInput label="Harvest Scale" value={regimeConfig.harvestScale || 1.0} onChange={(v) => handleRegimeChange('harvestScale', v)} type="number" />
@@ -482,8 +562,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
             <div className="border-t border-gray-700 pt-3 mb-4">
               <h3 className="text-sm font-medium text-purple-400 mb-3">Risk Caps</h3>
               <div className="grid grid-cols-4 gap-3">
+                <FormInput label="Deposited Capital" value={regimeConfig.depositedCapital || 0} onChange={(v) => handleRegimeChange('depositedCapital', v)} type="number" />
                 <FormInput label="Max BTC Exposure" value={regimeConfig.maxBtcExposure || 0.5} onChange={(v) => handleRegimeChange('maxBtcExposure', v)} type="number" />
-                <FormInput label="Max USDC Deployed" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
+                <FormInput label="Max USDC Cap" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
                 <FormInput label="Max Drawdown %" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
                 <FormInput label="Liquidity Factor Cap" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
               </div>
@@ -492,6 +573,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 <FormInput label="Ladder Reset (hrs)" value={regimeConfig.ladderResetHours || 72} onChange={(v) => handleRegimeChange('ladderResetHours', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-500">
+                Deposited Capital: your actual cash deposits (0 = auto-derive). Max USDC Cap: trading limit (grows with profits).
                 Auto-reset hours: 0 = disabled. After this time at a limit, the engine resumes with reset counters.
               </div>
             </div>

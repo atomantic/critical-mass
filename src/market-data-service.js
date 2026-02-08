@@ -212,8 +212,10 @@ const createMarketDataService = (exchange) => {
       const adapter = getAdapter(exchange);
       const fills = await adapter.getOrderFills(orderId).catch(() => []);
 
+      // Pass placedAt for fill time tracking (only meaningful for buy orders)
+      const orderPlacedAt = trackedOrder.type === 'entry' ? trackedOrder.placedAt : null;
       for (const fill of fills) {
-        fillLedger.ingestFill(fill);
+        fillLedger.ingestFill(fill, orderPlacedAt);
       }
       fillLedger.persist();
 

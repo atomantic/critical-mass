@@ -138,11 +138,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * Place or update take-profit sell order
    * @param {number} btcQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
    * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, errorMessage?: string}>}
    */
-  const placeTakeProfitOrder = async (btcQty, tpPrice) => {
-    // Anti-churn: check if price OR size change is significant
-    if (activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
+  const placeTakeProfitOrder = async (btcQty, tpPrice, options = {}) => {
+    // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
+    if (!options.forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
       const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
       const sizeChange = Math.abs(btcQty - lastTpSize) / lastTpSize * 100;
       // Update if neither price nor size changed significantly
@@ -157,7 +159,16 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     // Cancel existing TP order if present
     if (activeTpOrderId) {
-      await cancelTpOrder();
+      const oldTpId = activeTpOrderId;
+      const cancelSuccess = await cancelTpOrder();
+      if (!cancelSuccess) {
+        console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, keeping it tracked to avoid duplicate sells`);
+        // Do NOT clear tracking or place a new TP - risk of two live TP orders causing oversell
+        return {
+          success: false,
+          errorMessage: `Cannot place new TP: failed to cancel existing TP order ${oldTpId}`,
+        };
+      }
     }
 
     const roundedPrice = roundPrice(tpPrice);
@@ -200,15 +211,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   const cancelTpOrder = async () => {
     if (!activeTpOrderId) return true;
 
-    const result = await adapter.cancelOrder(activeTpOrderId);
+    const orderToCancel = activeTpOrderId;
+    const result = await adapter.cancelOrder(orderToCancel);
 
     if (result.success) {
-      pendingOrders.delete(activeTpOrderId);
+      console.log(`🗑️ [${exchange}] Cancelled TP order: ${orderToCancel}`);
+      pendingOrders.delete(orderToCancel);
       activeTpOrderId = null;
       lastTpSize = 0;
       return true;
     }
 
+    console.log(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: ${result.errorMessage || 'unknown error'}`);
     return false;
   };
 
@@ -257,9 +271,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
             // Order filled but WebSocket missed it - notify regime engine
             console.log(`✅ [${exchange}] Stale check detected filled order ${orderId} (WebSocket missed)`);
+            // Capture placedAt BEFORE deleting from pendingOrders
+            const placedAt = order.placedAt;
             pendingOrders.delete(orderId);
             if (callbacks.onFillDetected) {
-              callbacks.onFillDetected(orderId, status);
+              callbacks.onFillDetected(orderId, { ...status, placedAt });
             }
           } else if (normalizedStatus === 'CANCELLED') {
             // Order was cancelled
@@ -306,9 +322,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
           // Order filled but WebSocket missed it
           console.log(`✅ [${exchange}] Refresh detected filled order ${orderId}`);
+          // Capture placedAt BEFORE deleting from pendingOrders
+          const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
           if (callbacks.onFillDetected) {
-            callbacks.onFillDetected(orderId, status);
+            callbacks.onFillDetected(orderId, { ...status, placedAt });
           }
           refreshed++;
         } else if (normalizedStatus === 'CANCELLED') {
@@ -346,9 +364,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
         console.log(`✅ [${exchange}] Fill check detected filled order ${orderId}`);
+        // Capture placedAt BEFORE deleting from pendingOrders
+        const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
         if (callbacks.onFillDetected) {
-          callbacks.onFillDetected(orderId, status);
+          // Pass placedAt in status so handleOrderFill can use it for fill time tracking
+          callbacks.onFillDetected(orderId, { ...status, placedAt });
         }
         filled++;
       } else if (normalizedStatus === 'CANCELLED') {
@@ -532,7 +553,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     return Array.from(pendingOrders.entries()).map(([orderId, order]) => ({
       orderId,
       type: order.type,
-      side: order.type === 'entry' ? 'buy' : 'sell',
+      side: (order.type === 'entry' || order.type === 'ladder_entry') ? 'buy' : 'sell',
       price: order.price,
       size: order.size,
       sizeUsdc: order.sizeUsdc,
@@ -601,6 +622,147 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     }
   };
 
+  // ============================================================================
+  // Ladder Mode Functions
+  // ============================================================================
+
+  /**
+   * Sleep utility for rate limiting
+   * @param {number} ms - Milliseconds to sleep
+   * @returns {Promise<void>}
+   */
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  /**
+   * Place multiple ladder entry orders
+   * @param {Array<{index: number, price: number, sizeUsdc: number, btcQty: number}>} levels - Ladder levels
+   * @returns {Promise<{orders: Array<{orderId: string, index: number, price: number, sizeUsdc: number, btcQty: number}>, failedCount: number}>}
+   */
+  const placeLadderOrders = async (levels) => {
+    const results = [];
+    let failedCount = 0;
+
+    for (const level of levels) {
+      const result = await adapter.placeLimitBuy(productId, level.btcQty, level.price, { postOnly: true }).catch(err => {
+        console.log(`⚠️ [${exchange}] Error placing ladder order at $${level.price}: ${err.message}`);
+        return { success: false, errorMessage: err.message };
+      });
+
+      if (result.success) {
+        // Verify order is actually open (post-only can be immediately cancelled)
+        const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
+
+        // Only treat as immediately cancelled when we positively know it's cancelled.
+        // If we failed to fetch status (null), track the order and let later refresh reconcile.
+        if (orderStatus && orderStatus.status === 'CANCELLED') {
+          console.log(`⚠️ [${exchange}] Ladder order at $${level.price} was immediately cancelled`);
+          failedCount++;
+          continue;
+        }
+
+        if (!orderStatus) {
+          console.log(`⚠️ [${exchange}] Could not verify ladder order at $${level.price}, tracking it for reconciliation`);
+        }
+
+        pendingOrders.set(result.orderId, {
+          type: 'ladder_entry',
+          price: level.price,
+          size: level.btcQty,
+          sizeUsdc: level.sizeUsdc,
+          ladderIndex: level.index,
+          placedAt: Date.now(),
+        });
+
+        results.push({
+          orderId: result.orderId,
+          ladderIndex: level.index,
+          price: level.price,
+          sizeUsdc: level.sizeUsdc,
+          btcQty: level.btcQty,
+        });
+      } else {
+        console.log(`⚠️ [${exchange}] Failed to place ladder order at $${level.price}: ${result.errorMessage}`);
+        failedCount++;
+      }
+
+      // Rate limit between orders
+      await sleep(100);
+    }
+
+    return { orders: results, failedCount };
+  };
+
+  /**
+   * Cancel all unfilled ladder orders
+   * @returns {Promise<{cancelled: number, remainingTracked: number}>} Cancel results
+   */
+  const cancelAllLadderOrders = async () => {
+    let cancelled = 0;
+
+    const ladderOrders = Array.from(pendingOrders.entries())
+      .filter(([, order]) => order.type === 'ladder_entry');
+
+    const results = await Promise.allSettled(
+      ladderOrders.map(([orderId]) => adapter.cancelOrder(orderId))
+    );
+
+    results.forEach((result, index) => {
+      const [orderId] = ladderOrders[index];
+      if (result.status === 'fulfilled') {
+        const cancelResult = result.value;
+        if (cancelResult && cancelResult.success) {
+          pendingOrders.delete(orderId);
+          cancelled++;
+        } else if (cancelResult && (cancelResult.alreadyCancelled || cancelResult.alreadyFilled)) {
+          // Order is no longer active, stop tracking but don't count as fresh cancel
+          pendingOrders.delete(orderId);
+        } else {
+          console.log(`⚠️ [${exchange}] Cancel request for ladder order ${orderId} did not succeed: ${cancelResult?.errorMessage || 'unknown reason'}`);
+        }
+      } else {
+        console.log(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId}: ${result.reason?.message || 'unknown'}`);
+        // Do not remove from tracking - order may still be live
+      }
+    });
+
+    // Count remaining tracked ladder orders (failed cancels)
+    const remainingTracked = Array.from(pendingOrders.values())
+      .filter(o => o.type === 'ladder_entry').length;
+
+    return { cancelled, remainingTracked };
+  };
+
+  /**
+   * Get all pending ladder orders
+   * @returns {Array<{orderId: string, price: number, sizeUsdc: number, ladderIndex: number, placedAt: number}>}
+   */
+  const getPendingLadderOrders = () => {
+    const ladderOrders = [];
+    for (const [orderId, order] of pendingOrders) {
+      if (order.type === 'ladder_entry') {
+        ladderOrders.push({
+          orderId,
+          price: order.price,
+          size: order.size,
+          sizeUsdc: order.sizeUsdc,
+          ladderIndex: order.ladderIndex,
+          placedAt: order.placedAt,
+        });
+      }
+    }
+    return ladderOrders.sort((a, b) => b.price - a.price); // Sort by price descending (top of ladder first)
+  };
+
+  /**
+   * Check if an order is a ladder entry order
+   * @param {string} orderId - Order ID to check
+   * @returns {boolean}
+   */
+  const isLadderOrder = (orderId) => {
+    const order = pendingOrders.get(orderId);
+    return order?.type === 'ladder_entry';
+  };
+
   return {
     placeEntryBid,
     placeTakeProfitOrder,
@@ -624,6 +786,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // Regime-based stale timeout
     setStaleTimeoutMultiplier,
     getEffectiveStaleMs,
+    // Ladder mode functions
+    placeLadderOrders,
+    cancelAllLadderOrders,
+    getPendingLadderOrders,
+    isLadderOrder,
   };
 };
 
