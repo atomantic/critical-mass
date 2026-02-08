@@ -1530,8 +1530,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       marketState.vwapDistance = (marketState.lastPrice - marketState.vwap) / marketState.atr1m;
     }
 
-    // Update ATH for ladder mode (daily refresh)
-    await updateATH();
+    // Update ATH for ladder mode (daily refresh) - run async to avoid blocking metrics interval
+    updateATH().catch(err => console.log(`⚠️ [${exchange}] ATH update failed: ${err.message}`));
 
     // Classify regime with updated metrics
     regimeDetector.classify(marketState);

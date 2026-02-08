@@ -155,7 +155,6 @@ const createLadderCalculator = (exchange, config) => {
    */
   const calculateLevelSizes = (totalBudget, numLevels, sizeMode) => {
     const sizes = [];
-    const minOrderSize = config.baseSizeUsdc || 50;
 
     switch (sizeMode) {
       case 'linear':

@@ -100,8 +100,7 @@ All notable changes to this project will be documented in this file.
   - This prevents lost opportunities when good limit orders were placed before restart
 - **Orphaned TP orders from failed cancels** - Fixed silent failure when canceling old TP before placing new one
   - Cancel failures were ignored, causing new TP to be placed while old one remained on exchange
-  - Now logs warning when cancel fails and clears tracking state to prevent duplicate attempts
-  - Orphaned orders will be visible in exchange UI for manual cleanup
+  - Now logs a warning when cancel fails and keeps the existing TP tracked, refusing to place a new one to avoid duplicate sells
 
 ## [2.3.47] - 2026-02-03
 
