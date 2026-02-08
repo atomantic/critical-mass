@@ -589,19 +589,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const totalUsdcReturn = positionState.realizedPnL || 0;
     // depositedCapital = total user deposits (excludes profits)
     // Priority: config.depositedCapital > positionState.depositedCapital > derive from maxUsdc - profits
+    const autoDerivedCapital = Math.max(0, roundUSDC(maxUsdcDeployed - totalUsdcReturn));
     const depositedCapital = config.depositedCapital > 0
       ? config.depositedCapital
       : (positionState.depositedCapital > 0
           ? positionState.depositedCapital
           : (positionState.originalCapital > 0
               ? positionState.originalCapital
-              : roundUSDC(maxUsdcDeployed - totalUsdcReturn)));
+              : autoDerivedCapital));
     // initialCapital for APY calculations (first deposit amount)
     const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
     // deployedInPosition = capital currently in open positions
     const deployedInPosition = positionState.totalCostBasis || 0;
-    // availableCapital = maxUsdc - deployed in positions
-    const availableCapital = maxUsdcDeployed - deployedInPosition;
+    // availableCapital = maxUsdc - deployed in positions (clamped at 0 for reporting)
+    const availableCapital = Math.max(0, maxUsdcDeployed - deployedInPosition);
     const currentPrice = marketState.lastPrice || 0;
     // Legacy aliases for backwards compatibility
     const currentCapital = maxUsdcDeployed;
@@ -766,12 +767,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Helper to ensure depositedCapital is set
     const ensureDepositedCapital = () => {
       if (!positionState.depositedCapital || positionState.depositedCapital === 0) {
-        // Migrate from originalCapital if set, otherwise derive from maxUsdc - profits
+        // Migrate from originalCapital if set, otherwise derive from maxUsdc - profits (clamped at 0)
         const maxUsdc = config.maxUsdcDeployed || 10000;
         const profits = positionState.realizedPnL || 0;
         positionState.depositedCapital = positionState.originalCapital > 0
           ? positionState.originalCapital
-          : roundUSDC(maxUsdc - profits);
+          : roundUSDC(Math.max(0, maxUsdc - profits));
       }
     };
 
@@ -1454,47 +1455,49 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     athUpdateInProgress = true;
 
-    // Fetch full daily history in paginated batches (Coinbase API limits <350 candles per request)
-    const nowSec = Math.floor(now / 1000);
-    const maxCandlesPerRequest = 349;
-    const daySec = 24 * 60 * 60;
+    const fetchAndComputeATH = async () => {
+      // Fetch full daily history in paginated batches (Coinbase API limits <350 candles per request)
+      const nowSec = Math.floor(now / 1000);
+      const maxCandlesPerRequest = 349;
+      const daySec = 24 * 60 * 60;
 
-    const allCandles = [];
-    let endSec = nowSec;
+      const allCandles = [];
+      let endSec = nowSec;
 
-    while (true) {
-      const startSec = endSec - (maxCandlesPerRequest * daySec);
-      const batch = await adapter.getCandles(productId, startSec, endSec, 'ONE_DAY').catch(err => {
-        console.log(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`);
-        return null;
-      });
+      while (true) {
+        const startSec = endSec - (maxCandlesPerRequest * daySec);
+        const batch = await adapter.getCandles(productId, startSec, endSec, 'ONE_DAY').catch(err => {
+          console.log(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`);
+          return null;
+        });
 
-      if (!batch || batch.length === 0) break;
-      allCandles.push(...batch);
+        if (!batch || batch.length === 0) break;
+        allCandles.push(...batch);
 
-      // If we received fewer than max candles, we've reached the earliest available data
-      if (batch.length < maxCandlesPerRequest) break;
+        // If we received fewer than max candles, we've reached the earliest available data
+        if (batch.length < maxCandlesPerRequest) break;
 
-      // Move window back in time for next batch
-      endSec = startSec;
-    }
+        // Move window back in time for next batch
+        endSec = startSec;
+      }
 
-    if (allCandles.length === 0) {
+      if (allCandles.length === 0) return;
+
+      // Calculate ATH over full fetched history
+      const ath = ladderCalculator.calculateATHFromCandles(allCandles);
+      const athDistance = ladderCalculator.calculateATHDistance(marketState.lastPrice, ath);
+
+      marketState.ath = ath;
+      marketState.athDistance = athDistance;
+      marketState.athLastUpdate = now;
+
+      const distancePct = (Math.abs(athDistance) * 100).toFixed(1);
+      console.log(`📊 [${exchange}] ATH updated: $${ath.toFixed(2)} (${allCandles.length} candles), current price ${athDistance < 0 ? `${distancePct}% below` : `${distancePct}% above`} ATH`);
+    };
+
+    await fetchAndComputeATH().finally(() => {
       athUpdateInProgress = false;
-      return;
-    }
-
-    // Calculate ATH over full fetched history
-    const ath = ladderCalculator.calculateATHFromCandles(allCandles);
-    const athDistance = ladderCalculator.calculateATHDistance(marketState.lastPrice, ath);
-
-    marketState.ath = ath;
-    marketState.athDistance = athDistance;
-    marketState.athLastUpdate = now;
-    athUpdateInProgress = false;
-
-    const distancePct = (Math.abs(athDistance) * 100).toFixed(1);
-    console.log(`📊 [${exchange}] ATH updated: $${ath.toFixed(2)} (${allCandles.length} candles), current price ${athDistance < 0 ? `${distancePct}% below` : `${distancePct}% above`} ATH`);
+    });
   };
 
   /**
@@ -1811,8 +1814,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     // Cancel existing unfilled ladder orders
-    const cancelled = await orderExecutor.cancelAllLadderOrders();
-    console.log(`🔄 [${exchange}] Cancelled ${cancelled} unfilled ladder orders for repricing`);
+    const { cancelled, remainingTracked } = await orderExecutor.cancelAllLadderOrders();
+    console.log(`🔄 [${exchange}] Cancelled ${cancelled} unfilled ladder orders for repricing${remainingTracked > 0 ? `, ${remainingTracked} still tracked` : ''}`);
+
+    // Abort reprice if some orders couldn't be cancelled (risk of exceeding maxOpenOrders)
+    if (remainingTracked > 0) {
+      console.log(`⚠️ [${exchange}] Aborting ladder reprice: ${remainingTracked} orders still live on exchange, waiting for reconciliation`);
+      return;
+    }
 
     // Recalculate remaining budget
     const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
@@ -2011,10 +2020,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * Reset for new cycle
    */
   const resetCycle = async () => {
-    // Cancel remaining ladder orders if any
-    if (positionState.ladderActive && positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) {
-      const cancelled = await orderExecutor.cancelAllLadderOrders();
-      console.log(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders`);
+    // Cancel remaining ladder orders - check both positionState and executor tracking
+    const executorLadderOrders = orderExecutor.getPendingLadderOrders ? orderExecutor.getPendingLadderOrders() : [];
+    const hasTrackedLadder = (positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) || executorLadderOrders.length > 0;
+    if (positionState.ladderActive || hasTrackedLadder) {
+      const { cancelled } = await orderExecutor.cancelAllLadderOrders();
+      if (cancelled > 0) console.log(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders`);
     }
 
     // Reset ladder state
