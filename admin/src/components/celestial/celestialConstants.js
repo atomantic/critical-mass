@@ -10,7 +10,15 @@ export const TIER_COLORS = {
   planet:     '#3B82F6',
   sun:        '#F59E0B',
   hypergiant: '#8B5CF6',
+  galaxy:     '#EC4899',
   black_hole: '#EF4444',
+}
+
+// Hot core colors for stellar tiers (white-hot center that triggers bloom)
+export const CORE_COLORS = {
+  sun:        '#FEF3C7', // warm white
+  hypergiant: '#E9D5FF', // lavender white
+  galaxy:     '#FCE7F3', // pink white
 }
 
 // Emoji per tier
@@ -20,24 +28,28 @@ export const TIER_EMOJIS = {
   planet:     '🪐',
   sun:        '☀️',
   hypergiant: '💫',
+  galaxy:     '🌌',
   black_hole: '🕳️',
 }
 
 // Orbital radius per tier (higher tiers closer to center)
+// black_hole is stationary at center (radius 0), everything orbits it
 export const ORBITAL_RADII = {
   black_hole: 0,
-  hypergiant: 1.5,
-  sun:        3,
-  planet:     5,
-  moon:       6.5,
-  satellite:  8,
+  galaxy:     1.5,
+  hypergiant: 3,
+  sun:        4.5,
+  planet:     6,
+  moon:       7.5,
+  satellite:  9,
 }
 
 // Orbital speed multiplier (satellites fastest, higher tiers slower)
 export const ORBITAL_SPEEDS = {
   black_hole: 0,
-  hypergiant: 0.05,
-  sun:        0.1,
+  galaxy:     0.04,
+  hypergiant: 0.08,
+  sun:        0.12,
   planet:     0.2,
   moon:       0.35,
   satellite:  0.5,
@@ -49,18 +61,20 @@ export const GLOW_INTENSITY = {
   moon:       0.4,
   planet:     0.6,
   sun:        1.0,
-  hypergiant: 1.2,
-  black_hole: 1.5,
+  hypergiant: 1.4,
+  galaxy:     1.6,
+  black_hole: 2.0,
 }
 
-// Emissive intensity per tier
+// Emissive intensity per tier (used for rocky/cold bodies)
 export const EMISSIVE_INTENSITY = {
   satellite:  0.2,
   moon:       0.3,
   planet:     0.5,
   sun:        0.8,
   hypergiant: 1.0,
-  black_hole: 1.2,
+  galaxy:     1.2,
+  black_hole: 0.1,
 }
 
 // Ring (orbital path) opacity per tier
@@ -70,8 +84,12 @@ export const RING_OPACITY = {
   planet:     0.12,
   sun:        0.15,
   hypergiant: 0.18,
+  galaxy:     0.2,
   black_hole: 0,
 }
+
+// Tiers that render as stellar bodies (bright core + corona, triggers bloom)
+export const STELLAR_TIERS = new Set(['sun', 'hypergiant', 'galaxy'])
 
 // Base body scale, computed as: baseScale * (1 + log2(1 + costBasis/50)), capped at 2.0
 export const BASE_BODY_SCALE = 0.15
@@ -86,5 +104,5 @@ export const getBodySize = (costBasis) => {
   return Math.min(raw, 2.0)
 }
 
-// Tier ordering for legend display
-export const TIER_ORDER = ['black_hole', 'hypergiant', 'sun', 'planet', 'moon', 'satellite']
+// Tier ordering for legend display (center outward)
+export const TIER_ORDER = ['black_hole', 'galaxy', 'hypergiant', 'sun', 'planet', 'moon', 'satellite']

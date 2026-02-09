@@ -1599,7 +1599,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                   planet:     { bg: 'bg-blue-900/50',    text: 'text-blue-400',    tooltip: 'Planet — substantial mass, 10–100× base' },
                                   sun:        { bg: 'bg-amber-900/50',   text: 'text-amber-400',   tooltip: 'Sun — large mass, 100–500× base' },
                                   hypergiant: { bg: 'bg-purple-900/50',  text: 'text-purple-400',  tooltip: 'Hypergiant — massive mass, 500–1000× base' },
-                                  black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 1000×+ base' },
+                                  galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400',    tooltip: 'Galaxy — galactic mass, 1000–5000× base' },
+                                  black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 5000×+ base' },
                                 };
                                 if (order.type === 'entry') {
                                   return <span className="px-1.5 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400" title="Limit buy entry order">Entry</span>;
@@ -2094,7 +2095,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     </td>
                                   )}
                                   <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {fill.isSatellite && <span className="text-purple-400 mr-1" title={`${fill.bodyTier || 'Satellite'} TP (entry: $${fill.satelliteAvgPrice?.toFixed(2) || '?'})`}>{fill.bodyTier ? (fill.bodyTier === 'satellite' ? '🛰️' : fill.bodyTier === 'moon' ? '🌙' : fill.bodyTier === 'planet' ? '🪐' : fill.bodyTier === 'sun' ? '☀️' : fill.bodyTier === 'hypergiant' ? '💫' : fill.bodyTier === 'black_hole' ? '🕳️' : 'S') : 'S'}</span>}
+                                    {fill.isSatellite && <span className="text-purple-400 mr-1" title={`${fill.bodyTier || 'Satellite'} TP (entry: $${fill.satelliteAvgPrice?.toFixed(2) || '?'})`}>{fill.bodyTier ? (fill.bodyTier === 'satellite' ? '🛰️' : fill.bodyTier === 'moon' ? '🌙' : fill.bodyTier === 'planet' ? '🪐' : fill.bodyTier === 'sun' ? '☀️' : fill.bodyTier === 'hypergiant' ? '💫' : fill.bodyTier === 'galaxy' ? '🌌' : fill.bodyTier === 'black_hole' ? '🕳️' : 'S') : 'S'}</span>}
                                     {fill.orderId}
                                   </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">

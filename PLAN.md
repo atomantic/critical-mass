@@ -238,10 +238,11 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 **Celestial Hierarchy System (v2.5+):**
 - Evolved from satellite TP orders into a unified celestial body system
 - Every buy creates or merges into a "celestial body" with independent TP tracking
-- Bodies are classified by cost basis into tiers (satellite → moon → planet → sun → hypergiant → black hole)
+- Bodies are classified by cost basis into tiers (satellite → moon → planet → sun → hypergiant → galaxy → black hole)
 - Each tier has its own TP multiplier, holdback scale, and emoji
 - Bodies promote to higher tiers as they accumulate more capital through merges
 - `src/celestial-hierarchy.js` - Tier classification, body creation/merge, promotion logic
+- 7 tiers: satellite(1×) → moon(3×) → planet(10×) → sun(100×) → hypergiant(500×) → galaxy(1000×) → black_hole(5000×)
 - Tier-specific holdback: higher tiers hold proportionally more BTC (1.00x to 1.25x, capped at 95%)
 - **Minimum holdback floor**: Every TP must hold back at least 1 satoshi (0.00000001 BTC)
   - `calculateTakeProfitSize()` enforces `holdbackQty >= 1 sat` via `Math.max()`
@@ -261,13 +262,16 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Dashboard: body count by tier, completed, PnL, individual body details
 - Fill ledger annotates body fills with metadata (bodyId, bodyTier, costBasis, holdback, pnl)
 - **3D Visualization**: Three.js orbital scene in dashboard (lazy-loaded, code-split)
-  - Bodies orbit by tier: black_hole center, satellite outermost
+  - Black hole stationary at center with accretion disk + gravitational glow
+  - All other tiers orbit outward: galaxy closest, satellite outermost
+  - Bloom post-processing for emissive glow (inspired by bituniverse)
+  - Dual-layer starfield with fog depth, multiple light sources
   - Logarithmic sizing from costBasis, tier-colored emissive spheres
   - Merged bodies (×3+) show Saturn-like rings
   - Open buy orders as wireframe "incoming" satellites
   - Hover tooltips with body details (BTC qty, cost, avg, TP)
-  - Auto-rotate camera with user orbit/zoom controls, 1500-star background
-  - Dependencies: three, @react-three/fiber v8, @react-three/drei v9
+  - Auto-rotate camera with user orbit/zoom controls
+  - Dependencies: three, @react-three/fiber v8, @react-three/drei v9, @react-three/postprocessing v2
 - **Legacy compatibility**: Old `satelliteTpOrders` migrated to celestial bodies on startup
 - **Orphan reclamation**: On startup, detects sell orders on exchange that aren't tracked
   in state. Small sells reclaimed as bodies; large untracked sells trigger a warning.
@@ -468,8 +472,9 @@ admin/src/components/
 ├── celestial/          # 3D celestial system visualization
 │   ├── celestialConstants.js       # Tier colors, orbital radii, sizes, speeds
 │   ├── CelestialVisualization.jsx  # Card wrapper (lazy-loaded Canvas container)
-│   ├── CelestialScene.jsx          # R3F scene composition (lights, stars, controls)
-│   ├── CelestialBody.jsx           # Individual body mesh (sphere + glow + label)
+│   ├── CelestialScene.jsx          # R3F scene composition (lights, stars, bloom, controls)
+│   ├── CelestialBody.jsx           # Individual orbiting body mesh (sphere + glow + label)
+│   ├── BlackHole.jsx               # Stationary center body (dark core + accretion disk)
 │   ├── OrbitalRing.jsx             # Translucent ring showing orbital path per tier
 │   ├── IncomingOrder.jsx           # Open buy orders as wireframe satellites
 │   └── CelestialTooltip.jsx        # HTML overlay tooltip on hover
