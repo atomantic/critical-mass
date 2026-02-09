@@ -262,12 +262,14 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Dashboard: body count by tier, completed, PnL, individual body details
 - Fill ledger annotates body fills with metadata (bodyId, bodyTier, costBasis, holdback, pnl)
 - **3D Visualization**: Three.js orbital scene in dashboard (lazy-loaded, code-split)
-  - Black hole stationary at center with accretion disk + gravitational glow
-  - All other tiers orbit outward: galaxy closest, satellite outermost
+  - Hierarchical orbit chain: largest body at center, each smaller orbits the next-larger
+  - Sorted by tier rank then costBasis; nested Three.js groups create epicyclic motion
+  - Black hole renders with accretion disk + gravitational glow when at center
   - Bloom post-processing for emissive glow (inspired by bituniverse)
   - Dual-layer starfield with fog depth, multiple light sources
   - Logarithmic sizing from costBasis, tier-colored emissive spheres
-  - Merged bodies (×3+) show Saturn-like rings
+  - Merged planets (×3+) show Saturn-like rings
+  - Orbital path rings shown per-parent for each child body
   - Open buy orders as wireframe "incoming" satellites
   - Hover tooltips with body details (BTC qty, cost, avg, TP)
   - Auto-rotate camera with user orbit/zoom controls
@@ -470,12 +472,13 @@ src/
 
 admin/src/components/
 ├── celestial/          # 3D celestial system visualization
-│   ├── celestialConstants.js       # Tier colors, orbital radii, sizes, speeds
+│   ├── celestialConstants.js       # Tier colors, sizes, speeds, hierarchical orbit config
 │   ├── CelestialVisualization.jsx  # Card wrapper (lazy-loaded Canvas container)
 │   ├── CelestialScene.jsx          # R3F scene composition (lights, stars, bloom, controls)
-│   ├── CelestialBody.jsx           # Individual orbiting body mesh (sphere + glow + label)
-│   ├── BlackHole.jsx               # Stationary center body (dark core + accretion disk)
-│   ├── OrbitalRing.jsx             # Translucent ring showing orbital path per tier
+│   ├── HierarchicalOrbit.jsx       # Recursive nested orbit chain (largest→smallest)
+│   ├── CelestialBody.jsx           # Body visual (sphere + glow, no orbital motion)
+│   ├── BlackHole.jsx               # Black hole visual (dark core + accretion disk)
+│   ├── OrbitalRing.jsx             # Translucent ring showing orbital path (legacy)
 │   ├── IncomingOrder.jsx           # Open buy orders as wireframe satellites
 │   └── CelestialTooltip.jsx        # HTML overlay tooltip on hover
 ├── charts/             # D3.js chart components

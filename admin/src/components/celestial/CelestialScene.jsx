@@ -1,49 +1,27 @@
 import { useMemo, useState, useCallback } from 'react'
 import { Stars, OrbitControls } from '@react-three/drei'
 import { EffectComposer, Bloom } from '@react-three/postprocessing'
-import CelestialBody from './CelestialBody'
-import BlackHole from './BlackHole'
-import OrbitalRing from './OrbitalRing'
+import HierarchicalOrbit from './HierarchicalOrbit'
 import IncomingOrder from './IncomingOrder'
-import { TIER_ORDER } from './celestialConstants'
+import { TIER_RANK } from './celestialConstants'
 
 /**
- * R3F scene composition: lights, stars, orbital rings, bodies, bloom, controls
- * Inspired by bituniverse's galaxy visualization (bloom, fog, dual starfields)
+ * R3F scene composition: lights, stars, hierarchical orbits, bloom, controls.
+ * Bodies are sorted largest-first; the largest sits at center and each
+ * subsequent body orbits the next-larger one in a nested chain.
  */
 const CelestialScene = ({ bodies = [], buyOrders = [] }) => {
-  // Separate black holes (stationary center) from orbiting bodies
-  const blackHoles = useMemo(() => bodies.filter(b => b.tier === 'black_hole'), [bodies])
-  const orbitingBodies = useMemo(() => bodies.filter(b => b.tier !== 'black_hole'), [bodies])
+  // Sort bodies: tier rank ascending (higher tier = closer to center), then costBasis desc
+  const sortedBodies = useMemo(() =>
+    [...bodies].sort((a, b) => {
+      const rankDiff = (TIER_RANK[a.tier] ?? 99) - (TIER_RANK[b.tier] ?? 99)
+      if (rankDiff !== 0) return rankDiff
+      return b.costBasis - a.costBasis
+    }),
+  [bodies])
 
-  // Count orbiting bodies per tier for angle offset distribution
-  const tierCounts = useMemo(() => {
-    const counts = {}
-    for (const body of orbitingBodies) {
-      counts[body.tier] = (counts[body.tier] || 0) + 1
-    }
-    return counts
-  }, [orbitingBodies])
-
-  // Track per-tier index for each orbiting body
-  const bodiesWithIndex = useMemo(() => {
-    const tierIdx = {}
-    return orbitingBodies.map((body) => {
-      tierIdx[body.tier] = (tierIdx[body.tier] || 0)
-      const index = tierIdx[body.tier]
-      tierIdx[body.tier] += 1
-      return { body, index, totalInTier: tierCounts[body.tier] || 1 }
-    })
-  }, [orbitingBodies, tierCounts])
-
-  // Determine if we have high-tier bodies for brighter central light
   const hasHighTier = bodies.some(b => ['sun', 'hypergiant', 'galaxy', 'black_hole'].includes(b.tier))
-  const hasBlackHole = blackHoles.length > 0
-
-  // Tiers that need orbital rings (everything except black_hole)
-  const activeTiers = useMemo(() =>
-    TIER_ORDER.filter(t => t !== 'black_hole'),
-  [])
+  const hasBlackHole = bodies.some(b => b.tier === 'black_hole')
 
   // Pinned tooltip: stays on last-hovered body until a different one is hovered
   const [activeBodyId, setActiveBodyId] = useState(null)
@@ -62,7 +40,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [] }) => {
         minPolarAngle={Math.PI * 0.15}
       />
 
-      {/* Fog for depth (inspired by bituniverse) */}
+      {/* Fog for depth */}
       <fog attach="fog" args={['#0f0f14', 20, 60]} />
 
       {/* Ambient light */}
@@ -83,31 +61,16 @@ const CelestialScene = ({ bodies = [], buyOrders = [] }) => {
       {/* Rim fill light */}
       <directionalLight position={[5, 3, 5]} intensity={0.15} color="#ffffff" />
 
-      {/* Dual starfield background (like bituniverse - two layers at different speeds) */}
+      {/* Dual starfield background */}
       <Stars radius={50} depth={40} count={1200} factor={3} saturation={0.1} fade speed={0.3} />
       <Stars radius={80} depth={60} count={800} factor={2} saturation={0.2} fade speed={0.1} />
 
-      {/* Orbital rings */}
-      {activeTiers.map((tier) => (
-        <OrbitalRing key={tier} tier={tier} />
-      ))}
-
-      {/* Black holes - stationary at center */}
-      {blackHoles.map((body) => (
-        <BlackHole key={body.id} body={body} showTooltip={activeBodyId === body.id} onHover={onBodyHover} />
-      ))}
-
-      {/* Orbiting celestial bodies */}
-      {bodiesWithIndex.map(({ body, index, totalInTier }) => (
-        <CelestialBody
-          key={body.id}
-          body={body}
-          index={index}
-          totalInTier={totalInTier}
-          showTooltip={activeBodyId === body.id}
-          onHover={onBodyHover}
-        />
-      ))}
+      {/* Hierarchical celestial bodies - largest at center, each smaller orbits the next-larger */}
+      <HierarchicalOrbit
+        bodies={sortedBodies}
+        activeBodyId={activeBodyId}
+        onBodyHover={onBodyHover}
+      />
 
       {/* Incoming buy orders as wireframe satellites */}
       {buyOrders.map((order, i) => (
@@ -119,7 +82,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [] }) => {
         />
       ))}
 
-      {/* Bloom post-processing (inspired by bituniverse's UnrealBloomPass) */}
+      {/* Bloom post-processing */}
       <EffectComposer>
         <Bloom
           luminanceThreshold={0.3}
