@@ -6,7 +6,7 @@
  * Every buy starts as a satellite. Bodies consolidate within tiers when
  * price-close, and promote to higher tiers as mass (cost basis) grows.
  *
- * Tiers: satellite < moon < planet < sun < hypergiant < black_hole
+ * Tiers: satellite < moon < planet < sun < hypergiant < galaxy < black_hole
  *
  * Pure logic, no I/O.
  */
@@ -56,7 +56,8 @@ const TIERS = [
   { name: 'planet',     emoji: '🪐',  minMass: 10,   maxMass: 100,      tpMult: 1.5, tpMaxScale: 2.0,  proximity: 1.5, holdbackScale: 1.10 },
   { name: 'sun',        emoji: '☀️',  minMass: 100,  maxMass: 500,      tpMult: 2.0, tpMaxScale: 3.0,  proximity: 2.0, holdbackScale: 1.15 },
   { name: 'hypergiant', emoji: '💫',  minMass: 500,  maxMass: 1000,     tpMult: 3.0, tpMaxScale: 5.0,  proximity: 3.0, holdbackScale: 1.20 },
-  { name: 'black_hole', emoji: '🕳️', minMass: 1000, maxMass: Infinity,  tpMult: 5.0, tpMaxScale: 10.0, proximity: 4.0, holdbackScale: 1.25 },
+  { name: 'galaxy',     emoji: '🌌',  minMass: 1000, maxMass: 5000,     tpMult: 4.0, tpMaxScale: 8.0,  proximity: 3.5, holdbackScale: 1.22 },
+  { name: 'black_hole', emoji: '🕳️', minMass: 5000, maxMass: Infinity,  tpMult: 5.0, tpMaxScale: 10.0, proximity: 4.0, holdbackScale: 1.25 },
 ];
 
 /**
@@ -373,6 +374,7 @@ const TIER_COLORS = {
   planet: '#3B82F6',      // blue
   sun: '#F59E0B',         // amber
   hypergiant: '#8B5CF6',  // purple
+  galaxy: '#EC4899',      // pink
   black_hole: '#EF4444',  // red
 };
 
