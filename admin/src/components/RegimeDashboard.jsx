@@ -1081,6 +1081,47 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 )}
               </div>
             )}
+
+            {/* Risk Limits */}
+            <div className="bg-gray-800 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-medium text-gray-400">Risk Limits</h3>
+                {risk.isDrawdownPaused && (
+                  <button onClick={handleResumeDrawdown} className="px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] rounded flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
+                    Resume
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="text-center">
+                  <div className="text-[10px] text-gray-500 mb-1">BTC</div>
+                  <div className="text-xs text-white font-mono">{position.totalBTC?.toFixed(4) || 0}</div>
+                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, ((position.totalBTC || 0) / (config?.maxBtcExposure || 0.5)) * 100)}%` }} />
+                  </div>
+                  <div className="text-[9px] text-gray-600">/ {config?.maxBtcExposure || 0.5}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-[10px] text-gray-500 mb-1">USDC</div>
+                  <div className="text-xs text-white font-mono">${position.totalCostBasis?.toFixed(0) || 0}</div>
+                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, ((position.totalCostBasis || 0) / (config?.maxUsdcDeployed || 10000)) * 100)}%` }} />
+                  </div>
+                  <div className="text-[9px] text-gray-600">/ ${config?.maxUsdcDeployed || 10000}</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-[10px] text-gray-500 mb-1">Drawdown</div>
+                  <div className={`text-xs font-mono ${position.maxDrawdownSeen > config?.maxDrawdownPercent * 0.8 ? 'text-yellow-400' : 'text-white'}`}>
+                    {position.maxDrawdownSeen?.toFixed(1) || 0}%
+                  </div>
+                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
+                    <div className="h-full bg-red-500 transition-all" style={{ width: `${Math.min(100, ((position.maxDrawdownSeen || 0) / (config?.maxDrawdownPercent || 20)) * 100)}%` }} />
+                  </div>
+                  <div className="text-[9px] text-gray-600">/ {config?.maxDrawdownPercent || 20}%</div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Middle Column: Position & Risk */}
@@ -1302,47 +1343,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   </div>
                 </div>
               )}
-            </div>
-
-            {/* Risk Limits - Horizontal */}
-            <div className="bg-gray-800 rounded-lg p-3">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs font-medium text-gray-400">Risk Limits</h3>
-                {risk.isDrawdownPaused && (
-                  <button onClick={handleResumeDrawdown} className="px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] rounded flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
-                    Resume
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="text-center">
-                  <div className="text-[10px] text-gray-500 mb-1">BTC</div>
-                  <div className="text-xs text-white font-mono">{position.totalBTC?.toFixed(4) || 0}</div>
-                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, ((position.totalBTC || 0) / (config?.maxBtcExposure || 0.5)) * 100)}%` }} />
-                  </div>
-                  <div className="text-[9px] text-gray-600">/ {config?.maxBtcExposure || 0.5}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-[10px] text-gray-500 mb-1">USDC</div>
-                  <div className="text-xs text-white font-mono">${position.totalCostBasis?.toFixed(0) || 0}</div>
-                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, ((position.totalCostBasis || 0) / (config?.maxUsdcDeployed || 10000)) * 100)}%` }} />
-                  </div>
-                  <div className="text-[9px] text-gray-600">/ ${config?.maxUsdcDeployed || 10000}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-[10px] text-gray-500 mb-1">Drawdown</div>
-                  <div className={`text-xs font-mono ${position.maxDrawdownSeen > config?.maxDrawdownPercent * 0.8 ? 'text-yellow-400' : 'text-white'}`}>
-                    {position.maxDrawdownSeen?.toFixed(1) || 0}%
-                  </div>
-                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-red-500 transition-all" style={{ width: `${Math.min(100, ((position.maxDrawdownSeen || 0) / (config?.maxDrawdownPercent || 20)) * 100)}%` }} />
-                  </div>
-                  <div className="text-[9px] text-gray-600">/ {config?.maxDrawdownPercent || 20}%</div>
-                </div>
-              </div>
             </div>
 
           </div>
