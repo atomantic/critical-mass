@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import RegimePriceChart from './charts/RegimePriceChart'
@@ -419,6 +419,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [showAllCycles, setShowAllCycles] = useState(false)
   const [recalculating, setRecalculating] = useState(false)
   const [recalcPreview, setRecalcPreview] = useState(null)
+  const [expandedOrders, setExpandedOrders] = useState(new Set())
+  const [expandedFills, setExpandedFills] = useState(new Set())
   const prevPriceRef = useRef(null)
 
   const { status: socketStatus } = useRegimeEvents(exchange)
@@ -1533,16 +1535,71 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   const celestialBodies = status?.celestial?.bodies || []
                   const bodyLookup = new Map(celestialBodies.map(b => [b.tpOrderId, b]))
 
+                  // Build buy orders for each open TP
+                  // For body/satellite TPs: use body.buyOrders (filter migration artifacts)
+                  // For core TPs: use unconsumed buys from current position
+                  const getRelatedBuys = (order) => {
+                    const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null
+                    if (bodyData?.buyOrders?.length > 0) {
+                      const bodyBuys = bodyData.buyOrders.filter(bo => bo.btcQty > 0 && bo.orderId && bo.orderId !== 'core-migration')
+                      if (bodyBuys.length > 0) return bodyBuys
+                    }
+
+                    // sellOrderId-based lookup from fill ledger (works for all TP types)
+                    if (!isDryRun && (order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp')) {
+                      const linkedBuys = filteredFills
+                        .filter(f => f.side === 'buy' && f.sellOrderId === order.orderId)
+                      // Aggregate partial fills by orderId
+                      const byOrderId = new Map()
+                      linkedBuys.forEach(f => {
+                        const ex = byOrderId.get(f.orderId)
+                        if (ex) { ex.btcQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
+                        else byOrderId.set(f.orderId, { orderId: f.orderId, price: f.price, btcQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
+                      })
+                      if (byOrderId.size > 0) return Array.from(byOrderId.values())
+                    }
+
+                    if (order.type === 'take_profit' || order.type === 'body_tp' || order.type === 'satellite_tp') {
+                      // Fallback: chronological walk for buys without sellOrderId
+                      if (isDryRun) {
+                        const sorted = [...(dryRunState?.filledOrders || [])].sort((a, b) => (a.filledAt || a.placedAt || 0) - (b.filledAt || b.placedAt || 0))
+                        let pending = []
+                        sorted.forEach(o => {
+                          if (o.side === 'buy') pending.push({ orderId: o.orderId, price: o.fillPrice || o.price, btcQty: o.size, sizeUsdc: (o.size || 0) * (o.fillPrice || o.price || 0), filledAt: o.filledAt })
+                          else if (o.type === 'take_profit') pending = []
+                        })
+                        return pending
+                      }
+                      const sorted = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
+                      let pending = []
+                      sorted.forEach(f => {
+                        if (f.side === 'buy' && !f.isSatellite) {
+                          pending.push({ orderId: f.orderId, price: f.price, btcQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
+                        } else if (f.side === 'sell' && !f.isSatellite) {
+                          pending = []
+                        }
+                      })
+                      return pending
+                    }
+                    return []
+                  }
+
+                  const toggleOrder = (orderId) => {
+                    setExpandedOrders(prev => {
+                      const next = new Set(prev)
+                      if (next.has(orderId)) next.delete(orderId)
+                      else next.add(orderId)
+                      return next
+                    })
+                  }
+
                   const ordersWithCalcs = openOrders.map(order => {
                     const age = Date.now() - order.placedAt
                     const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
-                    // Use body's own avg cost: from backend enrichment, or fallback to celestial state
                     const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null
                     const orderAvgCost = order.satelliteAvgCost || bodyData?.avgPrice || (isTpOrder ? avgCost : 0)
-                    // Estimate sell-side fees (~0.06% net for maker orders on Coinbase)
                     const sellValue = order.size * order.price
-                    const estSellFee = sellValue * 0.0006 // 0.06% estimated maker fee
-                    // For bodies, use prorated cost basis (includes buy fees) instead of raw avgPrice * size
+                    const estSellFee = sellValue * 0.0006
                     const satCostBasis = order.satelliteCostBasis || bodyData?.costBasis
                     const satBtcQty = order.satelliteBtcQty || bodyData?.btcQty
                     const proratedCost = satCostBasis && satBtcQty
@@ -1557,26 +1614,24 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       ? order.size * profitPerBTC * holdbackRatio / denominator
                       : null
                     const estHoldbackValue = estHoldback ? estHoldback * order.price : null
-
-                    // Compute TP% for bodies that don't have it from backend
                     const tpPercent = order.tpPercent
                       || ((order.type === 'satellite_tp' || order.type === 'body_tp') && orderAvgCost > 0
                         ? ((order.price - orderAvgCost) / orderAvgCost * 100).toFixed(2)
                         : null)
+                    const relatedBuys = isTpOrder ? getRelatedBuys(order) : []
 
-                    return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue, tpPercent }
+                    return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue, tpPercent, relatedBuys }
                   })
 
                   return (
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-gray-400 text-xs border-b border-gray-700">
+                          <th className="text-left py-2 pr-1 w-6"></th>
                           <th className="text-left py-2 pr-2">Order ID</th>
                           <th className="text-left py-2 pr-2">Type</th>
                           <th className="text-right py-2 pr-2">TP%</th>
-                          <th className="text-left py-2 pr-2">Side</th>
                           <th className="text-right py-2 pr-2">Size (BTC)</th>
-                          <th className="text-right py-2 pr-2">Value</th>
                           <th className="text-right py-2 pr-2">Price</th>
                           <th className="text-right py-2 pr-2">Est. P&L</th>
                           <th className="text-right py-2 pr-2">Holdback</th>
@@ -1584,63 +1639,99 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         </tr>
                       </thead>
                       <tbody>
-                        {ordersWithCalcs.map((order) => (
-                          <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                            <td className="py-2 pr-2 font-mono text-gray-500 text-xs">
-                              {order.orderId}
-                            </td>
-                            <td className="py-2 pr-2">
-                              {(() => {
-                                const bodyInfo = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null;
-                                const tier = bodyInfo?.tier || (order.type === 'satellite_tp' ? 'satellite' : null);
-                                const tierStyles = {
-                                  satellite:  { bg: 'bg-gray-700/60',    text: 'text-gray-300',    tooltip: 'Satellite — individual order, 1–3× base' },
-                                  moon:       { bg: 'bg-slate-600/50',   text: 'text-slate-300',   tooltip: 'Moon — small cluster, 3–10× base' },
-                                  planet:     { bg: 'bg-blue-900/50',    text: 'text-blue-400',    tooltip: 'Planet — substantial mass, 10–100× base' },
-                                  sun:        { bg: 'bg-amber-900/50',   text: 'text-amber-400',   tooltip: 'Sun — large mass, 100–500× base' },
-                                  hypergiant: { bg: 'bg-purple-900/50',  text: 'text-purple-400',  tooltip: 'Hypergiant — massive mass, 500–1000× base' },
-                                  galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400',    tooltip: 'Galaxy — galactic mass, 1000–5000× base' },
-                                  black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 5000×+ base' },
-                                };
-                                if (order.type === 'entry') {
-                                  return <span className="px-1.5 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400" title="Limit buy entry order">Entry</span>;
-                                }
-                                if (tier && tierStyles[tier]) {
-                                  const s = tierStyles[tier];
-                                  const emoji = order.tierEmoji || bodyInfo?.emoji || '🛰️';
-                                  return <span className={`px-1.5 py-0.5 rounded text-xs ${s.bg} ${s.text}`} title={s.tooltip}>{emoji}</span>;
-                                }
-                                return <span className="px-1.5 py-0.5 rounded text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>;
-                              })()}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                              {order.tpPercent ? `${order.tpPercent}%` : '—'}
-                            </td>
-                            <td className={`py-2 pr-2 ${order.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
-                              {order.side?.toUpperCase()}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-white">
-                              {order.size?.toFixed(8)}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-yellow-400">
-                              ${((order.size || 0) * (order.price || 0)).toFixed(2)}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-white">
-                              ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-                            <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
-                              {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}$${order.estPnl.toFixed(2)}` : '—'}
-                            </td>
-                            <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                              {order.estHoldback !== null ? (
-                                <span title={`≈$${order.estHoldbackValue?.toFixed(2)}`}>+{order.estHoldback.toFixed(8)}</span>
-                              ) : '—'}
-                            </td>
-                            <td className="text-right py-2 font-mono text-gray-500 text-xs">
-                              {formatDuration(order.age)}
-                            </td>
-                          </tr>
-                        ))}
+                        {ordersWithCalcs.map((order) => {
+                          const isExpanded = expandedOrders.has(order.orderId)
+                          const isTp = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
+                          const hasBuys = order.relatedBuys.length > 0
+
+                          return (
+                            <React.Fragment key={order.orderId}>
+                              <tr
+                                className={`border-b border-gray-700/50 ${isTp && hasBuys ? 'cursor-pointer' : ''} hover:bg-gray-700/30`}
+                                onClick={isTp && hasBuys ? () => toggleOrder(order.orderId) : undefined}
+                              >
+                                <td className="py-2 pr-1 text-gray-500 text-xs">
+                                  {isTp && hasBuys ? (
+                                    <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                                  ) : null}
+                                </td>
+                                <td className="py-2 pr-2 font-mono text-gray-500 text-xs">
+                                  {order.orderId}
+                                  {hasBuys && <span className="text-gray-600 ml-1">({order.relatedBuys.length} {order.relatedBuys.length === 1 ? 'buy' : 'buys'})</span>}
+                                </td>
+                                <td className="py-2 pr-2">
+                                  {(() => {
+                                    const bodyInfo = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null;
+                                    const tier = bodyInfo?.tier || (order.type === 'satellite_tp' ? 'satellite' : null);
+                                    const tierStyles = {
+                                      satellite:  { bg: 'bg-gray-700/60',    text: 'text-gray-300',    tooltip: 'Satellite — individual order, 1–3× base' },
+                                      moon:       { bg: 'bg-slate-600/50',   text: 'text-slate-300',   tooltip: 'Moon — small cluster, 3–10× base' },
+                                      planet:     { bg: 'bg-blue-900/50',    text: 'text-blue-400',    tooltip: 'Planet — substantial mass, 10–100× base' },
+                                      sun:        { bg: 'bg-amber-900/50',   text: 'text-amber-400',   tooltip: 'Sun — large mass, 100–500× base' },
+                                      hypergiant: { bg: 'bg-purple-900/50',  text: 'text-purple-400',  tooltip: 'Hypergiant — massive mass, 500–1000× base' },
+                                      galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400',    tooltip: 'Galaxy — galactic mass, 1000–5000× base' },
+                                      black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 5000×+ base' },
+                                    };
+                                    if (order.type === 'entry') {
+                                      return <span className="px-1.5 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400" title="Limit buy entry order">Entry</span>;
+                                    }
+                                    if (tier && tierStyles[tier]) {
+                                      const s = tierStyles[tier];
+                                      const emoji = order.tierEmoji || bodyInfo?.emoji || '🛰️';
+                                      return <span className={`px-1.5 py-0.5 rounded text-xs ${s.bg} ${s.text}`} title={s.tooltip}>{emoji}</span>;
+                                    }
+                                    return <span className="px-1.5 py-0.5 rounded text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>;
+                                  })()}
+                                </td>
+                                <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
+                                  {order.tpPercent ? `${order.tpPercent}%` : '—'}
+                                </td>
+                                <td className="text-right py-2 pr-2 font-mono text-white">
+                                  {order.size?.toFixed(8)}
+                                </td>
+                                <td className="text-right py-2 pr-2 font-mono text-white">
+                                  ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                                <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
+                                  {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}$${order.estPnl.toFixed(2)}` : '—'}
+                                </td>
+                                <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
+                                  {order.estHoldback !== null ? (
+                                    <span title={`≈$${order.estHoldbackValue?.toFixed(2)}`}>+{order.estHoldback.toFixed(8)}</span>
+                                  ) : '—'}
+                                </td>
+                                <td className="text-right py-2 font-mono text-gray-500 text-xs">
+                                  {formatDuration(order.age)}
+                                </td>
+                              </tr>
+                              {/* Buy sub-rows */}
+                              {isExpanded && order.relatedBuys.map((buy, idx) => (
+                                <tr key={`${order.orderId}-buy-${buy.orderId}-${idx}`} className="border-b border-gray-700/30 bg-gray-750/20">
+                                  <td className="py-1 pr-1"></td>
+                                  <td className="py-1 pr-2 font-mono text-xs text-gray-500 pl-4">
+                                    <span className="text-green-400/70 mr-1">BUY</span>
+                                    {buy.orderId}
+                                  </td>
+                                  <td className="py-1 pr-2"></td>
+                                  <td className="py-1 pr-2"></td>
+                                  <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
+                                    {buy.btcQty?.toFixed(8)}
+                                  </td>
+                                  <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
+                                    ${buy.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </td>
+                                  <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
+                                    ${buy.sizeUsdc?.toFixed(2)}
+                                  </td>
+                                  <td className="py-1 pr-2"></td>
+                                  <td className="text-right py-1 font-mono text-xs text-gray-500">
+                                    {formatTimestamp(buy.filledAt)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </React.Fragment>
+                          )
+                        })}
                       </tbody>
                     </table>
                   )
@@ -1686,451 +1777,262 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   : 'No filled orders yet'
                 }
               </div>
-            ) : isDryRun ? (
-              /* Dry Run Mode - Split Buy/Sell Tables */
-              <div className="space-y-3">
-                {(() => {
-                  const allOrders = [...dryRunState.filledOrders].reverse().slice(0, 40)
-                  const buyOrders = allOrders.filter(o => o.side === 'buy')
-                  const sellOrders = allOrders.filter(o => o.side === 'sell')
-
-                  // Calculate buy totals
-                  let totalBuySize = 0
-                  let totalBuyValue = 0
-                  buyOrders.forEach(order => {
-                    totalBuySize += order.size || 0
-                    totalBuyValue += (order.size || 0) * (order.fillPrice || 0)
-                  })
-
-                  // Calculate sell totals
-                  let totalSellSize = 0
-                  let totalSellPnl = 0
-                  let totalSellHoldback = 0
-                  sellOrders.forEach(order => {
-                    totalSellSize += order.size || 0
-                    if (order.pnl !== undefined) totalSellPnl += order.pnl
-                    if (order.holdbackBtc !== undefined) totalSellHoldback += order.holdbackBtc
-                  })
-
-                  return (
-                    <>
-                      {/* Buys Table */}
-                      <div>
-                        <div className="text-xs text-green-400 mb-1 font-medium">Buys ({buyOrders.length})</div>
-                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                          <table className="w-full text-sm">
-                            <thead className="sticky top-0 bg-gray-800">
-                              <tr className="text-gray-400 text-xs border-b border-gray-700">
-                                <th className="text-left py-1.5 pr-2">Order ID</th>
-                                <th className="text-right py-1.5 pr-2">Size (BTC)</th>
-                                <th className="text-right py-1.5 pr-2">Price</th>
-                                <th className="text-right py-1.5 pr-2">Value</th>
-                                <th className="text-right py-1.5 pr-2">Fill Time</th>
-                                <th className="text-right py-1.5">Filled</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {buyOrders.length > 1 && (
-                                <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
-                                  <td className="py-1.5 pr-2"></td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {totalBuySize.toFixed(8)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 text-gray-400 text-xs">
-                                    avg ${totalBuySize > 0 ? (totalBuyValue / totalBuySize).toFixed(2) : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    ${totalBuyValue.toFixed(2)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2"></td>
-                                  <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
-                                </tr>
-                              )}
-                              {buyOrders.map((order, idx) => {
-                                const fillTimeMs = order.filledAt && order.placedAt ? order.filledAt - order.placedAt : null
-                                return (
-                                <tr key={`buy-${order.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                                  <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {order.orderId}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {order.size?.toFixed(8)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    ${order.fillPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
-                                    ${((order.size || 0) * (order.fillPrice || 0)).toFixed(2)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {fillTimeMs !== null ? formatDuration(fillTimeMs) : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {formatTimestamp(order.filledAt)}
-                                  </td>
-                                </tr>
-                              )})}
-                              {buyOrders.length === 0 && (
-                                <tr><td colSpan={6} className="text-center py-2 text-gray-500 text-xs">No buys yet</td></tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-
-                      {/* Sells Table */}
-                      <div>
-                        <div className="text-xs text-red-400 mb-1 font-medium">Sells ({sellOrders.length})</div>
-                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                          <table className="w-full text-sm">
-                            <thead className="sticky top-0 bg-gray-800">
-                              <tr className="text-gray-400 text-xs border-b border-gray-700">
-                                <th className="text-left py-1.5 pr-2">Order ID</th>
-                                <th className="text-right py-1.5 pr-2">Size (BTC)</th>
-                                <th className="text-right py-1.5 pr-2">Price</th>
-                                <th className="text-right py-1.5 pr-2">P&L</th>
-                                <th className="text-right py-1.5 pr-2">Holdback</th>
-                                <th className="text-right py-1.5 pr-2">Fill Time</th>
-                                <th className="text-right py-1.5">Filled</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {sellOrders.length > 1 && (
-                                <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
-                                  <td className="py-1.5 pr-2"></td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {totalSellSize.toFixed(8)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2"></td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                    {totalSellPnl !== 0 ? `${totalSellPnl >= 0 ? '+' : ''}$${totalSellPnl.toFixed(2)}` : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
-                                    {totalSellHoldback > 0 ? `+${totalSellHoldback.toFixed(8)}` : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2"></td>
-                                  <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
-                                </tr>
-                              )}
-                              {sellOrders.map((order, idx) => {
-                                const fillTimeMs = order.filledAt && order.placedAt ? order.filledAt - order.placedAt : null
-                                return (
-                                <tr key={`sell-${order.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                                  <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {order.orderId}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {order.size?.toFixed(8)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    ${order.fillPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
-                                    order.pnl >= 0 ? 'text-green-400' : 'text-red-400'
-                                  }`}>
-                                    {order.pnl !== undefined ? `${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}` : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
-                                    {order.holdbackBtc !== undefined ? `+${order.holdbackBtc.toFixed(8)}` : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {fillTimeMs !== null ? formatDuration(fillTimeMs) : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {formatTimestamp(order.filledAt)}
-                                  </td>
-                                </tr>
-                              )})}
-                              {sellOrders.length === 0 && (
-                                <tr><td colSpan={7} className="text-center py-2 text-gray-500 text-xs">No sells yet</td></tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    </>
-                  )
-                })()}
-              </div>
             ) : (
-              /* Live Mode Fills - Split Buy/Sell Tables */
-              <div className="space-y-3">
+              /* Filled Sells with expandable buy sub-rows */
+              <div>
                 {(() => {
-                  // Group fills by cycleId to calculate per-cycle holdback
-                  const cycleMap = new Map()
-                  filteredFills.forEach(fill => {
-                    const cycleId = fill.cycleId || 'unknown'
-                    if (!cycleMap.has(cycleId)) {
-                      cycleMap.set(cycleId, { buys: [], sells: [], totalBought: 0, totalSold: 0 })
-                    }
-                    const cycle = cycleMap.get(cycleId)
-                    if (fill.side === 'buy') {
-                      cycle.buys.push(fill)
-                      cycle.totalBought += fill.size
-                    } else {
-                      cycle.sells.push(fill)
-                      cycle.totalSold += fill.size
-                    }
-                  })
-
-                  // Calculate P&L and per-cycle holdback for sells
-                  const sortedFills = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
-                  let runningBtc = 0
-                  let runningCost = 0
-                  const fillsWithPnl = sortedFills.map(fill => {
-                    if (fill.side === 'buy') {
-                      // Skip satellite buys from core running average (they have independent TP)
-                      if (!fill.isSatellite) {
-                        runningBtc += fill.size
-                        runningCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
-                      }
-                      return { ...fill, pnl: null, holdback: null }
-                    } else if (fill.isSatellite) {
-                      // Satellite TP: use the satellite's own cost basis and holdback
-                      const pnl = fill.satellitePnl != null
-                        ? fill.satellitePnl
-                        : (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0) - (fill.satelliteCostBasis || 0)
-                      const holdback = fill.satelliteHoldbackBtc || 0
-                      // Do NOT update running totals — satellite buys were never merged into core
-                      return { ...fill, pnl, holdback, avgCost: fill.satelliteAvgPrice || fill.price, isSatellite: true }
-                    } else {
-                      const avgCost = runningBtc > 0 ? runningCost / runningBtc : 0
-                      const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
-                      const costBasis = avgCost * fill.size
-                      const pnl = proceeds - costBasis
-                      // Calculate per-cycle holdback: buys - sells for this cycle
-                      const cycleData = cycleMap.get(fill.cycleId || 'unknown')
-                      const cycleHoldback = cycleData ? Math.max(0, cycleData.totalBought - cycleData.totalSold) : 0
-                      // Update running totals for next iteration
-                      const remaining = runningBtc - fill.size
-                      runningBtc = remaining > 0 ? remaining : 0
-                      runningCost = remaining > 0 ? avgCost * remaining : 0
-                      return { ...fill, pnl, holdback: cycleHoldback, avgCost }
-                    }
-                  })
-
-                  // Aggregate partial fills by orderId for display
-                  const aggregateByOrderId = (fills) => {
-                    const orderMap = new Map()
-                    fills.forEach(fill => {
-                      const existing = orderMap.get(fill.orderId)
-                      if (existing) {
-                        existing.size += fill.size
-                        existing.quoteAmount = (existing.quoteAmount || 0) + (fill.quoteAmount || 0)
-                        existing.pnl = (existing.pnl || 0) + (fill.pnl || 0)
-                        existing.netFee = (existing.netFee || 0) + (fill.netFee || 0)
-                        // Holdback is per-cycle, so keep the same value (don't sum partials)
-                        existing.partialCount = (existing.partialCount || 1) + 1
-                      } else {
-                        orderMap.set(fill.orderId, { ...fill, partialCount: 1 })
-                      }
+                  const toggleFill = (key) => {
+                    setExpandedFills(prev => {
+                      const next = new Set(prev)
+                      if (next.has(key)) next.delete(key)
+                      else next.add(key)
+                      return next
                     })
-                    return Array.from(orderMap.values())
                   }
 
-                  const allFills = fillsWithPnl.sort((a, b) => b.timestamp - a.timestamp)
-                  // Aggregate buys and sells separately by orderId
-                  const buyFillsRaw = allFills.filter(f => f.side === 'buy')
-                  const sellFillsRaw = allFills.filter(f => f.side === 'sell')
-                  const allBuyFills = aggregateByOrderId(buyFillsRaw)
-                  const allSellFills = aggregateByOrderId(sellFillsRaw)
-                  // Show all fills (table has scrolling)
-                  const buyFills = allBuyFills
-                  const sellFills = allSellFills
+                  // Build sell groups: each = { sell, buys[], key }
+                  let sellGroups = []
 
-                  // Calculate buy totals from ALL fills, not just displayed ones
-                  let totalBuySize = 0
-                  let totalBuyValue = 0
-                  let totalBuyFees = 0
-                  allBuyFills.forEach(fill => {
-                    totalBuySize += fill.size || 0
-                    totalBuyValue += fill.quoteAmount || 0
-                    totalBuyFees += fill.netFee || 0
-                  })
-
-                  // Calculate sell totals from ALL fills - sum holdback from each cycle (not running total)
-                  let totalSellSize = 0
-                  let totalSellPnl = 0
-                  let totalHoldback = 0
-                  let totalSellFees = 0
-                  // Track unique cycles to avoid double-counting holdback
-                  const countedCycles = new Set()
-                  allSellFills.forEach(fill => {
-                    totalSellSize += fill.size || 0
-                    if (fill.pnl !== null) totalSellPnl += fill.pnl
-                    totalSellFees += fill.netFee || 0
-                    if (fill.isSatellite) {
-                      // Satellite holdback is per-fill (each satellite has its own)
-                      totalHoldback += fill.holdback || 0
-                    } else if (fill.cycleId && !countedCycles.has(fill.cycleId)) {
-                      // Core holdback is per-cycle (avoid double-counting)
-                      totalHoldback += fill.holdback || 0
-                      countedCycles.add(fill.cycleId)
+                  if (isDryRun) {
+                    // Walk chronologically: buys accumulate until a core sell consumes them
+                    // Satellite sells don't consume from the buy pool
+                    const sorted = [...(dryRunState?.filledOrders || [])].sort((a, b) => (a.filledAt || a.placedAt || 0) - (b.filledAt || b.placedAt || 0))
+                    let pendingBuys = []
+                    sorted.forEach(order => {
+                      if (order.side === 'buy') {
+                        pendingBuys.push(order)
+                      } else if (order.isSatellite || order.type === 'satellite_tp' || order.type === 'body_tp') {
+                        // Satellite/body sell: doesn't consume core buys, show with empty buys
+                        sellGroups.push({ sell: order, buys: [], key: `fill-${order.orderId}` })
+                      } else {
+                        // Core sell: consumes accumulated buys
+                        sellGroups.push({ sell: order, buys: [...pendingBuys], key: `fill-${order.orderId}` })
+                        pendingBuys = []
+                      }
+                    })
+                    sellGroups.reverse()
+                  } else {
+                    // Live: sellOrderId-based grouping with chronological fallback
+                    // First aggregate partial fills by orderId
+                    const aggregateByOrderId = (fills) => {
+                      const m = new Map()
+                      fills.forEach(f => {
+                        const ex = m.get(f.orderId)
+                        if (ex) {
+                          ex.size += f.size; ex.quoteAmount = (ex.quoteAmount || 0) + (f.quoteAmount || 0)
+                          ex.netFee = (ex.netFee || 0) + (f.netFee || 0); ex.partialCount = (ex.partialCount || 1) + 1
+                          // Preserve sellOrderId from any partial fill that has it
+                          if (f.sellOrderId && !ex.sellOrderId) ex.sellOrderId = f.sellOrderId
+                        } else m.set(f.orderId, { ...f, partialCount: 1 })
+                      })
+                      return Array.from(m.values())
                     }
-                  })
+
+                    // P&L calculation on raw fills
+                    const sortedAll = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
+                    let runBtc = 0, runCost = 0
+                    const pnlMap = new Map()
+                    sortedAll.forEach(fill => {
+                      if (fill.side === 'buy') {
+                        if (!fill.isSatellite) { runBtc += fill.size; runCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0) }
+                      } else if (fill.isSatellite) {
+                        const pnl = fill.satellitePnl != null ? fill.satellitePnl : (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0) - (fill.satelliteCostBasis || 0)
+                        const prev = pnlMap.get(fill.orderId)
+                        if (prev) { prev.pnl += pnl; prev.holdback += (fill.satelliteHoldbackBtc || 0) }
+                        else pnlMap.set(fill.orderId, { pnl, holdback: fill.satelliteHoldbackBtc || 0 })
+                      } else {
+                        const avgCost = runBtc > 0 ? runCost / runBtc : 0
+                        const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
+                        const pnl = proceeds - avgCost * fill.size
+                        const cycleId = fill.cycleId || 'unknown'
+                        const cycleBuys = filteredFills.filter(f => f.cycleId === cycleId && f.side === 'buy')
+                        const cycleSells = filteredFills.filter(f => f.cycleId === cycleId && f.side === 'sell')
+                        const holdback = Math.max(0, cycleBuys.reduce((s, b) => s + b.size, 0) - cycleSells.reduce((s, sl) => s + sl.size, 0))
+                        const prev = pnlMap.get(fill.orderId)
+                        if (prev) { prev.pnl += pnl }
+                        else pnlMap.set(fill.orderId, { pnl, holdback })
+                        const rem = runBtc - fill.size
+                        runBtc = rem > 0 ? rem : 0
+                        runCost = rem > 0 ? avgCost * rem : 0
+                      }
+                    })
+
+                    // Aggregate fills by orderId
+                    const aggBuysAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy'))
+                    const aggBuysNonSat = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy' && !f.isSatellite))
+                    const aggSellsAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'sell'))
+
+                    // Group ALL buys (including satellite) by sellOrderId for direct lookup
+                    const buysBySellOrderId = new Map()
+                    aggBuysAll.forEach(buy => {
+                      const sid = buy.sellOrderId
+                      if (!sid) return
+                      if (!buysBySellOrderId.has(sid)) buysBySellOrderId.set(sid, [])
+                      buysBySellOrderId.get(sid).push(buy)
+                    })
+
+                    // Track which non-satellite buys are claimed by sellOrderId
+                    const claimedBuyOrderIds = new Set()
+                    buysBySellOrderId.forEach(buys => buys.forEach(b => claimedBuyOrderIds.add(b.orderId)))
+
+                    // Build sell groups using sellOrderId, with chronological fallback for non-satellite
+                    const allAgg = [
+                      ...aggBuysNonSat.map(b => ({ ...b, _type: 'buy' })),
+                      ...aggSellsAll.map(s => ({ ...s, _type: 'sell' })),
+                    ].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+
+                    let pendingBuys = [] // fallback accumulator for sells without sellOrderId buys
+                    allAgg.forEach(order => {
+                      if (order._type === 'buy') {
+                        if (!claimedBuyOrderIds.has(order.orderId)) pendingBuys.push(order)
+                      } else {
+                        const pnlData = pnlMap.get(order.orderId)
+                        const sell = { ...order, pnl: pnlData?.pnl ?? null, holdback: pnlData?.holdback ?? null }
+                        // Prefer sellOrderId-based buys, fall back to chronological accumulation
+                        const linkedBuys = buysBySellOrderId.get(order.orderId)
+                        if (order.isSatellite) {
+                          sellGroups.push({ sell, buys: linkedBuys || [], key: `fill-${order.orderId}` })
+                        } else if (linkedBuys && linkedBuys.length > 0) {
+                          sellGroups.push({ sell, buys: linkedBuys, key: `fill-${order.orderId}` })
+                        } else {
+                          // Fallback: chronological walk (for sells without sellOrderId on buys)
+                          sellGroups.push({ sell, buys: [...pendingBuys], key: `fill-${order.orderId}` })
+                          pendingBuys = []
+                        }
+                      }
+                    })
+                    sellGroups.reverse()
+                  }
+
+                  if (sellGroups.length === 0) {
+                    return <div className="text-gray-500 text-sm text-center py-4">No filled sells yet</div>
+                  }
+
+                  // Totals
+                  const totalSize = sellGroups.reduce((s, g) => s + (g.sell.size || 0), 0)
+                  const totalPnl = sellGroups.reduce((s, g) => s + (isDryRun ? (g.sell.pnl || 0) : (g.sell.pnl || 0)), 0)
+                  const totalHoldback = sellGroups.reduce((s, g) => s + (isDryRun ? (g.sell.holdbackBtc || 0) : (g.sell.holdback || 0)), 0)
 
                   return (
-                    <>
-                      {/* Buys Table */}
-                      <div>
-                        <div className="text-xs text-green-400 mb-1 font-medium">Buys ({allBuyFills.length})</div>
-                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                          <table className="w-full text-sm">
-                            <thead className="sticky top-0 bg-gray-800">
-                              <tr className="text-gray-400 text-xs border-b border-gray-700">
-                                {showAllCycles && <th className="text-left py-1.5 pr-2">Cycle</th>}
-                                <th className="text-left py-1.5 pr-2">Order ID</th>
-                                <th className="text-right py-1.5 pr-2">Size (BTC)</th>
-                                <th className="text-right py-1.5 pr-2">Price</th>
-                                <th className="text-right py-1.5 pr-2">Value</th>
-                                <th className="text-right py-1.5 pr-2">Net Fee</th>
-                                <th className="text-right py-1.5 pr-2">Fill Time</th>
-                                <th className="text-right py-1.5">Filled</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {buyFills.length > 1 && (
-                                <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
-                                  {showAllCycles && <td className="py-1.5 pr-2"></td>}
-                                  <td className="py-1.5 pr-2"></td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {totalBuySize.toFixed(8)}
+                    <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-gray-800 z-10">
+                          <tr className="text-gray-400 text-xs border-b border-gray-700">
+                            <th className="text-left py-1.5 pr-1 w-6"></th>
+                            {!isDryRun && showAllCycles && <th className="text-left py-1.5 pr-2">Cycle</th>}
+                            <th className="text-left py-1.5 pr-2">Order ID</th>
+                            <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                            <th className="text-right py-1.5 pr-2">Price</th>
+                            <th className="text-right py-1.5 pr-2">Value</th>
+                            <th className="text-right py-1.5 pr-2">P&L</th>
+                            <th className="text-right py-1.5">Filled</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sellGroups.length > 1 && (
+                            <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
+                              <td className="py-1.5 pr-1"></td>
+                              {!isDryRun && showAllCycles && <td className="py-1.5 pr-2"></td>}
+                              <td className="py-1.5 pr-2 text-gray-400 text-xs">Totals ({sellGroups.length} sells)</td>
+                              <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{totalSize.toFixed(8)}</td>
+                              <td className="text-right py-1.5 pr-2"></td>
+                              <td className="text-right py-1.5 pr-2"></td>
+                              <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
+                                {totalHoldback > 0 && <span className="ml-1 text-cyan-400" title="Total holdback">+{totalHoldback.toFixed(8)}</span>}
+                              </td>
+                              <td className="text-right py-1.5"></td>
+                            </tr>
+                          )}
+                          {sellGroups.map(group => {
+                            const isExpanded = expandedFills.has(group.key)
+                            const sell = group.sell
+                            const buys = group.buys
+                            const sellPrice = sell.fillPrice || sell.price
+                            const sellValue = sell.quoteAmount || ((sell.size || 0) * (sellPrice || 0))
+                            const sellPnl = sell.pnl ?? null
+                            const sellHoldback = isDryRun ? sell.holdbackBtc : sell.holdback
+                            const sellTime = sell.filledAt || sell.timestamp
+
+                            return (
+                              <React.Fragment key={group.key}>
+                                <tr
+                                  className="border-b border-gray-700 cursor-pointer hover:bg-gray-700/40 transition-colors"
+                                  onClick={() => toggleFill(group.key)}
+                                >
+                                  <td className="py-1.5 pr-1 text-gray-500 text-xs">
+                                    <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
                                   </td>
-                                  <td className="text-right py-1.5 pr-2 text-gray-400 text-xs">
-                                    avg ${totalBuySize > 0 ? (totalBuyValue / totalBuySize).toFixed(2) : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    ${totalBuyValue.toFixed(2)}
-                                  </td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalBuyFees < 0 ? 'text-green-400' : 'text-gray-400'}`}>
-                                    {totalBuyFees < 0 ? `-$${Math.abs(totalBuyFees).toFixed(4)}` : `$${totalBuyFees.toFixed(4)}`}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2"></td>
-                                  <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
-                                </tr>
-                              )}
-                              {buyFills.map((fill, idx) => (
-                                <tr key={`buy-${fill.tradeId || fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                                  {showAllCycles && (
+                                  {!isDryRun && showAllCycles && (
                                     <td className="py-1.5 pr-2 text-xs text-gray-500">
-                                      {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
+                                      {sell.cycleId ? sell.cycleId.replace('cycle-', '#') : 'current'}
                                     </td>
                                   )}
-                                  <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {fill.orderId}
+                                  <td className="py-1.5 pr-2 font-mono text-xs text-gray-400">
+                                    {sell.orderId}
+                                    {buys.length > 0 && <span className="text-gray-600 ml-1">({buys.length} {buys.length === 1 ? 'buy' : 'buys'})</span>}
                                   </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {fill.size?.toFixed(8)}
+                                    {sell.size?.toFixed(8)}
                                   </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    ${fill.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    ${sellPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                   </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
-                                    ${fill.quoteAmount?.toFixed(2)}
-                                  </td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${fill.netFee < 0 ? 'text-green-400' : 'text-gray-500'}`} title={fill.rebate > 0 ? `Fee: $${fill.fee?.toFixed(4)} | Rebate: $${fill.rebate?.toFixed(4)}` : undefined}>
-                                    {fill.netFee !== undefined ? (fill.netFee < 0 ? `-$${Math.abs(fill.netFee).toFixed(4)}` : `$${fill.netFee.toFixed(4)}`) : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {fill.fillTimeMs ? formatDuration(fill.fillTimeMs) : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {formatTimestamp(fill.timestamp)}
-                                  </td>
-                                </tr>
-                              ))}
-                              {buyFills.length === 0 && (
-                                <tr><td colSpan={showAllCycles ? 8 : 7} className="text-center py-2 text-gray-500 text-xs">No buys yet</td></tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-
-                      {/* Sells Table */}
-                      <div>
-                        <div className="text-xs text-red-400 mb-1 font-medium">Sells ({allSellFills.length})</div>
-                        <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                          <table className="w-full text-sm">
-                            <thead className="sticky top-0 bg-gray-800">
-                              <tr className="text-gray-400 text-xs border-b border-gray-700">
-                                {showAllCycles && <th className="text-left py-1.5 pr-2">Cycle</th>}
-                                <th className="text-left py-1.5 pr-2">Order ID</th>
-                                <th className="text-right py-1.5 pr-2">Size (BTC)</th>
-                                <th className="text-right py-1.5 pr-2">Price</th>
-                                <th className="text-right py-1.5 pr-2">P&L</th>
-                                <th className="text-right py-1.5 pr-2">Holdback</th>
-                                <th className="text-right py-1.5 pr-2">Net Fee</th>
-                                <th className="text-right py-1.5 pr-2">Fill Time</th>
-                                <th className="text-right py-1.5">Filled</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {sellFills.length > 1 && (
-                                <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
-                                  {showAllCycles && <td className="py-1.5 pr-2"></td>}
-                                  <td className="py-1.5 pr-2"></td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {totalSellSize.toFixed(8)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2"></td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                    {totalSellPnl !== 0 ? `${totalSellPnl >= 0 ? '+' : ''}$${totalSellPnl.toFixed(2)}` : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
-                                    {totalHoldback > 0 ? `+${totalHoldback.toFixed(8)}` : '—'}
-                                  </td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalSellFees < 0 ? 'text-green-400' : 'text-gray-400'}`}>
-                                    {totalSellFees < 0 ? `-$${Math.abs(totalSellFees).toFixed(4)}` : `$${totalSellFees.toFixed(4)}`}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2"></td>
-                                  <td className="text-right py-1.5 text-gray-400 text-xs">Totals</td>
-                                </tr>
-                              )}
-                              {sellFills.map((fill, idx) => (
-                                <tr key={`sell-${fill.orderId}-${idx}`} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                                  {showAllCycles && (
-                                    <td className="py-1.5 pr-2 text-xs text-gray-500">
-                                      {fill.cycleId ? fill.cycleId.replace('cycle-', '#') : 'current'}
-                                    </td>
-                                  )}
-                                  <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {fill.isSatellite && <span className="text-purple-400 mr-1" title={`${fill.bodyTier || 'Satellite'} TP (entry: $${fill.satelliteAvgPrice?.toFixed(2) || '?'})`}>{fill.bodyTier ? (fill.bodyTier === 'satellite' ? '🛰️' : fill.bodyTier === 'moon' ? '🌙' : fill.bodyTier === 'planet' ? '🪐' : fill.bodyTier === 'sun' ? '☀️' : fill.bodyTier === 'hypergiant' ? '💫' : fill.bodyTier === 'galaxy' ? '🌌' : fill.bodyTier === 'black_hole' ? '🕳️' : 'S') : 'S'}</span>}
-                                    {fill.orderId}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {fill.size?.toFixed(8)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    ${fill.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    ${sellValue.toFixed(2)}
                                   </td>
                                   <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
-                                    fill.pnl >= 0 ? 'text-green-400' : 'text-red-400'
-                                  }`} title={fill.isSatellite ? `Entry: $${fill.satelliteAvgPrice?.toFixed(2)}` : fill.avgCost ? `Avg cost: $${fill.avgCost.toFixed(2)}` : undefined}>
-                                    {fill.pnl !== null ? `${fill.pnl >= 0 ? '+' : ''}$${fill.pnl.toFixed(2)}` : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
-                                    {fill.holdback > 0 ? `+${fill.holdback.toFixed(8)}` : '—'}
-                                  </td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${fill.netFee < 0 ? 'text-green-400' : 'text-gray-500'}`} title={fill.rebate > 0 ? `Fee: $${fill.fee?.toFixed(4)} | Rebate: $${fill.rebate?.toFixed(4)}` : undefined}>
-                                    {fill.netFee !== undefined ? (fill.netFee < 0 ? `-$${Math.abs(fill.netFee).toFixed(4)}` : `$${fill.netFee.toFixed(4)}`) : '—'}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {fill.fillTimeMs ? formatDuration(fill.fillTimeMs) : '—'}
+                                    sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'
+                                  }`}>
+                                    {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}$${sellPnl.toFixed(2)}` : '—'}
+                                    {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title="Holdback BTC">+{sellHoldback.toFixed(8)}</span>}
                                   </td>
                                   <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {formatTimestamp(fill.timestamp)}
+                                    {formatTimestamp(sellTime)}
                                   </td>
                                 </tr>
-                              ))}
-                              {sellFills.length === 0 && (
-                                <tr><td colSpan={showAllCycles ? 9 : 8} className="text-center py-2 text-gray-500 text-xs">No sells yet</td></tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    </>
+                                {/* Expanded buy sub-rows */}
+                                {isExpanded && buys.map((buy, idx) => {
+                                  const buyPrice = buy.fillPrice || buy.price
+                                  const buyValue = buy.quoteAmount || ((buy.size || 0) * (buyPrice || 0))
+                                  const buyTime = buy.filledAt || buy.timestamp
+                                  const fillTimeMs = isDryRun
+                                    ? (buy.filledAt && buy.placedAt ? buy.filledAt - buy.placedAt : null)
+                                    : buy.fillTimeMs
+                                  return (
+                                    <tr key={`${group.key}-buy-${buy.orderId || buy.tradeId}-${idx}`}
+                                      className="border-b border-gray-700/30 bg-gray-750/20"
+                                    >
+                                      <td className="py-1 pr-1"></td>
+                                      {!isDryRun && showAllCycles && <td className="py-1 pr-2"></td>}
+                                      <td className="py-1 pr-2 font-mono text-xs text-gray-500 pl-5">
+                                        <span className="text-green-400/70 mr-1">BUY</span>
+                                        {buy.orderId}
+                                      </td>
+                                      <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
+                                        {buy.size?.toFixed(8)}
+                                      </td>
+                                      <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
+                                        ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </td>
+                                      <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
+                                        ${buyValue.toFixed(2)}
+                                      </td>
+                                      <td className="text-right py-1 pr-2 font-mono text-xs text-gray-600">
+                                        {fillTimeMs !== null ? formatDuration(fillTimeMs) : ''}
+                                      </td>
+                                      <td className="text-right py-1 font-mono text-xs text-gray-500">
+                                        {formatTimestamp(buyTime)}
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                              </React.Fragment>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   )
                 })()}
               </div>
