@@ -120,19 +120,30 @@ export const getHierarchicalRadius = (depth) => {
 }
 
 // Minimum gap between body surfaces on orbital paths
-const MIN_ORBIT_GAP = 0.5
+const MIN_ORBIT_GAP = 0.8
+
+// Visual extent multiplier per tier (accounts for glow halo + bloom bleed)
+// Stellar bodies bloom heavily so they appear much larger than their geometry
+const VISUAL_EXTENT_SCALE = {
+  satellite:  1.4,
+  moon:       1.4,
+  planet:     1.5,
+  sun:        2.2,
+  hypergiant: 2.5,
+  galaxy:     2.8,
+  black_hole: 2.0,
+}
 
 /**
- * Get the visual extent (effective radius) of a body including glow/rings.
+ * Get the visual extent (effective radius) of a body including glow/rings/bloom.
  * Used to prevent orbit overlaps.
  */
 export const getBodyVisualExtent = (body) => {
   const size = getBodySize(body.costBasis)
   // Planets with rings extend to size * 2.0
   if (body.tier === 'planet' && body.mergeCount > 2) return size * 2.0
-  // Glow halo: 1.3x for stellar, 1.4x for rocky
-  const glowScale = STELLAR_TIERS.has(body.tier) ? 1.3 : 1.4
-  return size * glowScale
+  const scale = VISUAL_EXTENT_SCALE[body.tier] || 1.4
+  return size * scale
 }
 
 /**
