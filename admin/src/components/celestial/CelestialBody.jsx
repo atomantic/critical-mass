@@ -17,14 +17,14 @@ import CelestialTooltip from './CelestialTooltip'
  *   Bright MeshBasicMaterial (unlit, full brightness → bloom does the glow)
  *   + one thin BackSide halo for color tint. Bloom handles the rest.
  */
-const CelestialBody = memo(({ body, showTooltip, onHover }) => {
+const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
   const meshRef = useRef()
   const glowRef = useRef()
 
   const color = TIER_COLORS[body.tier] || TIER_COLORS.satellite
   const glowInt = GLOW_INTENSITY[body.tier] || 0.3
   const emissiveInt = EMISSIVE_INTENSITY[body.tier] || 0.2
-  const size = getBodySize(body.costBasis)
+  const size = getBodySize(body.costBasis, maxUsdcDeployed)
   const hasTP = body.tpPrice > 0
   const isStellar = STELLAR_TIERS.has(body.tier)
   const coreColor = CORE_COLORS[body.tier] || '#ffffff'
@@ -93,7 +93,7 @@ const CelestialBody = memo(({ body, showTooltip, onHover }) => {
       )}
 
       {/* Pinned tooltip */}
-      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.5, 0]} />}
+      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.5, 0]} maxUsdcDeployed={maxUsdcDeployed} />}
     </group>
   )
 }, (prev, next) =>
@@ -102,7 +102,8 @@ const CelestialBody = memo(({ body, showTooltip, onHover }) => {
   prev.body.costBasis === next.body.costBasis &&
   prev.body.tpPrice === next.body.tpPrice &&
   prev.body.mergeCount === next.body.mergeCount &&
-  prev.showTooltip === next.showTooltip
+  prev.showTooltip === next.showTooltip &&
+  prev.maxUsdcDeployed === next.maxUsdcDeployed
 )
 
 CelestialBody.displayName = 'CelestialBody'

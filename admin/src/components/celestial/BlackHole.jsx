@@ -9,11 +9,11 @@ import CelestialTooltip from './CelestialTooltip'
  * Dark core sphere with bright accretion disk and gravitational glow
  * Tooltip is pinned by parent (stays on last-hovered body)
  */
-const BlackHole = memo(({ body, showTooltip, onHover }) => {
+const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
   const diskRef = useRef()
   const outerGlowRef = useRef()
 
-  const size = getBodySize(body.costBasis) * 1.2 // Slightly larger than normal
+  const size = getBodySize(body.costBasis, maxUsdcDeployed) * 1.2 // Slightly larger than normal
   const hasTP = body.tpPrice > 0
 
   useFrame((state) => {
@@ -92,7 +92,7 @@ const BlackHole = memo(({ body, showTooltip, onHover }) => {
       </mesh>
 
       {/* Pinned tooltip - stays visible after hover until another body is hovered */}
-      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} />}
+      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} />}
     </group>
   )
 }, (prev, next) =>
@@ -100,7 +100,8 @@ const BlackHole = memo(({ body, showTooltip, onHover }) => {
   prev.body.costBasis === next.body.costBasis &&
   prev.body.tpPrice === next.body.tpPrice &&
   prev.body.mergeCount === next.body.mergeCount &&
-  prev.showTooltip === next.showTooltip
+  prev.showTooltip === next.showTooltip &&
+  prev.maxUsdcDeployed === next.maxUsdcDeployed
 )
 
 BlackHole.displayName = 'BlackHole'

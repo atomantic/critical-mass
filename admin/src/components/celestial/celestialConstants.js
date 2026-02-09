@@ -91,16 +91,18 @@ export const RING_OPACITY = {
 // Tiers that render as stellar bodies (bright core + corona, triggers bloom)
 export const STELLAR_TIERS = new Set(['sun', 'hypergiant', 'galaxy'])
 
-// Base body scale, computed as: baseScale * (1 + log2(1 + costBasis/50)), capped at 2.0
+// Base body scale — sqrt curve from percentage of max capital, range [0.15, 2.0]
 export const BASE_BODY_SCALE = 0.15
 
 /**
- * Calculate body visual size from costBasis
+ * Calculate body visual size from percentage of max capital
  * @param {number} costBasis
+ * @param {number} maxUsdcDeployed
  * @returns {number}
  */
-export const getBodySize = (costBasis) => {
-  const raw = BASE_BODY_SCALE * (1 + Math.log2(1 + (costBasis || 0) / 50))
+export const getBodySize = (costBasis, maxUsdcDeployed) => {
+  const pct = maxUsdcDeployed > 0 ? (costBasis || 0) / maxUsdcDeployed : 0
+  const raw = BASE_BODY_SCALE + Math.sqrt(pct) * (2.0 - BASE_BODY_SCALE)
   return Math.min(raw, 2.0)
 }
 
@@ -138,8 +140,8 @@ const VISUAL_EXTENT_SCALE = {
  * Get the visual extent (effective radius) of a body including glow/rings/bloom.
  * Used to prevent orbit overlaps.
  */
-export const getBodyVisualExtent = (body) => {
-  const size = getBodySize(body.costBasis)
+export const getBodyVisualExtent = (body, maxUsdcDeployed) => {
+  const size = getBodySize(body.costBasis, maxUsdcDeployed)
   // Planets with rings extend to size * 2.0
   if (body.tier === 'planet' && body.mergeCount > 2) return size * 2.0
   const scale = VISUAL_EXTENT_SCALE[body.tier] || 1.4
@@ -150,11 +152,11 @@ export const getBodyVisualExtent = (body) => {
  * Dynamic orbit radius that ensures the child body stays visually outside the parent.
  * Returns the larger of the default hierarchical radius or the minimum needed to avoid overlap.
  */
-export const getDynamicOrbitRadius = (depth, parentBody, childBody) => {
+export const getDynamicOrbitRadius = (depth, parentBody, childBody, maxUsdcDeployed) => {
   if (depth <= 0) return 0
   const baseRadius = getHierarchicalRadius(depth)
-  const parentExtent = getBodyVisualExtent(parentBody)
-  const childExtent = getBodyVisualExtent(childBody)
+  const parentExtent = getBodyVisualExtent(parentBody, maxUsdcDeployed)
+  const childExtent = getBodyVisualExtent(childBody, maxUsdcDeployed)
   const minRadius = parentExtent + childExtent + MIN_ORBIT_GAP
   return Math.max(baseRadius, minRadius)
 }

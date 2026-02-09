@@ -10,7 +10,7 @@ import { TIER_RANK } from './celestialConstants'
  * Bodies are sorted largest-first; the largest sits at center and each
  * subsequent body orbits the next-larger one in a nested chain.
  */
-const CelestialScene = ({ bodies = [], buyOrders = [] }) => {
+const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed }) => {
   // Sort bodies: tier rank ascending (higher tier = closer to center), then costBasis desc
   const sortedBodies = useMemo(() =>
     [...bodies].sort((a, b) => {
@@ -70,6 +70,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [] }) => {
         bodies={sortedBodies}
         activeBodyId={activeBodyId}
         onBodyHover={onBodyHover}
+        maxUsdcDeployed={maxUsdcDeployed}
       />
 
       {/* Incoming buy orders as wireframe satellites */}
