@@ -239,6 +239,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let reconcileInterval = null;
   let stateSaveInterval = null;
   let entryInProgress = false; // Lock to prevent concurrent entry evaluations
+  const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
 
   /**
    * Handle TP optimizer adjustment
@@ -1154,6 +1155,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           // Reclassify tier based on actual cost basis
           const tierCfg = celestialHierarchy.classifyTier(costBasis, config.baseSizeUsdc);
           bodyEntry.tier = tierCfg.name;
+
+          // Sanity check: cancel orphans selling at or below cost (stale/duplicate artifacts)
+          if (order.price <= avgPrice) {
+            console.log(`🗑️ [${exchange}] Orphan ${order.orderId.slice(0, 8)} sells @ $${order.price} ≤ avg $${avgPrice.toFixed(0)} — cancelling stale order`);
+            await adapter.cancelOrder(order.orderId);
+            continue;
+          }
 
           positionState.celestialBodies = positionState.celestialBodies || [];
           positionState.celestialBodies.push(bodyEntry);
@@ -2981,6 +2989,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   // Set up live mode fill detection callback (backup for when WebSocket misses fills)
   if (!isDryRun) {
     liveCallbacks.onFillDetected = async (orderId, status) => {
+      if (recentlyProcessedFills.has(orderId)) {
+        console.log(`⚠️ [${exchange}] Duplicate fill callback for ${orderId}, skipping`);
+        return;
+      }
+      recentlyProcessedFills.add(orderId);
+      setTimeout(() => recentlyProcessedFills.delete(orderId), 60000);
       console.log(`🔄 [${exchange}] Processing fill detected via polling: ${orderId} side=${status.side}`);
       // Convert status to the format handleOrderFill expects
       const fillData = {
