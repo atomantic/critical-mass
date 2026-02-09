@@ -119,6 +119,35 @@ export const getHierarchicalRadius = (depth) => {
   return HIERARCHICAL_RADII[Math.min(depth, HIERARCHICAL_RADII.length - 1)]
 }
 
+// Minimum gap between body surfaces on orbital paths
+const MIN_ORBIT_GAP = 0.5
+
+/**
+ * Get the visual extent (effective radius) of a body including glow/rings.
+ * Used to prevent orbit overlaps.
+ */
+export const getBodyVisualExtent = (body) => {
+  const size = getBodySize(body.costBasis)
+  // Planets with rings extend to size * 2.0
+  if (body.tier === 'planet' && body.mergeCount > 2) return size * 2.0
+  // Glow halo: 1.3x for stellar, 1.4x for rocky
+  const glowScale = STELLAR_TIERS.has(body.tier) ? 1.3 : 1.4
+  return size * glowScale
+}
+
+/**
+ * Dynamic orbit radius that ensures the child body stays visually outside the parent.
+ * Returns the larger of the default hierarchical radius or the minimum needed to avoid overlap.
+ */
+export const getDynamicOrbitRadius = (depth, parentBody, childBody) => {
+  if (depth <= 0) return 0
+  const baseRadius = getHierarchicalRadius(depth)
+  const parentExtent = getBodyVisualExtent(parentBody)
+  const childExtent = getBodyVisualExtent(childBody)
+  const minRadius = parentExtent + childExtent + MIN_ORBIT_GAP
+  return Math.max(baseRadius, minRadius)
+}
+
 // Hierarchical orbital speed by depth (deeper/smaller bodies orbit faster)
 const HIERARCHICAL_SPEEDS = [0, 0.03, 0.05, 0.08, 0.12, 0.16, 0.20]
 

@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import CelestialBody from './CelestialBody'
 import BlackHole from './BlackHole'
 import {
-  getHierarchicalRadius, getHierarchicalSpeed,
+  getDynamicOrbitRadius, getHierarchicalRadius, getHierarchicalSpeed,
   TIER_COLORS, RING_OPACITY,
 } from './celestialConstants'
 
@@ -65,12 +65,18 @@ const OrbitingGroup = ({ radius, speed, children }) => {
  *   ...
  * Three.js nested groups handle the compound orbital motion automatically.
  */
-const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover }) => {
+const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, parentOrbitRadius }) => {
   if (bodies.length === 0) return null
 
   const [current, ...rest] = bodies
-  const radius = getHierarchicalRadius(depth)
+  // Use parent-computed dynamic radius if provided, otherwise fall back to depth-based
+  const radius = parentOrbitRadius ?? getHierarchicalRadius(depth)
   const speed = getHierarchicalSpeed(depth)
+
+  // Compute dynamic child orbit radius that accounts for body sizes
+  const childOrbitRadius = rest.length > 0
+    ? getDynamicOrbitRadius(depth + 1, current, rest[0])
+    : 0
 
   const bodyElement = current.tier === 'black_hole' ? (
     <BlackHole body={current} showTooltip={activeBodyId === current.id} onHover={onBodyHover} />
@@ -82,7 +88,7 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover }) => 
     <OrbitingGroup radius={radius} speed={speed}>
       {bodyElement}
       {rest.length > 0 && (
-        <ChildOrbitRing radius={getHierarchicalRadius(depth + 1)} tier={rest[0].tier} />
+        <ChildOrbitRing radius={childOrbitRadius} tier={rest[0].tier} />
       )}
       {rest.length > 0 && (
         <HierarchicalOrbit
@@ -90,6 +96,7 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover }) => 
           depth={depth + 1}
           activeBodyId={activeBodyId}
           onBodyHover={onBodyHover}
+          parentOrbitRadius={childOrbitRadius}
         />
       )}
     </OrbitingGroup>

@@ -617,10 +617,16 @@ const createFillLedger = (exchange) => {
    * @param {Object} metadata - Key-value pairs to merge into the fill (bodyId, bodyTier, isSatellite, etc.)
    */
   const annotateFillsByOrderId = (orderId, metadata) => {
+    let matched = false;
     for (const [, fill] of fills) {
       if (fill.orderId === orderId) {
         Object.assign(fill, metadata);
+        matched = true;
       }
+    }
+    // Persist when sellOrderId is set to ensure it survives restarts
+    if (matched && metadata.sellOrderId) {
+      persist();
     }
   };
 

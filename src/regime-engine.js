@@ -1211,7 +1211,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           for (const srcOrderId of (body.sourceOrderIds || [])) {
             const buyFills = cycleFills.filter(f => f.orderId === srcOrderId && !f.isSatellite);
             if (buyFills.length > 0) {
-              fillLedger.annotateFillsByOrderId(srcOrderId, { isSatellite: true, bodyId: body.id, bodyTier: body.tier });
+              const annotation = { isSatellite: true, bodyId: body.id, bodyTier: body.tier };
+              if (body.tpOrderId) annotation.sellOrderId = body.tpOrderId;
+              fillLedger.annotateFillsByOrderId(srcOrderId, annotation);
               annotatedCount += buyFills.length;
             }
           }
@@ -1259,7 +1261,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 satelliteHoldbackBtc: holdbackBtc,
                 satellitePnl: pnl,
               });
-              fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isSatellite: true });
+              fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isSatellite: true, sellOrderId: sellFill.orderId });
               annotatedCount += 2;
               console.log(`🔧 [${exchange}] Annotated satellite: sell ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackBtc.toFixed(8)} BTC`);
             } else {
@@ -2718,6 +2720,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       body.tpPrice = tpPrice;
       body.btcOnOrder = sellQty;
 
+      // Link all source buy fills to this sell order
+      for (const srcId of (body.sourceOrderIds || [])) {
+        fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: result.orderId });
+      }
+
       console.log(`${tierCfg.emoji} [${exchange}] Body TP placed (${body.tier}): ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC, body=${body.id.slice(-8)})`);
 
       tradeEvents.emitTradeEvent('body_tp_placed', exchange, `${tierCfg.emoji} ${sellQty} BTC @ $${tpPrice}`, {
@@ -2772,6 +2779,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.activeTpOrderId = result.orderId;
       positionState.lastTpPrice = tpPrice;
       positionState.btcOnOrder = sellQty;
+
+      // Link all current-cycle non-satellite buys to this sell order
+      const cycleFills = fillLedger.getCurrentCycleFills();
+      for (const fill of cycleFills) {
+        if (fill.side === 'buy' && !fill.isSatellite) {
+          fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: result.orderId });
+        }
+      }
 
       if (result.updated) {
         console.log(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC ≈$${profitBtcValue.toFixed(2)})`);

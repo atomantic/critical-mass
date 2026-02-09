@@ -261,6 +261,11 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Reconciliation: periodic check for body fills that WebSocket missed
 - Dashboard: body count by tier, completed, PnL, individual body details
 - Fill ledger annotates body fills with metadata (bodyId, bodyTier, costBasis, holdback, pnl)
+- **sellOrderId tracking**: Each buy fill stores the `sellOrderId` of its associated sell order
+  - Backfilled via `scripts/backfill-sell-order-ids.js` (dry-run by default, `--apply` to persist)
+  - Runtime: set in `placeBodyTp()`, startup reconciliation, and legacy `placeTakeProfitOrder()`
+  - `annotateFillsByOrderId()` auto-persists when `sellOrderId` is set
+  - Dashboard uses `sellOrderId` for grouping buys under sells (with chronological fallback)
 - **3D Visualization**: Three.js orbital scene in dashboard (lazy-loaded, code-split)
   - Hierarchical orbit chain: largest body at center, each smaller orbits the next-larger
   - Sorted by tier rank then costBasis; nested Three.js groups create epicyclic motion
