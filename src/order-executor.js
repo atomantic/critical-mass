@@ -308,15 +308,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const now = Date.now();
     let refreshed = 0;
 
+    const isTpType = (type) => type === 'take_profit' || type === 'satellite_tp' || type === 'body_tp';
     const effectiveStaleMs = getEffectiveStaleMs();
     for (const [orderId, order] of pendingOrders) {
-      // Skip TP orders (core, satellite, and body) - they should stay
-      if (order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp') continue;
-
       // Check if order is stale (using regime-adjusted timeout)
       if (now - order.placedAt > effectiveStaleMs) {
-        // Rate limit cancels
-        if (now - lastCancelTime < config.cancelRateLimitMs) {
+        // Rate limit cancels (only relevant for non-TP orders)
+        if (!isTpType(order.type) && now - lastCancelTime < config.cancelRateLimitMs) {
           continue;
         }
 
@@ -324,9 +322,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const normalizedStatus = (status.status || '').toUpperCase();
 
         if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
-          // Order filled but WebSocket missed it
-          console.log(`✅ [${exchange}] Refresh detected filled order ${orderId}`);
-          // Capture placedAt BEFORE deleting from pendingOrders
+          console.log(`✅ [${exchange}] Refresh detected filled ${order.type} order ${orderId}`);
           const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
           if (callbacks.onFillDetected) {
@@ -334,10 +330,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           }
           refreshed++;
         } else if (normalizedStatus === 'CANCELLED') {
-          console.log(`⏰ [${exchange}] Refresh found cancelled order ${orderId}`);
+          console.log(`⏰ [${exchange}] Refresh found cancelled ${order.type} order ${orderId}`);
           pendingOrders.delete(orderId);
           refreshed++;
-        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
+        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isTpType(order.type)) {
+          // Only cancel stale ENTRY orders — TP orders should persist until filled
           await adapter.cancelOrder(orderId);
           lastCancelTime = now;
           pendingOrders.delete(orderId);
@@ -350,8 +347,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Check all pending entry orders for fills (backup fill detection)
+   * Check all pending orders for fills (backup fill detection)
    * Call this periodically to catch fills that WebSocket missed
+   * Checks entries, take_profit, body_tp, and satellite_tp orders
    * @returns {Promise<{filled: number, cancelled: number}>}
    */
   const checkPendingOrderFills = async () => {
@@ -359,25 +357,21 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     let cancelled = 0;
 
     for (const [orderId, order] of pendingOrders) {
-      if (order.type !== 'entry') continue;
-
       const status = await adapter.getOrder(orderId).catch(() => null);
       if (!status) continue;
 
       const normalizedStatus = (status.status || '').toUpperCase();
 
       if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
-        console.log(`✅ [${exchange}] Fill check detected filled order ${orderId}`);
-        // Capture placedAt BEFORE deleting from pendingOrders
+        console.log(`✅ [${exchange}] Fill check detected filled ${order.type} order ${orderId}`);
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
         if (callbacks.onFillDetected) {
-          // Pass placedAt in status so handleOrderFill can use it for fill time tracking
           callbacks.onFillDetected(orderId, { ...status, placedAt });
         }
         filled++;
       } else if (normalizedStatus === 'CANCELLED') {
-        console.log(`⏰ [${exchange}] Fill check found cancelled order ${orderId}`);
+        console.log(`⏰ [${exchange}] Fill check found cancelled ${order.type} order ${orderId}`);
         pendingOrders.delete(orderId);
         cancelled++;
       }

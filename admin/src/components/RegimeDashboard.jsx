@@ -1539,7 +1539,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   // For body/satellite TPs: use body.buyOrders (filter migration artifacts)
                   // For core TPs: use unconsumed buys from current position
                   const getRelatedBuys = (order) => {
-                    const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null
+                    const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null
                     if (bodyData?.buyOrders?.length > 0) {
                       const bodyBuys = bodyData.buyOrders.filter(bo => bo.btcQty > 0 && bo.orderId && bo.orderId !== 'core-migration')
                       if (bodyBuys.length > 0) return bodyBuys
@@ -1596,7 +1596,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   const ordersWithCalcs = openOrders.map(order => {
                     const age = Date.now() - order.placedAt
                     const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
-                    const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null
+                    const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null
                     const orderAvgCost = order.satelliteAvgCost || bodyData?.avgPrice || (isTpOrder ? avgCost : 0)
                     const sellValue = order.size * order.price
                     const estSellFee = sellValue * 0.0006
@@ -1615,7 +1615,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       : null
                     const estHoldbackValue = estHoldback ? estHoldback * order.price : null
                     const tpPercent = order.tpPercent
-                      || ((order.type === 'satellite_tp' || order.type === 'body_tp') && orderAvgCost > 0
+                      || (((order.type === 'satellite_tp' || order.type === 'body_tp' || (order.type === 'take_profit' && bodyData)) && orderAvgCost > 0)
                         ? ((order.price - orderAvgCost) / orderAvgCost * 100).toFixed(2)
                         : null)
                     const relatedBuys = isTpOrder ? getRelatedBuys(order) : []
@@ -1633,6 +1633,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           <th className="text-right py-2 pr-2">TP%</th>
                           <th className="text-right py-2 pr-2">Size (BTC)</th>
                           <th className="text-right py-2 pr-2">Price</th>
+                          <th className="text-right py-2 pr-2">Value</th>
                           <th className="text-right py-2 pr-2">Est. P&L</th>
                           <th className="text-right py-2 pr-2">Holdback</th>
                           <th className="text-right py-2">Age</th>
@@ -1661,7 +1662,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 </td>
                                 <td className="py-2 pr-2">
                                   {(() => {
-                                    const bodyInfo = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null;
+                                    const bodyInfo = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null;
                                     const tier = bodyInfo?.tier || (order.type === 'satellite_tp' ? 'satellite' : null);
                                     const tierStyles = {
                                       satellite:  { bg: 'bg-gray-700/60',    text: 'text-gray-300',    tooltip: 'Satellite — individual order, 1–3× base' },
@@ -1691,6 +1692,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-white">
                                   ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                                <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
+                                  ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
                                 <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
                                   {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}$${order.estPnl.toFixed(2)}` : '—'}
@@ -1871,6 +1875,40 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       buysBySellOrderId.get(sid).push(buy)
                     })
 
+                    // Redirect orphaned buys (sellOrderId points to non-existent sell) to real sell via bodyId
+                    // This handles TP re-placement: buys linked to old TP orderId get redirected to the actual fill
+                    const knownSellIds = new Set(aggSellsAll.map(s => s.orderId))
+                    const sellIdByBodyId = new Map()
+                    aggSellsAll.forEach(s => { if (s.bodyId) sellIdByBodyId.set(s.bodyId, s.orderId) })
+                    // Learn bodyId from any annotated buy sharing an orphaned sellOrderId
+                    const bodyIdByOrphanSellId = new Map()
+                    aggBuysAll.forEach(buy => {
+                      if (buy.sellOrderId && !knownSellIds.has(buy.sellOrderId) && buy.bodyId) {
+                        bodyIdByOrphanSellId.set(buy.sellOrderId, buy.bodyId)
+                      }
+                    })
+                    // Redirect orphaned buys to real sell
+                    aggBuysAll.forEach(buy => {
+                      const sid = buy.sellOrderId
+                      if (!sid || knownSellIds.has(sid)) return
+                      const bodyId = buy.bodyId || bodyIdByOrphanSellId.get(sid)
+                      if (!bodyId) return
+                      const realSellId = sellIdByBodyId.get(bodyId)
+                      if (!realSellId) return
+                      if (!buysBySellOrderId.has(realSellId)) buysBySellOrderId.set(realSellId, [])
+                      // Avoid duplicates (buy may already be in list from bodyId annotation)
+                      const existing = buysBySellOrderId.get(realSellId)
+                      if (!existing.some(b => b.orderId === buy.orderId)) existing.push(buy)
+                    })
+
+                    // Fallback: group satellite buys by bodyId for sells with no sellOrderId linkage at all
+                    const buysByBodyId = new Map()
+                    aggBuysAll.forEach(buy => {
+                      if (!buy.bodyId) return
+                      if (!buysByBodyId.has(buy.bodyId)) buysByBodyId.set(buy.bodyId, [])
+                      buysByBodyId.get(buy.bodyId).push(buy)
+                    })
+
                     // Track which non-satellite buys are claimed by sellOrderId
                     const claimedBuyOrderIds = new Set()
                     buysBySellOrderId.forEach(buys => buys.forEach(b => claimedBuyOrderIds.add(b.orderId)))
@@ -1891,7 +1929,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         // Prefer sellOrderId-based buys, fall back to chronological accumulation
                         const linkedBuys = buysBySellOrderId.get(order.orderId)
                         if (order.isSatellite) {
-                          sellGroups.push({ sell, buys: linkedBuys || [], key: `fill-${order.orderId}` })
+                          // Prefer sellOrderId-linked buys, fall back to bodyId-matched buys
+                          const bodyBuys = (!linkedBuys || linkedBuys.length === 0) && order.bodyId
+                            ? buysByBodyId.get(order.bodyId) || []
+                            : null
+                          sellGroups.push({ sell, buys: linkedBuys || bodyBuys || [], key: `fill-${order.orderId}` })
                         } else if (linkedBuys && linkedBuys.length > 0) {
                           sellGroups.push({ sell, buys: linkedBuys, key: `fill-${order.orderId}` })
                         } else {

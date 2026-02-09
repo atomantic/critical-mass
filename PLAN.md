@@ -279,6 +279,11 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Hover tooltips with body details (BTC qty, cost, avg, TP)
   - Auto-rotate camera with user orbit/zoom controls
   - Dependencies: three, @react-three/fiber v8, @react-three/drei v9, @react-three/postprocessing v2
+- **TP fill detection for all order types**: `checkPendingOrderFills()` and `refreshStaleOrders()` check entries, take_profit, body_tp, and satellite_tp orders (not just entries). TP orders that are filled/cancelled are cleaned up; open TPs are never auto-cancelled.
+- **Negative P&L guard**: `placeBodyTp()` rejects TP placement when `tpPrice <= body.avgPrice` to prevent selling at a loss
+- **Legacy TP cleanup**: `placeTakeProfitOrder()` cancels any legacy `take_profit` order when celestial bodies are present
+- **Buy→sell linkage on fill**: Body TP fills annotate source buy fills with `sellOrderId` for dashboard grouping; untracked sells annotate all current-cycle buys
+- **Dashboard take_profit display**: `take_profit` orders with matching celestial body data display the celestial emoji/tier instead of generic "TP"
 - **Legacy compatibility**: Old `satelliteTpOrders` migrated to celestial bodies on startup
 - **Orphan reclamation**: On startup, detects sell orders on exchange that aren't tracked
   in state. Small sells reclaimed as bodies; large untracked sells trigger a warning.
@@ -429,6 +434,13 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
   - API responses
   - Transaction records
 - TypeScript-compatible `jsconfig.json` for IDE support
+
+### Fill Ledger Sell Linkage Fix (v2.5.12)
+- Fixed `sellOrderId` annotation using both `sourceOrderIds` and `body.buyOrders` (handles core-migration bodies)
+- Core TP path no longer steals body-owned buys (`!fill.bodyId` guard)
+- Offline fill detection now links source buys to the sell orderId
+- One-time repair script: `scripts/repair-sell-linkage.js` (fixes 23 mismapped fills)
+- Documentation: `docs/fill-ledger-sell-linkage.md`
 
 ---
 
