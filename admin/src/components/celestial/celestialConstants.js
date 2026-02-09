@@ -106,3 +106,23 @@ export const getBodySize = (costBasis) => {
 
 // Tier ordering for legend display (center outward)
 export const TIER_ORDER = ['black_hole', 'galaxy', 'hypergiant', 'sun', 'planet', 'moon', 'satellite']
+
+// Tier rank lookup (lower = higher rank = closer to center in hierarchy)
+export const TIER_RANK = Object.fromEntries(TIER_ORDER.map((t, i) => [t, i]))
+
+// Hierarchical orbital radius by depth (parent→child distance)
+// Decreases with depth to keep the system compact
+const HIERARCHICAL_RADII = [0, 3.0, 2.4, 2.0, 1.7, 1.5, 1.3]
+
+export const getHierarchicalRadius = (depth) => {
+  if (depth <= 0) return 0
+  return HIERARCHICAL_RADII[Math.min(depth, HIERARCHICAL_RADII.length - 1)]
+}
+
+// Hierarchical orbital speed by depth (deeper/smaller bodies orbit faster)
+const HIERARCHICAL_SPEEDS = [0, 0.03, 0.05, 0.08, 0.12, 0.16, 0.20]
+
+export const getHierarchicalSpeed = (depth) => {
+  if (depth <= 0) return 0
+  return HIERARCHICAL_SPEEDS[Math.min(depth, HIERARCHICAL_SPEEDS.length - 1)]
+}
