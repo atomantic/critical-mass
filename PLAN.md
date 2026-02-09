@@ -235,6 +235,58 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Order limit: Validates maxOpenOrders ≥ ladderLevels + 1
   - Mode switch protection: Doesn't switch modes mid-cycle with active position
 
+**Satellite TP Orders (v2.5):**
+- Independent take-profit orders for hovering-price buys that barely improve core TP
+- When a new buy fill arrives, calculates how much merging would lower the core's TP price
+- `improvement = (priorTP - mergedTP) / priorTP * 100`
+- If `improvement < tpMergeMinImprovementPct` (default 0.1%) → satellite (quick capture)
+- If `improvement >= threshold` → merge into core (DCA recovery)
+- First buy always goes to core; max satellite count enforced
+- Satellite fills don't change core's totalBTC/costBasis
+- Both use same holdbackRatio for profit split
+- Core cycle reset preserves open satellites
+- Satellites contribute to shared realizedPnL and capital growth
+- Configuration:
+  - `satelliteTpEnabled: false` - Enable/disable satellite TP feature
+  - `tpMergeMinImprovementPct: 0.1` - Min % improvement to merge (below creates satellite)
+  - `maxSatelliteOrders: 5` - Maximum concurrent satellite TP orders
+- Order budget: core TP (1) + satellites (up to 5) + entries ≤ maxOpenOrders
+- Startup recovery: satellite TP orders restored from state and validated on exchange
+- Reconciliation: periodic check for satellite fills that WebSocket missed
+- Dashboard: satellite count, completed, PnL, individual order details
+- Fill ledger annotates satellite fills with metadata (isSatellite, costBasis, avgPrice, holdback)
+- Dashboard uses satellite-specific P&L and holdback instead of core running average
+- Satellite buys excluded from core running average calculation
+- **Cycle restoration fix**: Active cycle detection uses BTC balance ratio (sellBtc/buyBtc < 50%)
+  instead of zero-sells check, preventing satellite sells from triggering false cycle completion
+- **Satellite annotation migration**: On startup, retroactively annotates unannotated satellite
+  sells/buys by matching sell fills to their corresponding buy fills (within 2% size tolerance)
+- **Position rebuild exclusion**: `rebuildPositionFromFills()` skips `isSatellite` fills to prevent
+  satellite data from corrupting core position calculations
+- **Recovered cycle fix**: Fills assigned to `recovered-*` cycles are reassigned to the correct
+  active cycle during startup migration
+- **Orphan satellite reclamation**: On startup, detects sell orders on exchange that aren't tracked
+  in state (lost due to state corruption). Small sells (< 3x baseSizeUsdc) are reclaimed as
+  satellites; large untracked sells trigger a warning. Matched to buy fills by size similarity.
+- **Coinbase adapter**: `getOpenOrders` now includes `size` and `price` from order configuration
+
+**Macro Regime Detection (v2.6):**
+- Multi-timeframe EMA overlay that modulates micro-regime behavior
+- Fetches hourly (200) and daily (30) candles via REST API every 5 minutes
+- Computes 21h, 50h, 200h, and 20d EMAs
+- Scoring system (-100 to +100): EMA alignment (±30), price vs 200h (±25), daily trend (±25), EMA convergence (±20)
+- Four macro modes with configurable thresholds and hysteresis:
+  - ACCUMULATION (dip zone): increase sizing, tighter TP and entries
+  - RANGING (consolidation): passthrough (1.0x multipliers)
+  - MARKUP (uptrend): reduce sizing, wider TP for bigger captures
+  - DECLINE (capitulation risk): conservative sizing, wider entries
+- Multipliers applied: `effectiveSize = microSize × macroSizeMult`, `effectiveTP = baseTP × macroTpMult`, `effectiveOffset = baseOffset × macroOffsetMult`
+- State persisted for recovery across restarts
+- Dashboard: macro mode badge in regime cell, macro panel with EMAs/score/multipliers
+- Config UI: toggle, thresholds, hysteresis, per-mode multipliers
+- Disabled by default (`macroEnabled: false`), zero behavior change when off
+- Files: `src/macro-regime.js`, plus changes to regime-engine, config-utils, types, state-tracker, dashboard, config editor
+
 **Safety Features:**
 - Automatic SAFE mode on: WebSocket disconnect, stale data, REST errors
 - Flash move detection pauses entries and disables scaling
@@ -389,10 +441,11 @@ src/
 ├── backtest-engine.js  # Historical simulation (fixed + fibonacci)
 ├── optimizer-engine.js # Parameter optimization
 │
-│ # Regime Engine Components (v2.4/2.5)
+│ # Regime Engine Components (v2.4/2.5/2.6)
 ├── regime-engine.js    # Main regime-aware trading engine
 ├── regime-detector.js  # Regime classification (HARVEST/CAUTION/TREND)
-├── volatility-utils.js # ATR, RV, VWAP, swing calculations
+├── macro-regime.js     # Multi-timeframe macro regime (ACCUMULATION/RANGING/MARKUP/DECLINE)
+├── volatility-utils.js # ATR, RV, VWAP, swing, EMA calculations
 ├── position-sizer.js   # Liquidity-aware position sizing
 ├── order-executor.js   # Maker-prefer limit order placement + ladder orders
 ├── ladder-calculator.js # Ladder mode calculations (levels, sizing, ATH)

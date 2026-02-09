@@ -511,6 +511,13 @@ const createInitialRegimePositionState = () => ({
   ladderPlacedAt: null,
   ladderLowerBound: 0,
   pendingLadderOrders: [],  // [{orderId, price, sizeUsdc, ladderIndex}]
+  // Satellite TP state
+  satelliteTpOrders: [],        // [{orderId, btcQty, costBasis, avgPrice, tpOrderId, tpPrice, btcOnOrder, placedAt}]
+  satellitesCompleted: 0,
+  satelliteRealizedPnL: 0,
+  satelliteRealizedBtcPnL: 0,
+  // Macro regime state (persisted for recovery)
+  macroRegime: null,
 });
 
 /**

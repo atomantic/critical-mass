@@ -527,6 +527,102 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
             </div>
 
             <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Satellite TP Orders</h3>
+              <div className="flex items-center gap-4 mb-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <span className="text-gray-400">Enable Satellite TPs</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRegimeChange('satelliteTpEnabled', !regimeConfig.satelliteTpEnabled)}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                      regimeConfig.satelliteTpEnabled ? 'bg-cyan-500' : 'bg-gray-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                      regimeConfig.satelliteTpEnabled ? 'translate-x-5' : 'translate-x-1'
+                    }`} />
+                  </button>
+                </label>
+                {regimeConfig.satelliteTpEnabled && (
+                  <span className="text-xs text-cyan-400">
+                    Hovering-price buys keep independent TPs for quick capture
+                  </span>
+                )}
+              </div>
+              {regimeConfig.satelliteTpEnabled && (
+                <>
+                  <div className="grid grid-cols-4 gap-3">
+                    <FormInput label="Merge Min Improvement %" hint="Min TP improvement % to merge into core (below = satellite)" value={regimeConfig.tpMergeMinImprovementPct ?? 0.1} onChange={(v) => handleRegimeChange('tpMergeMinImprovementPct', v)} type="number" />
+                    <FormInput label="Max Satellite Orders" hint="Max concurrent satellite TP orders (1-10)" value={regimeConfig.maxSatelliteOrders ?? 5} onChange={(v) => handleRegimeChange('maxSatelliteOrders', Math.round(v))} type="number" />
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">
+                    When a buy barely improves the core TP (&lt;{regimeConfig.tpMergeMinImprovementPct ?? 0.1}%), it stays as an independent satellite for quick capture.
+                    Significant dips merge into core as before. Budget: core TP (1) + satellites ({regimeConfig.maxSatelliteOrders ?? 5}) + entries = {1 + (regimeConfig.maxSatelliteOrders ?? 5)} of {regimeConfig.maxOpenOrders || 12} order slots.
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
+              <h3 className="text-sm font-medium text-purple-400 mb-3">Macro Regime (Multi-Timeframe)</h3>
+              <div className="flex items-center gap-4 mb-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <span className="text-gray-400">Enable Macro Regime</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRegimeChange('macroEnabled', !regimeConfig.macroEnabled)}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                      regimeConfig.macroEnabled ? 'bg-cyan-500' : 'bg-gray-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                      regimeConfig.macroEnabled ? 'translate-x-5' : 'translate-x-1'
+                    }`} />
+                  </button>
+                </label>
+                {regimeConfig.macroEnabled && (
+                  <span className="text-xs text-cyan-400">
+                    Hourly + daily EMA overlay modulates sizing, TP, and entry offset
+                  </span>
+                )}
+              </div>
+              {regimeConfig.macroEnabled && (
+                <>
+                  <div className="grid grid-cols-4 gap-3 mb-3">
+                    <FormInput label="Update Interval (ms)" hint="How often to re-score macro (60000-600000)" value={regimeConfig.macroUpdateIntervalMs ?? 300000} onChange={(v) => handleRegimeChange('macroUpdateIntervalMs', v)} type="number" />
+                    <FormInput label="Hysteresis" hint="Score buffer to prevent mode chatter (1-20)" value={regimeConfig.macroHysteresis ?? 5} onChange={(v) => handleRegimeChange('macroHysteresis', v)} type="number" />
+                    <FormInput label="Accumulation Threshold" hint="Score below this = ACCUMULATION" value={regimeConfig.macroAccumulationThreshold ?? -15} onChange={(v) => handleRegimeChange('macroAccumulationThreshold', v)} type="number" />
+                    <FormInput label="Decline Threshold" hint="Score below this = DECLINE" value={regimeConfig.macroDeclineThreshold ?? -50} onChange={(v) => handleRegimeChange('macroDeclineThreshold', v)} type="number" />
+                  </div>
+                  <div className="grid grid-cols-4 gap-3 mb-3">
+                    <FormInput label="Markup Threshold" hint="Score above this = MARKUP" value={regimeConfig.macroMarkupThreshold ?? 35} onChange={(v) => handleRegimeChange('macroMarkupThreshold', v)} type="number" />
+                  </div>
+                  <div className="text-xs text-gray-500 mb-2">Accumulation Multipliers (buying dips harder)</div>
+                  <div className="grid grid-cols-3 gap-3 mb-3">
+                    <FormInput label="Size Mult" hint="Position size multiplier (0.1-3.0)" value={regimeConfig.macroAccumulationSizeMult ?? 1.3} onChange={(v) => handleRegimeChange('macroAccumulationSizeMult', v)} type="number" />
+                    <FormInput label="TP Mult" hint="Take-profit multiplier (tighter)" value={regimeConfig.macroAccumulationTpMult ?? 0.85} onChange={(v) => handleRegimeChange('macroAccumulationTpMult', v)} type="number" />
+                    <FormInput label="Offset Mult" hint="Entry offset multiplier (tighter)" value={regimeConfig.macroAccumulationOffsetMult ?? 0.8} onChange={(v) => handleRegimeChange('macroAccumulationOffsetMult', v)} type="number" />
+                  </div>
+                  <div className="text-xs text-gray-500 mb-2">Markup Multipliers (uptrend — reduce exposure)</div>
+                  <div className="grid grid-cols-3 gap-3 mb-3">
+                    <FormInput label="Size Mult" hint="Position size multiplier (0.1-3.0)" value={regimeConfig.macroMarkupSizeMult ?? 0.7} onChange={(v) => handleRegimeChange('macroMarkupSizeMult', v)} type="number" />
+                    <FormInput label="TP Mult" hint="Take-profit multiplier (wider)" value={regimeConfig.macroMarkupTpMult ?? 1.3} onChange={(v) => handleRegimeChange('macroMarkupTpMult', v)} type="number" />
+                    <FormInput label="Offset Mult" hint="Entry offset multiplier (wider)" value={regimeConfig.macroMarkupOffsetMult ?? 1.2} onChange={(v) => handleRegimeChange('macroMarkupOffsetMult', v)} type="number" />
+                  </div>
+                  <div className="text-xs text-gray-500 mb-2">Decline Multipliers (capitulation risk — conservative)</div>
+                  <div className="grid grid-cols-3 gap-3 mb-3">
+                    <FormInput label="Size Mult" hint="Position size multiplier (0.1-3.0)" value={regimeConfig.macroDeclineSizeMult ?? 0.4} onChange={(v) => handleRegimeChange('macroDeclineSizeMult', v)} type="number" />
+                    <FormInput label="TP Mult" hint="Take-profit multiplier (tighter)" value={regimeConfig.macroDeclineTpMult ?? 0.7} onChange={(v) => handleRegimeChange('macroDeclineTpMult', v)} type="number" />
+                    <FormInput label="Offset Mult" hint="Entry offset multiplier (wider)" value={regimeConfig.macroDeclineOffsetMult ?? 1.5} onChange={(v) => handleRegimeChange('macroDeclineOffsetMult', v)} type="number" />
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    RANGING mode uses 1.0x for all multipliers (passthrough). Score range: -100 to +100. Thresholds must be ordered: decline &lt; accumulation &lt; markup.
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="border-t border-gray-700 pt-3 mb-4">
               <h3 className="text-sm font-medium text-purple-400 mb-3">TP Auto-Management</h3>
               <div className="flex items-center gap-4 mb-3">
                 <label className="flex items-center gap-2 text-sm">
