@@ -47,12 +47,12 @@ export const ORBITAL_RADII = {
 // Orbital speed multiplier (satellites fastest, higher tiers slower)
 export const ORBITAL_SPEEDS = {
   black_hole: 0,
-  galaxy:     0.04,
-  hypergiant: 0.08,
-  sun:        0.12,
-  planet:     0.2,
-  moon:       0.35,
-  satellite:  0.5,
+  galaxy:     0.015,
+  hypergiant: 0.03,
+  sun:        0.05,
+  planet:     0.08,
+  moon:       0.14,
+  satellite:  0.2,
 }
 
 // Glow intensity per tier
