@@ -1,7 +1,7 @@
 {
-  "name": "dca_bot",
+  "name": "critical-mass",
   "version": "2.5.5",
-  "description": "Multi-exchange Dollar Cost Average trading bot for BTC",
+  "description": "Multi-exchange BTC accumulation engine with celestial position management",
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
@@ -12,7 +12,7 @@
     "pm2:start": "pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop ecosystem.config.cjs",
     "pm2:restart": "pm2 restart ecosystem.config.cjs",
-    "pm2:logs": "pm2 logs dca-bot",
+    "pm2:logs": "pm2 logs critical-mass",
     "pm2:status": "pm2 status",
     "cli": "node index.js",
     "cli:status": "node index.js status",
@@ -28,7 +28,8 @@
     "trading",
     "btc",
     "usdc",
-    "portos"
+    "portos",
+    "critical-mass"
   ],
   "author": "Adam Eivy (@antic|@atomantic)",
   "license": "ISC",

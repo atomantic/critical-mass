@@ -276,7 +276,7 @@ function AppContent() {
               {/* Top row: Title + Exchange selector */}
               <div className="flex items-center justify-between">
                 <Link to={buildPath('')} className="text-xl sm:text-2xl font-bold text-white hover:text-gray-200">
-                  DCA Bot
+                  Critical Mass
                 </Link>
                 {/* Exchange selector - visible on mobile in top row */}
                 <div className="sm:hidden">

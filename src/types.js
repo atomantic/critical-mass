@@ -1,8 +1,8 @@
 /**
- * Type definitions for DCA Bot
+ * Type definitions for Critical Mass
  *
  * This file contains JSDoc type definitions for the core data structures
- * used throughout the DCA bot. Enable @ts-check in your files to benefit
+ * used throughout Critical Mass. Enable @ts-check in your files to benefit
  * from type checking.
  */
 

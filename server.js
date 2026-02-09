@@ -1720,7 +1720,9 @@ const checkAndRunIntervalTrade = () => {
 server.listen(PORT, async () => {
   const enabledExchanges = getEnabledExchanges();
 
-  log('INFO', `DCA Trading Bot running on http://localhost:${PORT}`);
+  const { version } = require('./package.json');
+  log('INFO', `\n⚛  Critical Mass v${version}\n·  ·  · ◉ ·  ·  ·\nBTC Accumulation Engine\n`);
+  log('INFO', `Critical Mass running on http://localhost:${PORT}`);
   log('INFO', `Configured exchanges: ${getConfiguredExchanges().join(', ')}`);
   log('INFO', `Enabled exchanges: ${enabledExchanges.length > 0 ? enabledExchanges.join(', ') : 'none'}`);
 
