@@ -2,9 +2,13 @@
 /**
  * Chart Data Buffer
  *
- * Server-side buffer for chart data that persists across page reloads.
- * Mirrors the client-side useChartDataBuffer logic to maintain consistency.
+ * Server-side buffer for chart data that persists across page reloads
+ * and server restarts. Saves to disk periodically and loads on startup.
  */
+const fs = require('fs');
+const path = require('path');
+
+const DATA_DIR = path.join(__dirname, '..', 'data');
 
 // Maximum data retention (1 hour in milliseconds)
 const MAX_RETENTION_MS = 60 * 60 * 1000;
@@ -14,6 +18,16 @@ const MIN_SAMPLE_INTERVAL_MS = 1000;
 
 // Hard cap on array length as safety net (1 hour at 1 sample/sec = 3600, add buffer)
 const MAX_POINTS = 4000;
+
+// Save to disk every 30 seconds
+const SAVE_INTERVAL_MS = 30 * 1000;
+
+/**
+ * Get the file path for persisted chart data
+ * @param {string} exchange
+ * @returns {string}
+ */
+const getFilePath = (exchange) => path.join(DATA_DIR, exchange, 'chart-data-buffer.json');
 
 /**
  * Create a chart data buffer for an exchange
@@ -25,6 +39,8 @@ const createChartDataBuffer = (exchange) => {
   let atrHistory = [];
   let regimeHistory = [];
   let lastSampleTime = 0;
+  let dirty = false;
+  let saveTimer = null;
 
   /**
    * Trim old data from an array (time-based + hard cap)
@@ -39,6 +55,48 @@ const createChartDataBuffer = (exchange) => {
     }
     return filtered;
   };
+
+  /**
+   * Save buffer to disk
+   */
+  const saveToDisk = () => {
+    if (!dirty) return;
+    const filePath = getFilePath(exchange);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const data = {
+      priceHistory: trimOldData(priceHistory),
+      atrHistory: trimOldData(atrHistory),
+      regimeHistory: trimOldData(regimeHistory),
+      savedAt: Date.now(),
+    };
+    fs.writeFileSync(filePath, JSON.stringify(data));
+    dirty = false;
+  };
+
+  /**
+   * Load buffer from disk
+   */
+  const loadFromDisk = () => {
+    const filePath = getFilePath(exchange);
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const data = JSON.parse(raw);
+    if (data.priceHistory) priceHistory = trimOldData(data.priceHistory);
+    if (data.atrHistory) atrHistory = trimOldData(data.atrHistory);
+    if (data.regimeHistory) regimeHistory = trimOldData(data.regimeHistory);
+    const loaded = priceHistory.length + atrHistory.length + regimeHistory.length;
+    if (loaded > 0) {
+      const age = data.savedAt ? Math.round((Date.now() - data.savedAt) / 1000) : '?';
+      console.log(`📊 chart buffer loaded for ${exchange}: ${priceHistory.length} price, ${atrHistory.length} atr, ${regimeHistory.length} regime points (saved ${age}s ago)`);
+    }
+  };
+
+  // Load persisted data on creation
+  loadFromDisk();
+
+  // Periodic save to disk
+  saveTimer = setInterval(saveToDisk, SAVE_INTERVAL_MS);
 
   /**
    * Process incoming status update and buffer chart data
@@ -65,6 +123,7 @@ const createChartDataBuffer = (exchange) => {
       };
 
       priceHistory = [...trimOldData(priceHistory), pricePoint];
+      dirty = true;
     }
 
     // Add ATR/volatility data point
@@ -78,6 +137,7 @@ const createChartDataBuffer = (exchange) => {
       };
 
       atrHistory = [...trimOldData(atrHistory), atrPoint];
+      dirty = true;
     }
 
     // Track regime changes (only add when regime mode changes)
@@ -92,6 +152,7 @@ const createChartDataBuffer = (exchange) => {
           mode: regime.mode,
           since: regime.since,
         }];
+        dirty = true;
       } else {
         regimeHistory = trimmed;
       }
@@ -118,6 +179,8 @@ const createChartDataBuffer = (exchange) => {
     atrHistory = [];
     regimeHistory = [];
     lastSampleTime = 0;
+    dirty = true;
+    saveToDisk();
   };
 
   /**
@@ -132,11 +195,20 @@ const createChartDataBuffer = (exchange) => {
     newestTimestamp: priceHistory[priceHistory.length - 1]?.timestamp || null,
   });
 
+  /**
+   * Flush to disk and stop the save timer
+   */
+  const shutdown = () => {
+    saveToDisk();
+    if (saveTimer) clearInterval(saveTimer);
+  };
+
   return {
     processStatus,
     getData,
     clear,
     getStats,
+    shutdown,
   };
 };
 
@@ -177,9 +249,20 @@ const getChartData = (exchange) => {
   return buffer.getData();
 };
 
+/**
+ * Flush all buffers to disk (call on graceful shutdown)
+ */
+const shutdownAllBuffers = () => {
+  for (const [exchange, buffer] of chartBuffers) {
+    buffer.shutdown();
+    console.log(`📊 chart buffer flushed for ${exchange}`);
+  }
+};
+
 module.exports = {
   createChartDataBuffer,
   getChartDataBuffer,
   clearChartDataBuffer,
   getChartData,
+  shutdownAllBuffers,
 };
