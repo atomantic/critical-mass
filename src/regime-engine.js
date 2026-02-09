@@ -1033,6 +1033,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         let restoredBodies = 0;
         let expiredBodies = 0;
 
+        // Backfill buyOrders for bodies that predate the tracking field
+        for (const body of savedBodies) {
+          if (!body.buyOrders) {
+            body.buyOrders = (body.sourceOrderIds || []).map(oid => ({
+              orderId: oid,
+              price: body.avgPrice,
+              btcQty: 0,
+              sizeUsdc: 0,
+              filledAt: body.createdAt || Date.now(),
+            }));
+          }
+        }
+
         for (const body of [...savedBodies]) {
           if (!body.tpOrderId) continue;
 
@@ -1061,6 +1074,29 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         if (restoredBodies > 0) console.log(`🌌 [${exchange}] Restored ${restoredBodies} celestial body TP orders`);
         if (expiredBodies > 0) console.log(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
+
+        // Reprice any restored body TPs whose TP% exceeds the effective max
+        // (fixes bodies that were placed with uncapped holdback floor)
+        // Cancel directly via adapter since executor map may not be populated yet
+        for (const body of savedBodies) {
+          if (!body.tpOrderId || body.avgPrice <= 0) continue;
+          const currentTpPct = ((body.tpPrice - body.avgPrice) / body.avgPrice) * 100;
+          const bTierCfg = celestialHierarchy.getTierConfig(body.tier);
+          const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
+          if (currentTpPct > bEffectiveMax * 1.01) {
+            console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}% — cancelling and repricing`);
+            const cancelResult = await adapter.cancelOrder(body.tpOrderId);
+            if (cancelResult.success) {
+              if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(body.tpOrderId);
+              body.tpOrderId = null;
+              body.tpPrice = 0;
+              body.btcOnOrder = 0;
+              await placeBodyTp(body);
+            } else {
+              console.log(`⚠️ [${exchange}] Failed to cancel overpriced body TP ${body.tpOrderId}: ${cancelResult.errorMessage || 'unknown'}`);
+            }
+          }
+        }
       }
 
       // Detect orphaned sell orders on exchange that we lost track of
@@ -1128,6 +1164,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
           reclaimedBodies++;
           console.log(`🌌 [${exchange}] Reclaimed orphaned body (${bodyEntry.tier}): ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} BTC @ $${order.price}${matchingBuy ? ` (matched buy ${matchingBuy.orderId.slice(0, 8)})` : ' (no buy match)'}`);
+
+          // Check if reclaimed body's TP% exceeds effective max — reprice if so
+          if (bodyEntry.avgPrice > 0) {
+            const reclaimedTpPct = ((bodyEntry.tpPrice - bodyEntry.avgPrice) / bodyEntry.avgPrice) * 100;
+            const rTierCfg = celestialHierarchy.getTierConfig(bodyEntry.tier);
+            const rEffMax = config.tpMaxPercent * (rTierCfg.tpMaxScale || 1);
+            if (reclaimedTpPct > rEffMax * 1.01) {
+              console.log(`⚠️ [${exchange}] Reclaimed body ${bodyEntry.id.slice(-8)} TP% ${reclaimedTpPct.toFixed(2)}% exceeds max ${rEffMax.toFixed(2)}% — repricing`);
+              const rCancel = await adapter.cancelOrder(bodyEntry.tpOrderId);
+              if (rCancel.success) {
+                if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(bodyEntry.tpOrderId);
+                bodyEntry.tpOrderId = null;
+                bodyEntry.tpPrice = 0;
+                bodyEntry.btcOnOrder = 0;
+                await placeBodyTp(bodyEntry);
+              }
+            }
+          }
         }
 
         if (reclaimedBodies > 0) {
@@ -1360,6 +1414,34 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         if (restoredLadder > 0) console.log(`✅ [${exchange}] Restored ${restoredLadder} pending ladder orders`);
         if (cancelledLadder > 0) console.log(`ℹ️ [${exchange}] ${cancelledLadder} saved ladder orders no longer open on exchange`);
+      }
+
+      // Ensure all celestial bodies have TP orders
+      // (covers bodies with null tpOrderId from saved state, e.g. after a cancelled TP wasn't re-placed)
+      const bodiesNeedingTp = (positionState.celestialBodies || []).filter(b => !b.tpOrderId && b.btcQty > 0);
+      if (bodiesNeedingTp.length > 0) {
+        console.log(`🔧 [${exchange}] ${bodiesNeedingTp.length} celestial bodies need TP orders`);
+        for (const body of bodiesNeedingTp) {
+          await placeBodyTp(body);
+        }
+      }
+
+      // Safety net: detect position BTC not tracked by any celestial body and create a recovery body
+      const allRecoveryBodies = positionState.celestialBodies || [];
+      if (allRecoveryBodies.length > 0 && positionState.totalBTC > 0) {
+        const trackedBtc = allRecoveryBodies.reduce((sum, b) => sum + b.btcQty, 0);
+        const untrackedBtc = roundBTC(positionState.totalBTC - trackedBtc);
+        if (untrackedBtc > 0.00000100) {
+          const untrackedCostBasis = roundUSDC(untrackedBtc * positionState.avgCostBasis);
+          const recoveryBody = celestialHierarchy.createNewBody({
+            btcQty: untrackedBtc,
+            costBasis: untrackedCostBasis,
+            avgPrice: positionState.avgCostBasis,
+          }, `recovery-${Date.now()}`);
+          positionState.celestialBodies.push(recoveryBody);
+          console.log(`🔧 [${exchange}] Created recovery body for ${untrackedBtc.toFixed(8)} untracked BTC ($${untrackedCostBasis.toFixed(2)})`);
+          await placeBodyTp(recoveryBody);
+        }
       }
 
       // Update TP if we have position but no order, OR if existing TP has drifted below minimum
@@ -2595,12 +2677,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const feeFloorPct = (2 * 0.0006 * 100) + (0.01 / body.costBasis * 100);
 
     // Holdback floor: TP% must generate enough profit for at least 1 satoshi holdback
-    // profitPerBTC * holdbackRatio / sellPrice >= 1 sat → profitPerBTC >= 1sat * price / (btcQty * ratio)
+    // Only applied when achievable within the tier's effective max TP —
+    // tiny bodies that can't produce 1 sat holdback at a reasonable price just get normal TP
     const holdbackRatio = Math.min((config.holdbackRatio ?? 0.5) * (tierCfg.holdbackScale || 1), 0.95);
     const holdbackFloorPct = (0.00000001 * body.avgPrice) / (body.btcQty * holdbackRatio) * 100;
+    const effectiveMax = config.tpMaxPercent * (tierCfg.tpMaxScale || 1);
 
-    const minTpPct = Math.max(feeFloorPct, holdbackFloorPct);
-    const finalTpPct = Math.max(tierTpPct, minTpPct);
+    const minTpPct = holdbackFloorPct <= effectiveMax
+      ? Math.max(feeFloorPct, holdbackFloorPct)
+      : feeFloorPct;
+    const finalTpPct = Math.min(Math.max(tierTpPct, minTpPct), effectiveMax);
 
     const tpPrice = roundUSDC(body.avgPrice * (1 + finalTpPct / 100));
 
@@ -3017,6 +3103,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           createdAt: b.createdAt,
           lastMergedAt: b.lastMergedAt,
           mergeCount: b.mergeCount,
+          buyOrders: (b.buyOrders || []).map(bo => ({
+            orderId: bo.orderId,
+            price: bo.price,
+            btcQty: bo.btcQty,
+            sizeUsdc: bo.sizeUsdc,
+            filledAt: bo.filledAt,
+          })),
         };
       }),
       bodiesActive: (positionState.celestialBodies || []).length,

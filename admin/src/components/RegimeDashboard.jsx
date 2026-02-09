@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
+
+const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 
 // Format duration in human readable form
 const formatDuration = (ms) => {
@@ -1126,6 +1128,17 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
           {/* Middle Column: Position & Risk */}
           <div className="space-y-4">
+            {/* 3D Celestial Visualization */}
+            {status?.celestial?.enabled && (
+              <Suspense fallback={<div className="bg-gray-800 rounded-lg p-4 text-xs text-gray-500">Loading celestial system...</div>}>
+                <CelestialVisualization
+                  celestial={status.celestial}
+                  pendingOrders={pendingOrdersList}
+                  currentPrice={market.lastPrice}
+                />
+              </Suspense>
+            )}
+
             {/* Position */}
             <div className="bg-gray-800 rounded-lg p-4">
               <div className="flex items-center justify-between mb-2">
@@ -1199,12 +1212,28 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   {(status.celestial.bodies || []).length > 0 && (
                     <div className="mt-1 space-y-0.5">
                       {status.celestial.bodies.map((body, i) => (
-                        <div key={body.id || i} className="flex items-center justify-between text-[10px] bg-gray-900/50 rounded px-1.5 py-0.5">
-                          <span className="text-gray-400">
-                            <span title={body.tier}>{body.emoji}</span> {body.btcQty?.toFixed(6)} BTC @ ${body.avgPrice?.toFixed(0)}
-                            {body.mergeCount > 0 && <span className="text-gray-600 ml-1">×{body.mergeCount + 1}</span>}
-                          </span>
-                          <span className="text-purple-400">TP ${body.tpPrice?.toFixed(0)} ({body.tpPercent}%)</span>
+                        <div key={body.id || i} className="group">
+                          <div className="flex items-center justify-between text-[10px] bg-gray-900/50 rounded px-1.5 py-0.5 cursor-default">
+                            <span className="text-gray-400">
+                              <span title={body.tier}>{body.emoji}</span> {body.btcQty?.toFixed(6)} BTC @ ${body.avgPrice?.toFixed(0)}
+                              {body.mergeCount > 0 && <span className="text-gray-600 ml-1">×{body.mergeCount + 1}</span>}
+                              {(body.buyOrders || []).length > 0 && <span className="text-gray-600 ml-1" title="Constituent buy orders">({body.buyOrders.length} buys)</span>}
+                            </span>
+                            <span className={body.tpOrderId ? 'text-purple-400' : 'text-red-400'}>
+                              {body.tpOrderId ? `TP $${body.tpPrice?.toFixed(0)} (${body.tpPercent}%)` : 'NO TP'}
+                            </span>
+                          </div>
+                          {(body.buyOrders || []).length > 0 && (
+                            <div className="hidden group-hover:block ml-4 mt-0.5 space-y-px">
+                              {body.buyOrders.slice(-5).map((bo, j) => (
+                                <div key={bo.orderId || j} className="text-[9px] text-gray-600 flex justify-between px-1">
+                                  <span>{bo.orderId?.slice(0, 8)} {bo.btcQty?.toFixed(6)} BTC @ ${bo.price?.toFixed(0)}</span>
+                                  <span className={body.tpOrderId ? 'text-gray-600' : 'text-red-700'}>→ {body.tpOrderId ? body.tpOrderId.slice(0, 8) : 'none'}</span>
+                                </div>
+                              ))}
+                              {body.buyOrders.length > 5 && <div className="text-[9px] text-gray-700 px-1">...and {body.buyOrders.length - 5} more</div>}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1561,13 +1590,27 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               {order.orderId}
                             </td>
                             <td className="py-2 pr-2">
-                              <span className={`px-1.5 py-0.5 rounded text-xs ${
-                                order.type === 'entry' ? 'bg-blue-900/50 text-blue-400'
-                                  : (order.type === 'satellite_tp' || order.type === 'body_tp') ? 'bg-purple-900/50 text-purple-400'
-                                  : 'bg-cyan-900/50 text-cyan-400'
-                              }`}>
-                                {order.type === 'entry' ? 'Entry' : (order.type === 'satellite_tp' || order.type === 'body_tp') ? (order.tierEmoji || '🛰️') : 'TP'}
-                              </span>
+                              {(() => {
+                                const bodyInfo = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null;
+                                const tier = bodyInfo?.tier || (order.type === 'satellite_tp' ? 'satellite' : null);
+                                const tierStyles = {
+                                  satellite:  { bg: 'bg-gray-700/60',    text: 'text-gray-300',    tooltip: 'Satellite — individual order, 1–3× base' },
+                                  moon:       { bg: 'bg-slate-600/50',   text: 'text-slate-300',   tooltip: 'Moon — small cluster, 3–10× base' },
+                                  planet:     { bg: 'bg-blue-900/50',    text: 'text-blue-400',    tooltip: 'Planet — substantial mass, 10–100× base' },
+                                  sun:        { bg: 'bg-amber-900/50',   text: 'text-amber-400',   tooltip: 'Sun — large mass, 100–500× base' },
+                                  hypergiant: { bg: 'bg-purple-900/50',  text: 'text-purple-400',  tooltip: 'Hypergiant — massive mass, 500–1000× base' },
+                                  black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 1000×+ base' },
+                                };
+                                if (order.type === 'entry') {
+                                  return <span className="px-1.5 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400" title="Limit buy entry order">Entry</span>;
+                                }
+                                if (tier && tierStyles[tier]) {
+                                  const s = tierStyles[tier];
+                                  const emoji = order.tierEmoji || bodyInfo?.emoji || '🛰️';
+                                  return <span className={`px-1.5 py-0.5 rounded text-xs ${s.bg} ${s.text}`} title={s.tooltip}>{emoji}</span>;
+                                }
+                                return <span className="px-1.5 py-0.5 rounded text-xs bg-cyan-900/50 text-cyan-400" title="Take-profit sell order">TP</span>;
+                              })()}
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
                               {order.tpPercent ? `${order.tpPercent}%` : '—'}

@@ -51,12 +51,12 @@ const { roundBTC, roundUSDC } = require('./volatility-utils');
 
 /** @type {CelestialTier[]} */
 const TIERS = [
-  { name: 'satellite',  emoji: '🛰️', minMass: 1,   maxMass: 3,       tpMult: 1.0, tpMaxScale: 1.0,  proximity: 0.5, holdbackScale: 1.00 },
-  { name: 'moon',       emoji: '🌙',  minMass: 3,   maxMass: 8,       tpMult: 1.2, tpMaxScale: 1.5,  proximity: 0.8, holdbackScale: 1.05 },
-  { name: 'planet',     emoji: '🪐',  minMass: 8,   maxMass: 20,      tpMult: 1.5, tpMaxScale: 2.0,  proximity: 1.2, holdbackScale: 1.10 },
-  { name: 'sun',        emoji: '☀️',  minMass: 20,  maxMass: 50,      tpMult: 2.0, tpMaxScale: 3.0,  proximity: 1.5, holdbackScale: 1.15 },
-  { name: 'hypergiant', emoji: '💫',  minMass: 50,  maxMass: 120,     tpMult: 3.0, tpMaxScale: 5.0,  proximity: 2.0, holdbackScale: 1.20 },
-  { name: 'black_hole', emoji: '🕳️', minMass: 120, maxMass: Infinity, tpMult: 5.0, tpMaxScale: 10.0, proximity: 2.5, holdbackScale: 1.25 },
+  { name: 'satellite',  emoji: '🛰️', minMass: 1,    maxMass: 3,        tpMult: 1.0, tpMaxScale: 1.0,  proximity: 0.5, holdbackScale: 1.00 },
+  { name: 'moon',       emoji: '🌙',  minMass: 3,    maxMass: 10,       tpMult: 1.2, tpMaxScale: 1.5,  proximity: 0.8, holdbackScale: 1.05 },
+  { name: 'planet',     emoji: '🪐',  minMass: 10,   maxMass: 100,      tpMult: 1.5, tpMaxScale: 2.0,  proximity: 1.5, holdbackScale: 1.10 },
+  { name: 'sun',        emoji: '☀️',  minMass: 100,  maxMass: 500,      tpMult: 2.0, tpMaxScale: 3.0,  proximity: 2.0, holdbackScale: 1.15 },
+  { name: 'hypergiant', emoji: '💫',  minMass: 500,  maxMass: 1000,     tpMult: 3.0, tpMaxScale: 5.0,  proximity: 3.0, holdbackScale: 1.20 },
+  { name: 'black_hole', emoji: '🕳️', minMass: 1000, maxMass: Infinity,  tpMult: 5.0, tpMaxScale: 10.0, proximity: 4.0, holdbackScale: 1.25 },
 ];
 
 /**
@@ -117,6 +117,13 @@ const createNewBody = (newBuy, buyOrderId) => {
     createdAt: Date.now(),
     lastMergedAt: Date.now(),
     sourceOrderIds: [buyOrderId],
+    buyOrders: [{
+      orderId: buyOrderId,
+      price: newBuy.avgPrice,
+      btcQty,
+      sizeUsdc: costBasis,
+      filledAt: Date.now(),
+    }],
     mergeCount: 0,
   };
 };
@@ -194,6 +201,16 @@ const mergeIntoBody = (target, newBuy, baseSizeUsdc, buyOrderId) => {
   target.avgPrice = target.btcQty > 0 ? target.costBasis / target.btcQty : 0;
   target.lastMergedAt = Date.now();
   if (orderId) target.sourceOrderIds.push(orderId);
+  if (!target.buyOrders) target.buyOrders = [];
+  if (orderId) {
+    target.buyOrders.push({
+      orderId,
+      price: newBuy.avgPrice,
+      btcQty: newBtcQty,
+      sizeUsdc: newCost,
+      filledAt: Date.now(),
+    });
+  }
   target.mergeCount += 1;
 
   // Check promotion
@@ -288,6 +305,7 @@ const migrateFromLegacy = (positionState, baseSizeUsdc) => {
       createdAt: positionState.lastEntryTime || Date.now(),
       lastMergedAt: Date.now(),
       sourceOrderIds: ['core-migration'],
+      buyOrders: [],
       mergeCount: 0,
     });
   }
@@ -308,6 +326,13 @@ const migrateFromLegacy = (positionState, baseSizeUsdc) => {
       createdAt: sat.placedAt || Date.now(),
       lastMergedAt: Date.now(),
       sourceOrderIds: [sat.orderId || 'sat-migration'],
+      buyOrders: [{
+        orderId: sat.orderId || 'sat-migration',
+        price: sat.avgPrice,
+        btcQty: sat.btcQty,
+        sizeUsdc: sat.costBasis,
+        filledAt: sat.placedAt || Date.now(),
+      }],
       mergeCount: 0,
     });
   }
