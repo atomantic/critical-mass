@@ -260,6 +260,14 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Reconciliation: periodic check for body fills that WebSocket missed
 - Dashboard: body count by tier, completed, PnL, individual body details
 - Fill ledger annotates body fills with metadata (bodyId, bodyTier, costBasis, holdback, pnl)
+- **3D Visualization**: Three.js orbital scene in dashboard (lazy-loaded, code-split)
+  - Bodies orbit by tier: black_hole center, satellite outermost
+  - Logarithmic sizing from costBasis, tier-colored emissive spheres
+  - Merged bodies (×3+) show Saturn-like rings
+  - Open buy orders as wireframe "incoming" satellites
+  - Hover tooltips with body details (BTC qty, cost, avg, TP)
+  - Auto-rotate camera with user orbit/zoom controls, 1500-star background
+  - Dependencies: three, @react-three/fiber v8, @react-three/drei v9
 - **Legacy compatibility**: Old `satelliteTpOrders` migrated to celestial bodies on startup
 - **Orphan reclamation**: On startup, detects sell orders on exchange that aren't tracked
   in state. Small sells reclaimed as bodies; large untracked sells trigger a warning.
@@ -457,6 +465,14 @@ src/
 └── trade-events.js     # Trade event emitter for WebSocket updates
 
 admin/src/components/
+├── celestial/          # 3D celestial system visualization
+│   ├── celestialConstants.js       # Tier colors, orbital radii, sizes, speeds
+│   ├── CelestialVisualization.jsx  # Card wrapper (lazy-loaded Canvas container)
+│   ├── CelestialScene.jsx          # R3F scene composition (lights, stars, controls)
+│   ├── CelestialBody.jsx           # Individual body mesh (sphere + glow + label)
+│   ├── OrbitalRing.jsx             # Translucent ring showing orbital path per tier
+│   ├── IncomingOrder.jsx           # Open buy orders as wireframe satellites
+│   └── CelestialTooltip.jsx        # HTML overlay tooltip on hover
 ├── charts/             # D3.js chart components
 │   ├── index.js        # Chart exports
 │   ├── chartUtils.js   # Formatting, colors, responsive utils
