@@ -64,8 +64,8 @@ jobs:
           ## Installation
 
           \`\`\`bash
-          git clone https://github.com/atomantic/dca_bot.git
-          cd dca_bot
+          git clone https://github.com/atomantic/critical-mass.git
+          cd critical-mass
           npm run install:all
           cp config.json.example config.json
           # Edit config.json with your exchange credentials

@@ -1,6 +1,6 @@
-# DCA Trading Bot - Development Plan
+# Critical Mass - Development Plan
 
-A multi-exchange DCA trading bot for Bitcoin with admin dashboard.
+Multi-exchange BTC accumulation engine with celestial position management.
 
 **Version:** 2.4.21
 **Ports:** 5563 (API), 5564 (UI dev)

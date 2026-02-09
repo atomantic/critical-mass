@@ -11,7 +11,7 @@ module.exports = {
 
   apps: [
     {
-      name: 'dca-bot',
+      name: 'critical-mass',
       script: 'server.js',
       cwd: __dirname,
       interpreter: 'node',
@@ -31,13 +31,13 @@ module.exports = {
       min_uptime: '10s',
       restart_delay: 5000,
       max_memory_restart: '300M',
-      out_file: './logs/dca-out.log',
-      error_file: './logs/dca-error.log',
+      out_file: './logs/critical-mass-out.log',
+      error_file: './logs/critical-mass-error.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       merge_logs: true,
     },
     {
-      name: 'dca-bot-ui',
+      name: 'critical-mass-ui',
       script: `${__dirname}/admin/node_modules/.bin/vite`,
       cwd: `${__dirname}/admin`,
       args: `--host 0.0.0.0 --port ${PORTS.UI}`,

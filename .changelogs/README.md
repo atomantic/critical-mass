@@ -1,6 +1,6 @@
 # Release Changelogs
 
-This directory contains detailed release notes for each version of dca_bot.
+This directory contains detailed release notes for each version of Critical Mass.
 
 ## Structure
 
