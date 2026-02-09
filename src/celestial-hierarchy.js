@@ -17,8 +17,8 @@ const { roundBTC, roundUSDC } = require('./volatility-utils');
  * @typedef {Object} CelestialTier
  * @property {string} name - Tier name
  * @property {string} emoji - Display emoji
- * @property {number} minMass - Minimum mass multiplier (× baseSizeUsdc)
- * @property {number} maxMass - Maximum mass multiplier (Infinity for top tier)
+ * @property {number} minPct - Minimum % of maxUsdcDeployed
+ * @property {number} maxPct - Maximum % of maxUsdcDeployed (Infinity for top tier)
  * @property {number} tpMult - TP percentage multiplier
  * @property {number} tpMaxScale - Multiplied against tpMaxPercent for wider ceiling
  * @property {number} proximity - TP price proximity % for within-tier consolidation
@@ -51,13 +51,13 @@ const { roundBTC, roundUSDC } = require('./volatility-utils');
 
 /** @type {CelestialTier[]} */
 const TIERS = [
-  { name: 'satellite',  emoji: '🛰️', minMass: 1,    maxMass: 3,        tpMult: 1.0, tpMaxScale: 1.0,  proximity: 0.5, holdbackScale: 1.00 },
-  { name: 'moon',       emoji: '🌙',  minMass: 3,    maxMass: 10,       tpMult: 1.2, tpMaxScale: 1.5,  proximity: 0.8, holdbackScale: 1.05 },
-  { name: 'planet',     emoji: '🪐',  minMass: 10,   maxMass: 100,      tpMult: 1.5, tpMaxScale: 2.0,  proximity: 1.5, holdbackScale: 1.10 },
-  { name: 'sun',        emoji: '☀️',  minMass: 100,  maxMass: 500,      tpMult: 2.0, tpMaxScale: 3.0,  proximity: 2.0, holdbackScale: 1.15 },
-  { name: 'hypergiant', emoji: '💫',  minMass: 500,  maxMass: 1000,     tpMult: 3.0, tpMaxScale: 5.0,  proximity: 3.0, holdbackScale: 1.20 },
-  { name: 'galaxy',     emoji: '🌌',  minMass: 1000, maxMass: 5000,     tpMult: 4.0, tpMaxScale: 8.0,  proximity: 3.5, holdbackScale: 1.22 },
-  { name: 'black_hole', emoji: '🕳️', minMass: 5000, maxMass: Infinity,  tpMult: 5.0, tpMaxScale: 10.0, proximity: 4.0, holdbackScale: 1.25 },
+  { name: 'satellite',  emoji: '🛰️', minPct: 0,   maxPct: 2,        tpMult: 1.0, tpMaxScale: 1.0,  proximity: 0.5, holdbackScale: 1.00 },
+  { name: 'moon',       emoji: '🌙',  minPct: 2,   maxPct: 5,        tpMult: 1.2, tpMaxScale: 1.5,  proximity: 0.8, holdbackScale: 1.05 },
+  { name: 'planet',     emoji: '🪐',  minPct: 5,   maxPct: 15,       tpMult: 1.5, tpMaxScale: 2.0,  proximity: 1.5, holdbackScale: 1.10 },
+  { name: 'sun',        emoji: '☀️',  minPct: 15,  maxPct: 30,       tpMult: 2.0, tpMaxScale: 3.0,  proximity: 2.0, holdbackScale: 1.15 },
+  { name: 'hypergiant', emoji: '💫',  minPct: 30,  maxPct: 50,       tpMult: 3.0, tpMaxScale: 5.0,  proximity: 3.0, holdbackScale: 1.20 },
+  { name: 'galaxy',     emoji: '🌌',  minPct: 50,  maxPct: 75,       tpMult: 4.0, tpMaxScale: 8.0,  proximity: 3.5, holdbackScale: 1.22 },
+  { name: 'black_hole', emoji: '🕳️', minPct: 75,  maxPct: Infinity,  tpMult: 5.0, tpMaxScale: 10.0, proximity: 4.0, holdbackScale: 1.25 },
 ];
 
 /**
@@ -70,15 +70,15 @@ const getTierConfig = (tierName) => {
 };
 
 /**
- * Classify which tier a body belongs to based on cost basis
+ * Classify which tier a body belongs to based on % of max capital
  * @param {number} costBasis - Total cost basis in USD
- * @param {number} baseSizeUsdc - Base order size
+ * @param {number} maxUsdcDeployed - Maximum capital deployed
  * @returns {CelestialTier}
  */
-const classifyTier = (costBasis, baseSizeUsdc) => {
-  const mass = baseSizeUsdc > 0 ? costBasis / baseSizeUsdc : 1;
+const classifyTier = (costBasis, maxUsdcDeployed) => {
+  const pct = maxUsdcDeployed > 0 ? (costBasis / maxUsdcDeployed) * 100 : 0;
   for (let i = TIERS.length - 1; i >= 0; i--) {
-    if (mass >= TIERS[i].minMass) return TIERS[i];
+    if (pct >= TIERS[i].minPct) return TIERS[i];
   }
   return TIERS[0];
 };
@@ -137,12 +137,12 @@ const createNewBody = (newBuy, buyOrderId) => {
  * @param {number} newBuy.totalValue - USDC value
  * @param {number} newBuy.totalFees - Fees paid
  * @param {number} newBuy.avgPrice - Average fill price
- * @param {number} baseSizeUsdc - Base order size
+ * @param {number} maxUsdcDeployed - Maximum capital deployed (unused, kept for call-site consistency)
  * @param {number} candidateTpPrice - What TP price the new buy would get
  * @param {number} maxBodies - Maximum allowed bodies
  * @returns {CelestialBody|null}
  */
-const findMergeTarget = (bodies, newBuy, baseSizeUsdc, candidateTpPrice, maxBodies, pendingOrderCount, maxOpenOrders) => {
+const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxBodies, pendingOrderCount, maxOpenOrders) => {
   if (bodies.length === 0) return null;
 
   // Forced merge when at body capacity or order slot budget is full
@@ -188,11 +188,11 @@ const findMergeTarget = (bodies, newBuy, baseSizeUsdc, candidateTpPrice, maxBodi
  * @param {number} newBuy.totalValue - USDC value
  * @param {number} newBuy.totalFees - Fees paid
  * @param {number} newBuy.avgPrice - Average fill price
- * @param {number} baseSizeUsdc - Base order size
+ * @param {number} maxUsdcDeployed - Maximum capital deployed
  * @param {string} buyOrderId - Order ID from the buy
  * @returns {CelestialBody} Updated body (mutated in place)
  */
-const mergeIntoBody = (target, newBuy, baseSizeUsdc, buyOrderId) => {
+const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
   const newBtcQty = newBuy.btcQty || newBuy.totalSize;
   const newCost = newBuy.costBasis || (newBuy.totalValue + (newBuy.totalFees || 0));
   const orderId = buyOrderId || newBuy.buyOrderId;
@@ -215,11 +215,12 @@ const mergeIntoBody = (target, newBuy, baseSizeUsdc, buyOrderId) => {
   target.mergeCount += 1;
 
   // Check promotion
-  const newTier = classifyTier(target.costBasis, baseSizeUsdc);
+  const newTier = classifyTier(target.costBasis, maxUsdcDeployed);
   if (newTier.name !== target.tier) {
     const oldTier = target.tier;
     target.tier = newTier.name;
-    console.log(`⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (mass $${target.costBasis.toFixed(0)})`);
+    const pct = maxUsdcDeployed > 0 ? ((target.costBasis / maxUsdcDeployed) * 100).toFixed(1) : '0';
+    console.log(`⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (${pct}% of capital, $${target.costBasis.toFixed(0)})`);
   }
 
   return target;
@@ -245,12 +246,12 @@ const calculateBodyTpPercent = (baseTpPct, tierName, tpMaxPercent) => {
 /**
  * Reclassify all bodies that may have crossed tier boundaries
  * @param {CelestialBody[]} bodies - All bodies
- * @param {number} baseSizeUsdc - Base order size
+ * @param {number} maxUsdcDeployed - Maximum capital deployed
  * @returns {CelestialBody[]} Bodies with updated tiers
  */
-const checkPromotions = (bodies, baseSizeUsdc) => {
+const checkPromotions = (bodies, maxUsdcDeployed) => {
   for (const body of bodies) {
-    const correctTier = classifyTier(body.costBasis, baseSizeUsdc);
+    const correctTier = classifyTier(body.costBasis, maxUsdcDeployed);
     if (correctTier.name !== body.tier) {
       const oldEmoji = getTierConfig(body.tier).emoji;
       body.tier = correctTier.name;
@@ -285,15 +286,15 @@ const syncPositionState = (positionState, bodies) => {
 /**
  * Migrate old core+satellite state to celestial bodies
  * @param {Object} positionState - Old position state
- * @param {number} baseSizeUsdc - Base order size
+ * @param {number} maxUsdcDeployed - Maximum capital deployed
  * @returns {CelestialBody[]} Migrated bodies
  */
-const migrateFromLegacy = (positionState, baseSizeUsdc) => {
+const migrateFromLegacy = (positionState, maxUsdcDeployed) => {
   const bodies = [];
 
   // Migrate core position if it exists
   if (positionState.totalBTC > 0 && positionState.totalCostBasis > 0) {
-    const coreTier = classifyTier(positionState.totalCostBasis, baseSizeUsdc);
+    const coreTier = classifyTier(positionState.totalCostBasis, maxUsdcDeployed);
     bodies.push({
       id: generateBodyId('core-migration'),
       tier: coreTier.name,
@@ -314,7 +315,7 @@ const migrateFromLegacy = (positionState, baseSizeUsdc) => {
   // Migrate satellites
   const satellites = positionState.satelliteTpOrders || [];
   for (const sat of satellites) {
-    const satTier = classifyTier(sat.costBasis, baseSizeUsdc);
+    const satTier = classifyTier(sat.costBasis, maxUsdcDeployed);
     bodies.push({
       id: generateBodyId(sat.orderId || 'sat-migration'),
       tier: satTier.name,

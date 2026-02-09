@@ -1137,6 +1137,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   celestial={status.celestial}
                   pendingOrders={pendingOrdersList}
                   currentPrice={market.lastPrice}
+                  maxUsdcDeployed={config?.maxUsdcDeployed}
                 />
               </Suspense>
             )}

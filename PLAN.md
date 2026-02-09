@@ -238,11 +238,11 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 **Celestial Hierarchy System (v2.5+):**
 - Evolved from satellite TP orders into a unified celestial body system
 - Every buy creates or merges into a "celestial body" with independent TP tracking
-- Bodies are classified by cost basis into tiers (satellite → moon → planet → sun → hypergiant → galaxy → black hole)
+- Bodies are classified by **percentage of maxUsdcDeployed** into tiers (satellite → moon → planet → sun → hypergiant → galaxy → black hole)
 - Each tier has its own TP multiplier, holdback scale, and emoji
 - Bodies promote to higher tiers as they accumulate more capital through merges
 - `src/celestial-hierarchy.js` - Tier classification, body creation/merge, promotion logic
-- 7 tiers: satellite(1×) → moon(3×) → planet(10×) → sun(100×) → hypergiant(500×) → galaxy(1000×) → black_hole(5000×)
+- 7 tiers by % of max capital: satellite(0–2%) → moon(2–5%) → planet(5–15%) → sun(15–30%) → hypergiant(30–50%) → galaxy(50–75%) → black_hole(75%+)
 - Tier-specific holdback: higher tiers hold proportionally more BTC (1.00x to 1.25x, capped at 95%)
 - **Minimum holdback floor**: Every TP must hold back at least 1 satoshi (0.00000001 BTC)
   - `calculateTakeProfitSize()` enforces `holdbackQty >= 1 sat` via `Math.max()`
@@ -272,7 +272,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Black hole renders with accretion disk + gravitational glow when at center
   - Bloom post-processing for emissive glow (inspired by bituniverse)
   - Dual-layer starfield with fog depth, multiple light sources
-  - Logarithmic sizing from costBasis, tier-colored emissive spheres
+  - Percentage-based sizing (sqrt curve from costBasis / maxUsdcDeployed), tier-colored emissive spheres
   - Merged planets (×3+) show Saturn-like rings
   - Orbital path rings shown per-parent for each child body
   - Open buy orders as wireframe "incoming" satellites

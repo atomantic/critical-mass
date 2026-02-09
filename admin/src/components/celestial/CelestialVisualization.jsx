@@ -6,7 +6,7 @@ import { TIER_COLORS, TIER_EMOJIS, TIER_ORDER } from './celestialConstants'
 /**
  * Card wrapper: header, 3D canvas container, and legend
  */
-const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice }) => {
+const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, maxUsdcDeployed }) => {
   const bodies = celestial?.bodies || []
   const enabled = celestial?.enabled
 
@@ -56,7 +56,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice })
               gl={{ antialias: true, alpha: false }}
               onCreated={({ gl }) => { gl.setClearColor('#0f0f14') }}
             >
-              <CelestialScene bodies={bodies} buyOrders={buyOrders} />
+              <CelestialScene bodies={bodies} buyOrders={buyOrders} maxUsdcDeployed={maxUsdcDeployed} />
             </Canvas>
           </Suspense>
         )}

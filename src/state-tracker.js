@@ -576,12 +576,12 @@ const loadRegimeState = (exchange = 'coinbase') => {
     const hasSatellites = position.satelliteTpOrders && position.satelliteTpOrders.length > 0;
 
     if (hasCorePosition || hasSatellites) {
-      // Get baseSizeUsdc from config if available, default to 25
+      // Get maxUsdcDeployed from config for percentage-based tier classification
       const configUtils = require('./config-utils');
       const regimeConfig = configUtils.getRegimeConfig(exchange);
-      const baseSizeUsdc = regimeConfig.baseSizeUsdc || 25;
+      const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 10000;
 
-      position.celestialBodies = migrateFromLegacy(position, baseSizeUsdc);
+      position.celestialBodies = migrateFromLegacy(position, maxUsdcDeployed);
       position.celestialState = {
         bodiesCompleted: (position.cyclesCompleted || 0) + (position.satellitesCompleted || 0),
         bodiesRealizedPnL: (position.realizedPnL || 0),

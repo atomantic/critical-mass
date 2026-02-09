@@ -1165,7 +1165,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           bodyEntry.createdAt = placedAt;
 
           // Reclassify tier based on actual cost basis
-          const tierCfg = celestialHierarchy.classifyTier(costBasis, config.baseSizeUsdc);
+          const tierCfg = celestialHierarchy.classifyTier(costBasis, config.maxUsdcDeployed);
           bodyEntry.tier = tierCfg.name;
 
           // Sanity check: cancel orphans selling at or below cost (stale/duplicate artifacts)
@@ -1789,7 +1789,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Find merge target among existing celestial bodies
       const bodies = positionState.celestialBodies || [];
       const mergeTarget = celestialHierarchy.findMergeTarget(
-        bodies, newBuy, config.baseSizeUsdc, candidateTpPrice,
+        bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
         config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders
       );
 
@@ -1807,13 +1807,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
         }
 
-        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.baseSizeUsdc);
+        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed);
         // Replace old body with merged body in array
         const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
         if (idx !== -1) positionState.celestialBodies[idx] = merged;
 
         // Check for cascading promotions
-        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.baseSizeUsdc);
+        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
 
         // Sync aggregate fields for backward compatibility
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
@@ -2943,7 +2943,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       const bodies = positionState.celestialBodies || [];
       const mergeTarget = celestialHierarchy.findMergeTarget(
-        bodies, newBuy, config.baseSizeUsdc, candidateTpPrice,
+        bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
         config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders
       );
 
@@ -2955,11 +2955,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const cancelled = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
         if (!cancelled) await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
 
-        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.baseSizeUsdc);
+        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed);
         const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
         if (idx !== -1) positionState.celestialBodies[idx] = merged;
 
-        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.baseSizeUsdc);
+        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
         await placeBodyTp(merged);
 

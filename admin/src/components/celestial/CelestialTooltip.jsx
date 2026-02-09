@@ -4,10 +4,13 @@ import { TIER_EMOJIS } from './celestialConstants'
 /**
  * HTML overlay tooltip shown on hover over a celestial body
  */
-const CelestialTooltip = ({ body, position }) => {
+const CelestialTooltip = ({ body, position, maxUsdcDeployed }) => {
   const emoji = TIER_EMOJIS[body.tier] || '🛰️'
   const pnlPercent = body.avgPrice > 0 && body.tpPrice > 0
     ? ((body.tpPrice - body.avgPrice) / body.avgPrice * 100).toFixed(2)
+    : '—'
+  const capitalPct = maxUsdcDeployed > 0
+    ? ((body.costBasis / maxUsdcDeployed) * 100).toFixed(1)
     : '—'
 
   return (
@@ -16,6 +19,7 @@ const CelestialTooltip = ({ body, position }) => {
         <div className="font-medium text-white mb-1">
           {emoji} {body.tier.replace('_', ' ')}
           {body.mergeCount > 0 && <span className="text-gray-400 ml-1">×{body.mergeCount + 1}</span>}
+          <span className="text-cyan-400 ml-1">{capitalPct}%</span>
         </div>
         <div className="space-y-0.5 text-gray-300">
           <div>BTC: <span className="text-orange-400 font-mono">{body.btcQty?.toFixed(6)}</span></div>

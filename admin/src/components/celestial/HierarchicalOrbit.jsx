@@ -65,7 +65,7 @@ const OrbitingGroup = ({ radius, speed, children }) => {
  *   ...
  * Three.js nested groups handle the compound orbital motion automatically.
  */
-const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, parentOrbitRadius }) => {
+const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, parentOrbitRadius, maxUsdcDeployed }) => {
   if (bodies.length === 0) return null
 
   const [current, ...rest] = bodies
@@ -75,13 +75,13 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, paren
 
   // Compute dynamic child orbit radius that accounts for body sizes
   const childOrbitRadius = rest.length > 0
-    ? getDynamicOrbitRadius(depth + 1, current, rest[0])
+    ? getDynamicOrbitRadius(depth + 1, current, rest[0], maxUsdcDeployed)
     : 0
 
   const bodyElement = current.tier === 'black_hole' ? (
-    <BlackHole body={current} showTooltip={activeBodyId === current.id} onHover={onBodyHover} />
+    <BlackHole body={current} showTooltip={activeBodyId === current.id} onHover={onBodyHover} maxUsdcDeployed={maxUsdcDeployed} />
   ) : (
-    <CelestialBody body={current} showTooltip={activeBodyId === current.id} onHover={onBodyHover} />
+    <CelestialBody body={current} showTooltip={activeBodyId === current.id} onHover={onBodyHover} maxUsdcDeployed={maxUsdcDeployed} />
   )
 
   return (
@@ -97,6 +97,7 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, paren
           activeBodyId={activeBodyId}
           onBodyHover={onBodyHover}
           parentOrbitRadius={childOrbitRadius}
+          maxUsdcDeployed={maxUsdcDeployed}
         />
       )}
     </OrbitingGroup>
