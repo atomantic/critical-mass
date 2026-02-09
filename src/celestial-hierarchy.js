@@ -187,12 +187,13 @@ const findMergeTarget = (bodies, newBuy, baseSizeUsdc, candidateTpPrice, maxBodi
 const mergeIntoBody = (target, newBuy, baseSizeUsdc, buyOrderId) => {
   const newBtcQty = newBuy.btcQty || newBuy.totalSize;
   const newCost = newBuy.costBasis || (newBuy.totalValue + (newBuy.totalFees || 0));
+  const orderId = buyOrderId || newBuy.buyOrderId;
 
   target.btcQty = roundBTC(target.btcQty + newBtcQty);
   target.costBasis = roundUSDC(target.costBasis + newCost);
   target.avgPrice = target.btcQty > 0 ? target.costBasis / target.btcQty : 0;
   target.lastMergedAt = Date.now();
-  target.sourceOrderIds.push(buyOrderId);
+  if (orderId) target.sourceOrderIds.push(orderId);
   target.mergeCount += 1;
 
   // Check promotion
