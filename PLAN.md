@@ -235,49 +235,35 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Order limit: Validates maxOpenOrders ≥ ladderLevels + 1
   - Mode switch protection: Doesn't switch modes mid-cycle with active position
 
-**Satellite TP Orders (v2.5):**
-- Independent take-profit orders for hovering-price buys that barely improve core TP
-- When a new buy fill arrives, calculates how much merging would lower the core's TP price
-- `improvement = (priorTP - mergedTP) / priorTP * 100`
-- If `improvement < tpMergeMinImprovementPct` (default 0.1%) → satellite (quick capture)
-- If `improvement >= threshold` → merge into core (DCA recovery)
-- First buy always goes to core; max satellite count enforced
-- Satellite fills don't change core's totalBTC/costBasis
-- Both use same holdbackRatio for profit split
-- Core cycle reset preserves open satellites
-- Satellites contribute to shared realizedPnL and capital growth
+**Celestial Hierarchy System (v2.5+):**
+- Evolved from satellite TP orders into a unified celestial body system
+- Every buy creates or merges into a "celestial body" with independent TP tracking
+- Bodies are classified by cost basis into tiers (satellite → moon → planet → sun → hypergiant → black hole)
+- Each tier has its own TP multiplier, holdback scale, and emoji
+- Bodies promote to higher tiers as they accumulate more capital through merges
+- `src/celestial-hierarchy.js` - Tier classification, body creation/merge, promotion logic
+- Tier-specific holdback: higher tiers hold proportionally more BTC (1.00x to 1.25x, capped at 95%)
+- **Minimum holdback floor**: Every TP must hold back at least 1 satoshi (0.00000001 BTC)
+  - `calculateTakeProfitSize()` enforces `holdbackQty >= 1 sat` via `Math.max()`
+  - `placeBodyTp()` raises `minTpPct` floor so profit generates at least 1 sat holdback at sell price
+  - Formula: `holdbackFloorPct = (1sat × avgPrice) / (btcQty × holdbackRatio) × 100`
+  - Prevents tiny bodies from selling 100% of position with zero BTC accumulation
 - **Minimum profit floor**: TP% must clear round-trip fees (2×0.06%) + $0.01 net profit
-  - Formula: `satMinTpPct = (2 * 0.0006 * 100) + (0.01 / totalValue * 100)`
-  - Tiny orders (e.g., $1) exceed tpMaxPercent → merge into core instead
-  - Prevents $0.00 P&L satellites that waste order slots
-- **Satellite consolidation**: New satellites within 0.5% TP price of existing one are combined
-  - Cancels existing satellite, merges qty/cost basis, places single combined order
-  - Falls through to independent placement if cancel fails
-- **Fee-inclusive P&L display**: Dashboard uses prorated cost basis (includes buy fees) for satellite
-  estimated P&L instead of raw avgPrice × size
+  - Formula: `feeFloorPct = (2 * 0.0006 * 100) + (0.01 / costBasis * 100)`
+- **Body consolidation**: New buys within proximity of existing body are merged
+- **Fee-inclusive P&L display**: Dashboard uses prorated cost basis (includes buy fees)
 - Configuration:
-  - `satelliteTpEnabled: false` - Enable/disable satellite TP feature
-  - `tpMergeMinImprovementPct: 0.1` - Min % improvement to merge (below creates satellite)
-  - `maxSatelliteOrders: 5` - Maximum concurrent satellite TP orders
-- Order budget: core TP (1) + satellites (up to 5) + entries ≤ maxOpenOrders
-- Startup recovery: satellite TP orders restored from state and validated on exchange
-- Reconciliation: periodic check for satellite fills that WebSocket missed
-- Dashboard: satellite count, completed, PnL, individual order details
-- Fill ledger annotates satellite fills with metadata (isSatellite, costBasis, avgPrice, holdback)
-- Dashboard uses satellite-specific P&L and holdback instead of core running average
-- Satellite buys excluded from core running average calculation
-- **Cycle restoration fix**: Active cycle detection uses BTC balance ratio (sellBtc/buyBtc < 50%)
-  instead of zero-sells check, preventing satellite sells from triggering false cycle completion
-- **Satellite annotation migration**: On startup, retroactively annotates unannotated satellite
-  sells/buys by matching sell fills to their corresponding buy fills (within 2% size tolerance)
-- **Position rebuild exclusion**: `rebuildPositionFromFills()` skips `isSatellite` fills to prevent
-  satellite data from corrupting core position calculations
-- **Recovered cycle fix**: Fills assigned to `recovered-*` cycles are reassigned to the correct
-  active cycle during startup migration
-- **Orphan satellite reclamation**: On startup, detects sell orders on exchange that aren't tracked
-  in state (lost due to state corruption). Small sells (< 3x baseSizeUsdc) are reclaimed as
-  satellites; large untracked sells trigger a warning. Matched to buy fills by size similarity.
-- **Coinbase adapter**: `getOpenOrders` now includes `size` and `price` from order configuration
+  - `celestialEnabled` / `satelliteTpEnabled` - Enable celestial body system
+  - `maxCelestialBodies` / `maxSatelliteOrders` - Maximum concurrent bodies
+  - `holdbackRatio: 0.5` - Base profit holdback ratio (0.0-1.0)
+- Startup recovery: body TP orders restored from state and validated on exchange
+- Reconciliation: periodic check for body fills that WebSocket missed
+- Dashboard: body count by tier, completed, PnL, individual body details
+- Fill ledger annotates body fills with metadata (bodyId, bodyTier, costBasis, holdback, pnl)
+- **Legacy compatibility**: Old `satelliteTpOrders` migrated to celestial bodies on startup
+- **Orphan reclamation**: On startup, detects sell orders on exchange that aren't tracked
+  in state. Small sells reclaimed as bodies; large untracked sells trigger a warning.
+- **Coinbase adapter**: `getOpenOrders` includes `size` and `price` from order configuration
 
 **Macro Regime Detection (v2.6):**
 - Multi-timeframe EMA overlay that modulates micro-regime behavior
@@ -452,6 +438,7 @@ src/
 │
 │ # Regime Engine Components (v2.4/2.5/2.6)
 ├── regime-engine.js    # Main regime-aware trading engine
+├── celestial-hierarchy.js # Celestial body tier system (satellite→moon→planet→sun→hypergiant→black hole)
 ├── regime-detector.js  # Regime classification (HARVEST/CAUTION/TREND)
 ├── macro-regime.js     # Multi-timeframe macro regime (ACCUMULATION/RANGING/MARKUP/DECLINE)
 ├── volatility-utils.js # ATR, RV, VWAP, swing, EMA calculations

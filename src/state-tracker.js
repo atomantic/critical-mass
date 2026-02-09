@@ -24,6 +24,7 @@ const { getExchangeDataDir } = require('./migration');
  */
 
 const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
+const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
@@ -511,11 +512,19 @@ const createInitialRegimePositionState = () => ({
   ladderPlacedAt: null,
   ladderLowerBound: 0,
   pendingLadderOrders: [],  // [{orderId, price, sizeUsdc, ladderIndex}]
-  // Satellite TP state
+  // Satellite TP state (legacy — use celestialBodies)
   satelliteTpOrders: [],        // [{orderId, btcQty, costBasis, avgPrice, tpOrderId, tpPrice, btcOnOrder, placedAt}]
   satellitesCompleted: 0,
   satelliteRealizedPnL: 0,
   satelliteRealizedBtcPnL: 0,
+  // Celestial Hierarchy state
+  celestialBodies: [],          // CelestialBody[]
+  celestialState: {
+    bodiesCompleted: 0,
+    bodiesRealizedPnL: 0,
+    bodiesRealizedBtcPnL: 0,
+    stateVersion: 1,
+  },
   // Macro regime state (persisted for recovery)
   macroRegime: null,
 });
@@ -559,8 +568,38 @@ const loadRegimeState = (exchange = 'coinbase') => {
     delete data.position.ladderStep;
   }
 
+  const position = { ...createInitialRegimePositionState(), ...data.position };
+
+  // Migrate legacy core+satellite state to celestial bodies if needed
+  if (!position.celestialBodies || position.celestialBodies.length === 0) {
+    const hasCorePosition = position.totalBTC > 0 && position.totalCostBasis > 0;
+    const hasSatellites = position.satelliteTpOrders && position.satelliteTpOrders.length > 0;
+
+    if (hasCorePosition || hasSatellites) {
+      // Get baseSizeUsdc from config if available, default to 25
+      const configUtils = require('./config-utils');
+      const regimeConfig = configUtils.getRegimeConfig(exchange);
+      const baseSizeUsdc = regimeConfig.baseSizeUsdc || 25;
+
+      position.celestialBodies = migrateFromLegacy(position, baseSizeUsdc);
+      position.celestialState = {
+        bodiesCompleted: (position.cyclesCompleted || 0) + (position.satellitesCompleted || 0),
+        bodiesRealizedPnL: (position.realizedPnL || 0),
+        bodiesRealizedBtcPnL: (position.realizedBtcPnL || 0),
+        stateVersion: 1,
+      };
+
+      const coreCount = hasCorePosition ? 1 : 0;
+      const satCount = hasSatellites ? position.satelliteTpOrders.length : 0;
+      console.log(`🔄 Migrated ${coreCount} core + ${satCount} satellites → ${position.celestialBodies.length} celestial bodies`);
+    } else {
+      position.celestialBodies = [];
+      position.celestialState = position.celestialState || createInitialCelestialState();
+    }
+  }
+
   return {
-    position: { ...createInitialRegimePositionState(), ...data.position },
+    position,
     regime: { ...createInitialRegimeState(), ...data.regime },
     tpOptimizer: data.tpOptimizer || null,
     sizeOptimizer: data.sizeOptimizer || null,

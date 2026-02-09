@@ -425,10 +425,12 @@
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
  * @property {MacroRegimeState|null} [macroRegime] - Macro regime state for persistence
  * @property {Array<{orderId: string, price: number, btcQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
- * @property {SatelliteTpOrder[]} [satelliteTpOrders] - Active satellite TP orders (independent from core)
- * @property {number} [satellitesCompleted] - Total satellite TP cycles completed
- * @property {number} [satelliteRealizedPnL] - Cumulative realized P&L from satellite TPs in USD
- * @property {number} [satelliteRealizedBtcPnL] - Cumulative realized BTC P&L from satellite TPs (holdback reserves)
+ * @property {SatelliteTpOrder[]} [satelliteTpOrders] - Active satellite TP orders (legacy, use celestialBodies)
+ * @property {number} [satellitesCompleted] - Total satellite TP cycles completed (legacy)
+ * @property {number} [satelliteRealizedPnL] - Cumulative realized P&L from satellite TPs in USD (legacy)
+ * @property {number} [satelliteRealizedBtcPnL] - Cumulative realized BTC P&L from satellite TPs (legacy)
+ * @property {CelestialBody[]} [celestialBodies] - Active celestial bodies (replaces core+satellites)
+ * @property {CelestialState} [celestialState] - Aggregate celestial tracking
  * @property {boolean} [ladderActive] - Whether ladder mode is active
  * @property {number|null} [ladderPlacedAt] - Timestamp when ladder was placed
  * @property {number} [ladderLowerBound] - Current ladder lower bound price
@@ -478,7 +480,7 @@
 
 /**
  * @typedef {Object} PendingOrder
- * @property {'entry' | 'take_profit' | 'satellite_tp'} type - Order type
+ * @property {'entry' | 'take_profit' | 'satellite_tp' | 'body_tp'} type - Order type
  * @property {number} price - Order price
  * @property {number} size - Order size
  * @property {number} sizeUsdc - Order size in USDC (for entries)
@@ -488,6 +490,7 @@
 
 /**
  * @typedef {Object} SatelliteTpOrder
+ * @deprecated Use CelestialBody instead
  * @property {string} orderId - Buy order ID that created this satellite
  * @property {number} btcQty - BTC quantity from the buy fill
  * @property {number} costBasis - Cost basis including fees
@@ -496,6 +499,42 @@
  * @property {number} tpPrice - Take-profit price for this satellite
  * @property {number} btcOnOrder - BTC currently in the sell order (after holdback)
  * @property {number} placedAt - Timestamp when satellite was created
+ */
+
+/**
+ * @typedef {Object} CelestialTier
+ * @property {string} name - Tier name (satellite, moon, planet, sun, hypergiant, black_hole)
+ * @property {string} emoji - Display emoji
+ * @property {number} minMass - Minimum mass multiplier (× baseSizeUsdc)
+ * @property {number} maxMass - Maximum mass multiplier
+ * @property {number} tpMult - TP percentage multiplier
+ * @property {number} tpMaxScale - Multiplied against tpMaxPercent for wider ceiling
+ * @property {number} proximity - TP price proximity % for within-tier consolidation
+ * @property {number} holdbackScale - Multiplied against holdbackRatio
+ */
+
+/**
+ * @typedef {Object} CelestialBody
+ * @property {string} id - Unique body ID (persists through promotions)
+ * @property {string} tier - Tier name (satellite|moon|planet|sun|hypergiant|black_hole)
+ * @property {number} btcQty - Total BTC
+ * @property {number} costBasis - Total cost basis including fees ($)
+ * @property {number} avgPrice - costBasis / btcQty
+ * @property {string|null} tpOrderId - Exchange sell order ID
+ * @property {number} tpPrice - Current TP price
+ * @property {number} btcOnOrder - BTC in sell order (after holdback)
+ * @property {number} createdAt - First creation timestamp
+ * @property {number} lastMergedAt - Last merge/promotion timestamp
+ * @property {string[]} sourceOrderIds - All constituent buy order IDs
+ * @property {number} mergeCount - Number of merges undergone
+ */
+
+/**
+ * @typedef {Object} CelestialState
+ * @property {number} bodiesCompleted - Total body TP fills (all time)
+ * @property {number} bodiesRealizedPnL - Cumulative USD P&L
+ * @property {number} bodiesRealizedBtcPnL - Cumulative BTC holdback reserves
+ * @property {number} stateVersion - Schema version
  */
 
 /**

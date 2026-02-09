@@ -80,10 +80,14 @@ const REGIME_DEFAULTS = {
   tpUpdateThresholdPct: 0.5,
   holdbackRatio: 0.5,
 
-  // Satellite TP Orders
-  satelliteTpEnabled: false,          // Keep buys as independent TPs when merge barely improves core
-  tpMergeMinImprovementPct: 0.1,     // Min % improvement to merge into core (below = satellite)
-  maxSatelliteOrders: 5,             // Max concurrent satellite TP orders
+  // Satellite TP Orders (legacy aliases — use celestial fields)
+  satelliteTpEnabled: false,          // Legacy: use celestialEnabled
+  tpMergeMinImprovementPct: 0.1,     // Legacy: removed (proximity-based now)
+  maxSatelliteOrders: 5,             // Legacy: use maxCelestialBodies
+
+  // Celestial Hierarchy
+  celestialEnabled: true,             // Enable multi-tier position management
+  maxCelestialBodies: 10,             // Maximum concurrent celestial bodies (1-15)
 
   // TP Auto-Management
   tpAutoManaged: false,         // Opt-in flag for dynamic TP adjustment
@@ -561,12 +565,17 @@ const validateRegimeConfig = (config) => {
     errors.push('sizeMaxLadderSteps must be between 20 and 200');
   }
 
-  // Satellite TP validation
+  // Satellite TP validation (legacy)
   if (config.tpMergeMinImprovementPct !== undefined && (config.tpMergeMinImprovementPct < 0.01 || config.tpMergeMinImprovementPct > 5.0)) {
     errors.push('tpMergeMinImprovementPct must be between 0.01 and 5.0');
   }
   if (config.maxSatelliteOrders !== undefined && (!Number.isInteger(config.maxSatelliteOrders) || config.maxSatelliteOrders < 1 || config.maxSatelliteOrders > 10)) {
     errors.push('maxSatelliteOrders must be an integer between 1 and 10');
+  }
+
+  // Celestial Hierarchy validation
+  if (config.maxCelestialBodies !== undefined && (!Number.isInteger(config.maxCelestialBodies) || config.maxCelestialBodies < 1 || config.maxCelestialBodies > 15)) {
+    errors.push('maxCelestialBodies must be an integer between 1 and 15');
   }
 
   // Ladder / Entry Mode validation

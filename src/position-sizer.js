@@ -139,10 +139,12 @@ const createPositionSizer = (exchange, config) => {
    * @param {number} totalBTC - Total BTC position
    * @param {number} avgCostBasis - Average cost per BTC
    * @param {number} sellPrice - Target sell price
+   * @param {number} [tierHoldbackScale=1.0] - Tier-specific holdback multiplier (higher tiers hold more)
    * @returns {{sellQty: number, holdbackQty: number, profitUsdc: number, profitBtcValue: number}}
    */
-  const calculateTakeProfitSize = (totalBTC, avgCostBasis, sellPrice) => {
-    const holdbackRatio = config.holdbackRatio ?? 0.5;
+  const calculateTakeProfitSize = (totalBTC, avgCostBasis, sellPrice, tierHoldbackScale = 1.0) => {
+    const baseHoldback = config.holdbackRatio ?? 0.5;
+    const holdbackRatio = Math.min(baseHoldback * tierHoldbackScale, 0.95); // Cap at 95%
 
     // Calculate profit per BTC and total profit
     const profitPerBTC = sellPrice - avgCostBasis;
@@ -152,7 +154,11 @@ const createPositionSizer = (exchange, config) => {
     const profitToHoldAsBtcValue = totalProfit * holdbackRatio;
 
     // Convert that profit value to BTC quantity at sell price
-    const holdbackQty = roundBTC(profitToHoldAsBtcValue / sellPrice);
+    // Enforce minimum 1 satoshi holdback — if we can't hold back at least 1 sat,
+    // the TP price isn't high enough (caller should raise minTpPct)
+    const MIN_HOLDBACK = 0.00000001; // 1 satoshi
+    const rawHoldback = profitToHoldAsBtcValue / sellPrice;
+    const holdbackQty = Math.max(roundBTC(rawHoldback), MIN_HOLDBACK);
     const sellQty = roundBTC(totalBTC - holdbackQty);
 
     // Calculate actual profit split
