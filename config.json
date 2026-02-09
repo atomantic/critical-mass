@@ -37,7 +37,7 @@
         "holdbackRatio": 0.5,
         "maxBtcExposure": 10,
         "depositedCapital": 30000,
-        "maxUsdcDeployed": 30024.4,
+        "maxUsdcDeployed": 30024.42,
         "maxDrawdownPercent": 30,
         "entryOffsetBps": 25,
         "cancelRateLimitMs": 1000,

@@ -2579,12 +2579,51 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     else if (regime === 'TREND') tpPercent *= 0.8;
     tpPercent = clamp(tpPercent, config.tpMinPercent, config.tpMaxPercent);
 
-    const tpPrice = roundUSDC(avgPrice * (1 + tpPercent / 100));
+    // Minimum profit floor: TP% must clear round-trip fees + $0.01 net profit
+    const satMinTpPct = (2 * 0.0006 * 100) + (0.01 / totalValue * 100);
+    tpPercent = Math.max(tpPercent, satMinTpPct);
+
+    if (tpPercent > config.tpMaxPercent) {
+      console.log(`🛰️ [${exchange}] Satellite min TP ${tpPercent.toFixed(3)}% exceeds max ${config.tpMaxPercent}% for $${totalValue.toFixed(2)} order, merging into core`);
+      return false;
+    }
+
+    let finalBtcQty = totalSize;
+    let finalCostBasis = costBasis;
+    let finalAvgPrice = avgPrice;
+
+    // Consolidation: check if an existing satellite has a TP price within 0.5%
+    const candidateTpPrice = roundUSDC(avgPrice * (1 + tpPercent / 100));
+    if (!positionState.satelliteTpOrders) positionState.satelliteTpOrders = [];
+
+    const existingIdx = positionState.satelliteTpOrders.findIndex(sat => {
+      const priceDiff = Math.abs(sat.tpPrice - candidateTpPrice) / candidateTpPrice * 100;
+      return priceDiff < 0.5;
+    });
+
+    if (existingIdx !== -1) {
+      const existing = positionState.satelliteTpOrders[existingIdx];
+      const cancelled = await orderExecutor.cancelSatelliteTpOrder(existing.orderId);
+
+      if (cancelled) {
+        finalBtcQty = existing.btcQty + totalSize;
+        finalCostBasis = existing.costBasis + costBasis;
+        finalAvgPrice = finalCostBasis / finalBtcQty;
+        positionState.satelliteTpOrders.splice(existingIdx, 1);
+        console.log(`🛰️ [${exchange}] Consolidating with existing satellite (${existing.btcQty.toFixed(6)} BTC @ $${existing.avgPrice.toFixed(2)}) → combined ${finalBtcQty.toFixed(6)} BTC @ $${finalAvgPrice.toFixed(2)}`);
+
+        // Recalculate TP from combined avg price
+        tpPercent = Math.max(tpPercent, (2 * 0.0006 * 100) + (0.01 / finalCostBasis * 100));
+      }
+      // If cancel fails, fall through to independent placement with original values
+    }
+
+    const tpPrice = roundUSDC(finalAvgPrice * (1 + tpPercent / 100));
 
     // Calculate sell qty with holdback
     const { sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
-      totalSize,
-      avgPrice,
+      finalBtcQty,
+      finalAvgPrice,
       tpPrice
     );
 
@@ -2598,28 +2637,29 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (result.success) {
       const satellite = {
         orderId: buyOrderId,
-        btcQty: totalSize,
-        costBasis,
-        avgPrice,
+        btcQty: finalBtcQty,
+        costBasis: finalCostBasis,
+        avgPrice: finalAvgPrice,
         tpOrderId: result.orderId,
         tpPrice,
         btcOnOrder: sellQty,
         placedAt: Date.now(),
       };
 
-      if (!positionState.satelliteTpOrders) positionState.satelliteTpOrders = [];
       positionState.satelliteTpOrders.push(satellite);
 
-      console.log(`🛰️ [${exchange}] Satellite TP created: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC, buy=$${avgPrice.toFixed(2)})`);
+      const consolidateLabel = existingIdx !== -1 ? ' (consolidated)' : '';
+      console.log(`🛰️ [${exchange}] Satellite TP created${consolidateLabel}: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC, buy=$${finalAvgPrice.toFixed(2)})`);
 
       tradeEvents.emitTradeEvent('satellite_tp_placed', exchange, `${sellQty} BTC @ $${tpPrice}`, {
         buyOrderId,
-        btcQty: totalSize,
-        costBasis,
-        avgPrice,
+        btcQty: finalBtcQty,
+        costBasis: finalCostBasis,
+        avgPrice: finalAvgPrice,
         tpPrice,
         sellQty,
         holdbackQty,
+        consolidated: existingIdx !== -1,
       });
 
       return true;

@@ -758,65 +758,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               </div>
             </div>
 
-            {/* Macro Regime Panel */}
-            {config?.macroEnabled && status?.macro && (() => {
-              const m = status.macro
-              const macroStyle = MACRO_COLORS[m.mode] || MACRO_COLORS.RANGING
-              const mults = (() => {
-                switch (m.mode) {
-                  case 'ACCUMULATION': return { size: config.macroAccumulationSizeMult || 1.3, tp: config.macroAccumulationTpMult || 0.85, offset: config.macroAccumulationOffsetMult || 0.8 }
-                  case 'MARKUP': return { size: config.macroMarkupSizeMult || 0.7, tp: config.macroMarkupTpMult || 1.3, offset: config.macroMarkupOffsetMult || 1.2 }
-                  case 'DECLINE': return { size: config.macroDeclineSizeMult || 0.4, tp: config.macroDeclineTpMult || 0.7, offset: config.macroDeclineOffsetMult || 1.5 }
-                  default: return { size: 1.0, tp: 1.0, offset: 1.0 }
-                }
-              })()
-              return (
-                <div className={`bg-gray-800 rounded-lg p-3 border ${macroStyle.border}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-xs font-medium text-gray-400">Macro Regime</h3>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${macroStyle.bg} ${macroStyle.text}`}>
-                      {macroStyle.label} ({m.score?.toFixed(0)})
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">21h EMA</span>
-                      <span className="text-white font-mono">${m.emas?.h21?.toFixed(0) || '-'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">50h EMA</span>
-                      <span className="text-white font-mono">${m.emas?.h50?.toFixed(0) || '-'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">200h EMA</span>
-                      <span className="text-white font-mono">${m.emas?.h200?.toFixed(0) || '-'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">20d EMA</span>
-                      <span className="text-white font-mono">${m.emas?.d20?.toFixed(0) || '-'}</span>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-gray-700">
-                    <div className="text-center">
-                      <div className="text-[10px] text-gray-500">Size</div>
-                      <div className={`text-xs font-mono ${mults.size !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.size}x</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-[10px] text-gray-500">TP</div>
-                      <div className={`text-xs font-mono ${mults.tp !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.tp}x</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-[10px] text-gray-500">Offset</div>
-                      <div className={`text-xs font-mono ${mults.offset !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.offset}x</div>
-                    </div>
-                  </div>
-                  <div className="text-[10px] text-gray-500 mt-1">
-                    Updated {m.lastUpdate ? new Date(m.lastUpdate).toLocaleTimeString() : 'never'} | {m.candles?.hourly || 0}h/{m.candles?.daily || 0}d candles
-                  </div>
-                </div>
-              )
-            })()}
-
             {/* Volatility Chart */}
             <VolatilityChart
               atrData={atrHistory}
@@ -1405,6 +1346,65 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
           {/* Right Column: Timeline & Price Chart */}
           <div className="space-y-4">
+            {/* Macro Regime Panel */}
+            {config?.macroEnabled && status?.macro && (() => {
+              const m = status.macro
+              const macroStyle = MACRO_COLORS[m.mode] || MACRO_COLORS.RANGING
+              const mults = (() => {
+                switch (m.mode) {
+                  case 'ACCUMULATION': return { size: config.macroAccumulationSizeMult || 1.3, tp: config.macroAccumulationTpMult || 0.85, offset: config.macroAccumulationOffsetMult || 0.8 }
+                  case 'MARKUP': return { size: config.macroMarkupSizeMult || 0.7, tp: config.macroMarkupTpMult || 1.3, offset: config.macroMarkupOffsetMult || 1.2 }
+                  case 'DECLINE': return { size: config.macroDeclineSizeMult || 0.4, tp: config.macroDeclineTpMult || 0.7, offset: config.macroDeclineOffsetMult || 1.5 }
+                  default: return { size: 1.0, tp: 1.0, offset: 1.0 }
+                }
+              })()
+              return (
+                <div className={`bg-gray-800 rounded-lg p-3 border ${macroStyle.border}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-xs font-medium text-gray-400">Macro Regime</h3>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${macroStyle.bg} ${macroStyle.text}`}>
+                      {macroStyle.label} ({m.score?.toFixed(0)})
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">21h EMA</span>
+                      <span className="text-white font-mono">${m.emas?.h21?.toFixed(0) || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">50h EMA</span>
+                      <span className="text-white font-mono">${m.emas?.h50?.toFixed(0) || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">200h EMA</span>
+                      <span className="text-white font-mono">${m.emas?.h200?.toFixed(0) || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">20d EMA</span>
+                      <span className="text-white font-mono">${m.emas?.d20?.toFixed(0) || '-'}</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-gray-700">
+                    <div className="text-center">
+                      <div className="text-[10px] text-gray-500">Size</div>
+                      <div className={`text-xs font-mono ${mults.size !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.size}x</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[10px] text-gray-500">TP</div>
+                      <div className={`text-xs font-mono ${mults.tp !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.tp}x</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[10px] text-gray-500">Offset</div>
+                      <div className={`text-xs font-mono ${mults.offset !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.offset}x</div>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-gray-500 mt-1">
+                    Updated {m.lastUpdate ? new Date(m.lastUpdate).toLocaleTimeString() : 'never'} | {m.candles?.hourly || 0}h/{m.candles?.daily || 0}d candles
+                  </div>
+                </div>
+              )
+            })()}
+
             {/* Regime Timeline */}
             <RegimeTimeline data={regimeHistory} currentRegime={regime} height={60} />
 
@@ -1510,9 +1510,14 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     // Estimate sell-side fees (~0.06% net for maker orders on Coinbase)
                     const sellValue = order.size * order.price
                     const estSellFee = sellValue * 0.0006 // 0.06% estimated maker fee
-                    // Est P&L = proceeds - cost basis = (sellValue - sellFee) - (avgCost * size)
+                    // For satellites, use prorated cost basis (includes buy fees) instead of raw avgPrice * size
+                    const satCostBasis = order.satelliteCostBasis || satData?.costBasis
+                    const satBtcQty = order.satelliteBtcQty || satData?.btcQty
+                    const proratedCost = satCostBasis && satBtcQty
+                      ? (satCostBasis / satBtcQty) * order.size
+                      : null
                     const estPnl = isTpOrder && orderAvgCost > 0
-                      ? (sellValue - estSellFee) - (orderAvgCost * order.size)
+                      ? (sellValue - estSellFee) - (proratedCost || orderAvgCost * order.size)
                       : null
                     const profitPerBTC = order.price - orderAvgCost
                     const denominator = order.price * (1 - holdbackRatio) + orderAvgCost * holdbackRatio

@@ -246,6 +246,15 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Both use same holdbackRatio for profit split
 - Core cycle reset preserves open satellites
 - Satellites contribute to shared realizedPnL and capital growth
+- **Minimum profit floor**: TP% must clear round-trip fees (2×0.06%) + $0.01 net profit
+  - Formula: `satMinTpPct = (2 * 0.0006 * 100) + (0.01 / totalValue * 100)`
+  - Tiny orders (e.g., $1) exceed tpMaxPercent → merge into core instead
+  - Prevents $0.00 P&L satellites that waste order slots
+- **Satellite consolidation**: New satellites within 0.5% TP price of existing one are combined
+  - Cancels existing satellite, merges qty/cost basis, places single combined order
+  - Falls through to independent placement if cancel fails
+- **Fee-inclusive P&L display**: Dashboard uses prorated cost basis (includes buy fees) for satellite
+  estimated P&L instead of raw avgPrice × size
 - Configuration:
   - `satelliteTpEnabled: false` - Enable/disable satellite TP feature
   - `tpMergeMinImprovementPct: 0.1` - Min % improvement to merge (below creates satellite)

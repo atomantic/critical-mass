@@ -32,7 +32,7 @@ const {
 const { createRegimeEngine } = require('./src/regime-engine');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig } = require('./src/config-utils');
 const { startMarketDataService, stopMarketDataService, getMarketDataService, stopAllMarketDataServices } = require('./src/market-data-service');
-const { getChartDataBuffer, getChartData } = require('./src/chart-data-buffer');
+const { getChartDataBuffer, getChartData, shutdownAllBuffers } = require('./src/chart-data-buffer');
 
 // Active regime engines by exchange
 const regimeEngines = new Map();
@@ -1810,6 +1810,9 @@ const gracefulShutdown = async (signal) => {
 
   await Promise.all(stopPromises);
   log('INFO', 'All regime engines stopped');
+
+  // Flush chart data buffers to disk
+  shutdownAllBuffers();
 
   // Close server
   server.close(() => {
