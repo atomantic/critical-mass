@@ -48,6 +48,14 @@ const HEALTH_COLORS = {
   PAUSED: { bg: 'bg-gray-700', text: 'text-gray-400', icon: '○' },
 }
 
+// Macro regime mode colors
+const MACRO_COLORS = {
+  ACCUMULATION: { bg: 'bg-blue-900/50', border: 'border-blue-500', text: 'text-blue-400', label: 'Accumulation' },
+  RANGING: { bg: 'bg-gray-800/50', border: 'border-gray-500', text: 'text-gray-400', label: 'Ranging' },
+  MARKUP: { bg: 'bg-green-900/50', border: 'border-green-500', text: 'text-green-400', label: 'Markup' },
+  DECLINE: { bg: 'bg-red-900/50', border: 'border-red-500', text: 'text-red-400', label: 'Decline' },
+}
+
 // Aggressiveness level definitions with exact parameter values from the plan
 const AGGRESSIVENESS_LEVELS = [
   {
@@ -641,6 +649,18 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         Sat {status?.satellites?.enabled ? `${status.satellites.active || 0}/${config?.maxSatelliteOrders || 5}` : 'Off'}
                       </span>
                     </div>
+                    {config?.macroEnabled && status?.macro && (
+                      <div className="flex items-center gap-1">
+                        <span className={`w-1.5 h-1.5 rounded-full ${
+                          status.macro.mode === 'ACCUMULATION' ? 'bg-blue-400' :
+                          status.macro.mode === 'MARKUP' ? 'bg-green-400' :
+                          status.macro.mode === 'DECLINE' ? 'bg-red-400' : 'bg-gray-500'
+                        }`} />
+                        <span className="text-xs text-gray-400">
+                          Macro {status.macro.mode?.slice(0, 3)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -656,9 +676,21 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 <div className={`text-xl font-bold ${regimeStyle.text}`}>
                   {regime.mode || 'HARVEST'}
                 </div>
-                <div className="text-[10px] text-gray-500">
-                  Since {regime.since ? new Date(regime.since).toLocaleTimeString() : '-'}
-                </div>
+                {config?.macroEnabled && status?.macro ? (() => {
+                  const macroStyle = MACRO_COLORS[status.macro.mode] || MACRO_COLORS.RANGING
+                  return (
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <span className={`px-1 py-0.5 rounded text-[10px] ${macroStyle.bg} border ${macroStyle.border} ${macroStyle.text}`}>
+                        {macroStyle.label}
+                      </span>
+                      <span className="text-[10px] text-gray-500">{status.macro.score?.toFixed(0)}</span>
+                    </div>
+                  )
+                })() : (
+                  <div className="text-[10px] text-gray-500">
+                    Since {regime.since ? new Date(regime.since).toLocaleTimeString() : '-'}
+                  </div>
+                )}
               </div>
 
               {/* Entry Mode */}
@@ -725,6 +757,65 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
             </div>
+
+            {/* Macro Regime Panel */}
+            {config?.macroEnabled && status?.macro && (() => {
+              const m = status.macro
+              const macroStyle = MACRO_COLORS[m.mode] || MACRO_COLORS.RANGING
+              const mults = (() => {
+                switch (m.mode) {
+                  case 'ACCUMULATION': return { size: config.macroAccumulationSizeMult || 1.3, tp: config.macroAccumulationTpMult || 0.85, offset: config.macroAccumulationOffsetMult || 0.8 }
+                  case 'MARKUP': return { size: config.macroMarkupSizeMult || 0.7, tp: config.macroMarkupTpMult || 1.3, offset: config.macroMarkupOffsetMult || 1.2 }
+                  case 'DECLINE': return { size: config.macroDeclineSizeMult || 0.4, tp: config.macroDeclineTpMult || 0.7, offset: config.macroDeclineOffsetMult || 1.5 }
+                  default: return { size: 1.0, tp: 1.0, offset: 1.0 }
+                }
+              })()
+              return (
+                <div className={`bg-gray-800 rounded-lg p-3 border ${macroStyle.border}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-xs font-medium text-gray-400">Macro Regime</h3>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${macroStyle.bg} ${macroStyle.text}`}>
+                      {macroStyle.label} ({m.score?.toFixed(0)})
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">21h EMA</span>
+                      <span className="text-white font-mono">${m.emas?.h21?.toFixed(0) || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">50h EMA</span>
+                      <span className="text-white font-mono">${m.emas?.h50?.toFixed(0) || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">200h EMA</span>
+                      <span className="text-white font-mono">${m.emas?.h200?.toFixed(0) || '-'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">20d EMA</span>
+                      <span className="text-white font-mono">${m.emas?.d20?.toFixed(0) || '-'}</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-gray-700">
+                    <div className="text-center">
+                      <div className="text-[10px] text-gray-500">Size</div>
+                      <div className={`text-xs font-mono ${mults.size !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.size}x</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[10px] text-gray-500">TP</div>
+                      <div className={`text-xs font-mono ${mults.tp !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.tp}x</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[10px] text-gray-500">Offset</div>
+                      <div className={`text-xs font-mono ${mults.offset !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.offset}x</div>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-gray-500 mt-1">
+                    Updated {m.lastUpdate ? new Date(m.lastUpdate).toLocaleTimeString() : 'never'} | {m.candles?.hourly || 0}h/{m.candles?.daily || 0}d candles
+                  </div>
+                </div>
+              )
+            })()}
 
             {/* Volatility Chart */}
             <VolatilityChart

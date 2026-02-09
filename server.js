@@ -164,6 +164,15 @@ app.put('/api/:exchange/config', (req, res) => {
   const { exchange } = req.params;
   const updates = req.body;
   const config = updateExchangeConfig(exchange, updates);
+
+  // Hot-reload regime config into running engine
+  if (updates.regime) {
+    const engine = regimeEngines.get(exchange);
+    if (engine) {
+      engine.updateConfig(updates.regime);
+    }
+  }
+
   res.json({ success: true, config: config.exchanges[exchange] });
 });
 

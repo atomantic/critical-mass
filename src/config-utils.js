@@ -80,6 +80,11 @@ const REGIME_DEFAULTS = {
   tpUpdateThresholdPct: 0.5,
   holdbackRatio: 0.5,
 
+  // Satellite TP Orders
+  satelliteTpEnabled: false,          // Keep buys as independent TPs when merge barely improves core
+  tpMergeMinImprovementPct: 0.1,     // Min % improvement to merge into core (below = satellite)
+  maxSatelliteOrders: 5,             // Max concurrent satellite TP orders
+
   // TP Auto-Management
   tpAutoManaged: false,         // Opt-in flag for dynamic TP adjustment
   tpEvaluationCycles: 5,        // Evaluate every N cycles
@@ -137,6 +142,23 @@ const REGIME_DEFAULTS = {
   flashMoveMult: 3.0,
   flashCooldownMs: 600000,
   cancelEntriesOnFlash: true,
+
+  // Macro Regime
+  macroEnabled: false,                 // Enable multi-timeframe macro regime overlay
+  macroUpdateIntervalMs: 300000,       // How often to fetch candles and re-score (5 min)
+  macroHysteresis: 5,                  // Score buffer to prevent mode chatter at boundaries
+  macroAccumulationThreshold: -15,     // Score below this → ACCUMULATION
+  macroDeclineThreshold: -50,          // Score below this → DECLINE
+  macroMarkupThreshold: 35,            // Score above this → MARKUP
+  macroAccumulationSizeMult: 1.3,      // Size multiplier in ACCUMULATION
+  macroAccumulationTpMult: 0.85,       // TP multiplier in ACCUMULATION (tighter)
+  macroAccumulationOffsetMult: 0.8,    // Offset multiplier in ACCUMULATION (tighter entries)
+  macroMarkupSizeMult: 0.7,           // Size multiplier in MARKUP
+  macroMarkupTpMult: 1.3,             // TP multiplier in MARKUP (wider)
+  macroMarkupOffsetMult: 1.2,         // Offset multiplier in MARKUP (wider entries)
+  macroDeclineSizeMult: 0.4,          // Size multiplier in DECLINE
+  macroDeclineTpMult: 0.7,            // TP multiplier in DECLINE (tighter)
+  macroDeclineOffsetMult: 1.5,        // Offset multiplier in DECLINE (wider entries)
 
   // Entry Mode
   entryMode: 'reactive',              // 'reactive' | 'ladder'
@@ -539,6 +561,14 @@ const validateRegimeConfig = (config) => {
     errors.push('sizeMaxLadderSteps must be between 20 and 200');
   }
 
+  // Satellite TP validation
+  if (config.tpMergeMinImprovementPct !== undefined && (config.tpMergeMinImprovementPct < 0.01 || config.tpMergeMinImprovementPct > 5.0)) {
+    errors.push('tpMergeMinImprovementPct must be between 0.01 and 5.0');
+  }
+  if (config.maxSatelliteOrders !== undefined && (!Number.isInteger(config.maxSatelliteOrders) || config.maxSatelliteOrders < 1 || config.maxSatelliteOrders > 10)) {
+    errors.push('maxSatelliteOrders must be an integer between 1 and 10');
+  }
+
   // Ladder / Entry Mode validation
   if (config.entryMode !== undefined) {
     const allowedEntryModes = ['reactive', 'ladder'];
@@ -566,6 +596,32 @@ const validateRegimeConfig = (config) => {
   }
   if (config.ladderMinSpacingPct !== undefined && (config.ladderMinSpacingPct < 0.01 || config.ladderMinSpacingPct > 5.0)) {
     errors.push('ladderMinSpacingPct must be between 0.01 and 5.0');
+  }
+
+  // Macro Regime validation
+  if (config.macroHysteresis !== undefined && (config.macroHysteresis < 1 || config.macroHysteresis > 20)) {
+    errors.push('macroHysteresis must be between 1 and 20');
+  }
+  if (config.macroDeclineThreshold !== undefined && config.macroAccumulationThreshold !== undefined
+    && config.macroDeclineThreshold >= config.macroAccumulationThreshold) {
+    errors.push('macroDeclineThreshold must be less than macroAccumulationThreshold');
+  }
+  if (config.macroAccumulationThreshold !== undefined && config.macroMarkupThreshold !== undefined
+    && config.macroAccumulationThreshold >= config.macroMarkupThreshold) {
+    errors.push('macroAccumulationThreshold must be less than macroMarkupThreshold');
+  }
+  if (config.macroUpdateIntervalMs !== undefined && (config.macroUpdateIntervalMs < 60000 || config.macroUpdateIntervalMs > 600000)) {
+    errors.push('macroUpdateIntervalMs must be between 60000 (1 min) and 600000 (10 min)');
+  }
+  const macroMultFields = [
+    'macroAccumulationSizeMult', 'macroAccumulationTpMult', 'macroAccumulationOffsetMult',
+    'macroMarkupSizeMult', 'macroMarkupTpMult', 'macroMarkupOffsetMult',
+    'macroDeclineSizeMult', 'macroDeclineTpMult', 'macroDeclineOffsetMult',
+  ];
+  for (const field of macroMultFields) {
+    if (config[field] !== undefined && (config[field] < 0.1 || config[field] > 3.0)) {
+      errors.push(`${field} must be between 0.1 and 3.0`);
+    }
   }
 
   // Risk Caps validation

@@ -275,6 +275,33 @@ const calculateVWAPDistance = (price, vwap, atr) => {
 };
 
 /**
+ * Calculate EMA from a candle array and return the final value
+ * Uses standard EMA: multiplier = 2/(period+1), seeded with SMA of first `period` values
+ * @param {Candle[]} candles - Array of candles (oldest first)
+ * @param {number} period - EMA period
+ * @returns {number} Final EMA value (0 if insufficient data)
+ */
+const calculateEMA = (candles, period) => {
+  if (!candles || candles.length < period) return 0;
+
+  const multiplier = 2 / (period + 1);
+
+  // Seed with SMA of first `period` values
+  let ema = 0;
+  for (let i = 0; i < period; i++) {
+    ema += candles[i].close;
+  }
+  ema /= period;
+
+  // Apply EMA formula for remaining candles
+  for (let i = period; i < candles.length; i++) {
+    ema = (candles[i].close - ema) * multiplier + ema;
+  }
+
+  return ema;
+};
+
+/**
  * Clamp a value between min and max
  * @param {number} value - Value to clamp
  * @param {number} min - Minimum value
@@ -324,6 +351,7 @@ module.exports = {
   calculateAllMetrics,
   calculateVolExpansion,
   calculateVWAPDistance,
+  calculateEMA,
   clamp,
   roundBTC,
   roundUSDC,

@@ -410,14 +410,25 @@ const createCoinbaseAdapter = (keysPath = null) => {
   adapter.getOpenOrders = async (productId) => {
     const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/batch?product_ids=${productId}&order_status=OPEN`);
 
-    return (data.orders || []).map(order => ({
-      orderId: order.order_id,
-      productId: order.product_id,
-      side: order.side,
-      status: order.status,
-      filledSize: parseFloat(order.filled_size || 0),
-      createdTime: order.created_time,
-    }));
+    return (data.orders || []).map(order => {
+      // Extract size and price from order configuration (varies by order type)
+      const cfg = order.order_configuration || {};
+      const limitCfg = cfg.limit_limit_gtc || cfg.limit_limit_gtd || cfg.limit_limit_fok || {};
+      const stopCfg = cfg.stop_limit_stop_limit_gtc || cfg.stop_limit_stop_limit_gtd || {};
+      const size = parseFloat(limitCfg.base_size || stopCfg.base_size || 0);
+      const price = parseFloat(limitCfg.limit_price || stopCfg.limit_price || 0);
+
+      return {
+        orderId: order.order_id,
+        productId: order.product_id,
+        side: order.side,
+        status: order.status,
+        size,
+        price,
+        filledSize: parseFloat(order.filled_size || 0),
+        createdTime: order.created_time,
+      };
+    });
   };
 
   /**

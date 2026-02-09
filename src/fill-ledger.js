@@ -52,26 +52,31 @@ const createFillLedger = (exchange) => {
     }
 
     // Restore currentCycleId from loaded fills
-    // Find the most recent cycle that's still active (has buys but no sell)
-    const cycleStats = new Map(); // cycleId -> { buys: number, sells: number }
+    // Find the most recent cycle that's still active (core TP hasn't filled)
+    // Satellite TP sells are small fractions of the position; core TP sells ~99.75%
+    const cycleStats = new Map(); // cycleId -> { buysBtc, sellsBtc }
     for (const fill of fills.values()) {
       if (!fill.cycleId) continue;
       if (!cycleStats.has(fill.cycleId)) {
-        cycleStats.set(fill.cycleId, { buys: 0, sells: 0 });
+        cycleStats.set(fill.cycleId, { buysBtc: 0, sellsBtc: 0 });
       }
       const stats = cycleStats.get(fill.cycleId);
-      if (fill.side === 'buy') stats.buys++;
-      else if (fill.side === 'sell') stats.sells++;
+      if (fill.side === 'buy') stats.buysBtc += fill.size;
+      else if (fill.side === 'sell') stats.sellsBtc += fill.size;
     }
 
-    // Find an active cycle (has buys, no sells) - prefer most recent
+    // Find an active cycle - prefer most recent
+    // A cycle is "active" if less than 50% of BTC has been sold
+    // (core TP sells ~99.75%; satellite sells are individually tiny fractions)
     const allFills = Array.from(fills.values()).sort((a, b) => b.timestamp - a.timestamp);
     for (const fill of allFills) {
       if (!fill.cycleId) continue;
       const stats = cycleStats.get(fill.cycleId);
-      if (stats && stats.buys > 0 && stats.sells === 0) {
+      if (!stats || stats.buysBtc === 0) continue;
+      const sellRatio = stats.sellsBtc / stats.buysBtc;
+      if (sellRatio < 0.5) {
         currentCycleId = fill.cycleId;
-        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId}`);
+        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sold, satellite sells only)`);
         break;
       }
     }
@@ -182,6 +187,9 @@ const createFillLedger = (exchange) => {
     const uniqueBuyOrders = new Set();
 
     for (const fill of targetFills) {
+      // Skip satellite fills — they have independent position tracking
+      if (fill.isSatellite) continue;
+
       if (fill.side === 'buy') {
         const costBasis = fill.quoteAmount + fill.netFee;
         totalBTC = roundBTC(totalBTC + fill.size);
@@ -403,13 +411,22 @@ const createFillLedger = (exchange) => {
       }
     }
 
-    // Identify completed cycles (have at least one sell)
+    // Identify completed cycles (core TP has sold most of the position)
+    // Satellite TP sells are tiny fractions; core TP sells ~99.75%
     const completedCycles = [];
     const activeCycles = [];
 
     for (const [cycleId, cycleFills] of cycleMap) {
-      const hasSell = cycleFills.some(f => f.side === 'sell');
-      if (hasSell) {
+      let buysBtc = 0;
+      let sellsBtc = 0;
+      for (const fill of cycleFills) {
+        if (fill.side === 'buy') buysBtc += fill.size;
+        else if (fill.side === 'sell') sellsBtc += fill.size;
+      }
+      // A cycle is "completed" only when core TP has fired (selling most of position)
+      // Satellite sells are individually tiny; core TP sells ~99.75%
+      const sellRatio = buysBtc > 0 ? sellsBtc / buysBtc : 0;
+      if (sellRatio >= 0.5) {
         completedCycles.push({ cycleId, fills: cycleFills });
       } else {
         activeCycles.push({ cycleId, fills: cycleFills });
@@ -428,6 +445,9 @@ const createFillLedger = (exchange) => {
       let btcSold = 0;
 
       for (const fill of cycleFills) {
+        // Skip satellite fills — they have independent P&L tracking
+        if (fill.isSatellite) continue;
+
         if (fill.side === 'buy') {
           totalBTC += fill.size;
           totalCost += fill.quoteAmount + fill.netFee;
@@ -493,7 +513,6 @@ const createFillLedger = (exchange) => {
       // Assign cycle IDs and calculate P&L for completed orphan cycles
       for (let i = 0; i < orphanCycles.length; i++) {
         const cycleFills = orphanCycles[i];
-        const hasSell = cycleFills.some(f => f.side === 'sell');
         const cycleId = `cycle-${cycleFills[0].timestamp}-recovered-${i + 1}`;
 
         // Assign cycle ID to all fills in this cycle
@@ -503,14 +522,27 @@ const createFillLedger = (exchange) => {
           orphansFixed++;
         }
 
-        // If this is a completed cycle (has sell), calculate its P&L
-        if (hasSell) {
+        // Check if this is a completed cycle using BTC balance ratio
+        // (same heuristic as main cycle detection — core TP sells ~99.75%)
+        let orphanBuysBtc = 0;
+        let orphanSellsBtc = 0;
+        for (const fill of cycleFills) {
+          if (fill.side === 'buy') orphanBuysBtc += fill.size;
+          else if (fill.side === 'sell') orphanSellsBtc += fill.size;
+        }
+        const orphanSellRatio = orphanBuysBtc > 0 ? orphanSellsBtc / orphanBuysBtc : 0;
+        const isCompleted = orphanSellRatio >= 0.5;
+
+        if (isCompleted) {
           let totalBTC = 0;
           let totalCost = 0;
           let sellProceeds = 0;
           let btcSold = 0;
 
           for (const fill of cycleFills) {
+            // Skip satellite fills — they have independent P&L tracking
+            if (fill.isSatellite) continue;
+
             if (fill.side === 'buy') {
               totalBTC += fill.size;
               totalCost += fill.quoteAmount + fill.netFee;
@@ -527,8 +559,8 @@ const createFillLedger = (exchange) => {
 
           cycleDetails.push({
             cycleId,
-            buys: cycleFills.filter(f => f.side === 'buy').length,
-            sells: cycleFills.filter(f => f.side === 'sell').length,
+            buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite).length,
+            sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite).length,
             totalBtcBought: roundBTC(totalBTC),
             btcSold: roundBTC(btcSold),
             holdbackBtc,
@@ -580,6 +612,19 @@ const createFillLedger = (exchange) => {
   };
 
   /**
+   * Annotate a fill with additional metadata (e.g. satellite TP data)
+   * @param {string} orderId - Order ID to annotate fills for
+   * @param {Object} metadata - Key-value pairs to merge into the fill
+   */
+  const annotateFillsByOrderId = (orderId, metadata) => {
+    for (const [, fill] of fills) {
+      if (fill.orderId === orderId) {
+        Object.assign(fill, metadata);
+      }
+    }
+  };
+
+  /**
    * Get the count of unique buy orders in the current cycle
    * @returns {number} Unique buy order count
    */
@@ -587,7 +632,8 @@ const createFillLedger = (exchange) => {
     const cycleFills = getCurrentCycleFills();
     const uniqueBuyOrders = new Set();
     for (const fill of cycleFills) {
-      if (fill.side === 'buy') {
+      // Skip satellite buys — they have independent position tracking
+      if (fill.side === 'buy' && !fill.isSatellite) {
         uniqueBuyOrders.add(fill.orderId);
       }
     }
@@ -615,6 +661,7 @@ const createFillLedger = (exchange) => {
     aggregateFills,
     recalculateCycles,
     updateFillCycleId,
+    annotateFillsByOrderId,
     persist,
     load,
   };

@@ -423,7 +423,12 @@
  * @property {number} maxDrawdownSeen - Maximum drawdown observed
  * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
+ * @property {MacroRegimeState|null} [macroRegime] - Macro regime state for persistence
  * @property {Array<{orderId: string, price: number, btcQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
+ * @property {SatelliteTpOrder[]} [satelliteTpOrders] - Active satellite TP orders (independent from core)
+ * @property {number} [satellitesCompleted] - Total satellite TP cycles completed
+ * @property {number} [satelliteRealizedPnL] - Cumulative realized P&L from satellite TPs in USD
+ * @property {number} [satelliteRealizedBtcPnL] - Cumulative realized BTC P&L from satellite TPs (holdback reserves)
  * @property {boolean} [ladderActive] - Whether ladder mode is active
  * @property {number|null} [ladderPlacedAt] - Timestamp when ladder was placed
  * @property {number} [ladderLowerBound] - Current ladder lower bound price
@@ -473,12 +478,24 @@
 
 /**
  * @typedef {Object} PendingOrder
- * @property {'entry' | 'take_profit'} type - Order type
+ * @property {'entry' | 'take_profit' | 'satellite_tp'} type - Order type
  * @property {number} price - Order price
  * @property {number} size - Order size
  * @property {number} sizeUsdc - Order size in USDC (for entries)
  * @property {number} placedAt - Timestamp when placed
  * @property {boolean} [recoveredFromExchange] - Whether recovered on startup
+ */
+
+/**
+ * @typedef {Object} SatelliteTpOrder
+ * @property {string} orderId - Buy order ID that created this satellite
+ * @property {number} btcQty - BTC quantity from the buy fill
+ * @property {number} costBasis - Cost basis including fees
+ * @property {number} avgPrice - Average fill price of the buy
+ * @property {string|null} tpOrderId - Exchange sell order ID for this satellite's TP
+ * @property {number} tpPrice - Take-profit price for this satellite
+ * @property {number} btcOnOrder - BTC currently in the sell order (after holdback)
+ * @property {number} placedAt - Timestamp when satellite was created
  */
 
 /**
@@ -516,6 +533,11 @@
  * @property {number} tpMaxPercent - Maximum TP percentage (default: 15.0)
  * @property {number} tpUpdateThresholdPct - Min % change to update TP (default: 0.5)
  * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0, default: 0.5)
+ *
+ * Satellite TP Parameters
+ * @property {boolean} [satelliteTpEnabled] - Enable satellite TP orders for quick capture (default: false)
+ * @property {number} [tpMergeMinImprovementPct] - Min % improvement to merge into core TP; below this creates satellite (default: 0.1)
+ * @property {number} [maxSatelliteOrders] - Maximum concurrent satellite TP orders (default: 5)
  *
  * Risk Cap Parameters
  * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)
@@ -591,6 +613,35 @@
  * @property {number} volExpansion - Volatility expansion ratio
  * @property {number} vwap - Volume-weighted average price
  * @property {number} recentSwing - Recent swing range
+ */
+
+// ============================================================================
+// Macro Regime Types
+// ============================================================================
+
+/**
+ * @typedef {'ACCUMULATION' | 'RANGING' | 'MARKUP' | 'DECLINE'} MacroRegimeMode
+ * Four macro market states based on multi-timeframe EMA analysis:
+ * - ACCUMULATION: Price below key EMAs, in a dip zone — increase sizing
+ * - RANGING: No clear trend, consolidation — normal behavior (passthrough)
+ * - MARKUP: Sustained uptrend above EMAs — reduce sizing, wider TP
+ * - DECLINE: Steep multi-day drop, capitulation risk — conservative sizing
+ */
+
+/**
+ * @typedef {Object} MacroRegimeState
+ * @property {MacroRegimeMode} mode - Current macro mode
+ * @property {number} score - Current composite score (-100 to +100)
+ * @property {{h21: number, h50: number, h200: number, d20: number}} emas - EMA values
+ * @property {number} lastUpdate - Timestamp of last macro update
+ * @property {{hourly: number, daily: number}} candles - Number of candles used
+ */
+
+/**
+ * @typedef {Object} MacroMultipliers
+ * @property {number} sizeMult - Position size multiplier
+ * @property {number} tpMult - Take-profit multiplier
+ * @property {number} offsetMult - Entry offset multiplier
  */
 
 // ============================================================================
