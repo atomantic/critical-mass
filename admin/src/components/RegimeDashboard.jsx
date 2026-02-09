@@ -17,6 +17,14 @@ const formatDuration = (ms) => {
   return `${seconds}s`
 }
 
+// Format timestamp as YYYY-MM-DD HH:MM:SS local time
+const formatTimestamp = (ts) => {
+  if (!ts) return '-'
+  const d = new Date(ts)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 // Format countdown timer
 const formatCountdown = (ms) => {
   if (!ms || ms <= 0) return '0:00'
@@ -627,6 +635,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         {regime.mode === 'TREND' ? 'Blocked' : 'Allowed'}
                       </span>
                     </div>
+                    <div className="flex items-center gap-1">
+                      <span className={`w-1.5 h-1.5 rounded-full ${status?.satellites?.enabled ? 'bg-purple-400' : 'bg-gray-600'}`} />
+                      <span className="text-xs text-gray-400">
+                        Sat {status?.satellites?.enabled ? `${status.satellites.active || 0}/${config?.maxSatelliteOrders || 5}` : 'Off'}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1093,6 +1107,35 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
 
+              {/* Satellite TP Status */}
+              {status?.satellites?.enabled && (
+                <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-gray-500">Satellites</span>
+                    <span className="text-cyan-400 font-mono">{status.satellites.active || 0} active / {status.satellites.completed || 0} completed</span>
+                  </div>
+                  {(status.satellites.realizedPnL || 0) !== 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500">Satellite P&L</span>
+                      <span className={`font-mono ${status.satellites.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        ${status.satellites.realizedPnL?.toFixed(2) || '0'}
+                        {(status.satellites.realizedBtcPnL || 0) > 0 && <span className="text-orange-400 ml-1">+{status.satellites.realizedBtcPnL?.toFixed(8)} BTC</span>}
+                      </span>
+                    </div>
+                  )}
+                  {(status.satellites.orders || []).length > 0 && (
+                    <div className="mt-1 space-y-0.5">
+                      {status.satellites.orders.map((sat, i) => (
+                        <div key={i} className="flex items-center justify-between text-[10px] bg-gray-900/50 rounded px-1.5 py-0.5">
+                          <span className="text-gray-400">{sat.btcQty?.toFixed(6)} BTC @ ${sat.avgPrice?.toFixed(0)}</span>
+                          <span className="text-purple-400">TP ${sat.tpPrice?.toFixed(0)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Recalculate Button */}
               {!recalcPreview && (
                 <button
@@ -1363,23 +1406,37 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   const avgCost = position.avgCostBasis || 0
                   const holdbackRatio = config?.holdbackRatio ?? 0.5
 
+                  // Build satellite lookup from status.satellites.orders for fallback
+                  const satelliteOrders = status?.satellites?.orders || []
+                  const satelliteLookup = new Map(satelliteOrders.map(s => [s.tpOrderId, s]))
+
                   const ordersWithCalcs = openOrders.map(order => {
                     const age = Date.now() - order.placedAt
+                    const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp'
+                    // Use satellite's own avg cost: from backend enrichment, or fallback to satellites state
+                    const satData = order.type === 'satellite_tp' ? satelliteLookup.get(order.orderId) : null
+                    const orderAvgCost = order.satelliteAvgCost || satData?.avgPrice || (isTpOrder ? avgCost : 0)
                     // Estimate sell-side fees (~0.06% net for maker orders on Coinbase)
                     const sellValue = order.size * order.price
                     const estSellFee = sellValue * 0.0006 // 0.06% estimated maker fee
                     // Est P&L = proceeds - cost basis = (sellValue - sellFee) - (avgCost * size)
-                    const estPnl = order.type === 'take_profit' && avgCost > 0
-                      ? (sellValue - estSellFee) - (avgCost * order.size)
+                    const estPnl = isTpOrder && orderAvgCost > 0
+                      ? (sellValue - estSellFee) - (orderAvgCost * order.size)
                       : null
-                    const profitPerBTC = order.price - avgCost
-                    const denominator = order.price * (1 - holdbackRatio) + avgCost * holdbackRatio
-                    const estHoldback = order.type === 'take_profit' && profitPerBTC > 0 && denominator > 0
+                    const profitPerBTC = order.price - orderAvgCost
+                    const denominator = order.price * (1 - holdbackRatio) + orderAvgCost * holdbackRatio
+                    const estHoldback = isTpOrder && profitPerBTC > 0 && denominator > 0
                       ? order.size * profitPerBTC * holdbackRatio / denominator
                       : null
                     const estHoldbackValue = estHoldback ? estHoldback * order.price : null
 
-                    return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue }
+                    // Compute TP% for satellites that don't have it from backend
+                    const tpPercent = order.tpPercent
+                      || (order.type === 'satellite_tp' && orderAvgCost > 0
+                        ? ((order.price - orderAvgCost) / orderAvgCost * 100).toFixed(2)
+                        : null)
+
+                    return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue, tpPercent }
                   })
 
                   return (
@@ -1406,9 +1463,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             </td>
                             <td className="py-2 pr-2">
                               <span className={`px-1.5 py-0.5 rounded text-xs ${
-                                order.type === 'entry' ? 'bg-blue-900/50 text-blue-400' : 'bg-cyan-900/50 text-cyan-400'
+                                order.type === 'entry' ? 'bg-blue-900/50 text-blue-400'
+                                  : order.type === 'satellite_tp' ? 'bg-purple-900/50 text-purple-400'
+                                  : 'bg-cyan-900/50 text-cyan-400'
                               }`}>
-                                {order.type === 'entry' ? 'Entry' : 'TP'}
+                                {order.type === 'entry' ? 'Entry' : order.type === 'satellite_tp' ? 'Sat' : 'TP'}
                               </span>
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
@@ -1564,7 +1623,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     {fillTimeMs !== null ? formatDuration(fillTimeMs) : '—'}
                                   </td>
                                   <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {order.filledAt ? new Date(order.filledAt).toLocaleTimeString() : '-'}
+                                    {formatTimestamp(order.filledAt)}
                                   </td>
                                 </tr>
                               )})}
@@ -1635,7 +1694,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     {fillTimeMs !== null ? formatDuration(fillTimeMs) : '—'}
                                   </td>
                                   <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {order.filledAt ? new Date(order.filledAt).toLocaleTimeString() : '-'}
+                                    {formatTimestamp(order.filledAt)}
                                   </td>
                                 </tr>
                               )})}
@@ -1677,9 +1736,20 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   let runningCost = 0
                   const fillsWithPnl = sortedFills.map(fill => {
                     if (fill.side === 'buy') {
-                      runningBtc += fill.size
-                      runningCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
+                      // Skip satellite buys from core running average (they have independent TP)
+                      if (!fill.isSatellite) {
+                        runningBtc += fill.size
+                        runningCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
+                      }
                       return { ...fill, pnl: null, holdback: null }
+                    } else if (fill.isSatellite) {
+                      // Satellite TP: use the satellite's own cost basis and holdback
+                      const pnl = fill.satellitePnl != null
+                        ? fill.satellitePnl
+                        : (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0) - (fill.satelliteCostBasis || 0)
+                      const holdback = fill.satelliteHoldbackBtc || 0
+                      // Do NOT update running totals — satellite buys were never merged into core
+                      return { ...fill, pnl, holdback, avgCost: fill.satelliteAvgPrice || fill.price, isSatellite: true }
                     } else {
                       const avgCost = runningBtc > 0 ? runningCost / runningBtc : 0
                       const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
@@ -1746,8 +1816,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     totalSellSize += fill.size || 0
                     if (fill.pnl !== null) totalSellPnl += fill.pnl
                     totalSellFees += fill.netFee || 0
-                    // Only count holdback once per cycle
-                    if (fill.cycleId && !countedCycles.has(fill.cycleId)) {
+                    if (fill.isSatellite) {
+                      // Satellite holdback is per-fill (each satellite has its own)
+                      totalHoldback += fill.holdback || 0
+                    } else if (fill.cycleId && !countedCycles.has(fill.cycleId)) {
+                      // Core holdback is per-cycle (avoid double-counting)
                       totalHoldback += fill.holdback || 0
                       countedCycles.add(fill.cycleId)
                     }
@@ -1819,7 +1892,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     {fill.fillTimeMs ? formatDuration(fill.fillTimeMs) : '—'}
                                   </td>
                                   <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {fill.timestamp ? new Date(fill.timestamp).toLocaleTimeString() : '-'}
+                                    {formatTimestamp(fill.timestamp)}
                                   </td>
                                 </tr>
                               ))}
@@ -1879,6 +1952,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     </td>
                                   )}
                                   <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
+                                    {fill.isSatellite && <span className="text-purple-400 mr-1" title={`Satellite TP (entry: $${fill.satelliteAvgPrice?.toFixed(2) || '?'})`}>S</span>}
                                     {fill.orderId}
                                   </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
@@ -1889,7 +1963,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                   </td>
                                   <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
                                     fill.pnl >= 0 ? 'text-green-400' : 'text-red-400'
-                                  }`}>
+                                  }`} title={fill.isSatellite ? `Entry: $${fill.satelliteAvgPrice?.toFixed(2)}` : fill.avgCost ? `Avg cost: $${fill.avgCost.toFixed(2)}` : undefined}>
                                     {fill.pnl !== null ? `${fill.pnl >= 0 ? '+' : ''}$${fill.pnl.toFixed(2)}` : '—'}
                                   </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-xs text-cyan-400">
@@ -1902,7 +1976,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     {fill.fillTimeMs ? formatDuration(fill.fillTimeMs) : '—'}
                                   </td>
                                   <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {fill.timestamp ? new Date(fill.timestamp).toLocaleTimeString() : '-'}
+                                    {formatTimestamp(fill.timestamp)}
                                   </td>
                                 </tr>
                               ))}
