@@ -547,38 +547,54 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
               </div>
             </SectionCard>
 
-            {/* Satellite TP Orders - full width */}
-            <SectionCard title="Satellite TP Orders" className="lg:col-span-2">
+            {/* Celestial Hierarchy - full width */}
+            <SectionCard title="Celestial Hierarchy" className="lg:col-span-2">
               <div className="flex items-center gap-4 mb-3">
                 <label className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-400">Enable Satellite TPs</span>
+                  <span className="text-gray-400">Enable Celestial Bodies</span>
                   <button
                     type="button"
-                    onClick={() => handleRegimeChange('satelliteTpEnabled', !regimeConfig.satelliteTpEnabled)}
+                    onClick={() => handleRegimeChange('celestialEnabled', !(regimeConfig.celestialEnabled !== false))}
                     className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                      regimeConfig.satelliteTpEnabled ? 'bg-cyan-500' : 'bg-gray-600'
+                      regimeConfig.celestialEnabled !== false ? 'bg-cyan-500' : 'bg-gray-600'
                     }`}
                   >
                     <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                      regimeConfig.satelliteTpEnabled ? 'translate-x-5' : 'translate-x-1'
+                      regimeConfig.celestialEnabled !== false ? 'translate-x-5' : 'translate-x-1'
                     }`} />
                   </button>
                 </label>
-                {regimeConfig.satelliteTpEnabled && (
+                {regimeConfig.celestialEnabled !== false && (
                   <span className="text-xs text-cyan-400">
-                    Hovering-price buys keep independent TPs for quick capture
+                    Buys become celestial bodies that consolidate and promote through tiers
                   </span>
                 )}
               </div>
-              {regimeConfig.satelliteTpEnabled && (
+              {regimeConfig.celestialEnabled !== false && (
                 <>
                   <div className="grid grid-cols-4 gap-3">
-                    <FormInput label="Merge Min Improvement %" hint="Min TP improvement % to merge into core (below = satellite)" value={regimeConfig.tpMergeMinImprovementPct ?? 0.1} onChange={(v) => handleRegimeChange('tpMergeMinImprovementPct', v)} type="number" />
-                    <FormInput label="Max Satellite Orders" hint="Max concurrent satellite TP orders (1-10)" value={regimeConfig.maxSatelliteOrders ?? 5} onChange={(v) => handleRegimeChange('maxSatelliteOrders', Math.round(v))} type="number" />
+                    <FormInput label="Max Celestial Bodies" hint="Max concurrent body TP orders (1-15)" value={regimeConfig.maxCelestialBodies ?? 10} onChange={(v) => handleRegimeChange('maxCelestialBodies', Math.round(v))} type="number" />
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
-                    When a buy barely improves the core TP (&lt;{regimeConfig.tpMergeMinImprovementPct ?? 0.1}%), it stays as an independent satellite for quick capture.
-                    Significant dips merge into core as before. Budget: core TP (1) + satellites ({regimeConfig.maxSatelliteOrders ?? 5}) + entries = {1 + (regimeConfig.maxSatelliteOrders ?? 5)} of {regimeConfig.maxOpenOrders || 12} order slots.
+                    Each buy creates a celestial body (satellite). Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
+                    Tiers: 🛰️ satellite → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → 🕳️ black hole.
+                    Higher tiers have wider TP targets and hold more BTC.
+                  </div>
+                  <div className="mt-2 grid grid-cols-6 gap-1 text-xs text-center">
+                    {[
+                      { emoji: '🛰️', name: 'Satellite', range: `$${regimeConfig.baseSizeUsdc || 25}-$${(regimeConfig.baseSizeUsdc || 25) * 3}` },
+                      { emoji: '🌙', name: 'Moon', range: `$${(regimeConfig.baseSizeUsdc || 25) * 3}-$${(regimeConfig.baseSizeUsdc || 25) * 8}` },
+                      { emoji: '🪐', name: 'Planet', range: `$${(regimeConfig.baseSizeUsdc || 25) * 8}-$${(regimeConfig.baseSizeUsdc || 25) * 20}` },
+                      { emoji: '☀️', name: 'Sun', range: `$${(regimeConfig.baseSizeUsdc || 25) * 20}-$${(regimeConfig.baseSizeUsdc || 25) * 50}` },
+                      { emoji: '💫', name: 'Hypergiant', range: `$${(regimeConfig.baseSizeUsdc || 25) * 50}-$${(regimeConfig.baseSizeUsdc || 25) * 120}` },
+                      { emoji: '🕳️', name: 'Black Hole', range: `$${(regimeConfig.baseSizeUsdc || 25) * 120}+` },
+                    ].map(tier => (
+                      <div key={tier.name} className="bg-gray-800/50 rounded p-1">
+                        <div>{tier.emoji}</div>
+                        <div className="text-gray-400">{tier.name}</div>
+                        <div className="text-gray-500">{tier.range}</div>
+                      </div>
+                    ))}
                   </div>
                 </>
               )}

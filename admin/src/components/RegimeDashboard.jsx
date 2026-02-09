@@ -644,9 +644,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       </span>
                     </div>
                     <div className="flex items-center gap-1">
-                      <span className={`w-1.5 h-1.5 rounded-full ${status?.satellites?.enabled ? 'bg-purple-400' : 'bg-gray-600'}`} />
+                      <span className={`w-1.5 h-1.5 rounded-full ${status?.celestial?.enabled ? 'bg-purple-400' : 'bg-gray-600'}`} />
                       <span className="text-xs text-gray-400">
-                        Sat {status?.satellites?.enabled ? `${status.satellites.active || 0}/${config?.maxSatelliteOrders || 5}` : 'Off'}
+                        {status?.celestial?.enabled ? (status.celestial.tierSummary || `${status.celestial.bodiesActive || 0}/${config?.maxCelestialBodies || 10}`) : 'Off'}
                       </span>
                     </div>
                     {config?.macroEnabled && status?.macro && (
@@ -1139,28 +1139,31 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
 
-              {/* Satellite TP Status */}
-              {status?.satellites?.enabled && (
+              {/* Celestial Bodies Status */}
+              {status?.celestial?.enabled && (
                 <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-gray-500">Satellites</span>
-                    <span className="text-cyan-400 font-mono">{status.satellites.active || 0} active / {status.satellites.completed || 0} completed</span>
+                    <span className="text-gray-500">Celestial Bodies</span>
+                    <span className="text-cyan-400 font-mono">{status.celestial.bodiesActive || 0} active / {status.celestial.bodiesCompleted || 0} completed</span>
                   </div>
-                  {(status.satellites.realizedPnL || 0) !== 0 && (
+                  {(status.celestial.bodiesRealizedPnL || 0) !== 0 && (
                     <div className="flex items-center justify-between">
-                      <span className="text-gray-500">Satellite P&L</span>
-                      <span className={`font-mono ${status.satellites.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        ${status.satellites.realizedPnL?.toFixed(2) || '0'}
-                        {(status.satellites.realizedBtcPnL || 0) > 0 && <span className="text-orange-400 ml-1">+{status.satellites.realizedBtcPnL?.toFixed(8)} BTC</span>}
+                      <span className="text-gray-500">Bodies P&L</span>
+                      <span className={`font-mono ${status.celestial.bodiesRealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        ${status.celestial.bodiesRealizedPnL?.toFixed(2) || '0'}
+                        {(status.celestial.bodiesRealizedBtcPnL || 0) > 0 && <span className="text-orange-400 ml-1">+{status.celestial.bodiesRealizedBtcPnL?.toFixed(8)} BTC</span>}
                       </span>
                     </div>
                   )}
-                  {(status.satellites.orders || []).length > 0 && (
+                  {(status.celestial.bodies || []).length > 0 && (
                     <div className="mt-1 space-y-0.5">
-                      {status.satellites.orders.map((sat, i) => (
-                        <div key={i} className="flex items-center justify-between text-[10px] bg-gray-900/50 rounded px-1.5 py-0.5">
-                          <span className="text-gray-400">{sat.btcQty?.toFixed(6)} BTC @ ${sat.avgPrice?.toFixed(0)}</span>
-                          <span className="text-purple-400">TP ${sat.tpPrice?.toFixed(0)}</span>
+                      {status.celestial.bodies.map((body, i) => (
+                        <div key={body.id || i} className="flex items-center justify-between text-[10px] bg-gray-900/50 rounded px-1.5 py-0.5">
+                          <span className="text-gray-400">
+                            <span title={body.tier}>{body.emoji}</span> {body.btcQty?.toFixed(6)} BTC @ ${body.avgPrice?.toFixed(0)}
+                            {body.mergeCount > 0 && <span className="text-gray-600 ml-1">×{body.mergeCount + 1}</span>}
+                          </span>
+                          <span className="text-purple-400">TP ${body.tpPrice?.toFixed(0)} ({body.tpPercent}%)</span>
                         </div>
                       ))}
                     </div>
@@ -1497,22 +1500,22 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   const avgCost = position.avgCostBasis || 0
                   const holdbackRatio = config?.holdbackRatio ?? 0.5
 
-                  // Build satellite lookup from status.satellites.orders for fallback
-                  const satelliteOrders = status?.satellites?.orders || []
-                  const satelliteLookup = new Map(satelliteOrders.map(s => [s.tpOrderId, s]))
+                  // Build body lookup from status.celestial.bodies for fallback
+                  const celestialBodies = status?.celestial?.bodies || []
+                  const bodyLookup = new Map(celestialBodies.map(b => [b.tpOrderId, b]))
 
                   const ordersWithCalcs = openOrders.map(order => {
                     const age = Date.now() - order.placedAt
-                    const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp'
-                    // Use satellite's own avg cost: from backend enrichment, or fallback to satellites state
-                    const satData = order.type === 'satellite_tp' ? satelliteLookup.get(order.orderId) : null
-                    const orderAvgCost = order.satelliteAvgCost || satData?.avgPrice || (isTpOrder ? avgCost : 0)
+                    const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
+                    // Use body's own avg cost: from backend enrichment, or fallback to celestial state
+                    const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp') ? bodyLookup.get(order.orderId) : null
+                    const orderAvgCost = order.satelliteAvgCost || bodyData?.avgPrice || (isTpOrder ? avgCost : 0)
                     // Estimate sell-side fees (~0.06% net for maker orders on Coinbase)
                     const sellValue = order.size * order.price
                     const estSellFee = sellValue * 0.0006 // 0.06% estimated maker fee
-                    // For satellites, use prorated cost basis (includes buy fees) instead of raw avgPrice * size
-                    const satCostBasis = order.satelliteCostBasis || satData?.costBasis
-                    const satBtcQty = order.satelliteBtcQty || satData?.btcQty
+                    // For bodies, use prorated cost basis (includes buy fees) instead of raw avgPrice * size
+                    const satCostBasis = order.satelliteCostBasis || bodyData?.costBasis
+                    const satBtcQty = order.satelliteBtcQty || bodyData?.btcQty
                     const proratedCost = satCostBasis && satBtcQty
                       ? (satCostBasis / satBtcQty) * order.size
                       : null
@@ -1526,9 +1529,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       : null
                     const estHoldbackValue = estHoldback ? estHoldback * order.price : null
 
-                    // Compute TP% for satellites that don't have it from backend
+                    // Compute TP% for bodies that don't have it from backend
                     const tpPercent = order.tpPercent
-                      || (order.type === 'satellite_tp' && orderAvgCost > 0
+                      || ((order.type === 'satellite_tp' || order.type === 'body_tp') && orderAvgCost > 0
                         ? ((order.price - orderAvgCost) / orderAvgCost * 100).toFixed(2)
                         : null)
 
@@ -1560,10 +1563,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <td className="py-2 pr-2">
                               <span className={`px-1.5 py-0.5 rounded text-xs ${
                                 order.type === 'entry' ? 'bg-blue-900/50 text-blue-400'
-                                  : order.type === 'satellite_tp' ? 'bg-purple-900/50 text-purple-400'
+                                  : (order.type === 'satellite_tp' || order.type === 'body_tp') ? 'bg-purple-900/50 text-purple-400'
                                   : 'bg-cyan-900/50 text-cyan-400'
                               }`}>
-                                {order.type === 'entry' ? 'Entry' : order.type === 'satellite_tp' ? 'Sat' : 'TP'}
+                                {order.type === 'entry' ? 'Entry' : (order.type === 'satellite_tp' || order.type === 'body_tp') ? (order.tierEmoji || '🛰️') : 'TP'}
                               </span>
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
@@ -2048,7 +2051,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     </td>
                                   )}
                                   <td className="py-1.5 pr-2 font-mono text-gray-500 text-xs">
-                                    {fill.isSatellite && <span className="text-purple-400 mr-1" title={`Satellite TP (entry: $${fill.satelliteAvgPrice?.toFixed(2) || '?'})`}>S</span>}
+                                    {fill.isSatellite && <span className="text-purple-400 mr-1" title={`${fill.bodyTier || 'Satellite'} TP (entry: $${fill.satelliteAvgPrice?.toFixed(2) || '?'})`}>{fill.bodyTier ? (fill.bodyTier === 'satellite' ? '🛰️' : fill.bodyTier === 'moon' ? '🌙' : fill.bodyTier === 'planet' ? '🪐' : fill.bodyTier === 'sun' ? '☀️' : fill.bodyTier === 'hypergiant' ? '💫' : fill.bodyTier === 'black_hole' ? '🕳️' : 'S') : 'S'}</span>}
                                     {fill.orderId}
                                   </td>
                                   <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">

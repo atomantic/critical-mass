@@ -34,6 +34,7 @@ const { createMacroRegime } = require('./macro-regime');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
+const celestialHierarchy = require('./celestial-hierarchy');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -513,33 +514,37 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }
     }
 
-    // Check for satellite TP orders that filled while offline
-    const satellites = positionState.satelliteTpOrders || [];
-    for (const satellite of [...satellites]) {
-      if (satellite.tpOrderId && !openOrderIds.has(satellite.tpOrderId)) {
-        const orderStatus = await adapter.getOrder(satellite.tpOrderId).catch(() => null);
+    // Check for celestial body TP orders that filled while offline
+    const offlineBodies = positionState.celestialBodies || [];
+    for (const body of [...offlineBodies]) {
+      if (body.tpOrderId && !openOrderIds.has(body.tpOrderId)) {
+        const orderStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
         if (orderStatus && orderStatus.status === 'FILLED') {
-          console.log(`🛰️ [${exchange}] Satellite TP ${satellite.tpOrderId} filled while offline`);
+          const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+          console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} filled while offline`);
 
-          const rawFills = await adapter.getOrderFills(satellite.tpOrderId);
+          const rawFills = await adapter.getOrderFills(body.tpOrderId);
           const ingestedFills = [];
           for (const fill of rawFills) {
             const result = fillLedger.ingestFill(fill);
             if (result.fill) ingestedFills.push(result.fill);
           }
 
-          const fillsForSatellite = ingestedFills.length > 0
+          const fillsForBody = ingestedFills.length > 0
             ? ingestedFills
-            : fillLedger.getFillsForOrder(satellite.tpOrderId);
-          const summary = fillLedger.aggregateFills(fillsForSatellite);
+            : fillLedger.getFillsForOrder(body.tpOrderId);
+          const summary = fillLedger.aggregateFills(fillsForBody);
 
           const proceeds = summary.totalValue - summary.totalFees;
-          const pnl = proceeds - satellite.costBasis;
-          const holdbackBtc = roundBTC(satellite.btcQty - summary.totalSize);
+          const pnl = proceeds - body.costBasis;
+          const holdbackBtc = roundBTC(body.btcQty - summary.totalSize);
 
-          positionState.satelliteRealizedPnL = (positionState.satelliteRealizedPnL || 0) + pnl;
-          positionState.satelliteRealizedBtcPnL = (positionState.satelliteRealizedBtcPnL || 0) + holdbackBtc;
-          positionState.satellitesCompleted = (positionState.satellitesCompleted || 0) + 1;
+          const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
+          cs.bodiesCompleted += 1;
+          cs.bodiesRealizedPnL += pnl;
+          cs.bodiesRealizedBtcPnL += holdbackBtc;
+          positionState.celestialState = cs;
+
           positionState.realizedPnL += pnl;
           positionState.realizedBtcPnL += holdbackBtc;
 
@@ -547,32 +552,37 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
           updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
 
-          positionState.satelliteTpOrders = positionState.satelliteTpOrders.filter(
-            s => s.tpOrderId !== satellite.tpOrderId
+          positionState.celestialBodies = positionState.celestialBodies.filter(
+            b => b.tpOrderId !== body.tpOrderId
           );
 
-          if (orderExecutor.removeSatelliteTracking) {
-            orderExecutor.removeSatelliteTracking(satellite.tpOrderId);
+          if (orderExecutor.removeBodyTracking) {
+            orderExecutor.removeBodyTracking(body.tpOrderId);
           }
 
-          // Annotate fills with satellite metadata for dashboard display
-          fillLedger.annotateFillsByOrderId(satellite.tpOrderId, {
+          fillLedger.annotateFillsByOrderId(body.tpOrderId, {
             isSatellite: true,
-            satelliteCostBasis: satellite.costBasis,
-            satelliteAvgPrice: satellite.avgPrice,
-            satelliteBtcQty: satellite.btcQty,
+            bodyId: body.id,
+            bodyTier: body.tier,
+            satelliteCostBasis: body.costBasis,
+            satelliteAvgPrice: body.avgPrice,
+            satelliteBtcQty: body.btcQty,
             satelliteHoldbackBtc: holdbackBtc,
             satellitePnl: pnl,
           });
 
-          console.log(`🛰️ [${exchange}] Offline satellite fill: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+          // Sync aggregates after body removal
+          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-          tradeEvents.emitTradeEvent('satellite_tp_filled', exchange, `[OFFLINE] 🛰️ ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
+          console.log(`${tierCfg.emoji} [${exchange}] Offline body fill: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+
+          tradeEvents.emitTradeEvent('body_tp_filled', exchange, `[OFFLINE] ${tierCfg.emoji} ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
             btcAmount: summary.totalSize,
             price: summary.avgPrice,
             pnl,
             holdbackBtc,
-            isSatellite: true,
+            bodyId: body.id,
+            bodyTier: body.tier,
             offlineFill: true,
           });
         }
@@ -1017,51 +1027,48 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         }
       }
 
-      // Restore satellite TP order tracking from saved state
-      const savedSatellites = positionState.satelliteTpOrders || [];
-      if (savedSatellites.length > 0) {
-        let restoredSatellites = 0;
-        let expiredSatellites = 0;
+      // Restore celestial body TP order tracking from saved state
+      const savedBodies = positionState.celestialBodies || [];
+      if (savedBodies.length > 0) {
+        let restoredBodies = 0;
+        let expiredBodies = 0;
 
-        for (const satellite of [...savedSatellites]) {
-          if (!satellite.tpOrderId) continue;
+        for (const body of [...savedBodies]) {
+          if (!body.tpOrderId) continue;
 
-          const satStatus = await adapter.getOrder(satellite.tpOrderId).catch(() => null);
-          const satExists = satStatus && satStatus.status !== 'CANCELLED' && satStatus.status !== 'FAILED';
+          const bodyStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
+          const bodyExists = bodyStatus && bodyStatus.status !== 'CANCELLED' && bodyStatus.status !== 'FAILED';
 
-          if (satExists && satStatus.status === 'FILLED') {
-            // Satellite filled while offline — handled in checkOfflineOrderFills above
+          if (bodyExists && bodyStatus.status === 'FILLED') {
+            // Body filled while offline — handled in checkOfflineOrderFills above
             continue;
           }
 
-          if (satExists && orderExecutor.restoreSatelliteTpOrder) {
-            orderExecutor.restoreSatelliteTpOrder(
-              satellite.orderId,
-              satellite.tpOrderId,
-              satellite.btcOnOrder,
-              satellite.tpPrice
+          if (bodyExists && orderExecutor.restoreBodyTpOrder) {
+            orderExecutor.restoreBodyTpOrder(
+              body.id,
+              body.tpOrderId,
+              body.btcOnOrder || body.btcQty,
+              body.tpPrice
             );
-            restoredSatellites++;
+            restoredBodies++;
           } else {
-            // Satellite TP no longer on exchange — remove from state
-            positionState.satelliteTpOrders = positionState.satelliteTpOrders.filter(
-              s => s.tpOrderId !== satellite.tpOrderId
-            );
-            expiredSatellites++;
+            // Body TP no longer on exchange — re-place TP
+            body.tpOrderId = null;
+            expiredBodies++;
           }
         }
 
-        if (restoredSatellites > 0) console.log(`🛰️ [${exchange}] Restored ${restoredSatellites} satellite TP orders`);
-        if (expiredSatellites > 0) console.log(`⚠️ [${exchange}] ${expiredSatellites} satellite TP orders no longer on exchange`);
+        if (restoredBodies > 0) console.log(`🌌 [${exchange}] Restored ${restoredBodies} celestial body TP orders`);
+        if (expiredBodies > 0) console.log(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
       }
 
-      // Detect orphaned satellite orders on exchange that we lost track of
-      // (e.g., state corruption from a previous buggy restart)
+      // Detect orphaned sell orders on exchange that we lost track of
       const exchangeOpenOrders = await adapter.getOpenOrders(productId);
       const trackedSellIds = new Set();
       if (positionState.activeTpOrderId) trackedSellIds.add(positionState.activeTpOrderId);
-      for (const sat of (positionState.satelliteTpOrders || [])) {
-        if (sat.tpOrderId) trackedSellIds.add(sat.tpOrderId);
+      for (const body of (positionState.celestialBodies || [])) {
+        if (body.tpOrderId) trackedSellIds.add(body.tpOrderId);
       }
       const orphanedSells = exchangeOpenOrders.filter(o =>
         o.side.toUpperCase() === 'SELL' && !trackedSellIds.has(o.orderId) && o.size > 0
@@ -1069,67 +1076,63 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       if (orphanedSells.length > 0) {
         const cycleFills = fillLedger.getCurrentCycleFills();
-        const trackedBuyOrderIds = new Set(
-          (positionState.satelliteTpOrders || []).map(s => s.orderId)
+        const trackedBodyIds = new Set(
+          (positionState.celestialBodies || []).map(b => b.id)
         );
-        let reclaimedSatellites = 0;
+        let reclaimedBodies = 0;
 
         for (const order of orphanedSells) {
           const orderValue = order.size * order.price;
 
-          if (orderValue < config.baseSizeUsdc * 3) {
-            // Small sell — likely an orphaned satellite TP
-            // Match to a buy fill: similar size, not already tracked, before the sell was placed
-            const candidates = cycleFills.filter(f =>
-              f.side === 'buy' && !f.isSatellite && !trackedBuyOrderIds.has(f.orderId)
-              && f.size > 0 && (f.size / order.size) > 0.99 && (f.size / order.size) < 1.02
-            );
-            const matchingBuy = candidates.length > 0
-              ? candidates.reduce((best, buy) =>
-                Math.abs(buy.size - order.size) < Math.abs(best.size - order.size) ? buy : best
-              )
-              : null;
+          // Reclaim as celestial body regardless of size
+          const candidates = cycleFills.filter(f =>
+            f.side === 'buy' && !f.isSatellite
+            && f.size > 0 && (f.size / order.size) > 0.99 && (f.size / order.size) < 1.02
+          );
+          const matchingBuy = candidates.length > 0
+            ? candidates.reduce((best, buy) =>
+              Math.abs(buy.size - order.size) < Math.abs(best.size - order.size) ? buy : best
+            )
+            : null;
 
-            const costBasis = matchingBuy
-              ? (matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0))
-              : orderValue;
-            const avgPrice = matchingBuy ? matchingBuy.price : order.price;
-            const placedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
+          const costBasis = matchingBuy
+            ? (matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0))
+            : orderValue;
+          const avgPrice = matchingBuy ? matchingBuy.price : order.price;
+          const btcQty = matchingBuy ? matchingBuy.size : order.size;
+          const placedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
 
-            const satelliteEntry = {
-              orderId: matchingBuy ? matchingBuy.orderId : `orphan-${order.orderId}`,
-              btcQty: matchingBuy ? matchingBuy.size : order.size,
-              costBasis,
-              avgPrice,
-              tpOrderId: order.orderId,
-              tpPrice: order.price,
-              btcOnOrder: order.size,
-              placedAt,
-            };
+          const bodyEntry = celestialHierarchy.createNewBody({
+            btcQty,
+            costBasis,
+            avgPrice,
+            buyOrderId: matchingBuy ? matchingBuy.orderId : `orphan-${order.orderId}`,
+          }, matchingBuy ? matchingBuy.orderId : `orphan-${order.orderId}`);
 
-            positionState.satelliteTpOrders = positionState.satelliteTpOrders || [];
-            positionState.satelliteTpOrders.push(satelliteEntry);
-            trackedBuyOrderIds.add(satelliteEntry.orderId);
+          // Override TP info from exchange order
+          bodyEntry.tpOrderId = order.orderId;
+          bodyEntry.tpPrice = order.price;
+          bodyEntry.btcOnOrder = order.size;
+          bodyEntry.createdAt = placedAt;
 
-            if (orderExecutor.restoreSatelliteTpOrder) {
-              orderExecutor.restoreSatelliteTpOrder(
-                satelliteEntry.orderId,
-                order.orderId,
-                order.size,
-                order.price
-              );
-            }
+          // Reclassify tier based on actual cost basis
+          const tierCfg = celestialHierarchy.classifyTier(costBasis, config.baseSizeUsdc);
+          bodyEntry.tier = tierCfg.name;
 
-            reclaimedSatellites++;
-            console.log(`🛰️ [${exchange}] Reclaimed orphaned satellite: ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} BTC @ $${order.price}${matchingBuy ? ` (matched buy ${matchingBuy.orderId.slice(0, 8)})` : ' (no buy match)'}`);
-          } else {
-            // Large untracked sell — likely an old core TP from a previous session
-            console.log(`⚠️ [${exchange}] Untracked large sell on exchange: ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} BTC @ $${order.price} ($${orderValue.toFixed(2)}) - may be old TP, consider canceling`);
+          positionState.celestialBodies = positionState.celestialBodies || [];
+          positionState.celestialBodies.push(bodyEntry);
+
+          if (orderExecutor.restoreBodyTpOrder) {
+            orderExecutor.restoreBodyTpOrder(bodyEntry.id, order.orderId, order.size, order.price);
           }
+
+          reclaimedBodies++;
+          console.log(`🌌 [${exchange}] Reclaimed orphaned body (${bodyEntry.tier}): ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} BTC @ $${order.price}${matchingBuy ? ` (matched buy ${matchingBuy.orderId.slice(0, 8)})` : ' (no buy match)'}`);
         }
 
-        if (reclaimedSatellites > 0) {
-          console.log(`🛰️ [${exchange}] Reclaimed ${reclaimedSatellites} orphaned satellite orders from exchange`);
+        if (reclaimedBodies > 0) {
+          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+          console.log(`🌌 [${exchange}] Reclaimed ${reclaimedBodies} orphaned body orders from exchange`);
         }
       }
 
@@ -1141,12 +1144,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const coreTpOrderId = positionState.activeTpOrderId;
         let annotatedCount = 0;
 
-        // 1. Annotate buy fills for active satellites (their buys are tracked in state)
-        for (const satellite of (positionState.satelliteTpOrders || [])) {
-          const buyFills = cycleFills.filter(f => f.orderId === satellite.orderId && !f.isSatellite);
-          if (buyFills.length > 0) {
-            fillLedger.annotateFillsByOrderId(satellite.orderId, { isSatellite: true });
-            annotatedCount += buyFills.length;
+        // 1. Annotate buy fills for active celestial bodies (their buys are tracked in state)
+        for (const body of (positionState.celestialBodies || [])) {
+          for (const srcOrderId of (body.sourceOrderIds || [])) {
+            const buyFills = cycleFills.filter(f => f.orderId === srcOrderId && !f.isSatellite);
+            if (buyFills.length > 0) {
+              fillLedger.annotateFillsByOrderId(srcOrderId, { isSatellite: true, bodyId: body.id, bodyTier: body.tier });
+              annotatedCount += buyFills.length;
+            }
           }
         }
 
@@ -1656,65 +1661,90 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       const summary = fillLedger.aggregateFills(fillsToAggregate);
 
-      // Decide: merge into core or create satellite TP
-      const mergeDecision = shouldMergeBuyIntoCore(summary);
+      // Celestial hierarchy: create new buy descriptor
+      const newBuy = {
+        btcQty: summary.totalSize,
+        costBasis: summary.totalValue + summary.totalFees,
+        avgPrice: summary.avgPrice,
+        buyOrderId: fillData.orderId,
+      };
 
-      if (mergeDecision.merge) {
-        // MERGE: Update core position as before
-        positionState.totalBTC = roundBTC(positionState.totalBTC + summary.totalSize);
-        positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + summary.totalValue + summary.totalFees);
-        positionState.avgCostBasis = positionState.totalBTC > 0
-          ? positionState.totalCostBasis / positionState.totalBTC
-          : 0;
-        positionState.cycleBuys += 1;
-        positionState.lastEntryPrice = summary.avgPrice;
-        positionState.lastEntryTime = Date.now();
+      // Calculate candidate TP price for merge proximity check
+      const candidateTpPrice = roundUSDC(summary.avgPrice * (1 + calculateDynamicTpPercent() / 100));
 
-        const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
-        const mergeLabel = mergeDecision.reason !== 'satellites_disabled' && mergeDecision.reason !== 'first_buy'
-          ? ` [merged:${mergeDecision.reason}${mergeDecision.improvement !== undefined ? ` imp=${mergeDecision.improvement.toFixed(3)}%` : ''}]`
-          : '';
-        console.log(`✅ [${exchange}] ${fillTypeLabel}Buy filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, avg_cost=$${positionState.avgCostBasis.toFixed(2)}${mergeLabel}`);
+      // Find merge target among existing celestial bodies
+      const bodies = positionState.celestialBodies || [];
+      const mergeTarget = celestialHierarchy.findMergeTarget(
+        bodies, newBuy, config.baseSizeUsdc, candidateTpPrice,
+        config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders
+      );
 
-        // Place/update TP order (force update to bypass anti-churn after buy fill)
-        await placeTakeProfitOrder({ forceUpdate: true });
+      positionState.cycleBuys += 1;
+      positionState.lastEntryPrice = summary.avgPrice;
+      positionState.lastEntryTime = Date.now();
 
-        tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} BTC @ $${summary.avgPrice}`, {
-          btcAmount: summary.totalSize,
-          price: summary.avgPrice,
-          avgCostBasis: positionState.avgCostBasis,
-          isLadderFill,
-          mergeDecision: mergeDecision.reason,
-        });
-      } else {
-        // SATELLITE: Keep buy independent, place its own TP order
-        positionState.cycleBuys += 1;
-        positionState.lastEntryPrice = summary.avgPrice;
-        positionState.lastEntryTime = Date.now();
+      const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
 
-        const satellitePlaced = await placeSatelliteTp(summary, fillData.orderId);
-
-        if (!satellitePlaced) {
-          // Fallback: merge into core if satellite placement failed
-          positionState.totalBTC = roundBTC(positionState.totalBTC + summary.totalSize);
-          positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + summary.totalValue + summary.totalFees);
-          positionState.avgCostBasis = positionState.totalBTC > 0
-            ? positionState.totalCostBasis / positionState.totalBTC
-            : 0;
-
-          console.log(`✅ [${exchange}] Buy filled (satellite fallback→merge): ${summary.totalSize} BTC @ $${summary.avgPrice}, avg_cost=$${positionState.avgCostBasis.toFixed(2)}`);
-          await placeTakeProfitOrder({ forceUpdate: true });
-        } else {
-          // Annotate buy fills as satellite so dashboard excludes them from core running average
-          fillLedger.annotateFillsByOrderId(fillData.orderId, { isSatellite: true });
-          console.log(`✅ [${exchange}] Buy filled (satellite): ${summary.totalSize} BTC @ $${summary.avgPrice}, improvement=${(mergeDecision.improvement || 0).toFixed(3)}%`);
+      if (mergeTarget) {
+        // MERGE: Cancel existing body TP, merge, possibly promote, re-place TP
+        const cancelled = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
+        if (!cancelled) {
+          // Fallback: try satellite cancel path
+          await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
         }
 
-        tradeEvents.emitTradeEvent('buy_filled', exchange, `[SAT] ${summary.totalSize} BTC @ $${summary.avgPrice}`, {
+        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.baseSizeUsdc);
+        // Replace old body with merged body in array
+        const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
+        if (idx !== -1) positionState.celestialBodies[idx] = merged;
+
+        // Check for cascading promotions
+        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.baseSizeUsdc);
+
+        // Sync aggregate fields for backward compatibility
+        celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+        // Place body TP for merged body
+        await placeBodyTp(merged);
+
+        const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
+        console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy merged into ${merged.tier}: ${summary.totalSize} BTC @ $${summary.avgPrice}, body=${merged.id.slice(-8)} (${merged.btcQty.toFixed(6)} BTC, avg=$${merged.avgPrice.toFixed(2)})`);
+
+        tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} BTC @ $${summary.avgPrice} [merged→${merged.tier}]`, {
           btcAmount: summary.totalSize,
           price: summary.avgPrice,
-          isSatellite: true,
-          improvement: mergeDecision.improvement,
+          bodyId: merged.id,
+          bodyTier: merged.tier,
+          isMerge: true,
+          isLadderFill,
+        });
+      } else {
+        // NEW BODY: Create new satellite body with its own TP
+        const body = celestialHierarchy.createNewBody(newBuy, fillData.orderId);
+        positionState.celestialBodies = positionState.celestialBodies || [];
+        positionState.celestialBodies.push(body);
+
+        // Sync aggregate fields
+        celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+        const bodyTpPlaced = await placeBodyTp(body);
+
+        if (!bodyTpPlaced) {
+          console.log(`⚠️ [${exchange}] Body TP placement failed for ${body.id.slice(-8)}, body persists without TP`);
+        }
+
+        const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+        console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy → new ${body.tier}: ${summary.totalSize} BTC @ $${summary.avgPrice}, body=${body.id.slice(-8)}`);
+
+        // Annotate buy fills with body metadata
+        fillLedger.annotateFillsByOrderId(fillData.orderId, { isSatellite: true, bodyId: body.id, bodyTier: body.tier });
+
+        tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} BTC @ $${summary.avgPrice} [new ${body.tier}]`, {
+          btcAmount: summary.totalSize,
+          price: summary.avgPrice,
+          bodyId: body.id,
+          bodyTier: body.tier,
+          isLadderFill,
         });
       }
 
@@ -1742,36 +1772,34 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       fillLedger.persist();
 
     } else if (fillData.side.toLowerCase() === 'sell') {
-      // Determine if this is a satellite TP fill or core TP fill
-      const isSatelliteFill = orderExecutor.isSatelliteTpOrder
-        && orderExecutor.isSatelliteTpOrder(fillData.orderId);
+      // UNIFIED BODY TP FILL — find matching celestial body by TP order ID
+      const summary = fillLedger.aggregateFills(fillsToAggregate);
 
-      // Also check positionState for satellites (in case executor tracking was cleared)
-      const satelliteMatch = !isSatelliteFill
+      // Find the body whose tpOrderId matches this fill
+      const bodies = positionState.celestialBodies || [];
+      const bodyIdx = bodies.findIndex(b => b.tpOrderId === fillData.orderId);
+
+      // Fallback: check legacy satellite tracking
+      const legacySatellite = bodyIdx === -1
         ? (positionState.satelliteTpOrders || []).find(s => s.tpOrderId === fillData.orderId)
         : null;
 
-      if (isSatelliteFill || satelliteMatch) {
-        // SATELLITE TP FILL — handle independently from core
-        const summary = fillLedger.aggregateFills(fillsToAggregate);
-        const satellite = satelliteMatch
-          || (positionState.satelliteTpOrders || []).find(s => s.tpOrderId === fillData.orderId);
-
-        const satCostBasis = satellite ? satellite.costBasis : (summary.totalSize * positionState.avgCostBasis);
-        const satAvgPrice = satellite ? satellite.avgPrice : positionState.avgCostBasis;
+      if (bodyIdx !== -1) {
+        // CELESTIAL BODY TP FILL
+        const body = bodies[bodyIdx];
+        const tierCfg = celestialHierarchy.getTierConfig(body.tier);
         const proceeds = summary.totalValue - summary.totalFees;
-        const pnl = proceeds - satCostBasis;
+        const pnl = proceeds - body.costBasis;
+        const holdbackBtc = roundBTC(body.btcQty - summary.totalSize);
 
-        // Calculate BTC holdback for this satellite
-        const satTotalBtc = satellite ? satellite.btcQty : summary.totalSize;
-        const holdbackBtc = roundBTC(satTotalBtc - summary.totalSize);
+        // Update celestial state
+        const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
+        cs.bodiesCompleted += 1;
+        cs.bodiesRealizedPnL += pnl;
+        cs.bodiesRealizedBtcPnL += holdbackBtc;
+        positionState.celestialState = cs;
 
-        // Update satellite-specific realized PnL
-        positionState.satelliteRealizedPnL = (positionState.satelliteRealizedPnL || 0) + pnl;
-        positionState.satelliteRealizedBtcPnL = (positionState.satelliteRealizedBtcPnL || 0) + holdbackBtc;
-        positionState.satellitesCompleted = (positionState.satellitesCompleted || 0) + 1;
-
-        // Also add to shared realized PnL for capital growth
+        // Update shared realized P&L
         positionState.realizedPnL += pnl;
         positionState.realizedBtcPnL += holdbackBtc;
 
@@ -1780,93 +1808,134 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
         updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
 
-        // Remove satellite from state
-        positionState.satelliteTpOrders = (positionState.satelliteTpOrders || []).filter(
-          s => s.tpOrderId !== fillData.orderId
-        );
+        // Remove body from array
+        positionState.celestialBodies.splice(bodyIdx, 1);
 
-        console.log(`🛰️ [${exchange}] Satellite TP filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${(positionState.satelliteTpOrders || []).length} remaining)`);
+        // Remove executor tracking
+        orderExecutor.removeBodyTracking(fillData.orderId);
 
-        tradeEvents.emitTradeEvent('satellite_tp_filled', exchange, `🛰️ ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
+        // Sync aggregate fields
+        celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+        const remaining = positionState.celestialBodies.length;
+        console.log(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
+
+        tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
           btcAmount: summary.totalSize,
           price: summary.avgPrice,
           pnl,
           holdbackBtc,
-          isSatellite: true,
-          satellitesRemaining: (positionState.satelliteTpOrders || []).length,
+          bodyId: body.id,
+          bodyTier: body.tier,
+          bodiesRemaining: remaining,
           capitalGrowth: pnl,
           newMaxUsdcDeployed: config.maxUsdcDeployed,
         });
 
-        // Annotate fills with satellite metadata for dashboard display
+        // Annotate fills with body metadata
         fillLedger.annotateFillsByOrderId(fillData.orderId, {
           isSatellite: true,
-          satelliteCostBasis: satCostBasis,
-          satelliteAvgPrice: satAvgPrice,
-          satelliteBtcQty: satTotalBtc,
+          bodyId: body.id,
+          bodyTier: body.tier,
+          satelliteCostBasis: body.costBasis,
+          satelliteAvgPrice: body.avgPrice,
+          satelliteBtcQty: body.btcQty,
           satelliteHoldbackBtc: holdbackBtc,
           satellitePnl: pnl,
         });
 
-        // Persist state
+        // If no bodies remain, do a full cycle reset
+        if (positionState.celestialBodies.length === 0) {
+          positionState.cyclesCompleted += 1;
+
+          const actualTpPct = body.avgPrice > 0
+            ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
+            : 0;
+          recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+          recordCycleForSizeOptimizer({
+            stepsUsed: positionState.cycleBuys,
+            capitalDeployed: body.costBasis,
+          }, config.maxUsdcDeployed);
+
+          await resetCycle();
+        }
+
+        saveLiveState();
+        fillLedger.persist();
+
+      } else if (legacySatellite) {
+        // LEGACY SATELLITE TP FILL (backward compat during migration)
+        const satCostBasis = legacySatellite.costBasis || (summary.totalSize * positionState.avgCostBasis);
+        const satAvgPrice = legacySatellite.avgPrice || positionState.avgCostBasis;
+        const proceeds = summary.totalValue - summary.totalFees;
+        const pnl = proceeds - satCostBasis;
+        const satTotalBtc = legacySatellite.btcQty || summary.totalSize;
+        const holdbackBtc = roundBTC(satTotalBtc - summary.totalSize);
+
+        positionState.satelliteRealizedPnL = (positionState.satelliteRealizedPnL || 0) + pnl;
+        positionState.satelliteRealizedBtcPnL = (positionState.satelliteRealizedBtcPnL || 0) + holdbackBtc;
+        positionState.satellitesCompleted = (positionState.satellitesCompleted || 0) + 1;
+        positionState.realizedPnL += pnl;
+        positionState.realizedBtcPnL += holdbackBtc;
+
+        const prevMaxUsdc = config.maxUsdcDeployed;
+        config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+        updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+
+        positionState.satelliteTpOrders = (positionState.satelliteTpOrders || []).filter(
+          s => s.tpOrderId !== fillData.orderId
+        );
+
+        console.log(`🛰️ [${exchange}] Legacy satellite TP filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+
+        fillLedger.annotateFillsByOrderId(fillData.orderId, {
+          isSatellite: true,
+          satelliteCostBasis: satCostBasis,
+          satelliteAvgPrice: satAvgPrice,
+          satellitePnl: pnl,
+        });
+
         saveLiveState();
         fillLedger.persist();
 
       } else {
-        // CORE TP FILL — existing logic
-        const summary = fillLedger.aggregateFills(fillsToAggregate);
-        const proceeds = summary.totalValue - summary.totalFees;
-        const soldCostBasis = summary.totalSize * positionState.avgCostBasis;
+        // UNTRACKED SELL — could be a core TP from before migration
+        const summary2 = fillLedger.aggregateFills(fillsToAggregate);
+        const proceeds = summary2.totalValue - summary2.totalFees;
+        const soldCostBasis = summary2.totalSize * positionState.avgCostBasis;
         const pnl = proceeds - soldCostBasis;
-
-        // Calculate BTC holdback (the BTC we kept as reserves from this cycle)
-        const holdbackBtc = roundBTC(positionState.totalBTC - summary.totalSize);
-
-        // Calculate actual TP percentage for optimizer
-        const actualTpPct = positionState.avgCostBasis > 0
-          ? ((summary.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
-          : 0;
+        const holdbackBtc = roundBTC(positionState.totalBTC - summary2.totalSize);
 
         positionState.realizedPnL += pnl;
         positionState.realizedBtcPnL += holdbackBtc;
         positionState.btcOnOrder = 0;
         positionState.cyclesCompleted += 1;
 
-        // Grow capital by adding USDC profit to maxUsdcDeployed
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
         updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
 
-        console.log(`✅ [${exchange}] TP filled: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+        console.log(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} BTC @ $${summary2.avgPrice}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
-        tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
-          btcAmount: summary.totalSize,
-          price: summary.avgPrice,
+        tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} BTC @ $${summary2.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
+          btcAmount: summary2.totalSize,
+          price: summary2.avgPrice,
           pnl,
           holdbackBtc,
-          totalRealizedBtc: positionState.realizedBtcPnL,
           capitalGrowth: pnl,
           newMaxUsdcDeployed: config.maxUsdcDeployed,
         });
 
-        // Record cycle for TP optimizer (live mode doesn't track max price, use actual TP as optimal)
-        recordCycleForOptimizer({
-          optimalTpPct: actualTpPct, // In live mode, we don't track optimal; use actual
-          actualTpPct,
-        });
-
-        // Record cycle for Size optimizer
-        // Get current balance for size optimization (proceeds go back to available balance)
-        const postCycleBalance = config.maxUsdcDeployed; // After capital growth adjustment
+        const actualTpPct = positionState.avgCostBasis > 0
+          ? ((summary2.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
+          : 0;
+        recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
         recordCycleForSizeOptimizer({
           stepsUsed: positionState.cycleBuys,
-          capitalDeployed: soldCostBasis, // Cost basis of what we sold
-        }, postCycleBalance);
+          capitalDeployed: soldCostBasis,
+        }, config.maxUsdcDeployed);
 
-        // Reset for next cycle FIRST, then persist
         await resetCycle();
-
-        // Persist state AFTER reset to ensure cycle reset is saved
         saveLiveState();
         fillLedger.persist();
       }
@@ -2102,27 +2171,28 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           });
       }
 
-      // Check satellite TP orders for fills that WebSocket might have missed
-      const activeSatellites = positionState.satelliteTpOrders || [];
-      if (activeSatellites.length > 0) {
-        for (const satellite of [...activeSatellites]) {
-          if (!satellite.tpOrderId) continue;
-          adapter.getOrder(satellite.tpOrderId)
-            .then(async (satStatus) => {
-              if (satStatus.status === 'FILLED') {
-                console.log(`🛰️ [${exchange}] Reconcile detected satellite TP ${satellite.tpOrderId} filled`);
+      // Check celestial body TP orders for fills that WebSocket might have missed
+      const activeBodies = positionState.celestialBodies || [];
+      if (activeBodies.length > 0) {
+        for (const body of [...activeBodies]) {
+          if (!body.tpOrderId) continue;
+          adapter.getOrder(body.tpOrderId)
+            .then(async (bodyStatus) => {
+              if (bodyStatus.status === 'FILLED') {
+                const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+                console.log(`${tierCfg.emoji} [${exchange}] Reconcile detected body TP ${body.tpOrderId} filled`);
                 const fillData = {
-                  orderId: satellite.tpOrderId,
+                  orderId: body.tpOrderId,
                   side: 'sell',
                   status: 'FILLED',
-                  filledSize: parseFloat(satStatus.filledSize || 0),
-                  filledValue: parseFloat(satStatus.filledValue || 0),
-                  averageFilledPrice: parseFloat(satStatus.averageFilledPrice || 0),
+                  filledSize: parseFloat(bodyStatus.filledSize || 0),
+                  filledValue: parseFloat(bodyStatus.filledValue || 0),
+                  averageFilledPrice: parseFloat(bodyStatus.averageFilledPrice || 0),
                 };
                 await handleOrderFill(fillData);
               }
             })
-            .catch(() => {}); // Satellite check is non-critical
+            .catch(() => {}); // Body check is non-critical
         }
       }
 
@@ -2487,51 +2557,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
-   * Decide whether a new buy should merge into core or become a satellite
-   * @param {Object} buySummary - Aggregated fill summary from fillLedger
-   * @param {number} buySummary.totalSize - BTC quantity bought
-   * @param {number} buySummary.totalValue - USDC value of buy
-   * @param {number} buySummary.totalFees - Fees paid
-   * @param {number} buySummary.avgPrice - Average fill price
-   * @returns {{merge: boolean, reason: string, improvement?: number}}
+   * Calculate base dynamic TP percentage (without tier adjustments)
+   * Used for candidate TP calculations and merge proximity checks
+   * @returns {number} TP percentage
    */
-  const shouldMergeBuyIntoCore = (buySummary) => {
-    // Always merge if satellite feature is disabled
-    if (!config.satelliteTpEnabled) return { merge: true, reason: 'satellites_disabled' };
-
-    // First buy always goes to core (no existing position to compare)
-    if (positionState.totalBTC <= 0 || positionState.cycleBuys === 0) {
-      return { merge: true, reason: 'first_buy' };
-    }
-
-    // No active core TP to compare against
-    if (!positionState.activeTpOrderId || positionState.lastTpPrice <= 0) {
-      return { merge: true, reason: 'no_active_tp' };
-    }
-
-    // Check satellite capacity
-    const currentSatellites = (positionState.satelliteTpOrders || []).length;
-    if (currentSatellites >= (config.maxSatelliteOrders || 5)) {
-      return { merge: true, reason: 'max_satellites_reached' };
-    }
-
-    // Check order budget: core TP (1) + current satellites + new satellite (1) + entries
-    const pendingCounts = orderExecutor.getPendingCounts();
-    if (pendingCounts.total + 1 >= config.maxOpenOrders) {
-      return { merge: true, reason: 'order_budget_full' };
-    }
-
-    // Calculate how much merging would change the core TP price
-    const priorTP = positionState.lastTpPrice;
-
-    // Simulate merged position
-    const newBtc = buySummary.totalSize;
-    const newCost = buySummary.totalValue + buySummary.totalFees;
-    const mergedBtc = positionState.totalBTC + newBtc;
-    const mergedCost = positionState.totalCostBasis + newCost;
-    const mergedAvg = mergedCost / mergedBtc;
-
-    // Calculate what the merged TP price would be (same logic as calculateDynamicTP but with merged avg)
+  const calculateDynamicTpPercent = () => {
     const { recentSwing, lastPrice } = marketState;
     let tpPercent = recentSwing > 0 && lastPrice > 0
       ? (config.tpMult * recentSwing / lastPrice) * 100
@@ -2540,145 +2570,100 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const regime = regimeDetector.getMode();
     if (regime === 'CAUTION') tpPercent *= 1.5;
     else if (regime === 'TREND') tpPercent *= 0.8;
-    tpPercent = clamp(tpPercent, config.tpMinPercent, config.tpMaxPercent);
 
-    const mergedTP = roundUSDC(mergedAvg * (1 + tpPercent / 100));
+    const macroTpMult = macroRegime ? macroRegime.getMultipliers().tpMult : 1.0;
+    tpPercent *= macroTpMult;
 
-    // Calculate improvement: how much did the TP price drop?
-    const improvement = priorTP > 0
-      ? ((priorTP - mergedTP) / priorTP) * 100
-      : 0;
-
-    const threshold = config.tpMergeMinImprovementPct || 0.1;
-
-    if (improvement >= threshold) {
-      return { merge: true, reason: 'significant_improvement', improvement };
-    }
-
-    return { merge: false, reason: 'hovering_price', improvement };
+    return clamp(tpPercent, config.tpMinPercent, config.tpMaxPercent);
   };
 
   /**
-   * Create a satellite TP order for an independent buy
-   * @param {Object} buySummary - Buy fill summary
-   * @param {string} buyOrderId - Order ID from the buy
-   * @returns {Promise<boolean>} Whether satellite was successfully placed
+   * Place or update TP order for a celestial body
+   * Calculates tier-specific TP, applies holdback, places via executor
+   * @param {Object} body - CelestialBody
+   * @returns {Promise<boolean>} Whether TP was successfully placed
    */
-  const placeSatelliteTp = async (buySummary, buyOrderId) => {
-    const { totalSize, totalValue, totalFees, avgPrice } = buySummary;
-    const costBasis = totalValue + totalFees;
+  const placeBodyTp = async (body) => {
+    // Get tier-specific TP percentage
+    const baseTpPct = calculateDynamicTpPercent();
+    const { tpPercent: tierTpPct } = celestialHierarchy.calculateBodyTpPercent(baseTpPct, body.tier, config.tpMaxPercent);
 
-    // Calculate satellite TP price (same dynamic logic as core)
-    const { recentSwing, lastPrice } = marketState;
-    let tpPercent = recentSwing > 0 && lastPrice > 0
-      ? (config.tpMult * recentSwing / lastPrice) * 100
-      : config.tpMinPercent;
-
-    const regime = regimeDetector.getMode();
-    if (regime === 'CAUTION') tpPercent *= 1.5;
-    else if (regime === 'TREND') tpPercent *= 0.8;
-    tpPercent = clamp(tpPercent, config.tpMinPercent, config.tpMaxPercent);
+    // Get tier holdback scale
+    const tierCfg = celestialHierarchy.getTierConfig(body.tier);
 
     // Minimum profit floor: TP% must clear round-trip fees + $0.01 net profit
-    const satMinTpPct = (2 * 0.0006 * 100) + (0.01 / totalValue * 100);
-    tpPercent = Math.max(tpPercent, satMinTpPct);
+    const feeFloorPct = (2 * 0.0006 * 100) + (0.01 / body.costBasis * 100);
 
-    if (tpPercent > config.tpMaxPercent) {
-      console.log(`🛰️ [${exchange}] Satellite min TP ${tpPercent.toFixed(3)}% exceeds max ${config.tpMaxPercent}% for $${totalValue.toFixed(2)} order, merging into core`);
-      return false;
-    }
+    // Holdback floor: TP% must generate enough profit for at least 1 satoshi holdback
+    // profitPerBTC * holdbackRatio / sellPrice >= 1 sat → profitPerBTC >= 1sat * price / (btcQty * ratio)
+    const holdbackRatio = Math.min((config.holdbackRatio ?? 0.5) * (tierCfg.holdbackScale || 1), 0.95);
+    const holdbackFloorPct = (0.00000001 * body.avgPrice) / (body.btcQty * holdbackRatio) * 100;
 
-    let finalBtcQty = totalSize;
-    let finalCostBasis = costBasis;
-    let finalAvgPrice = avgPrice;
+    const minTpPct = Math.max(feeFloorPct, holdbackFloorPct);
+    const finalTpPct = Math.max(tierTpPct, minTpPct);
 
-    // Consolidation: check if an existing satellite has a TP price within 0.5%
-    const candidateTpPrice = roundUSDC(avgPrice * (1 + tpPercent / 100));
-    if (!positionState.satelliteTpOrders) positionState.satelliteTpOrders = [];
+    const tpPrice = roundUSDC(body.avgPrice * (1 + finalTpPct / 100));
 
-    const existingIdx = positionState.satelliteTpOrders.findIndex(sat => {
-      const priceDiff = Math.abs(sat.tpPrice - candidateTpPrice) / candidateTpPrice * 100;
-      return priceDiff < 0.5;
-    });
-
-    if (existingIdx !== -1) {
-      const existing = positionState.satelliteTpOrders[existingIdx];
-      const cancelled = await orderExecutor.cancelSatelliteTpOrder(existing.orderId);
-
-      if (cancelled) {
-        finalBtcQty = existing.btcQty + totalSize;
-        finalCostBasis = existing.costBasis + costBasis;
-        finalAvgPrice = finalCostBasis / finalBtcQty;
-        positionState.satelliteTpOrders.splice(existingIdx, 1);
-        console.log(`🛰️ [${exchange}] Consolidating with existing satellite (${existing.btcQty.toFixed(6)} BTC @ $${existing.avgPrice.toFixed(2)}) → combined ${finalBtcQty.toFixed(6)} BTC @ $${finalAvgPrice.toFixed(2)}`);
-
-        // Recalculate TP from combined avg price
-        tpPercent = Math.max(tpPercent, (2 * 0.0006 * 100) + (0.01 / finalCostBasis * 100));
-      }
-      // If cancel fails, fall through to independent placement with original values
-    }
-
-    const tpPrice = roundUSDC(finalAvgPrice * (1 + tpPercent / 100));
-
-    // Calculate sell qty with holdback
+    // Calculate sell qty with tier-specific holdback
     const { sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
-      finalBtcQty,
-      finalAvgPrice,
-      tpPrice
+      body.btcQty,
+      body.avgPrice,
+      tpPrice,
+      tierCfg.holdbackScale
     );
 
     if (sellQty <= 0) {
-      console.log(`⚠️ [${exchange}] Satellite sell qty is 0 after holdback, merging into core instead`);
+      console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} sell qty is 0 after holdback`);
       return false;
     }
 
-    const result = await orderExecutor.placeSatelliteTpOrder(sellQty, tpPrice, buyOrderId);
+    const result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id);
 
     if (result.success) {
-      const satellite = {
-        orderId: buyOrderId,
-        btcQty: finalBtcQty,
-        costBasis: finalCostBasis,
-        avgPrice: finalAvgPrice,
-        tpOrderId: result.orderId,
-        tpPrice,
-        btcOnOrder: sellQty,
-        placedAt: Date.now(),
-      };
+      body.tpOrderId = result.orderId;
+      body.tpPrice = tpPrice;
+      body.btcOnOrder = sellQty;
 
-      positionState.satelliteTpOrders.push(satellite);
+      console.log(`${tierCfg.emoji} [${exchange}] Body TP placed (${body.tier}): ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC, body=${body.id.slice(-8)})`);
 
-      const consolidateLabel = existingIdx !== -1 ? ' (consolidated)' : '';
-      console.log(`🛰️ [${exchange}] Satellite TP created${consolidateLabel}: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC, buy=$${finalAvgPrice.toFixed(2)})`);
-
-      tradeEvents.emitTradeEvent('satellite_tp_placed', exchange, `${sellQty} BTC @ $${tpPrice}`, {
-        buyOrderId,
-        btcQty: finalBtcQty,
-        costBasis: finalCostBasis,
-        avgPrice: finalAvgPrice,
+      tradeEvents.emitTradeEvent('body_tp_placed', exchange, `${tierCfg.emoji} ${sellQty} BTC @ $${tpPrice}`, {
+        bodyId: body.id,
+        bodyTier: body.tier,
+        btcQty: body.btcQty,
+        costBasis: body.costBasis,
+        avgPrice: body.avgPrice,
         tpPrice,
         sellQty,
         holdbackQty,
-        consolidated: existingIdx !== -1,
       });
 
       return true;
     }
 
-    console.log(`⚠️ [${exchange}] Failed to place satellite TP, merging into core: ${result.errorMessage}`);
+    console.log(`⚠️ [${exchange}] Failed to place body TP for ${body.id.slice(-8)}: ${result.errorMessage}`);
     return false;
   };
 
   /**
-   * Place or update take-profit order
+   * Place or update take-profit order (legacy compat for untracked core position)
+   * In celestial mode, body TPs are managed via placeBodyTp()
    * @param {Object} [options] - Options
    * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
    */
   const placeTakeProfitOrder = async (options = {}) => {
-    // Calculate TP price first (needed for profit-based holdback calculation)
+    // In celestial mode, update all body TPs instead
+    if (positionState.celestialBodies && positionState.celestialBodies.length > 0) {
+      for (const body of positionState.celestialBodies) {
+        if (!body.tpOrderId) {
+          await placeBodyTp(body);
+        }
+      }
+      return;
+    }
+
+    // Legacy path for untracked core position
     const tpPrice = calculateDynamicTP();
 
-    // Calculate sizing based on profit at TP price
     const { sellQty, holdbackQty, profitBtcValue } = positionSizer.calculateTakeProfitSize(
       positionState.totalBTC,
       positionState.avgCostBasis,
@@ -2701,33 +2686,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
-   * Calculate dynamic take-profit price
+   * Calculate dynamic take-profit price (legacy for core position)
    * @returns {number}
    */
   const calculateDynamicTP = () => {
     const { avgCostBasis } = positionState;
-    const { recentSwing, lastPrice } = marketState;
-
-    // Base TP percentage from recent volatility
-    let tpPercent = recentSwing > 0 && lastPrice > 0
-      ? (config.tpMult * recentSwing / lastPrice) * 100
-      : config.tpMinPercent;
-
-    // Regime adjustments
-    const regime = regimeDetector.getMode();
-    if (regime === 'CAUTION') {
-      tpPercent *= 1.5; // Wider TP, prioritize de-risk
-    } else if (regime === 'TREND') {
-      tpPercent *= 0.8; // Tighter TP, capture rallies
-    }
-
-    // Apply macro regime TP multiplier
-    const macroTpMult = macroRegime ? macroRegime.getMultipliers().tpMult : 1.0;
-    tpPercent *= macroTpMult;
-
-    // Clamp to min/max
-    tpPercent = clamp(tpPercent, config.tpMinPercent, config.tpMaxPercent);
-
+    const tpPercent = calculateDynamicTpPercent();
     return roundUSDC(avgCostBasis * (1 + tpPercent / 100));
   };
 
@@ -2749,13 +2713,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.ladderLowerBound = 0;
     positionState.pendingLadderOrders = [];
 
-    // Preserve satellite TP orders across core cycle resets
-    const activeSatellites = (positionState.satelliteTpOrders || []).length;
-
-    // Reset position state
-    positionState.totalBTC = 0;
-    positionState.totalCostBasis = 0;
-    positionState.avgCostBasis = 0;
+    // Reset cycle counters and entry tracking
     positionState.cycleBuys = 0;
     positionState.activeTpOrderId = null;
     positionState.lastTpPrice = 0;
@@ -2767,12 +2725,23 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     usdcCapWarningLogged = false;
     budgetExhaustedWarningLogged = false;
 
+    // Sync aggregate fields from any remaining bodies
+    const bodies = positionState.celestialBodies || [];
+    if (bodies.length > 0) {
+      celestialHierarchy.syncPositionState(positionState, bodies);
+    } else {
+      positionState.totalBTC = 0;
+      positionState.totalCostBasis = 0;
+      positionState.avgCostBasis = 0;
+    }
+
     // Start new cycle in fill ledger
     fillLedger.startNewCycle();
     riskManager.resetCycleTracking();
 
-    const satLabel = activeSatellites > 0 ? `, ${activeSatellites} satellites preserved` : '';
-    console.log(`🔄 [${exchange}] Cycle reset, starting new cycle${satLabel}`);
+    const bodyCount = bodies.length;
+    const bodyLabel = bodyCount > 0 ? `, ${bodyCount} celestial bodies preserved` : '';
+    console.log(`🔄 [${exchange}] Cycle reset, starting new cycle${bodyLabel}`);
   };
 
   /**
@@ -2793,59 +2762,44 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   // Set up dry-run callbacks now that all functions are defined
   if (isDryRun) {
     dryRunCallbacks.onBuyFill = async (orderId, btcQty, price, costBasis) => {
-      // Build a summary compatible with shouldMergeBuyIntoCore
-      const buySummary = {
-        totalSize: btcQty,
-        totalValue: costBasis,
-        totalFees: 0,
-        avgPrice: price,
-      };
+      const newBuy = { btcQty, costBasis, avgPrice: price, buyOrderId: orderId };
+      const candidateTpPrice = roundUSDC(price * (1 + calculateDynamicTpPercent() / 100));
 
-      const mergeDecision = shouldMergeBuyIntoCore(buySummary);
+      const bodies = positionState.celestialBodies || [];
+      const mergeTarget = celestialHierarchy.findMergeTarget(
+        bodies, newBuy, config.baseSizeUsdc, candidateTpPrice,
+        config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders
+      );
 
-      if (mergeDecision.merge) {
-        positionState.totalBTC = roundBTC(positionState.totalBTC + btcQty);
-        positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + costBasis);
-        positionState.avgCostBasis = positionState.totalBTC > 0
-          ? positionState.totalCostBasis / positionState.totalBTC
-          : 0;
-        positionState.cycleBuys += 1;
-        positionState.lastEntryPrice = price;
-        positionState.lastEntryTime = Date.now();
+      positionState.cycleBuys += 1;
+      positionState.lastEntryPrice = price;
+      positionState.lastEntryTime = Date.now();
 
-        await placeTakeProfitOrder({ forceUpdate: true });
+      if (mergeTarget) {
+        const cancelled = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
+        if (!cancelled) await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
 
-        tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}`, {
-          btcAmount: btcQty,
-          price,
-          avgCostBasis: positionState.avgCostBasis,
-          isDryRun: true,
-          mergeDecision: mergeDecision.reason,
+        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.baseSizeUsdc);
+        const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
+        if (idx !== -1) positionState.celestialBodies[idx] = merged;
+
+        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.baseSizeUsdc);
+        celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+        await placeBodyTp(merged);
+
+        const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
+        tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price} [merged→${merged.tier}]`, {
+          btcAmount: btcQty, price, bodyId: merged.id, bodyTier: merged.tier, isMerge: true, isDryRun: true,
         });
       } else {
-        // Satellite in dry-run: place satellite TP
-        positionState.cycleBuys += 1;
-        positionState.lastEntryPrice = price;
-        positionState.lastEntryTime = Date.now();
+        const body = celestialHierarchy.createNewBody(newBuy, orderId);
+        positionState.celestialBodies = positionState.celestialBodies || [];
+        positionState.celestialBodies.push(body);
+        celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+        await placeBodyTp(body);
 
-        const satellitePlaced = await placeSatelliteTp(buySummary, orderId);
-
-        if (!satellitePlaced) {
-          // Fallback to merge
-          positionState.totalBTC = roundBTC(positionState.totalBTC + btcQty);
-          positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + costBasis);
-          positionState.avgCostBasis = positionState.totalBTC > 0
-            ? positionState.totalCostBasis / positionState.totalBTC
-            : 0;
-          await placeTakeProfitOrder({ forceUpdate: true });
-        }
-
-        tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] [SAT] ${btcQty} BTC @ $${price}`, {
-          btcAmount: btcQty,
-          price,
-          isSatellite: true,
-          isDryRun: true,
-          improvement: mergeDecision.improvement,
+        tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price} [new ${body.tier}]`, {
+          btcAmount: btcQty, price, bodyId: body.id, bodyTier: body.tier, isDryRun: true,
         });
       }
 
@@ -2853,23 +2807,22 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     };
 
     dryRunCallbacks.onSellFill = async (orderId, btcQty, price, proceeds, pnl) => {
-      // Check if this is a satellite TP fill
-      const isSatelliteFill = orderExecutor.isSatelliteTpOrder
-        && orderExecutor.isSatelliteTpOrder(orderId);
-      const satelliteMatch = !isSatelliteFill
-        ? (positionState.satelliteTpOrders || []).find(s => s.tpOrderId === orderId)
-        : null;
+      // Find matching celestial body by TP order ID
+      const bodies = positionState.celestialBodies || [];
+      const bodyIdx = bodies.findIndex(b => b.tpOrderId === orderId);
 
-      if (isSatelliteFill || satelliteMatch) {
-        // SATELLITE TP FILL in dry-run
-        const satellite = satelliteMatch
-          || (positionState.satelliteTpOrders || []).find(s => s.tpOrderId === orderId);
-        const satTotalBtc = satellite ? satellite.btcQty : btcQty;
-        const holdbackBtc = roundBTC(satTotalBtc - btcQty);
+      if (bodyIdx !== -1) {
+        // CELESTIAL BODY TP FILL in dry-run
+        const body = bodies[bodyIdx];
+        const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+        const holdbackBtc = roundBTC(body.btcQty - btcQty);
 
-        positionState.satelliteRealizedPnL = (positionState.satelliteRealizedPnL || 0) + pnl;
-        positionState.satelliteRealizedBtcPnL = (positionState.satelliteRealizedBtcPnL || 0) + holdbackBtc;
-        positionState.satellitesCompleted = (positionState.satellitesCompleted || 0) + 1;
+        const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
+        cs.bodiesCompleted += 1;
+        cs.bodiesRealizedPnL += pnl;
+        cs.bodiesRealizedBtcPnL += holdbackBtc;
+        positionState.celestialState = cs;
+
         positionState.realizedPnL += pnl;
         positionState.realizedBtcPnL += holdbackBtc;
 
@@ -2877,34 +2830,38 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
         updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
 
-        positionState.satelliteTpOrders = (positionState.satelliteTpOrders || []).filter(
-          s => s.tpOrderId !== orderId
-        );
+        positionState.celestialBodies.splice(bodyIdx, 1);
+        orderExecutor.removeBodyTracking(orderId);
+        celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        console.log(`🛰️ [${exchange}] [DRY-RUN] Satellite TP filled: ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc.toFixed(2)}→$${config.maxUsdcDeployed.toFixed(2)}`);
+        console.log(`${tierCfg.emoji} [${exchange}] [DRY-RUN] Body TP filled (${body.tier}): ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc.toFixed(2)}→$${config.maxUsdcDeployed.toFixed(2)}`);
 
-        tradeEvents.emitTradeEvent('satellite_tp_filled', exchange, `[DRY-RUN] 🛰️ ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}`, {
-          btcAmount: btcQty,
-          price,
-          pnl,
-          holdbackBtc,
-          isSatellite: true,
-          isDryRun: true,
+        tradeEvents.emitTradeEvent('body_tp_filled', exchange, `[DRY-RUN] ${tierCfg.emoji} ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}`, {
+          btcAmount: btcQty, price, pnl, holdbackBtc,
+          bodyId: body.id, bodyTier: body.tier, isDryRun: true,
         });
+
+        // If no bodies remain, full cycle reset
+        if (positionState.celestialBodies.length === 0) {
+          positionState.cyclesCompleted += 1;
+          const actualTpPct = body.avgPrice > 0 ? ((price - body.avgPrice) / body.avgPrice) * 100 : 0;
+
+          const optimalAnalytics = orderExecutor.getOptimalTpAnalytics
+            ? orderExecutor.getOptimalTpAnalytics() : null;
+          const lastCycle = optimalAnalytics?.cycles?.[optimalAnalytics.cycles.length - 1];
+          const optimalTpPct = lastCycle?.optimalTpPct || actualTpPct;
+
+          recordCycleForOptimizer({ optimalTpPct, actualTpPct });
+          recordCycleForSizeOptimizer({
+            stepsUsed: positionState.cycleBuys,
+            capitalDeployed: body.costBasis,
+          }, config.maxUsdcDeployed);
+
+          await resetCycle();
+        }
       } else {
-        // CORE TP FILL in dry-run (original logic)
+        // Fallback: untracked sell (legacy core TP or unknown)
         const holdbackBtc = roundBTC(positionState.totalBTC - btcQty);
-
-        const actualTpPct = positionState.avgCostBasis > 0
-          ? ((price - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
-          : 0;
-
-        const optimalAnalytics = orderExecutor.getOptimalTpAnalytics
-          ? orderExecutor.getOptimalTpAnalytics()
-          : null;
-        const lastCycle = optimalAnalytics?.cycles?.[optimalAnalytics.cycles.length - 1];
-        const optimalTpPct = lastCycle?.optimalTpPct || actualTpPct;
-
         positionState.realizedPnL += pnl;
         positionState.realizedBtcPnL += holdbackBtc;
         positionState.btcOnOrder = 0;
@@ -2916,27 +2873,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         console.log(`💰 [${exchange}] [DRY-RUN] Capital growth: $${prevMaxUsdc.toFixed(2)} → $${config.maxUsdcDeployed.toFixed(2)} (+$${pnl.toFixed(2)})`);
 
-        tradeEvents.emitTradeEvent('tp_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`, {
-          btcAmount: btcQty,
-          price,
-          pnl,
-          holdbackBtc,
-          totalRealizedBtc: positionState.realizedBtcPnL,
-          capitalGrowth: pnl,
-          newMaxUsdcDeployed: config.maxUsdcDeployed,
-          isDryRun: true,
+        tradeEvents.emitTradeEvent('tp_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}`, {
+          btcAmount: btcQty, price, pnl, holdbackBtc, isDryRun: true,
         });
 
-        recordCycleForOptimizer({
-          optimalTpPct,
-          actualTpPct,
-        });
-
-        const postCycleBalance = config.maxUsdcDeployed;
+        const actualTpPct = positionState.avgCostBasis > 0
+          ? ((price - positionState.avgCostBasis) / positionState.avgCostBasis) * 100 : 0;
+        recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
         recordCycleForSizeOptimizer({
           stepsUsed: positionState.cycleBuys,
           capitalDeployed: positionState.totalCostBasis,
-        }, postCycleBalance);
+        }, config.maxUsdcDeployed);
 
         await resetCycle();
       }
@@ -2988,16 +2935,21 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             tpPercent: ((order.price - positionState.avgCostBasis) / positionState.avgCostBasis * 100).toFixed(2),
           };
         }
-        // Add cost basis + TP% for satellite_tp orders from their independent position
-        if (order.type === 'satellite_tp') {
-          const sat = (positionState.satelliteTpOrders || []).find(s => s.tpOrderId === order.orderId);
-          const satAvgPrice = sat ? sat.avgPrice : 0;
+        // Add cost basis + TP% for body_tp/satellite_tp orders from their independent position
+        if (order.type === 'body_tp' || order.type === 'satellite_tp') {
+          const body = (positionState.celestialBodies || []).find(b => b.tpOrderId === order.orderId);
+          const sat = !body ? (positionState.satelliteTpOrders || []).find(s => s.tpOrderId === order.orderId) : null;
+          const avgPrice = body ? body.avgPrice : (sat ? sat.avgPrice : 0);
+          const tierCfg = body ? celestialHierarchy.getTierConfig(body.tier) : null;
           return {
             ...order,
-            tpPercent: satAvgPrice > 0 ? ((order.price - satAvgPrice) / satAvgPrice * 100).toFixed(2) : null,
-            satelliteAvgCost: satAvgPrice,
-            satelliteBtcQty: sat ? sat.btcQty : order.size,
-            satelliteCostBasis: sat ? sat.costBasis : 0,
+            tpPercent: avgPrice > 0 ? ((order.price - avgPrice) / avgPrice * 100).toFixed(2) : null,
+            bodyId: body ? body.id : null,
+            bodyTier: body ? body.tier : null,
+            tierEmoji: tierCfg ? tierCfg.emoji : '🛰️',
+            satelliteAvgCost: avgPrice,
+            satelliteBtcQty: body ? body.btcQty : (sat ? sat.btcQty : order.size),
+            satelliteCostBasis: body ? body.costBasis : (sat ? sat.costBasis : 0),
           };
         }
         return order;
@@ -3020,9 +2972,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       entryMode: config.entryMode || 'reactive',
       ladderAutoSwitch: config.ladderAutoSwitch || false,
       ladderLevels: config.ladderLevels || 10,
-      satelliteTpEnabled: config.satelliteTpEnabled || false,
-      tpMergeMinImprovementPct: config.tpMergeMinImprovementPct || 0.1,
-      maxSatelliteOrders: config.maxSatelliteOrders || 5,
+      celestialEnabled: config.celestialEnabled !== false,
+      maxCelestialBodies: config.maxCelestialBodies || 10,
       macroEnabled: config.macroEnabled || false,
     },
     // Effective entry mode (may differ from config due to auto-switch)
@@ -3048,21 +2999,48 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       lowerBound: positionState.ladderLowerBound,
       pendingOrders: positionState.pendingLadderOrders?.length || 0,
     } : null,
+    celestial: {
+      enabled: config.celestialEnabled !== false,
+      bodies: (positionState.celestialBodies || []).map(b => {
+        const tierCfg = celestialHierarchy.getTierConfig(b.tier);
+        return {
+          id: b.id,
+          tier: b.tier,
+          emoji: tierCfg.emoji,
+          btcQty: b.btcQty,
+          costBasis: b.costBasis,
+          avgPrice: b.avgPrice,
+          tpOrderId: b.tpOrderId,
+          tpPrice: b.tpPrice,
+          tpPercent: b.avgPrice > 0 && b.tpPrice > 0 ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2) : null,
+          btcOnOrder: b.btcOnOrder,
+          createdAt: b.createdAt,
+          lastMergedAt: b.lastMergedAt,
+          mergeCount: b.mergeCount,
+        };
+      }),
+      bodiesActive: (positionState.celestialBodies || []).length,
+      bodiesCompleted: positionState.celestialState?.bodiesCompleted || 0,
+      bodiesRealizedPnL: positionState.celestialState?.bodiesRealizedPnL || 0,
+      bodiesRealizedBtcPnL: positionState.celestialState?.bodiesRealizedBtcPnL || 0,
+      tierSummary: celestialHierarchy.getTierSummary(positionState.celestialBodies || []),
+    },
+    // Legacy satellites section for backward compat
     satellites: {
-      enabled: config.satelliteTpEnabled || false,
-      active: (positionState.satelliteTpOrders || []).length,
-      completed: positionState.satellitesCompleted || 0,
-      realizedPnL: positionState.satelliteRealizedPnL || 0,
-      realizedBtcPnL: positionState.satelliteRealizedBtcPnL || 0,
-      orders: (positionState.satelliteTpOrders || []).map(s => ({
-        buyOrderId: s.orderId?.substring(0, 8),
-        tpOrderId: s.tpOrderId,
-        btcQty: s.btcQty,
-        costBasis: s.costBasis,
-        avgPrice: s.avgPrice,
-        tpPrice: s.tpPrice,
-        btcOnOrder: s.btcOnOrder,
-        placedAt: s.placedAt,
+      enabled: config.celestialEnabled !== false,
+      active: (positionState.celestialBodies || []).length,
+      completed: (positionState.celestialState?.bodiesCompleted || 0) + (positionState.satellitesCompleted || 0),
+      realizedPnL: (positionState.celestialState?.bodiesRealizedPnL || 0) + (positionState.satelliteRealizedPnL || 0),
+      realizedBtcPnL: (positionState.celestialState?.bodiesRealizedBtcPnL || 0) + (positionState.satelliteRealizedBtcPnL || 0),
+      orders: (positionState.celestialBodies || []).map(b => ({
+        buyOrderId: b.id?.substring(0, 8),
+        tpOrderId: b.tpOrderId,
+        btcQty: b.btcQty,
+        costBasis: b.costBasis,
+        avgPrice: b.avgPrice,
+        tpPrice: b.tpPrice,
+        btcOnOrder: b.btcOnOrder,
+        placedAt: b.createdAt,
       })),
     },
   });

@@ -612,9 +612,9 @@ const createFillLedger = (exchange) => {
   };
 
   /**
-   * Annotate a fill with additional metadata (e.g. satellite TP data)
+   * Annotate a fill with additional metadata (e.g. celestial body/satellite TP data)
    * @param {string} orderId - Order ID to annotate fills for
-   * @param {Object} metadata - Key-value pairs to merge into the fill
+   * @param {Object} metadata - Key-value pairs to merge into the fill (bodyId, bodyTier, isSatellite, etc.)
    */
   const annotateFillsByOrderId = (orderId, metadata) => {
     for (const [, fill] of fills) {

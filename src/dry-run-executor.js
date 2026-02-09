@@ -22,7 +22,7 @@ const { roundBTC, roundPrice } = require('./volatility-utils');
 /**
  * @typedef {Object} SimulatedOrder
  * @property {string} orderId - Simulated order ID
- * @property {'entry' | 'take_profit' | 'satellite_tp'} type - Order type
+ * @property {'entry' | 'take_profit' | 'satellite_tp' | 'body_tp'} type - Order type
  * @property {'buy' | 'sell'} side - Order side
  * @property {number} price - Limit price
  * @property {number} size - Size in BTC
@@ -92,7 +92,8 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   let activeTpOrderId = null;
 
   /** @type {Map<string, {tpOrderId: string, btcQty: number, tpPrice: number, costBasis: number}>} */
-  const satelliteTpOrders = new Map(); // buyOrderId -> satellite tracking
+  const satelliteTpOrders = new Map(); // buyOrderId -> satellite tracking (legacy alias)
+  const bodyTpOrders = satelliteTpOrders; // Celestial body TP tracking (same Map, new name)
 
   // Satellite simulated P&L tracking
   let simulatedSatelliteRealizedPnL = 0;
@@ -330,7 +331,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     }
 
     for (const [orderId, order] of pendingOrders) {
-      if ((order.type === 'take_profit' || order.type === 'satellite_tp') && order.status === 'open') {
+      if ((order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp') && order.status === 'open') {
         // TP fills if price reaches or exceeds our ask
         if (currentPrice >= order.price) {
           simulateFill(orderId, order.price);
@@ -397,11 +398,11 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       if (callbacks.onBuyFill) {
         callbacks.onBuyFill(orderId, order.size, fillPrice, costBasis);
       }
-    } else if (order.type === 'satellite_tp') {
+    } else if (order.type === 'satellite_tp' || order.type === 'body_tp') {
       simulatedTotalSold += order.size;
 
-      // Look up satellite tracking info for cost basis
-      const satelliteInfo = getSatelliteByTpOrderId(orderId);
+      // Look up satellite/body tracking info for cost basis
+      const satelliteInfo = getBodyByTpOrderId(orderId) || getSatelliteByTpOrderId(orderId);
       const avgBuyPrice = satelliteInfo ? (satelliteInfo.costBasis / satelliteInfo.btcQty) : getAverageEntryPrice();
       const costBasis = order.size * avgBuyPrice;
       const proceeds = order.size * fillPrice;
@@ -430,7 +431,8 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       });
       console.log(`🧪 [${exchange}] [DRY-RUN] Satellite TP FILLED: ${order.size} BTC @ $${fillPrice}, PnL=$${pnl.toFixed(2)}`);
 
-      // Remove satellite tracking
+      // Remove satellite/body tracking
+      removeBodyTracking(orderId);
       removeSatelliteTracking(orderId);
 
       // Notify callback for position update
@@ -695,6 +697,123 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   };
 
   // ============================================================================
+  // Celestial Body TP Functions (wrappers over satellite TP for new naming)
+  // ============================================================================
+
+  /**
+   * Place a body TP sell order (simulated, celestial hierarchy)
+   * @param {number} btcQty - BTC quantity to sell
+   * @param {number} tpPrice - Take-profit price
+   * @param {string} bodyId - Celestial body ID
+   * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
+   */
+  const placeBodyTpOrder = async (btcQty, tpPrice, bodyId) => {
+    const roundedPrice = roundPrice(tpPrice);
+    const roundedQty = roundBTC(btcQty);
+    const orderId = generateOrderId();
+
+    const order = {
+      orderId,
+      type: 'body_tp',
+      side: 'sell',
+      price: roundedPrice,
+      size: roundedQty,
+      sizeUsdc: roundedQty * roundedPrice,
+      placedAt: Date.now(),
+      status: 'open',
+      filledAt: null,
+      fillPrice: null,
+    };
+
+    pendingOrders.set(orderId, order);
+    bodyTpOrders.set(bodyId, {
+      tpOrderId: orderId,
+      btcQty: roundedQty,
+      tpPrice: roundedPrice,
+      costBasis: roundedQty * roundedPrice,
+    });
+
+    console.log(`🧪 [${exchange}] [DRY-RUN] Body TP placed: ${roundedQty} BTC @ $${roundedPrice} (body=${bodyId.slice(-8)})`);
+    return { success: true, orderId };
+  };
+
+  /**
+   * Cancel a specific body TP order (simulated)
+   * @param {string} bodyId - Celestial body ID
+   * @returns {Promise<boolean>}
+   */
+  const cancelBodyTpOrder = async (bodyId) => {
+    const body = bodyTpOrders.get(bodyId);
+    if (!body) return true;
+    pendingOrders.delete(body.tpOrderId);
+    bodyTpOrders.delete(bodyId);
+    return true;
+  };
+
+  /**
+   * Check if an order ID is a body TP order
+   * @param {string} orderId - Order ID to check
+   * @returns {boolean}
+   */
+  const isBodyTpOrder = (orderId) => {
+    for (const body of bodyTpOrders.values()) {
+      if (body.tpOrderId === orderId) return true;
+    }
+    return false;
+  };
+
+  /**
+   * Get body tracking info by TP order ID
+   * @param {string} tpOrderId - Sell order ID
+   * @returns {{bodyId: string, btcQty: number, tpPrice: number, costBasis: number}|null}
+   */
+  const getBodyByTpOrderId = (tpOrderId) => {
+    for (const [bodyId, body] of bodyTpOrders) {
+      if (body.tpOrderId === tpOrderId) {
+        return { bodyId, ...body };
+      }
+    }
+    return null;
+  };
+
+  /**
+   * Restore body TP order tracking (for state recovery)
+   * @param {string} bodyId - Body ID
+   * @param {string} tpOrderId - Sell order ID
+   * @param {number} btcQty - BTC quantity
+   * @param {number} tpPrice - TP price
+   */
+  const restoreBodyTpOrder = (bodyId, tpOrderId, btcQty, tpPrice) => {
+    bodyTpOrders.set(bodyId, { tpOrderId, btcQty, tpPrice, costBasis: btcQty * tpPrice });
+    pendingOrders.set(tpOrderId, {
+      orderId: tpOrderId,
+      type: 'body_tp',
+      side: 'sell',
+      price: tpPrice,
+      size: btcQty,
+      sizeUsdc: btcQty * tpPrice,
+      placedAt: Date.now(),
+      status: 'open',
+      filledAt: null,
+      fillPrice: null,
+    });
+  };
+
+  /**
+   * Remove body tracking after fill or cancel
+   * @param {string} tpOrderId - Sell order ID that was filled/cancelled
+   */
+  const removeBodyTracking = (tpOrderId) => {
+    for (const [bodyId, body] of bodyTpOrders) {
+      if (body.tpOrderId === tpOrderId) {
+        bodyTpOrders.delete(bodyId);
+        pendingOrders.delete(tpOrderId);
+        return;
+      }
+    }
+  };
+
+  // ============================================================================
 
   /**
    * Handle order fill notification (passthrough for compatibility)
@@ -718,7 +837,8 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
         activeTpOrderId = null;
         lastTpPrice = 0;
         lastTpSize = 0;
-      } else if (order.type === 'satellite_tp') {
+      } else if (order.type === 'satellite_tp' || order.type === 'body_tp') {
+        removeBodyTracking(orderId);
         removeSatelliteTracking(orderId);
       }
     }
@@ -737,7 +857,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       if (order.status === 'open') {
         if (order.type === 'entry') entries++;
         else if (order.type === 'take_profit') takeProfits++;
-        else if (order.type === 'satellite_tp') satellites++;
+        else if (order.type === 'satellite_tp' || order.type === 'body_tp') satellites++;
       }
     }
 
@@ -909,7 +1029,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   const getBtcOnOrder = () => {
     let total = 0;
     for (const order of pendingOrders.values()) {
-      if ((order.type === 'take_profit' || order.type === 'satellite_tp') && order.status === 'open') {
+      if ((order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp') && order.status === 'open') {
         total += order.size;
       }
     }
@@ -1134,7 +1254,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     clearPendingOrders,
     restorePendingOrder,
 
-    // Satellite TP functions
+    // Satellite TP functions (legacy aliases)
     placeSatelliteTpOrder,
     cancelSatelliteTpOrder,
     cancelAllSatelliteTpOrders,
@@ -1142,6 +1262,13 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     getSatelliteByTpOrderId,
     restoreSatelliteTpOrder,
     removeSatelliteTracking,
+    // Celestial body TP functions
+    placeBodyTpOrder,
+    cancelBodyTpOrder,
+    isBodyTpOrder,
+    getBodyByTpOrderId,
+    restoreBodyTpOrder,
+    removeBodyTracking,
 
     // Dry-run specific methods
     checkTpFills,
