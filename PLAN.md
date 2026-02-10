@@ -451,6 +451,20 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
   - Admin UI displays `#1`, `#2`, etc. for clean cycle identification
   - Cycle comparison uses numeric ordering instead of timestamp parsing
 
+### Cycle-Grouped Filled Orders (v2.5.18)
+- **Filled Orders card redesign**: Two-level hierarchy Cycle > Sell > Buys (live mode only)
+  - `expandedCycles` state (Set) tracks which cycle sections are expanded
+  - Most recent cycle auto-expanded on mount via useEffect + useRef init guard
+  - Cycle headers show colored badge (blue=current, green=completed, gray=unassigned), sell/buy counts, aggregated BTC + P&L
+  - Per-cycle subtotal row when multiple sells in a cycle
+  - Grand totals bar at top shows sell count, cycle count, total BTC, total P&L
+  - Cycle column removed from sell table (context provided by parent header)
+  - Header shows cycle count alongside fill count: "23 fills (5 cycles)"
+  - Toggle All/Current Cycles resets expandedCycles and re-inits auto-expand
+- **DryRun mode**: Flat table rendering preserved (no cycle grouping, no regression)
+- **DRY rendering**: Shared `renderSellRow` helper and `tableHeader` variable used by both paths
+- **Edge cases**: null cycleId grouped as "Unassigned" (gray badge, sorted last)
+
 ---
 
 ## Architecture
