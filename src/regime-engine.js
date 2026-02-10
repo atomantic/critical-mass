@@ -2614,8 +2614,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Enforce minimum order size floor (after all multipliers, skip zero-size regimes)
     const minSize = config.minOrderSizeUsdc || exchangeConfig.minOrderSize || 1;
-    if (sizing.sizeUsdc > 0 && sizing.sizeUsdc < minSize) {
-      sizing.sizeUsdc = minSize;
+    const remainingBudget = roundUSDC(Math.max(0, config.maxUsdcDeployed - positionState.totalCostBasis));
+    if (sizing.sizeUsdc > 0) {
+      // If remaining budget can't fit 2 orders at minimum, use it all in one last order
+      if (remainingBudget > 0 && remainingBudget < minSize * 2) {
+        sizing.sizeUsdc = remainingBudget;
+      } else if (sizing.sizeUsdc < minSize) {
+        sizing.sizeUsdc = minSize;
+      }
     }
 
     // Check risk caps
