@@ -442,6 +442,15 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
 - One-time repair script: `scripts/repair-sell-linkage.js` (fixes 23 mismapped fills)
 - Documentation: `docs/fill-ledger-sell-linkage.md`
 
+### Sell Order Dedup Guard & Sequential Cycle IDs (v2.5.15)
+- **Sell-fill dedup**: `recentlyProcessedSellFills` Set with 5-min TTL prevents double-processing when WS/reconcile/polling race
+  - Fixes catastrophic state corruption where untracked fallback path treated entire position as holdback
+- **Sequential cycle IDs**: Cycles now use `cycle-1`, `cycle-2`, etc. instead of `cycle-{timestamp}-{random}`
+  - `startNewCycle()` uses auto-incrementing counter
+  - `recalculateCycles()` renumbers all existing cycles sequentially on startup
+  - Admin UI displays `#1`, `#2`, etc. for clean cycle identification
+  - Cycle comparison uses numeric ordering instead of timestamp parsing
+
 ---
 
 ## Architecture
