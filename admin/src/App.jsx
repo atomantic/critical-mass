@@ -12,6 +12,7 @@ import Backtest from './components/Backtest'
 import Optimizer from './components/Optimizer'
 import ExchangeSelector from './components/ExchangeSelector'
 import KeysConfig from './components/KeysConfig'
+import NotificationsConfig from './components/NotificationsConfig'
 import RegimeDashboard from './components/RegimeDashboard'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
@@ -363,6 +364,12 @@ function AppContent() {
                   </div>
                 )}
                 <Link
+                  to="/notifications"
+                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  Notifications
+                </Link>
+                <Link
                   to={`/${currentExchange}/keys`}
                   className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
                 >
@@ -436,6 +443,9 @@ function AppContent() {
               <Route path="/:exchange/regime/transactions" element={<TransactionsRegime exchange={currentExchange} />} />
               <Route path="/:exchange/regime/charts" element={<ChartsRegime exchange={currentExchange} />} />
               <Route path="/:exchange/regime/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy="regime" />} />
+
+              {/* Notifications - global (not exchange-specific) */}
+              <Route path="/notifications" element={<NotificationsConfig />} />
 
               {/* API Keys - shared per exchange (not strategy-specific) */}
               <Route path="/:exchange/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />

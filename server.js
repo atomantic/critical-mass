@@ -33,6 +33,8 @@ const { createRegimeEngine } = require('./src/regime-engine');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig } = require('./src/config-utils');
 const { startMarketDataService, stopMarketDataService, getMarketDataService, stopAllMarketDataServices } = require('./src/market-data-service');
 const { getChartDataBuffer, getChartData, shutdownAllBuffers } = require('./src/chart-data-buffer');
+const { createNotifier } = require('./src/notifier');
+const { getNotificationConfig, updateNotificationConfig } = require('./src/config-utils');
 
 // Active regime engines by exchange
 const regimeEngines = new Map();
@@ -69,6 +71,9 @@ const io = new Server(server, {
   cors: { origin: '*' }
 });
 const PORT = process.env.PORT || 5563;
+
+// Notification system
+const notifier = createNotifier();
 
 // Middleware
 app.use(cors());
@@ -1644,6 +1649,40 @@ app.post('/api/:exchange/optimizer/run', (req, res) => {
     });
 });
 
+// ============ Notification API ============
+
+app.get('/api/notifications/config', (req, res) => {
+  const config = getNotificationConfig();
+  // Mask token for security
+  const masked = {
+    ...config,
+    telegram: {
+      ...config.telegram,
+      botToken: config.telegram.botToken
+        ? config.telegram.botToken.slice(0, 6) + '...' + config.telegram.botToken.slice(-4)
+        : '',
+    },
+  };
+  res.json(masked);
+});
+
+app.put('/api/notifications/config', (req, res) => {
+  const updates = req.body;
+  updateNotificationConfig(updates);
+  notifier.updateConfig(updates);
+  res.json({ success: true });
+});
+
+app.post('/api/notifications/test', (req, res) => {
+  notifier.sendTest()
+    .then(result => res.json(result))
+    .catch(err => res.status(500).json({ success: false, error: err.message }));
+});
+
+app.get('/api/notifications/stats', (req, res) => {
+  res.json(notifier.getStats());
+});
+
 // ============ Static Files ============
 
 app.use(express.static(path.join(__dirname, 'admin', 'dist')));
@@ -1786,6 +1825,9 @@ server.listen(PORT, async () => {
     }
   }
 
+  // Start notification system
+  notifier.start(() => regimeEngines);
+
   // Check for scheduled trades every 30 seconds
   const globalConfig = getGlobalConfig();
   setInterval(checkAndRunIntervalTrade, globalConfig.schedulerInterval || 30000);
@@ -1812,6 +1854,9 @@ const gracefulShutdown = async (signal) => {
 
   await Promise.all(stopPromises);
   log('INFO', 'All regime engines stopped');
+
+  // Stop notification system
+  notifier.stop();
 
   // Flush chart data buffers to disk
   shutdownAllBuffers();

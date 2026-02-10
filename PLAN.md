@@ -494,7 +494,8 @@ src/
 ├── websocket-feed.js   # Coinbase WebSocket real-time feed
 ├── fill-ledger.js      # Idempotent fill tracking with cost basis
 ├── recovery.js         # Startup state recovery from exchange
-└── trade-events.js     # Trade event emitter for WebSocket updates
+├── trade-events.js     # Trade event emitter for WebSocket updates
+└── notifier.js         # Telegram notification system (event routing, batching, daily summaries)
 
 admin/src/components/
 ├── celestial/          # 3D celestial system visualization
@@ -529,6 +530,7 @@ admin/src/components/
 ├── RegimeDashboard.jsx    # Regime engine control panel with live charts
 ├── ConfigEditor.jsx       # Strategy-aware configuration editor
 ├── ExchangeSelector.jsx   # Exchange + Strategy selector dropdown
+├── NotificationsConfig.jsx # Telegram notification settings page
 └── ...                    # Other components
 
 admin/src/hooks/
@@ -588,6 +590,12 @@ GET  /api/:exchange/transactions - Get transaction history
 GET  /api/:exchange/cost-basis   - Get cost basis report
 POST /api/:exchange/backtest     - Run backtest simulation
 POST /api/:exchange/optimize     - Run parameter optimization
+
+# Notifications (global, not exchange-specific)
+GET  /api/notifications/config   - Get notification config (token masked)
+PUT  /api/notifications/config   - Update notification config
+POST /api/notifications/test     - Send test Telegram message
+GET  /api/notifications/stats    - Get notifier stats
 ```
 
 ---
@@ -616,7 +624,7 @@ Required methods for each adapter:
 - Advanced order types (trailing stops)
 - Portfolio rebalancing
 - Tax reporting exports
-- Mobile notifications
+- Mobile notifications (push; Telegram notifications implemented in v2.5)
 
 ---
 
