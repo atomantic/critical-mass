@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.svg" alt="Critical Mass logo" width="128" height="128" />
+</p>
+
 # Critical Mass
 
 Multi-exchange BTC accumulation engine with celestial position management.
