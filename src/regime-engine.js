@@ -240,6 +240,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let stateSaveInterval = null;
   let entryInProgress = false; // Lock to prevent concurrent entry evaluations
   const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
+  const recentlyProcessedSellFills = new Set(); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
 
   /**
    * Handle TP optimizer adjustment
@@ -1297,7 +1298,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         // 3. Fix fills with wrong cycle IDs (e.g., recovered-* cycles that belong here)
         // Only move fills that are within the current cycle's timeframe
-        const cycleStartTs = parseInt(currentCycleId.replace('cycle-', '').split('-')[0], 10);
+        const currentCycleFills = fillLedger.getCurrentCycleFills();
+        const cycleStartTs = currentCycleFills.length > 0
+          ? Math.min(...currentCycleFills.map(f => f.timestamp))
+          : Date.now();
         const allFillsRaw = fillLedger.getAllFills();
         for (const fill of allFillsRaw) {
           if (fill.cycleId && fill.cycleId.includes('-recovered-')
@@ -1886,6 +1890,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       fillLedger.persist();
 
     } else if (fillData.side.toLowerCase() === 'sell') {
+      // Sell-fill dedup: skip if already processed (prevents double-processing across WS/reconcile/polling)
+      if (recentlyProcessedSellFills.has(fillData.orderId)) {
+        console.log(`⏭️ [${exchange}] Sell fill already processed, skipping: ${fillData.orderId}`);
+        return;
+      }
+      recentlyProcessedSellFills.add(fillData.orderId);
+      setTimeout(() => recentlyProcessedSellFills.delete(fillData.orderId), 5 * 60 * 1000);
+
       // UNIFIED BODY TP FILL — find matching celestial body by TP order ID
       const summary = fillLedger.aggregateFills(fillsToAggregate);
 
@@ -2600,6 +2612,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const macroMult = macroRegime ? macroRegime.getMultipliers() : { sizeMult: 1.0, tpMult: 1.0, offsetMult: 1.0 };
     sizing.sizeUsdc = roundUSDC(sizing.sizeUsdc * macroMult.sizeMult);
 
+    // Enforce minimum order size floor (after all multipliers, skip zero-size regimes)
+    const minSize = config.minOrderSizeUsdc || exchangeConfig.minOrderSize || 1;
+    if (sizing.sizeUsdc > 0 && sizing.sizeUsdc < minSize) {
+      sizing.sizeUsdc = minSize;
+    }
+
     // Check risk caps
     const btcQty = positionSizer.calculateBTCQuantity(sizing.sizeUsdc, marketState.bid);
     const riskCheck = riskManager.canPlaceEntry(positionState, btcQty, sizing.sizeUsdc);
@@ -2624,14 +2642,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return;
     }
 
-    // Check minimum size (with spam protection for budget exhausted)
-    if (!positionSizer.meetsMinimum(sizing.sizeUsdc, exchangeConfig.minOrderSize || 1)) {
-      const isBudgetExhausted = sizing.sizeUsdc <= 0;
-      if (!isBudgetExhausted || !budgetExhaustedWarningLogged) {
-        console.log(`ℹ️ [${exchange}] ${isBudgetExhausted ? 'Budget exhausted' : `Size $${sizing.sizeUsdc} below minimum`}`);
-        if (isBudgetExhausted) {
-          budgetExhaustedWarningLogged = true;
-        }
+    // Check for zero/budget-exhausted (with spam protection)
+    if (sizing.sizeUsdc <= 0) {
+      if (!budgetExhaustedWarningLogged) {
+        console.log(`ℹ️ [${exchange}] Budget exhausted`);
+        budgetExhaustedWarningLogged = true;
       }
       return;
     }

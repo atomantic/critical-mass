@@ -36,6 +36,7 @@ const createFillLedger = (exchange) => {
   /** @type {Map<string, Fill>} */
   const fills = new Map();
   let currentCycleId = null;
+  let nextCycleNumber = 1;
 
   /**
    * Load fill ledger from disk
@@ -80,6 +81,17 @@ const createFillLedger = (exchange) => {
         break;
       }
     }
+
+    // Initialize nextCycleNumber from existing cycle IDs
+    let maxCycleNum = 0;
+    for (const fill of fills.values()) {
+      if (!fill.cycleId) continue;
+      const match = fill.cycleId.match(/^cycle-(\d+)$/);
+      if (match) {
+        maxCycleNum = Math.max(maxCycleNum, parseInt(match[1], 10));
+      }
+    }
+    nextCycleNumber = maxCycleNum + 1;
 
     console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
   };
@@ -234,7 +246,8 @@ const createFillLedger = (exchange) => {
    * @returns {string} New cycle ID
    */
   const startNewCycle = () => {
-    currentCycleId = `cycle-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    currentCycleId = `cycle-${nextCycleNumber}`;
+    nextCycleNumber++;
     console.log(`🔄 [${exchange}] Started new cycle: ${currentCycleId}`);
     return currentCycleId;
   };
@@ -583,8 +596,54 @@ const createFillLedger = (exchange) => {
       }
     }
 
-    // Persist the cycle ID assignments
-    if (orphansFixed > 0) {
+    // Renumber all cycles sequentially (cycle-1, cycle-2, etc.)
+    const cycleTimestamps = new Map();
+    for (const fill of Array.from(fills.values())) {
+      if (!fill.cycleId) continue;
+      const existing = cycleTimestamps.get(fill.cycleId);
+      if (!existing || fill.timestamp < existing) {
+        cycleTimestamps.set(fill.cycleId, fill.timestamp);
+      }
+    }
+
+    const completedIds = new Set(cycleDetails.map(d => d.cycleId));
+    const completedEntries = [];
+    const activeEntries = [];
+    for (const [id, ts] of cycleTimestamps) {
+      if (completedIds.has(id)) completedEntries.push([id, ts]);
+      else activeEntries.push([id, ts]);
+    }
+    completedEntries.sort((a, b) => a[1] - b[1]);
+    activeEntries.sort((a, b) => a[1] - b[1]);
+
+    let cycleNum = 1;
+    let renumbered = 0;
+    const idMap = new Map();
+    for (const [oldId] of [...completedEntries, ...activeEntries]) {
+      const newId = `cycle-${cycleNum}`;
+      idMap.set(oldId, newId);
+      if (oldId !== newId) renumbered++;
+      cycleNum++;
+    }
+
+    if (renumbered > 0) {
+      for (const fill of Array.from(fills.values())) {
+        if (fill.cycleId && idMap.has(fill.cycleId)) {
+          fill.cycleId = idMap.get(fill.cycleId);
+          fills.set(fill.tradeId, fill);
+        }
+      }
+      for (const detail of cycleDetails) {
+        if (idMap.has(detail.cycleId)) detail.cycleId = idMap.get(detail.cycleId);
+      }
+      if (currentCycleId && idMap.has(currentCycleId)) {
+        currentCycleId = idMap.get(currentCycleId);
+      }
+      console.log(`🔢 [${exchange}] Renumbered ${renumbered} cycles to sequential IDs (cycle-1 through cycle-${cycleNum - 1})`);
+    }
+    nextCycleNumber = cycleNum;
+
+    if (orphansFixed > 0 || renumbered > 0) {
       persist();
     }
 

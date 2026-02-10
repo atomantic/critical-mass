@@ -446,13 +446,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     if (showAllCycles) {
       return liveFills
     }
-    // Find the most recent cycleId by parsing the timestamp embedded in the cycleId
+    // Find the most recent cycleId by comparing cycle numbers
     const currentCycleId = liveFills.reduce((latest, f) => {
       if (!f.cycleId) return latest
       if (!latest) return f.cycleId
-      const latestTime = parseInt(latest.split('-')[1]) || 0
-      const fillTime = parseInt(f.cycleId.split('-')[1]) || 0
-      return fillTime > latestTime ? f.cycleId : latest
+      const latestNum = parseInt(latest.replace('cycle-', '')) || 0
+      const fillNum = parseInt(f.cycleId.replace('cycle-', '')) || 0
+      return fillNum > latestNum ? f.cycleId : latest
     }, null)
     return liveFills.filter(f => f.cycleId === currentCycleId)
   }, [liveFills, showAllCycles])
@@ -1309,7 +1309,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <div className="text-xs text-gray-400 mb-1">Completed Cycles:</div>
                       {recalcPreview.cycleDetails.map((cycle, i) => (
                         <div key={i} className="text-xs text-gray-500 pl-2">
-                          {cycle.cycleId?.slice(0, 20)}... - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackBtc?.toFixed(8)} BTC
+                          {cycle.cycleId?.replace('cycle-', '#')} - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackBtc?.toFixed(8)} BTC
                         </div>
                       ))}
                     </div>
