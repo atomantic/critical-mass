@@ -421,6 +421,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [recalcPreview, setRecalcPreview] = useState(null)
   const [expandedOrders, setExpandedOrders] = useState(new Set())
   const [expandedFills, setExpandedFills] = useState(new Set())
+  const [expandedCycles, setExpandedCycles] = useState(new Set())
   const prevPriceRef = useRef(null)
 
   const { status: socketStatus } = useRegimeEvents(exchange)
@@ -456,6 +457,27 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }, null)
     return liveFills.filter(f => f.cycleId === currentCycleId)
   }, [liveFills, showAllCycles])
+
+  // Derive the most recent cycle ID from filtered fills
+  const mostRecentCycleId = useMemo(() => {
+    if (!filteredFills || filteredFills.length === 0) return null
+    return filteredFills.reduce((latest, f) => {
+      if (!f.cycleId) return latest
+      if (!latest) return f.cycleId
+      const latestNum = parseInt(latest.replace('cycle-', '')) || 0
+      const fillNum = parseInt(f.cycleId.replace('cycle-', '')) || 0
+      return fillNum > latestNum ? f.cycleId : latest
+    }, null)
+  }, [filteredFills])
+
+  // Auto-expand most recent cycle on mount / when cycle list changes
+  const cycleInitRef = useRef(false)
+  useEffect(() => {
+    if (mostRecentCycleId && !cycleInitRef.current) {
+      setExpandedCycles(new Set([mostRecentCycleId]))
+      cycleInitRef.current = true
+    }
+  }, [mostRecentCycleId])
 
   // Track previous price for animation
   useEffect(() => {
@@ -1752,7 +1774,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               <div className="flex items-center gap-3">
                 {!isDryRun && liveFills?.length > 0 && (
                   <button
-                    onClick={() => setShowAllCycles(!showAllCycles)}
+                    onClick={() => { setShowAllCycles(!showAllCycles); setExpandedCycles(new Set()); cycleInitRef.current = false }}
                     className={`text-xs px-2 py-1 rounded transition-colors ${
                       showAllCycles
                         ? 'bg-blue-600 text-white'
@@ -1768,6 +1790,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       ? dryRunState.filledOrders.length
                       : filteredFills.length
                     } fills
+                    {!isDryRun && (() => {
+                      const cc = new Set(filteredFills.map(f => f.cycleId).filter(Boolean)).size
+                      return cc > 0 ? ` (${cc} ${cc === 1 ? 'cycle' : 'cycles'})` : ''
+                    })()}
                   </span>
                 )}
               </div>
@@ -1953,128 +1979,237 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                   // Totals
                   const totalSize = sellGroups.reduce((s, g) => s + (g.sell.size || 0), 0)
-                  const totalPnl = sellGroups.reduce((s, g) => s + (isDryRun ? (g.sell.pnl || 0) : (g.sell.pnl || 0)), 0)
+                  const totalPnl = sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)
                   const totalHoldback = sellGroups.reduce((s, g) => s + (isDryRun ? (g.sell.holdbackBtc || 0) : (g.sell.holdback || 0)), 0)
 
-                  return (
-                    <div className="overflow-x-auto max-h-96 overflow-y-auto">
-                      <table className="w-full text-sm">
-                        <thead className="sticky top-0 bg-gray-800 z-10">
-                          <tr className="text-gray-400 text-xs border-b border-gray-700">
-                            <th className="text-left py-1.5 pr-1 w-6"></th>
-                            {!isDryRun && showAllCycles && <th className="text-left py-1.5 pr-2">Cycle</th>}
-                            <th className="text-left py-1.5 pr-2">Order ID</th>
-                            <th className="text-right py-1.5 pr-2">Size (BTC)</th>
-                            <th className="text-right py-1.5 pr-2">Price</th>
-                            <th className="text-right py-1.5 pr-2">Value</th>
-                            <th className="text-right py-1.5 pr-2">P&L</th>
-                            <th className="text-right py-1.5">Filled</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sellGroups.length > 1 && (
-                            <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
-                              <td className="py-1.5 pr-1"></td>
-                              {!isDryRun && showAllCycles && <td className="py-1.5 pr-2"></td>}
-                              <td className="py-1.5 pr-2 text-gray-400 text-xs">Totals ({sellGroups.length} sells)</td>
-                              <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{totalSize.toFixed(8)}</td>
-                              <td className="text-right py-1.5 pr-2"></td>
-                              <td className="text-right py-1.5 pr-2"></td>
-                              <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
-                                {totalHoldback > 0 && <span className="ml-1 text-cyan-400" title="Total holdback">+{totalHoldback.toFixed(8)}</span>}
-                              </td>
-                              <td className="text-right py-1.5"></td>
-                            </tr>
-                          )}
-                          {sellGroups.map(group => {
-                            const isExpanded = expandedFills.has(group.key)
-                            const sell = group.sell
-                            const buys = group.buys
-                            const sellPrice = sell.fillPrice || sell.price
-                            const sellValue = sell.quoteAmount || ((sell.size || 0) * (sellPrice || 0))
-                            const sellPnl = sell.pnl ?? null
-                            const sellHoldback = isDryRun ? sell.holdbackBtc : sell.holdback
-                            const sellTime = sell.filledAt || sell.timestamp
+                  // Shared sell + buy row renderer
+                  const renderSellRow = (group) => {
+                    const isExpanded = expandedFills.has(group.key)
+                    const sell = group.sell
+                    const buys = group.buys
+                    const sellPrice = sell.fillPrice || sell.price
+                    const sellValue = sell.quoteAmount || ((sell.size || 0) * (sellPrice || 0))
+                    const sellPnl = sell.pnl ?? null
+                    const sellHoldback = isDryRun ? sell.holdbackBtc : sell.holdback
+                    const sellTime = sell.filledAt || sell.timestamp
 
-                            return (
-                              <React.Fragment key={group.key}>
-                                <tr
-                                  className="border-b border-gray-700 cursor-pointer hover:bg-gray-700/40 transition-colors"
-                                  onClick={() => toggleFill(group.key)}
-                                >
-                                  <td className="py-1.5 pr-1 text-gray-500 text-xs">
-                                    <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
-                                  </td>
-                                  {!isDryRun && showAllCycles && (
-                                    <td className="py-1.5 pr-2 text-xs text-gray-500">
-                                      {sell.cycleId ? sell.cycleId.replace('cycle-', '#') : 'current'}
-                                    </td>
-                                  )}
-                                  <td className="py-1.5 pr-2 font-mono text-xs text-gray-400">
-                                    {sell.orderId}
-                                    {buys.length > 0 && <span className="text-gray-600 ml-1">({buys.length} {buys.length === 1 ? 'buy' : 'buys'})</span>}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    {sell.size?.toFixed(8)}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                                    ${sellPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </td>
-                                  <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
-                                    ${sellValue.toFixed(2)}
-                                  </td>
-                                  <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
-                                    sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'
-                                  }`}>
-                                    {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}$${sellPnl.toFixed(2)}` : '—'}
-                                    {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title="Holdback BTC">+{sellHoldback.toFixed(8)}</span>}
-                                  </td>
-                                  <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
-                                    {formatTimestamp(sellTime)}
-                                  </td>
-                                </tr>
-                                {/* Expanded buy sub-rows */}
-                                {isExpanded && buys.map((buy, idx) => {
-                                  const buyPrice = buy.fillPrice || buy.price
-                                  const buyValue = buy.quoteAmount || ((buy.size || 0) * (buyPrice || 0))
-                                  const buyTime = buy.filledAt || buy.timestamp
-                                  const fillTimeMs = isDryRun
-                                    ? (buy.filledAt && buy.placedAt ? buy.filledAt - buy.placedAt : null)
-                                    : buy.fillTimeMs
-                                  return (
-                                    <tr key={`${group.key}-buy-${buy.orderId || buy.tradeId}-${idx}`}
-                                      className="border-b border-gray-700/30 bg-gray-750/20"
-                                    >
-                                      <td className="py-1 pr-1"></td>
-                                      {!isDryRun && showAllCycles && <td className="py-1 pr-2"></td>}
-                                      <td className="py-1 pr-2 font-mono text-xs text-gray-500 pl-5">
-                                        <span className="text-green-400/70 mr-1">BUY</span>
-                                        {buy.orderId}
-                                      </td>
-                                      <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                        {buy.size?.toFixed(8)}
-                                      </td>
-                                      <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                        ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                      </td>
-                                      <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
-                                        ${buyValue.toFixed(2)}
-                                      </td>
-                                      <td className="text-right py-1 pr-2 font-mono text-xs text-gray-600">
-                                        {fillTimeMs !== null ? formatDuration(fillTimeMs) : ''}
-                                      </td>
-                                      <td className="text-right py-1 font-mono text-xs text-gray-500">
-                                        {formatTimestamp(buyTime)}
-                                      </td>
-                                    </tr>
-                                  )
-                                })}
-                              </React.Fragment>
-                            )
-                          })}
-                        </tbody>
-                      </table>
+                    return (
+                      <React.Fragment key={group.key}>
+                        <tr
+                          className="border-b border-gray-700 cursor-pointer hover:bg-gray-700/40 transition-colors"
+                          onClick={() => toggleFill(group.key)}
+                        >
+                          <td className="py-1.5 pr-1 text-gray-500 text-xs">
+                            <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                          </td>
+                          <td className="py-1.5 pr-2 font-mono text-xs text-gray-400">
+                            {sell.orderId}
+                            {buys.length > 0 && <span className="text-gray-600 ml-1">({buys.length} {buys.length === 1 ? 'buy' : 'buys'})</span>}
+                          </td>
+                          <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                            {sell.size?.toFixed(8)}
+                          </td>
+                          <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
+                            ${sellPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
+                            ${sellValue.toFixed(2)}
+                          </td>
+                          <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
+                            sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'
+                          }`}>
+                            {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}$${sellPnl.toFixed(2)}` : '—'}
+                            {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title="Holdback BTC">+{sellHoldback.toFixed(8)}</span>}
+                          </td>
+                          <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
+                            {formatTimestamp(sellTime)}
+                          </td>
+                        </tr>
+                        {isExpanded && buys.map((buy, idx) => {
+                          const buyPrice = buy.fillPrice || buy.price
+                          const buyValue = buy.quoteAmount || ((buy.size || 0) * (buyPrice || 0))
+                          const buyTime = buy.filledAt || buy.timestamp
+                          const fillTimeMs = isDryRun
+                            ? (buy.filledAt && buy.placedAt ? buy.filledAt - buy.placedAt : null)
+                            : buy.fillTimeMs
+                          return (
+                            <tr key={`${group.key}-buy-${buy.orderId || buy.tradeId}-${idx}`}
+                              className="border-b border-gray-700/30 bg-gray-750/20"
+                            >
+                              <td className="py-1 pr-1"></td>
+                              <td className="py-1 pr-2 font-mono text-xs text-gray-500 pl-5">
+                                <span className="text-green-400/70 mr-1">BUY</span>
+                                {buy.orderId}
+                              </td>
+                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
+                                {buy.size?.toFixed(8)}
+                              </td>
+                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
+                                ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
+                                ${buyValue.toFixed(2)}
+                              </td>
+                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-600">
+                                {fillTimeMs !== null ? formatDuration(fillTimeMs) : ''}
+                              </td>
+                              <td className="text-right py-1 font-mono text-xs text-gray-500">
+                                {formatTimestamp(buyTime)}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </React.Fragment>
+                    )
+                  }
+
+                  const tableHeader = (
+                    <tr className="text-gray-400 text-xs border-b border-gray-700">
+                      <th className="text-left py-1.5 pr-1 w-6"></th>
+                      <th className="text-left py-1.5 pr-2">Order ID</th>
+                      <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                      <th className="text-right py-1.5 pr-2">Price</th>
+                      <th className="text-right py-1.5 pr-2">Value</th>
+                      <th className="text-right py-1.5 pr-2">P&L</th>
+                      <th className="text-right py-1.5">Filled</th>
+                    </tr>
+                  )
+
+                  // --- DryRun: flat table (no cycle grouping) ---
+                  if (isDryRun) {
+                    return (
+                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0 bg-gray-800 z-10">
+                            {tableHeader}
+                          </thead>
+                          <tbody>
+                            {sellGroups.length > 1 && (
+                              <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
+                                <td className="py-1.5 pr-1"></td>
+                                <td className="py-1.5 pr-2 text-gray-400 text-xs">Totals ({sellGroups.length} sells)</td>
+                                <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{totalSize.toFixed(8)}</td>
+                                <td className="text-right py-1.5 pr-2"></td>
+                                <td className="text-right py-1.5 pr-2"></td>
+                                <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                  {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
+                                  {totalHoldback > 0 && <span className="ml-1 text-cyan-400" title="Total holdback">+{totalHoldback.toFixed(8)}</span>}
+                                </td>
+                                <td className="text-right py-1.5"></td>
+                              </tr>
+                            )}
+                            {sellGroups.map(renderSellRow)}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
+                  }
+
+                  // --- Live: cycle-grouped layout ---
+                  const cycleMap = new Map()
+                  sellGroups.forEach(group => {
+                    const cid = group.sell.cycleId || 'unknown'
+                    if (!cycleMap.has(cid)) cycleMap.set(cid, { cycleId: cid, sells: [], totalSize: 0, totalPnl: 0, totalHoldback: 0, buyCount: 0 })
+                    const entry = cycleMap.get(cid)
+                    entry.sells.push(group)
+                    entry.totalSize += group.sell.size || 0
+                    entry.totalPnl += group.sell.pnl || 0
+                    entry.totalHoldback += group.sell.holdback || 0
+                    entry.buyCount += group.buys.length
+                  })
+                  const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => {
+                    if (a.cycleId === 'unknown') return 1
+                    if (b.cycleId === 'unknown') return -1
+                    const numA = parseInt(a.cycleId.replace('cycle-', '')) || 0
+                    const numB = parseInt(b.cycleId.replace('cycle-', '')) || 0
+                    return numB - numA
+                  })
+
+                  return (
+                    <div className="overflow-x-auto max-h-96 overflow-y-auto space-y-2">
+                      {/* Grand totals bar */}
+                      {cycleGroups.length > 0 && (
+                        <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
+                          <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
+                          <div className="flex items-center gap-4">
+                            <span className="font-mono text-white">{totalSize.toFixed(8)} BTC</span>
+                            <span className={`font-mono ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                              {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
+                              {totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{totalHoldback.toFixed(8)}</span>}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {cycleGroups.map(cycle => {
+                        const isCurrentCycle = cycle.cycleId === mostRecentCycleId
+                        const isCycleExpanded = expandedCycles.has(cycle.cycleId)
+                        const cycleLabel = cycle.cycleId === 'unknown' ? 'Unassigned' : cycle.cycleId.replace('cycle-', '#')
+
+                        return (
+                          <div key={cycle.cycleId} className="border border-gray-700 rounded-lg overflow-hidden">
+                            <div
+                              className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-700/40 transition-colors"
+                              onClick={() => {
+                                setExpandedCycles(prev => {
+                                  const next = new Set(prev)
+                                  if (next.has(cycle.cycleId)) next.delete(cycle.cycleId)
+                                  else next.add(cycle.cycleId)
+                                  return next
+                                })
+                              }}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className={`inline-block transition-transform text-xs text-gray-500 ${isCycleExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
+                                <span className={`px-2 py-0.5 rounded text-xs ${
+                                  cycle.cycleId === 'unknown'
+                                    ? 'bg-gray-700 text-gray-400'
+                                    : isCurrentCycle
+                                      ? 'bg-blue-900/50 text-blue-400'
+                                      : 'bg-green-900/50 text-green-400'
+                                }`}>
+                                  {cycleLabel}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {cycle.sells.length} {cycle.sells.length === 1 ? 'sell' : 'sells'}, {cycle.buyCount} {cycle.buyCount === 1 ? 'buy' : 'buys'}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-4 text-xs">
+                                <span className="font-mono text-white">{cycle.totalSize.toFixed(8)} BTC</span>
+                                <span className={`font-mono ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                  {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}$${cycle.totalPnl.toFixed(2)}` : '—'}
+                                  {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
+                                </span>
+                              </div>
+                            </div>
+                            {isCycleExpanded && (
+                              <div className="border-t border-gray-700">
+                                <table className="w-full text-sm">
+                                  <thead>
+                                    {tableHeader}
+                                  </thead>
+                                  <tbody>
+                                    {cycle.sells.map(renderSellRow)}
+                                    {cycle.sells.length > 1 && (
+                                      <tr className="border-t border-gray-600 bg-gray-700/20">
+                                        <td className="py-1.5 pr-1"></td>
+                                        <td className="py-1.5 pr-2 text-gray-500 text-xs">Subtotal ({cycle.sells.length} sells)</td>
+                                        <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{cycle.totalSize.toFixed(8)}</td>
+                                        <td className="text-right py-1.5 pr-2"></td>
+                                        <td className="text-right py-1.5 pr-2"></td>
+                                        <td className={`text-right py-1.5 pr-2 font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                          {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}$${cycle.totalPnl.toFixed(2)}` : '—'}
+                                          {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
+                                        </td>
+                                        <td className="text-right py-1.5"></td>
+                                      </tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )
                 })()}
