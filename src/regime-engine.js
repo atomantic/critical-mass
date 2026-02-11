@@ -1028,7 +1028,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             price: positionState.lastTpPrice,
             size: positionState.btcOnOrder || positionState.totalBTC,
             sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.btcOnOrder || positionState.totalBTC),
-            placedAt: positionState.lastEntryTime || Date.now(),
+            placedAt: tpOrderStatus.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
             status: 'open',
           });
           console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ $${positionState.lastTpPrice}`);
@@ -1072,11 +1072,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           }
 
           if (bodyExists && orderExecutor.restoreBodyTpOrder) {
+            const bodyPlacedAt = bodyStatus.createdTime ? new Date(bodyStatus.createdTime).getTime() : Date.now();
             orderExecutor.restoreBodyTpOrder(
               body.id,
               body.tpOrderId,
               body.btcOnOrder || body.btcQty,
-              body.tpPrice
+              body.tpPrice,
+              bodyPlacedAt
             );
             restoredBodies++;
           } else {
@@ -1177,7 +1179,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           positionState.celestialBodies.push(bodyEntry);
 
           if (orderExecutor.restoreBodyTpOrder) {
-            orderExecutor.restoreBodyTpOrder(bodyEntry.id, order.orderId, order.size, order.price);
+            const orphanPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
+            orderExecutor.restoreBodyTpOrder(bodyEntry.id, order.orderId, order.size, order.price, orphanPlacedAt);
           }
 
           reclaimedBodies++;
@@ -1318,12 +1321,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       // Recalculate cycles from fill ledger to ensure accurate P&L tracking
       // This catches any discrepancies between saved state and actual fills
+      // Note: recalculateCycles skips satellite fills — body/satellite P&L tracked separately
       const recalcResult = fillLedger.recalculateCycles();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
-        console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, PnL=$${recalcResult.realizedPnL.toFixed(2)}, BTC reserves=${recalcResult.realizedBtcPnL.toFixed(6)}`);
+        const bodyPnL = positionState.celestialState?.bodiesRealizedPnL || 0;
+        const satPnL = positionState.satelliteRealizedPnL || 0;
+        const totalPnL = recalcResult.realizedPnL + bodyPnL + satPnL;
+        console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, cyclePnL=$${recalcResult.realizedPnL.toFixed(2)} + bodyPnL=$${bodyPnL.toFixed(2)} + satPnL=$${satPnL.toFixed(2)} = $${totalPnL.toFixed(2)}, BTC reserves=${recalcResult.realizedBtcPnL.toFixed(6)}`);
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
-        positionState.realizedPnL = recalcResult.realizedPnL;
-        positionState.realizedBtcPnL = recalcResult.realizedBtcPnL;
+        positionState.realizedPnL = totalPnL;
+        positionState.realizedBtcPnL = recalcResult.realizedBtcPnL + (positionState.celestialState?.bodiesRealizedBtcPnL || 0);
       }
 
       // Backfill APY tracking start time from earliest fill in ledger
@@ -1363,7 +1370,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
               price: savedEntry.price,
               size: savedEntry.btcQty,
               sizeUsdc: savedEntry.sizeUsdc,
-              placedAt: savedEntry.placedAt,
+              placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now()),
             });
             restoredEntries++;
             console.log(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ $${savedEntry.price}`);
@@ -1428,7 +1435,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 size: savedOrder.btcQty,
                 sizeUsdc: savedOrder.sizeUsdc,
                 ladderIndex: savedOrder.ladderIndex,
-                placedAt: savedOrder.placedAt || Date.now(),
+                placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedOrder.placedAt || Date.now()),
               });
               restoredLadder++;
             }
@@ -1533,6 +1540,38 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     isRunning = true;
     console.log(`✅ [${exchange}] ${modeLabel}Regime engine started`);
 
+    // SIGUSR1: reload state from disk (for applying manual state fixes without restart)
+    if (!isDryRun) {
+      const reloadHandler = () => {
+        console.log(`🔄 [${exchange}] SIGUSR1 received — reloading state from disk`);
+        const savedState = loadRegimeState(exchange);
+        const diskPos = savedState.position;
+        if (!diskPos) {
+          console.log(`⚠️ [${exchange}] No position in disk state, skipping reload`);
+          return;
+        }
+        // Merge safe-to-reload fields from disk into in-memory state
+        const reloadFields = [
+          'realizedPnL', 'realizedBtcPnL', 'satelliteRealizedPnL', 'satelliteRealizedBtcPnL',
+          'celestialState', 'satellitesCompleted',
+        ];
+        for (const field of reloadFields) {
+          if (diskPos[field] !== undefined) {
+            const old = positionState[field];
+            positionState[field] = diskPos[field];
+            console.log(`   ${field}: ${JSON.stringify(old)} → ${JSON.stringify(diskPos[field])}`);
+          }
+        }
+        // Also reload fill ledger from disk
+        fillLedger.load();
+        console.log(`✅ [${exchange}] State reloaded from disk`);
+        saveLiveState();
+      };
+      process.on('SIGUSR1', reloadHandler);
+      // Store for cleanup
+      positionState._sigusr1Handler = reloadHandler;
+    }
+
     return { success: true };
   };
 
@@ -1561,6 +1600,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Also persist fill ledger
       fillLedger.persist();
       console.log(`💾 [${exchange}] Saved live state and fill ledger`);
+      // Remove SIGUSR1 handler
+      if (positionState._sigusr1Handler) {
+        process.removeListener('SIGUSR1', positionState._sigusr1Handler);
+        delete positionState._sigusr1Handler;
+      }
     }
 
     // Stop intervals first
@@ -1801,13 +1845,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
 
       if (mergeTarget) {
-        // MERGE: Cancel existing body TP, merge, possibly promote, re-place TP
-        const cancelled = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
-        if (!cancelled) {
-          // Fallback: try satellite cancel path
+        const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
+        if (cancelResult.filled) {
+          console.log(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP already filled, redirecting buy to new body`);
+          mergeTarget = null;
+        } else if (!cancelResult.cancelled) {
           await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
         }
+      }
 
+      if (mergeTarget) {
+        // MERGE: merge into existing body, possibly promote, re-place TP
         const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed);
         // Replace old body with merged body in array
         const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
@@ -2257,7 +2305,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Place TP order if we have a position but no active TP order (e.g., after recovery)
     if (!isDryRun && positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
-      console.log(`📝 [${exchange}] Position without TP order detected, placing TP order now`);
+      const bodies = positionState.celestialBodies || [];
+      const bodiesWithoutTp = bodies.filter(b => !b.tpOrderId);
+      console.log(`📝 [${exchange}] Position without TP order detected — totalBTC=${positionState.totalBTC}, bodies=${bodies.length} (${bodiesWithoutTp.length} need TP), avgCost=$${positionState.avgCostBasis?.toFixed(2)}, cycleBuys=${positionState.cycleBuys}`);
       await placeTakeProfitOrder();
     }
   };
@@ -2903,9 +2953,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       positionState.lastEntryTime = Date.now();
 
       if (mergeTarget) {
-        const cancelled = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
-        if (!cancelled) await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
+        const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
+        if (cancelResult.filled) {
+          console.log(`⚠️ [${exchange}] [DRY-RUN] Body ${mergeTarget.id.slice(-8)} TP already filled, redirecting buy to new body`);
+          mergeTarget = null;
+        } else if (!cancelResult.cancelled) {
+          await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
+        }
+      }
 
+      if (mergeTarget) {
         const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed);
         const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
         if (idx !== -1) positionState.celestialBodies[idx] = merged;

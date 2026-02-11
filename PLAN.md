@@ -453,6 +453,19 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
   - Transaction records
 - TypeScript-compatible `jsconfig.json` for IDE support
 
+### ec8b7bcb Race Condition Fix & State Reconciliation (v2.5.28)
+- **Root cause**: `cancelBodyTpOrder` had a race condition where the cancel-and-replace flow didn't check if the TP had already filled on exchange
+- **Code fix (Part 1)**: `cancelBodyTpOrder` now returns `{cancelled, filled?}` and the merge flow aborts if the TP already filled
+- **State corruption caused**: wrong cost basis, 266 wrongly-linked buys, bogus cycle reset to cycle-12, -$103.57 false loss, 2 unprocessed body TP fills
+- **Reconciliation script** (`scripts/reconcile-state.js`): Idempotent 5-step repair script:
+  1. Fix fill-ledger annotations (remove 266 bogus ec8b7bcb links, relabel cycle-12 → cycle-11)
+  2. Ingest ALL missing fills from exchange (pending entries, older buys, sells, body TPs)
+  3. Undo untracked handler's state corruption (realizedPnL +103.57, cyclesCompleted 11→10, rebuild cycleBuys)
+  4. Process 2 unprocessed body TP fills (93cd9a00/body-65eddfb4, eeb06a32/body-90357600)
+  5. Rebuild aggregates from remaining celestial bodies via `syncPositionState`
+- **Recovery script** (`scripts/recover-btc.js`): Places market buy for 0.017023 BTC to cover the double-sell short position, annotates fills with ec8b7bcb linkage
+- Both scripts support `--dry-run` flag and create timestamped backups before mutations
+
 ### Fill Ledger Sell Linkage Fix (v2.5.12)
 - Fixed `sellOrderId` annotation using both `sourceOrderIds` and `body.buyOrders` (handles core-migration bodies)
 - Core TP path no longer steals body-owned buys (`!fill.bodyId` guard)
