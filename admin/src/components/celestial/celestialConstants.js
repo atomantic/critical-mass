@@ -133,7 +133,7 @@ const VISUAL_EXTENT_SCALE = {
   sun:        2.2,
   hypergiant: 2.5,
   galaxy:     2.8,
-  black_hole: 2.0,
+  black_hole: 3.5,
 }
 
 /**

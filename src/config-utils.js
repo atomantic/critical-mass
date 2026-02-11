@@ -69,8 +69,8 @@ const REGIME_DEFAULTS = {
   harvestScale: 1.0,
   cautionScale: 0.5,
   trendScale: 0.0,
-  maxLadderSteps: 15,
-  ladderResetHours: 72, // Auto-reset ladder counter after 72 hours (3 days) at max, 0 to disable
+  maxCycleBuys: 15,
+  cycleResetHours: 72, // Auto-reset cycle buys counter after 72 hours (3 days) at max, 0 to disable
   liquidityFactorCap: 2.0,
 
   // Take-Profit
@@ -107,9 +107,9 @@ const REGIME_DEFAULTS = {
   sizeAbsoluteMaxBase: 500,     // Ceiling for baseSizeUsdc
   sizeTargetUtilization: 0.90,  // Target 90% capital utilization
   sizeMaxChangePercent: 25,     // Max % change per adjustment
-  sizeAutoLadderSteps: false,   // Also auto-adjust maxLadderSteps
-  sizeMinLadderSteps: 10,       // Min ladder steps if auto-adjusting
-  sizeMaxLadderSteps: 100,      // Max ladder steps if auto-adjusting
+  sizeAutoCycleBuys: false,   // Also auto-adjust maxCycleBuys
+  sizeMinCycleBuys: 10,       // Min cycle buys if auto-adjusting
+  sizeMaxCycleBuys: 100,      // Max cycle buys if auto-adjusting
 
   // Risk Caps
   maxBtcExposure: 0.5,
@@ -530,8 +530,8 @@ const validateRegimeConfig = (config) => {
   if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
     errors.push('baseSizeUsdc must be between 1 and 1000');
   }
-  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 1000)) {
-    errors.push('maxLadderSteps must be between 3 and 1000');
+  if (config.maxCycleBuys !== undefined && (config.maxCycleBuys < 3 || config.maxCycleBuys > 1000)) {
+    errors.push('maxCycleBuys must be between 3 and 1000');
   }
 
   // Take-Profit validation
@@ -587,11 +587,11 @@ const validateRegimeConfig = (config) => {
   if (config.sizeMaxChangePercent !== undefined && (config.sizeMaxChangePercent < 5 || config.sizeMaxChangePercent > 50)) {
     errors.push('sizeMaxChangePercent must be between 5 and 50');
   }
-  if (config.sizeMinLadderSteps !== undefined && (config.sizeMinLadderSteps < 5 || config.sizeMinLadderSteps > 50)) {
-    errors.push('sizeMinLadderSteps must be between 5 and 50');
+  if (config.sizeMinCycleBuys !== undefined && (config.sizeMinCycleBuys < 5 || config.sizeMinCycleBuys > 50)) {
+    errors.push('sizeMinCycleBuys must be between 5 and 50');
   }
-  if (config.sizeMaxLadderSteps !== undefined && (config.sizeMaxLadderSteps < 20 || config.sizeMaxLadderSteps > 200)) {
-    errors.push('sizeMaxLadderSteps must be between 20 and 200');
+  if (config.sizeMaxCycleBuys !== undefined && (config.sizeMaxCycleBuys < 20 || config.sizeMaxCycleBuys > 200)) {
+    errors.push('sizeMaxCycleBuys must be between 20 and 200');
   }
 
   // Satellite TP validation (legacy)

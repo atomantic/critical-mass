@@ -416,7 +416,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 <FormInput label="Harvest Scale" hint="Size multiplier in calm, mean-reverting markets" value={regimeConfig.harvestScale || 1.0} onChange={(v) => handleRegimeChange('harvestScale', v)} type="number" />
                 <FormInput label="Caution Scale" hint="Size multiplier during elevated volatility" value={regimeConfig.cautionScale || 0.5} onChange={(v) => handleRegimeChange('cautionScale', v)} type="number" />
                 <FormInput label="Trend Scale" hint="Size multiplier in strong trends (0 = no entries)" value={regimeConfig.trendScale || 0.0} onChange={(v) => handleRegimeChange('trendScale', v)} type="number" />
-                <FormInput label="Max Ladder Steps" hint="Max concurrent DCA steps across cycles" value={regimeConfig.maxLadderSteps || 10} onChange={(v) => handleRegimeChange('maxLadderSteps', v)} type="number" />
+                <FormInput label="Max Cycle Buys" hint="Max buys per cycle before pausing entries" value={regimeConfig.maxCycleBuys || 10} onChange={(v) => handleRegimeChange('maxCycleBuys', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-500">
                 Scaling: HARVEST={regimeConfig.harvestScale || 1.0}x, CAUTION={regimeConfig.cautionScale || 0.5}x, TREND={regimeConfig.trendScale || 0.0}x base size
@@ -716,7 +716,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 <FormInput label="Max Drawdown %" hint="Pause entries when unrealized loss exceeds this" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
                 <FormInput label="Liquidity Factor Cap" hint="Max size multiplier from orderbook liquidity" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
                 <FormInput label="Drawdown Reset (hrs)" hint="Hours at drawdown cap before auto-resuming (0 = off)" value={regimeConfig.drawdownResetHours || 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
-                <FormInput label="Ladder Reset (hrs)" hint="Hours before stale ladder orders are cleared (0 = off)" value={regimeConfig.ladderResetHours || 72} onChange={(v) => handleRegimeChange('ladderResetHours', v)} type="number" />
+                <FormInput label="Cycle Reset (hrs)" hint="Hours at cycle buys limit before auto-resetting (0 = off)" value={regimeConfig.cycleResetHours || 72} onChange={(v) => handleRegimeChange('cycleResetHours', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-500">
                 Auto-reset hours: 0 = disabled. After this time at a limit, the engine resumes with reset counters.

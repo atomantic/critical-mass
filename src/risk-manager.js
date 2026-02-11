@@ -29,7 +29,7 @@ const createRiskManager = (exchange, config) => {
   let maxDrawdownSeen = 0;
   let isDrawdownPaused = false;
   let drawdownPausedAt = null; // Timestamp when drawdown pause started
-  let ladderLimitReachedAt = null; // Timestamp when ladder limit was first reached
+  let cycleBuysLimitReachedAt = null; // Timestamp when ladder limit was first reached
 
   /**
    * Check if entry would exceed BTC exposure cap
@@ -84,30 +84,30 @@ const createRiskManager = (exchange, config) => {
   };
 
   /**
-   * Check if ladder step limit is reached
-   * @param {number} currentStep - Current ladder step
+   * Check if cycle buys limit is reached
+   * @param {number} currentStep - Current cycle buy count
    * @returns {{allowed: boolean, reason: string|null, currentStep: number, maxSteps: number, shouldReset: boolean}}
    */
-  const checkLadderLimit = (currentStep) => {
-    if (currentStep >= config.maxLadderSteps) {
+  const checkCycleBuysLimit = (currentStep) => {
+    if (currentStep >= config.maxCycleBuys) {
       // Track when limit was first reached
-      if (!ladderLimitReachedAt) {
-        ladderLimitReachedAt = Date.now();
-        console.log(`⚠️ [${exchange}] Ladder limit reached: ${currentStep}/${config.maxLadderSteps}, waiting for TP or auto-reset`);
+      if (!cycleBuysLimitReachedAt) {
+        cycleBuysLimitReachedAt = Date.now();
+        console.log(`⚠️ [${exchange}] Cycle buys limit reached: ${currentStep}/${config.maxCycleBuys}, waiting for TP or auto-reset`);
       }
 
       // Check for time-based auto-reset
-      if (ladderLimitReachedAt && config.ladderResetHours > 0) {
-        const atLimitMs = Date.now() - ladderLimitReachedAt;
+      if (cycleBuysLimitReachedAt && config.cycleResetHours > 0) {
+        const atLimitMs = Date.now() - cycleBuysLimitReachedAt;
         const atLimitHours = atLimitMs / (1000 * 60 * 60);
-        if (atLimitHours >= config.ladderResetHours) {
-          console.log(`🔄 [${exchange}] Auto-resetting ladder after ${config.ladderResetHours}h at limit`);
-          ladderLimitReachedAt = null;
+        if (atLimitHours >= config.cycleResetHours) {
+          console.log(`🔄 [${exchange}] Auto-resetting cycle buys after ${config.cycleResetHours}h at limit`);
+          cycleBuysLimitReachedAt = null;
           return {
             allowed: true,
             reason: null,
             currentStep,
-            maxSteps: config.maxLadderSteps,
+            maxSteps: config.maxCycleBuys,
             shouldReset: true, // Signal to regime engine to reset cycleBuys
           };
         }
@@ -115,21 +115,21 @@ const createRiskManager = (exchange, config) => {
 
       return {
         allowed: false,
-        reason: `ladder_limit_reached:${currentStep}>=${config.maxLadderSteps}`,
+        reason: `cycle_buys_limit_reached:${currentStep}>=${config.maxCycleBuys}`,
         currentStep,
-        maxSteps: config.maxLadderSteps,
+        maxSteps: config.maxCycleBuys,
         shouldReset: false,
       };
     }
 
     // Not at limit, clear the timestamp
-    ladderLimitReachedAt = null;
+    cycleBuysLimitReachedAt = null;
 
     return {
       allowed: true,
       reason: null,
       currentStep,
-      maxSteps: config.maxLadderSteps,
+      maxSteps: config.maxCycleBuys,
       shouldReset: false,
     };
   };
@@ -214,11 +214,11 @@ const createRiskManager = (exchange, config) => {
    * @param {RegimePositionState} position - Current position state
    * @param {number} entryBTC - BTC to add (optional)
    * @param {number} entryUsdc - USDC to add (optional)
-   * @returns {{allowed: boolean, reasons: string[], shouldResetLadder: boolean}}
+   * @returns {{allowed: boolean, reasons: string[], shouldResetCycleBuys: boolean}}
    */
   const checkAllCaps = (position, entryBTC = 0, entryUsdc = 0) => {
     const reasons = [];
-    let shouldResetLadder = false;
+    let shouldResetCycleBuys = false;
 
     const btcCheck = checkBTCCap(position.totalBTC, entryBTC);
     if (!btcCheck.allowed) {
@@ -230,12 +230,12 @@ const createRiskManager = (exchange, config) => {
       reasons.push(usdcCheck.reason);
     }
 
-    const ladderCheck = checkLadderLimit(position.cycleBuys);
+    const ladderCheck = checkCycleBuysLimit(position.cycleBuys);
     if (!ladderCheck.allowed) {
       reasons.push(ladderCheck.reason);
     }
     if (ladderCheck.shouldReset) {
-      shouldResetLadder = true;
+      shouldResetCycleBuys = true;
     }
 
     if (isDrawdownPaused) {
@@ -245,7 +245,7 @@ const createRiskManager = (exchange, config) => {
     return {
       allowed: reasons.length === 0,
       reasons,
-      shouldResetLadder,
+      shouldResetCycleBuys,
     };
   };
 
@@ -254,7 +254,7 @@ const createRiskManager = (exchange, config) => {
    * @param {RegimePositionState} position - Current position
    * @param {number} entryBTC - BTC to add
    * @param {number} entryUsdc - USDC to add
-   * @returns {{allowed: boolean, reason: string|null, shouldResetLadder: boolean}}
+   * @returns {{allowed: boolean, reason: string|null, shouldResetCycleBuys: boolean}}
    */
   const canPlaceEntry = (position, entryBTC, entryUsdc) => {
     const result = checkAllCaps(position, entryBTC, entryUsdc);
@@ -263,11 +263,11 @@ const createRiskManager = (exchange, config) => {
       return {
         allowed: false,
         reason: result.reasons.join(', '),
-        shouldResetLadder: result.shouldResetLadder,
+        shouldResetCycleBuys: result.shouldResetCycleBuys,
       };
     }
 
-    return { allowed: true, reason: null, shouldResetLadder: result.shouldResetLadder };
+    return { allowed: true, reason: null, shouldResetCycleBuys: result.shouldResetCycleBuys };
   };
 
   /**
@@ -279,7 +279,7 @@ const createRiskManager = (exchange, config) => {
   const getRemainingCapacity = (position, currentPrice) => {
     const remainingBTC = roundBTC(config.maxBtcExposure - position.totalBTC);
     const remainingUsdc = roundUSDC(config.maxUsdcDeployed - position.totalCostBasis);
-    const remainingSteps = config.maxLadderSteps - position.cycleBuys;
+    const remainingSteps = config.maxCycleBuys - position.cycleBuys;
 
     return {
       remainingBTC: Math.max(0, remainingBTC),
@@ -291,13 +291,13 @@ const createRiskManager = (exchange, config) => {
   /**
    * Get utilization percentages
    * @param {RegimePositionState} position - Current position
-   * @returns {{btcUtilization: number, usdcUtilization: number, ladderUtilization: number}}
+   * @returns {{btcUtilization: number, usdcUtilization: number, cycleBuysUtilization: number}}
    */
   const getUtilization = (position) => {
     return {
       btcUtilization: (position.totalBTC / config.maxBtcExposure) * 100,
       usdcUtilization: (position.totalCostBasis / config.maxUsdcDeployed) * 100,
-      ladderUtilization: (position.cycleBuys / config.maxLadderSteps) * 100,
+      cycleBuysUtilization: (position.cycleBuys / config.maxCycleBuys) * 100,
     };
   };
 
@@ -311,7 +311,7 @@ const createRiskManager = (exchange, config) => {
     const parts = [
       `btc=${position.totalBTC.toFixed(4)}/${config.maxBtcExposure}(${util.btcUtilization.toFixed(0)}%)`,
       `usdc=$${position.totalCostBasis.toFixed(0)}/${config.maxUsdcDeployed}(${util.usdcUtilization.toFixed(0)}%)`,
-      `buys=${position.cycleBuys}/${config.maxLadderSteps}`,
+      `buys=${position.cycleBuys}/${config.maxCycleBuys}`,
     ];
 
     if (maxDrawdownSeen > 0) {
@@ -375,7 +375,7 @@ const createRiskManager = (exchange, config) => {
   return {
     checkBTCCap,
     checkUSDCCap,
-    checkLadderLimit,
+    checkCycleBuysLimit,
     updateDrawdown,
     checkAllCaps,
     canPlaceEntry,

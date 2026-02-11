@@ -43,12 +43,12 @@ const ChildOrbitRing = ({ radius, tier }) => {
  * Group that orbits its parent at a given radius and speed.
  * Depth 0 (center body) stays stationary.
  */
-const OrbitingGroup = ({ radius, speed, children }) => {
+const OrbitingGroup = ({ radius, speed, angleOffset = 0, children }) => {
   const groupRef = useRef()
 
   useFrame((state) => {
     if (!groupRef.current || radius === 0) return
-    const angle = state.clock.elapsedTime * speed
+    const angle = state.clock.elapsedTime * speed + angleOffset
     groupRef.current.position.x = Math.cos(angle) * radius
     groupRef.current.position.z = Math.sin(angle) * radius
   })
@@ -58,14 +58,15 @@ const OrbitingGroup = ({ radius, speed, children }) => {
 
 /**
  * Recursive hierarchical orbit system.
- * Bodies must be sorted largest-first. Each body orbits the next-larger body:
+ * Bodies must be sorted largest-first (by tier rank, then costBasis).
+ * Same-tier bodies are rendered as siblings orbiting their shared parent
+ * with angular offsets, rather than chaining off each other.
+ *
  *   body[0] → center (stationary)
- *   body[1] → orbits body[0]
- *   body[2] → orbits body[1]
- *   ...
- * Three.js nested groups handle the compound orbital motion automatically.
+ *   Same-tier group after body[0] → all orbit body[0] as siblings
+ *   Next tier group → orbits first sibling of previous tier, etc.
  */
-const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, parentOrbitRadius, maxUsdcDeployed }) => {
+const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, parentOrbitRadius, maxUsdcDeployed, angleOffset = 0 }) => {
   if (bodies.length === 0) return null
 
   const [current, ...rest] = bodies
@@ -73,9 +74,23 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, paren
   const radius = parentOrbitRadius ?? getHierarchicalRadius(depth)
   const speed = getHierarchicalSpeed(depth)
 
-  // Compute dynamic child orbit radius that accounts for body sizes
-  const childOrbitRadius = rest.length > 0
-    ? getDynamicOrbitRadius(depth + 1, current, rest[0], maxUsdcDeployed)
+  // Separate rest into siblings (same tier as first child) and deeper descendants
+  const siblings = []
+  const descendants = []
+  if (rest.length > 0) {
+    const siblingTier = rest[0].tier
+    for (const body of rest) {
+      if (body.tier === siblingTier) {
+        siblings.push(body)
+      } else {
+        descendants.push(body)
+      }
+    }
+  }
+
+  // Shared orbit radius for siblings (use max to prevent any overlap)
+  const childOrbitRadius = siblings.length > 0
+    ? Math.max(...siblings.map(s => getDynamicOrbitRadius(depth + 1, current, s, maxUsdcDeployed)))
     : 0
 
   const bodyElement = current.tier === 'black_hole' ? (
@@ -85,21 +100,28 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, paren
   )
 
   return (
-    <OrbitingGroup radius={radius} speed={speed}>
+    <OrbitingGroup radius={radius} speed={speed} angleOffset={angleOffset}>
       {bodyElement}
-      {rest.length > 0 && (
-        <ChildOrbitRing radius={childOrbitRadius} tier={rest[0].tier} />
+      {siblings.length > 0 && (
+        <ChildOrbitRing radius={childOrbitRadius} tier={siblings[0].tier} />
       )}
-      {rest.length > 0 && (
-        <HierarchicalOrbit
-          bodies={rest}
-          depth={depth + 1}
-          activeBodyId={activeBodyId}
-          onBodyHover={onBodyHover}
-          parentOrbitRadius={childOrbitRadius}
-          maxUsdcDeployed={maxUsdcDeployed}
-        />
-      )}
+      {siblings.map((child, i) => {
+        const childAngleOffset = (i / siblings.length) * Math.PI * 2
+        // First sibling carries descendants for further nesting
+        const childBodies = i === 0 ? [child, ...descendants] : [child]
+        return (
+          <HierarchicalOrbit
+            key={child.id}
+            bodies={childBodies}
+            depth={depth + 1}
+            activeBodyId={activeBodyId}
+            onBodyHover={onBodyHover}
+            parentOrbitRadius={childOrbitRadius}
+            maxUsdcDeployed={maxUsdcDeployed}
+            angleOffset={childAngleOffset}
+          />
+        )
+      })}
     </OrbitingGroup>
   )
 }
