@@ -145,7 +145,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Rate-limited adjustments (max 25% change per evaluation)
 - Safety bounds: absolute min base ($10), absolute max base ($500)
 - Target utilization default: 90% of available capital
-- Optionally auto-adjusts `maxLadderSteps` based on p90 historical step usage
+- Optionally auto-adjusts `maxCycleBuys` based on p90 historical step usage
 - State persisted across restarts
 - Dashboard panel shows current sizing, step usage stats, adjustment history
 - Configuration options:
@@ -154,7 +154,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - `sizeAbsoluteMinBase: 10` - Floor for baseSizeUsdc
   - `sizeAbsoluteMaxBase: 500` - Ceiling for baseSizeUsdc
   - `sizeMaxChangePercent: 25` - Max % change per adjustment
-  - `sizeAutoLadderSteps: false` - Also auto-adjust maxLadderSteps
+  - `sizeAutoCycleBuys: false` - Also auto-adjust maxCycleBuys
   - `sizeEvaluationCycles: 5` - Evaluate every N cycles
   - `sizeEvaluationMaxHours: 24` - Or at least once per day
 
@@ -178,7 +178,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 **Aggressiveness Control (v2.4+):**
 - Dashboard control with 4 preset levels: Conservative, Moderate, Aggressive, Maximum
 - Single-click changes apply immediately without restart
-- Controls 8 trading parameters simultaneously (including maxLadderSteps):
+- Controls 8 trading parameters simultaneously (including maxCycleBuys):
   | Parameter | Conservative | Moderate | Aggressive | Maximum |
   |-----------|-------------|----------|------------|---------|
   | baseSizeUsdc | 25 | 50 | 100 | 200 |
@@ -188,7 +188,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   | cautionScale | 0.15 | 0.35 | 0.6 | 1.0 |
   | trendScale | 0 | 0.1 | 0.25 | 0.5 |
   | entryOffsetBps | 25 | 18 | 12 | 5 |
-  | maxLadderSteps | 10 | 15 | 25 | 50 |
+  | maxCycleBuys | 10 | 15 | 25 | 50 |
 - Estimated $25k deployment: Conservative ~23-34 days, Moderate ~10-20 days, Aggressive ~3-6 days, Maximum ~1-1.3 days
 - Color-coded buttons (green/blue/yellow/red)
 - Hover preview shows computed values with diff highlighting

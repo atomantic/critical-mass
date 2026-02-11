@@ -178,8 +178,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let marketState = createInitialMarketState();
   let positionState = createInitialPositionState();
 
-  // Track if ladder limit warning has been logged (to avoid log spam)
-  let ladderLimitWarningLogged = false;
+  // Track if cycle buys limit warning has been logged (to avoid log spam)
+  let cycleBuysLimitWarningLogged = false;
   // Track if USDC cap exceeded warning has been logged (to avoid log spam)
   let usdcCapWarningLogged = false;
   // Track if budget exhausted warning has been logged (to avoid log spam)
@@ -279,10 +279,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       maxUsdcDeployed: adjustment.maxUsdcDeployed,
     };
 
-    // Optionally update ladder steps
-    if (adjustment.maxLadderSteps !== undefined) {
-      updates.maxLadderSteps = adjustment.maxLadderSteps;
-      config.maxLadderSteps = adjustment.maxLadderSteps;
+    // Optionally update max cycle buys
+    if (adjustment.maxCycleBuys !== undefined) {
+      updates.maxCycleBuys = adjustment.maxCycleBuys;
+      config.maxCycleBuys = adjustment.maxCycleBuys;
     }
 
     // Update in-memory config
@@ -295,7 +295,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     tradeEvents.emitTradeEvent('size_adjusted', exchange, `Size adjusted: base=$${adjustment.baseSizeUsdc}`, {
       baseSizeUsdc: adjustment.baseSizeUsdc,
       maxUsdcDeployed: adjustment.maxUsdcDeployed,
-      maxLadderSteps: adjustment.maxLadderSteps,
+      maxCycleBuys: adjustment.maxCycleBuys,
       reason: adjustment.reason,
     });
   };
@@ -2628,21 +2628,21 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const btcQty = positionSizer.calculateBTCQuantity(sizing.sizeUsdc, marketState.bid);
     const riskCheck = riskManager.canPlaceEntry(positionState, btcQty, sizing.sizeUsdc);
 
-    // Handle ladder auto-reset (time-based reset after being at max limit)
-    if (riskCheck.shouldResetLadder) {
-      console.log(`🔄 [${exchange}] Ladder auto-reset triggered, resetting buys ${positionState.cycleBuys} -> 0`);
+    // Handle cycle buys auto-reset (time-based reset after being at max limit)
+    if (riskCheck.shouldResetCycleBuys) {
+      console.log(`🔄 [${exchange}] Cycle buys auto-reset triggered, resetting buys ${positionState.cycleBuys} -> 0`);
       positionState.cycleBuys = 0;
-      ladderLimitWarningLogged = false;
+      cycleBuysLimitWarningLogged = false;
     }
 
     if (!riskCheck.allowed) {
       // Only log certain warnings once until they reset (to avoid log spam)
-      const isLadderLimit = riskCheck.reason.startsWith('ladder_limit_reached');
+      const isLadderLimit = riskCheck.reason.startsWith('cycle_buys_limit_reached');
       const isUsdcCap = riskCheck.reason.startsWith('usdc_cap_exceeded');
-      const shouldSkipLog = (isLadderLimit && ladderLimitWarningLogged) || (isUsdcCap && usdcCapWarningLogged);
+      const shouldSkipLog = (isLadderLimit && cycleBuysLimitWarningLogged) || (isUsdcCap && usdcCapWarningLogged);
       if (!shouldSkipLog) {
         console.log(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
-        if (isLadderLimit) ladderLimitWarningLogged = true;
+        if (isLadderLimit) cycleBuysLimitWarningLogged = true;
         if (isUsdcCap) usdcCapWarningLogged = true;
       }
       return;
@@ -2918,7 +2918,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.anchorPrice = 0;
     positionState.scalingDisabled = false;
     positionState.scalingDisabledReason = null;
-    ladderLimitWarningLogged = false;
+    cycleBuysLimitWarningLogged = false;
     usdcCapWarningLogged = false;
     budgetExhaustedWarningLogged = false;
 
@@ -3168,7 +3168,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     config: {
       maxUsdcDeployed: config.maxUsdcDeployed,
       baseSizeUsdc: config.baseSizeUsdc,
-      maxLadderSteps: config.maxLadderSteps,
+      maxCycleBuys: config.maxCycleBuys,
       tpMinPercent: config.tpMinPercent,
       tpMaxPercent: config.tpMaxPercent,
       holdbackRatio: config.holdbackRatio,

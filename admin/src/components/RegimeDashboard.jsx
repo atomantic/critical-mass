@@ -72,7 +72,7 @@ const AGGRESSIVENESS_LEVELS = [
       baseSizeUsdc: 25,
       cautionScale: 0.15,
       trendScale: 0,
-      maxLadderSteps: 10,
+      maxCycleBuys: 10,
     },
   },
   {
@@ -87,7 +87,7 @@ const AGGRESSIVENESS_LEVELS = [
       baseSizeUsdc: 50,
       cautionScale: 0.35,
       trendScale: 0.1,
-      maxLadderSteps: 15,
+      maxCycleBuys: 15,
     },
   },
   {
@@ -102,7 +102,7 @@ const AGGRESSIVENESS_LEVELS = [
       baseSizeUsdc: 100,
       cautionScale: 0.6,
       trendScale: 0.25,
-      maxLadderSteps: 25,
+      maxCycleBuys: 25,
     },
   },
   {
@@ -117,7 +117,7 @@ const AGGRESSIVENESS_LEVELS = [
       baseSizeUsdc: 200,
       cautionScale: 1.0,
       trendScale: 0.5,
-      maxLadderSteps: 50,
+      maxCycleBuys: 50,
     },
   },
 ]
@@ -890,8 +890,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         <span className="text-white font-mono">${sizeOptimizer.currentConfig?.maxUsdcDeployed?.toLocaleString()}</span>
                       </div>
                       <div>
-                        <span className="text-gray-400">Steps:</span>{' '}
-                        <span className="text-white font-mono">{sizeOptimizer.currentConfig?.maxLadderSteps}</span>
+                        <span className="text-gray-400">Max Buys:</span>{' '}
+                        <span className="text-white font-mono">{sizeOptimizer.currentConfig?.maxCycleBuys}</span>
                       </div>
                     </div>
                   </div>
@@ -1170,7 +1170,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 <h3 className="text-sm font-medium text-gray-400">Position</h3>
                 <div className="flex items-center gap-2">
                   {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
-                  <span className="text-xs text-gray-500">Buys {position.cycleBuys || position.ladderStep || 0}/{config?.maxLadderSteps || 10}</span>
+                  <span className="text-xs text-gray-500">Buys {position.cycleBuys || position.ladderStep || 0}/{config?.maxCycleBuys || 10}</span>
                 </div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
@@ -2109,13 +2109,19 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   const cycleMap = new Map()
                   sellGroups.forEach(group => {
                     const cid = group.sell.cycleId || 'unknown'
-                    if (!cycleMap.has(cid)) cycleMap.set(cid, { cycleId: cid, sells: [], totalSize: 0, totalPnl: 0, totalHoldback: 0, buyCount: 0 })
+                    if (!cycleMap.has(cid)) cycleMap.set(cid, { cycleId: cid, sells: [], totalSize: 0, totalPnl: 0, totalHoldback: 0, buyCount: 0, minTs: Infinity, maxTs: 0 })
                     const entry = cycleMap.get(cid)
                     entry.sells.push(group)
                     entry.totalSize += group.sell.size || 0
                     entry.totalPnl += group.sell.pnl || 0
                     entry.totalHoldback += group.sell.holdback || 0
                     entry.buyCount += group.buys.length
+                    const sellTs = group.sell.timestamp || group.sell.filledAt || 0
+                    if (sellTs > 0) { entry.minTs = Math.min(entry.minTs, sellTs); entry.maxTs = Math.max(entry.maxTs, sellTs) }
+                    group.buys.forEach(b => {
+                      const buyTs = b.timestamp || b.filledAt || 0
+                      if (buyTs > 0) { entry.minTs = Math.min(entry.minTs, buyTs); entry.maxTs = Math.max(entry.maxTs, buyTs) }
+                    })
                   })
                   const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => {
                     if (a.cycleId === 'unknown') return 1
@@ -2172,6 +2178,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 <span className="text-xs text-gray-500">
                                   {cycle.sells.length} {cycle.sells.length === 1 ? 'sell' : 'sells'}, {cycle.buyCount} {cycle.buyCount === 1 ? 'buy' : 'buys'}
                                 </span>
+                                {cycle.minTs < Infinity && (
+                                  <span className="text-[10px] text-gray-600 font-mono">
+                                    {new Date(cycle.minTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                    {cycle.maxTs > cycle.minTs && ` – ${new Date(cycle.maxTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
+                                  </span>
+                                )}
                               </div>
                               <div className="flex items-center gap-4 text-xs">
                                 <span className="font-mono text-white">{cycle.totalSize.toFixed(8)} BTC</span>

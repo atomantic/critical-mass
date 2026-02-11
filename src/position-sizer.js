@@ -30,7 +30,7 @@ const createPositionSizer = (exchange, config) => {
    * Calculate entry size in USDC
    * @param {Object} params - Sizing parameters
    * @param {RegimeMode} params.regime - Current regime mode
-   * @param {number} params.cycleBuys - Current ladder step (0-indexed)
+   * @param {number} params.cycleBuys - Current cycle buy count (0-indexed)
    * @param {number} params.totalCostBasis - Current cost basis
    * @param {number} [params.bidDepthUsdc] - Bid depth in USDC (optional)
    * @param {number} [params.baselineDepth] - Baseline depth for comparison (optional)
@@ -90,8 +90,8 @@ const createPositionSizer = (exchange, config) => {
   /**
    * Calculate liquidity factor
    * If L2 depth available: sqrt(depth / baseline)
-   * Fallback: geometric scaling based on ladder step
-   * @param {number} cycleBuys - Current ladder step
+   * Fallback: geometric scaling based on cycle buy count
+   * @param {number} cycleBuys - Current cycle buy count
    * @param {number} [bidDepthUsdc] - Current bid depth
    * @param {number} [baselineDepth] - Baseline depth
    * @returns {number} Liquidity factor
@@ -104,7 +104,7 @@ const createPositionSizer = (exchange, config) => {
       return Math.min(factor, config.liquidityFactorCap);
     }
 
-    // Fallback: geometric scaling based on ladder step
+    // Fallback: geometric scaling based on cycle buy count
     // factor = 1 + (step * 0.1), capped
     const stepFactor = 1 + (cycleBuys * 0.1);
     return Math.min(stepFactor, config.liquidityFactorCap);
