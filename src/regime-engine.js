@@ -1109,7 +1109,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
               body.btcOnOrder = 0;
               await placeBodyTp(body);
             } else {
-              console.log(`⚠️ [${exchange}] Failed to cancel overpriced body TP ${body.tpOrderId}: ${cancelResult.errorMessage || 'unknown'}`);
+              const status = await adapter.getOrder(body.tpOrderId).catch(() => null);
+              if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
+                console.log(`📋 [${exchange}] Overpriced body TP ${body.tpOrderId.slice(0, 8)} already filled — polling will process`);
+              } else {
+                console.log(`⚠️ [${exchange}] Failed to cancel overpriced body TP ${body.tpOrderId}: ${cancelResult.errorMessage || 'unknown'}`);
+              }
             }
           }
         }
@@ -1171,7 +1176,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           // Sanity check: cancel orphans selling at or below cost (stale/duplicate artifacts)
           if (order.price <= avgPrice) {
             console.log(`🗑️ [${exchange}] Orphan ${order.orderId.slice(0, 8)} sells @ $${order.price} ≤ avg $${avgPrice.toFixed(0)} — cancelling stale order`);
-            await adapter.cancelOrder(order.orderId);
+            const orphanCancel = await adapter.cancelOrder(order.orderId);
+            if (!orphanCancel.success) {
+              const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
+              if (orphanStatus && (orphanStatus.status === 'FILLED' || orphanStatus.completionPercentage >= 100)) {
+                console.log(`📋 [${exchange}] Orphan ${order.orderId.slice(0, 8)} already filled — polling will process`);
+              }
+            }
             continue;
           }
 
@@ -1200,6 +1211,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 bodyEntry.tpPrice = 0;
                 bodyEntry.btcOnOrder = 0;
                 await placeBodyTp(bodyEntry);
+              } else {
+                const rStatus = await adapter.getOrder(bodyEntry.tpOrderId).catch(() => null);
+                if (rStatus && (rStatus.status === 'FILLED' || rStatus.completionPercentage >= 100)) {
+                  console.log(`📋 [${exchange}] Reclaimed body ${bodyEntry.id.slice(-8)} TP already filled — polling will process`);
+                }
               }
             }
           }
@@ -1833,7 +1849,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       // Find merge target among existing celestial bodies
       const bodies = positionState.celestialBodies || [];
-      const mergeTarget = celestialHierarchy.findMergeTarget(
+      let mergeTarget = celestialHierarchy.findMergeTarget(
         bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
         config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders
       );
@@ -1846,11 +1862,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       if (mergeTarget) {
         const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
-        if (cancelResult.filled) {
-          console.log(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP already filled, redirecting buy to new body`);
+        if (!cancelResult.cancelled) {
+          console.log(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
           mergeTarget = null;
-        } else if (!cancelResult.cancelled) {
-          await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
         }
       }
 
@@ -2085,51 +2099,73 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       } else {
         // UNTRACKED SELL — could be a core TP from before migration
         const summary2 = fillLedger.aggregateFills(fillsToAggregate);
-        const proceeds = summary2.totalValue - summary2.totalFees;
-        const soldCostBasis = summary2.totalSize * positionState.avgCostBasis;
-        const pnl = proceeds - soldCostBasis;
-        const holdbackBtc = roundBTC(positionState.totalBTC - summary2.totalSize);
 
-        positionState.realizedPnL += pnl;
-        positionState.realizedBtcPnL += holdbackBtc;
-        positionState.btcOnOrder = 0;
-        positionState.cyclesCompleted += 1;
-
-        const prevMaxUsdc = config.maxUsdcDeployed;
-        config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
-
-        console.log(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} BTC @ $${summary2.avgPrice}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
-
-        // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
-        const cycleFills = fillLedger.getCurrentCycleFills();
-        for (const fill of cycleFills) {
-          if (fill.side === 'buy' && !fill.isSatellite && !fill.bodyId) {
-            fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
-          }
+        // Guard: check if fills for this order are already annotated as satellite/body TP.
+        // This catches duplicate body TP fills from cancel-and-replace races where both the
+        // old and new TP orders fill simultaneously — the first is processed correctly, the
+        // second arrives after the body is removed and would otherwise trigger a false cycle.
+        const existingFills = fillLedger.getFillsForOrder(fillData.orderId);
+        const alreadyProcessedAsSatellite = existingFills.some(f => f.isSatellite);
+        if (alreadyProcessedAsSatellite) {
+          console.log(`⏭️ [${exchange}] Sell ${fillData.orderId.slice(0,8)} already processed as body/satellite TP, skipping`);
+          return;
         }
 
-        tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} BTC @ $${summary2.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
-          btcAmount: summary2.totalSize,
-          price: summary2.avgPrice,
-          pnl,
-          holdbackBtc,
-          capitalGrowth: pnl,
-          newMaxUsdcDeployed: config.maxUsdcDeployed,
-        });
+        // Guard: if celestial bodies still exist, this is NOT a legitimate cycle-closing TP.
+        // It's likely a duplicate/untracked satellite sell. Log and annotate but don't complete the cycle.
+        const remainingBodies = (positionState.celestialBodies || []).length;
+        if (remainingBodies > 0) {
+          console.log(`⚠️ [${exchange}] Untracked sell ${fillData.orderId.slice(0,8)} (${summary2.totalSize} BTC @ $${summary2.avgPrice}) — ${remainingBodies} celestial bodies still active, skipping cycle completion`);
+          fillLedger.annotateFillsByOrderId(fillData.orderId, { untrackedSell: true });
+          saveLiveState();
+          fillLedger.persist();
+        } else {
+          const proceeds = summary2.totalValue - summary2.totalFees;
+          const soldCostBasis = summary2.totalSize * positionState.avgCostBasis;
+          const pnl = proceeds - soldCostBasis;
+          const holdbackBtc = roundBTC(positionState.totalBTC - summary2.totalSize);
 
-        const actualTpPct = positionState.avgCostBasis > 0
-          ? ((summary2.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
-          : 0;
-        recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-        recordCycleForSizeOptimizer({
-          stepsUsed: positionState.cycleBuys,
-          capitalDeployed: soldCostBasis,
-        }, config.maxUsdcDeployed);
+          positionState.realizedPnL += pnl;
+          positionState.realizedBtcPnL += holdbackBtc;
+          positionState.btcOnOrder = 0;
+          positionState.cyclesCompleted += 1;
 
-        await resetCycle();
-        saveLiveState();
-        fillLedger.persist();
+          const prevMaxUsdc = config.maxUsdcDeployed;
+          config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+          updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+
+          console.log(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} BTC @ $${summary2.avgPrice}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+
+          // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
+          const cycleFills = fillLedger.getCurrentCycleFills();
+          for (const fill of cycleFills) {
+            if (fill.side === 'buy' && !fill.isSatellite && !fill.bodyId) {
+              fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
+            }
+          }
+
+          tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} BTC @ $${summary2.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
+            btcAmount: summary2.totalSize,
+            price: summary2.avgPrice,
+            pnl,
+            holdbackBtc,
+            capitalGrowth: pnl,
+            newMaxUsdcDeployed: config.maxUsdcDeployed,
+          });
+
+          const actualTpPct = positionState.avgCostBasis > 0
+            ? ((summary2.avgPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100
+            : 0;
+          recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+          recordCycleForSizeOptimizer({
+            stepsUsed: positionState.cycleBuys,
+            capitalDeployed: soldCostBasis,
+          }, config.maxUsdcDeployed);
+
+          await resetCycle();
+          saveLiveState();
+          fillLedger.persist();
+        }
       }
     }
 
@@ -2722,6 +2758,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * @returns {Promise<boolean>} Whether TP was successfully placed
    */
   const placeBodyTp = async (body) => {
+    if (body.tpOrderId) {
+      console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} already has TP ${body.tpOrderId.slice(0, 8)}, skipping duplicate placement`);
+      return false;
+    }
+
     // Get tier-specific TP percentage
     const baseTpPct = calculateDynamicTpPercent();
     const { tpPercent: tierTpPct } = celestialHierarchy.calculateBodyTpPercent(baseTpPct, body.tier, config.tpMaxPercent);
@@ -2946,7 +2987,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const candidateTpPrice = roundUSDC(price * (1 + calculateDynamicTpPercent() / 100));
 
       const bodies = positionState.celestialBodies || [];
-      const mergeTarget = celestialHierarchy.findMergeTarget(
+      let mergeTarget = celestialHierarchy.findMergeTarget(
         bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
         config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders
       );
@@ -2957,11 +2998,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       if (mergeTarget) {
         const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
-        if (cancelResult.filled) {
-          console.log(`⚠️ [${exchange}] [DRY-RUN] Body ${mergeTarget.id.slice(-8)} TP already filled, redirecting buy to new body`);
+        if (!cancelResult.cancelled) {
+          console.log(`⚠️ [${exchange}] [DRY-RUN] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
           mergeTarget = null;
-        } else if (!cancelResult.cancelled) {
-          await orderExecutor.cancelSatelliteTpOrder(mergeTarget.id);
         }
       }
 

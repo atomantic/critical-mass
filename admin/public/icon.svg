@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180">
+  <!-- Solid background with rounded appearance -->
+  <rect width="180" height="180" rx="0" ry="0" fill="#1e1b4b" />
+  <!-- Subtle radial glow behind the core -->
+  <circle cx="90" cy="90" r="70" fill="url(#bgGlow)" />
+  <!-- Outer orbit ring -->
+  <ellipse cx="90" cy="90" rx="72" ry="26" fill="none" stroke="#6366f1" stroke-width="2" opacity="0.5" transform="rotate(-20 90 90)" />
+  <!-- Middle orbit ring -->
+  <ellipse cx="90" cy="90" rx="52" ry="20" fill="none" stroke="#818cf8" stroke-width="2" opacity="0.6" transform="rotate(25 90 90)" />
+  <!-- Inner orbit ring -->
+  <ellipse cx="90" cy="90" rx="36" ry="14" fill="none" stroke="#a5b4fc" stroke-width="1.5" opacity="0.4" transform="rotate(-5 90 90)" />
+  <!-- Core glow -->
+  <circle cx="90" cy="90" r="24" fill="url(#cmCoreGlow)" />
+  <!-- Bright core -->
+  <circle cx="90" cy="90" r="12" fill="#e0e7ff" />
+  <!-- Orbiting bodies -->
+  <circle cx="152" cy="64" r="6" fill="#a5b4fc" />
+  <circle cx="38" cy="110" r="4" fill="#818cf8" opacity="0.7" />
+  <circle cx="120" cy="125" r="3" fill="#c7d2fe" opacity="0.5" />
+  <defs>
+    <radialGradient id="bgGlow">
+      <stop offset="0%" stop-color="#312e81" />
+      <stop offset="100%" stop-color="#1e1b4b" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="cmCoreGlow">
+      <stop offset="0%" stop-color="#c7d2fe" />
+      <stop offset="60%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+</svg>

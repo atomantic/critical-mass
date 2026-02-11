@@ -604,15 +604,15 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   /**
    * Cancel a specific satellite TP order (simulated)
    * @param {string} buyOrderId - Buy order ID of the satellite to cancel
-   * @returns {Promise<boolean>}
+   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
    */
   const cancelSatelliteTpOrder = async (buyOrderId) => {
     const satellite = satelliteTpOrders.get(buyOrderId);
-    if (!satellite) return true;
+    if (!satellite) return { cancelled: true, filled: false };
 
     pendingOrders.delete(satellite.tpOrderId);
     satelliteTpOrders.delete(buyOrderId);
-    return true;
+    return { cancelled: true, filled: false };
   };
 
   /**
@@ -745,10 +745,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
    */
   const cancelBodyTpOrder = async (bodyId) => {
     const body = bodyTpOrders.get(bodyId);
-    if (!body) return { cancelled: true };
+    if (!body) return { cancelled: true, filled: false };
     pendingOrders.delete(body.tpOrderId);
     bodyTpOrders.delete(bodyId);
-    return { cancelled: true };
+    return { cancelled: true, filled: false };
   };
 
   /**
