@@ -48,6 +48,7 @@ const HEALTH_COLORS = {
   ACTIVE: { bg: 'bg-green-900/50', text: 'text-green-400', icon: '●' },
   SAFE: { bg: 'bg-yellow-900/50', text: 'text-yellow-400', icon: '◐' },
   PAUSED: { bg: 'bg-gray-700', text: 'text-gray-400', icon: '○' },
+  STOPPED: { bg: 'bg-red-900/30', text: 'text-red-400', icon: '■' },
 }
 
 // Macro regime mode colors
@@ -575,7 +576,38 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
         </div>
       )}
 
-      {isRunning ? (
+      {/* Stopped banner when engine is not running but we have data */}
+      {!isRunning && (market.lastPrice > 0 || position.totalBTC > 0) && (
+        <div className="bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 flex items-center gap-3">
+          <span className="text-red-400 text-lg">■</span>
+          <div>
+            <span className="text-red-300 font-medium text-sm">Engine Stopped</span>
+            <span className="text-gray-500 text-xs ml-2">Live market data streaming &middot; no trading</span>
+          </div>
+        </div>
+      )}
+
+      {(!isRunning && !market.lastPrice && !position.totalBTC) ? (
+        /* No data at all - show placeholder */
+        <div className="bg-gray-800 rounded-lg p-8 text-center">
+          <div className="text-gray-400">
+            <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            <p className="text-lg">Regime Engine is not running</p>
+            <p className="text-sm text-gray-500 mt-2">
+              The regime engine uses volatility-driven entries instead of fixed intervals.
+              {isDryRun ? (
+                <span className="block mt-1 text-purple-400">
+                  Dry-run mode is enabled - trades will be simulated against live data.
+                </span>
+              ) : (
+                ' Click Start in the header to begin adaptive trading.'
+              )}
+            </p>
+          </div>
+        </div>
+      ) : (
         <>
           {/* Live Status Bar */}
           <div className="bg-gray-800 rounded-lg p-2 sm:p-3">
@@ -1524,15 +1556,17 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         return pending
                       }
                       const sorted = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
-                      let pending = []
+                      const pendingMap = new Map()
                       sorted.forEach(f => {
                         if (f.side === 'buy' && !f.isSatellite) {
-                          pending.push({ orderId: f.orderId, price: f.price, btcQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
+                          const ex = pendingMap.get(f.orderId)
+                          if (ex) { ex.btcQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
+                          else pendingMap.set(f.orderId, { orderId: f.orderId, price: f.price, btcQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
                         } else if (f.side === 'sell' && !f.isSatellite) {
-                          pending = []
+                          pendingMap.clear()
                         }
                       })
-                      return pending
+                      return Array.from(pendingMap.values())
                     }
                     return []
                   }
@@ -1753,6 +1787,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                   // Build sell groups: each = { sell, buys[], key }
                   let sellGroups = []
+                  let orphanedBuys = []
 
                   if (isDryRun) {
                     // Walk chronologically: buys accumulate until a core sell consumes them
@@ -1805,13 +1840,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         const avgCost = runBtc > 0 ? runCost / runBtc : 0
                         const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
                         const pnl = proceeds - avgCost * fill.size
-                        const cycleId = fill.cycleId || 'unknown'
-                        const cycleBuys = filteredFills.filter(f => f.cycleId === cycleId && f.side === 'buy')
-                        const cycleSells = filteredFills.filter(f => f.cycleId === cycleId && f.side === 'sell')
-                        const holdback = Math.max(0, cycleBuys.reduce((s, b) => s + b.size, 0) - cycleSells.reduce((s, sl) => s + sl.size, 0))
                         const prev = pnlMap.get(fill.orderId)
                         if (prev) { prev.pnl += pnl }
-                        else pnlMap.set(fill.orderId, { pnl, holdback })
+                        else pnlMap.set(fill.orderId, { pnl, holdback: 0 })
                         const rem = runBtc - fill.size
                         runBtc = rem > 0 ? rem : 0
                         runCost = rem > 0 ? avgCost * rem : 0
@@ -1820,7 +1851,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                     // Aggregate fills by orderId
                     const aggBuysAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy'))
-                    const aggBuysNonSat = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy' && !f.isSatellite))
                     const aggSellsAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'sell'))
 
                     // Group ALL buys (including satellite) by sellOrderId for direct lookup
@@ -1866,51 +1896,46 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       buysByBodyId.get(buy.bodyId).push(buy)
                     })
 
-                    // Track which non-satellite buys are claimed by sellOrderId
-                    const claimedBuyOrderIds = new Set()
-                    buysBySellOrderId.forEach(buys => buys.forEach(b => claimedBuyOrderIds.add(b.orderId)))
-
-                    // Build sell groups using sellOrderId, with chronological fallback for non-satellite
-                    const allAgg = [
-                      ...aggBuysNonSat.map(b => ({ ...b, _type: 'buy' })),
-                      ...aggSellsAll.map(s => ({ ...s, _type: 'sell' })),
-                    ].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-
-                    let pendingBuys = [] // fallback accumulator for sells without sellOrderId buys
-                    allAgg.forEach(order => {
-                      if (order._type === 'buy') {
-                        if (!claimedBuyOrderIds.has(order.orderId)) pendingBuys.push(order)
+                    // Build sell groups using sellOrderId/bodyId linkage only (no chronological guessing)
+                    aggSellsAll.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+                    aggSellsAll.forEach(order => {
+                      const pnlData = pnlMap.get(order.orderId)
+                      const sell = { ...order, pnl: pnlData?.pnl ?? null, holdback: pnlData?.holdback ?? null }
+                      const linkedBuys = buysBySellOrderId.get(order.orderId)
+                      if (order.isSatellite) {
+                        const bodyBuys = (!linkedBuys || linkedBuys.length === 0) && order.bodyId
+                          ? buysByBodyId.get(order.bodyId) || []
+                          : null
+                        sellGroups.push({ sell, buys: linkedBuys || bodyBuys || [], key: `fill-${order.orderId}` })
                       } else {
-                        const pnlData = pnlMap.get(order.orderId)
-                        const sell = { ...order, pnl: pnlData?.pnl ?? null, holdback: pnlData?.holdback ?? null }
-                        // Prefer sellOrderId-based buys, fall back to chronological accumulation
-                        const linkedBuys = buysBySellOrderId.get(order.orderId)
-                        if (order.isSatellite) {
-                          // Prefer sellOrderId-linked buys, fall back to bodyId-matched buys
-                          const bodyBuys = (!linkedBuys || linkedBuys.length === 0) && order.bodyId
-                            ? buysByBodyId.get(order.bodyId) || []
-                            : null
-                          sellGroups.push({ sell, buys: linkedBuys || bodyBuys || [], key: `fill-${order.orderId}` })
-                        } else if (linkedBuys && linkedBuys.length > 0) {
-                          sellGroups.push({ sell, buys: linkedBuys, key: `fill-${order.orderId}` })
-                        } else {
-                          // Fallback: chronological walk (for sells without sellOrderId on buys)
-                          sellGroups.push({ sell, buys: [...pendingBuys], key: `fill-${order.orderId}` })
-                          pendingBuys = []
-                        }
+                        sellGroups.push({ sell, buys: linkedBuys || [], key: `fill-${order.orderId}` })
                       }
                     })
                     sellGroups.reverse()
+
+                    // Compute holdback for non-satellite sells from linked buys: holdback = sum(buy sizes) - sell size
+                    sellGroups.forEach(group => {
+                      if (!group.sell.isSatellite && group.buys.length > 0) {
+                        const buyTotal = group.buys.reduce((s, b) => s + (b.size || 0), 0)
+                        group.sell.holdback = Math.max(0, buyTotal - (group.sell.size || 0))
+                      }
+                    })
+
+                    // Find orphaned buys: not linked to any filled sell and not waiting on an open TP
+                    const claimedBuyIds = new Set()
+                    sellGroups.forEach(g => g.buys.forEach(b => claimedBuyIds.add(b.orderId)))
+                    orphanedBuys = aggBuysAll
+                      .filter(b => !claimedBuyIds.has(b.orderId) && !b.sellOrderId && !b.bodyId)
+                      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
                   }
 
                   if (sellGroups.length === 0) {
                     return <div className="text-gray-500 text-sm text-center py-4">No filled sells yet</div>
                   }
 
-                  // Totals
-                  const totalSize = sellGroups.reduce((s, g) => s + (g.sell.size || 0), 0)
+                  // Totals (holdback computed after cycleMap for live mode)
                   const totalPnl = sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)
-                  const totalHoldback = sellGroups.reduce((s, g) => s + (isDryRun ? (g.sell.holdbackBtc || 0) : (g.sell.holdback || 0)), 0)
+                  let totalHoldback = isDryRun ? sellGroups.reduce((s, g) => s + (g.sell.holdbackBtc || 0), 0) : 0
 
                   // Shared sell + buy row renderer
                   const renderSellRow = (group) => {
@@ -2017,10 +2042,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             {sellGroups.length > 1 && (
                               <tr className="border-b border-gray-600 bg-gray-700/30 font-medium">
                                 <td className="py-1.5 pr-1"></td>
-                                <td className="py-1.5 pr-2 text-gray-400 text-xs">Totals ({sellGroups.length} sells)</td>
-                                <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{totalSize.toFixed(8)}</td>
-                                <td className="text-right py-1.5 pr-2"></td>
-                                <td className="text-right py-1.5 pr-2"></td>
+                                <td className="py-1.5 pr-2 text-gray-400 text-xs" colSpan={4}>Totals ({sellGroups.length} sells)</td>
                                 <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                                   {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
                                   {totalHoldback > 0 && <span className="ml-1 text-cyan-400" title="Total holdback">+{totalHoldback.toFixed(8)}</span>}
@@ -2044,7 +2066,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     entry.sells.push(group)
                     entry.totalSize += group.sell.size || 0
                     entry.totalPnl += group.sell.pnl || 0
-                    entry.totalHoldback += group.sell.holdback || 0
+                    if (isDryRun) {
+                      entry.totalHoldback += group.sell.holdbackBtc || 0
+                    } else if (group.sell.isSatellite) {
+                      entry.totalHoldback += group.sell.holdback || 0
+                    }
                     entry.buyCount += group.buys.length
                     const sellTs = group.sell.timestamp || group.sell.filledAt || 0
                     if (sellTs > 0) { entry.minTs = Math.min(entry.minTs, sellTs); entry.maxTs = Math.max(entry.maxTs, sellTs) }
@@ -2053,6 +2079,24 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       if (buyTs > 0) { entry.minTs = Math.min(entry.minTs, buyTs); entry.maxTs = Math.max(entry.maxTs, buyTs) }
                     })
                   })
+                  // For live mode, compute core holdback per cycle from raw fills (not sell groups, which may have mislinked buys)
+                  if (!isDryRun) {
+                    const cycleBuySizes = new Map()
+                    filteredFills.forEach(f => {
+                      if (f.side === 'buy' && !f.isSatellite) {
+                        const cid = f.cycleId || 'unknown'
+                        cycleBuySizes.set(cid, (cycleBuySizes.get(cid) || 0) + f.size)
+                      }
+                    })
+                    cycleMap.forEach(entry => {
+                      const coreBuySize = cycleBuySizes.get(entry.cycleId) || 0
+                      const coreSellSize = entry.sells.reduce((s, g) => s + (g.sell.isSatellite ? 0 : (g.sell.size || 0)), 0)
+                      const coreHoldback = Math.max(0, coreBuySize - coreSellSize)
+                      entry.totalHoldback += coreHoldback
+                    })
+                    // Sum cycle holdbacks for grand total
+                    cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
+                  }
                   const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => {
                     if (a.cycleId === 'unknown') return 1
                     if (b.cycleId === 'unknown') return -1
@@ -2067,13 +2111,79 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       {cycleGroups.length > 0 && (
                         <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
                           <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
-                          <div className="flex items-center gap-4">
-                            <span className="font-mono text-white">{totalSize.toFixed(8)} BTC</span>
-                            <span className={`font-mono ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
-                              {totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{totalHoldback.toFixed(8)}</span>}
-                            </span>
+                          <span className={`font-mono ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
+                            {totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{totalHoldback.toFixed(8)}</span>}
+                          </span>
+                        </div>
+                      )}
+                      {/* Orphaned buys (not linked to any sell) */}
+                      {!isDryRun && orphanedBuys && orphanedBuys.length > 0 && (
+                        <div className="border border-yellow-700/40 rounded-lg overflow-hidden">
+                          <div
+                            className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-700/40 transition-colors"
+                            onClick={() => {
+                              setExpandedCycles(prev => {
+                                const next = new Set(prev)
+                                if (next.has('orphans')) next.delete('orphans')
+                                else next.add('orphans')
+                                return next
+                              })
+                            }}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-block transition-transform text-xs text-gray-500 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
+                              <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
+                              <span className="text-xs text-gray-500">{orphanedBuys.length} buys not linked to any sell</span>
+                            </div>
+                            <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} BTC</span>
                           </div>
+                          {expandedCycles.has('orphans') && (
+                            <div className="border-t border-gray-700">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="text-gray-400 text-xs border-b border-gray-700">
+                                    <th className="text-left py-1.5 pr-1 w-6"></th>
+                                    <th className="text-left py-1.5 pr-2">Order ID</th>
+                                    <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                                    <th className="text-right py-1.5 pr-2">Price</th>
+                                    <th className="text-right py-1.5 pr-2">Value</th>
+                                    <th className="text-right py-1.5 pr-2">Cycle</th>
+                                    <th className="text-right py-1.5">Filled</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {orphanedBuys.map((buy, idx) => {
+                                    const buyPrice = buy.fillPrice || buy.price
+                                    const buyValue = buy.quoteAmount || ((buy.size || 0) * (buyPrice || 0))
+                                    return (
+                                      <tr key={`orphan-${buy.orderId}-${idx}`} className="border-b border-gray-700/30">
+                                        <td className="py-1 pr-1"></td>
+                                        <td className="py-1 pr-2 font-mono text-xs text-yellow-400/70">
+                                          {buy.orderId}
+                                        </td>
+                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
+                                          {buy.size?.toFixed(8)}
+                                        </td>
+                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
+                                          ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        </td>
+                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
+                                          ${buyValue.toFixed(2)}
+                                        </td>
+                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-600">
+                                          {buy.cycleId?.replace('cycle-', '#') || '—'}
+                                        </td>
+                                        <td className="text-right py-1 font-mono text-xs text-gray-500">
+                                          {formatTimestamp(buy.timestamp || buy.filledAt)}
+                                        </td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
                         </div>
                       )}
                       {cycleGroups.map(cycle => {
@@ -2115,13 +2225,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                   </span>
                                 )}
                               </div>
-                              <div className="flex items-center gap-4 text-xs">
-                                <span className="font-mono text-white">{cycle.totalSize.toFixed(8)} BTC</span>
-                                <span className={`font-mono ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                  {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}$${cycle.totalPnl.toFixed(2)}` : '—'}
-                                  {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
-                                </span>
-                              </div>
+                              <span className={`font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}$${cycle.totalPnl.toFixed(2)}` : '—'}
+                                {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
+                              </span>
                             </div>
                             {isCycleExpanded && (
                               <div className="border-t border-gray-700">
@@ -2160,26 +2267,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
           </div>
         </div>
         </>
-      ) : (
-        /* Not Running State */
-        <div className="bg-gray-800 rounded-lg p-8 text-center">
-          <div className="text-gray-400">
-            <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            <p className="text-lg">Regime Engine is not running</p>
-            <p className="text-sm text-gray-500 mt-2">
-              The regime engine uses volatility-driven entries instead of fixed intervals.
-              {isDryRun ? (
-                <span className="block mt-1 text-purple-400">
-                  Dry-run mode is enabled - trades will be simulated against live data.
-                </span>
-              ) : (
-                ' Click Start in the header to begin adaptive trading.'
-              )}
-            </p>
-          </div>
-        </div>
       )}
     </div>
   )

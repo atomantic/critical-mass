@@ -6,3 +6,4 @@ dry-run-state.json
 .DS_Store
 .playwright-mcp
 admin/dist/
+tmp-*
