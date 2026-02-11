@@ -14,7 +14,7 @@
  */
 
 const { roundBTC, roundPrice, roundUSDC } = require('./volatility-utils');
-const { FIBONACCI, getFibonacciMultiplier } = require('./fibonacci-utils');
+const { getFibonacciMultiplier } = require('./fibonacci-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig

@@ -1126,9 +1126,6 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       if (orphanedSells.length > 0) {
         const cycleFills = fillLedger.getCurrentCycleFills();
-        const trackedBodyIds = new Set(
-          (positionState.celestialBodies || []).map(b => b.id)
-        );
         let reclaimedBodies = 0;
 
         for (const order of orphanedSells) {
@@ -2917,7 +2914,6 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
         await placeBodyTp(merged);
 
-        const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
         tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price} [merged→${merged.tier}]`, {
           btcAmount: btcQty, price, bodyId: merged.id, bodyTier: merged.tier, isMerge: true, isDryRun: true,
         });
