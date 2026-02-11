@@ -36,6 +36,9 @@ const createMarketDataService = (exchange) => {
   let fillLedger = null;
   let isConnected = false;
   let metricsUpdateInterval = null;
+  let onStatusUpdateCallback = null;
+  let lastStatusEmit = 0;
+  const STATUS_EMIT_INTERVAL = 1000; // Throttle to ~1/sec to match chart buffer rate
 
   // Market state (same structure as regime engine)
   const marketState = {
@@ -145,6 +148,26 @@ const createMarketDataService = (exchange) => {
   };
 
   /**
+   * Emit a throttled status update to the callback (for Socket.IO + chart buffer)
+   */
+  const emitStatus = () => {
+    if (!onStatusUpdateCallback) return;
+    const now = Date.now();
+    if (now - lastStatusEmit < STATUS_EMIT_INTERVAL) return;
+    lastStatusEmit = now;
+
+    const savedState = loadRegimeState(exchange);
+    onStatusUpdateCallback({
+      isRunning: false,
+      market: getMarketState(),
+      regime: getRegimeState(),
+      position: savedState?.position || null,
+      health: { mode: 'STOPPED' },
+      isDryRun: savedState?.isDryRun || false,
+    });
+  };
+
+  /**
    * Handle ticker updates
    */
   const handleTicker = (data) => {
@@ -182,6 +205,9 @@ const createMarketDataService = (exchange) => {
         regimeState.reason = `Detected via market data service`;
       }
     }
+
+    // Push live data to UI + chart buffer
+    emitStatus();
   };
 
   /**
@@ -365,6 +391,13 @@ const createMarketDataService = (exchange) => {
     onOrderFillCallback = callback;
   };
 
+  /**
+   * Set callback for status updates (used by Socket.IO + chart buffer)
+   */
+  const setOnStatusUpdate = (callback) => {
+    onStatusUpdateCallback = callback;
+  };
+
   return {
     start,
     stop,
@@ -376,6 +409,7 @@ const createMarketDataService = (exchange) => {
     trackOrder,
     untrackOrder,
     setOnOrderFill,
+    setOnStatusUpdate,
   };
 };
 

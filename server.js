@@ -72,6 +72,16 @@ const io = new Server(server, {
 });
 const PORT = process.env.PORT || 5563;
 
+// Wire up market data service to push live data to UI + chart buffer when engine is stopped
+const wireMarketDataCallbacks = (exchange) => {
+  const service = getMarketDataService(exchange);
+  if (!service) return;
+  service.setOnStatusUpdate((status) => {
+    getChartDataBuffer(exchange).processStatus(status);
+    io.emit('regime:status', { exchange, status });
+  });
+};
+
 // Notification system
 const notifier = createNotifier();
 
@@ -595,7 +605,7 @@ app.get('/api/:exchange/regime/status', (req, res) => {
         market: serviceStatus?.market || null,
         regime: serviceStatus?.regime || null,
         position: savedState?.position || null,
-        health: { mode: 'INACTIVE' },
+        health: { mode: 'STOPPED' },
         // Include dry-run state if applicable
         isDryRun: savedState?.isDryRun || false,
       },
@@ -733,7 +743,7 @@ app.post('/api/:exchange/regime/stop', async (req, res) => {
   saveRegimeRunningFlag(exchange, false);
 
   // Restart market data service for passive price streaming
-  startMarketDataService(exchange);
+  startMarketDataService(exchange).then(() => wireMarketDataCallbacks(exchange));
 
   log('INFO', `✅ [${exchange}] Regime engine stopped successfully`);
 
@@ -1878,7 +1888,7 @@ server.listen(PORT, async () => {
     // Start market data service if regime config exists and engine not already running
     if (regimeConfig && Object.keys(regimeConfig).length > 0 && !regimeEngines.has(exchange)) {
       log('INFO', `📊 [${exchange}] Starting market data service for live price streaming...`);
-      startMarketDataService(exchange).catch(err => {
+      startMarketDataService(exchange).then(() => wireMarketDataCallbacks(exchange)).catch(err => {
         log('WARN', `⚠️ [${exchange}] Failed to start market data service: ${err.message}`);
       });
     }
