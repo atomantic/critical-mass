@@ -80,7 +80,6 @@ app.use(cors());
 app.use(express.json());
 
 // Paths
-const CONFIG_FILE = path.join(__dirname, 'config.json');
 const DATA_DIR = path.join(__dirname, 'data');
 
 // Helper to read JSON file
