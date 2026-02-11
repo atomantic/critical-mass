@@ -1853,7 +1853,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     const aggBuysAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy'))
                     const aggSellsAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'sell'))
 
-                    // Group ALL buys (including satellite) by sellOrderId for direct lookup
+                    // Group all buys by sellOrderId for direct lookup
                     const buysBySellOrderId = new Map()
                     aggBuysAll.forEach(buy => {
                       const sid = buy.sellOrderId
@@ -1888,7 +1888,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       if (!existing.some(b => b.orderId === buy.orderId)) existing.push(buy)
                     })
 
-                    // Fallback: group satellite buys by bodyId for sells with no sellOrderId linkage at all
+                    // Fallback: group buys by bodyId for sells with no sellOrderId linkage
                     const buysByBodyId = new Map()
                     aggBuysAll.forEach(buy => {
                       if (!buy.bodyId) return
@@ -1896,30 +1896,23 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       buysByBodyId.get(buy.bodyId).push(buy)
                     })
 
-                    // Build sell groups using sellOrderId/bodyId linkage only (no chronological guessing)
+                    // Build sell groups: sellOrderId first, bodyId fallback, uniform for all sell types
                     aggSellsAll.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
                     aggSellsAll.forEach(order => {
                       const pnlData = pnlMap.get(order.orderId)
                       const sell = { ...order, pnl: pnlData?.pnl ?? null, holdback: pnlData?.holdback ?? null }
                       const linkedBuys = buysBySellOrderId.get(order.orderId)
-                      if (order.isSatellite) {
-                        const bodyBuys = (!linkedBuys || linkedBuys.length === 0) && order.bodyId
-                          ? buysByBodyId.get(order.bodyId) || []
-                          : null
-                        sellGroups.push({ sell, buys: linkedBuys || bodyBuys || [], key: `fill-${order.orderId}` })
-                      } else {
-                        sellGroups.push({ sell, buys: linkedBuys || [], key: `fill-${order.orderId}` })
+                      const bodyBuys = (!linkedBuys || linkedBuys.length === 0) && order.bodyId
+                        ? buysByBodyId.get(order.bodyId) || []
+                        : null
+                      const buys = linkedBuys || bodyBuys || []
+                      if (buys.length > 0) {
+                        const buyTotal = buys.reduce((s, b) => s + (b.size || 0), 0)
+                        sell.holdback = Math.max(0, buyTotal - (sell.size || 0))
                       }
+                      sellGroups.push({ sell, buys, key: `fill-${order.orderId}` })
                     })
                     sellGroups.reverse()
-
-                    // Compute holdback for non-satellite sells from linked buys: holdback = sum(buy sizes) - sell size
-                    sellGroups.forEach(group => {
-                      if (!group.sell.isSatellite && group.buys.length > 0) {
-                        const buyTotal = group.buys.reduce((s, b) => s + (b.size || 0), 0)
-                        group.sell.holdback = Math.max(0, buyTotal - (group.sell.size || 0))
-                      }
-                    })
 
                     // Find orphaned buys: not linked to any filled sell and not waiting on an open TP
                     const claimedBuyIds = new Set()
@@ -2079,8 +2072,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     entry.totalPnl += group.sell.pnl || 0
                     if (isDryRun) {
                       entry.totalHoldback += group.sell.holdbackBtc || 0
-                    } else if (group.sell.isSatellite) {
-                      entry.totalHoldback += group.sell.holdback || 0
                     }
                     entry.buyCount += group.buys.length
                     const sellTs = group.sell.timestamp || group.sell.filledAt || 0
@@ -2090,22 +2081,20 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       if (buyTs > 0) { entry.minTs = Math.min(entry.minTs, buyTs); entry.maxTs = Math.max(entry.maxTs, buyTs) }
                     })
                   })
-                  // For live mode, compute core holdback per cycle from raw fills (not sell groups, which may have mislinked buys)
+                  // For live mode, compute holdback per cycle from raw fills (total bought - total sold)
                   if (!isDryRun) {
                     const cycleBuySizes = new Map()
+                    const cycleSellSizes = new Map()
                     filteredFills.forEach(f => {
-                      if (f.side === 'buy' && !f.isSatellite) {
-                        const cid = f.cycleId || 'unknown'
-                        cycleBuySizes.set(cid, (cycleBuySizes.get(cid) || 0) + f.size)
-                      }
+                      const cid = f.cycleId || 'unknown'
+                      if (f.side === 'buy') cycleBuySizes.set(cid, (cycleBuySizes.get(cid) || 0) + f.size)
+                      else if (f.side === 'sell') cycleSellSizes.set(cid, (cycleSellSizes.get(cid) || 0) + f.size)
                     })
                     cycleMap.forEach(entry => {
-                      const coreBuySize = cycleBuySizes.get(entry.cycleId) || 0
-                      const coreSellSize = entry.sells.reduce((s, g) => s + (g.sell.isSatellite ? 0 : (g.sell.size || 0)), 0)
-                      const coreHoldback = Math.max(0, coreBuySize - coreSellSize)
-                      entry.totalHoldback += coreHoldback
+                      const buySize = cycleBuySizes.get(entry.cycleId) || 0
+                      const sellSize = cycleSellSizes.get(entry.cycleId) || 0
+                      entry.totalHoldback += Math.max(0, buySize - sellSize)
                     })
-                    // Sum cycle holdbacks for grand total
                     cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
                   }
                   const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => {
