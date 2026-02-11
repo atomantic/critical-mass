@@ -959,6 +959,13 @@ app.post('/api/:exchange/regime/recalculate', async (req, res) => {
   const currentCycleFills = fillLedger.getCurrentCycleFills();
   const currentPosition = fillLedger.rebuildPositionFromFills(currentCycleFills);
 
+  // Include body/satellite P&L (tracked independently from core cycle P&L)
+  const bodyPnL = currentState.position?.celestialState?.bodiesRealizedPnL || 0;
+  const satPnL = currentState.position?.satelliteRealizedPnL || 0;
+  const bodyBtcPnL = currentState.position?.celestialState?.bodiesRealizedBtcPnL || 0;
+  const totalRealizedPnL = recalcResult.realizedPnL + bodyPnL + satPnL;
+  const totalRealizedBtcPnL = recalcResult.realizedBtcPnL + bodyBtcPnL;
+
   const changes = {
     cyclesCompleted: {
       before: currentState.position?.cyclesCompleted || 0,
@@ -966,11 +973,11 @@ app.post('/api/:exchange/regime/recalculate', async (req, res) => {
     },
     realizedPnL: {
       before: currentState.position?.realizedPnL || 0,
-      after: recalcResult.realizedPnL,
+      after: totalRealizedPnL,
     },
     realizedBtcPnL: {
       before: currentState.position?.realizedBtcPnL || 0,
-      after: recalcResult.realizedBtcPnL,
+      after: totalRealizedBtcPnL,
     },
     ladderStep: {
       before: currentState.position?.ladderStep || 0,
@@ -992,8 +999,8 @@ app.post('/api/:exchange/regime/recalculate', async (req, res) => {
       ...currentState.position,
       ...currentPosition,
       cyclesCompleted: recalcResult.cyclesCompleted,
-      realizedPnL: recalcResult.realizedPnL,
-      realizedBtcPnL: recalcResult.realizedBtcPnL,
+      realizedPnL: totalRealizedPnL,
+      realizedBtcPnL: totalRealizedBtcPnL,
     };
 
     saveRegimeState(exchange, {
@@ -1010,7 +1017,7 @@ app.post('/api/:exchange/regime/recalculate', async (req, res) => {
       engine.updatePosition(updatedPosition);
     }
 
-    console.log(`🔧 [${exchange}] Regime state recalculated and applied: ${recalcResult.cyclesCompleted} cycles, $${recalcResult.realizedPnL} P&L, ${recalcResult.realizedBtcPnL} BTC reserves`);
+    console.log(`🔧 [${exchange}] Regime state recalculated and applied: ${recalcResult.cyclesCompleted} cycles, cyclePnL=$${recalcResult.realizedPnL.toFixed(2)} + bodyPnL=$${bodyPnL.toFixed(2)} + satPnL=$${satPnL.toFixed(2)} = $${totalRealizedPnL.toFixed(2)}, BTC reserves=${totalRealizedBtcPnL.toFixed(6)}`);
   }
 
   res.json({

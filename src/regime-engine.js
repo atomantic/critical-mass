@@ -1861,6 +1861,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
         if (idx !== -1) positionState.celestialBodies[idx] = merged;
 
+        // Annotate merged buy fills with body metadata (matches new-body annotation at line ~1903)
+        fillLedger.annotateFillsByOrderId(fillData.orderId, { isSatellite: true, bodyId: merged.id, bodyTier: merged.tier });
+
         // Check for cascading promotions
         celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
 
