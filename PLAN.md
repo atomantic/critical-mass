@@ -483,6 +483,12 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
 - **DRY rendering**: Shared `renderSellRow` helper and `tableHeader` variable used by both paths
 - **Edge cases**: null cycleId grouped as "Unassigned" (gray badge, sorted last)
 
+### Editable Aggressiveness Presets (v2.5.23)
+- **Presets stored in config.json**: `global.aggressivenessPresets` with 4 levels (conservative, moderate, aggressive, maximum), each containing 8 params (kFactor, minIntervalMs, maxIntervalMs, entryOffsetBps, baseSizeUsdc, cautionScale, trendScale, maxCycleBuys)
+- **Backend**: `getAggressivenessPresets()` / `updateAggressivenessPresets()` in config-utils.js, `GET/PUT /api/presets/aggressiveness` in server.js
+- **RegimeDashboard**: Fetches presets from API on mount, passes to `AggressivenessControl` as prop. Preview panel now includes maxCycleBuys
+- **ConfigEditor**: New "Aggressiveness Presets" section with 4 collapsible cards, each showing 8 editable fields with independent save/reset
+
 ---
 
 ## Architecture
@@ -622,6 +628,10 @@ GET  /api/:exchange/transactions - Get transaction history
 GET  /api/:exchange/cost-basis   - Get cost basis report
 POST /api/:exchange/backtest     - Run backtest simulation
 POST /api/:exchange/optimize     - Run parameter optimization
+
+# Aggressiveness Presets (global)
+GET  /api/presets/aggressiveness  - Get aggressiveness presets (merged with defaults)
+PUT  /api/presets/aggressiveness  - Update aggressiveness presets
 
 # Notifications (global, not exchange-specific)
 GET  /api/notifications/config   - Get notification config (token masked)

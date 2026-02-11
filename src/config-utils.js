@@ -207,6 +207,53 @@ const NOTIFICATION_DEFAULTS = {
 };
 
 /**
+ * Default aggressiveness preset definitions
+ * These define the parameter values for each aggressiveness level.
+ */
+const DEFAULT_AGGRESSIVENESS_PRESETS = {
+  conservative: {
+    kFactor: 0.8,
+    minIntervalMs: 180000,
+    maxIntervalMs: 7200000,
+    entryOffsetBps: 25,
+    baseSizeUsdc: 25,
+    cautionScale: 0.15,
+    trendScale: 0,
+    maxCycleBuys: 10,
+  },
+  moderate: {
+    kFactor: 0.65,
+    minIntervalMs: 120000,
+    maxIntervalMs: 3600000,
+    entryOffsetBps: 18,
+    baseSizeUsdc: 50,
+    cautionScale: 0.35,
+    trendScale: 0.1,
+    maxCycleBuys: 15,
+  },
+  aggressive: {
+    kFactor: 0.5,
+    minIntervalMs: 90000,
+    maxIntervalMs: 2400000,
+    entryOffsetBps: 12,
+    baseSizeUsdc: 100,
+    cautionScale: 0.6,
+    trendScale: 0.25,
+    maxCycleBuys: 25,
+  },
+  maximum: {
+    kFactor: 0.3,
+    minIntervalMs: 60000,
+    maxIntervalMs: 1200000,
+    entryOffsetBps: 5,
+    baseSizeUsdc: 200,
+    cautionScale: 1.0,
+    trendScale: 0.5,
+    maxCycleBuys: 50,
+  },
+};
+
+/**
  * Global default configuration
  * @type {GlobalConfig}
  */
@@ -701,6 +748,47 @@ const getNotificationConfig = () => {
 };
 
 /**
+ * Get aggressiveness presets (user-customized merged with defaults)
+ * @returns {Object} Presets keyed by level id
+ */
+const getAggressivenessPresets = () => {
+  const config = loadConfig();
+  const saved = config.global?.aggressivenessPresets || {};
+  const merged = {};
+  for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
+    merged[level] = {
+      ...DEFAULT_AGGRESSIVENESS_PRESETS[level],
+      ...saved[level],
+    };
+  }
+  return merged;
+};
+
+/**
+ * Update aggressiveness presets
+ * @param {Object} updates - Presets keyed by level id with partial param overrides
+ * @returns {Object} Updated full configuration
+ */
+const updateAggressivenessPresets = (updates) => {
+  const config = loadConfig();
+  const current = config.global?.aggressivenessPresets || {};
+
+  config.global = config.global || {};
+  config.global.aggressivenessPresets = {};
+
+  for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
+    config.global.aggressivenessPresets[level] = {
+      ...DEFAULT_AGGRESSIVENESS_PRESETS[level],
+      ...current[level],
+      ...updates[level],
+    };
+  }
+
+  saveConfig(config);
+  return config;
+};
+
+/**
  * Update notification configuration
  * @param {Object} updates - Notification config updates
  * @returns {Object} Updated full configuration
@@ -750,6 +838,10 @@ module.exports = {
   // Notifications
   getNotificationConfig,
   updateNotificationConfig,
+  // Aggressiveness presets
+  getAggressivenessPresets,
+  updateAggressivenessPresets,
+  DEFAULT_AGGRESSIVENESS_PRESETS,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,
