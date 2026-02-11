@@ -539,12 +539,24 @@ app.put('/api/:exchange/regime/config', (req, res) => {
   const { exchange } = req.params;
   const updates = req.body;
 
-  // Validate updates merged with current config to catch cross-field invariants
-  // (e.g., setting tpMinPercent > existing tpMaxPercent)
-  // Individual field range checks apply to updated values; cross-field checks use merged result
+  // Validate only the fields being updated (plus cross-field pairs for invariants)
+  // This avoids rejecting updates when unrelated existing fields are outside validation ranges
   const currentConfig = getRegimeConfig(exchange);
-  const mergedConfig = { ...currentConfig, ...updates };
-  const validation = validateRegimeConfig(mergedConfig);
+  const keysToValidate = Object.keys(updates);
+  // For cross-field checks, include the counterpart from current config
+  const crossFieldPairs = {
+    tpMinPercent: 'tpMaxPercent', tpMaxPercent: 'tpMinPercent',
+    macroDeclineThreshold: 'macroAccumulationThreshold', macroAccumulationThreshold: 'macroMarkupThreshold',
+    macroMarkupThreshold: 'macroAccumulationThreshold',
+  };
+  const validationSubset = { ...updates };
+  for (const key of keysToValidate) {
+    const partner = crossFieldPairs[key];
+    if (partner && validationSubset[partner] === undefined) {
+      validationSubset[partner] = currentConfig[partner];
+    }
+  }
+  const validation = validateRegimeConfig(validationSubset);
   if (!validation.valid) {
     return res.status(400).json({ success: false, errors: validation.errors });
   }
