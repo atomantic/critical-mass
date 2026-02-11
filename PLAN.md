@@ -437,6 +437,27 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
 - `regime:health` - Health mode changes
 - `regime:position` - Position updates
 
+### Scheduled Data Backups with Restore UI (v2.5+)
+- Automated scheduled backups of all trading data to `data/backups/`
+- ZIP-based archives using `spawnSync('zip', ...)` / `spawnSync('unzip', ...)`
+- Excludes API keys (`*-keys.json`) and backups dir from archives
+- Optionally excludes price cache files (~45MB per exchange, regenerable)
+- Configurable via `global.backup` in config: `enabled`, `intervalMs`, `maxBackups`, `includePriceCache`
+- Auto-prune oldest backups beyond `maxBackups` (default: 7)
+- Admin UI at `/backups`: config panel, manual backup button, backup list with restore/delete
+- Restore safety: stops all running regime engines before overwriting data files
+- Path traversal protection on restore filenames
+- Files: `src/backup-service.js`, backup endpoints in `server.js`, `admin/src/components/BackupRestore.jsx`
+- API routes:
+  ```
+  GET    /api/backups                  - List backups + config
+  POST   /api/backups                  - Create backup now
+  DELETE /api/backups/:filename        - Delete one backup
+  POST   /api/backups/:filename/restore - Restore backup (stops engines)
+  GET    /api/backups/config           - Get backup config
+  PUT    /api/backups/config           - Update backup config + reschedule
+  ```
+
 ### Data Management
 - Exchange-namespaced data directories
 - Transaction logging in TSV format
@@ -564,7 +585,8 @@ src/
 ├── fill-ledger.js      # Idempotent fill tracking with cost basis
 ├── recovery.js         # Startup state recovery from exchange
 ├── trade-events.js     # Trade event emitter for WebSocket updates
-└── notifier.js         # Telegram notification system (event routing, batching, daily summaries)
+├── notifier.js         # Telegram notification system (event routing, batching, daily summaries)
+└── backup-service.js   # Scheduled backup/restore service (zip-based, auto-prune)
 
 admin/src/components/
 ├── celestial/          # 3D celestial system visualization
@@ -600,6 +622,7 @@ admin/src/components/
 ├── ConfigEditor.jsx       # Strategy-aware configuration editor
 ├── ExchangeSelector.jsx   # Exchange + Strategy selector dropdown
 ├── NotificationsConfig.jsx # Telegram notification settings page
+├── BackupRestore.jsx      # Scheduled backup config + restore UI
 └── ...                    # Other components
 
 admin/src/hooks/

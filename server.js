@@ -34,7 +34,8 @@ const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig } = require('.
 const { startMarketDataService, stopMarketDataService, getMarketDataService, stopAllMarketDataServices } = require('./src/market-data-service');
 const { getChartDataBuffer, getChartData, shutdownAllBuffers } = require('./src/chart-data-buffer');
 const { createNotifier } = require('./src/notifier');
-const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS } = require('./src/config-utils');
+const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig } = require('./src/config-utils');
+const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('./src/backup-service');
 
 // Active regime engines by exchange
 const regimeEngines = new Map();
@@ -671,10 +672,7 @@ app.post('/api/:exchange/regime/start', async (req, res) => {
     });
   }
 
-  // Stop market data service to avoid duplicate WebSocket connections
-  stopMarketDataService(exchange);
-
-  // Create and start the engine
+  // Create and start the engine (keep market-data-service running during startup to avoid data gaps)
   const engine = createRegimeEngine(exchange, exchangeConfig, {
     onTradeEvent: (event) => io.emit('trade:event', event),
     onRegimeChange: (prevMode, newMode, reason) => io.emit('regime:change', { exchange, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
@@ -698,6 +696,9 @@ app.post('/api/:exchange/regime/start', async (req, res) => {
       error: startResult.error || 'Failed to start regime engine',
     });
   }
+
+  // Engine is connected — now stop market-data-service to avoid duplicate WebSocket connections
+  stopMarketDataService(exchange);
 
   // Save running flag for auto-resume on restart
   saveRegimeRunningFlag(exchange, true);
@@ -725,6 +726,10 @@ app.post('/api/:exchange/regime/stop', async (req, res) => {
 
   log('INFO', `🛑 [${exchange}] Stopping regime engine...`);
 
+  // Start market-data-service before stopping engine to avoid volatility data gaps
+  await startMarketDataService(exchange);
+  wireMarketDataCallbacks(exchange);
+
   const stopResult = await engine.stop().catch(err => {
     log('ERROR', `❌ [${exchange}] Error stopping engine: ${err.message}`);
     return { error: err.message };
@@ -741,9 +746,6 @@ app.post('/api/:exchange/regime/stop', async (req, res) => {
 
   // Remove running flag (user intentionally stopped)
   saveRegimeRunningFlag(exchange, false);
-
-  // Restart market data service for passive price streaming
-  startMarketDataService(exchange).then(() => wireMarketDataCallbacks(exchange));
 
   log('INFO', `✅ [${exchange}] Regime engine stopped successfully`);
 
@@ -1752,6 +1754,136 @@ app.get('/api/notifications/stats', (req, res) => {
   res.json(notifier.getStats());
 });
 
+// ============ Backup API ============
+
+// Backup scheduler timer
+let backupTimer = null;
+
+const rescheduleBackupTimer = () => {
+  if (backupTimer) {
+    clearInterval(backupTimer);
+    backupTimer = null;
+  }
+
+  const backupConfig = getBackupConfig();
+  if (!backupConfig.enabled) {
+    log('INFO', '💾 Backup scheduler disabled');
+    return;
+  }
+
+  backupTimer = setInterval(() => {
+    const config = getBackupConfig();
+    if (!config.enabled) return;
+
+    log('INFO', '💾 Running scheduled backup...');
+    const result = createBackup({ includePriceCache: config.includePriceCache });
+    if (result.success) {
+      const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
+      log('INFO', `💾 Scheduled backup created: ${result.filename} (${sizeMB} MB)`);
+      const pruneResult = pruneBackups(config.maxBackups);
+      if (pruneResult.pruned > 0) {
+        log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
+      }
+    } else {
+      log('ERROR', `💾 Scheduled backup failed: ${result.error}`);
+    }
+  }, backupConfig.intervalMs);
+
+  const hours = (backupConfig.intervalMs / 3600000).toFixed(1);
+  log('INFO', `💾 Backup scheduler started: every ${hours}h, max ${backupConfig.maxBackups} backups`);
+};
+
+// List backups + config
+app.get('/api/backups', (req, res) => {
+  const backups = listBackups();
+  const config = getBackupConfig();
+  res.json({ success: true, backups, config });
+});
+
+// Get backup config
+app.get('/api/backups/config', (req, res) => {
+  const config = getBackupConfig();
+  res.json({ success: true, config });
+});
+
+// Update backup config
+app.put('/api/backups/config', (req, res) => {
+  const updates = req.body;
+  updateBackupConfig(updates);
+  rescheduleBackupTimer();
+  log('INFO', `💾 Backup config updated: enabled=${updates.enabled !== undefined ? updates.enabled : 'unchanged'}`);
+  const config = getBackupConfig();
+  res.json({ success: true, config });
+});
+
+// Create backup now (manual trigger)
+app.post('/api/backups', (req, res) => {
+  const config = getBackupConfig();
+  log('INFO', '💾 Manual backup triggered');
+
+  const result = createBackup({ includePriceCache: config.includePriceCache });
+  if (!result.success) {
+    return res.status(500).json({ success: false, error: result.error });
+  }
+
+  const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
+  log('INFO', `💾 Manual backup created: ${result.filename} (${sizeMB} MB)`);
+
+  // Prune after creating
+  const pruneResult = pruneBackups(config.maxBackups);
+  if (pruneResult.pruned > 0) {
+    log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
+  }
+
+  res.json({ success: true, filename: result.filename, sizeBytes: result.sizeBytes });
+});
+
+// Delete a backup
+app.delete('/api/backups/:filename', (req, res) => {
+  const { filename } = req.params;
+  const result = deleteBackup(filename);
+  if (!result.success) {
+    return res.status(400).json(result);
+  }
+  log('INFO', `💾 Backup deleted: ${filename}`);
+  res.json({ success: true });
+});
+
+// Restore a backup
+app.post('/api/backups/:filename/restore', async (req, res) => {
+  const { filename } = req.params;
+  log('INFO', `💾 Restore requested: ${filename}`);
+
+  // Stop all running regime engines first
+  const stoppedEngines = [];
+  for (const [exchange, engine] of regimeEngines) {
+    log('INFO', `💾 Stopping regime engine for ${exchange} before restore...`);
+    await engine.stop().catch(err => {
+      log('ERROR', `💾 Error stopping ${exchange} engine: ${err.message}`);
+    });
+    stoppedEngines.push(exchange);
+    saveRegimeRunningFlag(exchange, false);
+  }
+  // Clear all engines from the map
+  regimeEngines.clear();
+
+  const result = restoreBackup(filename);
+  if (!result.success) {
+    return res.status(500).json({ success: false, error: result.error });
+  }
+
+  log('INFO', `💾 Restore complete: ${result.filesRestored} files restored from ${filename}`);
+
+  res.json({
+    success: true,
+    filesRestored: result.filesRestored,
+    stoppedEngines,
+    message: stoppedEngines.length > 0
+      ? `Restored ${result.filesRestored} files. Stopped engines: ${stoppedEngines.join(', ')}. Restart engines manually from dashboard.`
+      : `Restored ${result.filesRestored} files.`,
+  });
+});
+
 // ============ Static Files ============
 
 app.use(express.static(path.join(__dirname, 'admin', 'dist')));
@@ -1897,6 +2029,9 @@ server.listen(PORT, async () => {
   // Start notification system
   notifier.start(() => regimeEngines);
 
+  // Start backup scheduler
+  rescheduleBackupTimer();
+
   // Check for scheduled trades every 30 seconds
   const globalConfig = getGlobalConfig();
   setInterval(checkAndRunIntervalTrade, globalConfig.schedulerInterval || 30000);
@@ -1926,6 +2061,12 @@ const gracefulShutdown = async (signal) => {
 
   // Stop notification system
   notifier.stop();
+
+  // Stop backup scheduler
+  if (backupTimer) {
+    clearInterval(backupTimer);
+    backupTimer = null;
+  }
 
   // Flush chart data buffers to disk
   shutdownAllBuffers();

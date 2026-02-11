@@ -13,6 +13,7 @@ import Optimizer from './components/Optimizer'
 import ExchangeSelector from './components/ExchangeSelector'
 import KeysConfig from './components/KeysConfig'
 import NotificationsConfig from './components/NotificationsConfig'
+import BackupRestore from './components/BackupRestore'
 import RegimeDashboard from './components/RegimeDashboard'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
@@ -370,6 +371,12 @@ function AppContent() {
                   Notifications
                 </Link>
                 <Link
+                  to="/backups"
+                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  Backups
+                </Link>
+                <Link
                   to={`/${currentExchange}/keys`}
                   className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
                 >
@@ -446,6 +453,9 @@ function AppContent() {
 
               {/* Notifications - global (not exchange-specific) */}
               <Route path="/notifications" element={<NotificationsConfig />} />
+
+              {/* Backups - global (not exchange-specific) */}
+              <Route path="/backups" element={<BackupRestore />} />
 
               {/* API Keys - shared per exchange (not strategy-specific) */}
               <Route path="/:exchange/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
