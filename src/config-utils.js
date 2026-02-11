@@ -307,6 +307,12 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
  */
 const GLOBAL_DEFAULTS = {
   schedulerInterval: 30000,
+  backup: {
+    enabled: true,
+    intervalMs: 24 * 60 * 60 * 1000, // 24 hours
+    maxBackups: 7,
+    includePriceCache: false, // price caches are ~45MB per exchange, can be regenerated
+  },
 };
 
 /**
@@ -873,6 +879,39 @@ const updateNotificationConfig = (updates) => {
   return config;
 };
 
+/**
+ * Get backup configuration with defaults
+ * @returns {Object} Backup config
+ */
+const getBackupConfig = () => {
+  const config = loadConfig();
+  const backup = config.global?.backup || {};
+  return {
+    ...GLOBAL_DEFAULTS.backup,
+    ...backup,
+  };
+};
+
+/**
+ * Update backup configuration
+ * @param {Object} updates - Backup config updates
+ * @returns {Object} Updated full configuration
+ */
+const updateBackupConfig = (updates) => {
+  const config = loadConfig();
+  const current = config.global?.backup || {};
+
+  config.global = config.global || {};
+  config.global.backup = {
+    ...GLOBAL_DEFAULTS.backup,
+    ...current,
+    ...updates,
+  };
+
+  saveConfig(config);
+  return config;
+};
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -899,6 +938,9 @@ module.exports = {
   getAggressivenessPresets,
   updateAggressivenessPresets,
   DEFAULT_AGGRESSIVENESS_PRESETS,
+  // Backups
+  getBackupConfig,
+  updateBackupConfig,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,
