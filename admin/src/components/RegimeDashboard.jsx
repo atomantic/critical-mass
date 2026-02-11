@@ -1185,51 +1185,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
 
-              {/* Celestial Bodies Status */}
+              {/* Celestial Bodies Summary */}
               {status?.celestial?.enabled && (
                 <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
-                  <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center justify-between">
                     <span className="text-gray-500">Celestial Bodies</span>
                     <span className="text-cyan-400 font-mono">{status.celestial.bodiesActive || 0} active / {status.celestial.bodiesCompleted || 0} completed</span>
                   </div>
-                  {(status.celestial.bodiesRealizedPnL || 0) !== 0 && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-500">Bodies P&L</span>
-                      <span className={`font-mono ${status.celestial.bodiesRealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        ${status.celestial.bodiesRealizedPnL?.toFixed(2) || '0'}
-                        {(status.celestial.bodiesRealizedBtcPnL || 0) > 0 && <span className="text-orange-400 ml-1">+{status.celestial.bodiesRealizedBtcPnL?.toFixed(8)} BTC</span>}
-                      </span>
-                    </div>
-                  )}
-                  {(status.celestial.bodies || []).length > 0 && (
-                    <div className="mt-1 space-y-0.5">
-                      {status.celestial.bodies.map((body, i) => (
-                        <div key={body.id || i} className="group">
-                          <div className="flex items-center justify-between text-[10px] bg-gray-900/50 rounded px-1.5 py-0.5 cursor-default">
-                            <span className="text-gray-400">
-                              <span title={body.tier}>{body.emoji}</span> {body.btcQty?.toFixed(6)} BTC @ ${body.avgPrice?.toFixed(0)}
-                              {body.mergeCount > 0 && <span className="text-gray-600 ml-1">×{body.mergeCount + 1}</span>}
-                              {(body.buyOrders || []).length > 0 && <span className="text-gray-600 ml-1" title="Constituent buy orders">({body.buyOrders.length} buys)</span>}
-                            </span>
-                            <span className={body.tpOrderId ? 'text-purple-400' : 'text-red-400'}>
-                              {body.tpOrderId ? `TP $${body.tpPrice?.toFixed(0)} (${body.tpPercent}%)` : 'NO TP'}
-                            </span>
-                          </div>
-                          {(body.buyOrders || []).length > 0 && (
-                            <div className="hidden group-hover:block ml-4 mt-0.5 space-y-px">
-                              {body.buyOrders.slice(-5).map((bo, j) => (
-                                <div key={bo.orderId || j} className="text-[9px] text-gray-600 flex justify-between px-1">
-                                  <span>{bo.orderId?.slice(0, 8)} {bo.btcQty?.toFixed(6)} BTC @ ${bo.price?.toFixed(0)}</span>
-                                  <span className={body.tpOrderId ? 'text-gray-600' : 'text-red-700'}>→ {body.tpOrderId ? body.tpOrderId.slice(0, 8) : 'none'}</span>
-                                </div>
-                              ))}
-                              {body.buyOrders.length > 5 && <div className="text-[9px] text-gray-700 px-1">...and {body.buyOrders.length - 5} more</div>}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
               )}
 
