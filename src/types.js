@@ -558,6 +558,7 @@
  * @property {number} trendConfirmationPeriods - Periods to confirm TREND (default: 5)
  *
  * Position Sizing Parameters
+ * @property {number} minOrderSizeUsdc - Minimum order size in USDC (default: 5)
  * @property {number} baseSizeUsdc - Base order size in USDC (default: 50)
  * @property {number} harvestScale - Size multiplier in HARVEST (default: 1.0)
  * @property {number} cautionScale - Size multiplier in CAUTION (default: 0.5)
@@ -618,11 +619,9 @@
  * @property {'reactive' | 'ladder'} [entryMode] - Entry strategy mode (default: 'reactive')
  *
  * Ladder Parameters (when entryMode: 'ladder')
- * @property {number} [ladderLevels] - Number of ladder rungs (default: 10)
- * @property {number} [ladderLowerBoundPct] - Base lower bound % below current price (default: 15)
- * @property {boolean} [ladderLowerBoundAthAdjust] - Widen based on ATH distance (default: true)
+ * @property {number} [ladderMaxAthDropPct] - Floor = ATH × (1 - this/100). 80 means lowest bid at 20% of ATH (default: 80)
  * @property {'linear' | 'sqrt' | 'exponential'} [ladderSpacingMode] - Price level spacing (default: 'sqrt')
- * @property {'flat' | 'linear' | 'sqrt'} [ladderSizeMode] - Size allocation mode (default: 'flat')
+ * @property {'flat' | 'linear' | 'sqrt' | 'fibonacci'} [ladderSizeMode] - Size allocation mode (default: 'fibonacci')
  * @property {boolean} [ladderAutoSwitch] - Auto-switch to ladder on high vol (default: false)
  * @property {number} [ladderAutoSwitchVolMult] - Vol expansion threshold for auto-switch (default: 2.0)
  * @property {number} [ladderMinSpacingPct] - Min % between rungs (default: 0.5)

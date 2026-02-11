@@ -417,6 +417,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 <FormInput label="Caution Scale" hint="Size multiplier during elevated volatility" value={regimeConfig.cautionScale || 0.5} onChange={(v) => handleRegimeChange('cautionScale', v)} type="number" />
                 <FormInput label="Trend Scale" hint="Size multiplier in strong trends (0 = no entries)" value={regimeConfig.trendScale || 0.0} onChange={(v) => handleRegimeChange('trendScale', v)} type="number" />
                 <FormInput label="Max Cycle Buys" hint="Max buys per cycle before pausing entries" value={regimeConfig.maxCycleBuys || 10} onChange={(v) => handleRegimeChange('maxCycleBuys', v)} type="number" />
+                <FormInput label="Min Order Size ($)" hint="Floor for order size after all multipliers" value={regimeConfig.minOrderSizeUsdc || 5} onChange={(v) => handleRegimeChange('minOrderSizeUsdc', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-500">
                 Scaling: HARVEST={regimeConfig.harvestScale || 1.0}x, CAUTION={regimeConfig.cautionScale || 0.5}x, TREND={regimeConfig.trendScale || 0.0}x base size
@@ -457,29 +458,13 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 <>
                   <div className="bg-indigo-900/20 border border-indigo-700/30 rounded p-3 mb-3">
                     <div className="text-xs text-indigo-300">
-                      <span className="font-medium">Ladder Mode:</span> Pre-positions multiple limit buy orders from current price down to a calculated lower bound.
-                      Captures liquidity shocks and fat-tail events that single-order reactive mode misses.
+                      <span className="font-medium">Ladder Mode:</span> Deploys all available USDC as limit buy orders from just below current price
+                      down to an ATH-based floor with Fibonacci-weighted sizing. Orders stay in place during flash events; rebuild only after cycle reset.
                     </div>
                   </div>
                   <div className="grid grid-cols-4 gap-3">
-                    <FormInput label="Ladder Levels" hint="Number of limit buy orders to place" value={regimeConfig.ladderLevels || 10} onChange={(v) => handleRegimeChange('ladderLevels', v)} type="number" />
-                    <FormInput label="Lower Bound %" hint="How far below current price to span orders" value={regimeConfig.ladderLowerBoundPct || 15} onChange={(v) => handleRegimeChange('ladderLowerBoundPct', v)} type="number" />
+                    <FormInput label="Max ATH Drop %" hint="Floor = ATH × (1 - this/100). 80 means lowest bid at 20% of ATH" value={regimeConfig.ladderMaxAthDropPct || 80} onChange={(v) => handleRegimeChange('ladderMaxAthDropPct', v)} type="number" />
                     <FormInput label="Min Spacing %" hint="Minimum gap between adjacent rungs" value={regimeConfig.ladderMinSpacingPct || 0.5} onChange={(v) => handleRegimeChange('ladderMinSpacingPct', v)} type="number" />
-                    <div className="pt-5">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          id="ladderLowerBoundAthAdjust"
-                          checked={regimeConfig.ladderLowerBoundAthAdjust !== false}
-                          onChange={(e) => handleRegimeChange('ladderLowerBoundAthAdjust', e.target.checked)}
-                          className="w-4 h-4 rounded bg-gray-700 border-gray-600"
-                        />
-                        <label htmlFor="ladderLowerBoundAthAdjust" className="text-sm text-gray-300">ATH Adjust</label>
-                      </div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">Widen lower bound when price is far below ATH</div>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-4 gap-3 mt-3">
                     <FormSelect
                       label="Spacing Mode"
                       hint="How orders are distributed across the price range"
@@ -494,9 +479,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                     <FormSelect
                       label="Size Mode"
                       hint="How order sizes scale across the ladder"
-                      value={regimeConfig.ladderSizeMode || 'flat'}
+                      value={regimeConfig.ladderSizeMode || 'fibonacci'}
                       onChange={(v) => handleRegimeChange('ladderSizeMode', v)}
                       options={[
+                        { value: 'fibonacci', label: 'Fibonacci (escalating at bottom)' },
                         { value: 'flat', label: 'Flat (equal sizes)' },
                         { value: 'linear', label: 'Linear (larger at bottom)' },
                         { value: 'sqrt', label: 'Sqrt (moderate scaling)' }
@@ -504,8 +490,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                     />
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
-                    {regimeConfig.ladderLevels || 10} orders spanning {regimeConfig.ladderLowerBoundPct || 15}% below current price.
-                    {regimeConfig.ladderLowerBoundAthAdjust !== false && ' Lower bound widens based on ATH distance.'}
+                    Dynamic order count. Floor at {regimeConfig.ladderMaxAthDropPct || 80}% below ATH. {regimeConfig.ladderSizeMode || 'fibonacci'} sizing across all available USDC.
                     {regimeConfig.ladderAutoSwitch && ` Auto-switches to ladder when vol expands ${regimeConfig.ladderAutoSwitchVolMult || 2.0}x.`}
                   </div>
                 </>
@@ -736,29 +721,37 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
               </div>
             </SectionCard>
 
-            {/* Safety & Tail Events */}
+            {/* Safety & Tail Events — only applies to reactive mode */}
             <SectionCard title="Safety & Tail Events">
-              <div className="grid grid-cols-2 gap-3">
-                <FormInput label="Max Spread (bps)" hint="Pause entries when bid-ask spread exceeds this" value={regimeConfig.maxSpreadBps || 50} onChange={(v) => handleRegimeChange('maxSpreadBps', v)} type="number" />
-                <FormInput label="Spread Pause (ms)" hint="How long to pause after spread breach" value={regimeConfig.spreadPauseMs || 300000} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} type="number" />
-                <FormInput label="Min Depth (USDC)" hint="Pause entries when orderbook depth is below this" value={regimeConfig.minDepthUsdc || 10000} onChange={(v) => handleRegimeChange('minDepthUsdc', v)} type="number" />
-                <FormInput label="Depth Pause (ms)" hint="How long to pause after thin orderbook" value={regimeConfig.depthPauseMs || 300000} onChange={(v) => handleRegimeChange('depthPauseMs', v)} type="number" />
-                <FormInput label="Flash Move Mult" hint="ATR multiplier to detect flash crashes" value={regimeConfig.flashMoveMult || 3.0} onChange={(v) => handleRegimeChange('flashMoveMult', v)} type="number" />
-                <FormInput label="Flash Cooldown (ms)" hint="Pause duration after flash event detected" value={regimeConfig.flashCooldownMs || 600000} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} type="number" />
-              </div>
-              <div className="mt-3">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="cancelEntriesOnFlash"
-                    checked={regimeConfig.cancelEntriesOnFlash !== false}
-                    onChange={(e) => handleRegimeChange('cancelEntriesOnFlash', e.target.checked)}
-                    className="w-4 h-4 rounded bg-gray-700 border-gray-600"
-                  />
-                  <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
+              {regimeConfig.entryMode === 'ladder' ? (
+                <div className="text-xs text-gray-400 italic">
+                  These settings apply to Reactive mode only. Ladder mode bypasses tail event checks — the ladder IS the flash event strategy.
                 </div>
-                <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">Pull all pending entries during flash events</div>
-              </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormInput label="Max Spread (bps)" hint="Pause entries when bid-ask spread exceeds this" value={regimeConfig.maxSpreadBps || 50} onChange={(v) => handleRegimeChange('maxSpreadBps', v)} type="number" />
+                    <FormInput label="Spread Pause (ms)" hint="How long to pause after spread breach" value={regimeConfig.spreadPauseMs || 300000} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} type="number" />
+                    <FormInput label="Min Depth (USDC)" hint="Pause entries when orderbook depth is below this" value={regimeConfig.minDepthUsdc || 10000} onChange={(v) => handleRegimeChange('minDepthUsdc', v)} type="number" />
+                    <FormInput label="Depth Pause (ms)" hint="How long to pause after thin orderbook" value={regimeConfig.depthPauseMs || 300000} onChange={(v) => handleRegimeChange('depthPauseMs', v)} type="number" />
+                    <FormInput label="Flash Move Mult" hint="ATR multiplier to detect flash crashes" value={regimeConfig.flashMoveMult || 3.0} onChange={(v) => handleRegimeChange('flashMoveMult', v)} type="number" />
+                    <FormInput label="Flash Cooldown (ms)" hint="Pause duration after flash event detected" value={regimeConfig.flashCooldownMs || 600000} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} type="number" />
+                  </div>
+                  <div className="mt-3">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="cancelEntriesOnFlash"
+                        checked={regimeConfig.cancelEntriesOnFlash !== false}
+                        onChange={(e) => handleRegimeChange('cancelEntriesOnFlash', e.target.checked)}
+                        className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                      />
+                      <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
+                    </div>
+                    <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">Pull all pending entries during flash events</div>
+                  </div>
+                </>
+              )}
             </SectionCard>
 
             {/* System Health */}

@@ -65,6 +65,7 @@ const REGIME_DEFAULTS = {
   trendConfirmationPeriods: 5,
 
   // Position Sizing
+  minOrderSizeUsdc: 5,  // Minimum order size in USDC (floor after all multipliers)
   baseSizeUsdc: 50,
   harvestScale: 1.0,
   cautionScale: 0.5,
@@ -168,11 +169,9 @@ const REGIME_DEFAULTS = {
   entryMode: 'reactive',              // 'reactive' | 'ladder'
 
   // Ladder Parameters (only when entryMode: 'ladder')
-  ladderLevels: 10,                   // Number of rungs
-  ladderLowerBoundPct: 15,            // Base lower bound (% below current)
-  ladderLowerBoundAthAdjust: true,    // Widen based on ATH distance
+  ladderMaxAthDropPct: 80,            // Bottom of ladder = ATH × (1 - this/100). 80 = lowest bid at 20% of ATH
   ladderSpacingMode: 'sqrt',          // 'linear' | 'sqrt' | 'exponential'
-  ladderSizeMode: 'flat',             // 'flat' | 'linear' | 'sqrt'
+  ladderSizeMode: 'fibonacci',        // 'flat' | 'linear' | 'sqrt' | 'fibonacci'
   ladderAutoSwitch: false,            // Auto-switch based on volatility
   ladderAutoSwitchVolMult: 2.0,       // Vol expansion threshold
   ladderMinSpacingPct: 0.5,           // Min % between rungs
@@ -527,6 +526,9 @@ const validateRegimeConfig = (config) => {
   }
 
   // Position Sizing validation
+  if (config.minOrderSizeUsdc !== undefined && (config.minOrderSizeUsdc < 1 || config.minOrderSizeUsdc > 100)) {
+    errors.push('minOrderSizeUsdc must be between 1 and 100');
+  }
   if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
     errors.push('baseSizeUsdc must be between 1 and 1000');
   }
@@ -614,11 +616,8 @@ const validateRegimeConfig = (config) => {
       errors.push(`entryMode must be one of: ${allowedEntryModes.join(', ')}`);
     }
   }
-  if (config.ladderLevels !== undefined && (!Number.isInteger(config.ladderLevels) || config.ladderLevels < 2 || config.ladderLevels > 50)) {
-    errors.push('ladderLevels must be an integer between 2 and 50');
-  }
-  if (config.ladderLowerBoundPct !== undefined && (config.ladderLowerBoundPct < 1 || config.ladderLowerBoundPct > 50)) {
-    errors.push('ladderLowerBoundPct must be between 1 and 50');
+  if (config.ladderMaxAthDropPct !== undefined && (config.ladderMaxAthDropPct < 10 || config.ladderMaxAthDropPct > 95)) {
+    errors.push('ladderMaxAthDropPct must be between 10 and 95');
   }
   if (config.ladderSpacingMode !== undefined) {
     const allowedSpacing = ['linear', 'sqrt', 'exponential'];
@@ -627,7 +626,7 @@ const validateRegimeConfig = (config) => {
     }
   }
   if (config.ladderSizeMode !== undefined) {
-    const allowedSizing = ['flat', 'linear', 'sqrt'];
+    const allowedSizing = ['flat', 'linear', 'sqrt', 'fibonacci'];
     if (!allowedSizing.includes(config.ladderSizeMode)) {
       errors.push(`ladderSizeMode must be one of: ${allowedSizing.join(', ')}`);
     }
