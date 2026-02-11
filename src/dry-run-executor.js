@@ -664,8 +664,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
    * @param {string} tpOrderId - Sell order ID
    * @param {number} btcQty - BTC quantity
    * @param {number} tpPrice - TP price
+   * @param {number} [placedAt] - Original placement timestamp (ms), defaults to now
    */
-  const restoreSatelliteTpOrder = (buyOrderId, tpOrderId, btcQty, tpPrice) => {
+  const restoreSatelliteTpOrder = (buyOrderId, tpOrderId, btcQty, tpPrice, placedAt) => {
     satelliteTpOrders.set(buyOrderId, { tpOrderId, btcQty, tpPrice, costBasis: btcQty * tpPrice });
 
     pendingOrders.set(tpOrderId, {
@@ -675,7 +676,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       price: tpPrice,
       size: btcQty,
       sizeUsdc: btcQty * tpPrice,
-      placedAt: Date.now(),
+      placedAt: placedAt || Date.now(),
       status: 'open',
       filledAt: null,
       fillPrice: null,
@@ -740,14 +741,14 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   /**
    * Cancel a specific body TP order (simulated)
    * @param {string} bodyId - Celestial body ID
-   * @returns {Promise<boolean>}
+   * @returns {Promise<{cancelled: boolean, filled?: boolean}>}
    */
   const cancelBodyTpOrder = async (bodyId) => {
     const body = bodyTpOrders.get(bodyId);
-    if (!body) return true;
+    if (!body) return { cancelled: true };
     pendingOrders.delete(body.tpOrderId);
     bodyTpOrders.delete(bodyId);
-    return true;
+    return { cancelled: true };
   };
 
   /**
@@ -782,8 +783,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
    * @param {string} tpOrderId - Sell order ID
    * @param {number} btcQty - BTC quantity
    * @param {number} tpPrice - TP price
+   * @param {number} [placedAt] - Original placement timestamp (ms), defaults to now
    */
-  const restoreBodyTpOrder = (bodyId, tpOrderId, btcQty, tpPrice) => {
+  const restoreBodyTpOrder = (bodyId, tpOrderId, btcQty, tpPrice, placedAt) => {
     bodyTpOrders.set(bodyId, { tpOrderId, btcQty, tpPrice, costBasis: btcQty * tpPrice });
     pendingOrders.set(tpOrderId, {
       orderId: tpOrderId,
@@ -792,7 +794,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       price: tpPrice,
       size: btcQty,
       sizeUsdc: btcQty * tpPrice,
-      placedAt: Date.now(),
+      placedAt: placedAt || Date.now(),
       status: 'open',
       filledAt: null,
       fillPrice: null,
