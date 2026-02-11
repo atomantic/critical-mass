@@ -628,18 +628,22 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
                     Each buy creates a celestial body (satellite). Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
-                    Tiers: 🛰️ satellite → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → 🕳️ black hole.
+                    Tiers: 🛰️ satellite → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → 🌌 galaxy → 🕳️ black hole.
                     Higher tiers have wider TP targets and hold more BTC.
                   </div>
-                  <div className="mt-2 grid grid-cols-6 gap-1 text-xs text-center">
-                    {[
-                      { emoji: '🛰️', name: 'Satellite', range: `$${regimeConfig.baseSizeUsdc || 25}-$${(regimeConfig.baseSizeUsdc || 25) * 3}` },
-                      { emoji: '🌙', name: 'Moon', range: `$${(regimeConfig.baseSizeUsdc || 25) * 3}-$${(regimeConfig.baseSizeUsdc || 25) * 8}` },
-                      { emoji: '🪐', name: 'Planet', range: `$${(regimeConfig.baseSizeUsdc || 25) * 8}-$${(regimeConfig.baseSizeUsdc || 25) * 20}` },
-                      { emoji: '☀️', name: 'Sun', range: `$${(regimeConfig.baseSizeUsdc || 25) * 20}-$${(regimeConfig.baseSizeUsdc || 25) * 50}` },
-                      { emoji: '💫', name: 'Hypergiant', range: `$${(regimeConfig.baseSizeUsdc || 25) * 50}-$${(regimeConfig.baseSizeUsdc || 25) * 120}` },
-                      { emoji: '🕳️', name: 'Black Hole', range: `$${(regimeConfig.baseSizeUsdc || 25) * 120}+` },
-                    ].map(tier => (
+                  <div className="mt-2 grid grid-cols-7 gap-1 text-xs text-center">
+                    {(() => {
+                      const cap = regimeConfig.maxUsdcDeployed || 10000;
+                      return [
+                        { emoji: '🛰️', name: 'Satellite', range: `$0-$${Math.round(cap * 0.02)}` },
+                        { emoji: '🌙', name: 'Moon', range: `$${Math.round(cap * 0.02)}-$${Math.round(cap * 0.05)}` },
+                        { emoji: '🪐', name: 'Planet', range: `$${Math.round(cap * 0.05)}-$${Math.round(cap * 0.15)}` },
+                        { emoji: '☀️', name: 'Sun', range: `$${Math.round(cap * 0.15)}-$${Math.round(cap * 0.30)}` },
+                        { emoji: '💫', name: 'Hypergiant', range: `$${Math.round(cap * 0.30)}-$${Math.round(cap * 0.50)}` },
+                        { emoji: '🌌', name: 'Galaxy', range: `$${Math.round(cap * 0.50)}-$${Math.round(cap * 0.75)}` },
+                        { emoji: '🕳️', name: 'Black Hole', range: `$${Math.round(cap * 0.75)}+` },
+                      ];
+                    })().map(tier => (
                       <div key={tier.name} className="bg-gray-800/50 rounded p-1">
                         <div>{tier.emoji}</div>
                         <div className="text-gray-400">{tier.name}</div>
