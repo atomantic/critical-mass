@@ -50,6 +50,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null)
   const [isDirty, setIsDirty] = useState(false)
+  const [presets, setPresets] = useState(null)
+  const [editingPresets, setEditingPresets] = useState(null)
+  const [presetsDirty, setPresetsDirty] = useState(false)
+  const [savingPresets, setSavingPresets] = useState(false)
+  const [presetsMessage, setPresetsMessage] = useState(null)
+  const [expandedPresets, setExpandedPresets] = useState(new Set())
   const prevExchangeRef = useRef(exchange)
   const prevStrategyRef = useRef(strategy)
 
@@ -66,6 +72,66 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
       prevStrategyRef.current = strategy
     }
   }, [initialConfig, exchange, strategy, isDirty])
+
+  // Fetch aggressiveness presets for regime mode
+  useEffect(() => {
+    if (!isRegime) return
+    fetch('/api/presets/aggressiveness')
+      .then(res => res.json())
+      .then(data => {
+        if (data.presets) {
+          setPresets(data.presets)
+          setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+        }
+      })
+      .catch(() => {})
+  }, [isRegime])
+
+  const handlePresetParamChange = (level, key, value) => {
+    setEditingPresets(prev => ({
+      ...prev,
+      [level]: { ...prev[level], [key]: value },
+    }))
+    setPresetsDirty(true)
+  }
+
+  const handleSavePresets = async () => {
+    setSavingPresets(true)
+    setPresetsMessage(null)
+    const res = await fetch('/api/presets/aggressiveness', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(editingPresets),
+    })
+    if (res.ok) {
+      const data = await res.json()
+      setPresets(data.presets)
+      setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+      setPresetsDirty(false)
+      setPresetsMessage({ type: 'success', text: 'Presets saved!' })
+    } else {
+      const err = await res.json()
+      setPresetsMessage({ type: 'error', text: err.errors?.join(', ') || 'Failed to save' })
+    }
+    setSavingPresets(false)
+  }
+
+  const handleResetPresets = () => {
+    if (presets) {
+      setEditingPresets(JSON.parse(JSON.stringify(presets)))
+      setPresetsDirty(false)
+      setPresetsMessage(null)
+    }
+  }
+
+  const togglePresetExpanded = (level) => {
+    setExpandedPresets(prev => {
+      const next = new Set(prev)
+      if (next.has(level)) next.delete(level)
+      else next.add(level)
+      return next
+    })
+  }
 
   const handleChange = (key, value) => {
     setConfig(prev => ({ ...prev, [key]: value }))
@@ -768,6 +834,77 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 System enters SAFE mode when health thresholds are exceeded. Safe Recovery is time healthy before exiting SAFE.
               </div>
             </SectionCard>
+
+            {/* Aggressiveness Presets Editor — full width */}
+            {editingPresets && (
+              <SectionCard title="Aggressiveness Presets" className="lg:col-span-2">
+                <div className="text-xs text-gray-500 mb-3">
+                  Customize the parameter values applied by each aggressiveness level on the dashboard.
+                </div>
+                <div className="space-y-2">
+                  {[
+                    { id: 'conservative', label: 'Conservative', color: 'text-green-400' },
+                    { id: 'moderate', label: 'Moderate', color: 'text-blue-400' },
+                    { id: 'aggressive', label: 'Aggressive', color: 'text-yellow-400' },
+                    { id: 'maximum', label: 'Maximum', color: 'text-red-400' },
+                  ].map(({ id, label, color }) => {
+                    const isExpanded = expandedPresets.has(id)
+                    const params = editingPresets[id] || {}
+                    return (
+                      <div key={id} className="bg-gray-800/60 rounded-lg overflow-hidden">
+                        <button
+                          onClick={() => togglePresetExpanded(id)}
+                          className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-700/50 transition-colors"
+                        >
+                          <span className={`text-sm font-medium ${color}`}>{label}</span>
+                          <span className="text-gray-500 text-xs">{isExpanded ? '▼' : '▶'}</span>
+                        </button>
+                        {isExpanded && (
+                          <div className="px-3 pb-3">
+                            <div className="grid grid-cols-4 gap-3">
+                              <FormInput label="k Factor" value={params.kFactor} onChange={(v) => handlePresetParamChange(id, 'kFactor', v)} type="number" />
+                              <FormInput label="Min Interval (ms)" value={params.minIntervalMs} onChange={(v) => handlePresetParamChange(id, 'minIntervalMs', v)} type="number" />
+                              <FormInput label="Max Interval (ms)" value={params.maxIntervalMs} onChange={(v) => handlePresetParamChange(id, 'maxIntervalMs', v)} type="number" />
+                              <FormInput label="Entry Offset (bps)" value={params.entryOffsetBps} onChange={(v) => handlePresetParamChange(id, 'entryOffsetBps', v)} type="number" />
+                              <FormInput label="Base Size (USDC)" value={params.baseSizeUsdc} onChange={(v) => handlePresetParamChange(id, 'baseSizeUsdc', v)} type="number" />
+                              <FormInput label="Caution Scale" value={params.cautionScale} onChange={(v) => handlePresetParamChange(id, 'cautionScale', v)} type="number" />
+                              <FormInput label="Trend Scale" value={params.trendScale} onChange={(v) => handlePresetParamChange(id, 'trendScale', v)} type="number" />
+                              <FormInput label="Max Cycle Buys" value={params.maxCycleBuys} onChange={(v) => handlePresetParamChange(id, 'maxCycleBuys', v)} type="number" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+                {presetsMessage && (
+                  <div className={`mt-2 text-xs ${presetsMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                    {presetsMessage.text}
+                  </div>
+                )}
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={handleSavePresets}
+                    disabled={savingPresets || !presetsDirty}
+                    className={`px-3 py-1.5 text-sm rounded font-medium transition-colors ${
+                      presetsDirty
+                        ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                        : 'bg-purple-600/30 text-purple-300'
+                    } disabled:cursor-not-allowed`}
+                  >
+                    {savingPresets ? 'Saving...' : presetsDirty ? 'Save Presets *' : 'Save Presets'}
+                  </button>
+                  {presetsDirty && (
+                    <button
+                      onClick={handleResetPresets}
+                      className="px-3 py-1.5 text-sm bg-gray-600 hover:bg-gray-500 rounded font-medium transition-colors"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </SectionCard>
+            )}
           </div>
         )}
 

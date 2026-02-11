@@ -58,93 +58,43 @@ const MACRO_COLORS = {
   DECLINE: { bg: 'bg-red-900/50', border: 'border-red-500', text: 'text-red-400', label: 'Decline' },
 }
 
-// Aggressiveness level definitions with exact parameter values from the plan
-const AGGRESSIVENESS_LEVELS = [
-  {
-    id: 'conservative',
-    label: 'Conservative',
-    color: 'green',
-    params: {
-      kFactor: 0.8,
-      minIntervalMs: 180000,  // 3min
-      maxIntervalMs: 7200000, // 2hr
-      entryOffsetBps: 25,
-      baseSizeUsdc: 25,
-      cautionScale: 0.15,
-      trendScale: 0,
-      maxCycleBuys: 10,
-    },
-  },
-  {
-    id: 'moderate',
-    label: 'Moderate',
-    color: 'blue',
-    params: {
-      kFactor: 0.65,
-      minIntervalMs: 120000,  // 2min
-      maxIntervalMs: 3600000, // 1hr
-      entryOffsetBps: 18,
-      baseSizeUsdc: 50,
-      cautionScale: 0.35,
-      trendScale: 0.1,
-      maxCycleBuys: 15,
-    },
-  },
-  {
-    id: 'aggressive',
-    label: 'Aggressive',
-    color: 'yellow',
-    params: {
-      kFactor: 0.5,
-      minIntervalMs: 90000,   // 90s
-      maxIntervalMs: 2400000, // 40min
-      entryOffsetBps: 12,
-      baseSizeUsdc: 100,
-      cautionScale: 0.6,
-      trendScale: 0.25,
-      maxCycleBuys: 25,
-    },
-  },
-  {
-    id: 'maximum',
-    label: 'Maximum',
-    color: 'red',
-    params: {
-      kFactor: 0.3,
-      minIntervalMs: 60000,   // 1min
-      maxIntervalMs: 1200000, // 20min
-      entryOffsetBps: 5,
-      baseSizeUsdc: 200,
-      cautionScale: 1.0,
-      trendScale: 0.5,
-      maxCycleBuys: 50,
-    },
-  },
-]
+// Aggressiveness level metadata (colors/labels are static, params come from API)
+const AGGRESSIVENESS_LEVEL_META = {
+  conservative: { label: 'Conservative', color: 'green' },
+  moderate: { label: 'Moderate', color: 'blue' },
+  aggressive: { label: 'Aggressive', color: 'yellow' },
+  maximum: { label: 'Maximum', color: 'red' },
+}
 
-// Get parameter values for a given level
-const computeAggressivenessParams = (levelId) => {
-  const level = AGGRESSIVENESS_LEVELS.find(l => l.id === levelId)
-  return level ? { ...level.params } : null
+// Build AGGRESSIVENESS_LEVELS array from presets object (from API)
+const buildAggressivenessLevels = (presets) =>
+  Object.entries(AGGRESSIVENESS_LEVEL_META).map(([id, meta]) => ({
+    id,
+    ...meta,
+    params: presets[id] || {},
+  }))
+
+// Get parameter values for a given level from presets
+const computeAggressivenessParams = (levelId, presets) => {
+  return presets[levelId] ? { ...presets[levelId] } : null
 }
 
 // Detect current aggressiveness level from config based on actual parameter values
-const detectAggressivenessLevel = (config) => {
-  if (!config) return null
+const detectAggressivenessLevel = (config, presets) => {
+  if (!config || !presets) return null
 
-  // When config is partial (e.g. initial load), fall back to stored aggressiveness field
-  const firstPreset = AGGRESSIVENESS_LEVELS[0]
+  const levels = buildAggressivenessLevels(presets)
+  const firstPreset = levels[0]
+  if (!firstPreset?.params) return config.aggressiveness || null
+
   const presetKeys = Object.keys(firstPreset.params)
   const hasAllKeys = presetKeys.every(key => config[key] !== undefined)
   if (!hasAllKeys) return config.aggressiveness || null
 
-  // Detect based on actual parameter values (not the stored aggressiveness field)
-  // This ensures the UI reflects reality even if the field is out of sync
-  for (const level of AGGRESSIVENESS_LEVELS) {
+  for (const level of levels) {
     const expected = level.params
     const allMatch = Object.entries(expected).every(([key, value]) => {
       const current = config[key]
-      // Allow small tolerance for floating point
       return Math.abs(current - value) < 0.01 || (key.endsWith('Ms') && current === value)
     })
     if (allMatch) return level.id
@@ -229,18 +179,19 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
 }
 
 // Aggressiveness control component
-function AggressivenessControl({ config, exchange, onConfigUpdate }) {
+function AggressivenessControl({ config, exchange, onConfigUpdate, presets }) {
   const [updating, setUpdating] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [previewLevel, setPreviewLevel] = useState(null)
 
-  const currentLevel = detectAggressivenessLevel(config)
+  const levels = useMemo(() => buildAggressivenessLevels(presets || {}), [presets])
+  const currentLevel = detectAggressivenessLevel(config, presets)
 
   const handleLevelChange = async (level) => {
     if (level === currentLevel || updating) return
 
     setUpdating(true)
-    const params = computeAggressivenessParams(level)
+    const params = computeAggressivenessParams(level, presets)
     const updates = { aggressiveness: level, ...params }
 
     const res = await fetch(`/api/${exchange}/regime/config`, {
@@ -261,7 +212,7 @@ function AggressivenessControl({ config, exchange, onConfigUpdate }) {
   }
 
   const previewParams = previewLevel
-    ? computeAggressivenessParams(previewLevel)
+    ? computeAggressivenessParams(previewLevel, presets)
     : null
 
   const colorClasses = {
@@ -296,7 +247,7 @@ function AggressivenessControl({ config, exchange, onConfigUpdate }) {
 
       {/* Level buttons */}
       <div className="flex gap-1 mb-2">
-        {AGGRESSIVENESS_LEVELS.map((level) => {
+        {levels.map((level) => {
           const isActive = currentLevel === level.id
           const classes = colorClasses[level.color]
           return (
@@ -362,6 +313,12 @@ function AggressivenessControl({ config, exchange, onConfigUpdate }) {
                 {previewParams.trendScale}
               </span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">maxCycleBuys</span>
+              <span className={config?.maxCycleBuys !== previewParams.maxCycleBuys ? 'text-yellow-400' : 'text-gray-300'}>
+                {previewParams.maxCycleBuys}
+              </span>
+            </div>
           </div>
           {config?.sizeAutoManaged && (
             <div className="mt-1 text-[10px] text-purple-400">
@@ -422,6 +379,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [expandedOrders, setExpandedOrders] = useState(new Set())
   const [expandedFills, setExpandedFills] = useState(new Set())
   const [expandedCycles, setExpandedCycles] = useState(new Set())
+  const [presets, setPresets] = useState(null)
   const prevPriceRef = useRef(null)
 
   const { status: socketStatus } = useRegimeEvents(exchange)
@@ -526,15 +484,24 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }
   }, [exchange, initializeFromCache])
 
+  // Fetch aggressiveness presets
+  const fetchPresets = useCallback(async () => {
+    const res = await fetch('/api/presets/aggressiveness')
+    if (res.ok) {
+      const data = await res.json()
+      setPresets(data.presets)
+    }
+  }, [])
+
   // Initial load only - no polling needed, socket provides live updates
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      await Promise.all([fetchStatus(), fetchConfig(), fetchFills(), fetchCachedChartData()])
+      await Promise.all([fetchStatus(), fetchConfig(), fetchFills(), fetchCachedChartData(), fetchPresets()])
       setLoading(false)
     }
     load()
-  }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData])
+  }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData, fetchPresets])
 
   // Resume from drawdown pause
   const handleResumeDrawdown = async () => {
@@ -1492,6 +1459,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   config={config}
                   exchange={exchange}
                   onConfigUpdate={fetchConfig}
+                  presets={presets}
                 />
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">

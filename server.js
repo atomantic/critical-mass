@@ -34,7 +34,7 @@ const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig } = require('.
 const { startMarketDataService, stopMarketDataService, getMarketDataService, stopAllMarketDataServices } = require('./src/market-data-service');
 const { getChartDataBuffer, getChartData, shutdownAllBuffers } = require('./src/chart-data-buffer');
 const { createNotifier } = require('./src/notifier');
-const { getNotificationConfig, updateNotificationConfig } = require('./src/config-utils');
+const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS } = require('./src/config-utils');
 
 // Active regime engines by exchange
 const regimeEngines = new Map();
@@ -1647,6 +1647,47 @@ app.post('/api/:exchange/optimizer/run', (req, res) => {
       io.emit('optimizer:error', { error: err.message });
       // Don't try to send response here - we already responded with streaming: true
     });
+});
+
+// ============ Aggressiveness Presets API ============
+
+app.get('/api/presets/aggressiveness', (req, res) => {
+  const presets = getAggressivenessPresets();
+  res.json({ success: true, presets });
+});
+
+app.put('/api/presets/aggressiveness', (req, res) => {
+  const updates = req.body;
+  const validLevels = Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS);
+  const validParams = Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS.conservative);
+  const errors = [];
+
+  for (const [level, params] of Object.entries(updates)) {
+    if (!validLevels.includes(level)) {
+      errors.push(`Unknown level: ${level}`);
+      continue;
+    }
+    if (typeof params !== 'object' || params === null) {
+      errors.push(`${level}: params must be an object`);
+      continue;
+    }
+    for (const [key, value] of Object.entries(params)) {
+      if (!validParams.includes(key)) {
+        errors.push(`${level}: unknown param "${key}"`);
+      } else if (typeof value !== 'number') {
+        errors.push(`${level}.${key}: must be a number`);
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    return res.status(400).json({ success: false, errors });
+  }
+
+  updateAggressivenessPresets(updates);
+  log('INFO', '🔧 Aggressiveness presets updated');
+  const presets = getAggressivenessPresets();
+  res.json({ success: true, presets });
 });
 
 // ============ Notification API ============
