@@ -1880,10 +1880,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         );
       }
 
-      // If this was a ladder fill, reprice the remaining ladder orders
-      if (isLadderFill && positionState.ladderActive) {
-        await repriceLadderOrders();
-      }
+      // Ladder orders stay in place on individual fills (no reprice).
+      // Rebuild happens only after cycle reset.
 
       // Persist state immediately after buy fill to prevent loss on crash
       saveLiveState();
@@ -2447,9 +2445,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const healthCheck = healthMonitor.canPlaceEntry();
     if (!healthCheck.allowed) return;
 
-    // Check tail events
-    const tailCheck = tailEvents.canPlaceEntry(positionState.cycleBuys);
-    if (!tailCheck.allowed) return;
+    // Skip tail events check — ladder IS the flash event strategy,
+    // orders should stay in place regardless of spread/depth/flash conditions
 
     // Check regime allows entries
     if (!regimeDetector.allowsEntries()) return;
@@ -2478,6 +2475,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           volBaseline: marketState.volBaseline,
           realizedVol: marketState.realizedVol,
           athDistance: marketState.athDistance || 0,
+          ath: marketState.ath || 0,
         }
       );
 
@@ -2526,71 +2524,6 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     await placeLadder().finally(() => {
       entryInProgress = false;
-    });
-  };
-
-  /**
-   * Reprice ladder orders after a fill
-   * Cancels remaining unfilled orders and rebuilds ladder from current price with remaining budget
-   */
-  const repriceLadderOrders = async () => {
-    if (!positionState.pendingLadderOrders || positionState.pendingLadderOrders.length === 0) {
-      return;
-    }
-
-    // Cancel existing unfilled ladder orders
-    const { cancelled, remainingTracked } = await orderExecutor.cancelAllLadderOrders();
-    console.log(`🔄 [${exchange}] Cancelled ${cancelled} unfilled ladder orders for repricing${remainingTracked > 0 ? `, ${remainingTracked} still tracked` : ''}`);
-
-    // Abort reprice if some orders couldn't be cancelled (risk of exceeding maxOpenOrders)
-    if (remainingTracked > 0) {
-      console.log(`⚠️ [${exchange}] Aborting ladder reprice: ${remainingTracked} orders still live on exchange, waiting for reconciliation`);
-      return;
-    }
-
-    // Recalculate remaining budget
-    const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
-    const minBudget = config.baseSizeUsdc || 50;
-
-    if (remainingBudget < minBudget) {
-      console.log(`ℹ️ [${exchange}] Insufficient budget to rebuild ladder: $${remainingBudget.toFixed(2)}`);
-      positionState.pendingLadderOrders = [];
-      return;
-    }
-
-    // Build new ladder from current price
-    const ladder = ladderCalculator.buildLadder(
-      marketState.lastPrice,
-      remainingBudget,
-      {
-        atr: marketState.atr1m,
-        volBaseline: marketState.volBaseline,
-        realizedVol: marketState.realizedVol,
-        athDistance: marketState.athDistance || 0,
-      }
-    );
-
-    // Check order slot capacity before placing
-    const pendingCounts = orderExecutor.getPendingCounts();
-    const requiredSlots = ladder.levels.length + 1; // +1 for TP order
-    if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
-      console.log(`⚠️ [${exchange}] Cannot reprice ladder: need ${requiredSlots} slots, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
-      positionState.pendingLadderOrders = [];
-      return;
-    }
-
-    // Place repriced orders
-    const result = await orderExecutor.placeLadderOrders(ladder.levels);
-    positionState.pendingLadderOrders = result.orders;
-    positionState.ladderLowerBound = ladder.lowerBound;
-
-    console.log(`🔄 [${exchange}] Ladder repriced: ${result.orders.length} levels from $${marketState.lastPrice.toFixed(2)} to $${ladder.lowerBound.toFixed(2)}`);
-
-    tradeEvents.emitTradeEvent('ladder_repriced', exchange, `${result.orders.length} levels to $${ladder.lowerBound.toFixed(2)}`, {
-      levels: result.orders.length,
-      topPrice: marketState.lastPrice,
-      bottomPrice: ladder.lowerBound,
-      remainingBudget,
     });
   };
 
@@ -3174,7 +3107,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       holdbackRatio: config.holdbackRatio,
       entryMode: config.entryMode || 'reactive',
       ladderAutoSwitch: config.ladderAutoSwitch || false,
-      ladderLevels: config.ladderLevels || 10,
+      ladderMaxAthDropPct: config.ladderMaxAthDropPct || 80,
       celestialEnabled: config.celestialEnabled !== false,
       maxCelestialBodies: config.maxCelestialBodies || 10,
       macroEnabled: config.macroEnabled || false,

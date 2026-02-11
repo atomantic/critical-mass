@@ -195,44 +195,62 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - Detects "Custom" when values don't match any preset
 - Note: baseSizeUsdc may be overridden by auto-sizer if enabled
 
-**Pre-Positioned Liquidity Ladder Mode (v2.4) ✅ Implemented:**
-- Alternative entry strategy that pre-positions multiple limit buy orders
+**Pre-Positioned Liquidity Ladder Mode (v2.4, redesigned v2.6) ✅ Implemented:**
+- Deploys ALL available USDC as limit buy orders from just below current price
+  down to an ATH-based floor with Fibonacci-weighted sizing
 - Complements reactive mode by capturing liquidity shocks and fat-tail events
 - Two-engine system:
   | Engine | Extracts Value From | Best For |
   |--------|---------------------|----------|
   | Reactive | Oscillation frequency | Tight chop |
   | Ladder | Liquidity shocks & panic selling | Fat-tail dips, wicks |
+- Key behaviors:
+  - Bottom of ladder is ATH-based (not % below current price)
+  - Number of orders is dynamic (not a fixed count)
+  - Fibonacci sizing (smallest at top, largest at bottom)
+  - Ladder orders STAY in place on individual buy fills (no reprice)
+  - Rebuild only after all sells clear (cycle reset)
+  - Safety & Tail Events checks are skipped in ladder mode
 - Configuration:
   - `entryMode: 'reactive' | 'ladder'` - Entry strategy mode
-  - `ladderLevels: 10` - Number of rungs in the ladder
-  - `ladderLowerBoundPct: 15` - Base lower bound (% below current price)
-  - `ladderLowerBoundAthAdjust: true` - Widen ladder based on ATH distance
+  - `ladderMaxAthDropPct: 80` - Floor = ATH × (1 - this/100). 80 = lowest bid at 20% of ATH
   - `ladderSpacingMode: 'linear' | 'sqrt' | 'exponential'` - Price level distribution
-  - `ladderSizeMode: 'flat' | 'linear' | 'sqrt'` - Size allocation mode
+  - `ladderSizeMode: 'flat' | 'linear' | 'sqrt' | 'fibonacci'` - Size allocation mode (default: fibonacci)
   - `ladderAutoSwitch: false` - Auto-switch to ladder on high volatility
   - `ladderAutoSwitchVolMult: 2.0` - Vol expansion threshold for auto-switch
   - `ladderMinSpacingPct: 0.5` - Minimum % between rungs
-- Adaptive lower bound:
-  - Base percentage from config (default 15%)
-  - ATH adjustment: widens when further from ATH (e.g., 43% below ATH → 1.43x multiplier)
-  - Volatility adjustment: widens during high volatility (capped at 2x)
-  - Maximum adjustment capped at 50%
+  - `maxOpenOrders: 50` - Raised for ladder mode (Coinbase allows 500/product)
+- ATH-based floor:
+  - `floor = ATH × (1 - maxAthDropPct/100)` (e.g., 80% drop → floor at 20% of ATH)
+  - Fallback when ATH=0: uses currentPrice as reference
+  - Returns null if price already below floor
+- Adaptive first order offset:
+  - `topPrice = currentPrice × (1 - kFactor × ATR / currentPrice)` — reuses volatility trigger distance
+  - Fallback 1% if ATR unavailable
+- Dynamic level count (fibonacci mode):
+  - Finds max N where smallest fib-weighted order meets baseSizeUsdc
+  - Capped at 30 levels for safety
+  - Example: $30k budget, $100 base → ~14 levels
 - Spacing modes:
   - `sqrt`: Denser near top (current price), sparser at bottom (default)
   - `linear`: Even spacing throughout
   - `exponential`: Sparser near top, denser at bottom
+- Size modes:
+  - `fibonacci`: Escalating Fibonacci weights (1, 1, 2, 3, 5, 8, 13...) — most capital at bottom
+  - `flat`: Equal allocation to all levels
+  - `linear`: Linearly increasing towards bottom
+  - `sqrt`: Moderate increase towards bottom
 - Ladder cycle flow:
-  1. Build ladder with adaptive lower bound based on ATH distance and volatility
-  2. Place N limit buy orders spanning from current price to lower bound
-  3. On fill: update position, update TP, reprice remaining ladder from current price
-  4. On TP fill: cancel all unfilled ladder orders, reset cycle
+  1. Build ladder with ATH-based floor and dynamic level count
+  2. Place N limit buy orders from topPrice to floor with fibonacci sizing
+  3. On fill: create celestial body, place TP — ladder orders STAY in place
+  4. On cycle reset (all sells clear): cancel remaining ladder buys, rebuild from scratch
 - Risk safeguards:
   - Budget cap: Total ladder allocation ≤ maxUsdcDeployed - totalCostBasis
   - BTC cap: Checks maxBtcExposure on each fill
-  - Min order size: Skips levels where allocation < minOrderSize
+  - Min order size: Skips levels where allocation < minOrderSizeUsdc
   - Spacing minimum: Enforces ladderMinSpacingPct between levels
-  - Order limit: Validates maxOpenOrders ≥ ladderLevels + 1
+  - Order limit: Validates maxOpenOrders capacity before placement
   - Mode switch protection: Doesn't switch modes mid-cycle with active position
 
 **Celestial Hierarchy System (v2.5+):**
