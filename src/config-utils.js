@@ -18,7 +18,55 @@ const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils')
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
  */
 
-const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
+const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
+const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+
+/**
+ * Deep merge two objects. Values from `override` take precedence.
+ * Arrays are replaced, not concatenated.
+ * @param {Object} base - Base object
+ * @param {Object} override - Override object
+ * @returns {Object} Merged object
+ */
+const deepMerge = (base, override) => {
+  const result = { ...base };
+  for (const key of Object.keys(override)) {
+    const baseVal = base[key];
+    const overVal = override[key];
+    if (
+      overVal && typeof overVal === 'object' && !Array.isArray(overVal) &&
+      baseVal && typeof baseVal === 'object' && !Array.isArray(baseVal)
+    ) {
+      result[key] = deepMerge(baseVal, overVal);
+    } else {
+      result[key] = overVal;
+    }
+  }
+  return result;
+};
+
+/**
+ * Compute the diff between base and modified config.
+ * Returns only keys/values that differ from base (user overrides).
+ * @param {Object} base - Base configuration
+ * @param {Object} modified - Modified configuration
+ * @returns {Object} Only the differences
+ */
+const computeDiff = (base, modified) => {
+  const diff = {};
+  for (const key of Object.keys(modified)) {
+    const baseVal = base[key];
+    const modVal = modified[key];
+    if (modVal && typeof modVal === 'object' && !Array.isArray(modVal) &&
+        baseVal && typeof baseVal === 'object' && !Array.isArray(baseVal)) {
+      const nested = computeDiff(baseVal, modVal);
+      if (Object.keys(nested).length) diff[key] = nested;
+    } else if (JSON.stringify(baseVal) !== JSON.stringify(modVal)) {
+      diff[key] = modVal;
+    }
+  }
+  return diff;
+};
 
 /**
  * Default configuration values
@@ -262,23 +310,32 @@ const GLOBAL_DEFAULTS = {
 };
 
 /**
- * Load raw configuration from file
+ * Load raw configuration from base config, with user overrides from data/config.json merged on top
  * @returns {Object} Raw configuration object
  */
 const loadRawConfig = () => {
-  if (!fs.existsSync(CONFIG_FILE)) {
-    return {};
-  }
-  return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  const base = fs.existsSync(BASE_CONFIG_FILE)
+    ? JSON.parse(fs.readFileSync(BASE_CONFIG_FILE, 'utf8'))
+    : {};
+  const user = fs.existsSync(USER_CONFIG_FILE)
+    ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8'))
+    : {};
+  return Object.keys(user).length ? deepMerge(base, user) : base;
 };
 
 /**
- * Save configuration to file
- * @param {MultiExchangeConfig} config - Configuration to save
+ * Save configuration to user config file (data/config.json).
+ * Only persists the diff (overrides) from the base config.
+ * @param {MultiExchangeConfig} config - Full merged configuration to save
  * @returns {void}
  */
 const saveConfig = (config) => {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  const base = fs.existsSync(BASE_CONFIG_FILE)
+    ? JSON.parse(fs.readFileSync(BASE_CONFIG_FILE, 'utf8'))
+    : {};
+  const diff = computeDiff(base, config);
+  fs.mkdirSync(path.dirname(USER_CONFIG_FILE), { recursive: true });
+  fs.writeFileSync(USER_CONFIG_FILE, JSON.stringify(diff, null, 2));
 };
 
 /**

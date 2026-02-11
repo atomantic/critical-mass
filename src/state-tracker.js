@@ -25,9 +25,9 @@ const { getExchangeDataDir } = require('./migration');
 
 const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
 const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
+const { loadRawConfig } = require('./config-utils');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
 
 /**
  * Get state file path for an exchange
@@ -92,8 +92,7 @@ const migrateState = (state) => {
  */
 const loadState = (config = null, exchange = 'coinbase') => {
   if (!config) {
-    config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    // If multi-exchange config, get the specific exchange config
+    config = loadRawConfig();
     if (config.exchanges && config.exchanges[exchange]) {
       config = { ...config.global, ...config.exchanges[exchange] };
     }
