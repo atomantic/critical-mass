@@ -503,6 +503,17 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
 - **Fix 3**: regime-engine.js — Merge-case buy fills now annotated with `{ isSatellite: true, bodyId, bodyTier }` for consistency with new-body creation path
 - **Impact**: Realized P&L now correctly reflects body TP profits from both current and completed cycles
 
+### Fix Duplicate TP Orders & Harden Cancel-Discovers-Fill Handling (v2.5.33)
+- **Root cause**: When `cancelBodyTpOrder` fails during a merge, code still proceeded with merge and placed a second TP while the old one remained live on Coinbase
+- **Critical bug fix**: `const mergeTarget` at two locations prevented reassignment (`mergeTarget = null` would throw TypeError). Changed to `let` in both live and dry-run merge paths
+- **`safeCancelOrder` helper** (order-executor.js): Internal wrapper that cancels, then checks `getOrder` on failure to detect fills vs true failures. Returns `{cancelled, filled}` consistently
+- **Hardened cancel functions**: `cancelBodyTpOrder`, `cancelSatelliteTpOrder`, `cancelAllSatelliteTpOrders`, `cancelAllLadderOrders` all now use `safeCancelOrder` and return structured `{cancelled, filled}` results
+- **Merge abort simplification**: Both live and dry-run merge paths now abort on any cancel failure (filled or otherwise), redirecting buy to a new body instead of risking duplicate TPs
+- **`placeBodyTp` guard**: Defensive check rejects duplicate TP placement when `body.tpOrderId` already exists
+- **Startup cancel hardening**: Three `adapter.cancelOrder` sites in startup recovery now check `getOrder` on failure to detect fills, logging appropriately instead of silently failing
+- **Dry-run consistency**: `cancelSatelliteTpOrder` and `cancelBodyTpOrder` in dry-run-executor.js updated to return `{cancelled, filled}` matching live executor
+- **Design**: No inline fill processing during cancel — filled orders stay in `pendingOrders` for polling to process, avoiding re-entrancy. Sequential cancels replace `Promise.allSettled` in ladder cancel for API rate safety
+
 ### Editable Aggressiveness Presets (v2.5.23)
 - **Presets stored in config.json**: `global.aggressivenessPresets` with 4 levels (conservative, moderate, aggressive, maximum), each containing 8 params (kFactor, minIntervalMs, maxIntervalMs, entryOffsetBps, baseSizeUsdc, cautionScale, trendScale, maxCycleBuys)
 - **Backend**: `getAggressivenessPresets()` / `updateAggressivenessPresets()` in config-utils.js, `GET/PUT /api/presets/aggressiveness` in server.js

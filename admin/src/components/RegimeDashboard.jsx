@@ -1944,7 +1944,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     const buys = group.buys
                     const sellPrice = sell.fillPrice || sell.price
                     const sellValue = sell.quoteAmount || ((sell.size || 0) * (sellPrice || 0))
-                    const sellPnl = sell.pnl ?? null
+                    const sellPnl = sell.pnl ?? sell.satellitePnl ?? null
                     const sellHoldback = isDryRun ? sell.holdbackBtc : sell.holdback
                     const sellTime = sell.filledAt || sell.timestamp
 
@@ -1960,6 +1960,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           <td className="py-1.5 pr-2 font-mono text-xs text-gray-400">
                             {sell.orderId}
                             {buys.length > 0 && <span className="text-gray-600 ml-1">({buys.length} {buys.length === 1 ? 'buy' : 'buys'})</span>}
+                            {buys.length === 0 && sell.duplicateTpNote && <span className="text-yellow-600/70 ml-1" title={sell.duplicateTpNote}>(dup TP)</span>}
+                            {buys.length === 0 && sell.untrackedSell && !sell.duplicateTpNote && <span className="text-yellow-600/70 ml-1">(orphan)</span>}
                           </td>
                           <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
                             {sell.size?.toFixed(8)}
@@ -1980,6 +1982,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             {formatTimestamp(sellTime)}
                           </td>
                         </tr>
+                        {isExpanded && buys.length === 0 && (sell.duplicateTpNote || sell.untrackedSell) && (
+                          <tr className="border-b border-gray-700/30 bg-gray-750/20">
+                            <td className="py-1 pr-1"></td>
+                            <td colSpan={6} className="py-1.5 pl-5 text-xs text-yellow-600/70 italic">
+                              {sell.duplicateTpNote || 'Untracked sell — buy orders linked to original TP'}
+                              {sell.satelliteCostBasis > 0 && <span className="ml-2 text-gray-500">Cost basis: ${sell.satelliteCostBasis.toFixed(2)}</span>}
+                            </td>
+                          </tr>
+                        )}
                         {isExpanded && buys.map((buy, idx) => {
                           const buyPrice = buy.fillPrice || buy.price
                           const buyValue = buy.quoteAmount || ((buy.size || 0) * (buyPrice || 0))

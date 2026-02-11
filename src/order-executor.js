@@ -56,6 +56,28 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
+   * Safe cancel: cancel order, then check status on failure to detect fills
+   * @param {string} orderId - Order ID to cancel
+   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
+   */
+  const safeCancelOrder = async (orderId) => {
+    const result = await adapter.cancelOrder(orderId);
+    if (result.success) return { cancelled: true, filled: false };
+
+    const status = await adapter.getOrder(orderId).catch(() => null);
+    if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
+      console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
+      return { cancelled: false, filled: true };
+    }
+    if (status && status.status === 'CANCELLED') {
+      return { cancelled: true, filled: false };
+    }
+
+    console.log(`⚠️ [${exchange}] Cancel failed for ${orderId.slice(0, 8)}, status=${status?.status || 'unknown'}`);
+    return { cancelled: false, filled: false };
+  };
+
+  /**
    * Place entry bid (maker-prefer post-only)
    * @param {number} sizeUsdc - Order size in USDC
    * @param {number} currentBid - Current best bid
@@ -671,21 +693,24 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   /**
    * Cancel a specific satellite TP order
    * @param {string} buyOrderId - Buy order ID of the satellite to cancel
-   * @returns {Promise<boolean>}
+   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
    */
   const cancelSatelliteTpOrder = async (buyOrderId) => {
     const satellite = satelliteTpOrders.get(buyOrderId);
-    if (!satellite) return true;
+    if (!satellite) return { cancelled: true, filled: false };
 
-    const result = await adapter.cancelOrder(satellite.tpOrderId);
-    if (result.success) {
+    const result = await safeCancelOrder(satellite.tpOrderId);
+    if (result.cancelled) {
       pendingOrders.delete(satellite.tpOrderId);
       satelliteTpOrders.delete(buyOrderId);
-      return true;
+      return { cancelled: true, filled: false };
     }
-
-    console.log(`⚠️ [${exchange}] Failed to cancel satellite TP ${satellite.tpOrderId}`);
-    return false;
+    if (result.filled) {
+      satelliteTpOrders.delete(buyOrderId);
+      // Leave in pendingOrders for polling to process the fill
+      return { cancelled: false, filled: true };
+    }
+    return { cancelled: false, filled: false };
   };
 
   /**
@@ -697,10 +722,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const entries = Array.from(satelliteTpOrders.entries());
 
     for (const [buyOrderId, satellite] of entries) {
-      const result = await adapter.cancelOrder(satellite.tpOrderId).catch(() => ({ success: false }));
-      pendingOrders.delete(satellite.tpOrderId);
+      const result = await safeCancelOrder(satellite.tpOrderId).catch(() => ({ cancelled: false, filled: false }));
+      if (result.cancelled) {
+        pendingOrders.delete(satellite.tpOrderId);
+        cancelled++;
+      } else if (result.filled) {
+        console.log(`📋 [${exchange}] Satellite TP ${satellite.tpOrderId.slice(0, 8)} filled during bulk cancel`);
+      }
       satelliteTpOrders.delete(buyOrderId);
-      if (result.success) cancelled++;
     }
 
     return cancelled;
@@ -809,28 +838,24 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   /**
    * Cancel a specific body TP order
    * @param {string} bodyId - Celestial body ID
-   * @returns {Promise<{cancelled: boolean, filled?: boolean}>}
+   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
    */
   const cancelBodyTpOrder = async (bodyId) => {
     const body = bodyTpOrders.get(bodyId);
-    if (!body) return { cancelled: true };
+    if (!body) return { cancelled: true, filled: false };
 
-    const result = await adapter.cancelOrder(body.tpOrderId);
-    if (result.success) {
+    const result = await safeCancelOrder(body.tpOrderId);
+    if (result.cancelled) {
       pendingOrders.delete(body.tpOrderId);
       bodyTpOrders.delete(bodyId);
-      return { cancelled: true };
+      return { cancelled: true, filled: false };
     }
-
-    // Cancel failed — check if already filled on exchange
-    const status = await adapter.getOrder(body.tpOrderId).catch(() => null);
-    if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
-      console.log(`⚠️ [${exchange}] Body TP ${body.tpOrderId} already filled — merge aborted`);
+    if (result.filled) {
+      bodyTpOrders.delete(bodyId);
+      // Leave in pendingOrders for polling to process the fill
       return { cancelled: false, filled: true };
     }
-
-    console.log(`⚠️ [${exchange}] Failed to cancel body TP ${body.tpOrderId}`);
-    return { cancelled: false };
+    return { cancelled: false, filled: false };
   };
 
   /**
@@ -973,30 +998,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const ladderOrders = Array.from(pendingOrders.entries())
       .filter(([, order]) => order.type === 'ladder_entry');
 
-    const results = await Promise.allSettled(
-      ladderOrders.map(([orderId]) => adapter.cancelOrder(orderId))
-    );
-
-    results.forEach((result, index) => {
-      const [orderId] = ladderOrders[index];
-      if (result.status === 'fulfilled') {
-        const cancelResult = result.value;
-        if (cancelResult && cancelResult.success) {
-          pendingOrders.delete(orderId);
-          cancelled++;
-        } else if (cancelResult && (cancelResult.alreadyCancelled || cancelResult.alreadyFilled)) {
-          // Order is no longer active, stop tracking but don't count as fresh cancel
-          pendingOrders.delete(orderId);
-        } else {
-          console.log(`⚠️ [${exchange}] Cancel request for ladder order ${orderId} did not succeed: ${cancelResult?.errorMessage || 'unknown reason'}`);
-        }
+    for (const [orderId] of ladderOrders) {
+      const result = await safeCancelOrder(orderId).catch(() => ({ cancelled: false, filled: false }));
+      if (result.cancelled) {
+        pendingOrders.delete(orderId);
+        cancelled++;
+      } else if (result.filled) {
+        console.log(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`);
       } else {
-        console.log(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId}: ${result.reason?.message || 'unknown'}`);
-        // Do not remove from tracking - order may still be live
+        console.log(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId.slice(0, 8)}`);
       }
-    });
+    }
 
-    // Count remaining tracked ladder orders (failed cancels)
     const remainingTracked = Array.from(pendingOrders.values())
       .filter(o => o.type === 'ladder_entry').length;
 
