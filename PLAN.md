@@ -496,6 +496,13 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
 - **DRY rendering**: Shared `renderSellRow` helper and `tableHeader` variable used by both paths
 - **Edge cases**: null cycleId grouped as "Unassigned" (gray badge, sorted last)
 
+### Body P&L Excluded from Realized P&L (v2.5.29)
+- **Root cause**: `recalculateCycles()` and `rebuildPositionFromFills()` in fill-ledger.js skipped body TP sell fills (`isSatellite`) but still included their corresponding buy fills in cost basis calculations, inflating avgCost and producing incorrect (often negative) core cycle P&L
+- **Fix 1**: fill-ledger.js — Added `|| fill.bodyId` filter alongside existing `fill.isSatellite` in `rebuildPositionFromFills()`, `recalculateCycles()` P&L loops, `getCurrentCycleBuysCount()`, and cycle detail counts
+- **Fix 2**: server.js — Recalculate endpoint now includes `bodiesRealizedPnL + satelliteRealizedPnL` in realized P&L totals (matching the startup code in regime-engine.js)
+- **Fix 3**: regime-engine.js — Merge-case buy fills now annotated with `{ isSatellite: true, bodyId, bodyTier }` for consistency with new-body creation path
+- **Impact**: Realized P&L now correctly reflects body TP profits from both current and completed cycles
+
 ### Editable Aggressiveness Presets (v2.5.23)
 - **Presets stored in config.json**: `global.aggressivenessPresets` with 4 levels (conservative, moderate, aggressive, maximum), each containing 8 params (kFactor, minIntervalMs, maxIntervalMs, entryOffsetBps, baseSizeUsdc, cautionScale, trendScale, maxCycleBuys)
 - **Backend**: `getAggressivenessPresets()` / `updateAggressivenessPresets()` in config-utils.js, `GET/PUT /api/presets/aggressiveness` in server.js

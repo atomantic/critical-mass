@@ -199,8 +199,8 @@ const createFillLedger = (exchange) => {
     const uniqueBuyOrders = new Set();
 
     for (const fill of targetFills) {
-      // Skip satellite fills — they have independent position tracking
-      if (fill.isSatellite) continue;
+      // Skip body/satellite fills — they have independent position tracking
+      if (fill.isSatellite || fill.bodyId) continue;
 
       if (fill.side === 'buy') {
         const costBasis = fill.quoteAmount + fill.netFee;
@@ -458,8 +458,8 @@ const createFillLedger = (exchange) => {
       let btcSold = 0;
 
       for (const fill of cycleFills) {
-        // Skip satellite fills — they have independent P&L tracking
-        if (fill.isSatellite) continue;
+        // Skip body/satellite fills — they have independent P&L tracking
+        if (fill.isSatellite || fill.bodyId) continue;
 
         if (fill.side === 'buy') {
           totalBTC += fill.size;
@@ -477,8 +477,8 @@ const createFillLedger = (exchange) => {
 
       cycleDetails.push({
         cycleId,
-        buys: cycleFills.filter(f => f.side === 'buy').length,
-        sells: cycleFills.filter(f => f.side === 'sell').length,
+        buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
+        sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
         totalBtcBought: roundBTC(totalBTC),
         btcSold: roundBTC(btcSold),
         holdbackBtc,
@@ -553,8 +553,8 @@ const createFillLedger = (exchange) => {
           let btcSold = 0;
 
           for (const fill of cycleFills) {
-            // Skip satellite fills — they have independent P&L tracking
-            if (fill.isSatellite) continue;
+            // Skip body/satellite fills — they have independent P&L tracking
+            if (fill.isSatellite || fill.bodyId) continue;
 
             if (fill.side === 'buy') {
               totalBTC += fill.size;
@@ -572,8 +572,8 @@ const createFillLedger = (exchange) => {
 
           cycleDetails.push({
             cycleId,
-            buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite).length,
-            sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite).length,
+            buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
+            sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
             totalBtcBought: roundBTC(totalBTC),
             btcSold: roundBTC(btcSold),
             holdbackBtc,
@@ -697,8 +697,8 @@ const createFillLedger = (exchange) => {
     const cycleFills = getCurrentCycleFills();
     const uniqueBuyOrders = new Set();
     for (const fill of cycleFills) {
-      // Skip satellite buys — they have independent position tracking
-      if (fill.side === 'buy' && !fill.isSatellite) {
+      // Skip body/satellite buys — they have independent position tracking
+      if (fill.side === 'buy' && !fill.isSatellite && !fill.bodyId) {
         uniqueBuyOrders.add(fill.orderId);
       }
     }
