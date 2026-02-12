@@ -159,7 +159,8 @@ const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxB
         closest = body;
       }
     }
-    return closest || bodies[0];
+    // No body has a TP — pick the one with highest cost basis as merge target
+    return closest || bodies.reduce((best, b) => b.costBasis > best.costBasis ? b : best, bodies[0]);
   }
 
   // Check each body: is new buy's candidate TP within body's tier proximity?
@@ -393,11 +394,12 @@ const createInitialCelestialState = () => ({
  * @param {CelestialBody[]} bodies - All bodies
  * @returns {string} e.g. "S:3 M:1 P:1"
  */
+const TIER_ABBREV = { satellite: 'Sat', moon: 'M', planet: 'P', sun: 'Sun', hypergiant: 'HG', galaxy: 'G', black_hole: 'BH' };
+
 const getTierSummary = (bodies) => {
   const counts = {};
   for (const body of bodies) {
-    const tier = getTierConfig(body.tier);
-    const key = tier.name[0].toUpperCase();
+    const key = TIER_ABBREV[body.tier] || body.tier[0].toUpperCase();
     counts[key] = (counts[key] || 0) + 1;
   }
   return Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' ');

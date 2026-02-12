@@ -1,5 +1,54 @@
 # Critical Mass - Development Plan
 
+## Full Codebase Audit (In Progress)
+
+### Phase 1: Critical Bug Fixes - COMPLETE
+- [x] 1.1 Mutex deadlock protection (`src/async-mutex.js`) - Added 30s timeout, waiters counter
+- [x] 1.2 atomicReplace naked sell on FILLED (`src/order-executor.js`) - Return early on filled
+- [x] 1.3 Stale timeout ignores regime multiplier (`src/order-executor.js`) - Use getEffectiveStaleMs()
+- [x] 1.4 P&L data loss during recovery (`src/regime-engine.js`) - Explicit field merge
+- [x] 1.5 entryInProgress flag - ALREADY FIXED (uses .finally())
+- [x] 1.6 TP optimizer volFactor always 1.0 (`src/tp-optimizer.js`) - Separate historicalVolBaseline
+- [x] 1.7 findMergeTarget fallback to body without TP (`src/celestial-hierarchy.js`) - Highest costBasis
+- [x] 1.8 getTierSummary conflates satellite and sun (`src/celestial-hierarchy.js`) - TIER_ABBREV map
+- [x] 1.9 WebSocket product matching too broad (`src/websocket-feed.js`) - Exact productId match
+- [x] 1.10 fill-ledger.js negative BTC guard (`src/fill-ledger.js`) - Clamp to 0 with warning
+
+### Phase 2: Security Hardening - COMPLETE
+- [x] 2.1 Restrict CORS origin - Allowlist from env/defaults (localhost:5563, localhost:5564)
+- [x] 2.2 Exchange param validation - app.param middleware with regex + known exchange check
+- [x] 2.3 Rate limiting - express-rate-limit: 100/min GET, 20/min write, 5/min engine start/stop
+- [x] 2.4 Atomic writes for config - writeJSON now uses atomicWriteSync
+- [x] POST/PUT keys deduplication (from 3.4) - Single saveExchangeKeys handler
+
+### Phase 3: Modularity & DRY Refactoring - PARTIAL
+- [x] 3.3 Modularize server.js (2117 → 509 lines, 76% reduction)
+  - src/routes/exchange-routes.js, regime-routes.js, keys-routes.js, backtest-routes.js, settings-routes.js, legacy-routes.js
+  - Extracted createEngineCallbacks (from 3.4)
+- [x] 3.2 Extract apy-calculator.js from regime-engine.js (~170 lines)
+- [x] 3.4 POST/PUT keys deduplication (single saveExchangeKeys handler)
+- [ ] 3.1 Extract shared order tracking (deferred - deep closure coupling)
+- [ ] 3.2 Split regime-engine.js further (deferred - fill-processor, entry-evaluator, tp-manager, recovery deeply coupled to closure state)
+
+### Phase 4: Performance Fixes - COMPLETE
+- [x] 4.1 Fill ledger cycleIndex Map for O(1) cycle lookups (`src/fill-ledger.js`)
+- [x] 4.2 Order executor tpOrderToKey reverse-lookup Map for O(1) satellite/body TP lookups (`src/order-executor.js`)
+- [x] 4.3 Market data service regime state caching - 10s TTL cache to avoid disk reads every second (`src/market-data-service.js`)
+- [x] 4.4 Timer cleanup on shutdown - Track all TTL timers in regime-engine + stale timers in order-executor, clear on stop
+
+### Bug Fix: Negative USDC P&L on Body TPs
+- [x] Fee floor formula in `placeBodyTp()` didn't account for holdback ratio
+  - Old formula: `(2 * 0.0006 * 100) + ($0.01 / costBasis * 100)` → 0.14% for $50 position
+  - New formula: `((2 * feeRate) + ($0.01 / costBasis)) / (1 - holdbackRatio) * 100` → 0.44% for $50 position
+  - Holdback means only `(1-h)` of gross profit becomes USDC, so TP% must be higher
+  - Fee rate now configurable via `config.feeRate` (default 0.001 = 10 bps conservative)
+  - Added post-hoc P&L validation loop (bumps TP% up to 10× if rounding causes negative P&L)
+  - Added final guard that skips placement if estimated P&L < $0.01
+
+### Phase 5: Test Coverage (~283 test cases) - IN PROGRESS
+
+---
+
 Multi-exchange BTC accumulation engine with celestial position management.
 
 **Version:** 2.4.21
