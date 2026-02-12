@@ -1115,12 +1115,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Note: recalculateCycles skips satellite fills — body/satellite P&L tracked separately
       const recalcResult = fillLedger.recalculateCycles();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
-        const bodyPnL = positionState.celestialState?.bodiesRealizedPnL || 0;
-        const totalPnL = recalcResult.realizedPnL + bodyPnL;
-        console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, cyclePnL=$${recalcResult.realizedPnL.toFixed(2)} + bodyPnL=$${bodyPnL.toFixed(2)} = $${totalPnL.toFixed(2)}, BTC reserves=${recalcResult.realizedBtcPnL.toFixed(6)}`);
+        const totalPnL = recalcResult.globalRealizedPnL;
+        const totalBtcPnL = recalcResult.globalRealizedBtcPnL;
+        console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, BTC reserves=${totalBtcPnL.toFixed(6)}`);
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         positionState.realizedPnL = totalPnL;
-        positionState.realizedBtcPnL = recalcResult.realizedBtcPnL + (positionState.celestialState?.bodiesRealizedBtcPnL || 0);
+        positionState.realizedBtcPnL = totalBtcPnL;
+        // Keep celestial body P&L counter in sync
+        const bodyOnlyPnL = totalPnL - recalcResult.realizedPnL;
+        const bodyOnlyBtcPnL = totalBtcPnL - recalcResult.realizedBtcPnL;
+        if (positionState.celestialState) {
+          positionState.celestialState.bodiesRealizedPnL = Math.round(bodyOnlyPnL * 100) / 100;
+          positionState.celestialState.bodiesRealizedBtcPnL = Math.round(bodyOnlyBtcPnL * 1e8) / 1e8;
+        }
       }
 
       // Backfill APY tracking start time from earliest fill in ledger
@@ -1496,10 +1503,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }
     }
 
-    // Update unrealized P&L
-    if (positionState.totalBTC > 0) {
-      const currentValue = positionState.totalBTC * data.price;
-      positionState.unrealizedPnL = currentValue - positionState.totalCostBasis;
+    // Update unrealized P&L (core position + active celestial bodies)
+    {
+      let totalHeldBtc = positionState.totalBTC || 0;
+      let totalHeldCost = positionState.totalCostBasis || 0;
+      for (const body of (positionState.celestialBodies || [])) {
+        totalHeldBtc += body.btcQty || 0;
+        totalHeldCost += body.costBasis || 0;
+      }
+      positionState.unrealizedPnL = totalHeldBtc > 0 ? (totalHeldBtc * data.price) - totalHeldCost : 0;
     }
 
     // Emit throttled status update

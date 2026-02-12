@@ -343,11 +343,9 @@ module.exports = (app, deps) => {
     const currentCycleFills = fillLedger.getCurrentCycleFills();
     const currentPosition = fillLedger.rebuildPositionFromFills(currentCycleFills);
 
-    const bodyPnL = currentState.position?.celestialState?.bodiesRealizedPnL || 0;
-    const satPnL = 0; // Legacy satellite PnL folded into celestialState on load
-    const bodyBtcPnL = currentState.position?.celestialState?.bodiesRealizedBtcPnL || 0;
-    const totalRealizedPnL = recalcResult.realizedPnL + bodyPnL + satPnL;
-    const totalRealizedBtcPnL = recalcResult.realizedBtcPnL + bodyBtcPnL;
+    // Use global P&L computed from all fills (matches dashboard Filled Orders computation)
+    const totalRealizedPnL = recalcResult.globalRealizedPnL;
+    const totalRealizedBtcPnL = recalcResult.globalRealizedBtcPnL;
 
     const changes = {
       cyclesCompleted: { before: currentState.position?.cyclesCompleted || 0, after: recalcResult.cyclesCompleted },
@@ -359,12 +357,21 @@ module.exports = (app, deps) => {
     };
 
     if (apply) {
+      // Compute body-only P&L to keep celestialState counter in sync
+      const bodyOnlyPnL = totalRealizedPnL - recalcResult.realizedPnL;
+      const bodyOnlyBtcPnL = totalRealizedBtcPnL - recalcResult.realizedBtcPnL;
+      const celestialState = currentState.position?.celestialState || {};
       const updatedPosition = {
         ...currentState.position,
         ...currentPosition,
         cyclesCompleted: recalcResult.cyclesCompleted,
         realizedPnL: totalRealizedPnL,
         realizedBtcPnL: totalRealizedBtcPnL,
+        celestialState: {
+          ...celestialState,
+          bodiesRealizedPnL: Math.round(bodyOnlyPnL * 100) / 100,
+          bodiesRealizedBtcPnL: Math.round(bodyOnlyBtcPnL * 1e8) / 1e8,
+        },
       };
 
       saveRegimeState(exchange, { ...currentState, position: updatedPosition });
@@ -375,7 +382,7 @@ module.exports = (app, deps) => {
         engine.updatePosition(updatedPosition);
       }
 
-      console.log(`🔧 [${exchange}] Regime state recalculated and applied: ${recalcResult.cyclesCompleted} cycles, cyclePnL=$${recalcResult.realizedPnL.toFixed(2)} + bodyPnL=$${bodyPnL.toFixed(2)} + satPnL=$${satPnL.toFixed(2)} = $${totalRealizedPnL.toFixed(2)}, BTC reserves=${totalRealizedBtcPnL.toFixed(6)}`);
+      console.log(`🔧 [${exchange}] Regime state recalculated: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalRealizedPnL.toFixed(2)}, BTC reserves=${totalRealizedBtcPnL.toFixed(8)}`);
     }
 
     res.json({
