@@ -3441,6 +3441,108 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
+   * Manually merge a body into the next-highest body by TP price.
+   * Cancels both TPs, combines all buys, re-places a single merged TP.
+   * @param {string} bodyId - ID of the source body (lower TP) to roll up
+   * @returns {Promise<{success: boolean, message: string, mergedBody?: Object}>}
+   */
+  const manualMergeBody = async (bodyId) => {
+    if (!isRunning) {
+      return { success: false, message: 'Engine not running' };
+    }
+    const bodies = positionState.celestialBodies || [];
+    if (bodies.length < 2) {
+      return { success: false, message: 'Need at least 2 bodies to merge' };
+    }
+    const source = bodies.find(b => b.id === bodyId);
+    if (!source) {
+      return { success: false, message: `Body ${bodyId} not found` };
+    }
+
+    // Find next-highest body by tpPrice (lowest tpPrice above source's)
+    const candidates = bodies
+      .filter(b => b.id !== source.id && b.tpPrice > source.tpPrice)
+      .sort((a, b) => a.tpPrice - b.tpPrice);
+    if (candidates.length === 0) {
+      return { success: false, message: 'No higher body to merge into (this is the highest)' };
+    }
+    const target = candidates[0];
+
+    console.log(`🔗 [${exchange}] Manual roll-up: merging body ${source.id.slice(-8)} (TP $${source.tpPrice}) → ${target.id.slice(-8)} (TP $${target.tpPrice})`);
+
+    // Cancel source TP
+    const srcCancel = await orderExecutor.cancelBodyTpOrder(source.id);
+    if (!srcCancel.cancelled) {
+      const reason = srcCancel.filled ? 'already filled' : 'cancel failed';
+      console.log(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP ${reason}, aborting roll-up`);
+      return { success: false, message: `Source TP ${reason}` };
+    }
+
+    // Cancel target TP
+    const tgtCancel = await orderExecutor.cancelBodyTpOrder(target.id);
+    if (!tgtCancel.cancelled) {
+      // Restore source TP to avoid leaving it dangling
+      console.log(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP cancel failed, restoring source TP`);
+      await placeBodyTp(source);
+      saveLiveState();
+      return { success: false, message: 'Target TP cancel failed, source restored' };
+    }
+
+    // Merge bodies (pure data)
+    const merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed);
+
+    // Remove source from celestialBodies
+    positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
+
+    // Check cascading promotions and sync aggregates
+    celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
+    celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+    // Re-annotate source body's fills with merged body's ID
+    for (const srcId of (source.sourceOrderIds || [])) {
+      fillLedger.annotateFillsByOrderId(srcId, { bodyId: merged.id, bodyTier: merged.tier });
+    }
+    for (const buyOrder of (source.buyOrders || [])) {
+      if (buyOrder.orderId && buyOrder.orderId !== 'core-migration') {
+        fillLedger.annotateFillsByOrderId(buyOrder.orderId, { bodyId: merged.id, bodyTier: merged.tier });
+      }
+    }
+
+    // Place new combined TP (handles holdback, annotation for ALL source buy fills)
+    await placeBodyTp(merged);
+
+    // Persist
+    saveLiveState();
+    fillLedger.persist();
+
+    const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
+    console.log(`${tierCfg.emoji} [${exchange}] Roll-up complete: body ${merged.id.slice(-8)} now ${merged.tier} (${merged.btcQty.toFixed(6)} BTC, $${merged.costBasis.toFixed(2)}, ${merged.buyOrders?.length || 0} buys)`);
+
+    tradeEvents.emitTradeEvent('body_rollup', exchange, `${tierCfg.emoji} Merged → ${merged.tier}: ${merged.btcQty.toFixed(6)} BTC`, {
+      mergedBodyId: merged.id,
+      mergedTier: merged.tier,
+      btcQty: merged.btcQty,
+      costBasis: merged.costBasis,
+      avgPrice: merged.avgPrice,
+      sourceBodyId: source.id,
+      buyCount: merged.buyOrders?.length || 0,
+    });
+
+    return {
+      success: true,
+      message: `Merged ${source.id.slice(-8)} → ${merged.id.slice(-8)} (${merged.tier})`,
+      mergedBody: {
+        id: merged.id,
+        tier: merged.tier,
+        btcQty: merged.btcQty,
+        costBasis: merged.costBasis,
+        avgPrice: merged.avgPrice,
+        buyCount: merged.buyOrders?.length || 0,
+      },
+    };
+  };
+
+  /**
    * Force rebuild of TP sell order with current position
    * Useful when position state was corrected manually
    * @returns {Promise<{success: boolean, message: string}>}
@@ -3470,6 +3572,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     getFills,
     getFillStats,
     forceResumeDrawdown,
+    manualMergeBody,
     rebuildTP,
     // Dry-run specific methods
     isDryRun,

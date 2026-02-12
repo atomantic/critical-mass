@@ -864,6 +864,34 @@ app.post('/api/:exchange/regime/resume-drawdown', (req, res) => {
   });
 });
 
+// Manual body roll-up merge
+app.post('/api/:exchange/regime/rollup-body', async (req, res) => {
+  const { exchange } = req.params;
+  const { bodyId } = req.body || {};
+  const engine = regimeEngines.get(exchange);
+
+  if (!engine) {
+    return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
+  }
+  if (!bodyId) {
+    return res.status(400).json({ success: false, error: 'bodyId is required' });
+  }
+
+  const result = await engine.manualMergeBody(bodyId);
+
+  if (result.success) {
+    log('INFO', `🔗 [${exchange}] Body roll-up: ${result.message}`);
+  }
+
+  res.json({
+    success: result.success,
+    exchange,
+    message: result.message,
+    mergedBody: result.mergedBody || null,
+    status: engine.getStatus(),
+  });
+});
+
 // Get regime engine fill ledger
 app.get('/api/:exchange/regime/fills', (req, res) => {
   const { exchange } = req.params;
