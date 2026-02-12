@@ -71,7 +71,7 @@ const pos = state.position;
 pos.cyclesCompleted = 10;
 
 // Rebuild cycleBuys from cycle-11
-const cycle11Buys = ledger.filter(f => f.cycleId === 'cycle-11' && f.side === 'buy' && !f.isSatellite);
+const cycle11Buys = ledger.filter(f => f.cycleId === 'cycle-11' && f.side === 'buy' && !(f.isBodyOwned || f.isSatellite));
 const uniqueBuyOrders = new Set(cycle11Buys.map(f => f.orderId));
 pos.cycleBuys = uniqueBuyOrders.size;
 

@@ -39,8 +39,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   let staleTimeoutMultiplier = 1.0; // Can be adjusted by regime
 
   /** @type {Map<string, {tpOrderId: string, btcQty: number, tpPrice: number}>} */
-  const satelliteTpOrders = new Map(); // buyOrderId -> satellite TP tracking (legacy alias)
-  const bodyTpOrders = satelliteTpOrders; // Celestial body TP tracking (same Map, new name)
+  const bodyTpOrders = new Map(); // bodyId -> body TP tracking
 
   /** @type {Map<string, string>} tpOrderId -> buyOrderId/bodyId for O(1) reverse lookups */
   const tpOrderToKey = new Map();
@@ -368,7 +367,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const now = Date.now();
     let refreshed = 0;
 
-    const isTpType = (type) => type === 'take_profit' || type === 'satellite_tp' || type === 'body_tp';
+    const isTpType = (type) => type === 'take_profit' || type === 'body_tp';
     const effectiveStaleMs = getEffectiveStaleMs();
     for (const [orderId, order] of pendingOrders) {
       // Check if order is stale (using regime-adjusted timeout)
@@ -409,7 +408,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   /**
    * Check all pending orders for fills (backup fill detection)
    * Call this periodically to catch fills that WebSocket missed
-   * Checks entries, take_profit, body_tp, and satellite_tp orders
+   * Checks entries, take_profit, and body_tp orders
    * @returns {Promise<{filled: number, cancelled: number}>}
    */
   const checkPendingOrderFills = async () => {
@@ -564,8 +563,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         activeTpOrderId = null;
         lastTpPrice = 0;
         lastTpSize = 0;
-      } else if (order.type === 'satellite_tp' || order.type === 'body_tp') {
-        removeSatelliteTracking(orderId);
+      } else if (order.type === 'body_tp') {
+        removeBodyTracking(orderId);
       }
     }
   };
@@ -583,28 +582,28 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         activeTpOrderId = null;
         lastTpPrice = 0;
         lastTpSize = 0;
-      } else if (order.type === 'satellite_tp' || order.type === 'body_tp') {
-        removeSatelliteTracking(orderId);
+      } else if (order.type === 'body_tp') {
+        removeBodyTracking(orderId);
       }
     }
   };
 
   /**
    * Get pending orders count by type
-   * @returns {{entries: number, takeProfits: number, total: number}}
+   * @returns {{entries: number, takeProfits: number, bodies: number, total: number}}
    */
   const getPendingCounts = () => {
     let entries = 0;
     let takeProfits = 0;
-    let satellites = 0;
+    let bodies = 0;
 
     for (const order of pendingOrders.values()) {
       if (order.type === 'entry') entries++;
       else if (order.type === 'take_profit') takeProfits++;
-      else if (order.type === 'satellite_tp' || order.type === 'body_tp') satellites++;
+      else if (order.type === 'body_tp') bodies++;
     }
 
-    return { entries, takeProfits, satellites, total: pendingOrders.size };
+    return { entries, takeProfits, bodies, total: pendingOrders.size };
   };
 
   /**
@@ -664,7 +663,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    */
   const getSummary = () => {
     const counts = getPendingCounts();
-    let summary = `pending=${counts.total}(entries=${counts.entries},tp=${counts.takeProfits},sat=${counts.satellites})`;
+    let summary = `pending=${counts.total}(entries=${counts.entries},tp=${counts.takeProfits},body=${counts.bodies})`;
 
     if (activeTpOrderId) {
       summary += ` active_tp=${activeTpOrderId.substring(0, 8)}@$${lastTpPrice}`;
@@ -681,7 +680,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     activeTpOrderId = null;
     lastTpPrice = 0;
     lastTpSize = 0;
-    satelliteTpOrders.clear();
+    bodyTpOrders.clear();
     tpOrderToKey.clear();
     for (const t of staleTimers) clearTimeout(t);
     staleTimers.clear();
@@ -700,153 +699,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       lastTpPrice = order.price;
       lastTpSize = order.size;
     }
-    // satellite_tp/body_tp orders are restored via restoreSatelliteTpOrder/restoreBodyTpOrder
+    // body_tp orders are restored via restoreBodyTpOrder
   };
 
   // ============================================================================
-  // Satellite TP Functions
-  // ============================================================================
-
-  /**
-   * Place a satellite TP sell order (independent from core TP)
-   * @param {number} btcQty - BTC quantity to sell
-   * @param {number} tpPrice - Take-profit price
-   * @param {string} buyOrderId - Buy order ID that created this satellite
-   * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
-   */
-  const placeSatelliteTpOrder = async (btcQty, tpPrice, buyOrderId) => {
-    const roundedPrice = roundPrice(tpPrice);
-    const roundedQty = roundBTC(btcQty);
-
-    console.log(`📝 [${exchange}] Placing satellite TP: ${roundedQty} BTC @ $${roundedPrice} (buy=${buyOrderId.substring(0, 8)})`);
-
-    const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
-
-    if (result.success) {
-      satelliteTpOrders.set(buyOrderId, {
-        tpOrderId: result.orderId,
-        btcQty: roundedQty,
-        tpPrice: roundedPrice,
-      });
-      tpOrderToKey.set(result.orderId, buyOrderId);
-
-      pendingOrders.set(result.orderId, {
-        type: 'satellite_tp',
-        price: roundedPrice,
-        size: roundedQty,
-        sizeUsdc: roundedQty * roundedPrice,
-        placedAt: Date.now(),
-      });
-
-      return { success: true, orderId: result.orderId };
-    }
-
-    return { success: false, errorMessage: result.errorMessage || 'Satellite TP order failed' };
-  };
-
-  /**
-   * Cancel a specific satellite TP order
-   * @param {string} buyOrderId - Buy order ID of the satellite to cancel
-   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
-   */
-  const cancelSatelliteTpOrder = async (buyOrderId) => {
-    const satellite = satelliteTpOrders.get(buyOrderId);
-    if (!satellite) return { cancelled: true, filled: false };
-
-    const result = await safeCancelOrder(satellite.tpOrderId);
-    if (result.cancelled) {
-      pendingOrders.delete(satellite.tpOrderId);
-      tpOrderToKey.delete(satellite.tpOrderId);
-      satelliteTpOrders.delete(buyOrderId);
-      return { cancelled: true, filled: false };
-    }
-    if (result.filled) {
-      tpOrderToKey.delete(satellite.tpOrderId);
-      satelliteTpOrders.delete(buyOrderId);
-      // Leave in pendingOrders for polling to process the fill
-      return { cancelled: false, filled: true };
-    }
-    return { cancelled: false, filled: false };
-  };
-
-  /**
-   * Cancel all satellite TP orders
-   * @returns {Promise<number>} Number cancelled
-   */
-  const cancelAllSatelliteTpOrders = async () => {
-    let cancelled = 0;
-    const entries = Array.from(satelliteTpOrders.entries());
-
-    for (const [buyOrderId, satellite] of entries) {
-      const result = await safeCancelOrder(satellite.tpOrderId).catch(() => ({ cancelled: false, filled: false }));
-      if (result.cancelled) {
-        pendingOrders.delete(satellite.tpOrderId);
-        cancelled++;
-      } else if (result.filled) {
-        console.log(`📋 [${exchange}] Satellite TP ${satellite.tpOrderId.slice(0, 8)} filled during bulk cancel`);
-      }
-      tpOrderToKey.delete(satellite.tpOrderId);
-      satelliteTpOrders.delete(buyOrderId);
-    }
-
-    return cancelled;
-  };
-
-  /**
-   * Check if an order ID is a satellite TP order
-   * @param {string} orderId - Exchange order ID to check
-   * @returns {boolean}
-   */
-  const isSatelliteTpOrder = (orderId) => tpOrderToKey.has(orderId);
-
-  /**
-   * Get satellite tracking info by TP order ID
-   * @param {string} tpOrderId - Exchange sell order ID
-   * @returns {{buyOrderId: string, btcQty: number, tpPrice: number}|null}
-   */
-  const getSatelliteByTpOrderId = (tpOrderId) => {
-    const buyOrderId = tpOrderToKey.get(tpOrderId);
-    if (!buyOrderId) return null;
-    const satellite = satelliteTpOrders.get(buyOrderId);
-    return satellite ? { buyOrderId, ...satellite } : null;
-  };
-
-  /**
-   * Restore satellite TP order tracking (for recovery)
-   * @param {string} buyOrderId - Buy order ID
-   * @param {string} tpOrderId - Exchange sell order ID
-   * @param {number} btcQty - BTC quantity
-   * @param {number} tpPrice - TP price
-   * @param {number} [placedAt] - Original placement timestamp (ms), defaults to now
-   */
-  const restoreSatelliteTpOrder = (buyOrderId, tpOrderId, btcQty, tpPrice, placedAt) => {
-    satelliteTpOrders.set(buyOrderId, { tpOrderId, btcQty, tpPrice });
-    tpOrderToKey.set(tpOrderId, buyOrderId);
-
-    pendingOrders.set(tpOrderId, {
-      type: 'satellite_tp',
-      price: tpPrice,
-      size: btcQty,
-      sizeUsdc: btcQty * tpPrice,
-      placedAt: placedAt || Date.now(),
-    });
-  };
-
-  /**
-   * Remove satellite tracking after fill or cancel
-   * @param {string} tpOrderId - Exchange sell order ID that was filled/cancelled
-   */
-  const removeSatelliteTracking = (tpOrderId) => {
-    const buyOrderId = tpOrderToKey.get(tpOrderId);
-    if (buyOrderId) {
-      satelliteTpOrders.delete(buyOrderId);
-      tpOrderToKey.delete(tpOrderId);
-      pendingOrders.delete(tpOrderId);
-    }
-  };
-
-  // ============================================================================
-  // Celestial Body TP Functions (wrappers over satellite TP for new naming)
+  // Body TP Functions (celestial hierarchy)
   // ============================================================================
 
   /**
@@ -910,6 +767,29 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       return { cancelled: false, filled: true };
     }
     return { cancelled: false, filled: false };
+  };
+
+  /**
+   * Cancel all body TP orders
+   * @returns {Promise<number>} Number cancelled
+   */
+  const cancelAllBodyTpOrders = async () => {
+    let cancelled = 0;
+    const entries = Array.from(bodyTpOrders.entries());
+
+    for (const [bodyId, body] of entries) {
+      const result = await safeCancelOrder(body.tpOrderId).catch(() => ({ cancelled: false, filled: false }));
+      if (result.cancelled) {
+        pendingOrders.delete(body.tpOrderId);
+        cancelled++;
+      } else if (result.filled) {
+        console.log(`📋 [${exchange}] Body TP ${body.tpOrderId.slice(0, 8)} filled during bulk cancel`);
+      }
+      tpOrderToKey.delete(body.tpOrderId);
+      bodyTpOrders.delete(bodyId);
+    }
+
+    return cancelled;
   };
 
   /**
@@ -1117,17 +997,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // Regime-based stale timeout
     setStaleTimeoutMultiplier,
     getEffectiveStaleMs,
-    // Satellite TP functions (legacy aliases)
-    placeSatelliteTpOrder,
-    cancelSatelliteTpOrder,
-    cancelAllSatelliteTpOrders,
-    isSatelliteTpOrder,
-    getSatelliteByTpOrderId,
-    restoreSatelliteTpOrder,
-    removeSatelliteTracking,
-    // Celestial body TP functions
+    // Body TP functions (celestial hierarchy)
     placeBodyTpOrder,
     cancelBodyTpOrder,
+    cancelAllBodyTpOrders,
     isBodyTpOrder,
     getBodyByTpOrderId,
     restoreBodyTpOrder,

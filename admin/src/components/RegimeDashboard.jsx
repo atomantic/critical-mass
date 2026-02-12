@@ -1541,7 +1541,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   const bodyLookup = new Map(celestialBodies.map(b => [b.tpOrderId, b]))
 
                   // Build buy orders for each open TP
-                  // For body/satellite TPs: use body.buyOrders (filter migration artifacts)
+                  // For body TPs: use body.buyOrders (filter migration artifacts)
                   // For core TPs: use unconsumed buys from current position
                   const getRelatedBuys = (order) => {
                     const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null
@@ -1578,11 +1578,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       const sorted = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
                       const pendingMap = new Map()
                       sorted.forEach(f => {
-                        if (f.side === 'buy' && !f.isSatellite) {
+                        if (f.side === 'buy' && !(f.isBodyOwned ?? f.isSatellite)) {
                           const ex = pendingMap.get(f.orderId)
                           if (ex) { ex.btcQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
                           else pendingMap.set(f.orderId, { orderId: f.orderId, price: f.price, btcQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
-                        } else if (f.side === 'sell' && !f.isSatellite) {
+                        } else if (f.side === 'sell' && !(f.isBodyOwned ?? f.isSatellite)) {
                           pendingMap.clear()
                         }
                       })
@@ -1608,11 +1608,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     const age = Date.now() - order.placedAt
                     const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
                     const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null
-                    const orderAvgCost = order.satelliteAvgCost || bodyData?.avgPrice || (isTpOrder ? avgCost : 0)
+                    const orderAvgCost = (order.bodyAvgCost ?? order.satelliteAvgCost) || bodyData?.avgPrice || (isTpOrder ? avgCost : 0)
                     const sellValue = order.size * order.price
                     const estSellFee = sellValue * 0.0006
-                    const satCostBasis = order.satelliteCostBasis || bodyData?.costBasis
-                    const satBtcQty = order.satelliteBtcQty || bodyData?.btcQty
+                    const satCostBasis = (order.bodyCostBasis ?? order.satelliteCostBasis) || bodyData?.costBasis
+                    const satBtcQty = (order.bodyBtcQty ?? order.satelliteBtcQty) || bodyData?.btcQty
                     const proratedCost = satCostBasis && satBtcQty
                       ? (satCostBasis / satBtcQty) * order.size
                       : null
@@ -1914,14 +1914,14 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                   if (isDryRun) {
                     // Walk chronologically: buys accumulate until a core sell consumes them
-                    // Satellite sells don't consume from the buy pool
+                    // Body sells don't consume from the buy pool
                     const sorted = [...(dryRunState?.filledOrders || [])].sort((a, b) => (a.filledAt || a.placedAt || 0) - (b.filledAt || b.placedAt || 0))
                     let pendingBuys = []
                     sorted.forEach(order => {
                       if (order.side === 'buy') {
                         pendingBuys.push(order)
-                      } else if (order.isSatellite || order.type === 'satellite_tp' || order.type === 'body_tp') {
-                        // Satellite/body sell: doesn't consume core buys, show with empty buys
+                      } else if ((order.isBodyOwned ?? order.isSatellite) || order.type === 'satellite_tp' || order.type === 'body_tp') {
+                        // Body sell: doesn't consume core buys, show with empty buys
                         sellGroups.push({ sell: order, buys: [], key: `fill-${order.orderId}` })
                       } else {
                         // Core sell: consumes accumulated buys
@@ -1953,12 +1953,14 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     const pnlMap = new Map()
                     sortedAll.forEach(fill => {
                       if (fill.side === 'buy') {
-                        if (!fill.isSatellite) { runBtc += fill.size; runCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0) }
-                      } else if (fill.isSatellite) {
-                        const pnl = fill.satellitePnl != null ? fill.satellitePnl : (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0) - (fill.satelliteCostBasis || 0)
+                        if (!(fill.isBodyOwned ?? fill.isSatellite)) { runBtc += fill.size; runCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0) }
+                      } else if (fill.isBodyOwned ?? fill.isSatellite) {
+                        const bodyPnl = fill.bodyPnl ?? fill.satellitePnl
+                        const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0)
+                        const holdbackBtc = (fill.bodyHoldbackBtc ?? fill.satelliteHoldbackBtc) || 0
                         const prev = pnlMap.get(fill.orderId)
-                        if (prev) { prev.pnl += pnl; prev.holdback += (fill.satelliteHoldbackBtc || 0) }
-                        else pnlMap.set(fill.orderId, { pnl, holdback: fill.satelliteHoldbackBtc || 0 })
+                        if (prev) { prev.pnl += pnl; prev.holdback += holdbackBtc }
+                        else pnlMap.set(fill.orderId, { pnl, holdback: holdbackBtc })
                       } else {
                         const avgCost = runBtc > 0 ? runCost / runBtc : 0
                         const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
@@ -2029,10 +2031,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         ? buysByBodyId.get(order.bodyId) || []
                         : null
                       const buys = linkedBuys || bodyBuys || []
-                      // For satellite/body sells, prefer server-annotated holdback (computed from exact body.btcQty)
+                      // For body sells, prefer server-annotated holdback (computed from exact body.btcQty)
                       // Only fall back to buy-sell size diff when no server annotation exists
-                      if (sell.isSatellite && sell.satelliteHoldbackBtc != null) {
-                        sell.holdback = sell.satelliteHoldbackBtc
+                      if ((sell.isBodyOwned ?? sell.isSatellite) && (sell.bodyHoldbackBtc ?? sell.satelliteHoldbackBtc) != null) {
+                        sell.holdback = sell.bodyHoldbackBtc ?? sell.satelliteHoldbackBtc
                       } else if (buys.length > 0) {
                         const buyTotal = buys.reduce((s, b) => s + (b.size || 0), 0)
                         sell.holdback = Math.max(0, buyTotal - (sell.size || 0))
@@ -2041,12 +2043,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     })
                     sellGroups.reverse()
 
-                    // Recompute P&L from linked buys for non-satellite sells only.
-                    // Satellite/body sells keep server-annotated satellitePnl (uses exact body.costBasis)
+                    // Recompute P&L from linked buys for non-body sells only.
+                    // Body sells keep server-annotated bodyPnl (uses exact body.costBasis)
                     // to stay consistent with the Position card's realizedPnL accumulator.
                     sellGroups.forEach(group => {
                       if (group.buys.length === 0) return
-                      if (group.sell.isSatellite && group.sell.satellitePnl != null) return
+                      if ((group.sell.isBodyOwned ?? group.sell.isSatellite) && (group.sell.bodyPnl ?? group.sell.satellitePnl) != null) return
                       const buyCost = group.buys.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
                       const sellProceeds = (group.sell.quoteAmount || group.sell.size * group.sell.price) - (group.sell.netFee || group.sell.fee || 0)
                       group.sell.pnl = sellProceeds - buyCost
@@ -2075,7 +2077,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     const buys = group.buys
                     const sellPrice = sell.fillPrice || sell.price
                     const sellValue = sell.quoteAmount || ((sell.size || 0) * (sellPrice || 0))
-                    const sellPnl = sell.pnl ?? sell.satellitePnl ?? null
+                    const sellPnl = sell.pnl ?? sell.bodyPnl ?? sell.satellitePnl ?? null
                     const sellHoldback = isDryRun ? sell.holdbackBtc : sell.holdback
                     const sellTime = sell.filledAt || sell.timestamp
 
@@ -2118,7 +2120,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <td className="py-1 pr-1"></td>
                             <td colSpan={6} className="py-1.5 pl-5 text-xs text-yellow-600/70 italic">
                               {sell.duplicateTpNote || 'Untracked sell — buy orders linked to original TP'}
-                              {sell.satelliteCostBasis > 0 && <span className="ml-2 text-gray-500">Cost basis: ${sell.satelliteCostBasis.toFixed(2)}</span>}
+                              {(sell.bodyCostBasis ?? sell.satelliteCostBasis) > 0 && <span className="ml-2 text-gray-500">Cost basis: ${(sell.bodyCostBasis ?? sell.satelliteCostBasis).toFixed(2)}</span>}
                             </td>
                           </tr>
                         )}

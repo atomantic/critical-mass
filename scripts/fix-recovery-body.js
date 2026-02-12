@@ -150,7 +150,7 @@ let annotated = 0;
 for (const f of ledger) {
   if (f.side === 'buy' && byOrderId.has(f.orderId) && !f.bodyId) {
     if (!DRY_RUN) {
-      f.isSatellite = true;
+      f.isBodyOwned = true;
       f.bodyId = RECOVERY_BODY_ID;
       f.bodyTier = recoveryBody.tier;
     }
@@ -160,13 +160,13 @@ for (const f of ledger) {
 console.log(`\n📝 Annotated ${annotated} buy fills with bodyId=${RECOVERY_BODY_ID}`);
 
 // ── Step 6: Annotate ec8b7bcb sell with body metadata ──
-// Marks it as satellite so dashboard doesn't use chronological fallback
+// Marks it as body-owned so dashboard doesn't use chronological fallback
 const ec8bFills = ledger.filter(f => f.orderId === EC8B_ORDER_ID && f.side === 'sell');
 console.log(`\n📝 Annotating ${ec8bFills.length} ec8b7bcb sell fill(s):`);
 for (const f of ec8bFills) {
   console.log(`   ${f.tradeId.slice(0, 12)}: ${f.size} BTC @ $${f.price}`);
   if (!DRY_RUN) {
-    f.isSatellite = true;
+    f.isBodyOwned = true;
     f.bodyId = 'body-mli0qebf';
     f.bodyTier = 'satellite';
     f.isRecoverySell = true;
@@ -219,7 +219,7 @@ const fakeIds = (DRY_RUN ? recoveryBody.sourceOrderIds : recoveryBody.sourceOrde
 console.log(`   Fake orderIds remaining: ${fakeIds.length} ${fakeIds.length === 0 ? '✅' : '❌ ' + fakeIds.join(', ')}`);
 const ec8bBuysLinked = ledger.filter(f => f.sellOrderId === EC8B_ORDER_ID).length;
 console.log(`   ec8b7bcb linked buys: ${ec8bBuysLinked} ${ec8bBuysLinked === 0 ? '✅' : '❌'}`);
-const ec8bAnnotated = DRY_RUN ? 0 : ledger.filter(f => f.orderId === EC8B_ORDER_ID && f.isSatellite).length;
+const ec8bAnnotated = DRY_RUN ? 0 : ledger.filter(f => f.orderId === EC8B_ORDER_ID && (f.isBodyOwned || f.isSatellite)).length;
 console.log(`   ec8b7bcb sell annotated: ${ec8bAnnotated > 0 ? '✅' : `❌ (dry-run: ${DRY_RUN})`}`);
 const recoveryFills = DRY_RUN ? 0 : ledger.filter(f => f.bodyId === RECOVERY_BODY_ID).length;
 console.log(`   Recovery body fills annotated: ${recoveryFills}`);

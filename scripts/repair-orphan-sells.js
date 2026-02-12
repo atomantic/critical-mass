@@ -35,10 +35,10 @@ const repairs = [
   {
     sellOrderPrefix: '9e935edf',
     // buys were bf15e9df + b16f23dc + 060d67ce from cycle-2, but linked to core TP fe7ce067
-    // No clear bodyId — this was a pre-celestial satellite. Use a synthetic marker.
+    // No clear bodyId — this was a pre-celestial body. Use a synthetic marker.
     bodyId: null, // Will be handled by duplicateTpOf field
     duplicateTpOf: 'fe7ce067',
-    note: 'Early satellite TP, buys linked to core TP fe7ce067 (cycle-2 era, pre-celestial)',
+    note: 'Early body TP, buys linked to core TP fe7ce067 (cycle-2 era, pre-celestial)',
   },
   {
     sellOrderPrefix: 'f6369787',

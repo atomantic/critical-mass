@@ -76,7 +76,7 @@ const createFillLedger = (exchange) => {
 
     // Find an active cycle - prefer most recent
     // A cycle is "active" if less than 50% of BTC has been sold
-    // (core TP sells ~99.75%; satellite sells are individually tiny fractions)
+    // (core TP sells ~99.75%; body TP sells are individually tiny fractions)
     const allFills = Array.from(fills.values()).sort((a, b) => b.timestamp - a.timestamp);
     for (const fill of allFills) {
       if (!fill.cycleId) continue;
@@ -85,7 +85,7 @@ const createFillLedger = (exchange) => {
       const sellRatio = stats.sellsBtc / stats.buysBtc;
       if (sellRatio < 0.5) {
         currentCycleId = fill.cycleId;
-        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sold, satellite sells only)`);
+        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sold, body TP sells only)`);
         break;
       }
     }
@@ -217,8 +217,8 @@ const createFillLedger = (exchange) => {
     const uniqueBuyOrders = new Set();
 
     for (const fill of targetFills) {
-      // Skip body/satellite fills — they have independent position tracking
-      if (fill.isSatellite || fill.bodyId) continue;
+      // Skip body-owned fills — they have independent position tracking
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
 
       if (fill.side === 'buy') {
         const costBasis = fill.quoteAmount + fill.netFee;
@@ -482,8 +482,8 @@ const createFillLedger = (exchange) => {
       let btcSold = 0;
 
       for (const fill of cycleFills) {
-        // Skip body/satellite fills — they have independent P&L tracking
-        if (fill.isSatellite || fill.bodyId) continue;
+        // Skip body-owned fills — they have independent P&L tracking
+        if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
 
         if (fill.side === 'buy') {
           totalBTC += fill.size;
@@ -712,9 +712,9 @@ const createFillLedger = (exchange) => {
   };
 
   /**
-   * Annotate a fill with additional metadata (e.g. celestial body/satellite TP data)
+   * Annotate a fill with additional metadata (e.g. celestial body TP data)
    * @param {string} orderId - Order ID to annotate fills for
-   * @param {Object} metadata - Key-value pairs to merge into the fill (bodyId, bodyTier, isSatellite, etc.)
+   * @param {Object} metadata - Key-value pairs to merge into the fill (bodyId, bodyTier, isBodyOwned, etc.)
    */
   const annotateFillsByOrderId = (orderId, metadata) => {
     let matched = false;
@@ -738,8 +738,8 @@ const createFillLedger = (exchange) => {
     const cycleFills = getCurrentCycleFills();
     const uniqueBuyOrders = new Set();
     for (const fill of cycleFills) {
-      // Skip body/satellite buys — they have independent position tracking
-      if (fill.side === 'buy' && !fill.isSatellite && !fill.bodyId) {
+      // Skip body-owned buys — they have independent position tracking
+      if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
         uniqueBuyOrders.add(fill.orderId);
       }
     }

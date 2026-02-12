@@ -526,11 +526,7 @@ const createInitialRegimePositionState = () => ({
   ladderPlacedAt: null,
   ladderLowerBound: 0,
   pendingLadderOrders: [],  // [{orderId, price, sizeUsdc, ladderIndex}]
-  // Satellite TP state (legacy — use celestialBodies)
-  satelliteTpOrders: [],        // [{orderId, btcQty, costBasis, avgPrice, tpOrderId, tpPrice, btcOnOrder, placedAt}]
-  satellitesCompleted: 0,
-  satelliteRealizedPnL: 0,
-  satelliteRealizedBtcPnL: 0,
+  // Legacy satellite fields removed — migrated into celestialState on load
   // Celestial Hierarchy state
   celestialBodies: [],          // CelestialBody[]
   celestialState: {
@@ -588,24 +584,38 @@ const loadRegimeState = (exchange = 'coinbase') => {
   const diskVersion = (data.position && data.position._saveVersion) || 0;
   saveVersions.set(stateFile, diskVersion);
 
+  // Fold legacy satellite* counters into celestialState (one-time migration)
+  if (position.satellitesCompleted || position.satelliteRealizedPnL || position.satelliteRealizedBtcPnL) {
+    const cs = position.celestialState || createInitialCelestialState();
+    cs.bodiesCompleted = (cs.bodiesCompleted || 0) + (position.satellitesCompleted || 0);
+    cs.bodiesRealizedPnL = (cs.bodiesRealizedPnL || 0) + (position.satelliteRealizedPnL || 0);
+    cs.bodiesRealizedBtcPnL = (cs.bodiesRealizedBtcPnL || 0) + (position.satelliteRealizedBtcPnL || 0);
+    position.celestialState = cs;
+    delete position.satellitesCompleted;
+    delete position.satelliteRealizedPnL;
+    delete position.satelliteRealizedBtcPnL;
+    console.log(`🔄 Folded legacy satellite counters into celestialState`);
+  }
+
   // Migrate legacy core+satellite state to celestial bodies if needed
   if (!position.celestialBodies || position.celestialBodies.length === 0) {
     const hasCorePosition = position.totalBTC > 0 && position.totalCostBasis > 0;
     const hasSatellites = position.satelliteTpOrders && position.satelliteTpOrders.length > 0;
 
     if (hasCorePosition || hasSatellites) {
-      // Get maxUsdcDeployed from config for percentage-based tier classification
       const configUtils = require('./config-utils');
       const regimeConfig = configUtils.getRegimeConfig(exchange);
       const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 10000;
 
       position.celestialBodies = migrateFromLegacy(position, maxUsdcDeployed);
-      position.celestialState = {
-        bodiesCompleted: (position.cyclesCompleted || 0) + (position.satellitesCompleted || 0),
-        bodiesRealizedPnL: (position.realizedPnL || 0),
-        bodiesRealizedBtcPnL: (position.realizedBtcPnL || 0),
-        stateVersion: 1,
-      };
+      if (!position.celestialState) {
+        position.celestialState = {
+          bodiesCompleted: position.cyclesCompleted || 0,
+          bodiesRealizedPnL: position.realizedPnL || 0,
+          bodiesRealizedBtcPnL: position.realizedBtcPnL || 0,
+          stateVersion: 1,
+        };
+      }
 
       const coreCount = hasCorePosition ? 1 : 0;
       const satCount = hasSatellites ? position.satelliteTpOrders.length : 0;
@@ -615,6 +625,12 @@ const loadRegimeState = (exchange = 'coinbase') => {
       position.celestialState = position.celestialState || createInitialCelestialState();
     }
   }
+
+  // Clean up legacy satellite fields from position (no longer used)
+  delete position.satelliteTpOrders;
+  delete position.satellitesCompleted;
+  delete position.satelliteRealizedPnL;
+  delete position.satelliteRealizedBtcPnL;
 
   return {
     position,
