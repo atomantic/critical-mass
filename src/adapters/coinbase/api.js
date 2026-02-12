@@ -284,8 +284,9 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @param {number} price - Limit price in quote currency
    * @returns {Promise<LimitSellResult>} Order result
    */
-  adapter.placeLimitSell = async (productId, baseAmount, price) => {
+  adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
     const clientOrderId = uuidv4();
+    const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
     const product = await adapter.getProductDetails(productId);
@@ -309,7 +310,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
         limit_limit_gtc: {
           base_size: roundedAmount.toFixed(basePrecision),
           limit_price: roundedPrice.toFixed(quotePrecision),
-          post_only: true,
+          post_only: postOnly,
         },
       },
     };
@@ -320,7 +321,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
       orderId: result.order_id || result.success_response?.order_id,
       clientOrderId,
       success: result.success || !!result.success_response,
-      errorMessage: result.error_response?.message,
+      errorMessage: result.failure_response?.message || result.error_response?.message,
       baseSize: roundedAmount,
       limitPrice: roundedPrice,
     };

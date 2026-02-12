@@ -744,7 +744,7 @@
  * @property {(productId: string) => Promise<{bid: number, ask: number}>} getBidAsk - Get current bid/ask
  * @property {(productId: string) => Promise<ProductDetails>} getProductDetails - Get product details
  * @property {(productId: string, quoteAmount: number) => Promise<MarketBuyResult>} placeMarketBuy - Place market buy
- * @property {(productId: string, baseAmount: number, price: number) => Promise<LimitSellResult>} placeLimitSell - Place limit sell
+ * @property {(productId: string, baseAmount: number, price: number, options?: {postOnly?: boolean}) => Promise<LimitSellResult>} placeLimitSell - Place limit sell
  * @property {(orderId: string) => Promise<OrderDetails>} getOrder - Get order details
  * @property {(productId: string) => Promise<OpenOrder[]>} getOpenOrders - Get open orders
  * @property {(orderId: string) => Promise<CancelResult>} cancelOrder - Cancel an order

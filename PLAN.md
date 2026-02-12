@@ -305,6 +305,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - `manualMergeBody(bodyId)` in regime-engine.js: orchestrates cancel/merge/re-place with rollback on target cancel failure
   - `POST /api/:exchange/regime/rollup-body` endpoint in server.js
   - Emits `body_rollup` trade event on success
+  - Pushes `regime:status` via WebSocket after merge so celestial animation updates immediately
 - **TP fill detection for all order types**: `checkPendingOrderFills()` and `refreshStaleOrders()` check entries, take_profit, body_tp, and satellite_tp orders (not just entries). TP orders that are filled/cancelled are cleaned up; open TPs are never auto-cancelled.
 - **Negative P&L guard**: `placeBodyTp()` rejects TP placement when `tpPrice <= body.avgPrice` to prevent selling at a loss
 - **Legacy TP cleanup**: `placeTakeProfitOrder()` cancels any legacy `take_profit` order when celestial bodies are present

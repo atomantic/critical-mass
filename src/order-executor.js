@@ -812,7 +812,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} BTC @ $${roundedPrice} (body=${bodyId.slice(-8)})`);
 
-    const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
+    // Body TPs should not use post_only — when market reaches TP price, the order must fill
+    const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
 
     if (result.success) {
       bodyTpOrders.set(bodyId, {
