@@ -43,7 +43,7 @@ const parseArgs = () => {
 const main = async () => {
   const { command, exchange, flags } = parseArgs();
 
-  log('INFO', `Starting DCA bot (command: ${command}, exchange: ${exchange})`);
+  log('INFO', `Starting Critical Mass (command: ${command}, exchange: ${exchange})`);
 
   // Validate exchange
   const configuredExchanges = getConfiguredExchanges();
@@ -56,7 +56,7 @@ const main = async () => {
   if (command === 'status') {
     // Check status only
     const status = await checkStatus(exchange);
-    console.log(`\n=== DCA Bot Status (${exchange}) ===`);
+    console.log(`\n=== Critical Mass Status (${exchange}) ===`);
     console.log(`Product: ${status.config.productId}`);
     console.log(`Current Price: $${status.currentPrice.toFixed(2)}`);
     console.log(`Enabled: ${status.config.enabled}`);

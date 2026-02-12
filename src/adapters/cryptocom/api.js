@@ -328,9 +328,10 @@ const createCryptocomAdapter = (keysPath = null) => {
    * @param {number} price - Limit price
    * @returns {Promise<LimitSellResult>} Order result
    */
-  adapter.placeLimitSell = async (productId, baseAmount, price) => {
+  adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
     const instrument = toCryptocomSymbol(productId);
     const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 36);
+    const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
     const details = await adapter.getProductDetails(productId);
@@ -353,7 +354,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       client_oid: clientOrderId,
       spot_margin: 'SPOT',
       time_in_force: 'GOOD_TILL_CANCEL',
-      exec_inst: ['POST_ONLY'],
+      exec_inst: postOnly ? ['POST_ONLY'] : [],
     };
 
     console.log(`Crypto.com limit sell: ${orderParams.quantity} ${instrument.split('_')[0]} @ ${orderParams.price}`);

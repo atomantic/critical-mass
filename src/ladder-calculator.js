@@ -2,16 +2,19 @@
 /**
  * Ladder Calculator
  *
- * Calculates ladder parameters for pre-positioned liquidity ladder mode:
- * - Lower bound calculation (adaptive based on ATH distance, volatility)
- * - Price level distribution (linear, sqrt, exponential spacing)
- * - Size allocation across levels (flat, linear, sqrt distribution)
+ * Deploys ALL available USDC as limit buy orders from just below current
+ * price down to an ATH-based floor with Fibonacci-weighted sizing.
  *
- * The ladder mode complements reactive mode by capturing liquidity shocks
- * and fat-tail events that single-order approaches miss.
+ * Key behaviors:
+ * - Bottom of ladder is ATH-based (not % below current price)
+ * - Number of orders is dynamic (not a fixed count)
+ * - Fibonacci sizing (smallest at top, largest at bottom)
+ * - Orders stay in place on individual buy fills (no reprice)
+ * - Rebuild only after all sells clear (cycle reset)
  */
 
 const { roundBTC, roundPrice, roundUSDC } = require('./volatility-utils');
+const { getFibonacciMultiplier } = require('./fibonacci-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -33,7 +36,6 @@ const { roundBTC, roundPrice, roundUSDC } = require('./volatility-utils');
  * @property {number} totalBudget - Total USDC budget for ladder
  * @property {LadderLevel[]} levels - Array of ladder levels
  * @property {number} athDistance - ATH distance factor used
- * @property {number} volMultiplier - Volatility multiplier used
  */
 
 /**
@@ -41,6 +43,7 @@ const { roundBTC, roundPrice, roundUSDC } = require('./volatility-utils');
  * @property {number} atr - Current ATR value
  * @property {number} volBaseline - Baseline volatility
  * @property {number} athDistance - Distance from ATH (negative when below, e.g., -0.43 for 43% below)
+ * @property {number} [ath] - All-time high price
  * @property {number} [realizedVol] - Current realized volatility
  */
 
@@ -52,85 +55,77 @@ const { roundBTC, roundPrice, roundUSDC } = require('./volatility-utils');
  */
 const createLadderCalculator = (exchange, config) => {
   /**
-   * Calculate adaptive lower bound based on market conditions
+   * Calculate ATH-based lower bound (floor price for the ladder)
    * @param {number} currentPrice - Current market price
-   * @param {MarketContext} context - Market context
-   * @returns {{lowerBound: number, lowerBoundPct: number, volMultiplier: number}}
+   * @param {number} ath - All-time high price
+   * @param {number} maxAthDropPct - Max drop from ATH in percent (e.g. 80 → floor at 20% of ATH)
+   * @returns {number|null} Floor price, or null if currentPrice is already below the floor
    */
-  const calculateLowerBound = (currentPrice, context) => {
-    const { athDistance = 0, realizedVol = 0, volBaseline = 0 } = context;
+  const calculateLowerBound = (currentPrice, ath, maxAthDropPct) => {
+    const reference = ath > 0 ? ath : currentPrice;
+    const floor = roundPrice(reference * (1 - maxAthDropPct / 100));
+    return floor < currentPrice ? floor : null;
+  };
 
-    // Start with base percentage from config
-    let adjustedPct = config.ladderLowerBoundPct || 15;
-
-    // ATH adjustment: widen ladder when further from ATH
-    // e.g., 43% below ATH -> 1.43x multiplier
-    let athMultiplier = 1.0;
-    if (config.ladderLowerBoundAthAdjust && athDistance < 0) {
-      athMultiplier = 1 + Math.abs(athDistance);
-      adjustedPct *= athMultiplier;
+  /**
+   * Calculate dynamic level count for fibonacci sizing
+   * Finds max N where the smallest fib-weighted order meets minOrderSize
+   * @param {number} budget - Total USDC budget
+   * @param {number} baseSizeUsdc - Minimum acceptable order size
+   * @returns {number} Number of levels (capped at 30)
+   */
+  const calculateDynamicLevelCount = (budget, baseSizeUsdc) => {
+    const maxLevels = 30;
+    for (let n = maxLevels; n >= 2; n--) {
+      // fib(0) = 1 is the smallest weight (top of ladder)
+      let fibSum = 0;
+      for (let i = 0; i < n; i++) {
+        fibSum += getFibonacciMultiplier(i);
+      }
+      const smallestAllocation = (getFibonacciMultiplier(0) / fibSum) * budget;
+      if (smallestAllocation >= baseSizeUsdc) {
+        return n;
+      }
     }
-
-    // Volatility adjustment: widen during high volatility
-    let volMultiplier = 1.0;
-    if (volBaseline > 0 && realizedVol > volBaseline) {
-      const volExpansion = realizedVol / volBaseline;
-      // Cap at 2x to prevent extreme widening
-      volMultiplier = Math.min(volExpansion, 2.0);
-      adjustedPct *= volMultiplier;
-    }
-
-    // Cap total adjustment at reasonable maximum (50%)
-    adjustedPct = Math.min(adjustedPct, 50);
-
-    const lowerBound = roundPrice(currentPrice * (1 - adjustedPct / 100));
-
-    return {
-      lowerBound,
-      lowerBoundPct: adjustedPct,
-      athMultiplier,
-      volMultiplier,
-    };
+    // If budget can only fit 1 order, return 1
+    return budget >= baseSizeUsdc ? 1 : 0;
   };
 
   /**
    * Calculate price levels using specified spacing mode
-   * @param {number} currentPrice - Current price (top of ladder)
+   * @param {number} topPrice - Top of ladder (below current price)
    * @param {number} lowerBound - Lower bound price (bottom of ladder)
    * @param {number} numLevels - Number of ladder rungs
    * @param {'linear' | 'sqrt' | 'exponential'} spacingMode - Spacing distribution
    * @returns {number[]} Array of prices from top to bottom
    */
-  const calculateLadderLevels = (currentPrice, lowerBound, numLevels, spacingMode) => {
-    const totalRange = currentPrice - lowerBound;
+  const calculateLadderLevels = (topPrice, lowerBound, numLevels, spacingMode) => {
+    if (numLevels <= 1) return [topPrice];
+
+    const totalRange = topPrice - lowerBound;
     const prices = [];
     const minSpacingPct = (config.ladderMinSpacingPct || 0.5) / 100;
-    const minSpacing = currentPrice * minSpacingPct;
+    const minSpacing = topPrice * minSpacingPct;
 
     for (let i = 0; i < numLevels; i++) {
       let fraction;
 
       switch (spacingMode) {
         case 'sqrt':
-          // Square root: denser near top (current price), sparser at bottom
-          // Good for capturing small dips while still having exposure to larger drops
-          fraction = Math.sqrt(i / (numLevels - 1 || 1));
+          fraction = Math.sqrt(i / (numLevels - 1));
           break;
 
         case 'exponential':
-          // Exponential: sparser near top, denser at bottom
-          // Good for aggressive accumulation during crashes
-          fraction = Math.pow(i / (numLevels - 1 || 1), 2);
+          fraction = Math.pow(i / (numLevels - 1), 2);
           break;
 
         case 'linear':
         default:
-          // Linear: even spacing throughout
-          fraction = i / (numLevels - 1 || 1);
+          fraction = i / (numLevels - 1);
           break;
       }
 
-      const price = roundPrice(currentPrice - fraction * totalRange);
+      const price = roundPrice(topPrice - fraction * totalRange);
       prices.push(price);
     }
 
@@ -150,15 +145,30 @@ const createLadderCalculator = (exchange, config) => {
    * Calculate size allocation for each level
    * @param {number} totalBudget - Total USDC to allocate
    * @param {number} numLevels - Number of levels
-   * @param {'flat' | 'linear' | 'sqrt'} sizeMode - Size distribution mode
+   * @param {'flat' | 'linear' | 'sqrt' | 'fibonacci'} sizeMode - Size distribution mode
    * @returns {number[]} Array of USDC allocations per level
    */
   const calculateLevelSizes = (totalBudget, numLevels, sizeMode) => {
     const sizes = [];
 
     switch (sizeMode) {
+      case 'fibonacci':
+        // Fibonacci: escalating sizes at bottom (1, 1, 2, 3, 5, 8, 13...)
+        {
+          const weights = [];
+          let totalWeight = 0;
+          for (let i = 0; i < numLevels; i++) {
+            const weight = getFibonacciMultiplier(i);
+            weights.push(weight);
+            totalWeight += weight;
+          }
+          for (let i = 0; i < numLevels; i++) {
+            sizes.push(roundUSDC((weights[i] / totalWeight) * totalBudget));
+          }
+        }
+        break;
+
       case 'linear':
-        // Linear: larger sizes at lower prices (more capital at bottom)
         {
           const totalWeight = (numLevels * (numLevels + 1)) / 2;
           for (let i = 0; i < numLevels; i++) {
@@ -169,7 +179,6 @@ const createLadderCalculator = (exchange, config) => {
         break;
 
       case 'sqrt':
-        // Square root: moderate increase towards bottom
         {
           const weights = [];
           let totalWeight = 0;
@@ -186,7 +195,6 @@ const createLadderCalculator = (exchange, config) => {
 
       case 'flat':
       default:
-        // Flat: equal allocation to all levels
         {
           const perLevel = roundUSDC(totalBudget / numLevels);
           for (let i = 0; i < numLevels; i++) {
@@ -196,11 +204,13 @@ const createLadderCalculator = (exchange, config) => {
         break;
     }
 
-    // Correct rounding drift: adjust final level so total doesn't exceed budget
+    // Correct rounding drift: adjust final level so total matches budget
     const sizeSum = sizes.reduce((s, v) => s + v, 0);
-    if (sizeSum > totalBudget && sizes.length > 0) {
-      const overshoot = roundUSDC(sizeSum - totalBudget);
-      sizes[sizes.length - 1] = roundUSDC(sizes[sizes.length - 1] - overshoot);
+    if (sizes.length > 0) {
+      const drift = roundUSDC(sizeSum - totalBudget);
+      if (drift !== 0) {
+        sizes[sizes.length - 1] = roundUSDC(sizes[sizes.length - 1] - drift);
+      }
     }
 
     return sizes;
@@ -214,25 +224,56 @@ const createLadderCalculator = (exchange, config) => {
    * @returns {LadderResult}
    */
   const buildLadder = (currentPrice, totalBudget, context) => {
-    const numLevels = config.ladderLevels || 10;
+    const maxAthDropPct = config.ladderMaxAthDropPct || 80;
     const spacingMode = config.ladderSpacingMode || 'sqrt';
-    const sizeMode = config.ladderSizeMode || 'flat';
+    const sizeMode = config.ladderSizeMode || 'fibonacci';
+    const ath = context.ath || 0;
+    const baseSizeUsdc = config.baseSizeUsdc || 50;
 
-    // Calculate adaptive lower bound
-    const { lowerBound, lowerBoundPct, volMultiplier } = calculateLowerBound(
-      currentPrice,
-      context
-    );
+    // Calculate ATH-based floor
+    const lowerBound = calculateLowerBound(currentPrice, ath, maxAthDropPct);
+    if (lowerBound === null) {
+      // Price already at or below floor — no ladder to build
+      return { lowerBound: 0, lowerBoundPct: 0, totalBudget, levels: [], athDistance: context.athDistance || 0 };
+    }
 
-    // Calculate price levels
-    const priceLevels = calculateLadderLevels(currentPrice, lowerBound, numLevels, spacingMode);
+    // Compute first order offset adaptively: same as reactive mode's volatility trigger
+    const kFactor = config.kFactor || 0.65;
+    const atr = context.atr || 0;
+    let firstDropPct = 1; // fallback 1% if ATR unavailable
+    if (atr > 0 && currentPrice > 0) {
+      firstDropPct = (kFactor * atr / currentPrice) * 100;
+      firstDropPct = Math.max(firstDropPct, 0.1); // min 0.1%
+    }
+    const topPrice = roundPrice(currentPrice * (1 - firstDropPct / 100));
 
-    // Calculate size allocations
+    // Ensure topPrice is above floor
+    if (topPrice <= lowerBound) {
+      return { lowerBound, lowerBoundPct: roundUSDC(((currentPrice - lowerBound) / currentPrice) * 100), totalBudget, levels: [], athDistance: context.athDistance || 0 };
+    }
+
+    // Dynamic level count for fibonacci mode; fixed fallback for others
+    let numLevels;
+    if (sizeMode === 'fibonacci') {
+      numLevels = calculateDynamicLevelCount(totalBudget, baseSizeUsdc);
+    } else {
+      numLevels = Math.max(2, Math.floor(totalBudget / baseSizeUsdc));
+      numLevels = Math.min(numLevels, 30);
+    }
+
+    if (numLevels === 0) {
+      return { lowerBound, lowerBoundPct: roundUSDC(((currentPrice - lowerBound) / currentPrice) * 100), totalBudget, levels: [], athDistance: context.athDistance || 0 };
+    }
+
+    // Generate price levels from topPrice to floor
+    const priceLevels = calculateLadderLevels(topPrice, lowerBound, numLevels, spacingMode);
+
+    // Allocate sizes
     const sizesRaw = calculateLevelSizes(totalBudget, priceLevels.length, sizeMode);
 
-    // Combine prices and sizes, filtering out levels below minimum order size together
+    // Combine prices and sizes, filtering out sub-minimum levels
     const levels = [];
-    const minSize = config.baseSizeUsdc || 50;
+    const minSize = config.minOrderSizeUsdc || 5;
 
     for (let i = 0; i < priceLevels.length; i++) {
       const price = priceLevels[i];
@@ -250,13 +291,14 @@ const createLadderCalculator = (exchange, config) => {
       });
     }
 
+    const lowerBoundPct = roundUSDC(((currentPrice - lowerBound) / currentPrice) * 100);
+
     return {
       lowerBound,
       lowerBoundPct,
       totalBudget,
       levels,
       athDistance: context.athDistance || 0,
-      volMultiplier,
     };
   };
 
@@ -298,6 +340,7 @@ const createLadderCalculator = (exchange, config) => {
 
   return {
     calculateLowerBound,
+    calculateDynamicLevelCount,
     calculateLadderLevels,
     calculateLevelSizes,
     buildLadder,

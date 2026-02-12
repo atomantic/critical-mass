@@ -10,6 +10,7 @@
  */
 
 const { roundBTC, roundPrice } = require('./volatility-utils');
+const { createMutex } = require('./async-mutex');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -37,6 +38,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   let activeTpOrderId = null;
   let staleTimeoutMultiplier = 1.0; // Can be adjusted by regime
 
+  /** @type {Map<string, {tpOrderId: string, btcQty: number, tpPrice: number}>} */
+  const bodyTpOrders = new Map(); // bodyId -> body TP tracking
+
+  /** @type {Map<string, string>} tpOrderId -> buyOrderId/bodyId for O(1) reverse lookups */
+  const tpOrderToKey = new Map();
+
+  // Track stale order timeouts for cleanup on shutdown
+  const staleTimers = new Set();
+
+  // Mutex to serialize concurrent TP updates (prevents duplicate TP sells)
+  const tpMutex = createMutex();
+
   /**
    * Check if error indicates a post-only rejection (price moved)
    * @param {string} errorMessage - Error message from exchange
@@ -49,6 +62,28 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
            msg.includes('would cross') ||
            msg.includes('would immediately match') ||
            msg.includes('price is too aggressive');
+  };
+
+  /**
+   * Safe cancel: cancel order, then check status on failure to detect fills
+   * @param {string} orderId - Order ID to cancel
+   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
+   */
+  const safeCancelOrder = async (orderId) => {
+    const result = await adapter.cancelOrder(orderId);
+    if (result.success) return { cancelled: true, filled: false };
+
+    const status = await adapter.getOrder(orderId).catch(() => null);
+    if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
+      console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
+      return { cancelled: false, filled: true };
+    }
+    if (status && status.status === 'CANCELLED') {
+      return { cancelled: true, filled: false };
+    }
+
+    console.log(`⚠️ [${exchange}] Cancel failed for ${orderId.slice(0, 8)}, status=${status?.status || 'unknown'}`);
+    return { cancelled: false, filled: false };
   };
 
   /**
@@ -135,20 +170,24 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Place or update take-profit sell order
+   * Place or update take-profit sell order (mutex-serialized)
    * @param {number} btcQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
    * @param {Object} [options] - Options
    * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
-   * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, errorMessage?: string}>}
+   * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, filledDuringCancel?: boolean, filledOrderId?: string, errorMessage?: string}>}
    */
   const placeTakeProfitOrder = async (btcQty, tpPrice, options = {}) => {
+    // Serialize concurrent TP updates to prevent duplicate sells
+    const release = await tpMutex.acquire();
+
     // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
     if (!options.forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
       const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
       const sizeChange = Math.abs(btcQty - lastTpSize) / lastTpSize * 100;
       // Update if neither price nor size changed significantly
       if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
+        release();
         return {
           success: true,
           orderId: activeTpOrderId,
@@ -160,10 +199,22 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // Cancel existing TP order if present
     if (activeTpOrderId) {
       const oldTpId = activeTpOrderId;
-      const cancelSuccess = await cancelTpOrder();
-      if (!cancelSuccess) {
+      const cancelResult = await cancelTpOrder();
+
+      if (cancelResult.filled) {
+        // Old TP filled in-flight — abort new TP placement, signal caller
+        release();
+        return {
+          success: false,
+          filledDuringCancel: true,
+          filledOrderId: cancelResult.filledOrderId,
+          errorMessage: `TP ${oldTpId} filled during cancel`,
+        };
+      }
+
+      if (!cancelResult.cancelled) {
         console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, keeping it tracked to avoid duplicate sells`);
-        // Do NOT clear tracking or place a new TP - risk of two live TP orders causing oversell
+        release();
         return {
           success: false,
           errorMessage: `Cannot place new TP: failed to cancel existing TP order ${oldTpId}`,
@@ -191,6 +242,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         placedAt: Date.now(),
       });
 
+      release();
       return {
         success: true,
         orderId: result.orderId,
@@ -198,6 +250,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       };
     }
 
+    release();
     return {
       success: false,
       errorMessage: result.errorMessage || 'TP order placement failed',
@@ -205,25 +258,33 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Cancel take-profit order
-   * @returns {Promise<boolean>}
+   * Cancel take-profit order using safeCancelOrder to detect in-flight fills
+   * @returns {Promise<{cancelled: boolean, filled: boolean, filledOrderId?: string}>}
    */
   const cancelTpOrder = async () => {
-    if (!activeTpOrderId) return true;
+    if (!activeTpOrderId) return { cancelled: true, filled: false };
 
     const orderToCancel = activeTpOrderId;
-    const result = await adapter.cancelOrder(orderToCancel);
+    const result = await safeCancelOrder(orderToCancel);
 
-    if (result.success) {
+    if (result.cancelled) {
       console.log(`🗑️ [${exchange}] Cancelled TP order: ${orderToCancel}`);
       pendingOrders.delete(orderToCancel);
       activeTpOrderId = null;
       lastTpSize = 0;
-      return true;
+      return { cancelled: true, filled: false };
     }
 
-    console.log(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: ${result.errorMessage || 'unknown error'}`);
-    return false;
+    if (result.filled) {
+      console.log(`📋 [${exchange}] TP order ${orderToCancel.slice(0, 8)} filled during cancel attempt`);
+      pendingOrders.delete(orderToCancel);
+      activeTpOrderId = null;
+      lastTpSize = 0;
+      return { cancelled: false, filled: true, filledOrderId: orderToCancel };
+    }
+
+    console.log(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: unknown state`);
+    return { cancelled: false, filled: false };
   };
 
   /**
@@ -259,7 +320,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    */
   const scheduleStaleOrderTimeout = (orderId) => {
     const staleMs = getEffectiveStaleMs();
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      staleTimers.delete(timer);
       const order = pendingOrders.get(orderId);
       if (!order || order.type !== 'entry') return;
 
@@ -293,7 +355,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         .catch(err => {
           console.log(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err.message}`);
         });
-    }, config.orderStaleMs);
+    }, staleMs);
+    staleTimers.add(timer);
   };
 
   /**
@@ -304,15 +367,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const now = Date.now();
     let refreshed = 0;
 
+    const isTpType = (type) => type === 'take_profit' || type === 'body_tp';
     const effectiveStaleMs = getEffectiveStaleMs();
     for (const [orderId, order] of pendingOrders) {
-      // Skip TP orders - they should stay
-      if (order.type === 'take_profit') continue;
-
       // Check if order is stale (using regime-adjusted timeout)
       if (now - order.placedAt > effectiveStaleMs) {
-        // Rate limit cancels
-        if (now - lastCancelTime < config.cancelRateLimitMs) {
+        // Rate limit cancels (only relevant for non-TP orders)
+        if (!isTpType(order.type) && now - lastCancelTime < config.cancelRateLimitMs) {
           continue;
         }
 
@@ -320,9 +381,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const normalizedStatus = (status.status || '').toUpperCase();
 
         if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
-          // Order filled but WebSocket missed it
-          console.log(`✅ [${exchange}] Refresh detected filled order ${orderId}`);
-          // Capture placedAt BEFORE deleting from pendingOrders
+          console.log(`✅ [${exchange}] Refresh detected filled ${order.type} order ${orderId}`);
           const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
           if (callbacks.onFillDetected) {
@@ -330,10 +389,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           }
           refreshed++;
         } else if (normalizedStatus === 'CANCELLED') {
-          console.log(`⏰ [${exchange}] Refresh found cancelled order ${orderId}`);
+          console.log(`⏰ [${exchange}] Refresh found cancelled ${order.type} order ${orderId}`);
           pendingOrders.delete(orderId);
           refreshed++;
-        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
+        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isTpType(order.type)) {
+          // Only cancel stale ENTRY orders — TP orders should persist until filled
           await adapter.cancelOrder(orderId);
           lastCancelTime = now;
           pendingOrders.delete(orderId);
@@ -346,8 +406,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Check all pending entry orders for fills (backup fill detection)
+   * Check all pending orders for fills (backup fill detection)
    * Call this periodically to catch fills that WebSocket missed
+   * Checks entries, take_profit, and body_tp orders
    * @returns {Promise<{filled: number, cancelled: number}>}
    */
   const checkPendingOrderFills = async () => {
@@ -355,25 +416,21 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     let cancelled = 0;
 
     for (const [orderId, order] of pendingOrders) {
-      if (order.type !== 'entry') continue;
-
       const status = await adapter.getOrder(orderId).catch(() => null);
       if (!status) continue;
 
       const normalizedStatus = (status.status || '').toUpperCase();
 
       if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
-        console.log(`✅ [${exchange}] Fill check detected filled order ${orderId}`);
-        // Capture placedAt BEFORE deleting from pendingOrders
+        console.log(`✅ [${exchange}] Fill check detected filled ${order.type} order ${orderId}`);
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
         if (callbacks.onFillDetected) {
-          // Pass placedAt in status so handleOrderFill can use it for fill time tracking
           callbacks.onFillDetected(orderId, { ...status, placedAt });
         }
         filled++;
       } else if (normalizedStatus === 'CANCELLED') {
-        console.log(`⏰ [${exchange}] Fill check found cancelled order ${orderId}`);
+        console.log(`⏰ [${exchange}] Fill check found cancelled ${order.type} order ${orderId}`);
         pendingOrders.delete(orderId);
         cancelled++;
       }
@@ -397,13 +454,25 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     // Step 2: Wait for cancel confirmation
     let confirmed = false;
+    let filledDuringCancel = false;
     for (let i = 0; i < 5; i++) {
       const status = await adapter.getOrder(oldOrderId);
-      if (status.status === 'CANCELLED' || status.status === 'FILLED') {
+      if (status.status === 'CANCELLED') {
         confirmed = true;
         break;
       }
+      if (status.status === 'FILLED') {
+        filledDuringCancel = true;
+        break;
+      }
       await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    // If old order filled during cancel, do NOT place a new order (would create a naked sell)
+    if (filledDuringCancel) {
+      console.log(`📋 [${exchange}] atomicReplace: old order ${oldOrderId.slice(0, 8)} filled during cancel, aborting replacement`);
+      pendingOrders.delete(oldOrderId);
+      return { success: false, reason: 'filled_during_cancel', filledDuringCancel: true };
     }
 
     if (!confirmed) {
@@ -494,6 +563,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         activeTpOrderId = null;
         lastTpPrice = 0;
         lastTpSize = 0;
+      } else if (order.type === 'body_tp') {
+        removeBodyTracking(orderId);
       }
     }
   };
@@ -511,24 +582,28 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         activeTpOrderId = null;
         lastTpPrice = 0;
         lastTpSize = 0;
+      } else if (order.type === 'body_tp') {
+        removeBodyTracking(orderId);
       }
     }
   };
 
   /**
    * Get pending orders count by type
-   * @returns {{entries: number, takeProfits: number, total: number}}
+   * @returns {{entries: number, takeProfits: number, bodies: number, total: number}}
    */
   const getPendingCounts = () => {
     let entries = 0;
     let takeProfits = 0;
+    let bodies = 0;
 
     for (const order of pendingOrders.values()) {
       if (order.type === 'entry') entries++;
       else if (order.type === 'take_profit') takeProfits++;
+      else if (order.type === 'body_tp') bodies++;
     }
 
-    return { entries, takeProfits, total: pendingOrders.size };
+    return { entries, takeProfits, bodies, total: pendingOrders.size };
   };
 
   /**
@@ -588,7 +663,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    */
   const getSummary = () => {
     const counts = getPendingCounts();
-    let summary = `pending=${counts.total}(entries=${counts.entries},tp=${counts.takeProfits})`;
+    let summary = `pending=${counts.total}(entries=${counts.entries},tp=${counts.takeProfits},body=${counts.bodies})`;
 
     if (activeTpOrderId) {
       summary += ` active_tp=${activeTpOrderId.substring(0, 8)}@$${lastTpPrice}`;
@@ -605,6 +680,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     activeTpOrderId = null;
     lastTpPrice = 0;
     lastTpSize = 0;
+    bodyTpOrders.clear();
+    tpOrderToKey.clear();
+    for (const t of staleTimers) clearTimeout(t);
+    staleTimers.clear();
   };
 
   /**
@@ -619,6 +698,150 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       activeTpOrderId = orderId;
       lastTpPrice = order.price;
       lastTpSize = order.size;
+    }
+    // body_tp orders are restored via restoreBodyTpOrder
+  };
+
+  // ============================================================================
+  // Body TP Functions (celestial hierarchy)
+  // ============================================================================
+
+  /**
+   * Place a body TP sell order (celestial hierarchy)
+   * @param {number} btcQty - BTC quantity to sell
+   * @param {number} tpPrice - Take-profit price
+   * @param {string} bodyId - Celestial body ID
+   * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
+   */
+  const placeBodyTpOrder = async (btcQty, tpPrice, bodyId) => {
+    const roundedPrice = roundPrice(tpPrice);
+    const roundedQty = roundBTC(btcQty);
+
+    console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} BTC @ $${roundedPrice} (body=${bodyId.slice(-8)})`);
+
+    // Body TPs should not use post_only — when market reaches TP price, the order must fill
+    const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
+
+    if (result.success) {
+      bodyTpOrders.set(bodyId, {
+        tpOrderId: result.orderId,
+        btcQty: roundedQty,
+        tpPrice: roundedPrice,
+      });
+      tpOrderToKey.set(result.orderId, bodyId);
+
+      pendingOrders.set(result.orderId, {
+        type: 'body_tp',
+        price: roundedPrice,
+        size: roundedQty,
+        sizeUsdc: roundedQty * roundedPrice,
+        placedAt: Date.now(),
+      });
+
+      return { success: true, orderId: result.orderId };
+    }
+
+    return { success: false, errorMessage: result.errorMessage || 'Body TP order failed' };
+  };
+
+  /**
+   * Cancel a specific body TP order
+   * @param {string} bodyId - Celestial body ID
+   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
+   */
+  const cancelBodyTpOrder = async (bodyId) => {
+    const body = bodyTpOrders.get(bodyId);
+    if (!body) return { cancelled: true, filled: false };
+
+    const result = await safeCancelOrder(body.tpOrderId);
+    if (result.cancelled) {
+      pendingOrders.delete(body.tpOrderId);
+      tpOrderToKey.delete(body.tpOrderId);
+      bodyTpOrders.delete(bodyId);
+      return { cancelled: true, filled: false };
+    }
+    if (result.filled) {
+      tpOrderToKey.delete(body.tpOrderId);
+      bodyTpOrders.delete(bodyId);
+      // Leave in pendingOrders for polling to process the fill
+      return { cancelled: false, filled: true };
+    }
+    return { cancelled: false, filled: false };
+  };
+
+  /**
+   * Cancel all body TP orders
+   * @returns {Promise<number>} Number cancelled
+   */
+  const cancelAllBodyTpOrders = async () => {
+    let cancelled = 0;
+    const entries = Array.from(bodyTpOrders.entries());
+
+    for (const [bodyId, body] of entries) {
+      const result = await safeCancelOrder(body.tpOrderId).catch(() => ({ cancelled: false, filled: false }));
+      if (result.cancelled) {
+        pendingOrders.delete(body.tpOrderId);
+        cancelled++;
+      } else if (result.filled) {
+        console.log(`📋 [${exchange}] Body TP ${body.tpOrderId.slice(0, 8)} filled during bulk cancel`);
+      }
+      tpOrderToKey.delete(body.tpOrderId);
+      bodyTpOrders.delete(bodyId);
+    }
+
+    return cancelled;
+  };
+
+  /**
+   * Check if an order ID is a body TP order
+   * @param {string} orderId - Exchange order ID to check
+   * @returns {boolean}
+   */
+  const isBodyTpOrder = (orderId) => tpOrderToKey.has(orderId);
+
+  /**
+   * Get body tracking info by TP order ID
+   * @param {string} tpOrderId - Exchange sell order ID
+   * @returns {{bodyId: string, btcQty: number, tpPrice: number}|null}
+   */
+  const getBodyByTpOrderId = (tpOrderId) => {
+    const bodyId = tpOrderToKey.get(tpOrderId);
+    if (!bodyId) return null;
+    const body = bodyTpOrders.get(bodyId);
+    return body ? { bodyId, ...body } : null;
+  };
+
+  /**
+   * Restore body TP order tracking (for recovery)
+   * @param {string} bodyId - Body ID
+   * @param {string} tpOrderId - Exchange sell order ID
+   * @param {number} btcQty - BTC quantity
+   * @param {number} tpPrice - TP price
+   * @param {number} [placedAt] - Original placement timestamp (ms), defaults to now
+   */
+  const restoreBodyTpOrder = (bodyId, tpOrderId, btcQty, tpPrice, placedAt) => {
+    bodyTpOrders.set(bodyId, { tpOrderId, btcQty, tpPrice });
+    tpOrderToKey.set(tpOrderId, bodyId);
+
+    pendingOrders.set(tpOrderId, {
+      type: 'body_tp',
+      price: tpPrice,
+      size: btcQty,
+      sizeUsdc: btcQty * tpPrice,
+      placedAt: placedAt || Date.now(),
+    });
+  };
+
+  /**
+   * Remove body tracking after fill or cancel
+   * @param {string} tpOrderId - Exchange sell order ID that was filled/cancelled
+   */
+  const removeBodyTracking = (tpOrderId) => {
+    const bodyId = tpOrderToKey.get(tpOrderId);
+    if (bodyId) {
+      bodyTpOrders.delete(bodyId);
+      tpOrderToKey.delete(tpOrderId);
+      pendingOrders.delete(tpOrderId);
     }
   };
 
@@ -702,30 +925,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const ladderOrders = Array.from(pendingOrders.entries())
       .filter(([, order]) => order.type === 'ladder_entry');
 
-    const results = await Promise.allSettled(
-      ladderOrders.map(([orderId]) => adapter.cancelOrder(orderId))
-    );
-
-    results.forEach((result, index) => {
-      const [orderId] = ladderOrders[index];
-      if (result.status === 'fulfilled') {
-        const cancelResult = result.value;
-        if (cancelResult && cancelResult.success) {
-          pendingOrders.delete(orderId);
-          cancelled++;
-        } else if (cancelResult && (cancelResult.alreadyCancelled || cancelResult.alreadyFilled)) {
-          // Order is no longer active, stop tracking but don't count as fresh cancel
-          pendingOrders.delete(orderId);
-        } else {
-          console.log(`⚠️ [${exchange}] Cancel request for ladder order ${orderId} did not succeed: ${cancelResult?.errorMessage || 'unknown reason'}`);
-        }
+    for (const [orderId] of ladderOrders) {
+      const result = await safeCancelOrder(orderId).catch(() => ({ cancelled: false, filled: false }));
+      if (result.cancelled) {
+        pendingOrders.delete(orderId);
+        cancelled++;
+      } else if (result.filled) {
+        console.log(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`);
       } else {
-        console.log(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId}: ${result.reason?.message || 'unknown'}`);
-        // Do not remove from tracking - order may still be live
+        console.log(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId.slice(0, 8)}`);
       }
-    });
+    }
 
-    // Count remaining tracked ladder orders (failed cancels)
     const remainingTracked = Array.from(pendingOrders.values())
       .filter(o => o.type === 'ladder_entry').length;
 
@@ -786,11 +997,21 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // Regime-based stale timeout
     setStaleTimeoutMultiplier,
     getEffectiveStaleMs,
+    // Body TP functions (celestial hierarchy)
+    placeBodyTpOrder,
+    cancelBodyTpOrder,
+    cancelAllBodyTpOrders,
+    isBodyTpOrder,
+    getBodyByTpOrderId,
+    restoreBodyTpOrder,
+    removeBodyTracking,
     // Ladder mode functions
     placeLadderOrders,
     cancelAllLadderOrders,
     getPendingLadderOrders,
     isLadderOrder,
+    // Timer cleanup
+    clearTimers: () => { for (const t of staleTimers) clearTimeout(t); staleTimers.clear(); },
   };
 };
 

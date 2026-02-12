@@ -203,7 +203,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
 
   // Check if enabled
   if (!config.enabled) {
-    logger.log('INFO', `[${exchange}] DCA bot is disabled in config`);
+    logger.log('INFO', `[${exchange}] Critical Mass is disabled in config`);
     tradeEvents.disabled(exchange);
     return { status: 'disabled', exchange };
   }

@@ -12,6 +12,8 @@ import Backtest from './components/Backtest'
 import Optimizer from './components/Optimizer'
 import ExchangeSelector from './components/ExchangeSelector'
 import KeysConfig from './components/KeysConfig'
+import NotificationsConfig from './components/NotificationsConfig'
+import BackupRestore from './components/BackupRestore'
 import RegimeDashboard from './components/RegimeDashboard'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
@@ -275,8 +277,27 @@ function AppContent() {
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               {/* Top row: Title + Exchange selector */}
               <div className="flex items-center justify-between">
-                <Link to={buildPath('')} className="text-xl sm:text-2xl font-bold text-white hover:text-gray-200">
-                  DCA Bot
+                <Link to={buildPath('')} className="text-xl sm:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2">
+                  <svg viewBox="0 0 32 32" className="w-7 h-7 sm:w-8 sm:h-8 shrink-0" aria-hidden="true">
+                    {/* Outer orbit ring */}
+                    <ellipse cx="16" cy="16" rx="14" ry="5" fill="none" stroke="#6366f1" strokeWidth="0.8" opacity="0.5" transform="rotate(-20 16 16)" />
+                    {/* Middle orbit ring */}
+                    <ellipse cx="16" cy="16" rx="10" ry="4" fill="none" stroke="#818cf8" strokeWidth="0.8" opacity="0.6" transform="rotate(25 16 16)" />
+                    {/* Core glow */}
+                    <circle cx="16" cy="16" r="5" fill="url(#cmCoreGlow)" />
+                    {/* Bright core */}
+                    <circle cx="16" cy="16" r="2.5" fill="#e0e7ff" />
+                    {/* Orbiting body */}
+                    <circle cx="27" cy="12" r="1.5" fill="#a5b4fc" />
+                    <defs>
+                      <radialGradient id="cmCoreGlow">
+                        <stop offset="0%" stopColor="#c7d2fe" />
+                        <stop offset="60%" stopColor="#6366f1" />
+                        <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
+                      </radialGradient>
+                    </defs>
+                  </svg>
+                  Critical Mass
                 </Link>
                 {/* Exchange selector - visible on mobile in top row */}
                 <div className="sm:hidden">
@@ -343,6 +364,18 @@ function AppContent() {
                     )}
                   </div>
                 )}
+                <Link
+                  to="/notifications"
+                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  Notifications
+                </Link>
+                <Link
+                  to="/backups"
+                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  Backups
+                </Link>
                 <Link
                   to={`/${currentExchange}/keys`}
                   className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
@@ -417,6 +450,12 @@ function AppContent() {
               <Route path="/:exchange/regime/transactions" element={<TransactionsRegime exchange={currentExchange} />} />
               <Route path="/:exchange/regime/charts" element={<ChartsRegime exchange={currentExchange} />} />
               <Route path="/:exchange/regime/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy="regime" />} />
+
+              {/* Notifications - global (not exchange-specific) */}
+              <Route path="/notifications" element={<NotificationsConfig />} />
+
+              {/* Backups - global (not exchange-specific) */}
+              <Route path="/backups" element={<BackupRestore />} />
 
               {/* API Keys - shared per exchange (not strategy-specific) */}
               <Route path="/:exchange/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />

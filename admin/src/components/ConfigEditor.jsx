@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
-function FormInput({ label, value, onChange, type = 'text', className = '' }) {
+function FormInput({ label, hint, value, onChange, type = 'text', className = '' }) {
   return (
     <div className={className}>
       <label className="block text-xs text-gray-400 mb-1">{label}</label>
@@ -12,11 +12,12 @@ function FormInput({ label, value, onChange, type = 'text', className = '' }) {
         onChange={(e) => onChange(type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value)}
         className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
       />
+      {hint && <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
     </div>
   )
 }
 
-function FormSelect({ label, value, onChange, options, className = '' }) {
+function FormSelect({ label, hint, value, onChange, options, className = '' }) {
   return (
     <div className={className}>
       <label className="block text-xs text-gray-400 mb-1">{label}</label>
@@ -29,6 +30,17 @@ function FormSelect({ label, value, onChange, options, className = '' }) {
           <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
       </select>
+      {hint && <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
+    </div>
+  )
+}
+
+// Reusable section card for the 2-column regime grid
+function SectionCard({ title, children, className = '' }) {
+  return (
+    <div className={`bg-gray-900/40 rounded-lg p-4 ${className}`}>
+      <h3 className="text-sm font-medium text-purple-400 mb-3">{title}</h3>
+      {children}
     </div>
   )
 }
@@ -38,6 +50,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null)
   const [isDirty, setIsDirty] = useState(false)
+  const [presets, setPresets] = useState(null)
+  const [editingPresets, setEditingPresets] = useState(null)
+  const [presetsDirty, setPresetsDirty] = useState(false)
+  const [savingPresets, setSavingPresets] = useState(false)
+  const [presetsMessage, setPresetsMessage] = useState(null)
+  const [expandedPresets, setExpandedPresets] = useState(new Set())
   const prevExchangeRef = useRef(exchange)
   const prevStrategyRef = useRef(strategy)
 
@@ -54,6 +72,66 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
       prevStrategyRef.current = strategy
     }
   }, [initialConfig, exchange, strategy, isDirty])
+
+  // Fetch aggressiveness presets for regime mode
+  useEffect(() => {
+    if (!isRegime) return
+    fetch('/api/presets/aggressiveness')
+      .then(res => res.json())
+      .then(data => {
+        if (data.presets) {
+          setPresets(data.presets)
+          setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+        }
+      })
+      .catch(() => {})
+  }, [isRegime])
+
+  const handlePresetParamChange = (level, key, value) => {
+    setEditingPresets(prev => ({
+      ...prev,
+      [level]: { ...prev[level], [key]: value },
+    }))
+    setPresetsDirty(true)
+  }
+
+  const handleSavePresets = async () => {
+    setSavingPresets(true)
+    setPresetsMessage(null)
+    const res = await fetch('/api/presets/aggressiveness', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(editingPresets),
+    })
+    if (res.ok) {
+      const data = await res.json()
+      setPresets(data.presets)
+      setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+      setPresetsDirty(false)
+      setPresetsMessage({ type: 'success', text: 'Presets saved!' })
+    } else {
+      const err = await res.json()
+      setPresetsMessage({ type: 'error', text: err.errors?.join(', ') || 'Failed to save' })
+    }
+    setSavingPresets(false)
+  }
+
+  const handleResetPresets = () => {
+    if (presets) {
+      setEditingPresets(JSON.parse(JSON.stringify(presets)))
+      setPresetsDirty(false)
+      setPresetsMessage(null)
+    }
+  }
+
+  const togglePresetExpanded = (level) => {
+    setExpandedPresets(prev => {
+      const next = new Set(prev)
+      if (next.has(level)) next.delete(level)
+      else next.add(level)
+      return next
+    })
+  }
 
   const handleChange = (key, value) => {
     setConfig(prev => ({ ...prev, [key]: value }))
@@ -144,7 +222,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
   }
 
   return (
-    <div className="max-w-3xl">
+    <div>
       <div className="bg-gray-800 rounded-lg p-4">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Bot Configuration</h2>
@@ -382,26 +460,42 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
           </>
         )}
 
-        {/* Regime Engine Settings */}
+        {/* Regime Engine Settings - 2-column card grid */}
         {isRegime && (
-          <>
-            <div className="mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">Volatility Clock</h3>
-              <div className="grid grid-cols-4 gap-3">
-                <FormInput label="Product ID" value={config.productId} onChange={(v) => handleChange('productId', v)} />
-                <FormInput label="Base Size (USDC)" value={regimeConfig.baseSizeUsdc || 50} onChange={(v) => handleRegimeChange('baseSizeUsdc', v)} type="number" />
-                <FormInput label="k Factor (ATR mult)" value={regimeConfig.kFactor || 0.6} onChange={(v) => handleRegimeChange('kFactor', v)} type="number" />
-                <FormInput label="ATR Period" value={regimeConfig.atrPeriod || 14} onChange={(v) => handleRegimeChange('atrPeriod', v)} type="number" />
-                <FormInput label="Min Interval (ms)" value={regimeConfig.minIntervalMs || 60000} onChange={(v) => handleRegimeChange('minIntervalMs', v)} type="number" />
-                <FormInput label="Max Interval (ms)" value={regimeConfig.maxIntervalMs || 3600000} onChange={(v) => handleRegimeChange('maxIntervalMs', v)} type="number" />
-              </div>
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">Entry Mode & Ladder</h3>
+            {/* Volatility Clock */}
+            <SectionCard title="Volatility Clock">
+              <div className="grid grid-cols-2 gap-3">
+                <FormInput label="Product ID" hint="Trading pair (e.g. BTC-USDC)" value={config.productId} onChange={(v) => handleChange('productId', v)} />
+                <FormInput label="Base Size (USDC)" hint="Dollar amount per entry order" value={regimeConfig.baseSizeUsdc || 50} onChange={(v) => handleRegimeChange('baseSizeUsdc', v)} type="number" />
+                <FormInput label="k Factor (ATR mult)" hint="Higher = longer waits between entries" value={regimeConfig.kFactor || 0.6} onChange={(v) => handleRegimeChange('kFactor', v)} type="number" />
+                <FormInput label="ATR Period" hint="# of candles for ATR calculation" value={regimeConfig.atrPeriod || 14} onChange={(v) => handleRegimeChange('atrPeriod', v)} type="number" />
+                <FormInput label="Min Interval (ms)" hint="Fastest allowed entry interval" value={regimeConfig.minIntervalMs || 60000} onChange={(v) => handleRegimeChange('minIntervalMs', v)} type="number" />
+                <FormInput label="Max Interval (ms)" hint="Slowest entry interval (low-vol cap)" value={regimeConfig.maxIntervalMs || 3600000} onChange={(v) => handleRegimeChange('maxIntervalMs', v)} type="number" />
+              </div>
+            </SectionCard>
+
+            {/* Regime Scaling */}
+            <SectionCard title="Regime Scaling">
+              <div className="grid grid-cols-2 gap-3">
+                <FormInput label="Harvest Scale" hint="Size multiplier in calm, mean-reverting markets" value={regimeConfig.harvestScale || 1.0} onChange={(v) => handleRegimeChange('harvestScale', v)} type="number" />
+                <FormInput label="Caution Scale" hint="Size multiplier during elevated volatility" value={regimeConfig.cautionScale || 0.5} onChange={(v) => handleRegimeChange('cautionScale', v)} type="number" />
+                <FormInput label="Trend Scale" hint="Size multiplier in strong trends (0 = no entries)" value={regimeConfig.trendScale || 0.0} onChange={(v) => handleRegimeChange('trendScale', v)} type="number" />
+                <FormInput label="Max Cycle Buys" hint="Max buys per cycle before pausing entries" value={regimeConfig.maxCycleBuys || 10} onChange={(v) => handleRegimeChange('maxCycleBuys', v)} type="number" />
+                <FormInput label="Min Order Size ($)" hint="Floor for order size after all multipliers" value={regimeConfig.minOrderSizeUsdc || 5} onChange={(v) => handleRegimeChange('minOrderSizeUsdc', v)} type="number" />
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Scaling: HARVEST={regimeConfig.harvestScale || 1.0}x, CAUTION={regimeConfig.cautionScale || 0.5}x, TREND={regimeConfig.trendScale || 0.0}x base size
+              </div>
+            </SectionCard>
+
+            {/* Entry Mode & Ladder - full width */}
+            <SectionCard title="Entry Mode & Ladder" className="lg:col-span-2">
               <div className="grid grid-cols-4 gap-3 mb-3">
                 <FormSelect
                   label="Entry Mode"
+                  hint="Reactive: one order per trigger. Ladder: multiple orders spread across price levels"
                   value={regimeConfig.entryMode || 'reactive'}
                   onChange={(v) => handleRegimeChange('entryMode', v)}
                   options={[
@@ -409,46 +503,37 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                     { value: 'ladder', label: 'Ladder (pre-positioned)' }
                   ]}
                 />
-                <div className="flex items-center gap-2 pt-5">
-                  <input
-                    type="checkbox"
-                    id="ladderAutoSwitch"
-                    checked={regimeConfig.ladderAutoSwitch || false}
-                    onChange={(e) => handleRegimeChange('ladderAutoSwitch', e.target.checked)}
-                    className="w-4 h-4 rounded bg-gray-700 border-gray-600"
-                  />
-                  <label htmlFor="ladderAutoSwitch" className="text-sm text-gray-300">Auto-Switch on Vol</label>
+                <div className="pt-5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="ladderAutoSwitch"
+                      checked={regimeConfig.ladderAutoSwitch || false}
+                      onChange={(e) => handleRegimeChange('ladderAutoSwitch', e.target.checked)}
+                      className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                    />
+                    <label htmlFor="ladderAutoSwitch" className="text-sm text-gray-300">Auto-Switch on Vol</label>
+                  </div>
+                  <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">Switch from reactive to ladder when vol spikes</div>
                 </div>
                 {regimeConfig.ladderAutoSwitch && (
-                  <FormInput label="Auto-Switch Vol Mult" value={regimeConfig.ladderAutoSwitchVolMult || 2.0} onChange={(v) => handleRegimeChange('ladderAutoSwitchVolMult', v)} type="number" />
+                  <FormInput label="Auto-Switch Vol Mult" hint="realizedVol / volBaseline threshold to trigger switch (e.g. 1.5 = vol 50% above baseline)" value={regimeConfig.ladderAutoSwitchVolMult || 2.0} onChange={(v) => handleRegimeChange('ladderAutoSwitchVolMult', v)} type="number" />
                 )}
               </div>
               {(regimeConfig.entryMode === 'ladder' || regimeConfig.ladderAutoSwitch) && (
                 <>
                   <div className="bg-indigo-900/20 border border-indigo-700/30 rounded p-3 mb-3">
-                    <div className="text-xs text-indigo-300 mb-2">
-                      <span className="font-medium">Ladder Mode:</span> Pre-positions multiple limit buy orders from current price down to a calculated lower bound.
-                      Captures liquidity shocks and fat-tail events that single-order reactive mode misses.
+                    <div className="text-xs text-indigo-300">
+                      <span className="font-medium">Ladder Mode:</span> Deploys all available USDC as limit buy orders from just below current price
+                      down to an ATH-based floor with Fibonacci-weighted sizing. Orders stay in place during flash events; rebuild only after cycle reset.
                     </div>
                   </div>
                   <div className="grid grid-cols-4 gap-3">
-                    <FormInput label="Ladder Levels" value={regimeConfig.ladderLevels || 10} onChange={(v) => handleRegimeChange('ladderLevels', v)} type="number" />
-                    <FormInput label="Lower Bound %" value={regimeConfig.ladderLowerBoundPct || 15} onChange={(v) => handleRegimeChange('ladderLowerBoundPct', v)} type="number" />
-                    <FormInput label="Min Spacing %" value={regimeConfig.ladderMinSpacingPct || 0.5} onChange={(v) => handleRegimeChange('ladderMinSpacingPct', v)} type="number" />
-                    <div className="flex items-center gap-2 pt-5">
-                      <input
-                        type="checkbox"
-                        id="ladderLowerBoundAthAdjust"
-                        checked={regimeConfig.ladderLowerBoundAthAdjust !== false}
-                        onChange={(e) => handleRegimeChange('ladderLowerBoundAthAdjust', e.target.checked)}
-                        className="w-4 h-4 rounded bg-gray-700 border-gray-600"
-                      />
-                      <label htmlFor="ladderLowerBoundAthAdjust" className="text-sm text-gray-300">ATH Adjust</label>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-4 gap-3 mt-3">
+                    <FormInput label="Max ATH Drop %" hint="Floor = ATH × (1 - this/100). 80 means lowest bid at 20% of ATH" value={regimeConfig.ladderMaxAthDropPct || 80} onChange={(v) => handleRegimeChange('ladderMaxAthDropPct', v)} type="number" />
+                    <FormInput label="Min Spacing %" hint="Minimum gap between adjacent rungs" value={regimeConfig.ladderMinSpacingPct || 0.5} onChange={(v) => handleRegimeChange('ladderMinSpacingPct', v)} type="number" />
                     <FormSelect
                       label="Spacing Mode"
+                      hint="How orders are distributed across the price range"
                       value={regimeConfig.ladderSpacingMode || 'sqrt'}
                       onChange={(v) => handleRegimeChange('ladderSpacingMode', v)}
                       options={[
@@ -459,9 +544,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                     />
                     <FormSelect
                       label="Size Mode"
-                      value={regimeConfig.ladderSizeMode || 'flat'}
+                      hint="How order sizes scale across the ladder"
+                      value={regimeConfig.ladderSizeMode || 'fibonacci'}
                       onChange={(v) => handleRegimeChange('ladderSizeMode', v)}
                       options={[
+                        { value: 'fibonacci', label: 'Fibonacci (escalating at bottom)' },
                         { value: 'flat', label: 'Flat (equal sizes)' },
                         { value: 'linear', label: 'Linear (larger at bottom)' },
                         { value: 'sqrt', label: 'Sqrt (moderate scaling)' }
@@ -469,36 +556,21 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                     />
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
-                    {regimeConfig.ladderLevels || 10} orders spanning {regimeConfig.ladderLowerBoundPct || 15}% below current price.
-                    {regimeConfig.ladderLowerBoundAthAdjust !== false && ' Lower bound widens based on ATH distance.'}
+                    Dynamic order count. Floor at {regimeConfig.ladderMaxAthDropPct || 80}% below ATH. {regimeConfig.ladderSizeMode || 'fibonacci'} sizing across all available USDC.
                     {regimeConfig.ladderAutoSwitch && ` Auto-switches to ladder when vol expands ${regimeConfig.ladderAutoSwitchVolMult || 2.0}x.`}
                   </div>
                 </>
               )}
-            </div>
+            </SectionCard>
 
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">Regime Scaling</h3>
-              <div className="grid grid-cols-4 gap-3">
-                <FormInput label="Harvest Scale" value={regimeConfig.harvestScale || 1.0} onChange={(v) => handleRegimeChange('harvestScale', v)} type="number" />
-                <FormInput label="Caution Scale" value={regimeConfig.cautionScale || 0.5} onChange={(v) => handleRegimeChange('cautionScale', v)} type="number" />
-                <FormInput label="Trend Scale" value={regimeConfig.trendScale || 0.0} onChange={(v) => handleRegimeChange('trendScale', v)} type="number" />
-                <FormInput label="Max Ladder Steps" value={regimeConfig.maxLadderSteps || 10} onChange={(v) => handleRegimeChange('maxLadderSteps', v)} type="number" />
+            {/* Take-Profit */}
+            <SectionCard title="Take-Profit">
+              <div className="grid grid-cols-2 gap-3">
+                <FormInput label="TP Multiplier" hint="ATR-based TP scaling factor" value={regimeConfig.tpMult || 1.0} onChange={(v) => handleRegimeChange('tpMult', v)} type="number" />
+                <FormInput label="TP Min %" hint="Floor for take-profit percentage" value={regimeConfig.tpMinPercent || 2.0} onChange={(v) => handleRegimeChange('tpMinPercent', v)} type="number" />
+                <FormInput label="TP Max %" hint="Ceiling for take-profit percentage" value={regimeConfig.tpMaxPercent || 15.0} onChange={(v) => handleRegimeChange('tpMaxPercent', v)} type="number" />
+                <FormInput label="Holdback Ratio" hint="Fraction of position to keep as BTC (0-1)" value={regimeConfig.holdbackRatio ?? 0.5} onChange={(v) => handleRegimeChange('holdbackRatio', v)} type="number" />
               </div>
-              <div className="mt-2 text-xs text-gray-500">
-                Scaling: HARVEST={regimeConfig.harvestScale || 1.0}x, CAUTION={regimeConfig.cautionScale || 0.5}x, TREND={regimeConfig.trendScale || 0.0}x base size
-              </div>
-            </div>
-
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">Take-Profit</h3>
-              <div className="grid grid-cols-4 gap-3">
-                <FormInput label="TP Multiplier" value={regimeConfig.tpMult || 1.0} onChange={(v) => handleRegimeChange('tpMult', v)} type="number" />
-                <FormInput label="TP Min %" value={regimeConfig.tpMinPercent || 2.0} onChange={(v) => handleRegimeChange('tpMinPercent', v)} type="number" />
-                <FormInput label="TP Max %" value={regimeConfig.tpMaxPercent || 15.0} onChange={(v) => handleRegimeChange('tpMaxPercent', v)} type="number" />
-                <FormInput label="Holdback Ratio" value={regimeConfig.holdbackRatio ?? 0.5} onChange={(v) => handleRegimeChange('holdbackRatio', v)} type="number" />
-              </div>
-              {/* Holdback ratio explanation */}
               {(() => {
                 const holdbackRatio = regimeConfig.holdbackRatio ?? 0.5;
                 const sellRatio = 1 - holdbackRatio;
@@ -513,10 +585,143 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                   </div>
                 );
               })()}
-            </div>
+            </SectionCard>
 
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">TP Auto-Management</h3>
+            {/* Regime Detection */}
+            <SectionCard title="Regime Detection">
+              <div className="grid grid-cols-2 gap-3">
+                <FormInput label="Momentum Mult" hint="VWAP divergence threshold for momentum detection" value={regimeConfig.momentumMult || 1.5} onChange={(v) => handleRegimeChange('momentumMult', v)} type="number" />
+                <FormInput label="Vol Expansion" hint="realizedVol/baseline ratio to enter CAUTION" value={regimeConfig.volExpansionMult || 1.5} onChange={(v) => handleRegimeChange('volExpansionMult', v)} type="number" />
+                <FormInput label="Vol Contraction" hint="realizedVol/baseline ratio to return to HARVEST" value={regimeConfig.volContractionMult || 1.2} onChange={(v) => handleRegimeChange('volContractionMult', v)} type="number" />
+                <FormInput label="VWAP Hours" hint="Rolling window for VWAP calculation" value={regimeConfig.vwapPeriodHours || 4} onChange={(v) => handleRegimeChange('vwapPeriodHours', v)} type="number" />
+                <FormInput label="Trend Confirm Periods" hint="Consecutive momentum periods to confirm TREND" value={regimeConfig.trendConfirmationPeriods || 5} onChange={(v) => handleRegimeChange('trendConfirmationPeriods', v)} type="number" />
+              </div>
+            </SectionCard>
+
+            {/* Celestial Hierarchy - full width */}
+            <SectionCard title="Celestial Hierarchy" className="lg:col-span-2">
+              <div className="flex items-center gap-4 mb-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <span className="text-gray-400">Enable Celestial Bodies</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRegimeChange('celestialEnabled', !(regimeConfig.celestialEnabled !== false))}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                      regimeConfig.celestialEnabled !== false ? 'bg-cyan-500' : 'bg-gray-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                      regimeConfig.celestialEnabled !== false ? 'translate-x-5' : 'translate-x-1'
+                    }`} />
+                  </button>
+                </label>
+                {regimeConfig.celestialEnabled !== false && (
+                  <span className="text-xs text-cyan-400">
+                    Buys become celestial bodies that consolidate and promote through tiers
+                  </span>
+                )}
+              </div>
+              {regimeConfig.celestialEnabled !== false && (
+                <>
+                  <div className="grid grid-cols-4 gap-3">
+                    <FormInput label="Max Celestial Bodies" hint="Max concurrent body TP orders (1-15)" value={regimeConfig.maxCelestialBodies ?? 10} onChange={(v) => handleRegimeChange('maxCelestialBodies', Math.round(v))} type="number" />
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">
+                    Each buy creates a celestial body. Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
+                    Tiers: 🛰️ satellite → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → 🌌 galaxy → 🕳️ black hole.
+                    Higher tiers have wider TP targets and hold more BTC.
+                  </div>
+                  <div className="mt-2 grid grid-cols-7 gap-1 text-xs text-center">
+                    {(() => {
+                      const cap = regimeConfig.maxUsdcDeployed || 10000;
+                      return [
+                        { emoji: '🛰️', name: 'Satellite', range: `$0-$${Math.round(cap * 0.02)}` },
+                        { emoji: '🌙', name: 'Moon', range: `$${Math.round(cap * 0.02)}-$${Math.round(cap * 0.05)}` },
+                        { emoji: '🪐', name: 'Planet', range: `$${Math.round(cap * 0.05)}-$${Math.round(cap * 0.15)}` },
+                        { emoji: '☀️', name: 'Sun', range: `$${Math.round(cap * 0.15)}-$${Math.round(cap * 0.30)}` },
+                        { emoji: '💫', name: 'Hypergiant', range: `$${Math.round(cap * 0.30)}-$${Math.round(cap * 0.50)}` },
+                        { emoji: '🌌', name: 'Galaxy', range: `$${Math.round(cap * 0.50)}-$${Math.round(cap * 0.75)}` },
+                        { emoji: '🕳️', name: 'Black Hole', range: `$${Math.round(cap * 0.75)}+` },
+                      ];
+                    })().map(tier => (
+                      <div key={tier.name} className="bg-gray-800/50 rounded p-1">
+                        <div>{tier.emoji}</div>
+                        <div className="text-gray-400">{tier.name}</div>
+                        <div className="text-gray-500">{tier.range}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </SectionCard>
+
+            {/* Macro Regime - full width */}
+            <SectionCard title="Macro Regime (Multi-Timeframe)" className="lg:col-span-2">
+              <div className="flex items-center gap-4 mb-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <span className="text-gray-400">Enable Macro Regime</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRegimeChange('macroEnabled', !regimeConfig.macroEnabled)}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                      regimeConfig.macroEnabled ? 'bg-cyan-500' : 'bg-gray-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                      regimeConfig.macroEnabled ? 'translate-x-5' : 'translate-x-1'
+                    }`} />
+                  </button>
+                </label>
+                {regimeConfig.macroEnabled && (
+                  <span className="text-xs text-cyan-400">
+                    Hourly + daily EMA overlay modulates sizing, TP, and entry offset
+                  </span>
+                )}
+              </div>
+              {regimeConfig.macroEnabled && (
+                <>
+                  <div className="grid grid-cols-5 gap-3 mb-4">
+                    <FormInput label="Update Interval (ms)" hint="How often to re-score macro (60000-600000)" value={regimeConfig.macroUpdateIntervalMs ?? 300000} onChange={(v) => handleRegimeChange('macroUpdateIntervalMs', v)} type="number" />
+                    <FormInput label="Hysteresis" hint="Score buffer to prevent mode chatter (1-20)" value={regimeConfig.macroHysteresis ?? 5} onChange={(v) => handleRegimeChange('macroHysteresis', v)} type="number" />
+                    <FormInput label="Accumulation Threshold" hint="Score below this = ACCUMULATION" value={regimeConfig.macroAccumulationThreshold ?? -15} onChange={(v) => handleRegimeChange('macroAccumulationThreshold', v)} type="number" />
+                    <FormInput label="Decline Threshold" hint="Score below this = DECLINE" value={regimeConfig.macroDeclineThreshold ?? -50} onChange={(v) => handleRegimeChange('macroDeclineThreshold', v)} type="number" />
+                    <FormInput label="Markup Threshold" hint="Score above this = MARKUP" value={regimeConfig.macroMarkupThreshold ?? 35} onChange={(v) => handleRegimeChange('macroMarkupThreshold', v)} type="number" />
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                    <div className="bg-green-900/15 border border-green-800/30 rounded p-3">
+                      <div className="text-xs text-green-400 font-medium mb-2">Accumulation (buying dips harder)</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <FormInput label="Size" hint="0.1-3.0" value={regimeConfig.macroAccumulationSizeMult ?? 1.3} onChange={(v) => handleRegimeChange('macroAccumulationSizeMult', v)} type="number" />
+                        <FormInput label="TP" hint="Tighter" value={regimeConfig.macroAccumulationTpMult ?? 0.85} onChange={(v) => handleRegimeChange('macroAccumulationTpMult', v)} type="number" />
+                        <FormInput label="Offset" hint="Tighter" value={regimeConfig.macroAccumulationOffsetMult ?? 0.8} onChange={(v) => handleRegimeChange('macroAccumulationOffsetMult', v)} type="number" />
+                      </div>
+                    </div>
+                    <div className="bg-yellow-900/15 border border-yellow-800/30 rounded p-3">
+                      <div className="text-xs text-yellow-400 font-medium mb-2">Markup (uptrend — reduce exposure)</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <FormInput label="Size" hint="0.1-3.0" value={regimeConfig.macroMarkupSizeMult ?? 0.7} onChange={(v) => handleRegimeChange('macroMarkupSizeMult', v)} type="number" />
+                        <FormInput label="TP" hint="Wider" value={regimeConfig.macroMarkupTpMult ?? 1.3} onChange={(v) => handleRegimeChange('macroMarkupTpMult', v)} type="number" />
+                        <FormInput label="Offset" hint="Wider" value={regimeConfig.macroMarkupOffsetMult ?? 1.2} onChange={(v) => handleRegimeChange('macroMarkupOffsetMult', v)} type="number" />
+                      </div>
+                    </div>
+                    <div className="bg-red-900/15 border border-red-800/30 rounded p-3">
+                      <div className="text-xs text-red-400 font-medium mb-2">Decline (capitulation — conservative)</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <FormInput label="Size" hint="0.1-3.0" value={regimeConfig.macroDeclineSizeMult ?? 0.4} onChange={(v) => handleRegimeChange('macroDeclineSizeMult', v)} type="number" />
+                        <FormInput label="TP" hint="Tighter" value={regimeConfig.macroDeclineTpMult ?? 0.7} onChange={(v) => handleRegimeChange('macroDeclineTpMult', v)} type="number" />
+                        <FormInput label="Offset" hint="Wider" value={regimeConfig.macroDeclineOffsetMult ?? 1.5} onChange={(v) => handleRegimeChange('macroDeclineOffsetMult', v)} type="number" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">
+                    RANGING mode uses 1.0x for all multipliers (passthrough). Score range: -100 to +100. Thresholds must be ordered: decline &lt; accumulation &lt; markup.
+                  </div>
+                </>
+              )}
+            </SectionCard>
+
+            {/* TP Auto-Management - full width */}
+            <SectionCard title="TP Auto-Management" className="lg:col-span-2">
               <div className="flex items-center gap-4 mb-3">
                 <label className="flex items-center gap-2 text-sm">
                   <span className="text-gray-400">Enable Auto-Management</span>
@@ -540,15 +745,13 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
               </div>
               {regimeConfig.tpAutoManaged && (
                 <>
-                  <div className="grid grid-cols-4 gap-3">
-                    <FormInput label="Evaluation Cycles" value={regimeConfig.tpEvaluationCycles || 5} onChange={(v) => handleRegimeChange('tpEvaluationCycles', v)} type="number" />
-                    <FormInput label="Eval Max Hours" value={regimeConfig.tpEvaluationMaxHours || 24} onChange={(v) => handleRegimeChange('tpEvaluationMaxHours', v)} type="number" />
-                    <FormInput label="Min Sample Size" value={regimeConfig.tpMinSampleSize || 10} onChange={(v) => handleRegimeChange('tpMinSampleSize', v)} type="number" />
-                    <FormInput label="Max Change %" value={regimeConfig.tpMaxChangePercent || 25} onChange={(v) => handleRegimeChange('tpMaxChangePercent', v)} type="number" />
-                  </div>
-                  <div className="grid grid-cols-4 gap-3 mt-3">
-                    <FormInput label="Absolute Min %" value={regimeConfig.tpAbsoluteMin || 0.05} onChange={(v) => handleRegimeChange('tpAbsoluteMin', v)} type="number" />
-                    <FormInput label="Absolute Max %" value={regimeConfig.tpAbsoluteMax || 5.0} onChange={(v) => handleRegimeChange('tpAbsoluteMax', v)} type="number" />
+                  <div className="grid grid-cols-6 gap-3">
+                    <FormInput label="Evaluation Cycles" hint="Re-evaluate TP after this many completed cycles" value={regimeConfig.tpEvaluationCycles || 5} onChange={(v) => handleRegimeChange('tpEvaluationCycles', v)} type="number" />
+                    <FormInput label="Eval Max Hours" hint="Max hours before forcing TP re-evaluation" value={regimeConfig.tpEvaluationMaxHours || 24} onChange={(v) => handleRegimeChange('tpEvaluationMaxHours', v)} type="number" />
+                    <FormInput label="Min Sample Size" hint="Min fills needed before first auto-adjust" value={regimeConfig.tpMinSampleSize || 10} onChange={(v) => handleRegimeChange('tpMinSampleSize', v)} type="number" />
+                    <FormInput label="Max Change %" hint="Max single adjustment to TP values" value={regimeConfig.tpMaxChangePercent || 25} onChange={(v) => handleRegimeChange('tpMaxChangePercent', v)} type="number" />
+                    <FormInput label="Absolute Min %" hint="Hard floor: TP can never go below this" value={regimeConfig.tpAbsoluteMin || 0.05} onChange={(v) => handleRegimeChange('tpAbsoluteMin', v)} type="number" />
+                    <FormInput label="Absolute Max %" hint="Hard ceiling: TP can never go above this" value={regimeConfig.tpAbsoluteMax || 5.0} onChange={(v) => handleRegimeChange('tpAbsoluteMax', v)} type="number" />
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
                     Auto-adjusts TP range every {regimeConfig.tpEvaluationCycles || 5} cycles or {regimeConfig.tpEvaluationMaxHours || 24}h.
@@ -557,103 +760,160 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                   </div>
                 </>
               )}
-            </div>
+            </SectionCard>
 
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">Risk Caps</h3>
-              <div className="grid grid-cols-4 gap-3">
-                <FormInput label="Deposited Capital" value={regimeConfig.depositedCapital || 0} onChange={(v) => handleRegimeChange('depositedCapital', v)} type="number" />
-                <FormInput label="Max BTC Exposure" value={regimeConfig.maxBtcExposure || 0.5} onChange={(v) => handleRegimeChange('maxBtcExposure', v)} type="number" />
-                <FormInput label="Max USDC Cap" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
-                <FormInput label="Max Drawdown %" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
-                <FormInput label="Liquidity Factor Cap" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
-              </div>
-              <div className="grid grid-cols-4 gap-3 mt-3">
-                <FormInput label="Drawdown Reset (hrs)" value={regimeConfig.drawdownResetHours || 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
-                <FormInput label="Ladder Reset (hrs)" value={regimeConfig.ladderResetHours || 72} onChange={(v) => handleRegimeChange('ladderResetHours', v)} type="number" />
+            {/* Risk Caps */}
+            <SectionCard title="Risk Caps">
+              <div className="grid grid-cols-2 gap-3">
+                <FormInput label="Deposited Capital" hint="Your actual cash deposits (0 = auto-derive)" value={regimeConfig.depositedCapital || 0} onChange={(v) => handleRegimeChange('depositedCapital', v)} type="number" />
+                <FormInput label="Max BTC Exposure" hint="Max BTC the engine can hold at once" value={regimeConfig.maxBtcExposure || 0.5} onChange={(v) => handleRegimeChange('maxBtcExposure', v)} type="number" />
+                <FormInput label="Max USDC Cap" hint="Max USDC deployed across active orders" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
+                <FormInput label="Max Drawdown %" hint="Pause entries when unrealized loss exceeds this" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
+                <FormInput label="Liquidity Factor Cap" hint="Max size multiplier from orderbook liquidity" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
+                <FormInput label="Drawdown Reset (hrs)" hint="Hours at drawdown cap before auto-resuming (0 = off)" value={regimeConfig.drawdownResetHours || 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
+                <FormInput label="Cycle Reset (hrs)" hint="Hours at cycle buys limit before auto-resetting (0 = off)" value={regimeConfig.cycleResetHours || 72} onChange={(v) => handleRegimeChange('cycleResetHours', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-500">
-                Deposited Capital: your actual cash deposits (0 = auto-derive). Max USDC Cap: trading limit (grows with profits).
                 Auto-reset hours: 0 = disabled. After this time at a limit, the engine resumes with reset counters.
               </div>
-            </div>
+            </SectionCard>
 
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">Regime Detection</h3>
-              <div className="grid grid-cols-4 gap-3">
-                <FormInput label="Momentum Mult" value={regimeConfig.momentumMult || 1.5} onChange={(v) => handleRegimeChange('momentumMult', v)} type="number" />
-                <FormInput label="Vol Expansion" value={regimeConfig.volExpansionMult || 1.5} onChange={(v) => handleRegimeChange('volExpansionMult', v)} type="number" />
-                <FormInput label="Vol Contraction" value={regimeConfig.volContractionMult || 1.2} onChange={(v) => handleRegimeChange('volContractionMult', v)} type="number" />
-                <FormInput label="VWAP Hours" value={regimeConfig.vwapPeriodHours || 4} onChange={(v) => handleRegimeChange('vwapPeriodHours', v)} type="number" />
+            {/* Order Execution */}
+            <SectionCard title="Order Execution">
+              <div className="grid grid-cols-2 gap-3">
+                <FormInput label="Entry Offset (bps)" hint="Place limit buy this many bps below market" value={regimeConfig.entryOffsetBps || 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
+                <FormInput label="Entry Max Retries" hint="Retry cancelled entries up to this many times" value={regimeConfig.entryMaxRetries || 3} onChange={(v) => handleRegimeChange('entryMaxRetries', v)} type="number" />
+                <FormInput label="Order Stale (ms)" hint="Cancel unfilled entries after this duration" value={regimeConfig.orderStaleMs || 30000} onChange={(v) => handleRegimeChange('orderStaleMs', v)} type="number" />
+                <FormInput label="Cancel Rate Limit (ms)" hint="Min wait between cancel API calls" value={regimeConfig.cancelRateLimitMs || 1000} onChange={(v) => handleRegimeChange('cancelRateLimitMs', v)} type="number" />
+                <FormInput label="Max Open Orders" hint="Max simultaneous entry orders allowed" value={regimeConfig.maxOpenOrders || 3} onChange={(v) => handleRegimeChange('maxOpenOrders', v)} type="number" />
+                <FormInput label="TP Update Threshold %" hint="Min price change before updating TP order" value={regimeConfig.tpUpdateThresholdPct || 0.5} onChange={(v) => handleRegimeChange('tpUpdateThresholdPct', v)} type="number" />
+                <FormInput label="Reconcile Interval (ms)" hint="How often to sync local state with exchange" value={regimeConfig.reconcileIntervalMs || 300000} onChange={(v) => handleRegimeChange('reconcileIntervalMs', v)} type="number" />
               </div>
-              <div className="grid grid-cols-4 gap-3 mt-3">
-                <FormInput label="Trend Confirm Periods" value={regimeConfig.trendConfirmationPeriods || 5} onChange={(v) => handleRegimeChange('trendConfirmationPeriods', v)} type="number" />
-              </div>
-            </div>
+            </SectionCard>
 
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">Order Execution</h3>
-              <div className="grid grid-cols-4 gap-3">
-                <FormInput label="Entry Offset (bps)" value={regimeConfig.entryOffsetBps || 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
-                <FormInput label="Entry Max Retries" value={regimeConfig.entryMaxRetries || 3} onChange={(v) => handleRegimeChange('entryMaxRetries', v)} type="number" />
-                <FormInput label="Order Stale (ms)" value={regimeConfig.orderStaleMs || 30000} onChange={(v) => handleRegimeChange('orderStaleMs', v)} type="number" />
-                <FormInput label="Cancel Rate Limit (ms)" value={regimeConfig.cancelRateLimitMs || 1000} onChange={(v) => handleRegimeChange('cancelRateLimitMs', v)} type="number" />
-              </div>
-              <div className="grid grid-cols-4 gap-3 mt-3">
-                <FormInput label="Max Open Orders" value={regimeConfig.maxOpenOrders || 3} onChange={(v) => handleRegimeChange('maxOpenOrders', v)} type="number" />
-                <FormInput label="TP Update Threshold %" value={regimeConfig.tpUpdateThresholdPct || 0.5} onChange={(v) => handleRegimeChange('tpUpdateThresholdPct', v)} type="number" />
-                <FormInput label="Reconcile Interval (ms)" value={regimeConfig.reconcileIntervalMs || 300000} onChange={(v) => handleRegimeChange('reconcileIntervalMs', v)} type="number" />
-              </div>
-              <div className="mt-2 text-xs text-gray-500">
-                Order Stale: Time before unfilled entry orders are cancelled. TP Update Threshold: Min % change to update TP order.
-              </div>
-            </div>
-
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">Safety & Tail Events</h3>
-              <div className="grid grid-cols-4 gap-3">
-                <FormInput label="Max Spread (bps)" value={regimeConfig.maxSpreadBps || 50} onChange={(v) => handleRegimeChange('maxSpreadBps', v)} type="number" />
-                <FormInput label="Spread Pause (ms)" value={regimeConfig.spreadPauseMs || 300000} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} type="number" />
-                <FormInput label="Min Depth (USDC)" value={regimeConfig.minDepthUsdc || 10000} onChange={(v) => handleRegimeChange('minDepthUsdc', v)} type="number" />
-                <FormInput label="Depth Pause (ms)" value={regimeConfig.depthPauseMs || 300000} onChange={(v) => handleRegimeChange('depthPauseMs', v)} type="number" />
-              </div>
-              <div className="grid grid-cols-4 gap-3 mt-3">
-                <FormInput label="Flash Move Mult" value={regimeConfig.flashMoveMult || 3.0} onChange={(v) => handleRegimeChange('flashMoveMult', v)} type="number" />
-                <FormInput label="Flash Cooldown (ms)" value={regimeConfig.flashCooldownMs || 600000} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} type="number" />
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="cancelEntriesOnFlash"
-                    checked={regimeConfig.cancelEntriesOnFlash !== false}
-                    onChange={(e) => handleRegimeChange('cancelEntriesOnFlash', e.target.checked)}
-                    className="w-4 h-4 rounded bg-gray-700 border-gray-600"
-                  />
-                  <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
+            {/* Safety & Tail Events — only applies to reactive mode */}
+            <SectionCard title="Safety & Tail Events">
+              {regimeConfig.entryMode === 'ladder' ? (
+                <div className="text-xs text-gray-400 italic">
+                  These settings apply to Reactive mode only. Ladder mode bypasses tail event checks — the ladder IS the flash event strategy.
                 </div>
-              </div>
-            </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormInput label="Max Spread (bps)" hint="Pause entries when bid-ask spread exceeds this" value={regimeConfig.maxSpreadBps || 50} onChange={(v) => handleRegimeChange('maxSpreadBps', v)} type="number" />
+                    <FormInput label="Spread Pause (ms)" hint="How long to pause after spread breach" value={regimeConfig.spreadPauseMs || 300000} onChange={(v) => handleRegimeChange('spreadPauseMs', v)} type="number" />
+                    <FormInput label="Min Depth (USDC)" hint="Pause entries when orderbook depth is below this" value={regimeConfig.minDepthUsdc || 10000} onChange={(v) => handleRegimeChange('minDepthUsdc', v)} type="number" />
+                    <FormInput label="Depth Pause (ms)" hint="How long to pause after thin orderbook" value={regimeConfig.depthPauseMs || 300000} onChange={(v) => handleRegimeChange('depthPauseMs', v)} type="number" />
+                    <FormInput label="Flash Move Mult" hint="ATR multiplier to detect flash crashes" value={regimeConfig.flashMoveMult || 3.0} onChange={(v) => handleRegimeChange('flashMoveMult', v)} type="number" />
+                    <FormInput label="Flash Cooldown (ms)" hint="Pause duration after flash event detected" value={regimeConfig.flashCooldownMs || 600000} onChange={(v) => handleRegimeChange('flashCooldownMs', v)} type="number" />
+                  </div>
+                  <div className="mt-3">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="cancelEntriesOnFlash"
+                        checked={regimeConfig.cancelEntriesOnFlash !== false}
+                        onChange={(e) => handleRegimeChange('cancelEntriesOnFlash', e.target.checked)}
+                        className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                      />
+                      <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
+                    </div>
+                    <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">Pull all pending entries during flash events</div>
+                  </div>
+                </>
+              )}
+            </SectionCard>
 
-            <div className="border-t border-gray-700 pt-3 mb-4">
-              <h3 className="text-sm font-medium text-purple-400 mb-3">System Health</h3>
-              <div className="grid grid-cols-4 gap-3">
-                <FormInput label="Stale Data (ms)" value={regimeConfig.staleDataMs || 30000} onChange={(v) => handleRegimeChange('staleDataMs', v)} type="number" />
-                <FormInput label="Stale Orders (ms)" value={regimeConfig.staleOrdersMs || 60000} onChange={(v) => handleRegimeChange('staleOrdersMs', v)} type="number" />
-                <FormInput label="Max Latency (ms)" value={regimeConfig.maxLatencyMs || 5000} onChange={(v) => handleRegimeChange('maxLatencyMs', v)} type="number" />
-                <FormInput label="Safe Recovery (ms)" value={regimeConfig.safeRecoveryMs || 60000} onChange={(v) => handleRegimeChange('safeRecoveryMs', v)} type="number" />
-              </div>
-              <div className="grid grid-cols-4 gap-3 mt-3">
-                <FormInput label="Max REST Errors" value={regimeConfig.maxRestErrors || 5} onChange={(v) => handleRegimeChange('maxRestErrors', v)} type="number" />
-                <FormInput label="Max Rate Limits" value={regimeConfig.maxRateLimits || 3} onChange={(v) => handleRegimeChange('maxRateLimits', v)} type="number" />
+            {/* System Health */}
+            <SectionCard title="System Health">
+              <div className="grid grid-cols-2 gap-3">
+                <FormInput label="Stale Data (ms)" hint="Enter SAFE mode if no ticker data for this long" value={regimeConfig.staleDataMs || 30000} onChange={(v) => handleRegimeChange('staleDataMs', v)} type="number" />
+                <FormInput label="Stale Orders (ms)" hint="Flag orders as stale after this duration" value={regimeConfig.staleOrdersMs || 60000} onChange={(v) => handleRegimeChange('staleOrdersMs', v)} type="number" />
+                <FormInput label="Max Latency (ms)" hint="Enter SAFE mode if API latency exceeds this" value={regimeConfig.maxLatencyMs || 5000} onChange={(v) => handleRegimeChange('maxLatencyMs', v)} type="number" />
+                <FormInput label="Safe Recovery (ms)" hint="Time healthy before exiting SAFE mode" value={regimeConfig.safeRecoveryMs || 60000} onChange={(v) => handleRegimeChange('safeRecoveryMs', v)} type="number" />
+                <FormInput label="Max REST Errors" hint="Consecutive API errors before SAFE mode" value={regimeConfig.maxRestErrors || 5} onChange={(v) => handleRegimeChange('maxRestErrors', v)} type="number" />
+                <FormInput label="Max Rate Limits" hint="Consecutive rate limits before SAFE mode" value={regimeConfig.maxRateLimits || 3} onChange={(v) => handleRegimeChange('maxRateLimits', v)} type="number" />
               </div>
               <div className="mt-2 text-xs text-gray-500">
                 System enters SAFE mode when health thresholds are exceeded. Safe Recovery is time healthy before exiting SAFE.
               </div>
-            </div>
-          </>
+            </SectionCard>
+
+            {/* Aggressiveness Presets Editor — full width */}
+            {editingPresets && (
+              <SectionCard title="Aggressiveness Presets" className="lg:col-span-2">
+                <div className="text-xs text-gray-500 mb-3">
+                  Customize the parameter values applied by each aggressiveness level on the dashboard.
+                </div>
+                <div className="space-y-2">
+                  {[
+                    { id: 'conservative', label: 'Conservative', color: 'text-green-400' },
+                    { id: 'moderate', label: 'Moderate', color: 'text-blue-400' },
+                    { id: 'aggressive', label: 'Aggressive', color: 'text-yellow-400' },
+                    { id: 'maximum', label: 'Maximum', color: 'text-red-400' },
+                  ].map(({ id, label, color }) => {
+                    const isExpanded = expandedPresets.has(id)
+                    const params = editingPresets[id] || {}
+                    return (
+                      <div key={id} className="bg-gray-800/60 rounded-lg overflow-hidden">
+                        <button
+                          onClick={() => togglePresetExpanded(id)}
+                          className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-700/50 transition-colors"
+                        >
+                          <span className={`text-sm font-medium ${color}`}>{label}</span>
+                          <span className="text-gray-500 text-xs">{isExpanded ? '▼' : '▶'}</span>
+                        </button>
+                        {isExpanded && (
+                          <div className="px-3 pb-3">
+                            <div className="grid grid-cols-4 gap-3">
+                              <FormInput label="k Factor" value={params.kFactor} onChange={(v) => handlePresetParamChange(id, 'kFactor', v)} type="number" />
+                              <FormInput label="Min Interval (ms)" value={params.minIntervalMs} onChange={(v) => handlePresetParamChange(id, 'minIntervalMs', v)} type="number" />
+                              <FormInput label="Max Interval (ms)" value={params.maxIntervalMs} onChange={(v) => handlePresetParamChange(id, 'maxIntervalMs', v)} type="number" />
+                              <FormInput label="Entry Offset (bps)" value={params.entryOffsetBps} onChange={(v) => handlePresetParamChange(id, 'entryOffsetBps', v)} type="number" />
+                              <FormInput label="Base Size (USDC)" value={params.baseSizeUsdc} onChange={(v) => handlePresetParamChange(id, 'baseSizeUsdc', v)} type="number" />
+                              <FormInput label="Caution Scale" value={params.cautionScale} onChange={(v) => handlePresetParamChange(id, 'cautionScale', v)} type="number" />
+                              <FormInput label="Trend Scale" value={params.trendScale} onChange={(v) => handlePresetParamChange(id, 'trendScale', v)} type="number" />
+                              <FormInput label="Max Cycle Buys" value={params.maxCycleBuys} onChange={(v) => handlePresetParamChange(id, 'maxCycleBuys', v)} type="number" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+                {presetsMessage && (
+                  <div className={`mt-2 text-xs ${presetsMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                    {presetsMessage.text}
+                  </div>
+                )}
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={handleSavePresets}
+                    disabled={savingPresets || !presetsDirty}
+                    className={`px-3 py-1.5 text-sm rounded font-medium transition-colors ${
+                      presetsDirty
+                        ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                        : 'bg-purple-600/30 text-purple-300'
+                    } disabled:cursor-not-allowed`}
+                  >
+                    {savingPresets ? 'Saving...' : presetsDirty ? 'Save Presets *' : 'Save Presets'}
+                  </button>
+                  {presetsDirty && (
+                    <button
+                      onClick={handleResetPresets}
+                      className="px-3 py-1.5 text-sm bg-gray-600 hover:bg-gray-500 rounded font-medium transition-colors"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </SectionCard>
+            )}
+          </div>
         )}
 
         {/* Save Button */}
-        <div className="flex gap-2">
+        <div className="flex gap-2 mt-4">
           <button
             onClick={handleSave}
             disabled={saving}

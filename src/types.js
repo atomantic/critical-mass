@@ -1,8 +1,8 @@
 /**
- * Type definitions for DCA Bot
+ * Type definitions for Critical Mass
  *
  * This file contains JSDoc type definitions for the core data structures
- * used throughout the DCA bot. Enable @ts-check in your files to benefit
+ * used throughout Critical Mass. Enable @ts-check in your files to benefit
  * from type checking.
  */
 
@@ -423,7 +423,11 @@
  * @property {number} maxDrawdownSeen - Maximum drawdown observed
  * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
+ * @property {MacroRegimeState|null} [macroRegime] - Macro regime state for persistence
  * @property {Array<{orderId: string, price: number, btcQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
+ * @property {CelestialBody[]} [celestialBodies_legacy] - (removed, use celestialBodies)
+ * @property {CelestialBody[]} [celestialBodies] - Active celestial bodies (replaces core+satellites)
+ * @property {CelestialState} [celestialState] - Aggregate celestial tracking
  * @property {boolean} [ladderActive] - Whether ladder mode is active
  * @property {number|null} [ladderPlacedAt] - Timestamp when ladder was placed
  * @property {number} [ladderLowerBound] - Current ladder lower bound price
@@ -473,12 +477,50 @@
 
 /**
  * @typedef {Object} PendingOrder
- * @property {'entry' | 'take_profit'} type - Order type
+ * @property {'entry' | 'take_profit' | 'body_tp'} type - Order type
  * @property {number} price - Order price
  * @property {number} size - Order size
  * @property {number} sizeUsdc - Order size in USDC (for entries)
  * @property {number} placedAt - Timestamp when placed
  * @property {boolean} [recoveredFromExchange] - Whether recovered on startup
+ */
+
+// SatelliteTpOrder typedef removed — use CelestialBody instead
+
+/**
+ * @typedef {Object} CelestialTier
+ * @property {string} name - Tier name (satellite, moon, planet, sun, hypergiant, galaxy, black_hole)
+ * @property {string} emoji - Display emoji
+ * @property {number} minMass - Minimum mass multiplier (× baseSizeUsdc)
+ * @property {number} maxMass - Maximum mass multiplier
+ * @property {number} tpMult - TP percentage multiplier
+ * @property {number} tpMaxScale - Multiplied against tpMaxPercent for wider ceiling
+ * @property {number} proximity - TP price proximity % for within-tier consolidation
+ * @property {number} holdbackScale - Multiplied against holdbackRatio
+ */
+
+/**
+ * @typedef {Object} CelestialBody
+ * @property {string} id - Unique body ID (persists through promotions)
+ * @property {string} tier - Tier name (satellite|moon|planet|sun|hypergiant|galaxy|black_hole)
+ * @property {number} btcQty - Total BTC
+ * @property {number} costBasis - Total cost basis including fees ($)
+ * @property {number} avgPrice - costBasis / btcQty
+ * @property {string|null} tpOrderId - Exchange sell order ID
+ * @property {number} tpPrice - Current TP price
+ * @property {number} btcOnOrder - BTC in sell order (after holdback)
+ * @property {number} createdAt - First creation timestamp
+ * @property {number} lastMergedAt - Last merge/promotion timestamp
+ * @property {string[]} sourceOrderIds - All constituent buy order IDs
+ * @property {number} mergeCount - Number of merges undergone
+ */
+
+/**
+ * @typedef {Object} CelestialState
+ * @property {number} bodiesCompleted - Total body TP fills (all time)
+ * @property {number} bodiesRealizedPnL - Cumulative USD P&L
+ * @property {number} bodiesRealizedBtcPnL - Cumulative BTC holdback reserves
+ * @property {number} stateVersion - Schema version
  */
 
 /**
@@ -502,12 +544,13 @@
  * @property {number} trendConfirmationPeriods - Periods to confirm TREND (default: 5)
  *
  * Position Sizing Parameters
+ * @property {number} minOrderSizeUsdc - Minimum order size in USDC (default: 5)
  * @property {number} baseSizeUsdc - Base order size in USDC (default: 50)
  * @property {number} harvestScale - Size multiplier in HARVEST (default: 1.0)
  * @property {number} cautionScale - Size multiplier in CAUTION (default: 0.5)
  * @property {number} trendScale - Size multiplier in TREND (default: 0.0)
- * @property {number} maxLadderSteps - Maximum averaging-down steps (default: 10)
- * @property {number} ladderResetHours - Hours after which to auto-reset ladder at max (default: 72, 0 to disable)
+ * @property {number} maxCycleBuys - Maximum buys per cycle (default: 10)
+ * @property {number} cycleResetHours - Hours after which to auto-reset cycle buys at max (default: 72, 0 to disable)
  * @property {number} liquidityFactorCap - Maximum liquidity multiplier (default: 2.0)
  *
  * Take-Profit Parameters
@@ -516,6 +559,8 @@
  * @property {number} tpMaxPercent - Maximum TP percentage (default: 15.0)
  * @property {number} tpUpdateThresholdPct - Min % change to update TP (default: 0.5)
  * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0, default: 0.5)
+ *
+ * Celestial Body Parameters (legacy satellite aliases removed)
  *
  * Risk Cap Parameters
  * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)
@@ -557,11 +602,9 @@
  * @property {'reactive' | 'ladder'} [entryMode] - Entry strategy mode (default: 'reactive')
  *
  * Ladder Parameters (when entryMode: 'ladder')
- * @property {number} [ladderLevels] - Number of ladder rungs (default: 10)
- * @property {number} [ladderLowerBoundPct] - Base lower bound % below current price (default: 15)
- * @property {boolean} [ladderLowerBoundAthAdjust] - Widen based on ATH distance (default: true)
+ * @property {number} [ladderMaxAthDropPct] - Floor = ATH × (1 - this/100). 80 means lowest bid at 20% of ATH (default: 80)
  * @property {'linear' | 'sqrt' | 'exponential'} [ladderSpacingMode] - Price level spacing (default: 'sqrt')
- * @property {'flat' | 'linear' | 'sqrt'} [ladderSizeMode] - Size allocation mode (default: 'flat')
+ * @property {'flat' | 'linear' | 'sqrt' | 'fibonacci'} [ladderSizeMode] - Size allocation mode (default: 'fibonacci')
  * @property {boolean} [ladderAutoSwitch] - Auto-switch to ladder on high vol (default: false)
  * @property {number} [ladderAutoSwitchVolMult] - Vol expansion threshold for auto-switch (default: 2.0)
  * @property {number} [ladderMinSpacingPct] - Min % between rungs (default: 0.5)
@@ -591,6 +634,35 @@
  * @property {number} volExpansion - Volatility expansion ratio
  * @property {number} vwap - Volume-weighted average price
  * @property {number} recentSwing - Recent swing range
+ */
+
+// ============================================================================
+// Macro Regime Types
+// ============================================================================
+
+/**
+ * @typedef {'ACCUMULATION' | 'RANGING' | 'MARKUP' | 'DECLINE'} MacroRegimeMode
+ * Four macro market states based on multi-timeframe EMA analysis:
+ * - ACCUMULATION: Price below key EMAs, in a dip zone — increase sizing
+ * - RANGING: No clear trend, consolidation — normal behavior (passthrough)
+ * - MARKUP: Sustained uptrend above EMAs — reduce sizing, wider TP
+ * - DECLINE: Steep multi-day drop, capitulation risk — conservative sizing
+ */
+
+/**
+ * @typedef {Object} MacroRegimeState
+ * @property {MacroRegimeMode} mode - Current macro mode
+ * @property {number} score - Current composite score (-100 to +100)
+ * @property {{h21: number, h50: number, h200: number, d20: number}} emas - EMA values
+ * @property {number} lastUpdate - Timestamp of last macro update
+ * @property {{hourly: number, daily: number}} candles - Number of candles used
+ */
+
+/**
+ * @typedef {Object} MacroMultipliers
+ * @property {number} sizeMult - Position size multiplier
+ * @property {number} tpMult - Take-profit multiplier
+ * @property {number} offsetMult - Entry offset multiplier
  */
 
 // ============================================================================
@@ -655,7 +727,7 @@
  * @property {(productId: string) => Promise<{bid: number, ask: number}>} getBidAsk - Get current bid/ask
  * @property {(productId: string) => Promise<ProductDetails>} getProductDetails - Get product details
  * @property {(productId: string, quoteAmount: number) => Promise<MarketBuyResult>} placeMarketBuy - Place market buy
- * @property {(productId: string, baseAmount: number, price: number) => Promise<LimitSellResult>} placeLimitSell - Place limit sell
+ * @property {(productId: string, baseAmount: number, price: number, options?: {postOnly?: boolean}) => Promise<LimitSellResult>} placeLimitSell - Place limit sell
  * @property {(orderId: string) => Promise<OrderDetails>} getOrder - Get order details
  * @property {(productId: string) => Promise<OpenOrder[]>} getOpenOrders - Get open orders
  * @property {(orderId: string) => Promise<CancelResult>} cancelOrder - Cancel an order

@@ -2,7 +2,7 @@
   "exchanges": {
     "coinbase": {
       "enabled": false,
-      "dryRun": true,
+      "dryRun": false,
       "productId": "BTC-USDC",
       "totalAllocation": 30000,
       "intervalsToSpread": 60,
@@ -14,34 +14,35 @@
       "consolidateAfterOrders": 0,
       "consolidateInterval": "never",
       "regime": {
-        "enabled": false,
+        "enabled": true,
         "atrPeriod": 14,
-        "kFactor": 0.8,
-        "minIntervalMs": 180000,
-        "maxIntervalMs": 7200000,
+        "kFactor": 0.5,
+        "minIntervalMs": 90000,
+        "maxIntervalMs": 2400000,
         "momentumMult": 1.5,
         "volExpansionMult": 1.5,
         "volContractionMult": 1.2,
         "vwapPeriodHours": 4,
         "trendConfirmationPeriods": 5,
-        "baseSizeUsdc": 25,
+        "baseSizeUsdc": 250,
+        "minOrderSizeUsdc": 10,
         "harvestScale": 1,
-        "cautionScale": 0.15,
-        "trendScale": 0,
-        "maxLadderSteps": 300,
+        "cautionScale": 0.6,
+        "trendScale": 0.25,
+        "maxCycleBuys": 250,
         "liquidityFactorCap": 2,
         "tpMult": 1,
-        "tpMinPercent": 0.1,
-        "tpMaxPercent": 0.5,
+        "tpMinPercent": 0.125,
+        "tpMaxPercent": 0.51,
         "tpUpdateThresholdPct": 0.5,
         "holdbackRatio": 0.5,
-        "maxBtcExposure": 10,
-        "depositedCapital": 25000,
-        "maxUsdcDeployed": 25024.31,
-        "maxDrawdownPercent": 30,
-        "entryOffsetBps": 25,
+        "maxBtcExposure": 100,
+        "depositedCapital": 100000,
+        "maxUsdcDeployed": 100024.33,
+        "maxDrawdownPercent": 50,
+        "entryOffsetBps": 12,
         "cancelRateLimitMs": 1000,
-        "orderStaleMs": 60000,
+        "orderStaleMs": 120000,
         "staleDataMs": 30000,
         "staleOrdersMs": 60000,
         "maxRestErrors": 5,
@@ -49,7 +50,7 @@
         "maxLatencyMs": 5000,
         "safeRecoveryMs": 60000,
         "reconcileIntervalMs": 300000,
-        "maxOpenOrders": 12,
+        "maxOpenOrders": 50,
         "maxSpreadBps": 50,
         "spreadPauseMs": 300000,
         "minDepthUsdc": 10000,
@@ -57,19 +58,71 @@
         "flashMoveMult": 3,
         "flashCooldownMs": 600000,
         "cancelEntriesOnFlash": true,
-        "drawdownResetHours": 6,
-        "ladderResetHours": 6,
+        "drawdownResetHours": 1,
+        "cycleResetHours": 1,
         "tpAutoManaged": true,
-        "aggressiveness": "conservative",
-        "ladderAutoSwitch": true
+        "aggressiveness": "aggressive",
+        "ladderAutoSwitch": true,
+        "entryMode": "reactive",
+        "satelliteTpEnabled": true,
+        "tpMergeMinImprovementPct": 0.1,
+        "maxSatelliteOrders": 10,
+        "macroEnabled": true,
+        "ladderMaxAthDropPct": 80,
+        "ladderSizeMode": "fibonacci",
+        "ladderMinSpacingPct": 1,
+        "maxCelestialBodies": 20,
+        "macroUpdateIntervalMs": 300000
       },
       "dcaStrategy": "fixed",
       "fibBaseAmount": 10,
-      "schedulerInterval": 30000
+      "schedulerInterval": 30000,
+      "aggressivenessPresets": {
+        "conservative": {
+          "kFactor": 0.8,
+          "minIntervalMs": 180000,
+          "maxIntervalMs": 7200000,
+          "entryOffsetBps": 25,
+          "baseSizeUsdc": 50,
+          "cautionScale": 0.15,
+          "trendScale": 0,
+          "maxCycleBuys": 100
+        },
+        "moderate": {
+          "kFactor": 0.65,
+          "minIntervalMs": 120000,
+          "maxIntervalMs": 3600000,
+          "entryOffsetBps": 18,
+          "baseSizeUsdc": 100,
+          "cautionScale": 0.35,
+          "trendScale": 0.1,
+          "maxCycleBuys": 150
+        },
+        "aggressive": {
+          "kFactor": 0.5,
+          "minIntervalMs": 90000,
+          "maxIntervalMs": 2400000,
+          "entryOffsetBps": 12,
+          "baseSizeUsdc": 250,
+          "cautionScale": 0.6,
+          "trendScale": 0.25,
+          "maxCycleBuys": 250
+        },
+        "maximum": {
+          "kFactor": 0.3,
+          "minIntervalMs": 60000,
+          "maxIntervalMs": 1200000,
+          "entryOffsetBps": 5,
+          "baseSizeUsdc": 500,
+          "cautionScale": 1,
+          "trendScale": 0.5,
+          "maxCycleBuys": 500
+        }
+      }
     },
     "gemini": {
-      "enabled": false,
-      "dryRun": true,
+      "enabled": true,
+      "dryRun": false,
       "productId": "BTCUSD",
       "totalAllocation": 5000,
       "intervalsToSpread": 50,
@@ -80,11 +133,13 @@
       "maxBuyPrice": 150000,
       "schedulerInterval": 30000,
       "consolidateAfterOrders": 25,
-      "consolidateInterval": "never"
+      "consolidateInterval": "never",
+      "dcaStrategy": "fixed",
+      "fibBaseAmount": 10
     },
     "cryptocom": {
-      "enabled": false,
-      "dryRun": true,
+      "enabled": true,
+      "dryRun": false,
       "productId": "CRO_USD",
       "totalAllocation": 5000,
       "intervalsToSpread": 100,
@@ -95,10 +150,54 @@
       "maxBuyPrice": 0.5,
       "consolidateAfterOrders": 25,
       "consolidateInterval": "never",
-      "schedulerInterval": 30000
+      "schedulerInterval": 30000,
+      "dcaStrategy": "fixed",
+      "fibBaseAmount": 10
     }
   },
   "global": {
-    "schedulerInterval": 30000
+    "schedulerInterval": 30000,
+    "aggressivenessPresets": {
+      "conservative": {
+        "kFactor": 0.8,
+        "minIntervalMs": 180000,
+        "maxIntervalMs": 7200000,
+        "entryOffsetBps": 25,
+        "baseSizeUsdc": 50,
+        "cautionScale": 0.15,
+        "trendScale": 0,
+        "maxCycleBuys": 100
+      },
+      "moderate": {
+        "kFactor": 0.65,
+        "minIntervalMs": 120000,
+        "maxIntervalMs": 3600000,
+        "entryOffsetBps": 18,
+        "baseSizeUsdc": 100,
+        "cautionScale": 0.35,
+        "trendScale": 0.1,
+        "maxCycleBuys": 150
+      },
+      "aggressive": {
+        "kFactor": 0.5,
+        "minIntervalMs": 90000,
+        "maxIntervalMs": 2400000,
+        "entryOffsetBps": 12,
+        "baseSizeUsdc": 250,
+        "cautionScale": 0.6,
+        "trendScale": 0.25,
+        "maxCycleBuys": 250
+      },
+      "maximum": {
+        "kFactor": 0.3,
+        "minIntervalMs": 60000,
+        "maxIntervalMs": 1200000,
+        "entryOffsetBps": 5,
+        "baseSizeUsdc": 500,
+        "cautionScale": 1,
+        "trendScale": 0.5,
+        "maxCycleBuys": 500
+      }
+    }
   }
 }

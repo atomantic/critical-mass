@@ -24,9 +24,25 @@ const { getExchangeDataDir } = require('./migration');
  */
 
 const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
+const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
+const { loadRawConfig } = require('./config-utils');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
+
+/**
+ * Atomic write: write to .tmp then rename (POSIX-atomic).
+ * Prevents truncated JSON on crash.
+ * @param {string} filePath - Target file path
+ * @param {string} data - Data to write
+ */
+const atomicWriteSync = (filePath, data) => {
+  const tmpPath = filePath + '.tmp';
+  fs.writeFileSync(tmpPath, data);
+  fs.renameSync(tmpPath, filePath);
+};
+
+/** @type {Map<string, number>} In-memory save version per file */
+const saveVersions = new Map();
 
 /**
  * Get state file path for an exchange
@@ -91,8 +107,7 @@ const migrateState = (state) => {
  */
 const loadState = (config = null, exchange = 'coinbase') => {
   if (!config) {
-    config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    // If multi-exchange config, get the specific exchange config
+    config = loadRawConfig();
     if (config.exchanges && config.exchanges[exchange]) {
       config = { ...config.global, ...config.exchanges[exchange] };
     }
@@ -135,7 +150,7 @@ const saveState = (state, exchange = 'coinbase') => {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+  atomicWriteSync(stateFile, JSON.stringify(state, null, 2));
 };
 
 /**
@@ -511,6 +526,17 @@ const createInitialRegimePositionState = () => ({
   ladderPlacedAt: null,
   ladderLowerBound: 0,
   pendingLadderOrders: [],  // [{orderId, price, sizeUsdc, ladderIndex}]
+  // Legacy satellite fields removed — migrated into celestialState on load
+  // Celestial Hierarchy state
+  celestialBodies: [],          // CelestialBody[]
+  celestialState: {
+    bodiesCompleted: 0,
+    bodiesRealizedPnL: 0,
+    bodiesRealizedBtcPnL: 0,
+    stateVersion: 1,
+  },
+  // Macro regime state (persisted for recovery)
+  macroRegime: null,
 });
 
 /**
@@ -552,8 +578,62 @@ const loadRegimeState = (exchange = 'coinbase') => {
     delete data.position.ladderStep;
   }
 
+  const position = { ...createInitialRegimePositionState(), ...data.position };
+
+  // Sync in-memory save version from disk
+  const diskVersion = (data.position && data.position._saveVersion) || 0;
+  saveVersions.set(stateFile, diskVersion);
+
+  // Fold legacy satellite* counters into celestialState (one-time migration)
+  if (position.satellitesCompleted || position.satelliteRealizedPnL || position.satelliteRealizedBtcPnL) {
+    const cs = position.celestialState || createInitialCelestialState();
+    cs.bodiesCompleted = (cs.bodiesCompleted || 0) + (position.satellitesCompleted || 0);
+    cs.bodiesRealizedPnL = (cs.bodiesRealizedPnL || 0) + (position.satelliteRealizedPnL || 0);
+    cs.bodiesRealizedBtcPnL = (cs.bodiesRealizedBtcPnL || 0) + (position.satelliteRealizedBtcPnL || 0);
+    position.celestialState = cs;
+    delete position.satellitesCompleted;
+    delete position.satelliteRealizedPnL;
+    delete position.satelliteRealizedBtcPnL;
+    console.log(`🔄 Folded legacy satellite counters into celestialState`);
+  }
+
+  // Migrate legacy core+satellite state to celestial bodies if needed
+  if (!position.celestialBodies || position.celestialBodies.length === 0) {
+    const hasCorePosition = position.totalBTC > 0 && position.totalCostBasis > 0;
+    const hasSatellites = position.satelliteTpOrders && position.satelliteTpOrders.length > 0;
+
+    if (hasCorePosition || hasSatellites) {
+      const configUtils = require('./config-utils');
+      const regimeConfig = configUtils.getRegimeConfig(exchange);
+      const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 10000;
+
+      position.celestialBodies = migrateFromLegacy(position, maxUsdcDeployed);
+      if (!position.celestialState) {
+        position.celestialState = {
+          bodiesCompleted: position.cyclesCompleted || 0,
+          bodiesRealizedPnL: position.realizedPnL || 0,
+          bodiesRealizedBtcPnL: position.realizedBtcPnL || 0,
+          stateVersion: 1,
+        };
+      }
+
+      const coreCount = hasCorePosition ? 1 : 0;
+      const satCount = hasSatellites ? position.satelliteTpOrders.length : 0;
+      console.log(`🔄 Migrated ${coreCount} core + ${satCount} satellites → ${position.celestialBodies.length} celestial bodies`);
+    } else {
+      position.celestialBodies = [];
+      position.celestialState = position.celestialState || createInitialCelestialState();
+    }
+  }
+
+  // Clean up legacy satellite fields from position (no longer used)
+  delete position.satelliteTpOrders;
+  delete position.satellitesCompleted;
+  delete position.satelliteRealizedPnL;
+  delete position.satelliteRealizedBtcPnL;
+
   return {
-    position: { ...createInitialRegimePositionState(), ...data.position },
+    position,
     regime: { ...createInitialRegimeState(), ...data.regime },
     tpOptimizer: data.tpOptimizer || null,
     sizeOptimizer: data.sizeOptimizer || null,
@@ -568,6 +648,12 @@ const loadRegimeState = (exchange = 'coinbase') => {
  * @param {Object} [tpOptimizer] - Optional TP optimizer state
  * @param {Object} [sizeOptimizer] - Optional Size optimizer state
  */
+/**
+ * Protected fields that should be preserved from external edits
+ * when an optimistic version conflict is detected.
+ */
+const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'realizedBtcPnL'];
+
 const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null) => {
   const stateFile = getRegimeStateFile(exchange);
   const dir = path.dirname(stateFile);
@@ -575,6 +661,26 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+
+  // Optimistic version locking: detect external edits
+  const myVersion = saveVersions.get(stateFile) || 0;
+  if (fs.existsSync(stateFile)) {
+    const diskData = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    const diskVersion = (diskData.position && diskData.position._saveVersion) || 0;
+    if (diskVersion > myVersion) {
+      // External edit detected — merge protected fields from disk
+      console.log(`🔀 Merge: disk version ${diskVersion} > memory ${myVersion}, preserving external edits on [${PROTECTED_FIELDS.join(', ')}]`);
+      for (const field of PROTECTED_FIELDS) {
+        if (diskData.position[field] !== undefined) {
+          position[field] = diskData.position[field];
+        }
+      }
+    }
+  }
+
+  const nextVersion = myVersion + 1;
+  position._saveVersion = nextVersion;
+  saveVersions.set(stateFile, nextVersion);
 
   const stateData = { position, regime };
   if (tpOptimizer) {
@@ -584,7 +690,7 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
     stateData.sizeOptimizer = sizeOptimizer;
   }
 
-  fs.writeFileSync(stateFile, JSON.stringify(stateData, null, 2));
+  atomicWriteSync(stateFile, JSON.stringify(stateData, null, 2));
 };
 
 /**
@@ -665,4 +771,6 @@ module.exports = {
   saveRegimeState,
   updateRegimeStateAfterEntry,
   updateRegimeStateAfterTP,
+  // Atomic write utility (exposed for fill-ledger and testing)
+  atomicWriteSync,
 };

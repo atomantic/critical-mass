@@ -9,7 +9,7 @@
  *
  * Features:
  * - Calculates optimal baseSizeUsdc for target utilization
- * - Optionally adjusts maxLadderSteps based on historical step depth
+ * - Optionally adjusts maxCycleBuys based on historical buy depth
  * - Tracks USDC balance changes and triggers recalculation
  * - Rate-limited adjustments with safety bounds
  * - State persistence for continuity across restarts
@@ -19,7 +19,7 @@ const { roundUSDC } = require('./volatility-utils');
 
 /**
  * @typedef {Object} CycleRecord
- * @property {number} stepsUsed - Number of ladder steps used in cycle
+ * @property {number} stepsUsed - Number of buys used in cycle
  * @property {number} capitalDeployed - USDC deployed in cycle
  * @property {number} completedAt - Timestamp when cycle completed
  * @property {number} availableBalance - Available USDC at cycle completion
@@ -29,7 +29,7 @@ const { roundUSDC } = require('./volatility-utils');
  * @typedef {Object} SizeAdjustment
  * @property {number} baseSizeUsdc - New base size in USDC
  * @property {number} maxUsdcDeployed - New max deployment cap
- * @property {number} [maxLadderSteps] - New max ladder steps (optional)
+ * @property {number} [maxCycleBuys] - New max cycle buys (optional)
  * @property {string} reason - Adjustment reason
  */
 
@@ -54,7 +54,7 @@ const BALANCE_CHANGE_THRESHOLD = 0.10; // 10% balance change triggers re-evaluat
  * @param {number} liquidityFactorCap - Cap for liquidity factor (default 2.0)
  * @returns {number} Total multiplier sum
  */
-const calculateTotalLadderMultiplier = (maxSteps, liquidityFactorCap = 2.0) => {
+const calculateTotalStepMultiplier = (maxSteps, liquidityFactorCap = 2.0) => {
   let total = 0;
   for (let step = 0; step < maxSteps; step++) {
     const factor = Math.min(1 + (step * 0.1), liquidityFactorCap);
@@ -75,7 +75,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
   /** @type {CycleRecord[]} */
   let recentCycles = [];
 
-  /** @type {Array<{timestamp: number, baseSizeUsdc: number, maxUsdcDeployed: number, maxLadderSteps?: number, reason: string}>} */
+  /** @type {Array<{timestamp: number, baseSizeUsdc: number, maxUsdcDeployed: number, maxCycleBuys?: number, reason: string}>} */
   let adjustmentHistory = [];
 
   let lastEvaluationTime = Date.now();
@@ -199,7 +199,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
         timestamp: now,
         baseSizeUsdc: adjustment.baseSizeUsdc,
         maxUsdcDeployed: adjustment.maxUsdcDeployed,
-        maxLadderSteps: adjustment.maxLadderSteps,
+        maxCycleBuys: adjustment.maxCycleBuys,
         reason: adjustment.reason,
       });
 
@@ -236,7 +236,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
         timestamp: now,
         baseSizeUsdc: adjustment.baseSizeUsdc,
         maxUsdcDeployed: adjustment.maxUsdcDeployed,
-        maxLadderSteps: adjustment.maxLadderSteps,
+        maxCycleBuys: adjustment.maxCycleBuys,
         reason: adjustment.reason,
       });
 
@@ -266,11 +266,11 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
 
     // Current values
     const currentBaseSizeUsdc = config.baseSizeUsdc;
-    const currentMaxLadderSteps = config.maxLadderSteps;
+    const currentMaxCycleBuys = config.maxCycleBuys;
     const liquidityFactorCap = config.liquidityFactorCap || 2.0;
 
-    // Calculate total ladder multiplier for current steps
-    const totalMultiplier = calculateTotalLadderMultiplier(currentMaxLadderSteps, liquidityFactorCap);
+    // Calculate total step multiplier for current max buys
+    const totalMultiplier = calculateTotalStepMultiplier(currentMaxCycleBuys, liquidityFactorCap);
 
     // Target deployment based on available balance
     const targetDeployment = availableBalance * targetUtilization;
@@ -300,25 +300,25 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
     // Calculate new maxUsdcDeployed to match
     const newMaxUsdcDeployed = roundUSDC(availableBalance * targetUtilization);
 
-    // Optionally adjust ladder steps based on historical data
-    let newMaxLadderSteps = undefined;
-    if (config.sizeAutoLadderSteps && recentCycles.length >= 10) {
+    // Optionally adjust max cycle buys based on historical data
+    let newMaxCycleBuys = undefined;
+    if (config.sizeAutoCycleBuys && recentCycles.length >= 10) {
       // Use p90 steps * 1.5 as buffer, with min/max bounds
       const proposedSteps = Math.ceil(p90StepsUsed * 1.5);
-      const minSteps = config.sizeMinLadderSteps || 10;
-      const maxSteps = config.sizeMaxLadderSteps || 100;
-      newMaxLadderSteps = Math.max(minSteps, Math.min(proposedSteps, maxSteps));
+      const minSteps = config.sizeMinCycleBuys || 10;
+      const maxSteps = config.sizeMaxCycleBuys || 100;
+      newMaxCycleBuys = Math.max(minSteps, Math.min(proposedSteps, maxSteps));
 
       // Only include if significantly different from current
-      if (Math.abs(newMaxLadderSteps - currentMaxLadderSteps) < 3) {
-        newMaxLadderSteps = undefined;
+      if (Math.abs(newMaxCycleBuys - currentMaxCycleBuys) < 3) {
+        newMaxCycleBuys = undefined;
       }
     }
 
     // Check if values actually changed (beyond 1% threshold)
     const baseChanged = Math.abs(newBaseSizeUsdc - currentBaseSizeUsdc) / currentBaseSizeUsdc > 0.01;
     const deployChanged = Math.abs(newMaxUsdcDeployed - config.maxUsdcDeployed) / config.maxUsdcDeployed > 0.01;
-    const stepsChanged = newMaxLadderSteps !== undefined && newMaxLadderSteps !== currentMaxLadderSteps;
+    const stepsChanged = newMaxCycleBuys !== undefined && newMaxCycleBuys !== currentMaxCycleBuys;
 
     if (!baseChanged && !deployChanged && !stepsChanged) {
       return null;
@@ -328,14 +328,14 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
       `base: $${currentBaseSizeUsdc}→$${newBaseSizeUsdc}`,
       `cap: $${config.maxUsdcDeployed.toFixed(0)}→$${newMaxUsdcDeployed.toFixed(0)}`,
     ];
-    if (newMaxLadderSteps !== undefined) {
-      details.push(`steps: ${currentMaxLadderSteps}→${newMaxLadderSteps}`);
+    if (newMaxCycleBuys !== undefined) {
+      details.push(`steps: ${currentMaxCycleBuys}→${newMaxCycleBuys}`);
     }
 
     return {
       baseSizeUsdc: newBaseSizeUsdc,
       maxUsdcDeployed: newMaxUsdcDeployed,
-      maxLadderSteps: newMaxLadderSteps,
+      maxCycleBuys: newMaxCycleBuys,
       reason: `${reason}: ${details.join(', ')}`,
     };
   };
@@ -348,9 +348,9 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
   const previewSizing = (balance) => {
     const liquidityFactorCap = config.liquidityFactorCap || 2.0;
     const targetUtilization = config.sizeTargetUtilization || 0.90;
-    const maxLadderSteps = config.maxLadderSteps;
+    const maxCycleBuys = config.maxCycleBuys;
 
-    const totalMultiplier = calculateTotalLadderMultiplier(maxLadderSteps, liquidityFactorCap);
+    const totalMultiplier = calculateTotalStepMultiplier(maxCycleBuys, liquidityFactorCap);
     const targetDeployment = balance * targetUtilization;
     const optimalBaseSizeUsdc = roundUSDC(targetDeployment / totalMultiplier);
 
@@ -366,7 +366,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
       targetUtilization,
       targetDeployment,
       totalMultiplier: roundUSDC(totalMultiplier),
-      maxLadderSteps,
+      maxCycleBuys,
       optimalBaseSizeUsdc,
       currentBaseSizeUsdc: config.baseSizeUsdc,
       expectedDeployment: {
@@ -448,7 +448,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
     currentConfig: {
       baseSizeUsdc: config.baseSizeUsdc,
       maxUsdcDeployed: config.maxUsdcDeployed,
-      maxLadderSteps: config.maxLadderSteps,
+      maxCycleBuys: config.maxCycleBuys,
     },
     adjustmentHistory: adjustmentHistory.slice(-10),
   });
@@ -478,11 +478,11 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
     importState,
     reset,
     // Utility export
-    calculateTotalLadderMultiplier,
+    calculateTotalStepMultiplier,
   };
 };
 
 module.exports = {
   createSizeOptimizer,
-  calculateTotalLadderMultiplier,
+  calculateTotalStepMultiplier,
 };

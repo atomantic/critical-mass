@@ -18,7 +18,55 @@ const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils')
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
  */
 
-const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
+const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
+const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+
+/**
+ * Deep merge two objects. Values from `override` take precedence.
+ * Arrays are replaced, not concatenated.
+ * @param {Object} base - Base object
+ * @param {Object} override - Override object
+ * @returns {Object} Merged object
+ */
+const deepMerge = (base, override) => {
+  const result = { ...base };
+  for (const key of Object.keys(override)) {
+    const baseVal = base[key];
+    const overVal = override[key];
+    if (
+      overVal && typeof overVal === 'object' && !Array.isArray(overVal) &&
+      baseVal && typeof baseVal === 'object' && !Array.isArray(baseVal)
+    ) {
+      result[key] = deepMerge(baseVal, overVal);
+    } else {
+      result[key] = overVal;
+    }
+  }
+  return result;
+};
+
+/**
+ * Compute the diff between base and modified config.
+ * Returns only keys/values that differ from base (user overrides).
+ * @param {Object} base - Base configuration
+ * @param {Object} modified - Modified configuration
+ * @returns {Object} Only the differences
+ */
+const computeDiff = (base, modified) => {
+  const diff = {};
+  for (const key of Object.keys(modified)) {
+    const baseVal = base[key];
+    const modVal = modified[key];
+    if (modVal && typeof modVal === 'object' && !Array.isArray(modVal) &&
+        baseVal && typeof baseVal === 'object' && !Array.isArray(baseVal)) {
+      const nested = computeDiff(baseVal, modVal);
+      if (Object.keys(nested).length) diff[key] = nested;
+    } else if (JSON.stringify(baseVal) !== JSON.stringify(modVal)) {
+      diff[key] = modVal;
+    }
+  }
+  return diff;
+};
 
 /**
  * Default configuration values
@@ -65,12 +113,13 @@ const REGIME_DEFAULTS = {
   trendConfirmationPeriods: 5,
 
   // Position Sizing
+  minOrderSizeUsdc: 5,  // Minimum order size in USDC (floor after all multipliers)
   baseSizeUsdc: 50,
   harvestScale: 1.0,
   cautionScale: 0.5,
   trendScale: 0.0,
-  maxLadderSteps: 15,
-  ladderResetHours: 72, // Auto-reset ladder counter after 72 hours (3 days) at max, 0 to disable
+  maxCycleBuys: 15,
+  cycleResetHours: 72, // Auto-reset cycle buys counter after 72 hours (3 days) at max, 0 to disable
   liquidityFactorCap: 2.0,
 
   // Take-Profit
@@ -79,6 +128,12 @@ const REGIME_DEFAULTS = {
   tpMaxPercent: 15.0,
   tpUpdateThresholdPct: 0.5,
   holdbackRatio: 0.5,
+
+  // Legacy satellite aliases (removed — use celestialEnabled / maxCelestialBodies)
+
+  // Celestial Hierarchy
+  celestialEnabled: true,             // Enable multi-tier position management
+  maxCelestialBodies: 10,             // Maximum concurrent celestial bodies (1-15)
 
   // TP Auto-Management
   tpAutoManaged: false,         // Opt-in flag for dynamic TP adjustment
@@ -98,9 +153,9 @@ const REGIME_DEFAULTS = {
   sizeAbsoluteMaxBase: 500,     // Ceiling for baseSizeUsdc
   sizeTargetUtilization: 0.90,  // Target 90% capital utilization
   sizeMaxChangePercent: 25,     // Max % change per adjustment
-  sizeAutoLadderSteps: false,   // Also auto-adjust maxLadderSteps
-  sizeMinLadderSteps: 10,       // Min ladder steps if auto-adjusting
-  sizeMaxLadderSteps: 100,      // Max ladder steps if auto-adjusting
+  sizeAutoCycleBuys: false,   // Also auto-adjust maxCycleBuys
+  sizeMinCycleBuys: 10,       // Min cycle buys if auto-adjusting
+  sizeMaxCycleBuys: 100,      // Max cycle buys if auto-adjusting
 
   // Risk Caps
   maxBtcExposure: 0.5,
@@ -138,18 +193,109 @@ const REGIME_DEFAULTS = {
   flashCooldownMs: 600000,
   cancelEntriesOnFlash: true,
 
+  // Macro Regime
+  macroEnabled: false,                 // Enable multi-timeframe macro regime overlay
+  macroUpdateIntervalMs: 300000,       // How often to fetch candles and re-score (5 min)
+  macroHysteresis: 5,                  // Score buffer to prevent mode chatter at boundaries
+  macroAccumulationThreshold: -15,     // Score below this → ACCUMULATION
+  macroDeclineThreshold: -50,          // Score below this → DECLINE
+  macroMarkupThreshold: 35,            // Score above this → MARKUP
+  macroAccumulationSizeMult: 1.3,      // Size multiplier in ACCUMULATION
+  macroAccumulationTpMult: 0.85,       // TP multiplier in ACCUMULATION (tighter)
+  macroAccumulationOffsetMult: 0.8,    // Offset multiplier in ACCUMULATION (tighter entries)
+  macroMarkupSizeMult: 0.7,           // Size multiplier in MARKUP
+  macroMarkupTpMult: 1.3,             // TP multiplier in MARKUP (wider)
+  macroMarkupOffsetMult: 1.2,         // Offset multiplier in MARKUP (wider entries)
+  macroDeclineSizeMult: 0.4,          // Size multiplier in DECLINE
+  macroDeclineTpMult: 0.7,            // TP multiplier in DECLINE (tighter)
+  macroDeclineOffsetMult: 1.5,        // Offset multiplier in DECLINE (wider entries)
+
   // Entry Mode
   entryMode: 'reactive',              // 'reactive' | 'ladder'
 
   // Ladder Parameters (only when entryMode: 'ladder')
-  ladderLevels: 10,                   // Number of rungs
-  ladderLowerBoundPct: 15,            // Base lower bound (% below current)
-  ladderLowerBoundAthAdjust: true,    // Widen based on ATH distance
+  ladderMaxAthDropPct: 80,            // Bottom of ladder = ATH × (1 - this/100). 80 = lowest bid at 20% of ATH
   ladderSpacingMode: 'sqrt',          // 'linear' | 'sqrt' | 'exponential'
-  ladderSizeMode: 'flat',             // 'flat' | 'linear' | 'sqrt'
+  ladderSizeMode: 'fibonacci',        // 'flat' | 'linear' | 'sqrt' | 'fibonacci'
   ladderAutoSwitch: false,            // Auto-switch based on volatility
   ladderAutoSwitchVolMult: 2.0,       // Vol expansion threshold
   ladderMinSpacingPct: 0.5,           // Min % between rungs
+};
+
+/**
+ * Default notification configuration
+ */
+const NOTIFICATION_DEFAULTS = {
+  enabled: false,
+  telegram: { botToken: '', chatId: '' },
+  events: {
+    buy_filled: true,
+    entry_filled: true,
+    tp_filled: true,
+    regime_change: true,
+    flash_move: true,
+    safe_mode: true,
+    active_mode: true,
+    cap_reached: true,
+    cycle_reset: true,
+    error: true,
+    sell_placed: false,
+    tp_placed: false,
+    spread_pause: false,
+    depth_pause: false,
+    regime_hourly: false,
+    orders_consolidated: false,
+  },
+  rateLimitMs: 5000,
+  dailySummaryHour: 20,
+  quietHours: { enabled: false, start: 23, end: 7 },
+};
+
+/**
+ * Default aggressiveness preset definitions
+ * These define the parameter values for each aggressiveness level.
+ */
+const DEFAULT_AGGRESSIVENESS_PRESETS = {
+  conservative: {
+    kFactor: 0.8,
+    minIntervalMs: 180000,
+    maxIntervalMs: 7200000,
+    entryOffsetBps: 25,
+    baseSizeUsdc: 25,
+    cautionScale: 0.15,
+    trendScale: 0,
+    maxCycleBuys: 10,
+  },
+  moderate: {
+    kFactor: 0.65,
+    minIntervalMs: 120000,
+    maxIntervalMs: 3600000,
+    entryOffsetBps: 18,
+    baseSizeUsdc: 50,
+    cautionScale: 0.35,
+    trendScale: 0.1,
+    maxCycleBuys: 15,
+  },
+  aggressive: {
+    kFactor: 0.5,
+    minIntervalMs: 90000,
+    maxIntervalMs: 2400000,
+    entryOffsetBps: 12,
+    baseSizeUsdc: 100,
+    cautionScale: 0.6,
+    trendScale: 0.25,
+    maxCycleBuys: 25,
+  },
+  maximum: {
+    kFactor: 0.3,
+    minIntervalMs: 60000,
+    maxIntervalMs: 1200000,
+    entryOffsetBps: 5,
+    baseSizeUsdc: 200,
+    cautionScale: 1.0,
+    trendScale: 0.5,
+    maxCycleBuys: 50,
+  },
 };
 
 /**
@@ -158,26 +304,41 @@ const REGIME_DEFAULTS = {
  */
 const GLOBAL_DEFAULTS = {
   schedulerInterval: 30000,
+  backup: {
+    enabled: true,
+    intervalMs: 24 * 60 * 60 * 1000, // 24 hours
+    maxBackups: 7,
+    includePriceCache: false, // price caches are ~45MB per exchange, can be regenerated
+  },
 };
 
 /**
- * Load raw configuration from file
+ * Load raw configuration from base config, with user overrides from data/config.json merged on top
  * @returns {Object} Raw configuration object
  */
 const loadRawConfig = () => {
-  if (!fs.existsSync(CONFIG_FILE)) {
-    return {};
-  }
-  return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  const base = fs.existsSync(BASE_CONFIG_FILE)
+    ? JSON.parse(fs.readFileSync(BASE_CONFIG_FILE, 'utf8'))
+    : {};
+  const user = fs.existsSync(USER_CONFIG_FILE)
+    ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8'))
+    : {};
+  return Object.keys(user).length ? deepMerge(base, user) : base;
 };
 
 /**
- * Save configuration to file
- * @param {MultiExchangeConfig} config - Configuration to save
+ * Save configuration to user config file (data/config.json).
+ * Only persists the diff (overrides) from the base config.
+ * @param {MultiExchangeConfig} config - Full merged configuration to save
  * @returns {void}
  */
 const saveConfig = (config) => {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  const base = fs.existsSync(BASE_CONFIG_FILE)
+    ? JSON.parse(fs.readFileSync(BASE_CONFIG_FILE, 'utf8'))
+    : {};
+  const diff = computeDiff(base, config);
+  fs.mkdirSync(path.dirname(USER_CONFIG_FILE), { recursive: true });
+  fs.writeFileSync(USER_CONFIG_FILE, JSON.stringify(diff, null, 2));
 };
 
 /**
@@ -472,11 +633,14 @@ const validateRegimeConfig = (config) => {
   }
 
   // Position Sizing validation
+  if (config.minOrderSizeUsdc !== undefined && (config.minOrderSizeUsdc < 1 || config.minOrderSizeUsdc > 100)) {
+    errors.push('minOrderSizeUsdc must be between 1 and 100');
+  }
   if (config.baseSizeUsdc !== undefined && (config.baseSizeUsdc < 1 || config.baseSizeUsdc > 1000)) {
     errors.push('baseSizeUsdc must be between 1 and 1000');
   }
-  if (config.maxLadderSteps !== undefined && (config.maxLadderSteps < 3 || config.maxLadderSteps > 1000)) {
-    errors.push('maxLadderSteps must be between 3 and 1000');
+  if (config.maxCycleBuys !== undefined && (config.maxCycleBuys < 3 || config.maxCycleBuys > 1000)) {
+    errors.push('maxCycleBuys must be between 3 and 1000');
   }
 
   // Take-Profit validation
@@ -532,11 +696,18 @@ const validateRegimeConfig = (config) => {
   if (config.sizeMaxChangePercent !== undefined && (config.sizeMaxChangePercent < 5 || config.sizeMaxChangePercent > 50)) {
     errors.push('sizeMaxChangePercent must be between 5 and 50');
   }
-  if (config.sizeMinLadderSteps !== undefined && (config.sizeMinLadderSteps < 5 || config.sizeMinLadderSteps > 50)) {
-    errors.push('sizeMinLadderSteps must be between 5 and 50');
+  if (config.sizeMinCycleBuys !== undefined && (config.sizeMinCycleBuys < 5 || config.sizeMinCycleBuys > 50)) {
+    errors.push('sizeMinCycleBuys must be between 5 and 50');
   }
-  if (config.sizeMaxLadderSteps !== undefined && (config.sizeMaxLadderSteps < 20 || config.sizeMaxLadderSteps > 200)) {
-    errors.push('sizeMaxLadderSteps must be between 20 and 200');
+  if (config.sizeMaxCycleBuys !== undefined && (config.sizeMaxCycleBuys < 20 || config.sizeMaxCycleBuys > 200)) {
+    errors.push('sizeMaxCycleBuys must be between 20 and 200');
+  }
+
+  // Legacy satellite config aliases silently accepted (mapped to celestial equivalents)
+
+  // Celestial Hierarchy validation
+  if (config.maxCelestialBodies !== undefined && (!Number.isInteger(config.maxCelestialBodies) || config.maxCelestialBodies < 1 || config.maxCelestialBodies > 15)) {
+    errors.push('maxCelestialBodies must be an integer between 1 and 15');
   }
 
   // Ladder / Entry Mode validation
@@ -546,11 +717,8 @@ const validateRegimeConfig = (config) => {
       errors.push(`entryMode must be one of: ${allowedEntryModes.join(', ')}`);
     }
   }
-  if (config.ladderLevels !== undefined && (!Number.isInteger(config.ladderLevels) || config.ladderLevels < 2 || config.ladderLevels > 50)) {
-    errors.push('ladderLevels must be an integer between 2 and 50');
-  }
-  if (config.ladderLowerBoundPct !== undefined && (config.ladderLowerBoundPct < 1 || config.ladderLowerBoundPct > 50)) {
-    errors.push('ladderLowerBoundPct must be between 1 and 50');
+  if (config.ladderMaxAthDropPct !== undefined && (config.ladderMaxAthDropPct < 10 || config.ladderMaxAthDropPct > 95)) {
+    errors.push('ladderMaxAthDropPct must be between 10 and 95');
   }
   if (config.ladderSpacingMode !== undefined) {
     const allowedSpacing = ['linear', 'sqrt', 'exponential'];
@@ -559,13 +727,39 @@ const validateRegimeConfig = (config) => {
     }
   }
   if (config.ladderSizeMode !== undefined) {
-    const allowedSizing = ['flat', 'linear', 'sqrt'];
+    const allowedSizing = ['flat', 'linear', 'sqrt', 'fibonacci'];
     if (!allowedSizing.includes(config.ladderSizeMode)) {
       errors.push(`ladderSizeMode must be one of: ${allowedSizing.join(', ')}`);
     }
   }
   if (config.ladderMinSpacingPct !== undefined && (config.ladderMinSpacingPct < 0.01 || config.ladderMinSpacingPct > 5.0)) {
     errors.push('ladderMinSpacingPct must be between 0.01 and 5.0');
+  }
+
+  // Macro Regime validation
+  if (config.macroHysteresis !== undefined && (config.macroHysteresis < 1 || config.macroHysteresis > 20)) {
+    errors.push('macroHysteresis must be between 1 and 20');
+  }
+  if (config.macroDeclineThreshold !== undefined && config.macroAccumulationThreshold !== undefined
+    && config.macroDeclineThreshold >= config.macroAccumulationThreshold) {
+    errors.push('macroDeclineThreshold must be less than macroAccumulationThreshold');
+  }
+  if (config.macroAccumulationThreshold !== undefined && config.macroMarkupThreshold !== undefined
+    && config.macroAccumulationThreshold >= config.macroMarkupThreshold) {
+    errors.push('macroAccumulationThreshold must be less than macroMarkupThreshold');
+  }
+  if (config.macroUpdateIntervalMs !== undefined && (config.macroUpdateIntervalMs < 60000 || config.macroUpdateIntervalMs > 600000)) {
+    errors.push('macroUpdateIntervalMs must be between 60000 (1 min) and 600000 (10 min)');
+  }
+  const macroMultFields = [
+    'macroAccumulationSizeMult', 'macroAccumulationTpMult', 'macroAccumulationOffsetMult',
+    'macroMarkupSizeMult', 'macroMarkupTpMult', 'macroMarkupOffsetMult',
+    'macroDeclineSizeMult', 'macroDeclineTpMult', 'macroDeclineOffsetMult',
+  ];
+  for (const field of macroMultFields) {
+    if (config[field] !== undefined && (config[field] < 0.1 || config[field] > 3.0)) {
+      errors.push(`${field} must be between 0.1 and 3.0`);
+    }
   }
 
   // Risk Caps validation
@@ -591,6 +785,124 @@ const validateRegimeConfig = (config) => {
   };
 };
 
+/**
+ * Get notification configuration with defaults
+ * @returns {Object} Notification config
+ */
+const getNotificationConfig = () => {
+  const config = loadConfig();
+  const notif = config.global?.notifications || {};
+  return {
+    ...NOTIFICATION_DEFAULTS,
+    ...notif,
+    telegram: { ...NOTIFICATION_DEFAULTS.telegram, ...notif.telegram },
+    events: { ...NOTIFICATION_DEFAULTS.events, ...notif.events },
+    quietHours: { ...NOTIFICATION_DEFAULTS.quietHours, ...notif.quietHours },
+  };
+};
+
+/**
+ * Get aggressiveness presets (user-customized merged with defaults)
+ * @returns {Object} Presets keyed by level id
+ */
+const getAggressivenessPresets = () => {
+  const config = loadConfig();
+  const saved = config.global?.aggressivenessPresets || {};
+  const merged = {};
+  for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
+    merged[level] = {
+      ...DEFAULT_AGGRESSIVENESS_PRESETS[level],
+      ...saved[level],
+    };
+  }
+  return merged;
+};
+
+/**
+ * Update aggressiveness presets
+ * @param {Object} updates - Presets keyed by level id with partial param overrides
+ * @returns {Object} Updated full configuration
+ */
+const updateAggressivenessPresets = (updates) => {
+  const config = loadConfig();
+  const current = config.global?.aggressivenessPresets || {};
+
+  config.global = config.global || {};
+  config.global.aggressivenessPresets = {};
+
+  for (const level of Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS)) {
+    config.global.aggressivenessPresets[level] = {
+      ...DEFAULT_AGGRESSIVENESS_PRESETS[level],
+      ...current[level],
+      ...updates[level],
+    };
+  }
+
+  saveConfig(config);
+  return config;
+};
+
+/**
+ * Update notification configuration
+ * @param {Object} updates - Notification config updates
+ * @returns {Object} Updated full configuration
+ */
+const updateNotificationConfig = (updates) => {
+  const config = loadConfig();
+  const current = config.global?.notifications || {};
+
+  config.global = config.global || {};
+  config.global.notifications = {
+    ...current,
+    ...updates,
+    telegram: updates.telegram
+      ? { ...current.telegram, ...updates.telegram }
+      : current.telegram,
+    events: updates.events
+      ? { ...current.events, ...updates.events }
+      : current.events,
+    quietHours: updates.quietHours
+      ? { ...current.quietHours, ...updates.quietHours }
+      : current.quietHours,
+  };
+
+  saveConfig(config);
+  return config;
+};
+
+/**
+ * Get backup configuration with defaults
+ * @returns {Object} Backup config
+ */
+const getBackupConfig = () => {
+  const config = loadConfig();
+  const backup = config.global?.backup || {};
+  return {
+    ...GLOBAL_DEFAULTS.backup,
+    ...backup,
+  };
+};
+
+/**
+ * Update backup configuration
+ * @param {Object} updates - Backup config updates
+ * @returns {Object} Updated full configuration
+ */
+const updateBackupConfig = (updates) => {
+  const config = loadConfig();
+  const current = config.global?.backup || {};
+
+  config.global = config.global || {};
+  config.global.backup = {
+    ...GLOBAL_DEFAULTS.backup,
+    ...current,
+    ...updates,
+  };
+
+  saveConfig(config);
+  return config;
+};
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -610,7 +922,18 @@ module.exports = {
   getRegimeConfig,
   updateRegimeConfig,
   validateRegimeConfig,
+  // Notifications
+  getNotificationConfig,
+  updateNotificationConfig,
+  // Aggressiveness presets
+  getAggressivenessPresets,
+  updateAggressivenessPresets,
+  DEFAULT_AGGRESSIVENESS_PRESETS,
+  // Backups
+  getBackupConfig,
+  updateBackupConfig,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,
+  NOTIFICATION_DEFAULTS,
 };

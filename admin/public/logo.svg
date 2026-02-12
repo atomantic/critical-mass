@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Outer orbit ring -->
+  <ellipse cx="16" cy="16" rx="14" ry="5" fill="none" stroke="#6366f1" stroke-width="0.8" opacity="0.5" transform="rotate(-20 16 16)" />
+  <!-- Middle orbit ring -->
+  <ellipse cx="16" cy="16" rx="10" ry="4" fill="none" stroke="#818cf8" stroke-width="0.8" opacity="0.6" transform="rotate(25 16 16)" />
+  <!-- Core glow -->
+  <circle cx="16" cy="16" r="5" fill="url(#cmCoreGlow)" />
+  <!-- Bright core -->
+  <circle cx="16" cy="16" r="2.5" fill="#e0e7ff" />
+  <!-- Orbiting body -->
+  <circle cx="27" cy="12" r="1.5" fill="#a5b4fc" />
+  <defs>
+    <radialGradient id="cmCoreGlow">
+      <stop offset="0%" stop-color="#c7d2fe" />
+      <stop offset="60%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+</svg>
