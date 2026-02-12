@@ -12,7 +12,7 @@
 - [x] 1.7 findMergeTarget fallback to body without TP (`src/celestial-hierarchy.js`) - Highest costBasis
 - [x] 1.8 getTierSummary conflates satellite and sun (`src/celestial-hierarchy.js`) - TIER_ABBREV map
 - [x] 1.9 WebSocket product matching too broad (`src/websocket-feed.js`) - Exact productId match
-- [x] 1.10 fill-ledger.js negative BTC guard (`src/fill-ledger.js`) - Clamp to 0 with warning
+- [x] 1.10 fill-ledger.js negative BTC guard (`src/fill-ledger.js`) - Reorder linked buys before sells; clamp as fallback
 
 ### Phase 2: Security Hardening - COMPLETE
 - [x] 2.1 Restrict CORS origin - Allowlist from env/defaults (localhost:5563, localhost:5564)
@@ -185,6 +185,19 @@ All repair/reconcile scripts need updated field names with backward-compat reads
 - **Active orders on exchange**: `satellite_tp` type only used internally, not on exchange → safe to rename
 - **Running engine during deploy**: Stop engine before deploying, restart after → state migration runs on load
 - **Rollback**: All changes are naming-only, no logic changes → `git revert` is clean
+
+### Fix: Realized P&L Sync (Filled Orders ↔ Position Card) - COMPLETE
+- [x] Realized P&L in Position card ($88.64) diverged from Filled Orders total ($92.25)
+  - Root cause: Recalculate used per-cycle P&L + stale `bodiesRealizedPnL` counter
+  - Fix: Global buy-sell linkage algorithm in `recalculateCycles()` mirrors dashboard exactly
+  - Three-step approach: (1) pnlMap with running average for core, annotations for body
+    (2) Build buy-sell linkage via sellOrderId with orphan redirect via bodyId
+    (3) Override P&L from linked buys for sells without trusted annotations
+  - Returns `globalRealizedPnL` and `globalRealizedBtcPnL` used by both startup and API
+- [x] Startup auto-recalculate now uses global buy-linkage P&L (not stale body counter)
+- [x] Unrealized P&L now includes all active celestial bodies' mark-to-market (not just core)
+- [x] Fill reordering for corrective buys: linked buys processed before sells regardless of timestamp
+  - Fixes negative BTC warning for fills where correction buy was added after its sell
 
 ---
 

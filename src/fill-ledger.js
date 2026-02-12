@@ -207,7 +207,39 @@ const createFillLedger = (exchange) => {
    * @returns {RegimePositionState} Rebuilt position state
    */
   const rebuildPositionFromFills = (fillsToProcess) => {
-    const targetFills = fillsToProcess || getCurrentCycleFills();
+    const chronoFills = fillsToProcess || getCurrentCycleFills();
+
+    // Reorder linked buy-sell pairs so buys process before their sells,
+    // even when a corrective buy has a later timestamp than its sell.
+    const buysBySellOrderId = new Map();
+    for (const f of chronoFills) {
+      if (f.side === 'buy' && f.sellOrderId) {
+        if (!buysBySellOrderId.has(f.sellOrderId)) buysBySellOrderId.set(f.sellOrderId, []);
+        buysBySellOrderId.get(f.sellOrderId).push(f);
+      }
+    }
+    let targetFills = chronoFills;
+    if (buysBySellOrderId.size > 0) {
+      const result = [];
+      const emitted = new Set();
+      for (const fill of chronoFills) {
+        if (emitted.has(fill.tradeId)) continue;
+        if (fill.side === 'sell') {
+          const linkedBuys = buysBySellOrderId.get(fill.orderId);
+          if (linkedBuys) {
+            for (const buy of linkedBuys) {
+              if (!emitted.has(buy.tradeId)) {
+                result.push(buy);
+                emitted.add(buy.tradeId);
+              }
+            }
+          }
+        }
+        result.push(fill);
+        emitted.add(fill.tradeId);
+      }
+      targetFills = result;
+    }
 
     let totalBTC = 0;
     let totalCostBasis = 0;
@@ -475,6 +507,89 @@ const createFillLedger = (exchange) => {
     let totalRealizedPnL = 0;
     let totalRealizedBtcPnL = 0;
 
+    // Global P&L pass: mirrors dashboard Filled Orders buy-linkage computation.
+    // Step 1: Build pnlMap (running average for core, annotations for body)
+    let globalRealizedPnL = 0;
+    let globalRealizedBtcPnL = 0;
+    let gRunBtc = 0, gRunCost = 0;
+    const sellPnlMap = new Map(); // orderId -> { pnl, holdback }
+    for (const fill of allFills) {
+      const isBody = fill.isBodyOwned ?? fill.isSatellite;
+      if (fill.side === 'buy') {
+        if (!isBody) { gRunBtc += fill.size; gRunCost += fill.quoteAmount + fill.netFee; }
+      } else if (fill.side === 'sell') {
+        if (isBody) {
+          const bodyPnl = fill.bodyPnl ?? fill.satellitePnl;
+          const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount - fill.netFee) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0);
+          const holdback = (fill.bodyHoldbackBtc ?? fill.satelliteHoldbackBtc) || 0;
+          const prev = sellPnlMap.get(fill.orderId);
+          if (prev) { prev.pnl += pnl; prev.holdback += holdback; prev.isBody = true; }
+          else sellPnlMap.set(fill.orderId, { pnl, holdback, isBody: true, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: bodyPnl != null });
+        } else {
+          const avgCost = gRunBtc > 0 ? gRunCost / gRunBtc : 0;
+          const proceeds = fill.quoteAmount - fill.netFee;
+          const pnl = proceeds - avgCost * fill.size;
+          const prev = sellPnlMap.get(fill.orderId);
+          if (prev) { prev.pnl += pnl; prev.quoteAmount += fill.quoteAmount; prev.netFee += fill.netFee; }
+          else sellPnlMap.set(fill.orderId, { pnl, holdback: 0, isBody: false, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: false });
+          const rem = gRunBtc - fill.size;
+          gRunBtc = rem > 0 ? rem : 0;
+          gRunCost = rem > 0 ? avgCost * rem : 0;
+        }
+      }
+    }
+    // Step 2: Build buy-sell linkage and override P&L (matches dashboard lines 2049-2055)
+    const buysBySellId = new Map();
+    for (const fill of allFills) {
+      if (fill.side !== 'buy' || !fill.sellOrderId) continue;
+      if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, []);
+      buysBySellId.get(fill.sellOrderId).push(fill);
+    }
+    // Also build bodyId -> sell orderId map for orphan redirect
+    const sellIdByBodyId = new Map();
+    const knownSellIds = new Set(sellPnlMap.keys());
+    for (const fill of allFills) {
+      if (fill.side === 'sell' && fill.bodyId) sellIdByBodyId.set(fill.bodyId, fill.orderId);
+    }
+    // Redirect orphaned buys (sellOrderId points to non-existent sell) via bodyId
+    for (const fill of allFills) {
+      if (fill.side !== 'buy' || !fill.sellOrderId || knownSellIds.has(fill.sellOrderId)) continue;
+      const bodyId = fill.bodyId;
+      if (!bodyId) continue;
+      const realSellId = sellIdByBodyId.get(bodyId);
+      if (!realSellId) continue;
+      if (!buysBySellId.has(realSellId)) buysBySellId.set(realSellId, []);
+      const existing = buysBySellId.get(realSellId);
+      if (!existing.some(b => b.orderId === fill.orderId)) existing.push(fill);
+    }
+    // Fallback: link buys by bodyId for sells with no sellOrderId linkage
+    const buysByBodyId = new Map();
+    for (const fill of allFills) {
+      if (fill.side !== 'buy' || !fill.bodyId) continue;
+      if (!buysByBodyId.has(fill.bodyId)) buysByBodyId.set(fill.bodyId, []);
+      buysByBodyId.get(fill.bodyId).push(fill);
+    }
+    // Override P&L from linked buys for sells that don't have trusted annotations
+    for (const [orderId, data] of sellPnlMap) {
+      let linkedBuys = buysBySellId.get(orderId);
+      if (!linkedBuys || linkedBuys.length === 0) {
+        // Try bodyId fallback
+        const sellFill = allFills.find(f => f.side === 'sell' && f.orderId === orderId);
+        if (sellFill?.bodyId) linkedBuys = buysByBodyId.get(sellFill.bodyId);
+      }
+      if (!linkedBuys || linkedBuys.length === 0) continue;
+      // Skip body sells with trusted bodyPnl annotations
+      if (data.isBody && data.hasAnnotation) continue;
+      const buyCost = linkedBuys.reduce((s, b) => s + b.quoteAmount + b.netFee, 0);
+      const sellProceeds = data.quoteAmount - data.netFee;
+      data.pnl = sellProceeds - buyCost;
+    }
+    // Sum all sell P&L
+    for (const [, data] of sellPnlMap) {
+      globalRealizedPnL += data.pnl;
+      globalRealizedBtcPnL += data.holdback;
+    }
+
     for (const { cycleId, fills: cycleFills } of completedCycles) {
       let totalBTC = 0;
       let totalCost = 0;
@@ -683,6 +798,8 @@ const createFillLedger = (exchange) => {
       cyclesCompleted: cycleDetails.length,
       realizedPnL: roundUSDC(totalRealizedPnL),
       realizedBtcPnL: roundBTC(totalRealizedBtcPnL),
+      globalRealizedPnL: roundUSDC(globalRealizedPnL),
+      globalRealizedBtcPnL: roundBTC(totalRealizedBtcPnL + globalRealizedBtcPnL),
       cycleDetails,
       orphansFixed,
       activeCycleId: currentCycleId,
