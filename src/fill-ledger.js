@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { getExchangeDataDir } = require('./migration');
 const { roundBTC, roundUSDC } = require('./volatility-utils');
+const { atomicWriteSync } = require('./state-tracker');
 
 /**
  * @typedef {import('./types').Fill} Fill
@@ -110,7 +111,7 @@ const createFillLedger = (exchange) => {
     const fillsArray = Array.from(fills.values())
       .sort((a, b) => a.timestamp - b.timestamp);
 
-    fs.writeFileSync(filePath, JSON.stringify(fillsArray, null, 2));
+    atomicWriteSync(filePath, JSON.stringify(fillsArray, null, 2));
   };
 
   /**

@@ -10,6 +10,7 @@
  */
 
 const { roundBTC, roundPrice } = require('./volatility-utils');
+const { createMutex } = require('./async-mutex');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -40,6 +41,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   /** @type {Map<string, {tpOrderId: string, btcQty: number, tpPrice: number}>} */
   const satelliteTpOrders = new Map(); // buyOrderId -> satellite TP tracking (legacy alias)
   const bodyTpOrders = satelliteTpOrders; // Celestial body TP tracking (same Map, new name)
+
+  // Mutex to serialize concurrent TP updates (prevents duplicate TP sells)
+  const tpMutex = createMutex();
 
   /**
    * Check if error indicates a post-only rejection (price moved)
@@ -161,20 +165,24 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Place or update take-profit sell order
+   * Place or update take-profit sell order (mutex-serialized)
    * @param {number} btcQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
    * @param {Object} [options] - Options
    * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
-   * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, errorMessage?: string}>}
+   * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, filledDuringCancel?: boolean, filledOrderId?: string, errorMessage?: string}>}
    */
   const placeTakeProfitOrder = async (btcQty, tpPrice, options = {}) => {
+    // Serialize concurrent TP updates to prevent duplicate sells
+    const release = await tpMutex.acquire();
+
     // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
     if (!options.forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
       const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
       const sizeChange = Math.abs(btcQty - lastTpSize) / lastTpSize * 100;
       // Update if neither price nor size changed significantly
       if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
+        release();
         return {
           success: true,
           orderId: activeTpOrderId,
@@ -186,10 +194,22 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // Cancel existing TP order if present
     if (activeTpOrderId) {
       const oldTpId = activeTpOrderId;
-      const cancelSuccess = await cancelTpOrder();
-      if (!cancelSuccess) {
+      const cancelResult = await cancelTpOrder();
+
+      if (cancelResult.filled) {
+        // Old TP filled in-flight — abort new TP placement, signal caller
+        release();
+        return {
+          success: false,
+          filledDuringCancel: true,
+          filledOrderId: cancelResult.filledOrderId,
+          errorMessage: `TP ${oldTpId} filled during cancel`,
+        };
+      }
+
+      if (!cancelResult.cancelled) {
         console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, keeping it tracked to avoid duplicate sells`);
-        // Do NOT clear tracking or place a new TP - risk of two live TP orders causing oversell
+        release();
         return {
           success: false,
           errorMessage: `Cannot place new TP: failed to cancel existing TP order ${oldTpId}`,
@@ -217,6 +237,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         placedAt: Date.now(),
       });
 
+      release();
       return {
         success: true,
         orderId: result.orderId,
@@ -224,6 +245,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       };
     }
 
+    release();
     return {
       success: false,
       errorMessage: result.errorMessage || 'TP order placement failed',
@@ -231,25 +253,33 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Cancel take-profit order
-   * @returns {Promise<boolean>}
+   * Cancel take-profit order using safeCancelOrder to detect in-flight fills
+   * @returns {Promise<{cancelled: boolean, filled: boolean, filledOrderId?: string}>}
    */
   const cancelTpOrder = async () => {
-    if (!activeTpOrderId) return true;
+    if (!activeTpOrderId) return { cancelled: true, filled: false };
 
     const orderToCancel = activeTpOrderId;
-    const result = await adapter.cancelOrder(orderToCancel);
+    const result = await safeCancelOrder(orderToCancel);
 
-    if (result.success) {
+    if (result.cancelled) {
       console.log(`🗑️ [${exchange}] Cancelled TP order: ${orderToCancel}`);
       pendingOrders.delete(orderToCancel);
       activeTpOrderId = null;
       lastTpSize = 0;
-      return true;
+      return { cancelled: true, filled: false };
     }
 
-    console.log(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: ${result.errorMessage || 'unknown error'}`);
-    return false;
+    if (result.filled) {
+      console.log(`📋 [${exchange}] TP order ${orderToCancel.slice(0, 8)} filled during cancel attempt`);
+      pendingOrders.delete(orderToCancel);
+      activeTpOrderId = null;
+      lastTpSize = 0;
+      return { cancelled: false, filled: true, filledOrderId: orderToCancel };
+    }
+
+    console.log(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: unknown state`);
+    return { cancelled: false, filled: false };
   };
 
   /**

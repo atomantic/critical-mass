@@ -545,6 +545,15 @@ POST /api/:exchange/regime/dry-run/reset - Reset dry-run state
 - **Dry-run consistency**: `cancelSatelliteTpOrder` and `cancelBodyTpOrder` in dry-run-executor.js updated to return `{cancelled, filled}` matching live executor
 - **Design**: No inline fill processing during cancel — filled orders stay in `pendingOrders` for polling to process, avoiding re-entrancy. Sequential cancels replace `Promise.allSettled` in ladder cancel for API rate safety
 
+### Race Condition Fixes (v2.5.39)
+- **Race 1: Duplicate TP sells** — `cancelTpOrder()` now uses `safeCancelOrder()` and returns `{cancelled, filled, filledOrderId}`. `placeTakeProfitOrder()` detects fill-during-cancel and returns `filledDuringCancel` instead of placing a duplicate TP. Mutex serializes concurrent TP updates.
+- **Race 2: State file corruption** — `atomicWriteSync()` helper (write-tmp + rename) prevents truncated JSON on crash. Optimistic version locking (`_saveVersion`) detects external edits and preserves protected fields (`celestialBodies`, `celestialState`, `realizedPnL`, `realizedBtcPnL`). Applied to `saveState()`, `saveRegimeState()`, and fill-ledger `persist()`.
+- **Race 3: Orphaned sell fills after body merges** — `pendingMergeTpOrders` and `completedMergeTpOrders` Maps snapshot body data before TP cancellation during merges. If a TP fills after its body is removed from state, the fill handler finds the snapshot and processes P&L correctly. 60s TTL on completed snapshots.
+- **Race 4: Stale celestial visualization after roll-up** — `handleRollUp` called `fetchStatus()` which set `localStatus`, but `socketStatus || localStatus` meant stale WebSocket status always won. Fix: use API response's `data.status` to directly set `socketStatus` via `setSocketStatus` from the hook, bypassing the timing race.
+- **Reconciliation gap: cancelled/missing body TPs** — Periodic reconciliation only checked body TPs for `FILLED` status and swallowed all errors. Bodies with externally cancelled TPs became orphaned (visible in visualization, missing from Open Orders). Fix: detect `CANCELLED`/`FAILED`/404 and clear body TP fields for automatic re-placement.
+- **New file**: `src/async-mutex.js` — Promise-based mutex (zero deps)
+- **Test suite**: `tests/race-conditions.test.js` — 13 tests across 4 describe blocks covering all 3 races + mutex utility
+
 ### Editable Aggressiveness Presets (v2.5.23)
 - **Presets stored in config.json**: `global.aggressivenessPresets` with 4 levels (conservative, moderate, aggressive, maximum), each containing 8 params (kFactor, minIntervalMs, maxIntervalMs, entryOffsetBps, baseSizeUsdc, cautionScale, trendScale, maxCycleBuys)
 - **Backend**: `getAggressivenessPresets()` / `updateAggressivenessPresets()` in config-utils.js, `GET/PUT /api/presets/aggressiveness` in server.js

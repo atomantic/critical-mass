@@ -385,7 +385,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [rollingUp, setRollingUp] = useState(false)
   const prevPriceRef = useRef(null)
 
-  const { status: socketStatus } = useRegimeEvents(exchange)
+  const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange)
 
   // Use socket status when available, fall back to local status (for initial load / when engine stopped)
   const status = socketStatus || localStatus
@@ -555,8 +555,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     const data = await res.json()
     setRollingUp(false)
     setRollUpConfirm(null)
-    if (data.success) {
-      await fetchStatus()
+    if (data.success && data.status) {
+      // Directly update socket status from API response for immediate visual refresh
+      // (avoids race where socketStatus overrides stale localStatus from fetchStatus)
+      setSocketStatus(data.status)
     }
   }
 
