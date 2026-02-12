@@ -1634,8 +1634,26 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue, tpPercent, relatedBuys }
                   }).sort((a, b) => (b.price || 0) - (a.price || 0))
 
+                  const sellOrders = ordersWithCalcs.filter(o => o.type !== 'entry')
+                  const entryOrders = ordersWithCalcs.filter(o => o.type === 'entry')
+
+                  // Sell order totals
+                  const totalSellSize = sellOrders.reduce((sum, o) => sum + (o.size || 0), 0)
+                  const totalSellValue = sellOrders.reduce((sum, o) => sum + (o.size || 0) * (o.price || 0), 0)
+                  const totalSellPnl = sellOrders.reduce((sum, o) => sum + (o.estPnl || 0), 0)
+                  const hasPnl = sellOrders.some(o => o.estPnl !== null)
+                  const totalSellFees = sellOrders.reduce((sum, o) => sum + (o.estSellFee || 0), 0)
+                  const totalHoldback = sellOrders.reduce((sum, o) => sum + (o.estHoldback || 0), 0)
+                  const totalHoldbackValue = sellOrders.reduce((sum, o) => sum + (o.estHoldbackValue || 0), 0)
+                  const hasHoldback = sellOrders.some(o => o.estHoldback !== null)
+
                   return (
-                    <table className="w-full text-sm">
+                    <div className="space-y-4">
+                    {/* Sell Orders Table */}
+                    {sellOrders.length > 0 && (
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">{sellOrders.length} sell {sellOrders.length === 1 ? 'order' : 'orders'}</div>
+                      <table className="w-full text-sm">
                       <thead>
                         <tr className="text-gray-400 text-xs border-b border-gray-700">
                           <th className="text-left py-2 pr-1 w-6"></th>
@@ -1652,7 +1670,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         </tr>
                       </thead>
                       <tbody>
-                        {ordersWithCalcs.map((order) => {
+                        {sellOrders.map((order) => {
                           const isExpanded = expandedOrders.has(order.orderId)
                           const isTp = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
                           const hasBuys = order.relatedBuys.length > 0
@@ -1685,9 +1703,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                       galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400',    tooltip: 'Galaxy — galactic mass, 1000–5000× base' },
                                       black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 5000×+ base' },
                                     };
-                                    if (order.type === 'entry') {
-                                      return <span className="px-1.5 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-400" title="Limit buy entry order">Entry</span>;
-                                    }
                                     if (tier && tierStyles[tier]) {
                                       const s = tierStyles[tier];
                                       const emoji = order.tierEmoji || bodyInfo?.emoji || '🛰️';
@@ -1726,7 +1741,6 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     if (!canRollUp) return null
                                     const bodyData = bodyLookup.get(order.orderId)
                                     if (!bodyData) return null
-                                    // Find the next-highest body to show in confirmation
                                     const targetBody = celestialBodies
                                       .filter(b => b.tpPrice > (bodyData.tpPrice || order.price))
                                       .sort((a, b) => a.tpPrice - b.tpPrice)[0]
@@ -1778,7 +1792,62 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           )
                         })}
                       </tbody>
+                      <tfoot>
+                        <tr className="border-t border-gray-600 text-xs font-semibold">
+                          <td className="py-2 pr-1"></td>
+                          <td className="py-2 pr-2 text-gray-400">Totals</td>
+                          <td className="py-2 pr-2"></td>
+                          <td className="py-2 pr-2"></td>
+                          <td className="text-right py-2 pr-2 font-mono text-white">{totalSellSize.toFixed(8)}</td>
+                          <td className="py-2 pr-2"></td>
+                          <td className="text-right py-2 pr-2 font-mono text-gray-300">${totalSellValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className={`text-right py-2 pr-2 font-mono ${hasPnl ? (totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={totalSellFees ? `After est. sell fees: $${totalSellFees.toFixed(4)}` : undefined}>
+                            {hasPnl ? `${totalSellPnl >= 0 ? '+' : ''}$${totalSellPnl.toFixed(2)}` : '—'}
+                          </td>
+                          <td className="text-right py-2 pr-2 font-mono text-cyan-400">
+                            {hasHoldback ? <span title={`≈$${totalHoldbackValue.toFixed(2)}`}>+{totalHoldback.toFixed(8)}</span> : '—'}
+                          </td>
+                          <td className="py-2 pr-2"></td>
+                          <td className="py-2"></td>
+                        </tr>
+                      </tfoot>
                     </table>
+                    </div>
+                    )}
+
+                    {/* Entry Orders Table */}
+                    {entryOrders.length > 0 && (
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">{entryOrders.length} entry {entryOrders.length === 1 ? 'order' : 'orders'}</div>
+                      <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-gray-400 text-xs border-b border-gray-700">
+                          <th className="text-left py-2 pr-2">Order ID</th>
+                          <th className="text-right py-2 pr-2">Size (BTC)</th>
+                          <th className="text-right py-2 pr-2">Price</th>
+                          <th className="text-right py-2 pr-2">Value</th>
+                          <th className="text-right py-2 pr-2">Age</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {entryOrders.map((order) => (
+                          <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                            <td className="py-2 pr-2 font-mono text-gray-500 text-xs">{order.orderId}</td>
+                            <td className="text-right py-2 pr-2 font-mono text-white">{order.size?.toFixed(8)}</td>
+                            <td className="text-right py-2 pr-2 font-mono text-white">
+                              ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
+                              ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="text-right py-2 pr-2 font-mono text-gray-500 text-xs">{formatDuration(order.age)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    </div>
+                    )}
+                    </div>
                   )
                 })()}
               </div>
@@ -1988,9 +2057,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     return <div className="text-gray-500 text-sm text-center py-4">No filled sells yet</div>
                   }
 
-                  // Totals (holdback computed after cycleMap for live mode)
+                  // Totals (holdback computed from cycleMap after sell-group aggregation)
                   const totalPnl = sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)
-                  let totalHoldback = isDryRun ? sellGroups.reduce((s, g) => s + (g.sell.holdbackBtc || 0), 0) : 0
+                  let totalHoldback = 0
 
                   // Shared sell + buy row renderer
                   const renderSellRow = (group) => {
@@ -2098,6 +2167,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                   // --- DryRun: flat table (no cycle grouping) ---
                   if (isDryRun) {
+                    totalHoldback = sellGroups.reduce((s, g) => s + (g.sell.holdbackBtc || 0), 0)
                     return (
                       <div className="overflow-x-auto max-h-96 overflow-y-auto">
                         <table className="w-full text-sm">
@@ -2132,9 +2202,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     entry.sells.push(group)
                     entry.totalSize += group.sell.size || 0
                     entry.totalPnl += group.sell.pnl || 0
-                    if (isDryRun) {
-                      entry.totalHoldback += group.sell.holdbackBtc || 0
-                    }
+                    // Sum per-sell realized holdback (dry-run uses holdbackBtc, live uses holdback from buy-sell diff)
+                    entry.totalHoldback += isDryRun ? (group.sell.holdbackBtc || 0) : (group.sell.holdback || 0)
                     entry.buyCount += group.buys.length
                     const sellTs = group.sell.timestamp || group.sell.filledAt || 0
                     if (sellTs > 0) { entry.minTs = Math.min(entry.minTs, sellTs); entry.maxTs = Math.max(entry.maxTs, sellTs) }
@@ -2143,22 +2212,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       if (buyTs > 0) { entry.minTs = Math.min(entry.minTs, buyTs); entry.maxTs = Math.max(entry.maxTs, buyTs) }
                     })
                   })
-                  // For live mode, compute holdback per cycle from raw fills (total bought - total sold)
-                  if (!isDryRun) {
-                    const cycleBuySizes = new Map()
-                    const cycleSellSizes = new Map()
-                    filteredFills.forEach(f => {
-                      const cid = f.cycleId || 'unknown'
-                      if (f.side === 'buy') cycleBuySizes.set(cid, (cycleBuySizes.get(cid) || 0) + f.size)
-                      else if (f.side === 'sell') cycleSellSizes.set(cid, (cycleSellSizes.get(cid) || 0) + f.size)
-                    })
-                    cycleMap.forEach(entry => {
-                      const buySize = cycleBuySizes.get(entry.cycleId) || 0
-                      const sellSize = cycleSellSizes.get(entry.cycleId) || 0
-                      entry.totalHoldback += Math.max(0, buySize - sellSize)
-                    })
-                    cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
-                  }
+                  // Compute grand total holdback from per-cycle sums
+                  cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
                   const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => {
                     if (a.cycleId === 'unknown') return 1
                     if (b.cycleId === 'unknown') return -1
