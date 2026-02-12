@@ -381,6 +381,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [expandedFills, setExpandedFills] = useState(new Set())
   const [expandedCycles, setExpandedCycles] = useState(new Set())
   const [presets, setPresets] = useState(null)
+  const [rollUpConfirm, setRollUpConfirm] = useState(null)
+  const [rollingUp, setRollingUp] = useState(false)
   const prevPriceRef = useRef(null)
 
   const { status: socketStatus } = useRegimeEvents(exchange)
@@ -540,6 +542,22 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       await fetchStatus()
     }
     setRecalculating(false)
+  }
+
+  // Manual body roll-up merge
+  const handleRollUp = async (bodyId) => {
+    setRollingUp(true)
+    const res = await fetch(`/api/${exchange}/regime/rollup-body`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bodyId }),
+    })
+    const data = await res.json()
+    setRollingUp(false)
+    setRollUpConfirm(null)
+    if (data.success) {
+      await fetchStatus()
+    }
   }
 
   if (loading) {
@@ -1580,6 +1598,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     })
                   }
 
+                  // Find highest body TP price for roll-up button visibility
+                  const bodyTpOrders = openOrders.filter(o => o.type === 'body_tp' || o.type === 'satellite_tp')
+                  const highestBodyTpPrice = bodyTpOrders.reduce((max, o) => Math.max(max, o.price || 0), 0)
+
                   const ordersWithCalcs = openOrders.map(order => {
                     const age = Date.now() - order.placedAt
                     const isTpOrder = order.type === 'take_profit' || order.type === 'satellite_tp' || order.type === 'body_tp'
@@ -1608,7 +1630,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     const relatedBuys = isTpOrder ? getRelatedBuys(order) : []
 
                     return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue, tpPercent, relatedBuys }
-                  })
+                  }).sort((a, b) => (b.price || 0) - (a.price || 0))
 
                   return (
                     <table className="w-full text-sm">
@@ -1623,7 +1645,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           <th className="text-right py-2 pr-2">Value</th>
                           <th className="text-right py-2 pr-2">Est. P&L</th>
                           <th className="text-right py-2 pr-2">Holdback</th>
-                          <th className="text-right py-2">Age</th>
+                          <th className="text-right py-2 pr-2">Age</th>
+                          <th className="py-2 w-6"></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1691,8 +1714,36 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     <span title={`≈$${order.estHoldbackValue?.toFixed(2)}`}>+{order.estHoldback.toFixed(8)}</span>
                                   ) : '—'}
                                 </td>
-                                <td className="text-right py-2 font-mono text-gray-500 text-xs">
+                                <td className="text-right py-2 pr-2 font-mono text-gray-500 text-xs">
                                   {formatDuration(order.age)}
+                                </td>
+                                <td className="py-2 text-center">
+                                  {(() => {
+                                    const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
+                                    const canRollUp = isBodyTp && isRunning && celestialBodies.length >= 2 && order.price < highestBodyTpPrice
+                                    if (!canRollUp) return null
+                                    const bodyData = bodyLookup.get(order.orderId)
+                                    if (!bodyData) return null
+                                    // Find the next-highest body to show in confirmation
+                                    const targetBody = celestialBodies
+                                      .filter(b => b.tpPrice > (bodyData.tpPrice || order.price))
+                                      .sort((a, b) => a.tpPrice - b.tpPrice)[0]
+                                    if (!targetBody) return null
+                                    const srcLabel = `${bodyData.id?.slice(-8)} ($${bodyData.costBasis?.toFixed(0)})`
+                                    const tgtLabel = `${targetBody.id?.slice(-8)} ($${targetBody.costBasis?.toFixed(0)})`
+                                    return (
+                                      <button
+                                        title={`Roll up into ${tgtLabel}`}
+                                        className="px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded transition-colors"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          setRollUpConfirm({ bodyId: bodyData.id, bodyLabel: srcLabel, targetLabel: tgtLabel })
+                                        }}
+                                      >
+                                        ↑
+                                      </button>
+                                    )
+                                  })()}
                                 </td>
                               </tr>
                               {/* Buy sub-rows */}
@@ -1718,6 +1769,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                   <td className="text-right py-1 font-mono text-xs text-gray-500">
                                     {formatTimestamp(buy.filledAt)}
                                   </td>
+                                  <td className="py-1"></td>
                                 </tr>
                               ))}
                             </React.Fragment>
@@ -1913,6 +1965,14 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       sellGroups.push({ sell, buys, key: `fill-${order.orderId}` })
                     })
                     sellGroups.reverse()
+
+                    // Recompute P&L from linked buys (more accurate than chronological running average)
+                    sellGroups.forEach(group => {
+                      if (group.buys.length === 0) return
+                      const buyCost = group.buys.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
+                      const sellProceeds = (group.sell.quoteAmount || group.sell.size * group.sell.price) - (group.sell.netFee || group.sell.fee || 0)
+                      group.sell.pnl = sellProceeds - buyCost
+                    })
 
                     // Find orphaned buys: not linked to any filled sell and not waiting on an open TP
                     const claimedBuyIds = new Set()
@@ -2267,6 +2327,37 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
           </div>
         </div>
         </>
+      )}
+
+      {/* Roll-up confirmation dialog */}
+      {rollUpConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !rollingUp && setRollUpConfirm(null)}>
+          <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white text-lg font-medium mb-3">Roll Up Body</h3>
+            <p className="text-gray-300 text-sm mb-4">
+              Merge body <span className="font-mono text-yellow-400">{rollUpConfirm.bodyLabel}</span> into <span className="font-mono text-green-400">{rollUpConfirm.targetLabel}</span>?
+            </p>
+            <p className="text-gray-500 text-xs mb-4">
+              Both TP orders will be cancelled, buys combined, and a new TP placed for the merged body.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                onClick={() => setRollUpConfirm(null)}
+                disabled={rollingUp}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-yellow-600 hover:bg-yellow-500 rounded transition-colors disabled:opacity-50"
+                onClick={() => handleRollUp(rollUpConfirm.bodyId)}
+                disabled={rollingUp}
+              >
+                {rollingUp ? 'Merging...' : 'Roll Up'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
