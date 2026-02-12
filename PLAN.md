@@ -297,6 +297,14 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Hover tooltips with body details (BTC qty, cost, avg, TP)
   - Auto-rotate camera with user orbit/zoom controls
   - Dependencies: three, @react-three/fiber v8, @react-three/drei v9, @react-three/postprocessing v2
+- **Manual Body Roll-Up Merge**: Dashboard button to manually merge a body into the next-highest body by TP price
+  - Roll-up `↑` button on each `body_tp` row (hidden for highest body, when <2 bodies, or engine stopped)
+  - Confirmation dialog shows source/target body labels before executing
+  - Flow: cancel both TPs → `mergeBodies()` (pure data) → remove source → re-annotate fills → `placeBodyTp()` → persist
+  - `mergeBodies()` in celestial-hierarchy.js: combines qty/cost/orders, clears TP fields, checks tier promotion
+  - `manualMergeBody(bodyId)` in regime-engine.js: orchestrates cancel/merge/re-place with rollback on target cancel failure
+  - `POST /api/:exchange/regime/rollup-body` endpoint in server.js
+  - Emits `body_rollup` trade event on success
 - **TP fill detection for all order types**: `checkPendingOrderFills()` and `refreshStaleOrders()` check entries, take_profit, body_tp, and satellite_tp orders (not just entries). TP orders that are filled/cancelled are cleaned up; open TPs are never auto-cancelled.
 - **Negative P&L guard**: `placeBodyTp()` rejects TP placement when `tpPrice <= body.avgPrice` to prevent selling at a loss
 - **Legacy TP cleanup**: `placeTakeProfitOrder()` cancels any legacy `take_profit` order when celestial bodies are present
@@ -422,6 +430,7 @@ POST /api/:exchange/regime/stop      - Stop regime engine
 POST /api/:exchange/regime/pause     - Pause (enter SAFE mode)
 POST /api/:exchange/regime/resume    - Resume from SAFE mode
 POST /api/:exchange/regime/force-regime - Force regime transition
+POST /api/:exchange/regime/rollup-body - Manual body roll-up merge
 GET  /api/:exchange/regime/fills     - Get fill ledger
 
 # Dry-Run specific routes

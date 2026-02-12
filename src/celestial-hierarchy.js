@@ -227,6 +227,41 @@ const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
 };
 
 /**
+ * Merge two existing bodies (manual roll-up). Pure data, no I/O.
+ * Combines quantities, costs, orders; clears TP fields (caller re-places).
+ * Preserves target's id and createdAt.
+ * @param {CelestialBody} target - Body to merge INTO (higher TP)
+ * @param {CelestialBody} source - Body being absorbed (lower TP)
+ * @param {number} maxUsdcDeployed - For tier reclassification
+ * @returns {CelestialBody} Mutated target
+ */
+const mergeBodies = (target, source, maxUsdcDeployed) => {
+  target.btcQty = roundBTC(target.btcQty + source.btcQty);
+  target.costBasis = roundUSDC(target.costBasis + source.costBasis);
+  target.avgPrice = target.btcQty > 0 ? target.costBasis / target.btcQty : 0;
+  target.lastMergedAt = Date.now();
+  target.sourceOrderIds = [...target.sourceOrderIds, ...source.sourceOrderIds];
+  target.buyOrders = [...(target.buyOrders || []), ...(source.buyOrders || [])];
+  target.mergeCount += 1 + (source.mergeCount || 0);
+
+  // Clear TP fields — caller cancels both TPs and re-places via placeBodyTp
+  target.tpOrderId = null;
+  target.tpPrice = 0;
+  target.btcOnOrder = 0;
+
+  // Check tier promotion
+  const newTier = classifyTier(target.costBasis, maxUsdcDeployed);
+  if (newTier.name !== target.tier) {
+    const oldTier = target.tier;
+    target.tier = newTier.name;
+    const pct = maxUsdcDeployed > 0 ? ((target.costBasis / maxUsdcDeployed) * 100).toFixed(1) : '0';
+    console.log(`⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (${pct}% of capital, $${target.costBasis.toFixed(0)})`);
+  }
+
+  return target;
+};
+
+/**
  * Calculate body TP percentage with tier multipliers applied
  * @param {number} baseTpPct - Base dynamic TP percentage
  * @param {string} tierName - Tier name
@@ -388,6 +423,7 @@ module.exports = {
   createNewBody,
   findMergeTarget,
   mergeIntoBody,
+  mergeBodies,
   calculateBodyTpPercent,
   checkPromotions,
   syncPositionState,
