@@ -31,6 +31,7 @@ const { createSizeOptimizer } = require('./size-optimizer');
 const { createLadderCalculator } = require('./ladder-calculator');
 const { calculateAllMetrics, clamp, roundBTC, roundUSDC } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
+const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
@@ -247,6 +248,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const pendingMergeTpOrders = new Map();
   // tpOrderId → body snapshot (completed merges, auto-expire after 60s)
   const completedMergeTpOrders = new Map();
+
+  // Track TTL timers for cleanup on shutdown
+  const ttlTimers = new Set();
 
   /**
    * Handle TP optimizer adjustment
@@ -702,246 +706,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
   };
 
-  /**
-   * Calculate APY and return metrics
-   * Uses total liquid value (USDC + BTC at current price) for APY calculations
-   * @returns {Object} APY metrics
-   */
-  const calculateApyMetrics = () => {
-    const now = Date.now();
-    const startTime = positionState.engineStartTime;
-    // maxUsdcDeployed = total capital cap (deposits + profits)
-    const maxUsdcDeployed = config.maxUsdcDeployed || 10000;
-    // Total USDC return (realized P&L from trading)
-    const totalUsdcReturn = positionState.realizedPnL || 0;
-    // depositedCapital = total user deposits (excludes profits)
-    // Priority: config.depositedCapital > positionState.depositedCapital > derive from maxUsdc - profits
-    const autoDerivedCapital = Math.max(0, roundUSDC(maxUsdcDeployed - totalUsdcReturn));
-    const depositedCapital = config.depositedCapital > 0
-      ? config.depositedCapital
-      : (positionState.depositedCapital > 0
-          ? positionState.depositedCapital
-          : (positionState.originalCapital > 0
-              ? positionState.originalCapital
-              : autoDerivedCapital));
-    // initialCapital for APY calculations (first deposit amount)
-    const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
-    // deployedInPosition = capital currently in open positions
-    const deployedInPosition = positionState.totalCostBasis || 0;
-    // availableCapital = maxUsdc - deployed in positions (clamped at 0 for reporting)
-    const availableCapital = Math.max(0, maxUsdcDeployed - deployedInPosition);
-    const currentPrice = marketState.lastPrice || 0;
-    // Legacy aliases for backwards compatibility
-    const currentCapital = maxUsdcDeployed;
-    const deployedCapital = deployedInPosition;
-    const originalCapital = depositedCapital;
-
-    // Calculate BTC value in USD terms
-    const totalBtcReturn = positionState.realizedBtcPnL || 0;
-    const btcValueUsd = totalBtcReturn * currentPrice;
-
-    // Total liquid value = USDC return + BTC holdings at current market price
-    const totalLiquidValue = totalUsdcReturn + btcValueUsd;
-
-    // If engine hasn't started tracking yet or no realized P&L, return zeros
-    if (!startTime || (totalUsdcReturn === 0 && totalBtcReturn === 0)) {
-      return {
-        engineStartTime: startTime,
-        // Capital breakdown: deposited (user contributions) vs max (deposits + profits)
-        depositedCapital,
-        maxUsdcDeployed,
-        deployedInPosition,
-        availableCapital,
-        // Legacy aliases for backwards compatibility
-        originalCapital,
-        initialCapital,
-        currentCapital,
-        deployedCapital,
-        elapsedMs: startTime ? now - startTime : 0,
-        elapsedDays: 0,
-        // USDC returns
-        totalUsdcReturn: 0,
-        totalUsdcReturnPercent: 0,
-        estimatedDailyUsdc: 0,
-        // BTC returns
-        totalBtcReturn: 0,
-        btcValueUsd: 0,
-        estimatedDailyBtc: 0,
-        // Combined liquid value (used for APY)
-        totalLiquidValue: 0,
-        totalLiquidValuePercent: 0,
-        // APY calculations based on liquid value
-        dailyReturnPercent: 0,
-        estimatedAnnualReturn: 0,
-        estimatedApy: 0,
-        // Cycle metrics
-        cyclesPerDay: 0,
-        avgPnlPerCycle: 0,
-        // Legacy field for backwards compatibility
-        totalReturn: 0,
-        totalReturnPercent: 0,
-      };
-    }
-
-    const elapsedMs = now - startTime;
-    const elapsedDays = elapsedMs / (1000 * 60 * 60 * 24);
-
-    // Calculate return percentages
-    const totalUsdcReturnPercent = (totalUsdcReturn / initialCapital) * 100;
-    const totalLiquidValuePercent = (totalLiquidValue / initialCapital) * 100;
-
-    // Minimum 1 hour of data required for meaningful projections
-    const minHoursForProjection = 1;
-    const hasEnoughData = elapsedMs >= minHoursForProjection * 60 * 60 * 1000;
-
-    // Daily return rate based on total liquid value - only calculate with enough data
-    const dailyReturnPercent = hasEnoughData && elapsedDays > 0
-      ? totalLiquidValuePercent / elapsedDays
-      : 0;
-
-    // Estimated annual return (simple linear projection) based on liquid value
-    const estimatedAnnualReturn = hasEnoughData ? dailyReturnPercent * 365 : 0;
-
-    // Compound APY calculation: (1 + dailyReturn)^365 - 1
-    // Cap daily return to prevent overflow (max 10% daily to keep APY reasonable)
-    const dailyReturnDecimal = Math.min(dailyReturnPercent / 100, 0.1);
-    let estimatedApy = 0;
-    if (hasEnoughData && elapsedDays > 0) {
-      const rawApy = (Math.pow(1 + dailyReturnDecimal, 365) - 1) * 100;
-      // Cap APY at 99999% to avoid scientific notation in UI
-      estimatedApy = Math.min(rawApy, 99999);
-    }
-
-    // Cycles per day - only calculate with enough data
-    const cyclesPerDay = hasEnoughData && elapsedDays > 0
-      ? positionState.cyclesCompleted / elapsedDays
-      : 0;
-
-    // Average P&L per cycle (USDC only, since that's the direct trading profit)
-    const avgPnlPerCycle = positionState.cyclesCompleted > 0
-      ? totalUsdcReturn / positionState.cyclesCompleted
-      : 0;
-
-    // Estimated daily returns
-    const estimatedDailyUsdc = hasEnoughData && elapsedDays > 0
-      ? totalUsdcReturn / elapsedDays
-      : 0;
-
-    const estimatedDailyBtc = hasEnoughData && elapsedDays > 0
-      ? totalBtcReturn / elapsedDays
-      : 0;
-
-    // Estimated daily liquid value (USDC + BTC value combined)
-    const estimatedDailyLiquid = hasEnoughData && elapsedDays > 0
-      ? totalLiquidValue / elapsedDays
-      : 0;
-
-    return {
-      engineStartTime: startTime,
-      // Capital breakdown: deposited (user contributions) vs max (deposits + profits)
-      depositedCapital: roundUSDC(depositedCapital),
-      maxUsdcDeployed: roundUSDC(maxUsdcDeployed),
-      deployedInPosition: roundUSDC(deployedInPosition),
-      availableCapital: roundUSDC(availableCapital),
-      // Legacy aliases for backwards compatibility
-      originalCapital: roundUSDC(originalCapital),
-      initialCapital: roundUSDC(initialCapital),
-      currentCapital: roundUSDC(currentCapital),
-      deployedCapital: roundUSDC(deployedCapital),
-      elapsedMs,
-      elapsedDays: roundUSDC(elapsedDays * 100) / 100, // 2 decimal places
-      // USDC returns
-      totalUsdcReturn: roundUSDC(totalUsdcReturn),
-      totalUsdcReturnPercent: roundUSDC(totalUsdcReturnPercent * 100) / 100,
-      estimatedDailyUsdc: roundUSDC(estimatedDailyUsdc),
-      // BTC returns
-      totalBtcReturn: roundBTC(totalBtcReturn),
-      btcValueUsd: roundUSDC(btcValueUsd),
-      estimatedDailyBtc: roundBTC(estimatedDailyBtc),
-      // Combined liquid value (used for APY calculations)
-      totalLiquidValue: roundUSDC(totalLiquidValue),
-      totalLiquidValuePercent: roundUSDC(totalLiquidValuePercent * 100) / 100,
-      estimatedDailyLiquid: roundUSDC(estimatedDailyLiquid),
-      // APY calculations based on total liquid value
-      dailyReturnPercent: roundUSDC(dailyReturnPercent * 100) / 100,
-      estimatedAnnualReturn: roundUSDC(estimatedAnnualReturn * 100) / 100,
-      estimatedApy: roundUSDC(estimatedApy * 100) / 100,
-      // Cycle metrics
-      cyclesPerDay: roundUSDC(cyclesPerDay * 100) / 100,
-      avgPnlPerCycle: roundUSDC(avgPnlPerCycle),
-      // Legacy fields for backwards compatibility
-      totalReturn: roundUSDC(totalLiquidValue),
-      totalReturnPercent: roundUSDC(totalLiquidValuePercent * 100) / 100,
-    };
-  };
-
-  /**
-   * Initialize APY tracking if not already set
-   * If there are existing filled orders but start time is after first order, backfill
-   */
-  const initializeApyTracking = () => {
-    // Check for existing filled orders to potentially backfill start time
-    const filledOrders = orderExecutor.getFilledOrders ? orderExecutor.getFilledOrders() : [];
-    let earliestOrderTime = Infinity;
-
-    if (filledOrders.length > 0) {
-      earliestOrderTime = filledOrders.reduce((earliest, order) => {
-        const orderTime = order.placedAt || order.filledAt;
-        return orderTime < earliest ? orderTime : earliest;
-      }, Infinity);
-    }
-
-    // Helper to ensure depositedCapital is set
-    const ensureDepositedCapital = () => {
-      if (!positionState.depositedCapital || positionState.depositedCapital === 0) {
-        // Migrate from originalCapital if set, otherwise derive from maxUsdc - profits (clamped at 0)
-        const maxUsdc = config.maxUsdcDeployed || 10000;
-        const profits = positionState.realizedPnL || 0;
-        positionState.depositedCapital = positionState.originalCapital > 0
-          ? positionState.originalCapital
-          : roundUSDC(Math.max(0, maxUsdc - profits));
-      }
-    };
-
-    // If we have filled orders and the saved start time is after the first order, backfill
-    if (earliestOrderTime !== Infinity) {
-      if (!positionState.engineStartTime || positionState.engineStartTime > earliestOrderTime) {
-        positionState.engineStartTime = earliestOrderTime;
-        positionState.initialCapital = config.maxUsdcDeployed || 10000;
-        // Only set originalCapital if not already set (preserve true starting value)
-        if (!positionState.originalCapital) {
-          positionState.originalCapital = positionState.initialCapital;
-        }
-        ensureDepositedCapital();
-        console.log(`📊 [${exchange}] APY tracking backfilled: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
-        return;
-      }
-      // Preserved existing start time that's earlier than first order
-      if (!positionState.originalCapital) {
-        positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
-      }
-      ensureDepositedCapital();
-      console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
-      return;
-    }
-
-    // No filled orders - preserve existing or start fresh
-    if (positionState.engineStartTime) {
-      if (!positionState.originalCapital) {
-        positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
-      }
-      ensureDepositedCapital();
-      console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
-      return;
-    }
-
-    // No existing state or orders, start fresh
-    positionState.engineStartTime = Date.now();
-    positionState.initialCapital = config.maxUsdcDeployed || 10000;
-    positionState.originalCapital = positionState.initialCapital;
-    positionState.depositedCapital = positionState.initialCapital;
-    console.log(`📊 [${exchange}] APY tracking started fresh: deposited=$${positionState.depositedCapital}`);
-  };
+  // APY calculation delegates to extracted module
+  const calculateApyMetrics = () => _calculateApyMetrics(positionState, config, marketState);
+  const initializeApyTracking = () => _initializeApyTracking(
+    positionState, config, exchange,
+    orderExecutor.getFilledOrders ? () => orderExecutor.getFilledOrders() : undefined
+  );
 
   /**
    * Start the regime engine
@@ -985,13 +755,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       positionState = {
         ...createInitialPositionState(),
-        ...positionState, // Keep saved fields like realizedPnL, cyclesCompleted
-        ...position,      // Override with exchange-recovered values
-        // BUT: if cycle was completed, preserve the zero position from saved state
+        ...positionState, // Keep saved fields (realizedPnL, cyclesCompleted, celestialBodies, etc.)
+        // Only override position fields that come from fill-ledger rebuild
+        // (NOT realizedPnL, cyclesCompleted, celestialBodies, celestialState, etc.)
         totalBTC: cycleWasCompleted ? 0 : position.totalBTC,
         totalCostBasis: cycleWasCompleted ? 0 : position.totalCostBasis,
         avgCostBasis: cycleWasCompleted ? 0 : position.avgCostBasis,
         cycleBuys: cycleWasCompleted ? 0 : position.cycleBuys,
+        lastEntryPrice: position.lastEntryPrice || positionState.lastEntryPrice,
+        lastEntryTime: position.lastEntryTime || positionState.lastEntryTime,
+        anchorPrice: position.anchorPrice || positionState.anchorPrice,
         activeTpOrderId: savedTpOrderId, // Restore TP tracking (not in fills)
         lastTpPrice: savedTpPrice,
       };
@@ -1652,6 +1425,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     tailEvents.cleanup();
 
+    // Clear all TTL timers to prevent post-shutdown state mutations
+    for (const t of ttlTimers) clearTimeout(t);
+    ttlTimers.clear();
+    recentlyProcessedFills.clear();
+    recentlyProcessedSellFills.clear();
+    pendingMergeTpOrders.clear();
+    completedMergeTpOrders.clear();
+
+    // Clear order executor stale timers
+    if (orderExecutor.clearTimers) orderExecutor.clearTimers();
+
     // Disconnect WebSocket last (callbacks will check isRunning)
     if (wsFeed) {
       wsFeed.disconnect();
@@ -1881,7 +1665,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           if (mergeTarget.tpOrderId) {
             pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
             completedMergeTpOrders.set(mergeTarget.tpOrderId, { ...mergeTarget });
-            setTimeout(() => completedMergeTpOrders.delete(mergeTarget.tpOrderId), 60000);
+            const t = setTimeout(() => { completedMergeTpOrders.delete(mergeTarget.tpOrderId); ttlTimers.delete(t); }, 60000);
+            ttlTimers.add(t);
           }
         }
       }
@@ -1974,7 +1759,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         return;
       }
       recentlyProcessedSellFills.add(fillData.orderId);
-      setTimeout(() => recentlyProcessedSellFills.delete(fillData.orderId), 5 * 60 * 1000);
+      const t1 = setTimeout(() => { recentlyProcessedSellFills.delete(fillData.orderId); ttlTimers.delete(t1); }, 5 * 60 * 1000);
+      ttlTimers.add(t1);
 
       // UNIFIED BODY TP FILL — find matching celestial body by TP order ID
       const summary = fillLedger.aggregateFills(fillsToAggregate);
@@ -2868,22 +2654,27 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Get tier holdback scale
     const tierCfg = celestialHierarchy.getTierConfig(body.tier);
 
-    // Minimum profit floor: TP% must clear round-trip fees + $0.01 net profit
-    const feeFloorPct = (2 * 0.0006 * 100) + (0.01 / body.costBasis * 100);
+    // Holdback ratio (needed for fee floor calculation below)
+    const holdbackRatio = Math.min((config.holdbackRatio ?? 0.5) * (tierCfg.holdbackScale || 1), 0.95);
+
+    // Minimum profit floor: TP% must clear round-trip fees + $0.01 net USDC profit.
+    // Because holdback retains BTC, only (1-h) of gross profit becomes USDC proceeds,
+    // so the required TP% = (roundTripFees + minProfit/costBasis) / (1-h)
+    const feeRatePerSide = config.feeRate || 0.001; // conservative 10 bps default
+    const feeFloorPct = ((2 * feeRatePerSide) + (0.01 / body.costBasis)) / (1 - holdbackRatio) * 100;
 
     // Holdback floor: TP% must generate enough profit for at least 1 satoshi holdback
     // Only applied when achievable within the tier's effective max TP —
     // tiny bodies that can't produce 1 sat holdback at a reasonable price just get normal TP
-    const holdbackRatio = Math.min((config.holdbackRatio ?? 0.5) * (tierCfg.holdbackScale || 1), 0.95);
     const holdbackFloorPct = (0.00000001 * body.avgPrice) / (body.btcQty * holdbackRatio) * 100;
     const effectiveMax = config.tpMaxPercent * (tierCfg.tpMaxScale || 1);
 
     const minTpPct = holdbackFloorPct <= effectiveMax
       ? Math.max(feeFloorPct, holdbackFloorPct)
       : feeFloorPct;
-    const finalTpPct = Math.min(Math.max(tierTpPct, minTpPct), effectiveMax);
+    let finalTpPct = Math.min(Math.max(tierTpPct, minTpPct), effectiveMax);
 
-    const tpPrice = roundUSDC(body.avgPrice * (1 + finalTpPct / 100));
+    let tpPrice = roundUSDC(body.avgPrice * (1 + finalTpPct / 100));
 
     // Guard: never place a TP at or below the body's avg price (would realize a loss)
     if (tpPrice <= body.avgPrice) {
@@ -2892,12 +2683,33 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     // Calculate sell qty with tier-specific holdback
-    const { sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
+    let { sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
       body.btcQty,
       body.avgPrice,
       tpPrice,
       tierCfg.holdbackScale
     );
+
+    // Post-hoc P&L validation: simulate the fill and bump TP% if rounding
+    // still causes negative USDC P&L or insufficient holdback
+    for (let bump = 0; bump < 10; bump++) {
+      const estSellProceeds = sellQty * tpPrice * (1 - feeRatePerSide);
+      const estPnl = estSellProceeds - body.costBasis;
+      if (estPnl >= 0.01 && holdbackQty >= 0.00000001) break;
+      finalTpPct += 0.01;
+      tpPrice = roundUSDC(body.avgPrice * (1 + finalTpPct / 100));
+      ({ sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
+        body.btcQty, body.avgPrice, tpPrice, tierCfg.holdbackScale
+      ));
+    }
+
+    // Final guard: skip if estimated P&L is still negative (e.g. effectiveMax too low)
+    const finalEstProceeds = sellQty * tpPrice * (1 - feeRatePerSide);
+    const finalEstPnl = finalEstProceeds - body.costBasis;
+    if (finalEstPnl < 0.01) {
+      console.log(`🚫 [${exchange}] Body ${body.id.slice(-8)} estimated PnL $${finalEstPnl.toFixed(4)} < $0.01 at TP $${tpPrice} (${finalTpPct.toFixed(3)}%), skipping to prevent negative P&L`);
+      return false;
+    }
 
     if (sellQty <= 0) {
       console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} sell qty is 0 after holdback`);
@@ -3241,7 +3053,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         return;
       }
       recentlyProcessedFills.add(orderId);
-      setTimeout(() => recentlyProcessedFills.delete(orderId), 60000);
+      const t2 = setTimeout(() => { recentlyProcessedFills.delete(orderId); ttlTimers.delete(t2); }, 60000);
+      ttlTimers.add(t2);
       console.log(`🔄 [${exchange}] Processing fill detected via polling: ${orderId} side=${status.side}`);
       // Convert status to the format handleOrderFill expects
       const fillData = {
@@ -3627,12 +3440,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (source.tpOrderId) {
       pendingMergeTpOrders.delete(source.tpOrderId);
       completedMergeTpOrders.set(source.tpOrderId, sourceSnapshot);
-      setTimeout(() => completedMergeTpOrders.delete(source.tpOrderId), 60000);
+      const t3 = setTimeout(() => { completedMergeTpOrders.delete(source.tpOrderId); ttlTimers.delete(t3); }, 60000);
+      ttlTimers.add(t3);
     }
     if (target.tpOrderId) {
       pendingMergeTpOrders.delete(target.tpOrderId);
       completedMergeTpOrders.set(target.tpOrderId, targetSnapshot);
-      setTimeout(() => completedMergeTpOrders.delete(target.tpOrderId), 60000);
+      const t4 = setTimeout(() => { completedMergeTpOrders.delete(target.tpOrderId); ttlTimers.delete(t4); }, 60000);
+      ttlTimers.add(t4);
     }
 
     // Check cascading promotions and sync aggregates

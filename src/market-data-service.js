@@ -40,6 +40,11 @@ const createMarketDataService = (exchange) => {
   let lastStatusEmit = 0;
   const STATUS_EMIT_INTERVAL = 1000; // Throttle to ~1/sec to match chart buffer rate
 
+  // Cache for regime state to avoid disk reads every second
+  let cachedRegimeState = null;
+  let cachedRegimeStateTime = 0;
+  const REGIME_STATE_CACHE_MS = 10_000; // Reload from disk at most every 10s
+
   // Market state (same structure as regime engine)
   const marketState = {
     lastPrice: 0,
@@ -156,14 +161,19 @@ const createMarketDataService = (exchange) => {
     if (now - lastStatusEmit < STATUS_EMIT_INTERVAL) return;
     lastStatusEmit = now;
 
-    const savedState = loadRegimeState(exchange);
+    // Use cached regime state to avoid disk reads every second
+    if (!cachedRegimeState || now - cachedRegimeStateTime > REGIME_STATE_CACHE_MS) {
+      cachedRegimeState = loadRegimeState(exchange);
+      cachedRegimeStateTime = now;
+    }
+
     onStatusUpdateCallback({
       isRunning: false,
       market: getMarketState(),
       regime: getRegimeState(),
-      position: savedState?.position || null,
+      position: cachedRegimeState?.position || null,
       health: { mode: 'STOPPED' },
-      isDryRun: savedState?.isDryRun || false,
+      isDryRun: cachedRegimeState?.isDryRun || false,
     });
   };
 

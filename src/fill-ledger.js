@@ -36,6 +36,8 @@ const getFillLedgerPath = (exchange) => {
 const createFillLedger = (exchange) => {
   /** @type {Map<string, Fill>} */
   const fills = new Map();
+  /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
+  const cycleIndex = new Map();
   let currentCycleId = null;
   let nextCycleNumber = 1;
 
@@ -51,6 +53,11 @@ const createFillLedger = (exchange) => {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     for (const fill of data) {
       fills.set(fill.tradeId, fill);
+      // Populate cycle index
+      if (fill.cycleId) {
+        if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+        cycleIndex.get(fill.cycleId).add(fill.tradeId);
+      }
     }
 
     // Restore currentCycleId from loaded fills
@@ -154,6 +161,11 @@ const createFillLedger = (exchange) => {
     };
 
     fills.set(tradeId, fill);
+    // Maintain cycle index
+    if (fill.cycleId) {
+      if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+      cycleIndex.get(fill.cycleId).add(tradeId);
+    }
     persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
@@ -179,9 +191,14 @@ const createFillLedger = (exchange) => {
    */
   const getCurrentCycleFills = () => {
     if (!currentCycleId) return [];
-    return Array.from(fills.values())
-      .filter(f => f.cycleId === currentCycleId)
-      .sort((a, b) => a.timestamp - b.timestamp);
+    const tradeIds = cycleIndex.get(currentCycleId);
+    if (!tradeIds || tradeIds.size === 0) return [];
+    const result = [];
+    for (const id of tradeIds) {
+      const fill = fills.get(id);
+      if (fill) result.push(fill);
+    }
+    return result.sort((a, b) => a.timestamp - b.timestamp);
   };
 
   /**
@@ -217,7 +234,13 @@ const createFillLedger = (exchange) => {
         realizedPnL = roundUSDC(realizedPnL + (proceeds - soldCostBasis));
 
         totalBTC = roundBTC(totalBTC - fill.size);
-        totalCostBasis = roundUSDC(totalCostBasis - soldCostBasis);
+        if (totalBTC < 0) {
+          console.log(`⚠️ [${exchange}] rebuildPositionFromFills: negative BTC ${totalBTC} after sell ${fill.tradeId}, clamping to 0`);
+          totalBTC = 0;
+          totalCostBasis = 0;
+        } else {
+          totalCostBasis = roundUSDC(totalCostBasis - soldCostBasis);
+        }
       }
     }
 
@@ -530,9 +553,11 @@ const createFillLedger = (exchange) => {
         const cycleId = `cycle-${cycleFills[0].timestamp}-recovered-${i + 1}`;
 
         // Assign cycle ID to all fills in this cycle
+        if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
         for (const fill of cycleFills) {
           fill.cycleId = cycleId;
           fills.set(fill.tradeId, fill);
+          cycleIndex.get(cycleId).add(fill.tradeId);
           orphansFixed++;
         }
 
@@ -628,10 +653,16 @@ const createFillLedger = (exchange) => {
     }
 
     if (renumbered > 0) {
+      // Rebuild cycle index after renumbering
+      cycleIndex.clear();
       for (const fill of Array.from(fills.values())) {
         if (fill.cycleId && idMap.has(fill.cycleId)) {
           fill.cycleId = idMap.get(fill.cycleId);
           fills.set(fill.tradeId, fill);
+        }
+        if (fill.cycleId) {
+          if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+          cycleIndex.get(fill.cycleId).add(fill.tradeId);
         }
       }
       for (const detail of cycleDetails) {
@@ -666,8 +697,17 @@ const createFillLedger = (exchange) => {
   const updateFillCycleId = (tradeId, cycleId) => {
     const fill = fills.get(tradeId);
     if (fill) {
+      // Remove from old cycle index
+      if (fill.cycleId && cycleIndex.has(fill.cycleId)) {
+        cycleIndex.get(fill.cycleId).delete(tradeId);
+      }
       fill.cycleId = cycleId;
       fills.set(tradeId, fill);
+      // Add to new cycle index
+      if (cycleId) {
+        if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
+        cycleIndex.get(cycleId).add(tradeId);
+      }
     }
   };
 

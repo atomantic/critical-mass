@@ -228,15 +228,14 @@ const createWebSocketFeed = (exchange, config) => {
   };
 
   /**
-   * Check if product ID matches (handles BTC-USD vs BTC-USDC case)
+   * Check if product ID matches exactly
    * @param {string} tickerProductId - Product ID from ticker
    * @returns {boolean}
    */
   const isMatchingProduct = (tickerProductId) => {
     if (!tickerProductId) return false;
-    // Direct match
     if (tickerProductId === config.productId) return true;
-    // Handle BTC-USD vs BTC-USDC - accept if base currency matches
+    // Coinbase WS sends BTC-USD for BTC-USDC subscriptions; match on base currency
     const [tickerBase] = tickerProductId.split('-');
     const [configBase] = config.productId.split('-');
     return tickerBase === configBase;
