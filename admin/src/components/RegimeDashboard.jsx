@@ -2029,7 +2029,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         ? buysByBodyId.get(order.bodyId) || []
                         : null
                       const buys = linkedBuys || bodyBuys || []
-                      if (buys.length > 0) {
+                      // For satellite/body sells, prefer server-annotated holdback (computed from exact body.btcQty)
+                      // Only fall back to buy-sell size diff when no server annotation exists
+                      if (sell.isSatellite && sell.satelliteHoldbackBtc != null) {
+                        sell.holdback = sell.satelliteHoldbackBtc
+                      } else if (buys.length > 0) {
                         const buyTotal = buys.reduce((s, b) => s + (b.size || 0), 0)
                         sell.holdback = Math.max(0, buyTotal - (sell.size || 0))
                       }
@@ -2037,9 +2041,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     })
                     sellGroups.reverse()
 
-                    // Recompute P&L from linked buys (more accurate than chronological running average)
+                    // Recompute P&L from linked buys for non-satellite sells only.
+                    // Satellite/body sells keep server-annotated satellitePnl (uses exact body.costBasis)
+                    // to stay consistent with the Position card's realizedPnL accumulator.
                     sellGroups.forEach(group => {
                       if (group.buys.length === 0) return
+                      if (group.sell.isSatellite && group.sell.satellitePnl != null) return
                       const buyCost = group.buys.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
                       const sellProceeds = (group.sell.quoteAmount || group.sell.size * group.sell.price) - (group.sell.netFee || group.sell.fee || 0)
                       group.sell.pnl = sellProceeds - buyCost
