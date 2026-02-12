@@ -2343,11 +2343,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     logHourlySummary();
 
     // Place TP order if we have a position but no active TP order (e.g., after recovery)
-    if (!isDryRun && positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
+    if (!isDryRun && positionState.totalBTC > 0) {
       const bodies = positionState.celestialBodies || [];
       const bodiesWithoutTp = bodies.filter(b => !b.tpOrderId);
-      console.log(`📝 [${exchange}] Position without TP order detected — totalBTC=${positionState.totalBTC}, bodies=${bodies.length} (${bodiesWithoutTp.length} need TP), avgCost=$${positionState.avgCostBasis?.toFixed(2)}, cycleBuys=${positionState.cycleBuys}`);
-      await placeTakeProfitOrder();
+      const needsTp = bodies.length > 0 ? bodiesWithoutTp.length > 0 : !positionState.activeTpOrderId;
+      if (needsTp) {
+        console.log(`📝 [${exchange}] Position without TP order detected — bodies=${bodies.length} (${bodiesWithoutTp.length} need TP: ${bodiesWithoutTp.map(b => b.id.slice(-8)).join(',')}), avgCost=$${positionState.avgCostBasis?.toFixed(2)}, cycleBuys=${positionState.cycleBuys}`);
+        await placeTakeProfitOrder();
+      }
     }
   };
 
@@ -3527,6 +3530,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       sourceBodyId: source.id,
       buyCount: merged.buyOrders?.length || 0,
     });
+
+    // Push updated status via WebSocket so dashboard animation refreshes immediately
+    if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(getState());
 
     return {
       success: true,

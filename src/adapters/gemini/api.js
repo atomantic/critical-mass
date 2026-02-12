@@ -240,9 +240,10 @@ const createGeminiAdapter = (keysPath = null) => {
    * @param {number} price - Limit price
    * @returns {Promise<LimitSellResult>} Order result
    */
-  adapter.placeLimitSell = async (productId, baseAmount, price) => {
+  adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
     const symbol = toGeminiSymbol(productId);
     const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 32);
+    const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
     const product = await adapter.getProductDetails(productId);
@@ -259,7 +260,7 @@ const createGeminiAdapter = (keysPath = null) => {
       side: 'sell',
       type: 'exchange limit',
       client_order_id: clientOrderId,
-      options: ['maker-or-cancel'], // Post-only equivalent
+      options: postOnly ? ['maker-or-cancel'] : [],
     };
 
     const result = await makeRestRequest('/v1/order/new', orderPayload);
