@@ -45,7 +45,146 @@
   - Added post-hoc P&L validation loop (bumps TP% up to 10× if rounding causes negative P&L)
   - Added final guard that skips placement if estimated P&L < $0.01
 
+### Bug Fix: UI Holdback & P&L Display
+- [x] Filled Orders holdback total was summing entire position, not per-sell holdback
+- [x] Filled Orders P&L diverged from Position card due to recomputing vs server-annotated values
+
 ### Phase 5: Test Coverage (~283 test cases) - IN PROGRESS
+
+### Phase 6: Satellite → Body Naming Cleanup - PLANNED
+
+**Goal:** Remove the misleading "satellite" naming that was a legacy of when the only body type
+was a satellite. Now that all 7 celestial tiers share identical code paths, the generic "body"
+terminology should be used everywhere. The tier name "satellite" (the smallest tier) stays as-is.
+
+**Scope:** ~400 references across ~26 files (src/, admin/, scripts/, tests/)
+
+#### 6.1 Fill Annotation Field Renames (backward-compat read)
+Rename fields written to fill-ledger.json fills:
+- `isSatellite` → `isBodyOwned`
+- `satellitePnl` → `bodyPnl`
+- `satelliteHoldbackBtc` → `bodyHoldbackBtc`
+- `satelliteCostBasis` → `bodyCostBasis`
+- `satelliteAvgPrice` → `bodyAvgPrice`
+- `satelliteBtcQty` → `bodyBtcQty`
+
+**Backward compat:** All read sites must accept BOTH old and new field names since existing
+fill-ledger.json files on disk have the old names. Pattern: `fill.bodyPnl ?? fill.satellitePnl`
+Write sites only write new names. Over time old fills age out naturally.
+
+Files affected:
+- `src/regime-engine.js` (~30 refs): annotation writes in body TP fill handler, body TP sell annotation, getState() aggregation
+- `src/fill-ledger.js` (~19 refs): filter conditions (`!fill.isSatellite && !fill.bodyId`), comments
+- `admin/src/components/RegimeDashboard.jsx` (~32 refs): P&L display, holdback, sell group logic
+- `src/routes/regime-routes.js` (1 ref): `satelliteRealizedPnL` in recalculate endpoint
+- `scripts/reconcile-state.js` (~9 refs): annotation cleanup
+- `scripts/backfill-sell-order-ids.js` (~12 refs): fill annotation
+- `scripts/repair-sell-linkage.js` (~15 refs): linkage repair
+- `scripts/repair-orphan-sells.js` (~2 refs): orphan detection
+- `scripts/fix-recovery-body.js` (~5 refs): recovery annotation
+- `scripts/add-recovery-fill.js` (~4 refs): recovery fill
+- `tests/fill-ledger.test.js` (~6 refs): test assertions
+- `tests/celestial-hierarchy.test.js` (~41 refs): test data
+
+#### 6.2 Order Type Consolidation (`satellite_tp` → `body_tp`)
+Consolidate the dual order type strings. Both `satellite_tp` and `body_tp` exist in code;
+`body_tp` is already the preferred type. Remove `satellite_tp` usage.
+
+Files affected:
+- `src/order-executor.js` (~64 refs): the biggest change — rename all `satellite*` functions
+  - `placeSatelliteTpOrder()` → `placeBodyTpOrder()`
+  - `cancelSatelliteTpOrder()` → `cancelBodyTpOrder()`
+  - `cancelAllSatelliteTpOrders()` → `cancelAllBodyTpOrders()`
+  - `isSatelliteTpOrder()` → `isBodyTpOrder()`
+  - Internal `satelliteTpOrders` array → `bodyTpOrders`
+  - Internal `tpOrderToKey` Map references
+  - `satellite_tp` type strings → `body_tp`
+- `src/dry-run-executor.js` (~87 refs): mirror all order-executor renames
+- `src/regime-engine.js` (~91 refs): all callsites to renamed functions
+- `admin/src/components/TransactionsRegime.jsx` (1 ref): order type check
+- `src/state-tracker.js` (~11 refs): legacy migration code
+
+**Note:** Functions like `cancelBodyTpOrder` already exist (as wrappers). The rename unifies
+the naming so there's a single `bodyTpOrders` array, not the current aliased
+`const bodyTpOrders = satelliteTpOrders`.
+
+#### 6.3 State Field Cleanup
+Remove/rename legacy state fields in position state:
+
+- `satelliteTpOrders[]` → DELETE (already migrated to `celestialBodies[]` via state-tracker migration)
+- `satellitesCompleted` → merge into `bodiesCompleted` (already exists)
+- `satelliteRealizedPnL` → merge into `bodiesRealizedPnL` (already exists)
+- `satelliteRealizedBtcPnL` → merge into `bodiesRealizedBtcPnL` (already exists)
+
+Files affected:
+- `src/state-tracker.js`: Remove from defaults, update migration logic
+- `src/regime-engine.js`: Remove references, use only `bodies*` fields
+- `src/routes/regime-routes.js`: Update recalculate endpoint
+- `src/types.js`: Remove `SatelliteTpOrder` typedef, update `PositionState` props
+
+**Migration:** On state load, sum `satellite*` into `bodies*` if both exist, then delete `satellite*` fields.
+
+#### 6.4 Config Field Cleanup
+Remove legacy config aliases:
+
+- `satelliteTpEnabled` → DELETE (already aliased to `celestialEnabled`)
+- `maxSatelliteOrders` → DELETE (already aliased to `maxCelestialBodies`)
+
+Files affected:
+- `src/config-utils.js` (~6 refs): Remove from defaults, keep one-time migration
+- `src/types.js`: Remove from config typedef
+- `admin/src/components/ConfigEditor.jsx` (~2 refs): Remove legacy mentions
+- `config.json`: Remove fields if present
+
+#### 6.5 Type Definitions Update (`src/types.js`)
+- Remove `SatelliteTpOrder` typedef (deprecated, replaced by `CelestialBody`)
+- Rename fill annotation properties in typedef comments
+- Update `TrackedOrder.type` union: remove `'satellite_tp'`
+- Update `CelestialTier.name` comment (keep "satellite" as valid tier name)
+- Update `RegimeConfig` satellite section comments
+
+#### 6.6 UI Components
+- `admin/src/components/RegimeDashboard.jsx`: Update all `sell.satellitePnl` → `sell.bodyPnl` etc (with backward compat reads)
+- `admin/src/components/TransactionsRegime.jsx`: Update `satellite_tp` check → `body_tp`
+- `admin/src/components/ConfigEditor.jsx`: Update description text mentioning "satellite"
+- `admin/src/components/celestial/celestialConstants.js`: KEEP `satellite` tier name (it's the actual tier, not a misnomer)
+- `admin/src/components/celestial/*.jsx`: KEEP tier-name references (CelestialBody, CelestialScene, etc.)
+
+#### 6.7 Scripts Update
+All repair/reconcile scripts need updated field names with backward-compat reads:
+- `scripts/reconcile-state.js`
+- `scripts/backfill-sell-order-ids.js`
+- `scripts/repair-sell-linkage.js`
+- `scripts/repair-orphan-sells.js`
+- `scripts/fix-recovery-body.js`
+- `scripts/fix-cycle-numbering.js`
+- `scripts/add-recovery-fill.js`
+
+#### 6.8 Tests Update
+- `tests/fill-ledger.test.js`: Update test fill objects and assertions
+- `tests/celestial-hierarchy.test.js`: Update test data using old field names
+
+#### 6.9 PLAN.md & CLAUDE.md Documentation
+- Update PLAN.md Celestial Hierarchy section
+- Update PLAN.md architecture notes
+- Keep historical references in fix descriptions as-is (they document what happened)
+
+#### Implementation Order
+1. **6.3 + 6.4** State & config cleanup (smallest blast radius, migration-safe)
+2. **6.5** Type definitions (no runtime impact, just docs)
+3. **6.2** Order type consolidation (biggest single change: order-executor + dry-run-executor)
+4. **6.1** Fill annotation renames (regime-engine writes + all read sites)
+5. **6.6** UI components (follow server-side changes)
+6. **6.7** Scripts (low priority, used manually)
+7. **6.8** Tests (update to match new field names)
+8. **6.9** Documentation
+
+#### Risks & Mitigations
+- **Persisted data on disk**: fill-ledger.json has old field names → backward-compat reads (`?? oldName`)
+- **regime-state.json**: has old state fields → one-time migration in state-tracker
+- **Active orders on exchange**: `satellite_tp` type only used internally, not on exchange → safe to rename
+- **Running engine during deploy**: Stop engine before deploying, restart after → state migration runs on load
+- **Rollback**: All changes are naming-only, no logic changes → `git revert` is clean
 
 ---
 
