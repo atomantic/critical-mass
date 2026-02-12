@@ -344,7 +344,7 @@ module.exports = (app, deps) => {
     const currentPosition = fillLedger.rebuildPositionFromFills(currentCycleFills);
 
     const bodyPnL = currentState.position?.celestialState?.bodiesRealizedPnL || 0;
-    const satPnL = currentState.position?.satelliteRealizedPnL || 0;
+    const satPnL = 0; // Legacy satellite PnL folded into celestialState on load
     const bodyBtcPnL = currentState.position?.celestialState?.bodiesRealizedBtcPnL || 0;
     const totalRealizedPnL = recalcResult.realizedPnL + bodyPnL + satPnL;
     const totalRealizedBtcPnL = recalcResult.realizedBtcPnL + bodyBtcPnL;

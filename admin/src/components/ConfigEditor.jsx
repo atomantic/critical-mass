@@ -627,7 +627,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                     <FormInput label="Max Celestial Bodies" hint="Max concurrent body TP orders (1-15)" value={regimeConfig.maxCelestialBodies ?? 10} onChange={(v) => handleRegimeChange('maxCelestialBodies', Math.round(v))} type="number" />
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
-                    Each buy creates a celestial body (satellite). Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
+                    Each buy creates a celestial body. Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
                     Tiers: 🛰️ satellite → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → 🌌 galaxy → 🕳️ black hole.
                     Higher tiers have wider TP targets and hold more BTC.
                   </div>

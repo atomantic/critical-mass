@@ -139,7 +139,7 @@ async function main() {
         sellOrderId: EC8B_SELL_ORDER_ID,
         isRecoveryBuy: true,
         bodyId: EC8B_BODY_ID,
-        isSatellite: true,
+        isBodyOwned: true,
       };
       if (!DRY_RUN) ledger.push(newFill);
       console.log(`   ✅ Buy fill: ${f.trade_id.slice(0, 12)} — ${size} BTC @ $${price.toFixed(2)} (fee $${fee.toFixed(4)}, rebate $${rebate.toFixed(4)}, net $${netFee.toFixed(4)})`);
@@ -168,10 +168,10 @@ async function main() {
 
   // 4b. Annotate ec8b7bcb sell with cost basis for dashboard P&L
   if (!DRY_RUN) {
-    ec8bSell.satelliteCostBasis = roundUSDC(buyCost);
-    ec8bSell.satellitePnl = roundTripPnl;
+    ec8bSell.bodyCostBasis = roundUSDC(buyCost);
+    ec8bSell.bodyPnl = roundTripPnl;
   }
-  console.log(`   satelliteCostBasis: $${roundUSDC(buyCost)}`);
+  console.log(`   bodyCostBasis: $${roundUSDC(buyCost)}`);
 
   // 5. Update state
   const oldPnl = pos.realizedPnL;

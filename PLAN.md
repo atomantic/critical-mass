@@ -51,7 +51,7 @@
 
 ### Phase 5: Test Coverage (~283 test cases) - IN PROGRESS
 
-### Phase 6: Satellite → Body Naming Cleanup - PLANNED
+### Phase 6: Satellite → Body Naming Cleanup - COMPLETE
 
 **Goal:** Remove the misleading "satellite" naming that was a legacy of when the only body type
 was a satellite. Now that all 7 celestial tiers share identical code paths, the generic "body"
@@ -59,7 +59,7 @@ terminology should be used everywhere. The tier name "satellite" (the smallest t
 
 **Scope:** ~400 references across ~26 files (src/, admin/, scripts/, tests/)
 
-#### 6.1 Fill Annotation Field Renames (backward-compat read)
+#### 6.1 Fill Annotation Field Renames (backward-compat read) ✅
 Rename fields written to fill-ledger.json fills:
 - `isSatellite` → `isBodyOwned`
 - `satellitePnl` → `bodyPnl`
@@ -86,7 +86,7 @@ Files affected:
 - `tests/fill-ledger.test.js` (~6 refs): test assertions
 - `tests/celestial-hierarchy.test.js` (~41 refs): test data
 
-#### 6.2 Order Type Consolidation (`satellite_tp` → `body_tp`)
+#### 6.2 Order Type Consolidation (`satellite_tp` → `body_tp`) ✅
 Consolidate the dual order type strings. Both `satellite_tp` and `body_tp` exist in code;
 `body_tp` is already the preferred type. Remove `satellite_tp` usage.
 
@@ -108,7 +108,7 @@ Files affected:
 the naming so there's a single `bodyTpOrders` array, not the current aliased
 `const bodyTpOrders = satelliteTpOrders`.
 
-#### 6.3 State Field Cleanup
+#### 6.3 State Field Cleanup ✅
 Remove/rename legacy state fields in position state:
 
 - `satelliteTpOrders[]` → DELETE (already migrated to `celestialBodies[]` via state-tracker migration)
@@ -124,7 +124,7 @@ Files affected:
 
 **Migration:** On state load, sum `satellite*` into `bodies*` if both exist, then delete `satellite*` fields.
 
-#### 6.4 Config Field Cleanup
+#### 6.4 Config Field Cleanup ✅
 Remove legacy config aliases:
 
 - `satelliteTpEnabled` → DELETE (already aliased to `celestialEnabled`)
@@ -136,21 +136,21 @@ Files affected:
 - `admin/src/components/ConfigEditor.jsx` (~2 refs): Remove legacy mentions
 - `config.json`: Remove fields if present
 
-#### 6.5 Type Definitions Update (`src/types.js`)
+#### 6.5 Type Definitions Update (`src/types.js`) ✅
 - Remove `SatelliteTpOrder` typedef (deprecated, replaced by `CelestialBody`)
 - Rename fill annotation properties in typedef comments
 - Update `TrackedOrder.type` union: remove `'satellite_tp'`
 - Update `CelestialTier.name` comment (keep "satellite" as valid tier name)
 - Update `RegimeConfig` satellite section comments
 
-#### 6.6 UI Components
+#### 6.6 UI Components ✅
 - `admin/src/components/RegimeDashboard.jsx`: Update all `sell.satellitePnl` → `sell.bodyPnl` etc (with backward compat reads)
 - `admin/src/components/TransactionsRegime.jsx`: Update `satellite_tp` check → `body_tp`
 - `admin/src/components/ConfigEditor.jsx`: Update description text mentioning "satellite"
 - `admin/src/components/celestial/celestialConstants.js`: KEEP `satellite` tier name (it's the actual tier, not a misnomer)
 - `admin/src/components/celestial/*.jsx`: KEEP tier-name references (CelestialBody, CelestialScene, etc.)
 
-#### 6.7 Scripts Update
+#### 6.7 Scripts Update ✅
 All repair/reconcile scripts need updated field names with backward-compat reads:
 - `scripts/reconcile-state.js`
 - `scripts/backfill-sell-order-ids.js`
@@ -160,11 +160,11 @@ All repair/reconcile scripts need updated field names with backward-compat reads
 - `scripts/fix-cycle-numbering.js`
 - `scripts/add-recovery-fill.js`
 
-#### 6.8 Tests Update
+#### 6.8 Tests Update ✅
 - `tests/fill-ledger.test.js`: Update test fill objects and assertions
 - `tests/celestial-hierarchy.test.js`: Update test data using old field names
 
-#### 6.9 PLAN.md & CLAUDE.md Documentation
+#### 6.9 PLAN.md & CLAUDE.md Documentation ✅
 - Update PLAN.md Celestial Hierarchy section
 - Update PLAN.md architecture notes
 - Keep historical references in fix descriptions as-is (they document what happened)
@@ -460,8 +460,8 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 - **Body consolidation**: New buys within proximity of existing body are merged
 - **Fee-inclusive P&L display**: Dashboard uses prorated cost basis (includes buy fees)
 - Configuration:
-  - `celestialEnabled` / `satelliteTpEnabled` - Enable celestial body system
-  - `maxCelestialBodies` / `maxSatelliteOrders` - Maximum concurrent bodies
+  - `celestialEnabled` - Enable celestial body system
+  - `maxCelestialBodies` - Maximum concurrent bodies
   - `holdbackRatio: 0.5` - Base profit holdback ratio (0.0-1.0)
 - Startup recovery: body TP orders restored from state and validated on exchange
 - Reconciliation: periodic check for body fills that WebSocket missed
@@ -494,12 +494,12 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - `POST /api/:exchange/regime/rollup-body` endpoint in server.js
   - Emits `body_rollup` trade event on success
   - Pushes `regime:status` via WebSocket after merge so celestial animation updates immediately
-- **TP fill detection for all order types**: `checkPendingOrderFills()` and `refreshStaleOrders()` check entries, take_profit, body_tp, and satellite_tp orders (not just entries). TP orders that are filled/cancelled are cleaned up; open TPs are never auto-cancelled.
+- **TP fill detection for all order types**: `checkPendingOrderFills()` and `refreshStaleOrders()` check entries, take_profit, and body_tp orders (not just entries). TP orders that are filled/cancelled are cleaned up; open TPs are never auto-cancelled.
 - **Negative P&L guard**: `placeBodyTp()` rejects TP placement when `tpPrice <= body.avgPrice` to prevent selling at a loss
 - **Legacy TP cleanup**: `placeTakeProfitOrder()` cancels any legacy `take_profit` order when celestial bodies are present
 - **Buy→sell linkage on fill**: Body TP fills annotate source buy fills with `sellOrderId` for dashboard grouping; untracked sells annotate all current-cycle buys
 - **Dashboard take_profit display**: `take_profit` orders with matching celestial body data display the celestial emoji/tier instead of generic "TP"
-- **Legacy compatibility**: Old `satelliteTpOrders` migrated to celestial bodies on startup
+- **Legacy compatibility**: Old `satelliteTpOrders` migrated to celestial bodies on startup; legacy satellite fill annotations read via backward-compat `?? oldName` pattern
 - **Orphan reclamation**: On startup, detects sell orders on exchange that aren't tracked
   in state. Small sells reclaimed as bodies; large untracked sells trigger a warning.
 - **Coinbase adapter**: `getOpenOrders` includes `size` and `price` from order configuration

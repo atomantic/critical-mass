@@ -425,10 +425,7 @@
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
  * @property {MacroRegimeState|null} [macroRegime] - Macro regime state for persistence
  * @property {Array<{orderId: string, price: number, btcQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
- * @property {SatelliteTpOrder[]} [satelliteTpOrders] - Active satellite TP orders (legacy, use celestialBodies)
- * @property {number} [satellitesCompleted] - Total satellite TP cycles completed (legacy)
- * @property {number} [satelliteRealizedPnL] - Cumulative realized P&L from satellite TPs in USD (legacy)
- * @property {number} [satelliteRealizedBtcPnL] - Cumulative realized BTC P&L from satellite TPs (legacy)
+ * @property {CelestialBody[]} [celestialBodies_legacy] - (removed, use celestialBodies)
  * @property {CelestialBody[]} [celestialBodies] - Active celestial bodies (replaces core+satellites)
  * @property {CelestialState} [celestialState] - Aggregate celestial tracking
  * @property {boolean} [ladderActive] - Whether ladder mode is active
@@ -480,7 +477,7 @@
 
 /**
  * @typedef {Object} PendingOrder
- * @property {'entry' | 'take_profit' | 'satellite_tp' | 'body_tp'} type - Order type
+ * @property {'entry' | 'take_profit' | 'body_tp'} type - Order type
  * @property {number} price - Order price
  * @property {number} size - Order size
  * @property {number} sizeUsdc - Order size in USDC (for entries)
@@ -488,18 +485,7 @@
  * @property {boolean} [recoveredFromExchange] - Whether recovered on startup
  */
 
-/**
- * @typedef {Object} SatelliteTpOrder
- * @deprecated Use CelestialBody instead
- * @property {string} orderId - Buy order ID that created this satellite
- * @property {number} btcQty - BTC quantity from the buy fill
- * @property {number} costBasis - Cost basis including fees
- * @property {number} avgPrice - Average fill price of the buy
- * @property {string|null} tpOrderId - Exchange sell order ID for this satellite's TP
- * @property {number} tpPrice - Take-profit price for this satellite
- * @property {number} btcOnOrder - BTC currently in the sell order (after holdback)
- * @property {number} placedAt - Timestamp when satellite was created
- */
+// SatelliteTpOrder typedef removed — use CelestialBody instead
 
 /**
  * @typedef {Object} CelestialTier
@@ -574,10 +560,7 @@
  * @property {number} tpUpdateThresholdPct - Min % change to update TP (default: 0.5)
  * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0, default: 0.5)
  *
- * Satellite TP Parameters
- * @property {boolean} [satelliteTpEnabled] - Enable satellite TP orders for quick capture (default: false)
- * @property {number} [tpMergeMinImprovementPct] - Min % improvement to merge into core TP; below this creates satellite (default: 0.1)
- * @property {number} [maxSatelliteOrders] - Maximum concurrent satellite TP orders (default: 5)
+ * Celestial Body Parameters (legacy satellite aliases removed)
  *
  * Risk Cap Parameters
  * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)

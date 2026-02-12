@@ -647,11 +647,11 @@ describe('migrateFromLegacy', () => {
     assert.equal(bodies[0].tier, 'galaxy'); // 50% of 10000
   });
 
-  it('migrates satellite TP orders', () => {
+  it('migrates legacy satellite TP orders', () => {
     const positionState = {
       totalBTC: 0,
       totalCostBasis: 0,
-      satelliteTpOrders: [
+      satelliteTpOrders: [  // legacy field name for migration test
         { orderId: 'sat-1', btcQty: 0.001, costBasis: 100, avgPrice: 100000, tpOrderId: 'tp-sat-1', tpPrice: 102000, btcOnOrder: 0.0009, placedAt: 1700000000000 },
         { orderId: 'sat-2', btcQty: 0.002, costBasis: 200, avgPrice: 100000, tpOrderId: null, tpPrice: 0, btcOnOrder: 0 },
       ],
@@ -663,26 +663,26 @@ describe('migrateFromLegacy', () => {
     assert.equal(bodies[1].btcQty, 0.002);
   });
 
-  it('returns empty array when no position and no satellites', () => {
+  it('returns empty array when no position and no bodies', () => {
     const bodies = migrateFromLegacy({ totalBTC: 0, totalCostBasis: 0 }, 10000);
     assert.equal(bodies.length, 0);
   });
 
-  it('handles missing satelliteTpOrders', () => {
+  it('handles missing legacy satelliteTpOrders', () => {
     const bodies = migrateFromLegacy({ totalBTC: 0, totalCostBasis: 0 }, 10000);
     assert.equal(bodies.length, 0);
   });
 
-  it('migrates both core and satellites', () => {
+  it('migrates both core and legacy satellites', () => {
     const positionState = {
       totalBTC: 0.05,
       totalCostBasis: 5000,
       avgCostBasis: 100000,
-      satelliteTpOrders: [
+      satelliteTpOrders: [  // legacy field name for migration test
         { orderId: 'sat-1', btcQty: 0.001, costBasis: 100, avgPrice: 100000 },
       ],
     };
     const bodies = migrateFromLegacy(positionState, 10000);
-    assert.equal(bodies.length, 2); // 1 core + 1 satellite
+    assert.equal(bodies.length, 2); // 1 core + 1 legacy satellite
   });
 });

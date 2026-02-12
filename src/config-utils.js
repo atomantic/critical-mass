@@ -129,10 +129,7 @@ const REGIME_DEFAULTS = {
   tpUpdateThresholdPct: 0.5,
   holdbackRatio: 0.5,
 
-  // Satellite TP Orders (legacy aliases — use celestial fields)
-  satelliteTpEnabled: false,          // Legacy: use celestialEnabled
-  tpMergeMinImprovementPct: 0.1,     // Legacy: removed (proximity-based now)
-  maxSatelliteOrders: 5,             // Legacy: use maxCelestialBodies
+  // Legacy satellite aliases (removed — use celestialEnabled / maxCelestialBodies)
 
   // Celestial Hierarchy
   celestialEnabled: true,             // Enable multi-tier position management
@@ -706,13 +703,7 @@ const validateRegimeConfig = (config) => {
     errors.push('sizeMaxCycleBuys must be between 20 and 200');
   }
 
-  // Satellite TP validation (legacy)
-  if (config.tpMergeMinImprovementPct !== undefined && (config.tpMergeMinImprovementPct < 0.01 || config.tpMergeMinImprovementPct > 5.0)) {
-    errors.push('tpMergeMinImprovementPct must be between 0.01 and 5.0');
-  }
-  if (config.maxSatelliteOrders !== undefined && (!Number.isInteger(config.maxSatelliteOrders) || config.maxSatelliteOrders < 1 || config.maxSatelliteOrders > 10)) {
-    errors.push('maxSatelliteOrders must be an integer between 1 and 10');
-  }
+  // Legacy satellite config aliases silently accepted (mapped to celestial equivalents)
 
   // Celestial Hierarchy validation
   if (config.maxCelestialBodies !== undefined && (!Number.isInteger(config.maxCelestialBodies) || config.maxCelestialBodies < 1 || config.maxCelestialBodies > 15)) {

@@ -59,10 +59,10 @@ let skipped = 0;
 // A. Completed cycles: assign all buys to the dominant sell orderId
 for (const cycleId of completedCycleIds) {
   const cycleFills = cycleMap.get(cycleId);
-  const sells = cycleFills.filter(f => f.side === 'sell' && !f.isSatellite);
+  const sells = cycleFills.filter(f => f.side === 'sell' && !(f.isBodyOwned || f.isSatellite));
   const buys = cycleFills.filter(f => f.side === 'buy');
 
-  // Find unique non-satellite sell orderIds
+  // Find unique non-body sell orderIds
   const sellOrderIds = [...new Set(sells.map(s => s.orderId))];
 
   let targetSellOrderId = null;
@@ -96,8 +96,8 @@ if (activeCycleId) {
   // Build body lookup from celestialBodies in regime state
   const bodyById = new Map(celestialBodies.map(b => [b.id, b]));
 
-  // Build satellite sell lookup by orderId
-  const satSells = sells.filter(s => s.isSatellite);
+  // Build body sell lookup by orderId
+  const satSells = sells.filter(s => (s.isBodyOwned || s.isSatellite));
 
   // Track which sells have been consumed by matching
   const consumedSellIds = new Set();
@@ -105,15 +105,15 @@ if (activeCycleId) {
   for (const buy of buys) {
     if (buy.sellOrderId) { skipped++; continue; }
 
-    // B. Satellite buy with bodyId — look up body's tpOrderId
-    if (buy.isSatellite && buy.bodyId) {
+    // B. Body buy with bodyId — look up body's tpOrderId
+    if ((buy.isBodyOwned || buy.isSatellite) && buy.bodyId) {
       const body = bodyById.get(buy.bodyId);
       if (body && body.tpOrderId) {
         buy.sellOrderId = body.tpOrderId;
         assigned++;
         continue;
       }
-      // Body not in state (already sold). Match via satellite sell heuristic.
+      // Body not in state (already sold). Match via body sell heuristic.
       const matchingSell = satSells.find(s => {
         if (consumedSellIds.has(s.orderId)) return false;
         const sizeRatio = buy.size / s.size;
@@ -130,9 +130,9 @@ if (activeCycleId) {
       continue;
     }
 
-    // C. Satellite buy without bodyId (legacy)
-    if (buy.isSatellite && !buy.bodyId) {
-      // Heuristic: find satellite sell with similar BTC size and closest timestamp
+    // C. Body buy without bodyId (legacy)
+    if ((buy.isBodyOwned || buy.isSatellite) && !buy.bodyId) {
+      // Heuristic: find body sell with similar BTC size and closest timestamp
       const candidates = satSells.filter(s => {
         if (consumedSellIds.has(s.orderId)) return false;
         const sizeRatio = buy.size / s.size;
@@ -152,8 +152,8 @@ if (activeCycleId) {
       continue;
     }
 
-    // D. Non-satellite buy: assign to core TP if exists
-    if (!buy.isSatellite) {
+    // D. Non-body buy: assign to core TP if exists
+    if (!(buy.isBodyOwned || buy.isSatellite)) {
       const coreTpOrderId = explicitTpOrderId || positionState.activeTpOrderId;
       if (coreTpOrderId) {
         buy.sellOrderId = coreTpOrderId;

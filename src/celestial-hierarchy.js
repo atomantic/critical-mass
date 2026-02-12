@@ -2,9 +2,9 @@
 /**
  * Celestial Hierarchy
  *
- * Multi-tier position management replacing binary core+satellite model.
- * Every buy starts as a satellite. Bodies consolidate within tiers when
- * price-close, and promote to higher tiers as mass (cost basis) grows.
+ * Multi-tier position management for celestial body system.
+ * Every buy starts as the smallest tier (satellite). Bodies consolidate
+ * within tiers when price-close, and promote to higher tiers as mass grows.
  *
  * Tiers: satellite < moon < planet < sun < hypergiant < galaxy < black_hole
  *
@@ -94,7 +94,7 @@ const generateBodyId = (orderId) => {
 };
 
 /**
- * Create a new satellite body from a buy fill
+ * Create a new celestial body from a buy fill (starts at satellite tier)
  * @param {Object} newBuy - Buy fill summary
  * @param {number} newBuy.totalSize - BTC quantity
  * @param {number} newBuy.totalValue - USDC value

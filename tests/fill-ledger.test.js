@@ -617,9 +617,9 @@ describe('Fill Ledger', () => {
   });
 
   // =======================================================================
-  // 26. rebuildPositionFromFills skips satellite and body fills
+  // 26. rebuildPositionFromFills skips body-owned fills
   // =======================================================================
-  it('rebuildPositionFromFills skips satellite and body fills', () => {
+  it('rebuildPositionFromFills skips body-owned fills', () => {
     const ledger = createTestLedger();
     ledger.startNewCycle();
 
@@ -643,8 +643,8 @@ describe('Fill Ledger', () => {
       rebate: '0',
       tradeTime: '2025-01-01T01:00:00Z',
     }));
-    // Annotate as satellite after ingestion
-    ledger.annotateFillsByOrderId('sat-ord', { isSatellite: true });
+    // Annotate as body-owned after ingestion
+    ledger.annotateFillsByOrderId('sat-ord', { isBodyOwned: true });
 
     // Body buy — should be skipped
     const bodyResult = ledger.ingestFill(makeBuyFill({

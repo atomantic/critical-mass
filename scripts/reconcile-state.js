@@ -281,12 +281,12 @@ async function main() {
       const body = (state.position.celestialBodies || []).find(b => b.id === bodyTp.bodyId);
       if (body) {
         Object.assign(newFill, {
-          isSatellite: true,
+          isBodyOwned: true,
           bodyId: body.id,
           bodyTier: body.tier,
-          satelliteCostBasis: body.costBasis,
-          satelliteAvgPrice: body.avgPrice,
-          satelliteBtcQty: body.btcQty,
+          bodyCostBasis: body.costBasis,
+          bodyAvgPrice: body.avgPrice,
+          bodyBtcQty: body.btcQty,
         });
       }
     }
@@ -323,7 +323,7 @@ async function main() {
   console.log(`🔄 cyclesCompleted: ${oldCycles} → ${pos.cyclesCompleted}`);
 
   // 3c. Rebuild cycleBuys from cycle-11 buy fills
-  const cycle11Buys = ledger.filter(f => f.cycleId === CORRECT_CYCLE && f.side === 'buy' && !f.isSatellite);
+  const cycle11Buys = ledger.filter(f => f.cycleId === CORRECT_CYCLE && f.side === 'buy' && !(f.isBodyOwned || f.isSatellite));
   const uniqueBuyOrders = new Set(cycle11Buys.map(f => f.orderId));
   const oldCycleBuys = pos.cycleBuys;
   pos.cycleBuys = uniqueBuyOrders.size;
@@ -395,9 +395,9 @@ async function main() {
 
     // 4.5 Annotate sell fills with body metadata (if not already done in step 2)
     for (const fill of sellFills) {
-      if (!fill.satelliteHoldbackBtc) {
-        fill.satelliteHoldbackBtc = holdbackBtc;
-        fill.satellitePnl = pnl;
+      if (!(fill.bodyHoldbackBtc ?? fill.satelliteHoldbackBtc)) {
+        fill.bodyHoldbackBtc = holdbackBtc;
+        fill.bodyPnl = pnl;
       }
     }
 
@@ -438,7 +438,7 @@ async function main() {
   syncPositionState(pos, remainingBodies);
 
   // Rebuild cycleBuys from cycle-11 fills (after all ledger changes)
-  const finalCycle11Buys = ledger.filter(f => f.cycleId === CORRECT_CYCLE && f.side === 'buy' && !f.isSatellite);
+  const finalCycle11Buys = ledger.filter(f => f.cycleId === CORRECT_CYCLE && f.side === 'buy' && !(f.isBodyOwned || f.isSatellite));
   const finalUniqueBuyOrders = new Set(finalCycle11Buys.map(f => f.orderId));
   pos.cycleBuys = finalUniqueBuyOrders.size;
 

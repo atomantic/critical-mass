@@ -2,7 +2,7 @@
 /**
  * One-time repair script: Fix sellOrderId annotations in the fill ledger.
  *
- * Issues found via price-based matching of satellite sells to source buys:
+ * Issues found via price-based matching of body sells to source buys:
  *   - 5 mismapped   (sellOrderId points to wrong sell)
  *   - 3 unmapped     (no sellOrderId at all)
  *   - 1 multi-buy body (12 buys pointing to stale legacy TP 3b5737ff)
@@ -24,22 +24,24 @@ for (const fill of fills) {
 
 let changes = 0
 
-// All satellite sells in current cycle
+// All body sells in current cycle
 const CYCLE = 'cycle-1770195737025-k9ae9wd2v'
-const cycleSells = fills.filter(f => f.side === 'sell' && f.isSatellite && f.cycleId === CYCLE)
+const cycleSells = fills.filter(f => f.side === 'sell' && (f.isBodyOwned || f.isSatellite) && f.cycleId === CYCLE)
 const cycleBuys = fills.filter(f => f.side === 'buy' && f.cycleId === CYCLE)
 
-console.log(`📊 Found ${cycleSells.length} satellite sells, ${cycleBuys.length} buys in current cycle\n`)
+console.log(`📊 Found ${cycleSells.length} body sells, ${cycleBuys.length} buys in current cycle\n`)
 
-// --- 1) Single-buy satellite sells: match by satelliteAvgPrice to buy price ---
-// satelliteAvgPrice records the source buy's exact price for single-buy satellites
+// --- 1) Single-buy body sells: match by bodyAvgPrice to buy price ---
+// bodyAvgPrice records the source buy's exact price for single-buy bodies
 const PRICE_TOLERANCE = 0.02
 
 for (const sell of cycleSells) {
-  if (!sell.satelliteAvgPrice || !sell.satelliteBtcQty) continue
+  const sellAvgPrice = sell.bodyAvgPrice ?? sell.satelliteAvgPrice
+  const sellBtcQty = sell.bodyBtcQty ?? sell.satelliteBtcQty
+  if (!sellAvgPrice || !sellBtcQty) continue
 
   const matchingBuys = cycleBuys.filter(buy =>
-    Math.abs(buy.price - sell.satelliteAvgPrice) < PRICE_TOLERANCE
+    Math.abs(buy.price - sellAvgPrice) < PRICE_TOLERANCE
   )
 
   if (matchingBuys.length === 1) {
@@ -54,7 +56,7 @@ for (const sell of cycleSells) {
       console.log(`🔧 ${sell.orderId.slice(0, 8)} <- ${buy.orderId.slice(0, 8)} [${label}]`)
       for (const f of allFillsForBuy) {
         f.sellOrderId = sell.orderId
-        f.isSatellite = true
+        f.isBodyOwned = true
         if (sell.bodyId && !f.bodyId) {
           f.bodyId = sell.bodyId
           f.bodyTier = sell.bodyTier
@@ -75,9 +77,9 @@ for (const sell of cycleSells) {
       changes++
     }
   } else if (matchingBuys.length === 0) {
-    console.log(`🔶 ${sell.orderId.slice(0, 8)} — no single price match (multi-buy body, avgPrice=${sell.satelliteAvgPrice})`)
+    console.log(`🔶 ${sell.orderId.slice(0, 8)} — no single price match (multi-buy body, avgPrice=${sellAvgPrice})`)
   } else {
-    console.log(`⚠️  ${sell.orderId.slice(0, 8)} — ${matchingBuys.length} price matches for ${sell.satelliteAvgPrice}, skipping`)
+    console.log(`⚠️  ${sell.orderId.slice(0, 8)} — ${matchingBuys.length} price matches for ${sellAvgPrice}, skipping`)
   }
 }
 
@@ -96,12 +98,13 @@ if (da726Sell) {
   )
 
   const totalBtc = staleBuys.reduce((sum, b) => sum + b.size, 0)
-  console.log(`\n🔧 da726af9 multi-buy body: ${staleBuys.length} buys, ${totalBtc.toFixed(8)} BTC (expected ${da726Sell.satelliteBtcQty})`)
+  const da726BtcQty = da726Sell.bodyBtcQty ?? da726Sell.satelliteBtcQty
+  console.log(`\n🔧 da726af9 multi-buy body: ${staleBuys.length} buys, ${totalBtc.toFixed(8)} BTC (expected ${da726BtcQty})`)
 
-  if (Math.abs(totalBtc - da726Sell.satelliteBtcQty) < 0.00000002) {
+  if (Math.abs(totalBtc - da726BtcQty) < 0.00000002) {
     for (const buy of staleBuys) {
       buy.sellOrderId = DA726AF9_SELL
-      buy.isSatellite = true
+      buy.isBodyOwned = true
       if (!buy.bodyId) {
         buy.bodyId = DA726AF9_BODY
         buy.bodyTier = 'planet'
@@ -110,7 +113,7 @@ if (da726Sell) {
     }
     console.log(`   ✅ Remapped ${staleBuys.length} fills to da726af9, added bodyId where missing`)
   } else {
-    console.log(`   ⚠️  BTC sum mismatch: ${totalBtc} vs ${da726Sell.satelliteBtcQty}, skipping`)
+    console.log(`   ⚠️  BTC sum mismatch: ${totalBtc} vs ${da726BtcQty}, skipping`)
   }
 }
 
