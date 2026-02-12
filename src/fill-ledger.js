@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { getExchangeDataDir } = require('./migration');
 const { roundBTC, roundUSDC } = require('./volatility-utils');
+const { atomicWriteSync } = require('./state-tracker');
 
 /**
  * @typedef {import('./types').Fill} Fill
@@ -35,7 +36,10 @@ const getFillLedgerPath = (exchange) => {
 const createFillLedger = (exchange) => {
   /** @type {Map<string, Fill>} */
   const fills = new Map();
+  /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
+  const cycleIndex = new Map();
   let currentCycleId = null;
+  let nextCycleNumber = 1;
 
   /**
    * Load fill ledger from disk
@@ -49,32 +53,53 @@ const createFillLedger = (exchange) => {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     for (const fill of data) {
       fills.set(fill.tradeId, fill);
+      // Populate cycle index
+      if (fill.cycleId) {
+        if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+        cycleIndex.get(fill.cycleId).add(fill.tradeId);
+      }
     }
 
     // Restore currentCycleId from loaded fills
-    // Find the most recent cycle that's still active (has buys but no sell)
-    const cycleStats = new Map(); // cycleId -> { buys: number, sells: number }
+    // Find the most recent cycle that's still active (core TP hasn't filled)
+    // Satellite TP sells are small fractions of the position; core TP sells ~99.75%
+    const cycleStats = new Map(); // cycleId -> { buysBtc, sellsBtc }
     for (const fill of fills.values()) {
       if (!fill.cycleId) continue;
       if (!cycleStats.has(fill.cycleId)) {
-        cycleStats.set(fill.cycleId, { buys: 0, sells: 0 });
+        cycleStats.set(fill.cycleId, { buysBtc: 0, sellsBtc: 0 });
       }
       const stats = cycleStats.get(fill.cycleId);
-      if (fill.side === 'buy') stats.buys++;
-      else if (fill.side === 'sell') stats.sells++;
+      if (fill.side === 'buy') stats.buysBtc += fill.size;
+      else if (fill.side === 'sell') stats.sellsBtc += fill.size;
     }
 
-    // Find an active cycle (has buys, no sells) - prefer most recent
+    // Find an active cycle - prefer most recent
+    // A cycle is "active" if less than 50% of BTC has been sold
+    // (core TP sells ~99.75%; body TP sells are individually tiny fractions)
     const allFills = Array.from(fills.values()).sort((a, b) => b.timestamp - a.timestamp);
     for (const fill of allFills) {
       if (!fill.cycleId) continue;
       const stats = cycleStats.get(fill.cycleId);
-      if (stats && stats.buys > 0 && stats.sells === 0) {
+      if (!stats || stats.buysBtc === 0) continue;
+      const sellRatio = stats.sellsBtc / stats.buysBtc;
+      if (sellRatio < 0.5) {
         currentCycleId = fill.cycleId;
-        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId}`);
+        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sold, body TP sells only)`);
         break;
       }
     }
+
+    // Initialize nextCycleNumber from existing cycle IDs
+    let maxCycleNum = 0;
+    for (const fill of fills.values()) {
+      if (!fill.cycleId) continue;
+      const match = fill.cycleId.match(/^cycle-(\d+)$/);
+      if (match) {
+        maxCycleNum = Math.max(maxCycleNum, parseInt(match[1], 10));
+      }
+    }
+    nextCycleNumber = maxCycleNum + 1;
 
     console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
   };
@@ -93,7 +118,7 @@ const createFillLedger = (exchange) => {
     const fillsArray = Array.from(fills.values())
       .sort((a, b) => a.timestamp - b.timestamp);
 
-    fs.writeFileSync(filePath, JSON.stringify(fillsArray, null, 2));
+    atomicWriteSync(filePath, JSON.stringify(fillsArray, null, 2));
   };
 
   /**
@@ -136,6 +161,11 @@ const createFillLedger = (exchange) => {
     };
 
     fills.set(tradeId, fill);
+    // Maintain cycle index
+    if (fill.cycleId) {
+      if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+      cycleIndex.get(fill.cycleId).add(tradeId);
+    }
     persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
@@ -161,9 +191,14 @@ const createFillLedger = (exchange) => {
    */
   const getCurrentCycleFills = () => {
     if (!currentCycleId) return [];
-    return Array.from(fills.values())
-      .filter(f => f.cycleId === currentCycleId)
-      .sort((a, b) => a.timestamp - b.timestamp);
+    const tradeIds = cycleIndex.get(currentCycleId);
+    if (!tradeIds || tradeIds.size === 0) return [];
+    const result = [];
+    for (const id of tradeIds) {
+      const fill = fills.get(id);
+      if (fill) result.push(fill);
+    }
+    return result.sort((a, b) => a.timestamp - b.timestamp);
   };
 
   /**
@@ -172,7 +207,39 @@ const createFillLedger = (exchange) => {
    * @returns {RegimePositionState} Rebuilt position state
    */
   const rebuildPositionFromFills = (fillsToProcess) => {
-    const targetFills = fillsToProcess || getCurrentCycleFills();
+    const chronoFills = fillsToProcess || getCurrentCycleFills();
+
+    // Reorder linked buy-sell pairs so buys process before their sells,
+    // even when a corrective buy has a later timestamp than its sell.
+    const buysBySellOrderId = new Map();
+    for (const f of chronoFills) {
+      if (f.side === 'buy' && f.sellOrderId) {
+        if (!buysBySellOrderId.has(f.sellOrderId)) buysBySellOrderId.set(f.sellOrderId, []);
+        buysBySellOrderId.get(f.sellOrderId).push(f);
+      }
+    }
+    let targetFills = chronoFills;
+    if (buysBySellOrderId.size > 0) {
+      const result = [];
+      const emitted = new Set();
+      for (const fill of chronoFills) {
+        if (emitted.has(fill.tradeId)) continue;
+        if (fill.side === 'sell') {
+          const linkedBuys = buysBySellOrderId.get(fill.orderId);
+          if (linkedBuys) {
+            for (const buy of linkedBuys) {
+              if (!emitted.has(buy.tradeId)) {
+                result.push(buy);
+                emitted.add(buy.tradeId);
+              }
+            }
+          }
+        }
+        result.push(fill);
+        emitted.add(fill.tradeId);
+      }
+      targetFills = result;
+    }
 
     let totalBTC = 0;
     let totalCostBasis = 0;
@@ -182,6 +249,9 @@ const createFillLedger = (exchange) => {
     const uniqueBuyOrders = new Set();
 
     for (const fill of targetFills) {
+      // Skip body-owned fills — they have independent position tracking
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+
       if (fill.side === 'buy') {
         const costBasis = fill.quoteAmount + fill.netFee;
         totalBTC = roundBTC(totalBTC + fill.size);
@@ -196,7 +266,13 @@ const createFillLedger = (exchange) => {
         realizedPnL = roundUSDC(realizedPnL + (proceeds - soldCostBasis));
 
         totalBTC = roundBTC(totalBTC - fill.size);
-        totalCostBasis = roundUSDC(totalCostBasis - soldCostBasis);
+        if (totalBTC < 0) {
+          console.log(`⚠️ [${exchange}] rebuildPositionFromFills: negative BTC ${totalBTC} after sell ${fill.tradeId}, clamping to 0`);
+          totalBTC = 0;
+          totalCostBasis = 0;
+        } else {
+          totalCostBasis = roundUSDC(totalCostBasis - soldCostBasis);
+        }
       }
     }
 
@@ -226,7 +302,8 @@ const createFillLedger = (exchange) => {
    * @returns {string} New cycle ID
    */
   const startNewCycle = () => {
-    currentCycleId = `cycle-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    currentCycleId = `cycle-${nextCycleNumber}`;
+    nextCycleNumber++;
     console.log(`🔄 [${exchange}] Started new cycle: ${currentCycleId}`);
     return currentCycleId;
   };
@@ -403,13 +480,22 @@ const createFillLedger = (exchange) => {
       }
     }
 
-    // Identify completed cycles (have at least one sell)
+    // Identify completed cycles (core TP has sold most of the position)
+    // Satellite TP sells are tiny fractions; core TP sells ~99.75%
     const completedCycles = [];
     const activeCycles = [];
 
     for (const [cycleId, cycleFills] of cycleMap) {
-      const hasSell = cycleFills.some(f => f.side === 'sell');
-      if (hasSell) {
+      let buysBtc = 0;
+      let sellsBtc = 0;
+      for (const fill of cycleFills) {
+        if (fill.side === 'buy') buysBtc += fill.size;
+        else if (fill.side === 'sell') sellsBtc += fill.size;
+      }
+      // A cycle is "completed" only when core TP has fired (selling most of position)
+      // Satellite sells are individually tiny; core TP sells ~99.75%
+      const sellRatio = buysBtc > 0 ? sellsBtc / buysBtc : 0;
+      if (sellRatio >= 0.5) {
         completedCycles.push({ cycleId, fills: cycleFills });
       } else {
         activeCycles.push({ cycleId, fills: cycleFills });
@@ -421,6 +507,89 @@ const createFillLedger = (exchange) => {
     let totalRealizedPnL = 0;
     let totalRealizedBtcPnL = 0;
 
+    // Global P&L pass: mirrors dashboard Filled Orders buy-linkage computation.
+    // Step 1: Build pnlMap (running average for core, annotations for body)
+    let globalRealizedPnL = 0;
+    let globalRealizedBtcPnL = 0;
+    let gRunBtc = 0, gRunCost = 0;
+    const sellPnlMap = new Map(); // orderId -> { pnl, holdback }
+    for (const fill of allFills) {
+      const isBody = fill.isBodyOwned ?? fill.isSatellite;
+      if (fill.side === 'buy') {
+        if (!isBody) { gRunBtc += fill.size; gRunCost += fill.quoteAmount + fill.netFee; }
+      } else if (fill.side === 'sell') {
+        if (isBody) {
+          const bodyPnl = fill.bodyPnl ?? fill.satellitePnl;
+          const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount - fill.netFee) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0);
+          const holdback = (fill.bodyHoldbackBtc ?? fill.satelliteHoldbackBtc) || 0;
+          const prev = sellPnlMap.get(fill.orderId);
+          if (prev) { prev.pnl += pnl; prev.holdback += holdback; prev.isBody = true; }
+          else sellPnlMap.set(fill.orderId, { pnl, holdback, isBody: true, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: bodyPnl != null });
+        } else {
+          const avgCost = gRunBtc > 0 ? gRunCost / gRunBtc : 0;
+          const proceeds = fill.quoteAmount - fill.netFee;
+          const pnl = proceeds - avgCost * fill.size;
+          const prev = sellPnlMap.get(fill.orderId);
+          if (prev) { prev.pnl += pnl; prev.quoteAmount += fill.quoteAmount; prev.netFee += fill.netFee; }
+          else sellPnlMap.set(fill.orderId, { pnl, holdback: 0, isBody: false, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: false });
+          const rem = gRunBtc - fill.size;
+          gRunBtc = rem > 0 ? rem : 0;
+          gRunCost = rem > 0 ? avgCost * rem : 0;
+        }
+      }
+    }
+    // Step 2: Build buy-sell linkage and override P&L (matches dashboard lines 2049-2055)
+    const buysBySellId = new Map();
+    for (const fill of allFills) {
+      if (fill.side !== 'buy' || !fill.sellOrderId) continue;
+      if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, []);
+      buysBySellId.get(fill.sellOrderId).push(fill);
+    }
+    // Also build bodyId -> sell orderId map for orphan redirect
+    const sellIdByBodyId = new Map();
+    const knownSellIds = new Set(sellPnlMap.keys());
+    for (const fill of allFills) {
+      if (fill.side === 'sell' && fill.bodyId) sellIdByBodyId.set(fill.bodyId, fill.orderId);
+    }
+    // Redirect orphaned buys (sellOrderId points to non-existent sell) via bodyId
+    for (const fill of allFills) {
+      if (fill.side !== 'buy' || !fill.sellOrderId || knownSellIds.has(fill.sellOrderId)) continue;
+      const bodyId = fill.bodyId;
+      if (!bodyId) continue;
+      const realSellId = sellIdByBodyId.get(bodyId);
+      if (!realSellId) continue;
+      if (!buysBySellId.has(realSellId)) buysBySellId.set(realSellId, []);
+      const existing = buysBySellId.get(realSellId);
+      if (!existing.some(b => b.orderId === fill.orderId)) existing.push(fill);
+    }
+    // Fallback: link buys by bodyId for sells with no sellOrderId linkage
+    const buysByBodyId = new Map();
+    for (const fill of allFills) {
+      if (fill.side !== 'buy' || !fill.bodyId) continue;
+      if (!buysByBodyId.has(fill.bodyId)) buysByBodyId.set(fill.bodyId, []);
+      buysByBodyId.get(fill.bodyId).push(fill);
+    }
+    // Override P&L from linked buys for sells that don't have trusted annotations
+    for (const [orderId, data] of sellPnlMap) {
+      let linkedBuys = buysBySellId.get(orderId);
+      if (!linkedBuys || linkedBuys.length === 0) {
+        // Try bodyId fallback
+        const sellFill = allFills.find(f => f.side === 'sell' && f.orderId === orderId);
+        if (sellFill?.bodyId) linkedBuys = buysByBodyId.get(sellFill.bodyId);
+      }
+      if (!linkedBuys || linkedBuys.length === 0) continue;
+      // Skip body sells with trusted bodyPnl annotations
+      if (data.isBody && data.hasAnnotation) continue;
+      const buyCost = linkedBuys.reduce((s, b) => s + b.quoteAmount + b.netFee, 0);
+      const sellProceeds = data.quoteAmount - data.netFee;
+      data.pnl = sellProceeds - buyCost;
+    }
+    // Sum all sell P&L
+    for (const [, data] of sellPnlMap) {
+      globalRealizedPnL += data.pnl;
+      globalRealizedBtcPnL += data.holdback;
+    }
+
     for (const { cycleId, fills: cycleFills } of completedCycles) {
       let totalBTC = 0;
       let totalCost = 0;
@@ -428,6 +597,9 @@ const createFillLedger = (exchange) => {
       let btcSold = 0;
 
       for (const fill of cycleFills) {
+        // Skip body-owned fills — they have independent P&L tracking
+        if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+
         if (fill.side === 'buy') {
           totalBTC += fill.size;
           totalCost += fill.quoteAmount + fill.netFee;
@@ -444,8 +616,8 @@ const createFillLedger = (exchange) => {
 
       cycleDetails.push({
         cycleId,
-        buys: cycleFills.filter(f => f.side === 'buy').length,
-        sells: cycleFills.filter(f => f.side === 'sell').length,
+        buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
+        sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
         totalBtcBought: roundBTC(totalBTC),
         btcSold: roundBTC(btcSold),
         holdbackBtc,
@@ -493,24 +665,38 @@ const createFillLedger = (exchange) => {
       // Assign cycle IDs and calculate P&L for completed orphan cycles
       for (let i = 0; i < orphanCycles.length; i++) {
         const cycleFills = orphanCycles[i];
-        const hasSell = cycleFills.some(f => f.side === 'sell');
         const cycleId = `cycle-${cycleFills[0].timestamp}-recovered-${i + 1}`;
 
         // Assign cycle ID to all fills in this cycle
+        if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
         for (const fill of cycleFills) {
           fill.cycleId = cycleId;
           fills.set(fill.tradeId, fill);
+          cycleIndex.get(cycleId).add(fill.tradeId);
           orphansFixed++;
         }
 
-        // If this is a completed cycle (has sell), calculate its P&L
-        if (hasSell) {
+        // Check if this is a completed cycle using BTC balance ratio
+        // (same heuristic as main cycle detection — core TP sells ~99.75%)
+        let orphanBuysBtc = 0;
+        let orphanSellsBtc = 0;
+        for (const fill of cycleFills) {
+          if (fill.side === 'buy') orphanBuysBtc += fill.size;
+          else if (fill.side === 'sell') orphanSellsBtc += fill.size;
+        }
+        const orphanSellRatio = orphanBuysBtc > 0 ? orphanSellsBtc / orphanBuysBtc : 0;
+        const isCompleted = orphanSellRatio >= 0.5;
+
+        if (isCompleted) {
           let totalBTC = 0;
           let totalCost = 0;
           let sellProceeds = 0;
           let btcSold = 0;
 
           for (const fill of cycleFills) {
+            // Skip body/satellite fills — they have independent P&L tracking
+            if (fill.isSatellite || fill.bodyId) continue;
+
             if (fill.side === 'buy') {
               totalBTC += fill.size;
               totalCost += fill.quoteAmount + fill.netFee;
@@ -527,8 +713,8 @@ const createFillLedger = (exchange) => {
 
           cycleDetails.push({
             cycleId,
-            buys: cycleFills.filter(f => f.side === 'buy').length,
-            sells: cycleFills.filter(f => f.side === 'sell').length,
+            buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
+            sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
             totalBtcBought: roundBTC(totalBTC),
             btcSold: roundBTC(btcSold),
             holdbackBtc,
@@ -551,8 +737,60 @@ const createFillLedger = (exchange) => {
       }
     }
 
-    // Persist the cycle ID assignments
-    if (orphansFixed > 0) {
+    // Renumber all cycles sequentially (cycle-1, cycle-2, etc.)
+    const cycleTimestamps = new Map();
+    for (const fill of Array.from(fills.values())) {
+      if (!fill.cycleId) continue;
+      const existing = cycleTimestamps.get(fill.cycleId);
+      if (!existing || fill.timestamp < existing) {
+        cycleTimestamps.set(fill.cycleId, fill.timestamp);
+      }
+    }
+
+    const completedIds = new Set(cycleDetails.map(d => d.cycleId));
+    const completedEntries = [];
+    const activeEntries = [];
+    for (const [id, ts] of cycleTimestamps) {
+      if (completedIds.has(id)) completedEntries.push([id, ts]);
+      else activeEntries.push([id, ts]);
+    }
+    completedEntries.sort((a, b) => a[1] - b[1]);
+    activeEntries.sort((a, b) => a[1] - b[1]);
+
+    let cycleNum = 1;
+    let renumbered = 0;
+    const idMap = new Map();
+    for (const [oldId] of [...completedEntries, ...activeEntries]) {
+      const newId = `cycle-${cycleNum}`;
+      idMap.set(oldId, newId);
+      if (oldId !== newId) renumbered++;
+      cycleNum++;
+    }
+
+    if (renumbered > 0) {
+      // Rebuild cycle index after renumbering
+      cycleIndex.clear();
+      for (const fill of Array.from(fills.values())) {
+        if (fill.cycleId && idMap.has(fill.cycleId)) {
+          fill.cycleId = idMap.get(fill.cycleId);
+          fills.set(fill.tradeId, fill);
+        }
+        if (fill.cycleId) {
+          if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+          cycleIndex.get(fill.cycleId).add(fill.tradeId);
+        }
+      }
+      for (const detail of cycleDetails) {
+        if (idMap.has(detail.cycleId)) detail.cycleId = idMap.get(detail.cycleId);
+      }
+      if (currentCycleId && idMap.has(currentCycleId)) {
+        currentCycleId = idMap.get(currentCycleId);
+      }
+      console.log(`🔢 [${exchange}] Renumbered ${renumbered} cycles to sequential IDs (cycle-1 through cycle-${cycleNum - 1})`);
+    }
+    nextCycleNumber = cycleNum;
+
+    if (orphansFixed > 0 || renumbered > 0) {
       persist();
     }
 
@@ -560,6 +798,8 @@ const createFillLedger = (exchange) => {
       cyclesCompleted: cycleDetails.length,
       realizedPnL: roundUSDC(totalRealizedPnL),
       realizedBtcPnL: roundBTC(totalRealizedBtcPnL),
+      globalRealizedPnL: roundUSDC(globalRealizedPnL),
+      globalRealizedBtcPnL: roundBTC(totalRealizedBtcPnL + globalRealizedBtcPnL),
       cycleDetails,
       orphansFixed,
       activeCycleId: currentCycleId,
@@ -574,8 +814,36 @@ const createFillLedger = (exchange) => {
   const updateFillCycleId = (tradeId, cycleId) => {
     const fill = fills.get(tradeId);
     if (fill) {
+      // Remove from old cycle index
+      if (fill.cycleId && cycleIndex.has(fill.cycleId)) {
+        cycleIndex.get(fill.cycleId).delete(tradeId);
+      }
       fill.cycleId = cycleId;
       fills.set(tradeId, fill);
+      // Add to new cycle index
+      if (cycleId) {
+        if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
+        cycleIndex.get(cycleId).add(tradeId);
+      }
+    }
+  };
+
+  /**
+   * Annotate a fill with additional metadata (e.g. celestial body TP data)
+   * @param {string} orderId - Order ID to annotate fills for
+   * @param {Object} metadata - Key-value pairs to merge into the fill (bodyId, bodyTier, isBodyOwned, etc.)
+   */
+  const annotateFillsByOrderId = (orderId, metadata) => {
+    let matched = false;
+    for (const [, fill] of fills) {
+      if (fill.orderId === orderId) {
+        Object.assign(fill, metadata);
+        matched = true;
+      }
+    }
+    // Persist when sellOrderId is set to ensure it survives restarts
+    if (matched && metadata.sellOrderId) {
+      persist();
     }
   };
 
@@ -587,7 +855,8 @@ const createFillLedger = (exchange) => {
     const cycleFills = getCurrentCycleFills();
     const uniqueBuyOrders = new Set();
     for (const fill of cycleFills) {
-      if (fill.side === 'buy') {
+      // Skip body-owned buys — they have independent position tracking
+      if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
         uniqueBuyOrders.add(fill.orderId);
       }
     }
@@ -615,6 +884,7 @@ const createFillLedger = (exchange) => {
     aggregateFills,
     recalculateCycles,
     updateFillCycleId,
+    annotateFillsByOrderId,
     persist,
     load,
   };

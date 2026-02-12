@@ -1,6 +1,10 @@
-# Multi-Exchange DCA Trading Bot
+<p align="center">
+  <img src="logo.svg" alt="Critical Mass logo" width="128" height="128" />
+</p>
 
-A Node.js bot that implements a Dollar Cost Averaging (DCA) strategy for BTC on multiple exchanges (Coinbase, Gemini), designed to accumulate both fiat and BTC over time.
+# Critical Mass
+
+Multi-exchange BTC accumulation engine with celestial position management.
 
 **Version:** 2.0.0
 **Ports:** 5563 (API), 5564 (UI dev)
@@ -44,7 +48,7 @@ This creates a dual accumulation strategy that profits in both directions.
 
 ```bash
 git clone <repo-url>
-cd dca_bot
+cd critical-mass
 npm run install:all   # Install both server and admin UI dependencies
 ```
 
@@ -177,7 +181,7 @@ npm run pm2:stop
 ## File Structure
 
 ```
-dca_bot/
+critical-mass/
 ├── index.js              # CLI entry point
 ├── server.js             # API server + scheduler
 ├── config.json           # Multi-exchange configuration

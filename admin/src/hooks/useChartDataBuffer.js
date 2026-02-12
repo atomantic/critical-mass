@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-// Maximum data retention (15 minutes in milliseconds)
-const MAX_RETENTION_MS = 15 * 60 * 1000
+// Maximum data retention (1 hour in milliseconds) - matches server-side buffer and timeline display
+const MAX_RETENTION_MS = 60 * 60 * 1000
 
 // Minimum interval between data points (to prevent over-sampling)
 const MIN_SAMPLE_INTERVAL_MS = 1000
 
-// Hard cap on array length as safety net (15 min at 1 sample/sec = 900, add buffer)
-const MAX_POINTS = 1000
+// Hard cap on array length as safety net (1 hour at 1 sample/sec = 3600, add buffer)
+const MAX_POINTS = 4000
 
 /**
  * Hook that accumulates WebSocket data for charting

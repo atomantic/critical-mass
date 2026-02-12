@@ -105,6 +105,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
   let lastEvaluationCycle = 0;
   let totalSampleCount = 0;
   let avgVolBaseline = 0;
+  let historicalVolBaseline = 0; // Slower-moving historical vol for volFactor comparison
 
   // Cache for percentile calculations
   let cachedPercentiles = { p25: 0, p50: 0, p75: 0 };
@@ -218,6 +219,9 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     avgVolBaseline = avgVolBaseline === 0
       ? cycleData.volBaseline
       : avgVolBaseline * 0.95 + cycleData.volBaseline * 0.05;
+    historicalVolBaseline = historicalVolBaseline === 0
+      ? cycleData.volBaseline
+      : historicalVolBaseline * 0.99 + cycleData.volBaseline * 0.01;
 
     // Compress if needed
     compressOldCycles();
@@ -313,7 +317,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     // Volatility adjustment factor
     // Higher vol = wider TP, lower vol = tighter TP
     const currentVol = avgVolBaseline || 1;
-    const historicalVol = avgVolBaseline; // Will evolve over time
+    const historicalVol = historicalVolBaseline || avgVolBaseline || 1;
     const volFactor = historicalVol > 0 ? Math.sqrt(currentVol / historicalVol) : 1;
 
     // Calculate proposed values
@@ -388,6 +392,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     stats: {
       totalSampleCount,
       avgVolBaseline,
+      historicalVolBaseline,
       cachedPercentiles: { ...cachedPercentiles },
     },
     lastEvaluationTime,
@@ -413,6 +418,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     if (state.stats) {
       totalSampleCount = state.stats.totalSampleCount || 0;
       avgVolBaseline = state.stats.avgVolBaseline || 0;
+      historicalVolBaseline = state.stats.historicalVolBaseline || 0;
       if (state.stats.cachedPercentiles) {
         cachedPercentiles = { ...state.stats.cachedPercentiles };
       }
@@ -466,6 +472,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     lastEvaluationCycle = 0;
     totalSampleCount = 0;
     avgVolBaseline = 0;
+    historicalVolBaseline = 0;
     cachedPercentiles = { p25: 0, p50: 0, p75: 0 };
     percentileCacheValid = false;
     console.log(`📊 [${exchange}] TP optimizer reset`);

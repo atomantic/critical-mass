@@ -284,8 +284,9 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @param {number} price - Limit price in quote currency
    * @returns {Promise<LimitSellResult>} Order result
    */
-  adapter.placeLimitSell = async (productId, baseAmount, price) => {
+  adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
     const clientOrderId = uuidv4();
+    const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
     const product = await adapter.getProductDetails(productId);
@@ -309,7 +310,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
         limit_limit_gtc: {
           base_size: roundedAmount.toFixed(basePrecision),
           limit_price: roundedPrice.toFixed(quotePrecision),
-          post_only: true,
+          post_only: postOnly,
         },
       },
     };
@@ -320,7 +321,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
       orderId: result.order_id || result.success_response?.order_id,
       clientOrderId,
       success: result.success || !!result.success_response,
-      errorMessage: result.error_response?.message,
+      errorMessage: result.failure_response?.message || result.error_response?.message,
       baseSize: roundedAmount,
       limitPrice: roundedPrice,
     };
@@ -410,14 +411,25 @@ const createCoinbaseAdapter = (keysPath = null) => {
   adapter.getOpenOrders = async (productId) => {
     const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/batch?product_ids=${productId}&order_status=OPEN`);
 
-    return (data.orders || []).map(order => ({
-      orderId: order.order_id,
-      productId: order.product_id,
-      side: order.side,
-      status: order.status,
-      filledSize: parseFloat(order.filled_size || 0),
-      createdTime: order.created_time,
-    }));
+    return (data.orders || []).map(order => {
+      // Extract size and price from order configuration (varies by order type)
+      const cfg = order.order_configuration || {};
+      const limitCfg = cfg.limit_limit_gtc || cfg.limit_limit_gtd || cfg.limit_limit_fok || {};
+      const stopCfg = cfg.stop_limit_stop_limit_gtc || cfg.stop_limit_stop_limit_gtd || {};
+      const size = parseFloat(limitCfg.base_size || stopCfg.base_size || 0);
+      const price = parseFloat(limitCfg.limit_price || stopCfg.limit_price || 0);
+
+      return {
+        orderId: order.order_id,
+        productId: order.product_id,
+        side: order.side,
+        status: order.status,
+        size,
+        price,
+        filledSize: parseFloat(order.filled_size || 0),
+        createdTime: order.created_time,
+      };
+    });
   };
 
   /**
