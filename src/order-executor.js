@@ -147,6 +147,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const result = await adapter.placeLimitBuy(productId, btcQty, bidPrice, { postOnly: true });
 
     if (result.success) {
+      console.log(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${btcQty} BTC @ $${bidPrice}`);
       // Verify order is actually open on exchange (post-only orders can be immediately cancelled)
       const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
 
@@ -263,6 +264,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
 
     if (result.success) {
+      console.log(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} BTC @ $${roundedPrice}`);
       activeTpOrderId = result.orderId;
       lastTpPrice = roundedPrice;
       lastTpSize = roundedQty;
@@ -756,6 +758,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
 
     if (result.success) {
+      console.log(`✅ [${exchange}] Body TP placed: orderId=${result.orderId} ${roundedQty} BTC @ $${roundedPrice} (body=${bodyId.slice(-8)})`);
       bodyTpOrders.set(bodyId, {
         tpOrderId: result.orderId,
         btcQty: roundedQty,

@@ -169,7 +169,7 @@ const createFillLedger = (exchange) => {
     persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
-    console.log(`📝 [${exchange}] Fill ingested: ${fill.side} ${fill.size} BTC @ $${fill.price} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);
+    console.log(`📝 [${exchange}] Fill ingested: tradeId=${tradeId} orderId=${fill.orderId} ${fill.side} ${fill.size} BTC @ $${fill.price} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);
 
     return { ingested: true, fill };
   };
