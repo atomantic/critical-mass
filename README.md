@@ -4,39 +4,52 @@
 
 # Critical Mass
 
-Multi-exchange BTC accumulation engine with celestial position management.
+Multi-exchange crypto accumulation engine with adaptive regime detection and celestial position management.
 
-**Version:** 2.0.0
-**Ports:** 5563 (API), 5564 (UI dev)
+> **Disclaimer:** This software trades real money on cryptocurrency exchanges. Use at your own risk. The authors are not responsible for any financial losses. Always start with dry-run mode and small allocations to verify behavior before committing real capital.
 
-## Strategy
+<p align="center">
+  <img src="docs/app_1.png" alt="Critical Mass Dashboard" width="800" />
+</p>
 
-The bot executes configurable interval cycles:
+## How It Works
 
-1. **Buy** a fixed amount of BTC (e.g., $500/interval)
-2. **Sell** 95% at +10% markup via post-only limit order
-3. **Hold** 5% as BTC reserves (never sold)
+Critical Mass supports two trading strategies that can run independently per exchange:
 
-### Expected Returns
+### DCA Strategy (Fixed Interval)
 
-When a sell order fills:
-- **Fiat**: +4.5% return on that cycle (0.95 × 1.10 = 1.045)
-- **BTC**: Accumulates 5% of each purchase as permanent reserves
+A classic dollar-cost averaging approach with built-in profit-taking:
 
-This creates a dual accumulation strategy that profits in both directions.
+1. **Buy** a fixed amount of BTC at each interval (e.g., $500/day)
+2. **Sell** 95% at a configurable markup (e.g., +10%) via post-only limit order
+3. **Hold** the remaining 5% as permanent BTC reserves
+
+When a sell fills, you net ~4.5% return on that cycle (0.95 x 1.10 = 1.045) while accumulating BTC reserves from every purchase.
+
+### Regime Strategy (Adaptive)
+
+A real-time, volatility-aware strategy that adapts to market conditions:
+
+- **Regime Detection** - Classifies the market as TREND, HARVEST, or CAUTION using ATR and momentum indicators
+- **Adaptive Sizing** - Scales position sizes based on volatility, VWAP, and the current regime
+- **Fibonacci Laddering** - Spreads entries across Fibonacci-spaced price levels for better fills
+- **Dynamic Take-Profit** - Adjusts sell targets based on ATR multiples with configurable min/max bounds
+- **Macro Overlay** - Factors in ATH distance and broader market context
+- **Aggressiveness Presets** - Conservative, Moderate, Aggressive, and Maximum profiles
 
 ## Features
 
-- **Multi-Exchange Support** - Coinbase and Gemini with per-exchange configuration
-- **Granular Intervals** - 5min, 10min, 30min, 1hour, 4hour, or daily trading
-- **Admin Dashboard** - Web UI for configuration, monitoring, and backtesting
+- **Multi-Exchange** - Coinbase, Gemini, and Crypto.com with per-exchange configuration
+- **Dual Strategy** - Fixed-interval DCA or adaptive regime-based trading per exchange
+- **Real-Time Dashboard** - React admin UI with WebSocket-driven live updates
+- **Celestial Visualization** - Positions rendered as orbiting bodies in a solar system view
+- **Volatility Charts** - Live ATR, price, and regime timeline charts
+- **Backtesting** - Simulate strategies against historical data
+- **Parameter Optimizer** - Find optimal settings via grid search
 - **Dry-Run Mode** - Test strategies without real trades
-- **Post-only Sells** - Maker orders for lower fees
-- **BTC Holdback** - Configurable percentage kept as reserves
-- **Fee Tracking** - Logs fees, rebates, and net costs
-- **Price Protection** - Skip buys above max price threshold
-- **Duplicate Prevention** - Only runs once per interval
-- **Auto-sync** - Detects filled sell orders and updates fund balance
+- **Notifications** - Configurable alerts for fills, errors, and regime changes
+- **Backup & Restore** - Automatic state backups with pruning
+- **Health Monitor** - Tracks WebSocket connectivity, latency, rate limits, and error rates
 - **PM2 Support** - Production-ready process management
 
 ## Requirements
@@ -47,9 +60,10 @@ This creates a dual accumulation strategy that profits in both directions.
 ## Installation
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/atomantic/critical-mass.git
 cd critical-mass
 npm run install:all   # Install both server and admin UI dependencies
+cp config.example.json config.json  # Copy example config and customize
 ```
 
 ## Configuration
@@ -74,14 +88,24 @@ Create exchange-specific key files in the `data/` directory:
 }
 ```
 
+**Crypto.com** (`data/cryptocom-keys.json`):
+```json
+{
+  "apiKey": "your-api-key",
+  "apiSecret": "your-api-secret"
+}
+```
+
 ### Bot Settings (`config.json`)
+
+Each exchange can run either the fixed DCA strategy or the adaptive regime strategy:
 
 ```json
 {
   "exchanges": {
     "coinbase": {
       "enabled": true,
-      "dryRun": false,
+      "dryRun": true,
       "productId": "BTC-USDC",
       "totalAllocation": 10000,
       "intervalsToSpread": 60,
@@ -89,19 +113,12 @@ Create exchange-specific key files in the `data/` directory:
       "sellMarkupPercent": 10,
       "holdbackPercent": 5,
       "minOrderSize": 1,
-      "maxBuyPrice": 250000
-    },
-    "gemini": {
-      "enabled": false,
-      "dryRun": true,
-      "productId": "BTCUSD",
-      "totalAllocation": 5000,
-      "intervalsToSpread": 168,
-      "intervalType": "1hour",
-      "sellMarkupPercent": 10,
-      "holdbackPercent": 5,
-      "minOrderSize": 1,
-      "maxBuyPrice": 250000
+      "maxBuyPrice": 250000,
+      "regime": {
+        "enabled": false,
+        "baseSizeUsdc": 100,
+        "aggressiveness": "moderate"
+      }
     }
   },
   "global": {
@@ -112,18 +129,36 @@ Create exchange-specific key files in the `data/` directory:
 
 ### Configuration Options
 
+**DCA Settings:**
+
 | Setting | Description |
 |---------|-------------|
-| `enabled` | Enable/disable the bot for this exchange |
-| `dryRun` | Simulate trades without executing (for testing) |
-| `productId` | Trading pair (BTC-USDC for Coinbase, BTCUSD for Gemini) |
+| `enabled` | Enable/disable the exchange |
+| `dryRun` | Simulate trades without executing |
+| `productId` | Trading pair (e.g., `BTC-USDC`, `BTCUSD`, `CRO_USD`) |
 | `totalAllocation` | Budget limit in quote currency |
-| `intervalsToSpread` | Number of intervals to spread buys |
+| `intervalsToSpread` | Number of intervals to spread buys across |
 | `intervalType` | Trade frequency: `5min`, `10min`, `30min`, `1hour`, `4hour`, `daily` |
-| `sellMarkupPercent` | Sell price markup percentage (10 = +10%) |
+| `sellMarkupPercent` | Sell price markup (10 = +10%) |
 | `holdbackPercent` | BTC kept as reserves (5 = 5%) |
 | `minOrderSize` | Minimum order in quote currency |
-| `maxBuyPrice` | Skip buys above this BTC price |
+| `maxBuyPrice` | Skip buys above this price |
+
+**Regime Settings** (`regime` sub-object):
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Enable adaptive regime strategy |
+| `aggressiveness` | Preset: `conservative`, `moderate`, `aggressive`, `maximum` |
+| `baseSizeUsdc` | Base order size in quote currency |
+| `atrPeriod` | ATR calculation period |
+| `kFactor` | ATR multiplier for interval scaling |
+| `minIntervalMs` / `maxIntervalMs` | Bounds for adaptive trade interval |
+| `tpMinPercent` / `tpMaxPercent` | Take-profit range |
+| `holdbackRatio` | Fraction of each buy kept as reserves |
+| `maxUsdcDeployed` | Maximum capital deployed at once |
+| `maxBtcExposure` | Maximum BTC exposure |
+| `ladderSizeMode` | Ladder sizing: `fibonacci` or `fixed` |
 
 ## Usage
 
@@ -162,138 +197,44 @@ node index.js debug --exchange coinbase
 ### PM2 (Production)
 
 ```bash
-# Start the bot
-npm run pm2:start
-
-# View logs
-npm run pm2:logs
-
-# Check status
-npm run pm2:status
-
-# Restart
-npm run pm2:restart
-
-# Stop
-npm run pm2:stop
+npm run pm2:start      # Start
+npm run pm2:logs       # View logs
+npm run pm2:status     # Check status
+npm run pm2:restart    # Restart
+npm run pm2:stop       # Stop
 ```
 
-## File Structure
+## Testing
 
+```bash
+npm test
 ```
-critical-mass/
-├── index.js              # CLI entry point
-├── server.js             # API server + scheduler
-├── config.json           # Multi-exchange configuration
-├── ecosystem.config.cjs  # PM2 configuration
-├── package.json
-├── src/
-│   ├── adapters/         # Exchange adapters
-│   │   ├── base-adapter.js
-│   │   ├── index.js      # Adapter registry
-│   │   ├── coinbase/     # Coinbase implementation
-│   │   └── gemini/       # Gemini implementation
-│   ├── config-utils.js   # Configuration management
-│   ├── dca-engine.js     # Core DCA logic
-│   ├── interval-utils.js # Interval timing utilities
-│   ├── logger.js         # Transaction logging
-│   ├── migration.js      # Data migration utilities
-│   ├── order-manager.js  # Order execution
-│   ├── state-tracker.js  # State persistence
-│   ├── backtest-engine.js # Backtesting engine
-│   └── optimizer-engine.js # Parameter optimization
-├── admin/                # React admin dashboard
-│   └── src/
-│       ├── App.jsx
-│       └── components/
-│           ├── Dashboard.jsx
-│           ├── Backtest.jsx
-│           ├── ConfigEditor.jsx
-│           ├── ExchangeSelector.jsx
-│           └── KeysConfig.jsx
-├── data/
-│   ├── coinbase/         # Coinbase-specific data
-│   │   ├── state.json
-│   │   └── transactions.tsv
-│   ├── gemini/           # Gemini-specific data
-│   │   ├── state.json
-│   │   └── transactions.tsv
-│   ├── coinbase-keys.json # API credentials (git-ignored)
-│   └── gemini-keys.json   # API credentials (git-ignored)
-└── logs/                 # PM2 logs
-```
-
-## State Tracking
-
-Each exchange maintains separate state in `data/{exchange}/state.json`:
-
-- Total allocation used vs budget
-- BTC reserves (holdback)
-- Outstanding sell orders (value and BTC amount)
-- Cumulative fees and rebates
-- Last run identifier (prevents duplicate runs)
-- Order history with cost basis
-
-## Transaction Log
-
-All transactions logged to `data/{exchange}/transactions.tsv`:
-
-| Column | Description |
-|--------|-------------|
-| Date | Transaction date |
-| Type | BUY, SELL_ORDER, SELL_FILLED |
-| Price | BTC price |
-| BTC Amount | Amount of BTC |
-| USDC Amount | Amount in quote currency |
-| Fees | Trading fees |
-| Rebates | Fee rebates |
-| Net Fees | Fees minus rebates |
-| Order ID | Exchange order ID |
-| Fund Size | Current fund balance |
-| BTC Reserves | Total BTC reserves |
-| Outstanding USDC | Value of pending sells |
-| Outstanding BTC | Amount in pending sells |
-| Total Fees | Cumulative fees |
-| Total Rebates | Cumulative rebates |
 
 ## Safety Features
 
-- **Max price threshold** - Skips buys when BTC exceeds `maxBuyPrice`
-- **Interval run check** - Prevents duplicate runs in same interval
+- **Max price threshold** - Skips buys above `maxBuyPrice`
+- **Capital limits** - `maxUsdcDeployed` and `maxBtcExposure` caps
+- **Drawdown protection** - Pauses trading if drawdown exceeds threshold
+- **Flash crash detection** - Detects extreme price moves and cancels entries
+- **Spread monitoring** - Pauses if bid-ask spread is too wide
+- **Depth checks** - Requires minimum order book depth
+- **Rate limit tracking** - Backs off when approaching exchange limits
+- **Stale data protection** - Pauses if market data feed goes stale
+- **Duplicate prevention** - Only runs once per interval (DCA mode)
 - **Dry-run mode** - Test configuration without real trades
-- **Low balance handling** - Uses available balance when below interval amount
-- **Post-only orders** - Ensures sell orders are maker orders (lower fees)
-- **Auto-sync** - Tracks filled sell orders and updates fund size
+- **Post-only orders** - Ensures sell orders are maker orders for lower fees
+- **Auto-sync** - Detects filled sell orders and updates fund balance
 - **Fee accounting** - Accurate cost basis including fees and rebates
-- **Data backup** - Migration creates backups before moving files
-
-## API Endpoints
-
-The server exposes REST endpoints for the admin dashboard:
-
-```
-GET  /api/exchanges              - List all exchanges
-GET  /api/:exchange/summary      - Exchange-specific summary
-GET  /api/:exchange/config       - Get exchange config
-PUT  /api/:exchange/config       - Update exchange config
-GET  /api/:exchange/keys         - Get keys (masked)
-PUT  /api/:exchange/keys         - Save keys
-POST /api/:exchange/test-connection - Test API connection
-POST /api/:exchange/trade        - Trigger manual trade
-GET  /api/:exchange/transactions - Get transaction history
-GET  /api/:exchange/cost-basis   - Get cost basis report
-POST /api/:exchange/backtest     - Run backtest simulation
-```
+- **Automatic backups** - Periodic state backups with configurable retention
 
 ## Exchange Setup
 
 ### Coinbase
 
-1. Go to [Coinbase Advanced Trade](https://www.coinbase.com/advanced-trade)
-2. Navigate to Settings > API
-3. Create new API key with **View** and **Trade** permissions
-4. Add your server's IP to the allowlist
-5. Copy the API key name and private key to `data/coinbase-keys.json`
+1. Go to [Coinbase Developer Platform](https://www.coinbase.com/settings/api)
+2. Create new API key with **View** and **Trade** permissions
+3. Add your server's IP to the allowlist
+4. Copy the API key name and private key to `data/coinbase-keys.json`
 
 ### Gemini
 
@@ -301,24 +242,12 @@ POST /api/:exchange/backtest     - Run backtest simulation
 2. Create new API key with **Trading** scope
 3. Copy the API key and secret to `data/gemini-keys.json`
 
-## Example Output
+### Crypto.com
 
-```
-[2025-01-20T10:00:00.000Z] [INFO] [coinbase] Starting interval cycle...
-[2025-01-20T10:00:01.000Z] [INFO] [coinbase] Current BTC-USDC price: 104523.00
-[2025-01-20T10:00:01.000Z] [INFO] [coinbase] USDC balance: 50000.00 available
-[2025-01-20T10:00:01.000Z] [INFO] [coinbase] Allocation: 5000/30000 used, buying 500.00
-[2025-01-20T10:00:02.000Z] [INFO] [coinbase] Placing market buy for 500 USDC of BTC-USDC
-[2025-01-20T10:00:03.000Z] [INFO] [coinbase] Buy filled: 0.00478200 BTC at 104523.00
-[2025-01-20T10:00:03.000Z] [INFO] [coinbase] Fees: 0.6250, Rebates: 0.1560, Net: 0.4690
-[2025-01-20T10:00:04.000Z] [INFO] [coinbase] Placing post-only sell for 0.00454290 BTC at 114975.30
-[2025-01-20T10:00:04.000Z] [INFO] [coinbase] === Daily Cycle Complete ===
-[2025-01-20T10:00:04.000Z] [INFO] [coinbase] Bought: 0.00478200 BTC at 104523.00
-[2025-01-20T10:00:04.000Z] [INFO] [coinbase] Sell order: 0.00454290 BTC at 114975.30
-[2025-01-20T10:00:04.000Z] [INFO] [coinbase] Holdback (reserves): 0.00023910 BTC
-[2025-01-20T10:00:04.000Z] [INFO] [coinbase] Total BTC reserves: 0.00502110 BTC
-```
+1. Go to [Crypto.com Exchange API Settings](https://exchange.crypto.com/settings/api)
+2. Create new API key with **Trade** permissions
+3. Copy the API key and secret to `data/cryptocom-keys.json`
 
 ## License
 
-ISC
+[ISC](LICENSE)

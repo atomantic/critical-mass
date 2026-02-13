@@ -839,4 +839,39 @@ describe('Fill Ledger', () => {
     assert.equal(pos.totalBTC, 0.01);
     assert.equal(pos.totalCostBasis, 1000); // 100000 * 0.01
   });
+
+  // =======================================================================
+  // 36. load() excludes body/satellite sells from active cycle detection
+  // =======================================================================
+  it('restores active cycle on load even when satellite sells exceed 50% of buy volume', () => {
+    const exchange = 'sat-sell-load';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle(); // cycle-1
+
+    // Ingest a buy of 0.01 BTC
+    ledger1.ingestFill(makeBuyFill({
+      tradeId: 'ssl-buy-1',
+      orderId: 'ssl-buy-ord-1',
+      price: '100000',
+      size: '0.01',
+      tradeTime: '2025-01-01T00:00:00Z',
+    }));
+
+    // Ingest a satellite sell of 0.006 BTC (60% of buy volume — would exceed 0.5 threshold)
+    ledger1.ingestFill(makeSellFill({
+      tradeId: 'ssl-sat-sell-1',
+      orderId: 'ssl-sat-ord-1',
+      price: '105000',
+      size: '0.006',
+      tradeTime: '2025-01-02T00:00:00Z',
+    }));
+    // Annotate as body-owned satellite sell and persist to disk
+    ledger1.annotateFillsByOrderId('ssl-sat-ord-1', { isBodyOwned: true, isSatellite: true, bodyId: 'body-abc' });
+    ledger1.persist();
+
+    // Reload — cycle-1 should still be active (satellite sells excluded from ratio)
+    const ledger2 = createTestLedger(exchange);
+    assert.equal(ledger2.getCurrentCycleId(), 'cycle-1');
+    assert.equal(ledger2.getCurrentCycleBuysCount(), 1);
+  });
 });

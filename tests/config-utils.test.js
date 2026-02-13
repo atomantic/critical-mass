@@ -349,6 +349,7 @@ describe('validateRegimeConfig', () => {
     assert.equal(validateRegimeConfig({ maxIntervalMs: 14400000 }).valid, true);
   });
 
+
   it('reports invalid entryMode', () => {
     assert.equal(validateRegimeConfig({ entryMode: 'unknown' }).valid, false);
     assert.equal(validateRegimeConfig({ entryMode: 'reactive' }).valid, true);
@@ -801,6 +802,7 @@ describe('updateRegimeConfig', () => {
     assert.equal(result.exchanges.kraken.regime.enabled, true);
     assert.equal(result.exchanges.kraken.dryRun, DEFAULTS.dryRun);
   });
+
 });
 
 // ============================================================================

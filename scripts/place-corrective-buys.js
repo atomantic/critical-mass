@@ -68,6 +68,13 @@ const CORRECTIONS = [
     sellPrice: 68506.19,
     note: 'dashboard P&L +$2.24 → derived avgBuy=66940.61',
   },
+  {
+    sellOrderId: 'd86b9229-9b01-4fc5-a47e-b30e7e896484',
+    size: 0.01879128,
+    originalAvgBuyPrice: 69042.66,
+    sellPrice: 69319.89,
+    note: 'race condition duplicate TP — body mll3fd2y',
+  },
 ];
 
 function calcMaxBuyPrice(originalAvgBuyPrice) {
