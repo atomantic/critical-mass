@@ -70,19 +70,52 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @returns {Promise<{cancelled: boolean, filled: boolean}>}
    */
   const safeCancelOrder = async (orderId) => {
-    const result = await adapter.cancelOrder(orderId);
-    if (result.success) return { cancelled: true, filled: false };
+    const maxRetries = 2;
+    const verifyDelayMs = 500;
 
-    const status = await adapter.getOrder(orderId).catch(() => null);
-    if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
-      console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
-      return { cancelled: false, filled: true };
-    }
-    if (status && status.status === 'CANCELLED') {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const result = await adapter.cancelOrder(orderId);
+
+      if (!result.success) {
+        // Cancel call itself failed — check if already filled or cancelled
+        const status = await adapter.getOrder(orderId).catch(() => null);
+        if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
+          console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
+          return { cancelled: false, filled: true };
+        }
+        if (status && status.status === 'CANCELLED') {
+          return { cancelled: true, filled: false };
+        }
+        console.log(`⚠️ [${exchange}] Cancel failed for ${orderId.slice(0, 8)}, status=${status?.status || 'unknown'}`);
+        return { cancelled: false, filled: false };
+      }
+
+      // Cancel reported success — verify the order is actually cancelled
+      await new Promise(r => setTimeout(r, verifyDelayMs));
+      const verified = await adapter.getOrder(orderId).catch(() => null);
+
+      if (verified?.status === 'CANCELLED') {
+        return { cancelled: true, filled: false };
+      }
+      if (verified?.status === 'FILLED' || verified?.completionPercentage >= 100) {
+        console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
+        return { cancelled: false, filled: true };
+      }
+      if (verified?.status === 'OPEN' && attempt < maxRetries) {
+        console.log(`⚠️ [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} still OPEN — retrying (${attempt + 1}/${maxRetries})`);
+        continue;
+      }
+
+      // Retries exhausted or unexpected status
+      if (verified?.status === 'OPEN') {
+        console.log(`🚨 [${exchange}] Cancel verification failed for ${orderId.slice(0, 8)} — still OPEN after ${maxRetries} retries`);
+        return { cancelled: false, filled: false };
+      }
+
+      // Verified status is null/unknown but cancel said success — trust it
       return { cancelled: true, filled: false };
     }
 
-    console.log(`⚠️ [${exchange}] Cancel failed for ${orderId.slice(0, 8)}, status=${status?.status || 'unknown'}`);
     return { cancelled: false, filled: false };
   };
 
