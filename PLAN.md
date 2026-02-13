@@ -186,6 +186,17 @@ All repair/reconcile scripts need updated field names with backward-compat reads
 - **Running engine during deploy**: Stop engine before deploying, restart after → state migration runs on load
 - **Rollback**: All changes are naming-only, no logic changes → `git revert` is clean
 
+### Fix: Cancel-Verification Race Causing Orphan Double-Sells - COMPLETE
+- [x] `safeCancelOrder` now verifies cancel with `getOrder` poll after Coinbase ack (500ms delay, 2 retries)
+  - Detects Coinbase phantom cancel acks where order remains OPEN on the book
+  - Returns `{ cancelled: false, filled: true }` if order fills between cancel and verify
+  - Logs escalating warnings (⚠️ retry, 🚨 exhausted) for monitoring
+- [x] Merge snapshot TTL increased from 60s to 5min (300000ms) across all 3 locations
+  - Matches reconciliation interval so late WebSocket fills still find snapshot data
+- [x] Corrective buy script (`scripts/place-corrective-buys.js`) for orphan sell recovery
+  - Places GTC limit buys at prices preserving original P&L
+  - `--status` checks fill progress, `--annotate` ingests fills + sets sellOrderId linkage
+
 ### Fix: Realized P&L Sync (Filled Orders ↔ Position Card) - COMPLETE
 - [x] Realized P&L in Position card ($88.64) diverged from Filled Orders total ($92.25)
   - Root cause: Recalculate used per-cycle P&L + stale `bodiesRealizedPnL` counter

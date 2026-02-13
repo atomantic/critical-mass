@@ -1672,7 +1672,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           if (mergeTarget.tpOrderId) {
             pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
             completedMergeTpOrders.set(mergeTarget.tpOrderId, { ...mergeTarget });
-            const t = setTimeout(() => { completedMergeTpOrders.delete(mergeTarget.tpOrderId); ttlTimers.delete(t); }, 60000);
+            const t = setTimeout(() => { completedMergeTpOrders.delete(mergeTarget.tpOrderId); ttlTimers.delete(t); }, 300000);
             ttlTimers.add(t);
           }
         }
@@ -3405,17 +3405,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Remove source from celestialBodies
     positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
 
-    // Move snapshots from pending → completed (60s TTL for late-arriving fills)
+    // Move snapshots from pending → completed (5min TTL for late-arriving fills)
     if (source.tpOrderId) {
       pendingMergeTpOrders.delete(source.tpOrderId);
       completedMergeTpOrders.set(source.tpOrderId, sourceSnapshot);
-      const t3 = setTimeout(() => { completedMergeTpOrders.delete(source.tpOrderId); ttlTimers.delete(t3); }, 60000);
+      const t3 = setTimeout(() => { completedMergeTpOrders.delete(source.tpOrderId); ttlTimers.delete(t3); }, 300000);
       ttlTimers.add(t3);
     }
     if (target.tpOrderId) {
       pendingMergeTpOrders.delete(target.tpOrderId);
       completedMergeTpOrders.set(target.tpOrderId, targetSnapshot);
-      const t4 = setTimeout(() => { completedMergeTpOrders.delete(target.tpOrderId); ttlTimers.delete(t4); }, 60000);
+      const t4 = setTimeout(() => { completedMergeTpOrders.delete(target.tpOrderId); ttlTimers.delete(t4); }, 300000);
       ttlTimers.add(t4);
     }
 
