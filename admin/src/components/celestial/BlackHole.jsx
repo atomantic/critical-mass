@@ -57,57 +57,57 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
         <meshBasicMaterial color="#000000" />
       </mesh>
 
-      {/* Photon ring — bright thin ring at the event horizon edge */}
+      {/* Photon ring — bright thin ring hugging the event horizon */}
       <mesh ref={photonRingRef} rotation={[diskTilt, 0, 0]}>
-        <ringGeometry args={[size * 1.08, size * 1.18, 96]} />
+        <ringGeometry args={[size * 1.05, size * 1.12, 96]} />
         <meshBasicMaterial
           color="#FDE68A"
           transparent
-          opacity={0.6}
+          opacity={0.7}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Inner accretion disk — hot bright band close to the event horizon */}
+      {/* Inner accretion disk — hot bright band just outside photon ring */}
       <mesh rotation={[diskTilt, 0, 0]}>
-        <ringGeometry args={[size * 1.18, size * 1.6, 96]} />
+        <ringGeometry args={[size * 1.12, size * 1.35, 96]} />
         <meshBasicMaterial
           color="#FBBF24"
           transparent
-          opacity={0.3}
+          opacity={0.35}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Outer accretion disk — wider, cooler, rotating */}
+      {/* Outer accretion disk — rotating, tighter */}
       <mesh ref={diskRef} rotation={[diskTilt, 0, 0]}>
-        <ringGeometry args={[size * 1.6, size * 2.8, 96]} />
+        <ringGeometry args={[size * 1.35, size * 1.8, 96]} />
         <meshBasicMaterial
           color="#F97316"
           transparent
-          opacity={0.18}
+          opacity={0.2}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Faint outermost disk halo */}
+      {/* Faint outermost disk edge */}
       <mesh rotation={[diskTilt, 0, 0]}>
-        <ringGeometry args={[size * 2.8, size * 3.5, 64]} />
+        <ringGeometry args={[size * 1.8, size * 2.2, 64]} />
         <meshBasicMaterial
           color="#7C2D12"
           transparent
-          opacity={0.06}
+          opacity={0.08}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Gravitational lensing glow — subtle red-shifted halo */}
-      <mesh ref={outerGlowRef} scale={3.0}>
+      {/* Gravitational lensing glow — tight around event horizon */}
+      <mesh ref={outerGlowRef} scale={1.6}>
         <sphereGeometry args={[size, 16, 16]} />
         <meshBasicMaterial
           color="#7F1D1D"
           transparent
-          opacity={0.08}
+          opacity={0.1}
           side={THREE.BackSide}
         />
       </mesh>

@@ -809,13 +809,20 @@ src/
 └── backup-service.js   # Scheduled backup/restore service (zip-based, auto-prune)
 
 admin/src/components/
+├── Systems.jsx         # Debug/showcase page rendering all body types in hierarchical orbit
 ├── celestial/          # 3D celestial system visualization
 │   ├── celestialConstants.js       # Tier colors, sizes, speeds, hierarchical orbit config
 │   ├── CelestialVisualization.jsx  # Card wrapper (lazy-loaded Canvas container)
 │   ├── CelestialScene.jsx          # R3F scene composition (lights, stars, bloom, controls)
 │   ├── HierarchicalOrbit.jsx       # Recursive nested orbit chain (largest→smallest)
-│   ├── CelestialBody.jsx           # Body visual (sphere + glow, no orbital motion)
-│   ├── BlackHole.jsx               # Black hole visual (dark core + accretion disk)
+│   ├── CelestialBody.jsx           # Body visual (sphere/custom + glow, no orbital motion)
+│   ├── BlackHole.jsx               # Black hole visual (dark core + tight accretion disk)
+│   ├── GalaxyBody.jsx              # Galaxy visual (spiral particle arms + bright core)
+│   ├── HypergiantGeometry.jsx      # Hypergiant mesh (Jupiter-like gas band texture)
+│   ├── hypergiantTexture.js        # Procedural canvas gas band texture (singleton)
+│   ├── MoonGeometry.jsx            # Moon mesh (cratered procedural texture)
+│   ├── moonTexture.js              # Procedural canvas lunar surface texture (singleton)
+│   ├── SatelliteGeometry.jsx       # Satellite composite (bus + solar panels + antenna)
 │   ├── OrbitalRing.jsx             # Translucent ring showing orbital path (legacy)
 │   ├── IncomingOrder.jsx           # Open buy orders as wireframe satellites
 │   └── CelestialTooltip.jsx        # HTML overlay tooltip on hover
