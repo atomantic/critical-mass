@@ -238,6 +238,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let entryInProgress = false; // Lock to prevent concurrent entry evaluations
   const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
   const recentlyProcessedSellFills = new Set(); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
+  const tpPlacementInFlight = new Set(); // Dedup guard: prevents concurrent placeBodyTp calls for the same body
 
   // Race 3: Merge-snapshot maps for fills arriving after body removal during merges
   // tpOrderId → body snapshot (active during merge operation)
@@ -2617,6 +2618,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return false;
     }
 
+    // Prevent concurrent TP placement for the same body (race between fill handler and safety-net loop)
+    if (tpPlacementInFlight.has(body.id)) {
+      console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP placement already in-flight, skipping`);
+      return false;
+    }
+
+    tpPlacementInFlight.add(body.id);
+    try {
+
     // Get tier-specific TP percentage
     const baseTpPct = calculateDynamicTpPercent();
     const { tpPercent: tierTpPct } = celestialHierarchy.calculateBodyTpPercent(baseTpPct, body.tier, config.tpMaxPercent);
@@ -2723,6 +2733,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     console.log(`⚠️ [${exchange}] Failed to place body TP for ${body.id.slice(-8)}: ${result.errorMessage}`);
     return false;
+
+    } finally {
+      tpPlacementInFlight.delete(body.id);
+    }
   };
 
   /**
@@ -2746,7 +2760,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         positionState.btcOnOrder = 0;
       }
 
-      for (const body of positionState.celestialBodies) {
+      // Snapshot the array to avoid visiting bodies added concurrently by fill handlers
+      const bodiesToCheck = [...positionState.celestialBodies];
+      for (const body of bodiesToCheck) {
         if (!body.tpOrderId) {
           await placeBodyTp(body);
         }

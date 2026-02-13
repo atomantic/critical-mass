@@ -585,10 +585,12 @@ const updateRegimeConfig = (exchange, updates) => {
     config.exchanges[exchange] = { ...DEFAULTS };
   }
 
-  config.exchanges[exchange].regime = {
+  const merged = {
     ...(config.exchanges[exchange].regime || {}),
     ...updates,
   };
+
+  config.exchanges[exchange].regime = merged;
 
   saveConfig(config);
   return config;
@@ -623,7 +625,6 @@ const validateRegimeConfig = (config) => {
   if (config.maxIntervalMs !== undefined && config.maxIntervalMs > 14400000) {
     errors.push('maxIntervalMs must not exceed 14400000 (4 hours)');
   }
-
   // Regime Detection validation
   if (config.momentumMult !== undefined && (config.momentumMult < 1.0 || config.momentumMult > 2.5)) {
     errors.push('momentumMult must be between 1.0 and 2.5');
