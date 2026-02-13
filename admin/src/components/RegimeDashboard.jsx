@@ -59,6 +59,35 @@ const MACRO_COLORS = {
   DECLINE: { bg: 'bg-red-900/50', border: 'border-red-500', text: 'text-red-400', label: 'Decline' },
 }
 
+// Tooltip descriptions for config parameters
+const CONFIG_TOOLTIPS = {
+  baseSize: 'Base USDC amount per buy order. When "Auto", dynamically adjusted based on available balance and position sizing rules',
+  kFactor: 'ATR multiplier controlling trigger sensitivity. Lower = more frequent trades on smaller moves. Higher = fewer trades, only on larger price swings',
+  minInterval: 'Minimum wait time between consecutive buy orders to prevent over-trading during rapid price movement',
+  maxInterval: 'Maximum time before placing another buy, even without a strong trigger signal',
+  tpRange: 'Take-profit target range. Sell orders are placed within this band above cost basis. "Auto" adjusts based on volatility',
+  entryOffset: 'Basis points below mid-price for limit buy entry. Higher values target a deeper discount but may fill less often',
+  cautionScale: 'Scales down order size during high-volatility regimes. Lower values = more cautious sizing when markets are volatile',
+  trendScale: 'Adjusts buy aggression based on trend strength. Lower values reduce buying into strong downtrends',
+  maxCycleBuys: 'Maximum buy orders in a single accumulation cycle before the bot waits for corresponding sells to complete',
+}
+
+// Info icon + hover tooltip for config labels
+function ConfigTooltip({ tip, align = 'center' }) {
+  const alignClass = align === 'left' ? 'left-0' : align === 'right' ? 'right-0' : 'left-1/2 -translate-x-1/2'
+  return (
+    <span className="relative group cursor-help ml-1 inline-flex align-middle">
+      <svg className="w-3 h-3 text-gray-600 group-hover:text-gray-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 16v-4M12 8h.01" />
+      </svg>
+      <span className={`absolute bottom-full ${alignClass} mb-2 px-3 py-2 bg-gray-900 border border-gray-700 text-xs text-gray-300 rounded-lg shadow-lg w-52 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50`}>
+        {tip}
+      </span>
+    </span>
+  )
+}
+
 // Aggressiveness level metadata (colors/labels are static, params come from API)
 const AGGRESSIVENESS_LEVEL_META = {
   conservative: { label: 'Conservative', color: 'green' },
@@ -383,6 +412,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [presets, setPresets] = useState(null)
   const [rollUpConfirm, setRollUpConfirm] = useState(null)
   const [rollingUp, setRollingUp] = useState(false)
+  const [fillSearchId, setFillSearchId] = useState('')
+  const [openSearchId, setOpenSearchId] = useState('')
   const prevPriceRef = useRef(null)
 
   const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange)
@@ -1476,15 +1507,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   presets={presets}
                 />
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
+                <div className="grid grid-cols-3 gap-4 text-xs">
                   <div>
-                    <span className="text-gray-500">Mode</span>
-                    <div className={config.dryRun ? 'text-purple-400' : 'text-green-400'}>
-                      {config.dryRun ? 'Dry-Run' : 'Live'}
-                    </div>
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Base Size</span>
+                    <span className="text-gray-500">Base Size<ConfigTooltip tip={CONFIG_TOOLTIPS.baseSize} align="left" /></span>
                     <div className="flex items-center gap-1">
                       <span className="text-white">${config.baseSizeUsdc}</span>
                       {config.sizeAutoManaged && (
@@ -1493,25 +1518,41 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     </div>
                   </div>
                   <div>
-                    <span className="text-gray-500">k Factor</span>
+                    <span className="text-gray-500">k Factor<ConfigTooltip tip={CONFIG_TOOLTIPS.kFactor} /></span>
                     <div className="text-white">{config.kFactor}</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">Min Interval</span>
+                    <span className="text-gray-500">Entry Offset<ConfigTooltip tip={CONFIG_TOOLTIPS.entryOffset} align="right" /></span>
+                    <div className="text-white">{config.entryOffsetBps}bps</div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Min Interval<ConfigTooltip tip={CONFIG_TOOLTIPS.minInterval} align="left" /></span>
                     <div className="text-white">{config.minIntervalMs / 1000}s</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">Max Interval</span>
+                    <span className="text-gray-500">Max Interval<ConfigTooltip tip={CONFIG_TOOLTIPS.maxInterval} /></span>
                     <div className="text-white">{config.maxIntervalMs / 60000}m</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">TP Range</span>
+                    <span className="text-gray-500">TP Range<ConfigTooltip tip={CONFIG_TOOLTIPS.tpRange} align="right" /></span>
                     <div className="flex items-center gap-1">
                       <span className="text-white">{config.tpMinPercent}% - {config.tpMaxPercent}%</span>
                       {config.tpAutoManaged && (
                         <span className="px-1 py-0.5 bg-cyan-900/50 text-cyan-400 text-xs rounded">Auto</span>
                       )}
                     </div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Caution Scale<ConfigTooltip tip={CONFIG_TOOLTIPS.cautionScale} align="left" /></span>
+                    <div className="text-white">{config.cautionScale}</div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Trend Scale<ConfigTooltip tip={CONFIG_TOOLTIPS.trendScale} /></span>
+                    <div className="text-white">{config.trendScale}</div>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Max Cycle Buys<ConfigTooltip tip={CONFIG_TOOLTIPS.maxCycleBuys} align="right" /></span>
+                    <div className="text-white">{config.maxCycleBuys}</div>
                   </div>
                 </div>
               </div>
@@ -1525,7 +1566,18 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
           <div className="bg-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-medium text-gray-400">Open Orders</h3>
-              {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
+              <div className="flex items-center gap-2">
+                {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
+                {pendingOrdersList.length > 0 && (
+                  <input
+                    type="text"
+                    value={openSearchId}
+                    onChange={e => setOpenSearchId(e.target.value)}
+                    placeholder="Filter by ID…"
+                    className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-500 w-36"
+                  />
+                )}
+              </div>
             </div>
             {pendingOrdersList.length === 0 ? (
               <div className="text-gray-500 text-sm text-center py-4">No open orders</div>
@@ -1634,8 +1686,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     return { ...order, age, estPnl, estSellFee, estHoldback, estHoldbackValue, tpPercent, relatedBuys }
                   }).sort((a, b) => (b.price || 0) - (a.price || 0))
 
-                  const sellOrders = ordersWithCalcs.filter(o => o.type !== 'entry')
-                  const entryOrders = ordersWithCalcs.filter(o => o.type === 'entry')
+                  const openFilter = openSearchId.toLowerCase()
+                  const matchesOpenSearch = (order) => {
+                    if (!openFilter) return true
+                    if (order.orderId?.toLowerCase().includes(openFilter)) return true
+                    if (order.relatedBuys?.some(b => b.orderId?.toLowerCase().includes(openFilter))) return true
+                    return false
+                  }
+                  const sellOrders = ordersWithCalcs.filter(o => o.type !== 'entry' && matchesOpenSearch(o))
+                  const entryOrders = ordersWithCalcs.filter(o => o.type === 'entry' && matchesOpenSearch(o))
 
                   // Sell order totals
                   const totalSellSize = sellOrders.reduce((sum, o) => sum + (o.size || 0), 0)
@@ -1883,6 +1942,13 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     })()}
                   </span>
                 )}
+                <input
+                  type="text"
+                  value={fillSearchId}
+                  onChange={e => setFillSearchId(e.target.value)}
+                  placeholder="Filter by ID…"
+                  className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-500 w-36"
+                />
               </div>
             </div>
             {(isDryRun
@@ -2062,8 +2128,20 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
                   }
 
-                  if (sellGroups.length === 0) {
-                    return <div className="text-gray-500 text-sm text-center py-4">No filled sells yet</div>
+                  // Apply fill search filter
+                  if (fillSearchId) {
+                    const fillFilter = fillSearchId.toLowerCase()
+                    sellGroups = sellGroups.filter(g =>
+                      g.sell.orderId?.toLowerCase().includes(fillFilter) ||
+                      g.buys.some(b => b.orderId?.toLowerCase().includes(fillFilter))
+                    )
+                    orphanedBuys = orphanedBuys.filter(b =>
+                      b.orderId?.toLowerCase().includes(fillFilter)
+                    )
+                  }
+
+                  if (sellGroups.length === 0 && orphanedBuys.length === 0) {
+                    return <div className="text-gray-500 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
                   }
 
                   // Totals (holdback computed from cycleMap after sell-group aggregation)
@@ -2178,7 +2256,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   if (isDryRun) {
                     totalHoldback = sellGroups.reduce((s, g) => s + (g.sell.holdbackBtc || 0), 0)
                     return (
-                      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      <div className="overflow-x-auto max-h-[48rem] overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-gray-800 z-10">
                             {tableHeader}
@@ -2232,7 +2310,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   })
 
                   return (
-                    <div className="overflow-x-auto max-h-96 overflow-y-auto space-y-2">
+                    <div className="overflow-x-auto max-h-[48rem] overflow-y-auto space-y-2">
                       {/* Grand totals bar */}
                       {cycleGroups.length > 0 && (
                         <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
