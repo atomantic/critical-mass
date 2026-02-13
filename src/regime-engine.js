@@ -2480,6 +2480,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       regime,
       cycleBuys: positionState.cycleBuys,
       totalCostBasis: positionState.totalCostBasis,
+      currentPrice: marketState.bid,
+      avgCostBasis: positionState.avgCostBasis,
     });
 
     // Apply macro regime size multiplier

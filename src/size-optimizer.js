@@ -48,19 +48,16 @@ const BALANCE_CHANGE_THRESHOLD = 0.10; // 10% balance change triggers re-evaluat
 
 /**
  * Calculate the total ladder multiplier for a given number of steps
- * This accounts for the geometric scaling: 1 + (step * 0.1), capped at liquidityFactorCap
+ * With divergence-based scaling, per-step factors are unknowable at planning time
+ * (they depend on runtime price vs avg cost), so assume factor=1.0 per step.
+ * This is conservative — divergence scaling acts as bonus capacity that's still budget-capped.
  *
  * @param {number} maxSteps - Maximum ladder steps
- * @param {number} liquidityFactorCap - Cap for liquidity factor (default 2.0)
+ * @param {number} _liquidityFactorCap - Unused (kept for API compatibility)
  * @returns {number} Total multiplier sum
  */
-const calculateTotalStepMultiplier = (maxSteps, liquidityFactorCap = 2.0) => {
-  let total = 0;
-  for (let step = 0; step < maxSteps; step++) {
-    const factor = Math.min(1 + (step * 0.1), liquidityFactorCap);
-    total += factor;
-  }
-  return total;
+const calculateTotalStepMultiplier = (maxSteps, _liquidityFactorCap = 2.0) => {
+  return maxSteps;
 };
 
 /**

@@ -347,7 +347,7 @@ The Regime Engine is an advanced trading system that adapts to market conditions
 **Dynamic Size Auto-Management (v2.3+):**
 - Opt-in feature (`sizeAutoManaged: true`) for automatic position sizing adjustment
 - Dynamically calculates optimal `baseSizeUsdc` based on available USDC balance
-- Calculates total ladder multiplier accounting for geometric scaling (1 + step*0.1, capped)
+- Calculates total ladder multiplier (assumes factor=1.0 per step; divergence scaling is bonus capacity)
 - Formula: `baseSizeUsdc = (availableUsdc * targetUtilization) / totalLadderMultiplier`
 - Records cycle data (steps used, capital deployed, available balance)
 - Triggers recalculation on:
