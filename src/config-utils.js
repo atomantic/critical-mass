@@ -121,6 +121,7 @@ const REGIME_DEFAULTS = {
   maxCycleBuys: 15,
   cycleResetHours: 72, // Auto-reset cycle buys counter after 72 hours (3 days) at max, 0 to disable
   liquidityFactorCap: 2.0,
+  divergenceScalePct: 5,
 
   // Take-Profit
   tpMult: 1.0,
@@ -642,6 +643,9 @@ const validateRegimeConfig = (config) => {
   }
   if (config.maxCycleBuys !== undefined && (config.maxCycleBuys < 3 || config.maxCycleBuys > 1000)) {
     errors.push('maxCycleBuys must be between 3 and 1000');
+  }
+  if (config.divergenceScalePct !== undefined && (config.divergenceScalePct < 0.5 || config.divergenceScalePct > 20)) {
+    errors.push('divergenceScalePct must be between 0.5 and 20');
   }
 
   // Take-Profit validation

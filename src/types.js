@@ -552,6 +552,7 @@
  * @property {number} maxCycleBuys - Maximum buys per cycle (default: 10)
  * @property {number} cycleResetHours - Hours after which to auto-reset cycle buys at max (default: 72, 0 to disable)
  * @property {number} liquidityFactorCap - Maximum liquidity multiplier (default: 2.0)
+ * @property {number} divergenceScalePct - Price divergence % from avg cost at which liquidity factor reaches cap (default: 5)
  *
  * Take-Profit Parameters
  * @property {number} tpMult - TP distance multiplier (default: 1.0)

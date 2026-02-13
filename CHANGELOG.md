@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **Divergence-based liquidity scaling** - Position sizer now scales entry size based on price divergence from average cost basis instead of buy count
+  - Old: `1 + (cycleBuys * 0.1)` (scaled with order count, disconnected from market)
+  - New: `1 + (divergencePct / divergenceScalePct) * (cap - 1)` (scales when price drops below avg entry)
+  - First entry or no avg cost: factor 1.0 (base size)
+  - New config param `divergenceScalePct` (default: 5) controls how much divergence reaches the cap
+  - Size optimizer simplified to assume factor=1.0 per step (conservative; divergence acts as bonus capacity)
+
 ## [2.4.14] - 2026-02-06
 
 ### Fixed

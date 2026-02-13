@@ -37,13 +37,13 @@ const createPositionSizer = (exchange, config) => {
    * @returns {{sizeUsdc: number, sizeBTC: number, factors: Object}}
    */
   const calculateEntrySize = (params) => {
-    const { regime, cycleBuys, totalCostBasis, bidDepthUsdc, baselineDepth } = params;
+    const { regime, cycleBuys, totalCostBasis, bidDepthUsdc, baselineDepth, currentPrice, avgCostBasis } = params;
 
     // Get regime scale factor
     const regimeScale = getRegimeScale(regime);
 
     // Get liquidity factor
-    const liquidityFactor = calculateLiquidityFactor(cycleBuys, bidDepthUsdc, baselineDepth);
+    const liquidityFactor = calculateLiquidityFactor(cycleBuys, bidDepthUsdc, baselineDepth, currentPrice, avgCostBasis);
 
     // Calculate raw size
     let sizeUsdc = config.baseSizeUsdc * regimeScale * liquidityFactor;
@@ -65,6 +65,8 @@ const createPositionSizer = (exchange, config) => {
         remainingBudget,
         regime,
         cycleBuys,
+        currentPrice,
+        avgCostBasis,
       },
     };
   };
@@ -90,13 +92,15 @@ const createPositionSizer = (exchange, config) => {
   /**
    * Calculate liquidity factor
    * If L2 depth available: sqrt(depth / baseline)
-   * Fallback: geometric scaling based on cycle buy count
+   * Fallback: divergence-based scaling from average cost basis
    * @param {number} cycleBuys - Current cycle buy count
    * @param {number} [bidDepthUsdc] - Current bid depth
    * @param {number} [baselineDepth] - Baseline depth
+   * @param {number} [currentPrice] - Current market price
+   * @param {number} [avgCostBasis] - Average cost basis per unit
    * @returns {number} Liquidity factor
    */
-  const calculateLiquidityFactor = (cycleBuys, bidDepthUsdc, baselineDepth) => {
+  const calculateLiquidityFactor = (cycleBuys, bidDepthUsdc, baselineDepth, currentPrice, avgCostBasis) => {
     // If L2 depth is available, use sqrt scaling
     if (bidDepthUsdc !== undefined && baselineDepth !== undefined && baselineDepth > 0) {
       const depthRatio = bidDepthUsdc / baselineDepth;
@@ -104,10 +108,15 @@ const createPositionSizer = (exchange, config) => {
       return Math.min(factor, config.liquidityFactorCap);
     }
 
-    // Fallback: geometric scaling based on cycle buy count
-    // factor = 1 + (step * 0.1), capped
-    const stepFactor = 1 + (cycleBuys * 0.1);
-    return Math.min(stepFactor, config.liquidityFactorCap);
+    // Divergence-based scaling: scale up when price drops below avg cost
+    if (cycleBuys === 0 || !avgCostBasis || !currentPrice || avgCostBasis <= 0 || currentPrice <= 0) {
+      return 1.0;
+    }
+
+    const divergenceScalePct = config.divergenceScalePct || 5;
+    const divergencePct = Math.max(0, (avgCostBasis - currentPrice) / avgCostBasis) * 100;
+    const factor = 1 + (divergencePct / divergenceScalePct) * (config.liquidityFactorCap - 1);
+    return Math.min(Math.max(factor, 1.0), config.liquidityFactorCap);
   };
 
   /**
@@ -179,8 +188,11 @@ const createPositionSizer = (exchange, config) => {
    * @returns {string}
    */
   const getSizingSummary = (factors) => {
-    const { base, regimeScale, liquidityFactor, remainingBudget, regime, cycleBuys } = factors;
-    return `base=$${base} regime=${regime}(${regimeScale}) liq=${liquidityFactor.toFixed(2)} buys=${cycleBuys} budget=$${remainingBudget.toFixed(0)}`;
+    const { base, regimeScale, liquidityFactor, remainingBudget, regime, cycleBuys, currentPrice, avgCostBasis } = factors;
+    const divergencePct = (currentPrice && avgCostBasis && avgCostBasis > 0)
+      ? Math.max(0, (avgCostBasis - currentPrice) / avgCostBasis) * 100
+      : 0;
+    return `base=$${base} regime=${regime}(${regimeScale}) liq=${liquidityFactor.toFixed(2)} div=${divergencePct.toFixed(1)}% buys=${cycleBuys} budget=$${remainingBudget.toFixed(0)}`;
   };
 
   /**
