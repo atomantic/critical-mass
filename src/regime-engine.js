@@ -1724,7 +1724,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         }
 
         const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-        console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy → new ${body.tier}: ${summary.totalSize} BTC @ $${summary.avgPrice}, body=${body.id.slice(-8)}`);
+        console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy filled → created ${body.tier} body: ${summary.totalSize} BTC @ $${summary.avgPrice}, body=${body.id.slice(-8)}`);
 
         // Annotate buy fills with body metadata
         fillLedger.annotateFillsByOrderId(fillData.orderId, { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier });
