@@ -2,6 +2,7 @@ import { useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import CelestialBody from './CelestialBody'
 import BlackHole from './BlackHole'
+import GalaxyBody from './GalaxyBody'
 import {
   getDynamicOrbitRadius, getHierarchicalRadius, getHierarchicalSpeed,
   TIER_COLORS, RING_OPACITY,
@@ -93,10 +94,13 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, paren
     ? Math.max(...siblings.map(s => getDynamicOrbitRadius(depth + 1, current, s, maxUsdcDeployed)))
     : 0
 
+  const bodyProps = { body: current, showTooltip: activeBodyId === current.id, onHover: onBodyHover, maxUsdcDeployed }
   const bodyElement = current.tier === 'black_hole' ? (
-    <BlackHole body={current} showTooltip={activeBodyId === current.id} onHover={onBodyHover} maxUsdcDeployed={maxUsdcDeployed} />
+    <BlackHole {...bodyProps} />
+  ) : current.tier === 'galaxy' ? (
+    <GalaxyBody {...bodyProps} />
   ) : (
-    <CelestialBody body={current} showTooltip={activeBodyId === current.id} onHover={onBodyHover} maxUsdcDeployed={maxUsdcDeployed} />
+    <CelestialBody {...bodyProps} />
   )
 
   return (

@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect, createContext, useContext, lazy, Suspense } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, useParams, Navigate } from 'react-router-dom'
 import Dashboard from './components/Dashboard'
 import ConfigEditor from './components/ConfigEditor'
@@ -15,6 +15,7 @@ import KeysConfig from './components/KeysConfig'
 import NotificationsConfig from './components/NotificationsConfig'
 import BackupRestore from './components/BackupRestore'
 import RegimeDashboard from './components/RegimeDashboard'
+const Systems = lazy(() => import('./components/Systems'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
@@ -377,6 +378,12 @@ function AppContent() {
                   Backups
                 </Link>
                 <Link
+                  to="/systems"
+                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                >
+                  Systems
+                </Link>
+                <Link
                   to={`/${currentExchange}/keys`}
                   className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
                 >
@@ -456,6 +463,9 @@ function AppContent() {
 
               {/* Backups - global (not exchange-specific) */}
               <Route path="/backups" element={<BackupRestore />} />
+
+              {/* Systems - debug showcase of all celestial body types */}
+              <Route path="/systems" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><Systems /></Suspense>} />
 
               {/* API Keys - shared per exchange (not strategy-specific) */}
               <Route path="/:exchange/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />

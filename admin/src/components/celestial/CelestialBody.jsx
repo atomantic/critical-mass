@@ -6,6 +6,9 @@ import {
   GLOW_INTENSITY, EMISSIVE_INTENSITY, STELLAR_TIERS, getBodySize,
 } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
+import MoonGeometry from './MoonGeometry'
+import SatelliteGeometry from './SatelliteGeometry'
+import HypergiantGeometry from './HypergiantGeometry'
 
 /**
  * Individual celestial body (visual only — parent handles orbital positioning).
@@ -47,37 +50,55 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => 
     }
   })
 
+  const isMoon = body.tier === 'moon'
+  const isSatellite = body.tier === 'satellite'
+  const isHypergiant = body.tier === 'hypergiant'
+  const useGroupGeometry = isMoon || isSatellite || isHypergiant
+
   return (
     <group>
-      {/* Main body sphere */}
-      <mesh
-        ref={meshRef}
-        onPointerOver={(e) => { e.stopPropagation(); onHover(body.id) }}
-      >
-        <sphereGeometry args={[size, 24, 24]} />
-        {isStellar ? (
-          <meshBasicMaterial color={coreColor} />
-        ) : (
-          <meshStandardMaterial
-            color={color}
-            emissive={color}
-            emissiveIntensity={emissiveInt}
-            roughness={0.4}
-            metalness={0.3}
-          />
-        )}
-      </mesh>
+      {/* Main body */}
+      {useGroupGeometry ? (
+        <group
+          ref={meshRef}
+          onPointerOver={(e) => { e.stopPropagation(); onHover(body.id) }}
+        >
+          {isMoon && <MoonGeometry size={size} color={color} emissiveInt={emissiveInt} />}
+          {isSatellite && <SatelliteGeometry size={size} color={color} emissiveInt={emissiveInt} />}
+          {isHypergiant && <HypergiantGeometry size={size} />}
+        </group>
+      ) : (
+        <mesh
+          ref={meshRef}
+          onPointerOver={(e) => { e.stopPropagation(); onHover(body.id) }}
+        >
+          <sphereGeometry args={[size, 24, 24]} />
+          {isStellar ? (
+            <meshBasicMaterial color={coreColor} />
+          ) : (
+            <meshStandardMaterial
+              color={color}
+              emissive={color}
+              emissiveIntensity={emissiveInt}
+              roughness={0.4}
+              metalness={0.3}
+            />
+          )}
+        </mesh>
+      )}
 
-      {/* Single thin BackSide glow halo */}
-      <mesh ref={glowRef} scale={isStellar ? 1.3 : 1.4}>
-        <sphereGeometry args={[size, 16, 16]} />
-        <meshBasicMaterial
-          color={color}
-          transparent
-          opacity={0.12}
-          side={THREE.BackSide}
-        />
-      </mesh>
+      {/* Glow halo — skip for moon (no atmosphere) and satellite (mechanical) */}
+      {!isMoon && !isSatellite && (
+        <mesh ref={glowRef} scale={isStellar ? 1.3 : 1.4}>
+          <sphereGeometry args={[size, 16, 16]} />
+          <meshBasicMaterial
+            color={color}
+            transparent
+            opacity={0.12}
+            side={THREE.BackSide}
+          />
+        </mesh>
+      )}
 
       {/* Saturn-like ring for merged planets (mergeCount > 2) */}
       {body.tier === 'planet' && body.mergeCount > 2 && (

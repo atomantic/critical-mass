@@ -1,6 +1,7 @@
 import { useRef, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { ORBITAL_RADII, ORBITAL_SPEEDS, TIER_COLORS } from './celestialConstants'
+import SatelliteGeometry from './SatelliteGeometry'
 
 /**
  * Open buy orders rendered as wireframe "under construction" satellites
@@ -25,9 +26,12 @@ const IncomingOrder = memo(({ order, index, total }) => {
       Math.sin(angle) * radius
     )
 
-    // Pulsing opacity
+    // Pulsing opacity + rotation on composite group
     if (meshRef.current) {
-      meshRef.current.material.opacity = 0.2 + Math.sin(time * 3 + index) * 0.1
+      const opacity = 0.2 + Math.sin(time * 3 + index) * 0.1
+      meshRef.current.traverse((child) => {
+        if (child.material) child.material.opacity = opacity
+      })
       meshRef.current.rotation.y += 0.01
       meshRef.current.rotation.x += 0.005
     }
@@ -35,15 +39,9 @@ const IncomingOrder = memo(({ order, index, total }) => {
 
   return (
     <group ref={groupRef} position={[radius, 0, 0]}>
-      <mesh ref={meshRef}>
-        <sphereGeometry args={[size, 12, 12]} />
-        <meshBasicMaterial
-          color={TIER_COLORS.satellite}
-          wireframe
-          transparent
-          opacity={0.3}
-        />
-      </mesh>
+      <group ref={meshRef}>
+        <SatelliteGeometry size={size} color={TIER_COLORS.satellite} wireframe />
+      </group>
     </group>
   )
 }, (prev, next) =>
