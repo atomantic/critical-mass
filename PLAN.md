@@ -784,7 +784,7 @@ src/
 │   ├── base-adapter.js # Interface definition
 │   ├── index.js        # Registry and factory
 │   ├── coinbase/       # Coinbase implementation
-│   ├── gemini/         # Gemini implementation
+│   ├── gemini/         # Gemini implementation (REST + WebSocket)
 │   └── cryptocom/      # Crypto.com implementation (REST + WebSocket)
 ├── config-utils.js     # Multi-exchange config management
 ├── dca-engine.js       # Core trading logic (fixed + fibonacci strategies)
@@ -1243,6 +1243,16 @@ async function executeArbitrageOpportunity(opportunity) {
 ---
 
 ## Exchange-Specific Notes
+
+### Gemini Exchange
+- Uses HMAC-SHA384 authentication for REST API
+- Symbol format: `btcusd` (lowercase, no separator, USDC→USD mapping)
+- WebSocket v2: `wss://api.gemini.com/v2/marketdata` (public, no auth)
+  - Subscribe via `{ type: "subscribe", subscriptions: [{ name: "l2", symbols: ["BTCUSD"] }] }`
+  - L2 updates: `{ type: "l2_updates", symbol, changes: [[side,price,qty]], trades: [...] }`
+  - Trade events: `{ type: "trade", symbol, price, quantity, side, tid, timestamp }`
+  - Best bid/ask derived from L2 changes; last price from trade events
+  - No server heartbeat — client-side ping/pong used for keepalive
 
 ### Crypto.com Exchange
 - Uses HMAC-SHA256 authentication with alphabetically sorted parameters
