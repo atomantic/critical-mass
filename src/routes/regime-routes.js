@@ -15,7 +15,8 @@ const standaloneLedgers = new Map();
 
 const getStandaloneLedger = (exchange) => {
   if (!standaloneLedgers.has(exchange)) {
-    standaloneLedgers.set(exchange, createFillLedger(exchange));
+    const exchConfig = getExchangeConfig(exchange);
+    standaloneLedgers.set(exchange, createFillLedger(exchange, exchConfig?.productId));
   }
   return standaloneLedgers.get(exchange);
 };
@@ -440,7 +441,9 @@ module.exports = (app, deps) => {
         engine.updatePosition(updatedPosition);
       }
 
-      console.log(`🔧 [${exchange}] Regime state recalculated: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalRealizedPnL.toFixed(2)}, BTC reserves=${totalRealizedAssetPnL.toFixed(8)}`);
+      const productId = getRegimeConfig(exchange)?.productId || getExchangeConfig(exchange)?.productId || 'BTC-USDC';
+      const asset = productId.replace('_', '-').split('-')[0];
+      console.log(`🔧 [${exchange}] Regime state recalculated: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalRealizedPnL.toFixed(2)}, ${asset} reserves=${totalRealizedAssetPnL.toFixed(8)}`);
     }
 
     res.json({

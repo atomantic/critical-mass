@@ -117,7 +117,7 @@ const createMarketDataService = (exchange) => {
     }
 
     // Create fill ledger for order fill tracking
-    fillLedger = createFillLedger(exchange);
+    fillLedger = createFillLedger(exchange, productId);
 
     // Create WebSocket feed
     wsFeed = createWebSocketFeed(exchange, {
@@ -243,7 +243,8 @@ const createMarketDataService = (exchange) => {
     const trackedOrder = trackedOrders.get(orderId);
 
     if (status === 'FILLED') {
-      console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} BTC @ $${averageFilledPrice}`);
+      const baseCurr = productId.replace('_', '-').split('-')[0];
+      console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
 
       // Get fills for this order and ingest them
       const adapter = getAdapter(exchange);

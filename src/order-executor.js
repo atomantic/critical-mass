@@ -19,6 +19,18 @@ const { createMutex } = require('./async-mutex');
  */
 
 /**
+ * Format a price with appropriate decimal places
+ * @param {number} p - Price value
+ * @returns {string} Formatted price string
+ */
+const fmtPrice = (p) => {
+  if (p == null || isNaN(p)) return '-';
+  if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
+  if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
+  return `$${p.toFixed(5)}`;
+};
+
+/**
  * Create order executor instance
  * @param {string} exchange - Exchange name
  * @param {RegimeStrategyConfig} config - Configuration
@@ -31,6 +43,7 @@ const { createMutex } = require('./async-mutex');
 const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {}) => {
   /** @type {Map<string, PendingOrder>} */
   const pendingOrders = new Map();
+  const baseCurrency = productId.replace('_', '-').split('-')[0];
 
   let lastCancelTime = 0;
   let lastTpPrice = 0;
@@ -142,12 +155,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     bidPrice = roundPrice(bidPrice);
     const assetQty = roundAsset(sizeUsdc / bidPrice);
 
-    console.log(`📝 [${exchange}] Placing entry bid: ${assetQty} BTC @ $${bidPrice} (size $${sizeUsdc})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
+    console.log(`📝 [${exchange}] Placing entry bid: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
 
     const result = await adapter.placeLimitBuy(productId, assetQty, bidPrice, { postOnly: true });
 
     if (result.success) {
-      console.log(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${assetQty} BTC @ $${bidPrice}`);
+      console.log(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)}`);
       // Verify order is actually open on exchange (post-only orders can be immediately cancelled)
       const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
 
@@ -259,12 +272,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const roundedPrice = roundPrice(tpPrice);
     const roundedQty = roundAsset(assetQty);
 
-    console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} BTC @ $${roundedPrice}`);
+    console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
 
     const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
 
     if (result.success) {
-      console.log(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} BTC @ $${roundedPrice}`);
+      console.log(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
       activeTpOrderId = result.orderId;
       lastTpPrice = roundedPrice;
       lastTpSize = roundedQty;
@@ -752,13 +765,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const roundedPrice = roundPrice(tpPrice);
     const roundedQty = roundAsset(assetQty);
 
-    console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} BTC @ $${roundedPrice} (body=${bodyId.slice(-8)})`);
+    console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
 
     // Body TPs should not use post_only — when market reaches TP price, the order must fill
     const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
 
     if (result.success) {
-      console.log(`✅ [${exchange}] Body TP placed: orderId=${result.orderId} ${roundedQty} BTC @ $${roundedPrice} (body=${bodyId.slice(-8)})`);
+      console.log(`✅ [${exchange}] Body TP placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
       bodyTpOrders.set(bodyId, {
         tpOrderId: result.orderId,
         assetQty: roundedQty,

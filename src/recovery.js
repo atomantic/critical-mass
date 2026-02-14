@@ -75,16 +75,14 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     console.log(`📋 [${exchange}] Exchange has ${openOrders.length} open orders (regime engine tracks its own orders separately)`);
 
     // 7. Compare position against base balance (informational only)
-    // NOTE: Account may have BTC from other sources - we only track what regime engine traded
+    // NOTE: Account may have asset from other sources - we only track what regime engine traded
     const trackedAsset = position.totalAsset;
     const accountAsset = baseBalance.available + baseBalance.hold;
 
     if (accountAsset > trackedAsset + 0.00001) {
-      // Account has more BTC than we're tracking - this is expected if user has other holdings
-      console.log(`ℹ️ [${exchange}] Account has ${accountAsset.toFixed(8)} BTC, regime engine tracking ${trackedAsset.toFixed(8)} BTC (other holdings not tracked)`);
+      console.log(`ℹ️ [${exchange}] Account has ${accountAsset.toFixed(8)} ${baseCurrency}, regime engine tracking ${trackedAsset.toFixed(8)} ${baseCurrency} (other holdings not tracked)`);
     } else if (trackedAsset > accountAsset + 0.00001) {
-      // We're tracking more than exists - this is a real problem
-      discrepancies.push(`BTC tracking error: tracking ${trackedAsset.toFixed(8)} but only ${accountAsset.toFixed(8)} in account`);
+      discrepancies.push(`${baseCurrency} tracking error: tracking ${trackedAsset.toFixed(8)} but only ${accountAsset.toFixed(8)} in account`);
       console.log(`⚠️ [${exchange}] ${discrepancies[discrepancies.length - 1]}`);
     }
 
@@ -135,9 +133,9 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     const accountAsset = baseBalance.available + baseBalance.hold;
 
     // Only flag as discrepancy if we're tracking MORE than exists in account
-    // Account having extra BTC is fine (user's other holdings)
+    // Account having extra asset is fine (user's other holdings)
     if (trackedAsset > accountAsset + 0.00001) {
-      discrepancies.push(`Tracking ${trackedAsset.toFixed(8)} BTC but only ${accountAsset.toFixed(8)} in account`);
+      discrepancies.push(`Tracking ${trackedAsset.toFixed(8)} ${baseCurrency} but only ${accountAsset.toFixed(8)} in account`);
     }
 
     return {
