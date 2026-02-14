@@ -220,13 +220,22 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     };
   }
 
+  // Filter out dry-run orders - they don't exist on the exchange
+  const realOrders = pendingOrders.filter(o => !o.orderId?.startsWith('dry-run-'));
+  if (realOrders.length < 2) {
+    return {
+      success: false,
+      error: `Only ${realOrders.length} real orders after filtering dry-run orders`,
+    };
+  }
+
   const eligibleOrders = [];
   const skippedOrderIds = [];
   const cancelledOrderIds = [];
 
   // Step 1: Check each order for partial fills
-  log('INFO', `Checking ${pendingOrders.length} orders for partial fills...`);
-  for (const order of pendingOrders) {
+  log('INFO', `Checking ${realOrders.length} orders for partial fills...`);
+  for (const order of realOrders) {
     const orderDetails = await adapter.getOrder(order.orderId);
 
     // Skip orders that have partial fills

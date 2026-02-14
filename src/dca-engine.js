@@ -492,12 +492,22 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     // Threshold-based consolidation
     if (config.consolidateAfterOrders > 0 && pendingCount > config.consolidateAfterOrders) {
       logger.log('INFO', `[${exchange}] Auto-consolidation triggered: ${pendingCount} orders > ${config.consolidateAfterOrders} threshold`);
-      await executeConsolidation(exchange);
+      const consolResult = await executeConsolidation(exchange).catch(err => {
+        logger.log('ERROR', `[${exchange}] Auto-consolidation failed: ${err.message}`);
+        tradeEvents.error(exchange, `Auto-consolidation failed: ${err.message}`);
+        return { success: false, error: err.message };
+      });
+      if (!consolResult?.success) {
+        logger.log('WARN', `[${exchange}] Auto-consolidation unsuccessful, will retry next cycle`);
+      }
     }
     // Interval-based consolidation (only if threshold didn't trigger and we have 2+ orders)
     else if (pendingCount >= 2 && shouldRunConsolidation(state.lastConsolidationId, config.consolidateInterval)) {
       logger.log('INFO', `[${exchange}] Scheduled consolidation triggered: ${config.consolidateInterval} interval`);
-      await executeConsolidation(exchange);
+      await executeConsolidation(exchange).catch(err => {
+        logger.log('ERROR', `[${exchange}] Scheduled consolidation failed: ${err.message}`);
+        tradeEvents.error(exchange, `Scheduled consolidation failed: ${err.message}`);
+      });
     }
   }
 
