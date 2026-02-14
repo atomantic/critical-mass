@@ -86,32 +86,45 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
 
     return chronological.map(fill => {
       if (fill.side === 'buy') {
-        totalBtc += fill.size
-        totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
+        // Only track non-body buys in running position (body buys have independent P&L)
+        const isBody = fill.isBodyOwned || fill.isSatellite || fill.bodyId
+        if (!isBody) {
+          totalBtc += fill.size
+          totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
+        }
         return { ...fill, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0, pnl: null, holdbackBtc: null, holdbackValue: null }
       }
       // Sell fill - calculate P&L
-      const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
-      const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
-      const costBasis = avgCost * fill.size
-      const pnl = proceeds - costBasis
-
-      // Calculate holdback (BTC kept as reserves)
-      const btcSold = fill.size
-      const holdbackBtc = totalBtc - btcSold
-      const holdbackValue = holdbackBtc > 0 ? holdbackBtc * fill.price : 0
-
-      // Update position after sell
-      const remainingBtc = totalBtc - btcSold
-      if (remainingBtc > 0) {
-        totalBtc = remainingBtc
-        totalCost = avgCost * remainingBtc
+      // Use server annotations for body/satellite sells, fall back to running avg for core sells
+      const isBody = fill.isBodyOwned || fill.isSatellite || fill.bodyId
+      const annotatedPnl = fill.bodyPnl ?? fill.satellitePnl
+      let pnl
+      if (annotatedPnl != null) {
+        pnl = annotatedPnl
       } else {
-        totalBtc = 0
-        totalCost = 0
+        const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
+        const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
+        pnl = proceeds - avgCost * fill.size
       }
 
-      return { ...fill, avgCost, pnl, holdbackBtc: holdbackBtc > 0 ? holdbackBtc : null, holdbackValue: holdbackValue > 0 ? holdbackValue : null }
+      // Use server-annotated holdback (BTC retained from this specific sell's position)
+      const holdbackBtc = fill.bodyHoldbackBtc ?? fill.satelliteHoldbackBtc ?? null
+      const holdbackValue = holdbackBtc != null && holdbackBtc > 0 ? holdbackBtc * fill.price : 0
+
+      // Update running position for non-body sells (core TP)
+      if (!isBody) {
+        const remainingBtc = totalBtc - fill.size
+        if (remainingBtc > 0) {
+          const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
+          totalBtc = remainingBtc
+          totalCost = avgCost * remainingBtc
+        } else {
+          totalBtc = 0
+          totalCost = 0
+        }
+      }
+
+      return { ...fill, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0, pnl, holdbackBtc: holdbackBtc != null && holdbackBtc > 0 ? holdbackBtc : null, holdbackValue: holdbackValue > 0 ? holdbackValue : null }
     })
   })()
 
@@ -139,10 +152,10 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
     .reduce((sum, f) => sum + f.pnl, 0)
   const totalHoldbackBtc = fillsWithPnL
     .filter(f => f.holdbackBtc !== null)
-    .reduce((max, f) => Math.max(max, f.holdbackBtc), 0)
+    .reduce((sum, f) => sum + f.holdbackBtc, 0)
   const totalHoldbackValue = fillsWithPnL
     .filter(f => f.holdbackValue !== null)
-    .reduce((max, f) => Math.max(max, f.holdbackValue), 0)
+    .reduce((sum, f) => sum + f.holdbackValue, 0)
 
   if (loading) {
     return (
