@@ -42,6 +42,18 @@ const { roundAsset, roundPrice } = require('./volatility-utils');
  * @property {Object} details - Additional details
  */
 
+/**
+ * Format a price for display
+ * @param {number} p - Price value
+ * @returns {string}
+ */
+const fmtPrice = (p) => {
+  if (p == null || isNaN(p)) return '-';
+  if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
+  if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
+  return `$${p.toFixed(5)}`;
+};
+
 let orderIdCounter = 0;
 
 /**
@@ -77,9 +89,10 @@ const getOrderIdCounter = () => orderIdCounter;
  * @param {Function} [callbacks.onSellFill] - Called when sell order fills: (orderId, assetQty, price, proceeds, pnl)
  * @returns {Object} Dry-run order executor instance
  */
-const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) => {
+const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, productId) => {
   /** @type {Map<string, SimulatedOrder>} */
   const pendingOrders = new Map();
+  const baseCurrency = productId ? productId.replace('_', '-').split('-')[0] : 'BTC';
 
   /** @type {DecisionLogEntry[]} */
   const decisionLog = [];
@@ -182,7 +195,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       offsetBps,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${assetQty} BTC @ $${bidPrice} (size $${sizeUsdc}) offset=${offsetBps}bps`);
+    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc}) offset=${offsetBps}bps`);
 
     // Entry fills are checked continuously via checkEntryFills() called from regime engine
 
@@ -250,7 +263,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       assetQty: roundedQty,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] TP sell placed: ${roundedQty} BTC @ $${roundedPrice}`);
+    console.log(`🧪 [${exchange}] [DRY-RUN] TP sell placed: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
 
     return {
       success: true,
@@ -388,7 +401,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
         costBasis,
         totalBought: simulatedTotalBought,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] Entry FILLED: ${order.size} BTC @ $${fillPrice}`);
+      console.log(`🧪 [${exchange}] [DRY-RUN] Entry FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}`);
 
       // Push to filled orders after all data is populated
       filledOrders.push({ ...order });
@@ -428,7 +441,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
         pnl,
         isBody: true,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] Body TP FILLED: ${order.size} BTC @ $${fillPrice}, PnL=$${pnl.toFixed(2)}`);
+      console.log(`🧪 [${exchange}] [DRY-RUN] Body TP FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}, PnL=$${pnl.toFixed(2)}`);
 
       // Remove body tracking
       removeBodyTracking(orderId);
@@ -484,7 +497,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
         usdcProfit,
         totalRealizedPnL: simulatedRealizedPnL,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} BTC @ $${fillPrice}, USDC profit=$${usdcProfit.toFixed(2)}, holdback=${holdbackAsset.toFixed(8)} BTC (≈$${holdbackValue.toFixed(2)})`);
+      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}, USDC profit=$${usdcProfit.toFixed(2)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency} (≈$${holdbackValue.toFixed(2)})`);
 
       if (orderId === activeTpOrderId) {
         activeTpOrderId = null;
@@ -593,7 +606,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       costBasis: roundedQty * roundedPrice,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] Body TP placed: ${roundedQty} BTC @ $${roundedPrice} (body=${bodyId.slice(-8)})`);
+    console.log(`🧪 [${exchange}] [DRY-RUN] Body TP placed: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
     return { success: true, orderId };
   };
 

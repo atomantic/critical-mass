@@ -22,9 +22,11 @@ const { roundAsset, roundUSDC } = require('./volatility-utils');
  * Create risk manager instance
  * @param {string} exchange - Exchange name
  * @param {RegimeStrategyConfig} config - Configuration
+ * @param {string} [productId] - Product ID (e.g. BTC-USDC, CRO_USD)
  * @returns {Object} Risk manager instance
  */
-const createRiskManager = (exchange, config) => {
+const createRiskManager = (exchange, config, productId) => {
+  const assetLabel = productId ? productId.replace('_', '-').split('-')[0].toLowerCase() : 'asset';
   let peakEquity = null; // null = uninitialized, will be set to first observed equity
   let maxDrawdownSeen = 0;
   let isDrawdownPaused = false;
@@ -32,9 +34,9 @@ const createRiskManager = (exchange, config) => {
   let cycleBuysLimitReachedAt = null; // Timestamp when ladder limit was first reached
 
   /**
-   * Check if entry would exceed BTC exposure cap
-   * @param {number} currentAsset - Current BTC position
-   * @param {number} entryAsset - BTC amount to add
+   * Check if entry would exceed asset exposure cap
+   * @param {number} currentAsset - Current asset position
+   * @param {number} entryAsset - Asset amount to add
    * @returns {{allowed: boolean, reason: string|null, currentAsset: number, maxAsset: number}}
    */
   const checkAssetCap = (currentAsset, entryAsset) => {
@@ -43,7 +45,7 @@ const createRiskManager = (exchange, config) => {
     if (newTotal > config.maxAssetExposure) {
       return {
         allowed: false,
-        reason: `btc_cap_exceeded:${roundAsset(newTotal)}>${config.maxAssetExposure}`,
+        reason: `asset_cap_exceeded:${roundAsset(newTotal)}>${config.maxAssetExposure}`,
         currentAsset,
         maxAsset: config.maxAssetExposure,
       };
@@ -309,7 +311,7 @@ const createRiskManager = (exchange, config) => {
   const getSummary = (position) => {
     const util = getUtilization(position);
     const parts = [
-      `btc=${position.totalAsset.toFixed(4)}/${config.maxAssetExposure}(${util.btcUtilization.toFixed(0)}%)`,
+      `${assetLabel}=${position.totalAsset.toFixed(4)}/${config.maxAssetExposure}(${util.btcUtilization.toFixed(0)}%)`,
       `usdc=$${position.totalCostBasis.toFixed(0)}/${config.maxUsdcDeployed}(${util.usdcUtilization.toFixed(0)}%)`,
       `buys=${position.cycleBuys}/${config.maxCycleBuys}`,
     ];

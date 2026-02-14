@@ -31,15 +31,23 @@ const getFillLedgerPath = (exchange) => {
 /**
  * Create fill ledger instance
  * @param {string} exchange - Exchange name
+ * @param {string} [productId] - Product ID (e.g. 'BTC-USDC') used to derive base currency for logs
  * @returns {Object} Fill ledger instance
  */
-const createFillLedger = (exchange) => {
+const createFillLedger = (exchange, productId) => {
   /** @type {Map<string, Fill>} */
   const fills = new Map();
   /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
   const cycleIndex = new Map();
   let currentCycleId = null;
   let nextCycleNumber = 1;
+  const baseCurrency = productId ? productId.replace('_', '-').split('-')[0] : 'BTC';
+  const fmtPrice = (p) => {
+    if (p == null || isNaN(p)) return '-';
+    if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
+    if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
+    return `$${p.toFixed(5)}`;
+  };
 
   /**
    * Load fill ledger from disk
@@ -172,7 +180,7 @@ const createFillLedger = (exchange) => {
     persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
-    console.log(`📝 [${exchange}] Fill ingested: tradeId=${tradeId} orderId=${fill.orderId} ${fill.side} ${fill.size} BTC @ $${fill.price} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);
+    console.log(`📝 [${exchange}] Fill ingested: tradeId=${tradeId} orderId=${fill.orderId} ${fill.side} ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);
 
     return { ingested: true, fill };
   };
@@ -270,7 +278,7 @@ const createFillLedger = (exchange) => {
 
         totalAsset = roundAsset(totalAsset - fill.size);
         if (totalAsset < 0) {
-          console.log(`⚠️ [${exchange}] rebuildPositionFromFills: negative BTC ${totalAsset} after sell ${fill.tradeId}, clamping to 0`);
+          console.log(`⚠️ [${exchange}] rebuildPositionFromFills: negative ${baseCurrency} ${totalAsset} after sell ${fill.tradeId}, clamping to 0`);
           totalAsset = 0;
           totalCostBasis = 0;
         } else {
