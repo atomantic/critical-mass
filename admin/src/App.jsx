@@ -19,14 +19,30 @@ const Systems = lazy(() => import('./components/Systems'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
-// Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD")
+// Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "CRO_USD" -> "USD", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
   if (!productId) return 'USDC'
   if (productId.includes('-')) {
     return productId.split('-')[1]
   }
+  if (productId.includes('_')) {
+    return productId.split('_')[1]
+  }
   // For Gemini-style (BTCUSD), strip BTC prefix
   return productId.replace(/^BTC/, '') || 'USD'
+}
+
+// Extract base currency from product ID (e.g., "BTC-USDC" -> "BTC", "CRO_USD" -> "CRO", "BTCUSD" -> "BTC")
+export function getBaseCurrency(productId) {
+  if (!productId) return 'BTC'
+  if (productId.includes('-')) {
+    return productId.split('-')[0]
+  }
+  if (productId.includes('_')) {
+    return productId.split('_')[0]
+  }
+  // For Gemini-style (BTCUSD), assume BTC prefix
+  return 'BTC'
 }
 
 // Exchange context for sharing current exchange and strategy across components
@@ -445,7 +461,7 @@ function AppContent() {
               {/* DCA strategy routes */}
               <Route path="/:exchange/dca" element={<Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />} />
               <Route path="/:exchange/dca/cost-basis" element={<CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/dca/transactions" element={<TransactionsDCA transactions={summary?.transactions} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/dca/transactions" element={<TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
               <Route path="/:exchange/dca/charts" element={<ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
               <Route path="/:exchange/dca/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
               <Route path="/:exchange/dca/optimizer" element={<Optimizer exchange={currentExchange} />} />
