@@ -1,18 +1,21 @@
 import { useState, useEffect, useCallback } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { getBaseCurrency } from '../App'
 
 function CostBasisRegime({ exchange = 'coinbase' }) {
   const [status, setStatus] = useState(null)
   const [fills, setFills] = useState([])
   const [loading, setLoading] = useState(true)
   const [currentPrice, setCurrentPrice] = useState(0)
+  const [productId, setProductId] = useState(null)
 
-  const formatBTC = (n) => (n || 0).toFixed(8)
+  const formatAsset = (n) => (n || 0).toFixed(8)
 
   const fetchData = useCallback(async () => {
-    const [statusRes, fillsRes] = await Promise.all([
+    const [statusRes, fillsRes, configRes] = await Promise.all([
       fetch(`/api/${exchange}/regime/status`),
       fetch(`/api/${exchange}/regime/fills`),
+      fetch(`/api/${exchange}/config`),
     ])
 
     if (statusRes.ok) {
@@ -23,6 +26,10 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
     if (fillsRes.ok) {
       const data = await fillsRes.json()
       setFills(data.fills || [])
+    }
+    if (configRes.ok) {
+      const data = await configRes.json()
+      setProductId(data.config?.productId || data.productId || null)
     }
     setLoading(false)
   }, [exchange])
@@ -43,6 +50,7 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
 
   const position = status?.position || {}
   const isDryRun = status?.isDryRun
+  const baseCurrency = getBaseCurrency(productId)
 
   // Calculate cycle-based P&L from fills
   const cycleData = fills.reduce((acc, fill) => {
@@ -79,22 +87,22 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
   })
 
   // Calculate totals
-  const totalBTC = position.totalBTC || 0
+  const totalAsset = position.totalAsset || 0
   const totalCostBasis = position.totalCostBasis || 0
   const avgCost = position.avgCostBasis || 0
-  const currentValue = totalBTC * currentPrice
+  const currentValue = totalAsset * currentPrice
   const unrealizedPnL = currentValue - totalCostBasis
   const unrealizedPnLPercent = totalCostBasis > 0 ? ((currentValue / totalCostBasis) - 1) * 100 : 0
   const realizedPnL = position.realizedPnL || 0
-  const btcReserves = position.realizedBtcPnL || 0
-  const btcReservesValue = btcReserves * currentPrice
+  const assetReserves = position.realizedAssetPnL || 0
+  const btcReservesValue = assetReserves * currentPrice
 
   return (
     <div className="space-y-6">
       {/* Current Price Banner */}
       <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
         <div>
-          <span className="text-gray-400">Current BTC Price:</span>
+          <span className="text-gray-400">Current {baseCurrency} Price:</span>
           <span className="text-3xl font-bold ml-4">{formatPrice(currentPrice)}</span>
         </div>
         <div>
@@ -110,13 +118,13 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {/* BTC Position */}
+        {/* Asset Position */}
         <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-orange-400 mb-3">BTC Position</h3>
+          <h3 className="text-lg font-semibold text-orange-400 mb-3">{baseCurrency} Position</h3>
           <div className="space-y-2">
             <div className="flex justify-between">
-              <span className="text-gray-400">Total BTC:</span>
-              <span className="font-mono">{formatBTC(totalBTC)}</span>
+              <span className="text-gray-400">Total {baseCurrency}:</span>
+              <span className="font-mono">{formatAsset(totalAsset)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Cost Basis:</span>
@@ -136,13 +144,13 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
           </div>
         </div>
 
-        {/* BTC Reserves (Holdback) */}
+        {/* Asset Reserves (Holdback) */}
         <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-cyan-400 mb-3">BTC Reserves</h3>
+          <h3 className="text-lg font-semibold text-cyan-400 mb-3">{baseCurrency} Reserves</h3>
           <div className="space-y-2">
             <div className="flex justify-between">
               <span className="text-gray-400">Amount:</span>
-              <span className="font-mono">{formatBTC(btcReserves)} BTC</span>
+              <span className="font-mono">{formatAsset(assetReserves)} {baseCurrency}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
@@ -177,7 +185,7 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
           <div className="space-y-2">
             <div className="flex justify-between">
               <span className="text-gray-400">Position + Reserves:</span>
-              <span className="font-mono">{formatBTC(totalBTC + btcReserves)} BTC</span>
+              <span className="font-mono">{formatAsset(totalAsset + assetReserves)} {baseCurrency}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Combined Value:</span>
@@ -236,7 +244,7 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
                   <div className="grid grid-cols-4 gap-4 text-sm">
                     <div>
                       <span className="text-gray-500">Bought:</span>
-                      <span className="ml-2 font-mono">{formatBTC(cycle.totalBought)} BTC</span>
+                      <span className="ml-2 font-mono">{formatAsset(cycle.totalBought)} {baseCurrency}</span>
                     </div>
                     <div>
                       <span className="text-gray-500">Cost:</span>
@@ -278,7 +286,7 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
                                 <td className={`py-1 ${fill.side === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
                                   {fill.side.toUpperCase()}
                                 </td>
-                                <td className="py-1 text-right font-mono">{formatBTC(fill.size)}</td>
+                                <td className="py-1 text-right font-mono">{formatAsset(fill.size)}</td>
                                 <td className="py-1 text-right">{formatPrice(fill.price)}</td>
                                 <td className="py-1 text-right">{formatCurrency(fill.quoteAmount || fill.size * fill.price)}</td>
                               </tr>
@@ -299,8 +307,8 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
         <h4 className="font-semibold text-gray-300 mb-2">Understanding Regime Cost Basis</h4>
         <ul className="list-disc list-inside space-y-1">
           <li><strong>Cycle-based</strong>: Each trading cycle (entry to TP fill) is tracked separately</li>
-          <li><strong>Position</strong>: Current BTC held from active entries</li>
-          <li><strong>BTC Reserves</strong>: Accumulated holdback from profitable take-profit fills</li>
+          <li><strong>Position</strong>: Current {baseCurrency} held from active entries</li>
+          <li><strong>{baseCurrency} Reserves</strong>: Accumulated holdback from profitable take-profit fills</li>
           <li><strong>Realized P&L</strong>: USDC profit from completed cycles</li>
           <li><strong>Total Value</strong>: Combines position + reserves + realized profit</li>
         </ul>

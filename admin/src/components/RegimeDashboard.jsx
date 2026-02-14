@@ -21,6 +21,18 @@ const formatDuration = (ms) => {
   return `${seconds}s`
 }
 
+// Dynamic price formatter: shows enough decimals for the asset's price magnitude
+const getPriceDecimals = (price) => {
+  if (!price || price >= 100) return 2
+  if (price >= 1) return 4
+  return 5
+}
+const formatPrice = (price) => {
+  if (price == null || isNaN(price)) return '-'
+  const d = getPriceDecimals(price)
+  return price.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
+}
+
 // Format timestamp as YYYY-MM-DD HH:MM:SS local time
 const formatTimestamp = (ts) => {
   if (!ts) return '-'
@@ -154,7 +166,7 @@ function LivePriceTicker({ price, prevPrice }) {
   return (
     <div className="flex items-center gap-1">
       <span className={`text-lg font-bold font-mono transition-colors duration-300 ${directionColors[direction]}`}>
-        ${price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '-'}
+        ${formatPrice(price)}
       </span>
       {direction !== 'none' && (
         <span className={`text-sm ${directionColors[direction]} animate-pulse`}>
@@ -377,7 +389,7 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
       <div className="text-[10px] text-gray-500 mb-0.5">ATR Trigger Distance</div>
       <div className="flex items-center justify-between">
         <span className="text-xs font-mono text-gray-300">
-          ${distanceToTrigger.toFixed(2)} to go
+          ${formatPrice(distanceToTrigger)} to go
         </span>
         <span className="text-[10px] text-gray-500">
           ({progress.toFixed(0)}%)
@@ -392,8 +404,8 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
         />
       </div>
       <div className="flex justify-between text-[10px] text-gray-600 mt-0.5">
-        <span>Anchor: ${anchorPrice?.toFixed(2) || '-'}</span>
-        <span>Target: ±${triggerDistance.toFixed(2)}</span>
+        <span>Anchor: ${formatPrice(anchorPrice)}</span>
+        <span>Target: ±${formatPrice(triggerDistance)}</span>
       </div>
     </div>
   )
@@ -742,7 +754,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   prevPrice={prevPriceRef.current}
                 />
                 <div className="text-[10px] text-gray-500">
-                  Spread: ${market.spread?.toFixed(2) || '-'} ({market.spread && market.lastPrice ? ((market.spread / market.lastPrice) * 10000).toFixed(1) : '-'} bps)
+                  Spread: ${formatPrice(market.spread)} ({market.spread && market.lastPrice ? ((market.spread / market.lastPrice) * 10000).toFixed(1) : '-'} bps)
                 </div>
               </div>
 
@@ -876,15 +888,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <div className="flex justify-between">
                   <span className="text-gray-500">ATR 1m</span>
-                  <span className="text-white font-mono">${market.atr1m?.toFixed(2) || '-'}</span>
+                  <span className="text-white font-mono">${formatPrice(market.atr1m)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">ATR 5m</span>
-                  <span className="text-white font-mono">${market.atr5m?.toFixed(2) || '-'}</span>
+                  <span className="text-white font-mono">${formatPrice(market.atr5m)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">VWAP</span>
-                  <span className="text-white font-mono">${market.vwap?.toFixed(2) || '-'}</span>
+                  <span className="text-white font-mono">${formatPrice(market.vwap)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">VWAP Dist</span>
@@ -1126,15 +1138,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div className="grid grid-cols-2 gap-1 text-[10px]">
                       <div>
                         <span className="text-gray-500">Entry:</span>{' '}
-                        <span className="text-white font-mono">${dryRunState.optimalTpAnalytics.currentCycle.entryPrice?.toFixed(2)}</span>
+                        <span className="text-white font-mono">${formatPrice(dryRunState.optimalTpAnalytics.currentCycle.entryPrice)}</span>
                       </div>
                       <div>
                         <span className="text-gray-500">Max seen:</span>{' '}
-                        <span className="text-green-400 font-mono">${dryRunState.optimalTpAnalytics.currentCycle.currentMaxPrice?.toFixed(2)}</span>
+                        <span className="text-green-400 font-mono">${formatPrice(dryRunState.optimalTpAnalytics.currentCycle.currentMaxPrice)}</span>
                       </div>
                       <div>
                         <span className="text-gray-500">Min seen:</span>{' '}
-                        <span className="text-red-400 font-mono">${dryRunState.optimalTpAnalytics.currentCycle.currentMinPrice?.toFixed(2)}</span>
+                        <span className="text-red-400 font-mono">${formatPrice(dryRunState.optimalTpAnalytics.currentCycle.currentMinPrice)}</span>
                       </div>
                       <div>
                         <span className="text-gray-500">Optimal TP:</span>{' '}
@@ -1314,7 +1326,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
                 <div>
                   <div className="text-gray-500">Avg Cost</div>
-                  <div className="text-white font-mono">${position.avgCostBasis?.toFixed(2) || '0'}</div>
+                  <div className="text-white font-mono">${formatPrice(position.avgCostBasis)}</div>
                 </div>
                 <div>
                   <div className="text-gray-500">Cycles</div>
@@ -1477,7 +1489,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div>{asset} on Order: <span className="text-yellow-400">{dryRunState.pnl.assetOnOrder?.toFixed(8) || 0}</span></div>
                     <div>{asset} Reserves: <span className="text-cyan-400">{position.realizedAssetPnL?.toFixed(8) || 0}</span></div>
                     <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
-                    <div>Avg Entry: ${dryRunState.pnl.avgEntryPrice?.toFixed(2) || 0}</div>
+                    <div>Avg Entry: ${formatPrice(dryRunState.pnl.avgEntryPrice)}</div>
                   </div>
                 </div>
               )}
@@ -1510,19 +1522,19 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                     <div className="flex justify-between">
                       <span className="text-gray-500">21h EMA</span>
-                      <span className="text-white font-mono">${m.emas?.h21?.toFixed(0) || '-'}</span>
+                      <span className="text-white font-mono">${formatPrice(m.emas?.h21)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">50h EMA</span>
-                      <span className="text-white font-mono">${m.emas?.h50?.toFixed(0) || '-'}</span>
+                      <span className="text-white font-mono">${formatPrice(m.emas?.h50)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">200h EMA</span>
-                      <span className="text-white font-mono">${m.emas?.h200?.toFixed(0) || '-'}</span>
+                      <span className="text-white font-mono">${formatPrice(m.emas?.h200)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">20d EMA</span>
-                      <span className="text-white font-mono">${m.emas?.d20?.toFixed(0) || '-'}</span>
+                      <span className="text-white font-mono">${formatPrice(m.emas?.d20)}</span>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-gray-700">
@@ -1849,7 +1861,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                   {order.size?.toFixed(8)}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-white">
-                                  ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
                                   ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1907,7 +1919,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                     {buy.assetQty?.toFixed(8)}
                                   </td>
                                   <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                    ${buy.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    ${buy.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                                   </td>
                                   <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
                                     ${buy.sizeUsdc?.toFixed(2)}
@@ -1966,7 +1978,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             <td className="py-2 pr-2 font-mono text-gray-500 text-xs">{order.orderId}</td>
                             <td className="text-right py-2 pr-2 font-mono text-white">{order.size?.toFixed(8)}</td>
                             <td className="text-right py-2 pr-2 font-mono text-white">
-                              ${order.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                             </td>
                             <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
                               ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -2250,7 +2262,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             {sell.size?.toFixed(8)}
                           </td>
                           <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">
-                            ${sellPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            ${sellPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                           </td>
                           <td className="text-right py-1.5 pr-2 font-mono text-gray-400 text-xs">
                             ${sellValue.toFixed(2)}
@@ -2294,7 +2306,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 {buy.size?.toFixed(8)}
                               </td>
                               <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                               </td>
                               <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
                                 ${buyValue.toFixed(2)}
@@ -2442,7 +2454,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                           {buy.size?.toFixed(8)}
                                         </td>
                                         <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                          ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                          ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                                         </td>
                                         <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
                                           ${buyValue.toFixed(2)}

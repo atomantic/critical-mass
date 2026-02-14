@@ -40,7 +40,7 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
     const buyData = sortedOrders.map((o) => ({
       date: o.createdAt,
       price: o.buyPrice,
-      amount: o.buyQuantityBTC || 0,
+      amount: o.buyQuantity || 0,
     }))
 
     // Sell data for price chart (pending sell targets)
@@ -53,9 +53,9 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
       }))
 
     // Calculate average cost basis (weighted by BTC quantity)
-    const totalBTC = sortedOrders.reduce((sum, o) => sum + (o.buyQuantityBTC || 0), 0)
+    const totalAsset = sortedOrders.reduce((sum, o) => sum + (o.buyQuantity || 0), 0)
     const totalCost = sortedOrders.reduce((sum, o) => sum + (o.buyCostBasis || o.buyUSDC || 0), 0)
-    const avgCostBasisPrice = totalBTC > 0 ? totalCost / totalBTC : 0
+    const avgCostBasisPrice = totalAsset > 0 ? totalCost / totalAsset : 0
 
     // Fund balance over time - use orders' createdAt for timeline
     // Calculate running fund size based on order sequence

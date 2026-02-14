@@ -81,7 +81,7 @@ const getTabsForStrategy = (strategy) => {
 }
 
 // Valid exchange names and strategies
-const VALID_EXCHANGES = ['coinbase', 'gemini']
+const VALID_EXCHANGES = ['coinbase', 'gemini', 'cryptocom']
 const VALID_STRATEGIES = ['dca', 'regime']
 
 // Component that listens to trade events and shows toasts
@@ -122,6 +122,7 @@ function AppContent() {
   const [stopping, setStopping] = useState(false)
   const [starting, setStarting] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   // WebSocket connection for regime strategy
   const { connected: wsConnected } = useRegimeEvents(currentStrategy === 'regime' ? currentExchange : null)
@@ -290,12 +291,12 @@ function AppContent() {
       <div className="min-h-screen">
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-3 sm:py-4">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-3 md:py-4">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
               {/* Top row: Title + Exchange selector */}
               <div className="flex items-center justify-between">
-                <Link to={buildPath('')} className="text-xl sm:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2">
-                  <svg viewBox="0 0 32 32" className="w-7 h-7 sm:w-8 sm:h-8 shrink-0" aria-hidden="true">
+                <Link to={buildPath('')} className="text-xl md:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2 whitespace-nowrap">
+                  <svg viewBox="0 0 32 32" className="w-7 h-7 md:w-8 md:h-8 shrink-0" aria-hidden="true">
                     {/* Outer orbit ring */}
                     <ellipse cx="16" cy="16" rx="14" ry="5" fill="none" stroke="#6366f1" strokeWidth="0.8" opacity="0.5" transform="rotate(-20 16 16)" />
                     {/* Middle orbit ring */}
@@ -316,8 +317,8 @@ function AppContent() {
                   </svg>
                   Critical Mass
                 </Link>
-                {/* Exchange selector - visible on mobile in top row */}
-                <div className="sm:hidden">
+                <div className="flex items-center gap-2 md:hidden">
+                  {/* Exchange selector - visible on mobile in top row */}
                   <ExchangeSelector
                     currentExchange={currentExchange}
                     currentStrategy={currentStrategy}
@@ -325,27 +326,43 @@ function AppContent() {
                     onChange={handleExchangeStrategyChange}
                     onRefresh={fetchExchanges}
                   />
+                  {/* Hamburger menu button for mobile */}
+                  <button
+                    onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                    className="p-2 text-gray-400 hover:text-white transition-colors"
+                    aria-label="Toggle menu"
+                  >
+                    {mobileMenuOpen ? (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                      </svg>
+                    )}
+                  </button>
                 </div>
               </div>
 
               {/* Bottom row on mobile / Right side on desktop */}
-              <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-4">
+              <div className="flex items-center justify-between md:justify-end gap-2 md:gap-4">
                 {/* Regime engine controls */}
                 {currentStrategy === 'regime' && (
-                  <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                  <div className="flex items-center gap-2 md:gap-3 flex-wrap">
                     {regimeDryRun && (
-                      <span className="px-1.5 sm:px-2 py-0.5 sm:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] sm:text-xs font-medium rounded">
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded">
                         DRY-RUN
                       </span>
                     )}
-                    <div className="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm">
-                      <span className={`w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full ${regimeRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
+                    <div className="flex items-center gap-1 md:gap-1.5 text-xs md:text-sm">
+                      <span className={`w-1.5 md:w-2 h-1.5 md:h-2 rounded-full ${regimeRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
                       <span className={regimeRunning ? 'text-green-400' : 'text-gray-400'}>
                         {regimeRunning ? 'Running' : 'Stopped'}
                       </span>
                     </div>
-                    <div className="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm">
-                      <span className={`w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full ${wsConnected ? 'bg-blue-500' : 'bg-red-500'}`} />
+                    <div className="flex items-center gap-1 md:gap-1.5 text-xs md:text-sm">
+                      <span className={`w-1.5 md:w-2 h-1.5 md:h-2 rounded-full ${wsConnected ? 'bg-blue-500' : 'bg-red-500'}`} />
                       <span className={wsConnected ? 'text-blue-400' : 'text-red-400'}>
                         {wsConnected ? 'Live' : 'Offline'}
                       </span>
@@ -356,7 +373,7 @@ function AppContent() {
                           <button
                             onClick={handleResetDryRun}
                             disabled={resetting}
-                            className="px-1.5 sm:px-2 py-0.5 sm:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-[10px] sm:text-xs transition-colors"
+                            className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-[10px] md:text-xs transition-colors"
                             title="Reset dry-run state"
                           >
                             {resetting ? '...' : 'Reset'}
@@ -365,7 +382,7 @@ function AppContent() {
                         <button
                           onClick={handleStopRegime}
                           disabled={stopping}
-                          className="px-2 sm:px-3 py-1 sm:py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-xs sm:text-sm font-medium transition-colors"
+                          className="px-2 md:px-3 py-1 md:py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-xs md:text-sm font-medium transition-colors"
                         >
                           {stopping ? '...' : 'Stop'}
                         </button>
@@ -374,7 +391,7 @@ function AppContent() {
                       <button
                         onClick={handleStartRegime}
                         disabled={starting}
-                        className="px-2 sm:px-3 py-1 sm:py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-xs sm:text-sm font-medium transition-colors"
+                        className="px-2 md:px-3 py-1 md:py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-xs md:text-sm font-medium transition-colors"
                       >
                         {starting ? '...' : 'Start'}
                       </button>
@@ -383,30 +400,30 @@ function AppContent() {
                 )}
                 <Link
                   to="/notifications"
-                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Notifications
                 </Link>
                 <Link
                   to="/backups"
-                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Backups
                 </Link>
                 <Link
                   to="/systems"
-                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Systems
                 </Link>
                 <Link
                   to={`/${currentExchange}/keys`}
-                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   API Keys
                 </Link>
                 {/* Exchange selector - hidden on mobile (shown in top row) */}
-                <div className="hidden sm:block">
+                <div className="hidden md:block">
                   <ExchangeSelector
                     currentExchange={currentExchange}
                     currentStrategy={currentStrategy}
@@ -417,6 +434,40 @@ function AppContent() {
                 </div>
               </div>
             </div>
+
+            {/* Mobile menu dropdown */}
+            {mobileMenuOpen && (
+              <div className="md:hidden mt-3 pt-3 border-t border-gray-700 flex flex-col gap-1">
+                <Link
+                  to="/notifications"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Notifications
+                </Link>
+                <Link
+                  to="/backups"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Backups
+                </Link>
+                <Link
+                  to="/systems"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Systems
+                </Link>
+                <Link
+                  to={`/${currentExchange}/keys`}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  API Keys
+                </Link>
+              </div>
+            )}
           </div>
         </header>
 

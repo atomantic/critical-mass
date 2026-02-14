@@ -11,7 +11,7 @@
  * Pure logic, no I/O.
  */
 
-const { roundBTC, roundUSDC } = require('./volatility-utils');
+const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /**
  * @typedef {Object} CelestialTier
@@ -29,12 +29,12 @@ const { roundBTC, roundUSDC } = require('./volatility-utils');
  * @typedef {Object} CelestialBody
  * @property {string} id - Unique ID (persists through promotions)
  * @property {string} tier - Tier name
- * @property {number} btcQty - Total BTC
+ * @property {number} assetQty - Total BTC
  * @property {number} costBasis - Total cost basis including fees ($)
- * @property {number} avgPrice - costBasis / btcQty
+ * @property {number} avgPrice - costBasis / assetQty
  * @property {string|null} tpOrderId - Exchange sell order ID
  * @property {number} tpPrice - Current TP price
- * @property {number} btcOnOrder - BTC in sell order (after holdback)
+ * @property {number} assetOnOrder - BTC in sell order (after holdback)
  * @property {number} createdAt - First creation timestamp
  * @property {number} lastMergedAt - Last merge/promotion timestamp
  * @property {string[]} sourceOrderIds - All constituent buy order IDs
@@ -45,7 +45,7 @@ const { roundBTC, roundUSDC } = require('./volatility-utils');
  * @typedef {Object} CelestialState
  * @property {number} bodiesCompleted - Total body TP fills (all time)
  * @property {number} bodiesRealizedPnL - Cumulative USD P&L
- * @property {number} bodiesRealizedBtcPnL - Cumulative BTC holdback reserves
+ * @property {number} bodiesRealizedAssetPnL - Cumulative BTC holdback reserves
  * @property {number} stateVersion - Schema version
  */
 
@@ -104,24 +104,24 @@ const generateBodyId = (orderId) => {
  * @returns {CelestialBody}
  */
 const createNewBody = (newBuy, buyOrderId) => {
-  const btcQty = newBuy.btcQty || newBuy.totalSize;
+  const assetQty = newBuy.assetQty || newBuy.totalSize;
   const costBasis = newBuy.costBasis || (newBuy.totalValue + (newBuy.totalFees || 0));
   return {
     id: generateBodyId(buyOrderId),
     tier: 'satellite',
-    btcQty,
+    assetQty,
     costBasis,
     avgPrice: newBuy.avgPrice,
     tpOrderId: null,
     tpPrice: 0,
-    btcOnOrder: 0,
+    assetOnOrder: 0,
     createdAt: Date.now(),
     lastMergedAt: Date.now(),
     sourceOrderIds: [buyOrderId],
     buyOrders: [{
       orderId: buyOrderId,
       price: newBuy.avgPrice,
-      btcQty,
+      assetQty,
       sizeUsdc: costBasis,
       filledAt: Date.now(),
     }],
@@ -194,13 +194,13 @@ const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxB
  * @returns {CelestialBody} Updated body (mutated in place)
  */
 const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
-  const newBtcQty = newBuy.btcQty || newBuy.totalSize;
+  const newBtcQty = newBuy.assetQty || newBuy.totalSize;
   const newCost = newBuy.costBasis || (newBuy.totalValue + (newBuy.totalFees || 0));
   const orderId = buyOrderId || newBuy.buyOrderId;
 
-  target.btcQty = roundBTC(target.btcQty + newBtcQty);
+  target.assetQty = roundAsset(target.assetQty + newBtcQty);
   target.costBasis = roundUSDC(target.costBasis + newCost);
-  target.avgPrice = target.btcQty > 0 ? target.costBasis / target.btcQty : 0;
+  target.avgPrice = target.assetQty > 0 ? target.costBasis / target.assetQty : 0;
   target.lastMergedAt = Date.now();
   if (orderId) target.sourceOrderIds.push(orderId);
   if (!target.buyOrders) target.buyOrders = [];
@@ -208,7 +208,7 @@ const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
     target.buyOrders.push({
       orderId,
       price: newBuy.avgPrice,
-      btcQty: newBtcQty,
+      assetQty: newBtcQty,
       sizeUsdc: newCost,
       filledAt: Date.now(),
     });
@@ -237,9 +237,9 @@ const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
  * @returns {CelestialBody} Mutated target
  */
 const mergeBodies = (target, source, maxUsdcDeployed) => {
-  target.btcQty = roundBTC(target.btcQty + source.btcQty);
+  target.assetQty = roundAsset(target.assetQty + source.assetQty);
   target.costBasis = roundUSDC(target.costBasis + source.costBasis);
-  target.avgPrice = target.btcQty > 0 ? target.costBasis / target.btcQty : 0;
+  target.avgPrice = target.assetQty > 0 ? target.costBasis / target.assetQty : 0;
   target.lastMergedAt = Date.now();
   target.sourceOrderIds = [...target.sourceOrderIds, ...source.sourceOrderIds];
   target.buyOrders = [...(target.buyOrders || []), ...(source.buyOrders || [])];
@@ -248,7 +248,7 @@ const mergeBodies = (target, source, maxUsdcDeployed) => {
   // Clear TP fields — caller cancels both TPs and re-places via placeBodyTp
   target.tpOrderId = null;
   target.tpPrice = 0;
-  target.btcOnOrder = 0;
+  target.assetOnOrder = 0;
 
   // Check tier promotion
   const newTier = classifyTier(target.costBasis, maxUsdcDeployed);
@@ -303,20 +303,20 @@ const checkPromotions = (bodies, maxUsdcDeployed) => {
  * @param {CelestialBody[]} bodies - All celestial bodies
  */
 const syncPositionState = (positionState, bodies) => {
-  let totalBTC = 0;
+  let totalAsset = 0;
   let totalCostBasis = 0;
-  let btcOnOrder = 0;
+  let assetOnOrder = 0;
 
   for (const body of bodies) {
-    totalBTC += body.btcQty;
+    totalAsset += body.assetQty;
     totalCostBasis += body.costBasis;
-    btcOnOrder += body.btcOnOrder;
+    assetOnOrder += body.assetOnOrder;
   }
 
-  positionState.totalBTC = roundBTC(totalBTC);
+  positionState.totalAsset = roundAsset(totalAsset);
   positionState.totalCostBasis = roundUSDC(totalCostBasis);
-  positionState.avgCostBasis = totalBTC > 0 ? totalCostBasis / totalBTC : 0;
-  positionState.btcOnOrder = roundBTC(btcOnOrder);
+  positionState.avgCostBasis = totalAsset > 0 ? totalCostBasis / totalAsset : 0;
+  positionState.assetOnOrder = roundAsset(assetOnOrder);
 };
 
 /**
@@ -329,17 +329,17 @@ const migrateFromLegacy = (positionState, maxUsdcDeployed) => {
   const bodies = [];
 
   // Migrate core position if it exists
-  if (positionState.totalBTC > 0 && positionState.totalCostBasis > 0) {
+  if (positionState.totalAsset > 0 && positionState.totalCostBasis > 0) {
     const coreTier = classifyTier(positionState.totalCostBasis, maxUsdcDeployed);
     bodies.push({
       id: generateBodyId('core-migration'),
       tier: coreTier.name,
-      btcQty: positionState.totalBTC,
+      assetQty: positionState.totalAsset,
       costBasis: positionState.totalCostBasis,
-      avgPrice: positionState.avgCostBasis || (positionState.totalCostBasis / positionState.totalBTC),
+      avgPrice: positionState.avgCostBasis || (positionState.totalCostBasis / positionState.totalAsset),
       tpOrderId: positionState.activeTpOrderId || null,
       tpPrice: positionState.lastTpPrice || 0,
-      btcOnOrder: positionState.btcOnOrder || 0,
+      assetOnOrder: positionState.assetOnOrder || 0,
       createdAt: positionState.lastEntryTime || Date.now(),
       lastMergedAt: Date.now(),
       sourceOrderIds: ['core-migration'],
@@ -355,19 +355,19 @@ const migrateFromLegacy = (positionState, maxUsdcDeployed) => {
     bodies.push({
       id: generateBodyId(sat.orderId || 'sat-migration'),
       tier: satTier.name,
-      btcQty: sat.btcQty,
+      assetQty: sat.assetQty,
       costBasis: sat.costBasis,
       avgPrice: sat.avgPrice,
       tpOrderId: sat.tpOrderId || null,
       tpPrice: sat.tpPrice || 0,
-      btcOnOrder: sat.btcOnOrder || 0,
+      assetOnOrder: sat.assetOnOrder || 0,
       createdAt: sat.placedAt || Date.now(),
       lastMergedAt: Date.now(),
       sourceOrderIds: [sat.orderId || 'sat-migration'],
       buyOrders: [{
         orderId: sat.orderId || 'sat-migration',
         price: sat.avgPrice,
-        btcQty: sat.btcQty,
+        assetQty: sat.assetQty,
         sizeUsdc: sat.costBasis,
         filledAt: sat.placedAt || Date.now(),
       }],
@@ -385,7 +385,7 @@ const migrateFromLegacy = (positionState, maxUsdcDeployed) => {
 const createInitialCelestialState = () => ({
   bodiesCompleted: 0,
   bodiesRealizedPnL: 0,
-  bodiesRealizedBtcPnL: 0,
+  bodiesRealizedAssetPnL: 0,
   stateVersion: 1,
 });
 

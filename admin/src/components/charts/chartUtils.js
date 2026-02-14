@@ -36,13 +36,13 @@ export function formatPriceCompact(value) {
   return `$${value.toFixed(5)}`
 }
 
-// BTC format
-export function formatBTC(value) {
-  return `${(value || 0).toFixed(8)} BTC`
+// Asset format (default: BTC)
+export function formatAsset(value, currency = 'BTC') {
+  return `${(value || 0).toFixed(8)} ${currency}`
 }
 
 // Short BTC format for axes
-export function formatBTCCompact(value) {
+export function formatAssetCompact(value) {
   const absValue = Math.abs(value)
   if (absValue >= 1) return `${value.toFixed(2)}`
   if (absValue >= 0.01) return `${value.toFixed(4)}`

@@ -110,7 +110,7 @@ module.exports = (app, deps) => {
 
     let currentPrice = 0;
     let quoteBalance = { available: 0, hold: 0 };
-    let btcBalance = { available: 0, hold: 0 };
+    let assetBalance = { available: 0, hold: 0 };
     let keysConfigured = false;
     let apiError = null;
     const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
@@ -122,7 +122,7 @@ module.exports = (app, deps) => {
       try {
         currentPrice = await adapter.getCurrentPrice(config.productId);
         quoteBalance = await adapter.getAccountBalance(quoteCurrency);
-        btcBalance = await adapter.getAccountBalance('BTC');
+        assetBalance = await adapter.getAccountBalance(config.productId.split(/[-_]/)[0]);
       } catch (err) {
         apiError = err.message || 'API connection failed';
         log('ERROR', `[${exchange}] Status check failed: ${apiError}`);
@@ -133,7 +133,7 @@ module.exports = (app, deps) => {
       exchange,
       currentPrice,
       quoteBalance,
-      btcBalance,
+      assetBalance,
       quoteCurrency,
       keysConfigured,
       apiError,
@@ -161,9 +161,9 @@ module.exports = (app, deps) => {
 
     const filledOrders = (state.orders || []).filter(o => o.status === 'filled');
     const realizedProfit = filledOrders.reduce((sum, o) => {
-      const proceeds = o.netProceeds || (o.sellQuantityBTC * (o.filledPrice || o.sellPrice));
-      const cost = o.buyCostBasis || (o.buyQuantityBTC * o.buyPrice);
-      const costForSold = o.buyQuantityBTC > 0 ? cost * (o.sellQuantityBTC / o.buyQuantityBTC) : 0;
+      const proceeds = o.netProceeds || (o.sellQuantity * (o.filledPrice || o.sellPrice));
+      const cost = o.buyCostBasis || (o.buyQuantity * o.buyPrice);
+      const costForSold = o.buyQuantity > 0 ? cost * (o.sellQuantity / o.buyQuantity) : 0;
       return sum + (proceeds - costForSold);
     }, 0);
 
@@ -185,10 +185,10 @@ module.exports = (app, deps) => {
         totalFees: state.totalFees || 0,
         totalRebates: state.totalRebates || 0,
         netFees: state.netFees || 0,
-        btcReserves: state.btcReserves || 0,
+        assetReserves: state.assetReserves || 0,
         usdcFundSize: state.usdcFundSize || 0,
         outstandingOrdersUSDC: state.outstandingOrdersUSDC || 0,
-        outstandingOrdersBTC: state.outstandingOrdersBTC || 0,
+        outstandingOrdersAsset: state.outstandingOrdersAsset || 0,
         allocationUsed: state.totalAllocated || 0,
         allocationRemaining: (config.totalAllocation || 0) - (state.totalAllocated || 0),
         intervalsRun: state.totalIntervalsRun || 0,

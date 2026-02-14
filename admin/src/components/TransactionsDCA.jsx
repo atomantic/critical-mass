@@ -36,7 +36,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
   }
 
   // formatCurrency for totals, formatPrice for per-unit prices
-  const formatBTC = (n) => (n || 0).toFixed(8)
+  const formatAsset = (n) => (n || 0).toFixed(8)
   // Show full timestamp if available, otherwise just the date
   const formatDateTime = (tx) => {
     // Prefer Timestamp column (full ISO) if available
@@ -120,7 +120,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
                     <td className="px-4 py-3">{formatPrice(tx.Price)}</td>
                     <td className="px-4 py-3 font-mono">
                       <span className={tx['BTC Amount'] >= 0 ? 'text-green-400' : 'text-red-400'}>
-                        {tx['BTC Amount'] >= 0 ? '+' : ''}{formatBTC(tx['BTC Amount'])}
+                        {tx['BTC Amount'] >= 0 ? '+' : ''}{formatAsset(tx['BTC Amount'])}
                       </span>
                     </td>
                     <td className="px-4 py-3">

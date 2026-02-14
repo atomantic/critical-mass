@@ -13,7 +13,7 @@
  * - Rebuild only after all sells clear (cycle reset)
  */
 
-const { roundBTC, roundPrice, roundUSDC } = require('./volatility-utils');
+const { roundAsset, roundPrice, roundUSDC } = require('./volatility-utils');
 const { getFibonacciMultiplier } = require('./fibonacci-utils');
 
 /**
@@ -25,7 +25,7 @@ const { getFibonacciMultiplier } = require('./fibonacci-utils');
  * @property {number} index - Level index (0 = top, closest to current price)
  * @property {number} price - Price for this level
  * @property {number} sizeUsdc - USDC allocation for this level
- * @property {number} btcQty - BTC quantity for this level
+ * @property {number} assetQty - BTC quantity for this level
  * @property {number} distancePct - Distance from current price in %
  */
 
@@ -279,14 +279,14 @@ const createLadderCalculator = (exchange, config) => {
       const price = priceLevels[i];
       const sizeUsdc = sizesRaw[i];
       if (sizeUsdc < minSize) continue;
-      const btcQty = roundBTC(sizeUsdc / price);
+      const assetQty = roundAsset(sizeUsdc / price);
       const distancePct = roundUSDC(((currentPrice - price) / currentPrice) * 100);
 
       levels.push({
         index: levels.length,
         price,
         sizeUsdc,
-        btcQty,
+        assetQty,
         distancePct,
       });
     }

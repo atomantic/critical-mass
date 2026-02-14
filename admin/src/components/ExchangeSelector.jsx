@@ -90,26 +90,26 @@ function ExchangeSelector({ currentExchange, currentStrategy, exchanges, onChang
     <div className="exchange-selector relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+        className="flex items-center gap-1.5 md:gap-2 px-2 md:px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
       >
-        <span className={`w-6 h-6 flex items-center justify-center rounded ${EXCHANGE_COLORS[currentExchange] || 'bg-gray-600'}`}>
+        <span className={`w-6 h-6 flex items-center justify-center rounded shrink-0 ${EXCHANGE_COLORS[currentExchange] || 'bg-gray-600'}`}>
           {EXCHANGE_ICONS[currentExchange] || '?'}
         </span>
-        <span className="font-medium capitalize">{currentExchange}</span>
-        <span className="text-gray-400">/</span>
-        <span className={`px-2 py-0.5 rounded text-xs ${currentStrategyConfig.color} ${currentStrategyConfig.textColor}`}>
+        <span className="font-medium capitalize hidden md:inline">{currentExchange}</span>
+        <span className="text-gray-400 hidden md:inline">/</span>
+        <span className={`px-1.5 md:px-2 py-0.5 rounded text-xs shrink-0 ${currentStrategyConfig.color} ${currentStrategyConfig.textColor}`}>
           {currentStrategyConfig.icon} {currentStrategyConfig.label}
         </span>
-        <span className={`text-xs px-2 py-0.5 rounded ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
+        <span className={`text-xs px-1.5 md:px-2 py-0.5 rounded shrink-0 ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
           {currentStatus.label}
         </span>
-        <svg className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg className={`w-4 h-4 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
+        <div className="absolute right-0 mt-2 w-[calc(100vw-2rem)] md:w-80 max-w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
           <div className="p-2">
             <div className="text-xs text-gray-500 uppercase tracking-wider px-2 py-1">Select Exchange & Strategy</div>
 

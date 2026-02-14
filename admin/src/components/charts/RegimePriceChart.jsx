@@ -1,5 +1,6 @@
 import { useRef, useEffect, useMemo, useState } from 'react'
 import * as d3 from 'd3'
+import { formatPriceCompact } from './chartUtils'
 
 // Regime colors for background zones
 const REGIME_COLORS = {
@@ -144,7 +145,7 @@ function RegimePriceChart({
         .attr('fill', '#60a5fa')
         .attr('font-size', '9px')
         .attr('cursor', 'help')
-        .text(`Anchor $${anchorPrice.toFixed(0)}`)
+        .text(`Anchor ${formatPriceCompact(anchorPrice)}`)
       anchorLabel.append('title')
         .text('Anchor price: the reference price used to calculate ATR trigger bands')
 
@@ -157,7 +158,7 @@ function RegimePriceChart({
         .attr('cursor', 'help')
         .text(`+${kFactor}x ATR`)
       upperLabel.append('title')
-        .text(`Upper trigger: $${upperTrigger.toFixed(0)} — price ${kFactor}× ATR above anchor signals bullish momentum`)
+        .text(`Upper trigger: ${formatPriceCompact(upperTrigger)} — price ${kFactor}× ATR above anchor signals bullish momentum`)
 
       const lowerLabel = g.append('text')
         .attr('x', innerWidth - 5)
@@ -168,7 +169,7 @@ function RegimePriceChart({
         .attr('cursor', 'help')
         .text(`-${kFactor}x ATR`)
       lowerLabel.append('title')
-        .text(`Lower trigger: $${lowerTrigger.toFixed(0)} — price ${kFactor}× ATR below anchor signals bearish pressure`)
+        .text(`Lower trigger: ${formatPriceCompact(lowerTrigger)} — price ${kFactor}× ATR below anchor signals bearish pressure`)
     }
 
     // Price area
@@ -234,7 +235,7 @@ function RegimePriceChart({
     // Y axis
     const yAxis = d3.axisLeft(yScale)
       .ticks(6)
-      .tickFormat(d => `$${d.toLocaleString()}`)
+      .tickFormat(d => formatPriceCompact(d))
 
     g.append('g')
       .call(yAxis)
@@ -245,7 +246,7 @@ function RegimePriceChart({
     // Right Y axis (current price)
     const yAxisRight = d3.axisRight(yScale)
       .tickValues([lastPoint?.price || currentPrice].filter(Boolean))
-      .tickFormat(d => `$${d.toLocaleString()}`)
+      .tickFormat(d => formatPriceCompact(d))
 
     g.append('g')
       .attr('transform', `translate(${innerWidth},0)`)

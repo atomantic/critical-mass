@@ -265,6 +265,7 @@ app.delete('/api/*', writeLimiter);
 // Stricter limits for engine start/stop
 app.post('/api/:exchange/regime/start', engineLimiter);
 app.post('/api/:exchange/regime/stop', engineLimiter);
+app.post('/api/:exchange/regime/convert-dca', engineLimiter);
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());

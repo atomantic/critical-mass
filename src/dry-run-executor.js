@@ -12,7 +12,7 @@
  * - Calculates hypothetical P&L
  */
 
-const { roundBTC, roundPrice } = require('./volatility-utils');
+const { roundAsset, roundPrice } = require('./volatility-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -73,8 +73,8 @@ const getOrderIdCounter = () => orderIdCounter;
  * @param {RegimeStrategyConfig} config - Configuration
  * @param {Object} marketStateRef - Reference to market state (for simulating fills)
  * @param {Object} [callbacks] - Event callbacks
- * @param {Function} [callbacks.onBuyFill] - Called when buy order fills: (orderId, btcQty, price, costBasis)
- * @param {Function} [callbacks.onSellFill] - Called when sell order fills: (orderId, btcQty, price, proceeds, pnl)
+ * @param {Function} [callbacks.onBuyFill] - Called when buy order fills: (orderId, assetQty, price, costBasis)
+ * @param {Function} [callbacks.onSellFill] - Called when sell order fills: (orderId, assetQty, price, proceeds, pnl)
  * @returns {Object} Dry-run order executor instance
  */
 const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) => {
@@ -91,7 +91,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   let lastTpSize = 0;
   let activeTpOrderId = null;
 
-  /** @type {Map<string, {tpOrderId: string, btcQty: number, tpPrice: number, costBasis: number}>} */
+  /** @type {Map<string, {tpOrderId: string, assetQty: number, tpPrice: number, costBasis: number}>} */
   const bodyTpOrders = new Map(); // bodyId -> body TP tracking
 
   // Body simulated P&L tracking
@@ -100,7 +100,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
   // Simulated P&L tracking
   let simulatedRealizedPnL = 0;
-  let simulatedRealizedBtcPnL = 0;
+  let simulatedRealizedAssetPnL = 0;
   let simulatedTotalBought = 0;
   let simulatedTotalSold = 0;
 
@@ -141,7 +141,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
    * @param {number} currentAsk - Current best ask
    * @param {number} [retryCount=0] - Current retry attempt (unused in dry-run, for API compatibility)
    * @param {number} [effectiveOffsetBps] - Optional dynamic offset (defaults to config.entryOffsetBps)
-   * @returns {Promise<{success: boolean, orderId?: string, price?: number, btcQty?: number, errorMessage?: string}>}
+   * @returns {Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>}
    */
   const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null) => {
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
@@ -155,7 +155,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     }
 
     bidPrice = roundPrice(bidPrice);
-    const btcQty = roundBTC(sizeUsdc / bidPrice);
+    const assetQty = roundAsset(sizeUsdc / bidPrice);
 
     const orderId = generateOrderId();
 
@@ -164,7 +164,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       type: 'entry',
       side: 'buy',
       price: bidPrice,
-      size: btcQty,
+      size: assetQty,
       sizeUsdc,
       placedAt: Date.now(),
       status: 'open',
@@ -177,12 +177,12 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     logDecision('entry_placed', 'N/A', currentBid, {
       orderId,
       bidPrice,
-      btcQty,
+      assetQty,
       sizeUsdc,
       offsetBps,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${btcQty} BTC @ $${bidPrice} (size $${sizeUsdc}) offset=${offsetBps}bps`);
+    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${assetQty} BTC @ $${bidPrice} (size $${sizeUsdc}) offset=${offsetBps}bps`);
 
     // Entry fills are checked continuously via checkEntryFills() called from regime engine
 
@@ -190,22 +190,22 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       success: true,
       orderId,
       price: bidPrice,
-      btcQty,
+      assetQty,
     };
   };
 
   /**
    * Place or update take-profit sell order (simulated)
-   * @param {number} btcQty - BTC quantity to sell
+   * @param {number} assetQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
    * @param {string} [regime] - Current regime for logging
    * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, errorMessage?: string}>}
    */
-  const placeTakeProfitOrder = async (btcQty, tpPrice, regime = 'UNKNOWN') => {
+  const placeTakeProfitOrder = async (assetQty, tpPrice, regime = 'UNKNOWN') => {
     // Anti-churn: check if price OR size change is significant
     if (activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
       const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
-      const sizeChange = Math.abs(btcQty - lastTpSize) / lastTpSize * 100;
+      const sizeChange = Math.abs(assetQty - lastTpSize) / lastTpSize * 100;
       // Update if neither price nor size changed significantly
       if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
         return {
@@ -222,7 +222,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     }
 
     const roundedPrice = roundPrice(tpPrice);
-    const roundedQty = roundBTC(btcQty);
+    const roundedQty = roundAsset(assetQty);
 
     const orderId = generateOrderId();
 
@@ -247,7 +247,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     logDecision('tp_placed', regime, marketStateRef.lastPrice || 0, {
       orderId,
       tpPrice: roundedPrice,
-      btcQty: roundedQty,
+      assetQty: roundedQty,
     });
 
     console.log(`🧪 [${exchange}] [DRY-RUN] TP sell placed: ${roundedQty} BTC @ $${roundedPrice}`);
@@ -383,7 +383,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
       logDecision('entry_filled', 'N/A', fillPrice, {
         orderId,
-        btcQty: order.size,
+        assetQty: order.size,
         fillPrice,
         costBasis,
         totalBought: simulatedTotalBought,
@@ -402,20 +402,20 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
       // Look up body tracking info for cost basis
       const bodyInfo = getBodyByTpOrderId(orderId);
-      const avgBuyPrice = bodyInfo ? (bodyInfo.costBasis / bodyInfo.btcQty) : getAverageEntryPrice();
+      const avgBuyPrice = bodyInfo ? (bodyInfo.costBasis / bodyInfo.assetQty) : getAverageEntryPrice();
       const costBasis = order.size * avgBuyPrice;
       const proceeds = order.size * fillPrice;
       const pnl = proceeds - costBasis;
       simulatedBodyRealizedPnL += pnl;
 
       const holdbackRatio = config.holdbackRatio ?? 0.5;
-      const profitPerBTC = fillPrice - avgBuyPrice;
+      const profitPerAsset = fillPrice - avgBuyPrice;
       const denominator = fillPrice * (1 - holdbackRatio) + avgBuyPrice * holdbackRatio;
-      const holdbackBtc = denominator > 0 ? order.size * profitPerBTC * holdbackRatio / denominator : 0;
-      simulatedBodyRealizedBtcPnL += holdbackBtc;
+      const holdbackAsset = denominator > 0 ? order.size * profitPerAsset * holdbackRatio / denominator : 0;
+      simulatedBodyRealizedBtcPnL += holdbackAsset;
 
       order.pnl = pnl;
-      order.holdbackBtc = holdbackBtc;
+      order.holdbackAsset = holdbackAsset;
       order.avgCostBasis = avgBuyPrice;
       order.isBody = true;
 
@@ -423,7 +423,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
       logDecision('tp_filled', 'N/A', fillPrice, {
         orderId,
-        btcQty: order.size,
+        assetQty: order.size,
         fillPrice,
         pnl,
         isBody: true,
@@ -455,18 +455,18 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       // Calculate profit-based BTC holdback for this cycle
       // holdbackQty = sellQty * (price - cost) * ratio / (price * (1 - ratio) + cost * ratio)
       const holdbackRatio = config.holdbackRatio ?? 0.5;
-      const profitPerBTC = fillPrice - avgBuyPrice;
+      const profitPerAsset = fillPrice - avgBuyPrice;
       const denominator = fillPrice * (1 - holdbackRatio) + avgBuyPrice * holdbackRatio;
-      const holdbackBtc = denominator > 0 ? order.size * profitPerBTC * holdbackRatio / denominator : 0;
-      const holdbackValue = holdbackBtc * fillPrice;
-      simulatedRealizedBtcPnL += holdbackBtc;
+      const holdbackAsset = denominator > 0 ? order.size * profitPerAsset * holdbackRatio / denominator : 0;
+      const holdbackValue = holdbackAsset * fillPrice;
+      simulatedRealizedAssetPnL += holdbackAsset;
 
       // Calculate USDC profit (this is what grows the capital)
-      const usdcProfit = order.size * profitPerBTC;
+      const usdcProfit = order.size * profitPerAsset;
 
       // Store P&L data on the order for UI display
       order.pnl = pnl;
-      order.holdbackBtc = holdbackBtc;
+      order.holdbackAsset = holdbackAsset;
       order.holdbackValue = holdbackValue;
       order.usdcProfit = usdcProfit;
       order.avgCostBasis = avgBuyPrice;
@@ -476,15 +476,15 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
       logDecision('tp_filled', 'N/A', fillPrice, {
         orderId,
-        btcQty: order.size,
+        assetQty: order.size,
         fillPrice,
         pnl,
-        holdbackBtc,
+        holdbackAsset,
         holdbackValue,
         usdcProfit,
         totalRealizedPnL: simulatedRealizedPnL,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} BTC @ $${fillPrice}, USDC profit=$${usdcProfit.toFixed(2)}, holdback=${holdbackBtc.toFixed(8)} BTC (≈$${holdbackValue.toFixed(2)})`);
+      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} BTC @ $${fillPrice}, USDC profit=$${usdcProfit.toFixed(2)}, holdback=${holdbackAsset.toFixed(8)} BTC (≈$${holdbackValue.toFixed(2)})`);
 
       if (orderId === activeTpOrderId) {
         activeTpOrderId = null;
@@ -562,14 +562,14 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
   /**
    * Place a body TP sell order (simulated, celestial hierarchy)
-   * @param {number} btcQty - BTC quantity to sell
+   * @param {number} assetQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
    * @param {string} bodyId - Celestial body ID
    * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
    */
-  const placeBodyTpOrder = async (btcQty, tpPrice, bodyId) => {
+  const placeBodyTpOrder = async (assetQty, tpPrice, bodyId) => {
     const roundedPrice = roundPrice(tpPrice);
-    const roundedQty = roundBTC(btcQty);
+    const roundedQty = roundAsset(assetQty);
     const orderId = generateOrderId();
 
     const order = {
@@ -588,7 +588,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     pendingOrders.set(orderId, order);
     bodyTpOrders.set(bodyId, {
       tpOrderId: orderId,
-      btcQty: roundedQty,
+      assetQty: roundedQty,
       tpPrice: roundedPrice,
       costBasis: roundedQty * roundedPrice,
     });
@@ -642,7 +642,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
   /**
    * Get body tracking info by TP order ID
    * @param {string} tpOrderId - Sell order ID
-   * @returns {{bodyId: string, btcQty: number, tpPrice: number, costBasis: number}|null}
+   * @returns {{bodyId: string, assetQty: number, tpPrice: number, costBasis: number}|null}
    */
   const getBodyByTpOrderId = (tpOrderId) => {
     for (const [bodyId, body] of bodyTpOrders) {
@@ -657,19 +657,19 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
    * Restore body TP order tracking (for state recovery)
    * @param {string} bodyId - Body ID
    * @param {string} tpOrderId - Sell order ID
-   * @param {number} btcQty - BTC quantity
+   * @param {number} assetQty - BTC quantity
    * @param {number} tpPrice - TP price
    * @param {number} [placedAt] - Original placement timestamp (ms), defaults to now
    */
-  const restoreBodyTpOrder = (bodyId, tpOrderId, btcQty, tpPrice, placedAt) => {
-    bodyTpOrders.set(bodyId, { tpOrderId, btcQty, tpPrice, costBasis: btcQty * tpPrice });
+  const restoreBodyTpOrder = (bodyId, tpOrderId, assetQty, tpPrice, placedAt) => {
+    bodyTpOrders.set(bodyId, { tpOrderId, assetQty, tpPrice, costBasis: assetQty * tpPrice });
     pendingOrders.set(tpOrderId, {
       orderId: tpOrderId,
       type: 'body_tp',
       side: 'sell',
       price: tpPrice,
-      size: btcQty,
-      sizeUsdc: btcQty * tpPrice,
+      size: assetQty,
+      sizeUsdc: assetQty * tpPrice,
       placedAt: placedAt || Date.now(),
       status: 'open',
       filledAt: null,
@@ -846,7 +846,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       pendingOrders.delete(oldOrderId);
     }
 
-    const { btcQty, price, type } = newOrderParams;
+    const { assetQty, price, type } = newOrderParams;
     const newOrderId = generateOrderId();
 
     const newOrder = {
@@ -854,8 +854,8 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
       type,
       side: type === 'entry' ? 'buy' : 'sell',
       price,
-      size: btcQty,
-      sizeUsdc: btcQty * price,
+      size: assetQty,
+      sizeUsdc: assetQty * price,
       placedAt: Date.now(),
       status: 'open',
       filledAt: null,
@@ -867,7 +867,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     if (type === 'take_profit') {
       activeTpOrderId = newOrderId;
       lastTpPrice = price;
-      lastTpSize = btcQty;
+      lastTpSize = assetQty;
     }
 
     return { success: true, newOrderId };
@@ -919,8 +919,8 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
    */
   const getSimulatedPnL = () => ({
     realizedPnL: simulatedRealizedPnL,
-    realizedBtcPnL: simulatedRealizedBtcPnL,
-    btcOnOrder: getBtcOnOrder(),
+    realizedAssetPnL: simulatedRealizedAssetPnL,
+    assetOnOrder: getBtcOnOrder(),
     totalBought: simulatedTotalBought,
     totalSold: simulatedTotalSold,
     avgEntryPrice: getAverageEntryPrice(),
@@ -1019,7 +1019,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     lastTpPrice = 0;
     lastTpSize = 0;
     simulatedRealizedPnL = 0;
-    simulatedRealizedBtcPnL = 0;
+    simulatedRealizedAssetPnL = 0;
     simulatedBodyRealizedPnL = 0;
     simulatedBodyRealizedBtcPnL = 0;
     simulatedTotalBought = 0;
@@ -1038,7 +1038,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
     lastTpPrice,
     lastTpSize,
     simulatedRealizedPnL,
-    simulatedRealizedBtcPnL,
+    simulatedRealizedAssetPnL,
     simulatedBodyRealizedPnL,
     simulatedBodyRealizedBtcPnL,
     simulatedTotalBought,
@@ -1079,7 +1079,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
 
     // Restore P&L tracking
     simulatedRealizedPnL = state.simulatedRealizedPnL || 0;
-    simulatedRealizedBtcPnL = state.simulatedRealizedBtcPnL || 0;
+    simulatedRealizedAssetPnL = state.simulatedRealizedAssetPnL || 0;
     simulatedBodyRealizedPnL = state.simulatedBodyRealizedPnL || state.simulatedSatelliteRealizedPnL || 0;
     simulatedBodyRealizedBtcPnL = state.simulatedBodyRealizedBtcPnL || state.simulatedSatelliteRealizedBtcPnL || 0;
     simulatedTotalBought = state.simulatedTotalBought || 0;
@@ -1100,9 +1100,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}) 
         const id = entry.bodyId || entry.buyOrderId;
         bodyTpOrders.set(id, {
           tpOrderId: entry.tpOrderId,
-          btcQty: entry.btcQty,
+          assetQty: entry.assetQty,
           tpPrice: entry.tpPrice,
-          costBasis: entry.costBasis || (entry.btcQty * entry.tpPrice),
+          costBasis: entry.costBasis || (entry.assetQty * entry.tpPrice),
         });
       }
     }

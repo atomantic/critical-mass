@@ -29,7 +29,7 @@ const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
 const { createLadderCalculator } = require('./ladder-calculator');
-const { calculateAllMetrics, clamp, roundBTC, roundUSDC } = require('./volatility-utils');
+const { calculateAllMetrics, clamp, roundAsset, roundUSDC } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
@@ -76,7 +76,7 @@ const createInitialMarketState = () => ({
  * @returns {RegimePositionState}
  */
 const createInitialPositionState = () => ({
-  totalBTC: 0,
+  totalAsset: 0,
   totalCostBasis: 0,
   avgCostBasis: 0,
   cycleBuys: 0,
@@ -88,8 +88,8 @@ const createInitialPositionState = () => ({
   cyclesCompleted: 0,
   unrealizedPnL: 0,
   realizedPnL: 0,
-  realizedBtcPnL: 0,
-  btcOnOrder: 0,
+  realizedAssetPnL: 0,
+  assetOnOrder: 0,
   maxDrawdownSeen: 0,
   scalingDisabled: false,
   scalingDisabledReason: null,
@@ -430,9 +430,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const savedState = loadRegimeState(exchange);
     const pos = savedState.position;
     // Check if state has any meaningful data (not just default initial state)
-    // Even with totalBTC=0, there may be satellites, TP orders, or historical data to restore
+    // Even with totalAsset=0, there may be satellites, TP orders, or historical data to restore
     const hasMeaningfulState = pos && (
-      pos.totalBTC > 0
+      pos.totalAsset > 0
       || pos.cyclesCompleted > 0
       || pos.activeTpOrderId
       || (pos.celestialBodies && pos.celestialBodies.length > 0)
@@ -461,7 +461,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       sizeOptimizer.importState(savedState.sizeOptimizer);
     }
 
-    console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, ${positionState.totalBTC.toFixed(6)} BTC`);
+    console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, ${positionState.totalAsset.toFixed(6)} BTC`);
     return true;
   };
 
@@ -502,19 +502,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const proceeds = summary.totalValue - summary.totalFees;
         const soldCostBasis = summary.totalSize * positionState.avgCostBasis;
         const pnl = proceeds - soldCostBasis;
-        const holdbackBtc = roundBTC(positionState.totalBTC - summary.totalSize);
+        const holdbackAsset = roundAsset(positionState.totalAsset - summary.totalSize);
 
         positionState.realizedPnL += pnl;
-        positionState.realizedBtcPnL += holdbackBtc;
+        positionState.realizedAssetPnL += holdbackAsset;
         positionState.cyclesCompleted += 1;
 
-        console.log(`💰 [${exchange}] Offline TP fill: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC`);
+        console.log(`💰 [${exchange}] Offline TP fill: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} BTC`);
 
         tradeEvents.emitTradeEvent('tp_filled', exchange, `[OFFLINE] ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
-          btcAmount: summary.totalSize,
+          assetAmount: summary.totalSize,
           price: summary.avgPrice,
           pnl,
-          holdbackBtc,
+          holdbackAsset,
           offlineFill: true,
         });
 
@@ -546,16 +546,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
           const proceeds = summary.totalValue - summary.totalFees;
           const pnl = proceeds - body.costBasis;
-          const holdbackBtc = roundBTC(body.btcQty - summary.totalSize);
+          const holdbackAsset = roundAsset(body.assetQty - summary.totalSize);
 
           const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
           cs.bodiesCompleted += 1;
           cs.bodiesRealizedPnL += pnl;
-          cs.bodiesRealizedBtcPnL += holdbackBtc;
+          cs.bodiesRealizedAssetPnL += holdbackAsset;
           positionState.celestialState = cs;
 
           positionState.realizedPnL += pnl;
-          positionState.realizedBtcPnL += holdbackBtc;
+          positionState.realizedAssetPnL += holdbackAsset;
 
           const prevMaxUsdc = config.maxUsdcDeployed;
           config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
@@ -575,8 +575,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             bodyTier: body.tier,
             bodyCostBasis: body.costBasis,
             bodyAvgPrice: body.avgPrice,
-            bodyBtcQty: body.btcQty,
-            bodyHoldbackBtc: holdbackBtc,
+            bodyBtcQty: body.assetQty,
+            bodyHoldbackAsset: holdbackAsset,
             bodyPnl: pnl,
           });
 
@@ -598,10 +598,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           console.log(`${tierCfg.emoji} [${exchange}] Offline body fill: ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
           tradeEvents.emitTradeEvent('body_tp_filled', exchange, `[OFFLINE] ${tierCfg.emoji} ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
-            btcAmount: summary.totalSize,
+            assetAmount: summary.totalSize,
             price: summary.avgPrice,
             pnl,
-            holdbackBtc,
+            holdbackAsset,
             bodyId: body.id,
             bodyTier: body.tier,
             offlineFill: true,
@@ -634,10 +634,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
           // Update position
           const summary = fillLedger.aggregateFills(fillsToAggregate);
-          positionState.totalBTC = roundBTC(positionState.totalBTC + summary.totalSize);
+          positionState.totalAsset = roundAsset(positionState.totalAsset + summary.totalSize);
           positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + summary.totalValue + summary.totalFees);
-          positionState.avgCostBasis = positionState.totalBTC > 0
-            ? positionState.totalCostBasis / positionState.totalBTC
+          positionState.avgCostBasis = positionState.totalAsset > 0
+            ? positionState.totalCostBasis / positionState.totalAsset
             : 0;
           positionState.cycleBuys += 1;
           positionState.lastEntryPrice = summary.avgPrice;
@@ -656,7 +656,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           await placeTakeProfitOrder({ forceUpdate: true });
 
           tradeEvents.emitTradeEvent('buy_filled', exchange, `[OFFLINE] ${summary.totalSize} BTC @ $${summary.avgPrice}`, {
-            btcAmount: summary.totalSize,
+            assetAmount: summary.totalSize,
             price: summary.avgPrice,
             avgCostBasis: positionState.avgCostBasis,
             offlineFill: true,
@@ -674,7 +674,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * @param {number} currentPrice - Current market price
    */
   const reEvaluateAfterDowntime = (currentPrice) => {
-    if (positionState.totalBTC <= 0) {
+    if (positionState.totalAsset <= 0) {
       console.log(`ℹ️ [${exchange}] No position to re-evaluate`);
       return;
     }
@@ -697,7 +697,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     // If price rose significantly and we have a position, TP might need updating
-    if (priceChange > 3 && positionState.totalBTC > 0) {
+    if (priceChange > 3 && positionState.totalAsset > 0) {
       console.log(`📈 [${exchange}] Price rose ${priceChangeAbs.toFixed(2)}% while offline - TP order may need adjustment`);
       // TP order will be re-evaluated naturally on next metrics update
     }
@@ -731,14 +731,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const { position } = await recoveryModule.recoverState(fillLedger, orderExecutor);
 
       // Merge recovered position with any saved state
-      // IMPORTANT: If saved state shows totalBTC=0 with cyclesCompleted>0, this means
+      // IMPORTANT: If saved state shows totalAsset=0 with cyclesCompleted>0, this means
       // a cycle was properly completed and reset. The recovery from fills will show
       // the "holdback" BTC as position (sum of buys minus sells), but this is NOT
       // an active position - it's accumulated BTC reserves from completed cycles.
       // Trust the saved state in this case.
       const savedTpOrderId = positionState.activeTpOrderId;
       const savedTpPrice = positionState.lastTpPrice;
-      const savedTotalBTC = positionState.totalBTC;
+      const savedTotalBTC = positionState.totalAsset;
       const savedCyclesCompleted = positionState.cyclesCompleted;
       // Cross-validate: if fill ledger has buys in the current cycle, the cycle is NOT completed
       // (saved state may have been corrupted by a previous buggy restart)
@@ -755,7 +755,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         ...positionState, // Keep saved fields (realizedPnL, cyclesCompleted, celestialBodies, etc.)
         // Only override position fields that come from fill-ledger rebuild
         // (NOT realizedPnL, cyclesCompleted, celestialBodies, celestialState, etc.)
-        totalBTC: cycleWasCompleted ? 0 : position.totalBTC,
+        totalAsset: cycleWasCompleted ? 0 : position.totalAsset,
         totalCostBasis: cycleWasCompleted ? 0 : position.totalCostBasis,
         avgCostBasis: cycleWasCompleted ? 0 : position.avgCostBasis,
         cycleBuys: cycleWasCompleted ? 0 : position.cycleBuys,
@@ -784,12 +784,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       // Get current price and re-evaluate position
       const currentPrice = await adapter.getCurrentPrice(productId);
-      if (currentPrice > 0 && positionState.totalBTC > 0) {
+      if (currentPrice > 0 && positionState.totalAsset > 0) {
         reEvaluateAfterDowntime(currentPrice);
       }
 
       // If we have position but no TP order, place one
-      if (positionState.totalBTC > 0 && !positionState.activeTpOrderId) {
+      if (positionState.totalAsset > 0 && !positionState.activeTpOrderId) {
         console.log(`📝 [${exchange}] Position exists but no TP order, will place after metrics update`);
       }
 
@@ -802,8 +802,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           orderExecutor.restorePendingOrder(positionState.activeTpOrderId, {
             type: 'take_profit',
             price: positionState.lastTpPrice,
-            size: positionState.btcOnOrder || positionState.totalBTC,
-            sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.btcOnOrder || positionState.totalBTC),
+            size: positionState.assetOnOrder || positionState.totalAsset,
+            sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.assetOnOrder || positionState.totalAsset),
             placedAt: tpOrderStatus.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
             status: 'open',
           });
@@ -813,7 +813,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
           positionState.activeTpOrderId = null;
           positionState.lastTpPrice = 0;
-          positionState.btcOnOrder = 0;
+          positionState.assetOnOrder = 0;
         }
       }
 
@@ -829,7 +829,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             body.buyOrders = (body.sourceOrderIds || []).map(oid => ({
               orderId: oid,
               price: body.avgPrice,
-              btcQty: 0,
+              assetQty: 0,
               sizeUsdc: 0,
               filledAt: body.createdAt || Date.now(),
             }));
@@ -852,7 +852,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             orderExecutor.restoreBodyTpOrder(
               body.id,
               body.tpOrderId,
-              body.btcOnOrder || body.btcQty,
+              body.assetOnOrder || body.assetQty,
               body.tpPrice,
               bodyPlacedAt
             );
@@ -882,7 +882,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
               if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(body.tpOrderId);
               body.tpOrderId = null;
               body.tpPrice = 0;
-              body.btcOnOrder = 0;
+              body.assetOnOrder = 0;
               await placeBodyTp(body);
             } else {
               const status = await adapter.getOrder(body.tpOrderId).catch(() => null);
@@ -929,11 +929,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             ? (matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0))
             : orderValue;
           const avgPrice = matchingBuy ? matchingBuy.price : order.price;
-          const btcQty = matchingBuy ? matchingBuy.size : order.size;
+          const assetQty = matchingBuy ? matchingBuy.size : order.size;
           const placedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
 
           const bodyEntry = celestialHierarchy.createNewBody({
-            btcQty,
+            assetQty,
             costBasis,
             avgPrice,
             buyOrderId: matchingBuy ? matchingBuy.orderId : `orphan-${order.orderId}`,
@@ -942,7 +942,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           // Override TP info from exchange order
           bodyEntry.tpOrderId = order.orderId;
           bodyEntry.tpPrice = order.price;
-          bodyEntry.btcOnOrder = order.size;
+          bodyEntry.assetOnOrder = order.size;
           bodyEntry.createdAt = placedAt;
 
           // Reclassify tier based on actual cost basis
@@ -985,7 +985,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(bodyEntry.tpOrderId);
                 bodyEntry.tpOrderId = null;
                 bodyEntry.tpPrice = 0;
-                bodyEntry.btcOnOrder = 0;
+                bodyEntry.assetOnOrder = 0;
                 await placeBodyTp(bodyEntry);
               } else {
                 const rStatus = await adapter.getOrder(bodyEntry.tpOrderId).catch(() => null);
@@ -1038,7 +1038,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         // (non-core-TP sells missing isBodyOwned, or with negative PnL/holdback)
         const sellsToAnnotate = cycleFills.filter(f =>
           f.side === 'sell' && f.orderId !== coreTpOrderId
-          && (!(f.isBodyOwned || f.isSatellite) || (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackBtc ?? f.satelliteHoldbackBtc) < 0)
+          && (!(f.isBodyOwned || f.isSatellite) || (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset) < 0)
         );
         const buyFills = cycleFills.filter(f => f.side === 'buy');
         const consumedBuyOrderIds = new Set();
@@ -1064,21 +1064,21 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             const costBasis = matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0);
             const proceeds = sellFill.quoteAmount - (sellFill.netFee || sellFill.fee || 0);
             const pnl = proceeds - costBasis;
-            const holdbackBtc = roundBTC(matchingBuy.size - sellFill.size);
+            const holdbackAsset = roundAsset(matchingBuy.size - sellFill.size);
 
             // Sanity check: body PnL should be positive and holdback non-negative
-            if (pnl >= 0 && holdbackBtc >= 0) {
+            if (pnl >= 0 && holdbackAsset >= 0) {
               fillLedger.annotateFillsByOrderId(sellFill.orderId, {
                 isBodyOwned: true,
                 bodyCostBasis: costBasis,
                 bodyAvgPrice: matchingBuy.price,
                 bodyBtcQty: matchingBuy.size,
-                bodyHoldbackBtc: holdbackBtc,
+                bodyHoldbackAsset: holdbackAsset,
                 bodyPnl: pnl,
               });
               fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isBodyOwned: true, sellOrderId: sellFill.orderId });
               annotatedCount += 2;
-              console.log(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackBtc.toFixed(8)} BTC`);
+              console.log(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} BTC`);
             } else {
               // Mark as body-owned but without computed values (dashboard will show raw data)
               fillLedger.annotateFillsByOrderId(sellFill.orderId, { isBodyOwned: true });
@@ -1117,17 +1117,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const recalcResult = fillLedger.recalculateCycles();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
         const totalPnL = recalcResult.globalRealizedPnL;
-        const totalBtcPnL = recalcResult.globalRealizedBtcPnL;
-        console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, BTC reserves=${totalBtcPnL.toFixed(6)}`);
+        const totalAssetPnL = recalcResult.globalRealizedAssetPnL;
+        console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, BTC reserves=${totalAssetPnL.toFixed(6)}`);
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         positionState.realizedPnL = totalPnL;
-        positionState.realizedBtcPnL = totalBtcPnL;
+        positionState.realizedAssetPnL = totalAssetPnL;
         // Keep celestial body P&L counter in sync
         const bodyOnlyPnL = totalPnL - recalcResult.realizedPnL;
-        const bodyOnlyBtcPnL = totalBtcPnL - recalcResult.realizedBtcPnL;
+        const bodyOnlyBtcPnL = totalAssetPnL - recalcResult.realizedAssetPnL;
         if (positionState.celestialState) {
           positionState.celestialState.bodiesRealizedPnL = Math.round(bodyOnlyPnL * 100) / 100;
-          positionState.celestialState.bodiesRealizedBtcPnL = Math.round(bodyOnlyBtcPnL * 1e8) / 1e8;
+          positionState.celestialState.bodiesRealizedAssetPnL = Math.round(bodyOnlyBtcPnL * 1e8) / 1e8;
         }
       }
 
@@ -1166,7 +1166,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             orderExecutor.restorePendingOrder(order.orderId, {
               type: 'entry',
               price: savedEntry.price,
-              size: savedEntry.btcQty,
+              size: savedEntry.assetQty,
               sizeUsdc: savedEntry.sizeUsdc,
               placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now()),
             });
@@ -1184,10 +1184,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             for (const fill of rawFills) {
               const result = fillLedger.ingestFill(fill);
               if (result.ingested) {
-                positionState.totalBTC = roundBTC(positionState.totalBTC + fill.size);
+                positionState.totalAsset = roundAsset(positionState.totalAsset + fill.size);
                 positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + (fill.size * fill.price) + fill.netFee);
-                positionState.avgCostBasis = positionState.totalBTC > 0
-                  ? positionState.totalCostBasis / positionState.totalBTC
+                positionState.avgCostBasis = positionState.totalAsset > 0
+                  ? positionState.totalCostBasis / positionState.totalAsset
                   : 0;
                 orderHadNewFills = true;
                 lastFillPrice = fill.price;
@@ -1230,7 +1230,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
               orderExecutor.restorePendingOrder(order.orderId, {
                 type: 'ladder_entry',
                 price: savedOrder.price,
-                size: savedOrder.btcQty,
+                size: savedOrder.assetQty,
                 sizeUsdc: savedOrder.sizeUsdc,
                 ladderIndex: savedOrder.ladderIndex,
                 placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedOrder.placedAt || Date.now()),
@@ -1256,7 +1256,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       // Ensure all celestial bodies have TP orders
       // (covers bodies with null tpOrderId from saved state, e.g. after a cancelled TP wasn't re-placed)
-      const bodiesNeedingTp = (positionState.celestialBodies || []).filter(b => !b.tpOrderId && b.btcQty > 0);
+      const bodiesNeedingTp = (positionState.celestialBodies || []).filter(b => !b.tpOrderId && b.assetQty > 0);
       if (bodiesNeedingTp.length > 0) {
         console.log(`🔧 [${exchange}] ${bodiesNeedingTp.length} celestial bodies need TP orders`);
         for (const body of bodiesNeedingTp) {
@@ -1266,24 +1266,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       // Safety net: detect position BTC not tracked by any celestial body and create a recovery body
       const allRecoveryBodies = positionState.celestialBodies || [];
-      if (allRecoveryBodies.length > 0 && positionState.totalBTC > 0) {
-        const trackedBtc = allRecoveryBodies.reduce((sum, b) => sum + b.btcQty, 0);
-        const untrackedBtc = roundBTC(positionState.totalBTC - trackedBtc);
-        if (untrackedBtc > 0.00000100) {
-          const untrackedCostBasis = roundUSDC(untrackedBtc * positionState.avgCostBasis);
+      if (allRecoveryBodies.length > 0 && positionState.totalAsset > 0) {
+        const trackedBtc = allRecoveryBodies.reduce((sum, b) => sum + b.assetQty, 0);
+        const untrackedAsset = roundAsset(positionState.totalAsset - trackedBtc);
+        if (untrackedAsset > 0.00000100) {
+          const untrackedCostBasis = roundUSDC(untrackedAsset * positionState.avgCostBasis);
           const recoveryBody = celestialHierarchy.createNewBody({
-            btcQty: untrackedBtc,
+            assetQty: untrackedAsset,
             costBasis: untrackedCostBasis,
             avgPrice: positionState.avgCostBasis,
           }, `recovery-${Date.now()}`);
           positionState.celestialBodies.push(recoveryBody);
-          console.log(`🔧 [${exchange}] Created recovery body for ${untrackedBtc.toFixed(8)} untracked BTC ($${untrackedCostBasis.toFixed(2)})`);
+          console.log(`🔧 [${exchange}] Created recovery body for ${untrackedAsset.toFixed(8)} untracked BTC ($${untrackedCostBasis.toFixed(2)})`);
           await placeBodyTp(recoveryBody);
         }
       }
 
       // Update TP if we have position but no order, OR if existing TP has drifted below minimum
-      if (positionState.totalBTC > 0) {
+      if (positionState.totalAsset > 0) {
         if (!positionState.activeTpOrderId) {
           await placeTakeProfitOrder();
         } else if (positionState.lastTpPrice > 0 && positionState.avgCostBasis > 0) {
@@ -1350,7 +1350,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         }
         // Merge safe-to-reload fields from disk into in-memory state
         const reloadFields = [
-          'realizedPnL', 'realizedBtcPnL',
+          'realizedPnL', 'realizedAssetPnL',
           'celestialState',
         ];
         for (const field of reloadFields) {
@@ -1506,10 +1506,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Update unrealized P&L (core position + active celestial bodies)
     {
-      let totalHeldBtc = positionState.totalBTC || 0;
+      let totalHeldBtc = positionState.totalAsset || 0;
       let totalHeldCost = positionState.totalCostBasis || 0;
       for (const body of (positionState.celestialBodies || [])) {
-        totalHeldBtc += body.btcQty || 0;
+        totalHeldBtc += body.assetQty || 0;
         totalHeldCost += body.costBasis || 0;
       }
       positionState.unrealizedPnL = totalHeldBtc > 0 ? (totalHeldBtc * data.price) - totalHeldCost : 0;
@@ -1636,7 +1636,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
       // Celestial hierarchy: create new buy descriptor
       const newBuy = {
-        btcQty: summary.totalSize,
+        assetQty: summary.totalSize,
         costBasis: summary.totalValue + summary.totalFees,
         avgPrice: summary.avgPrice,
         buyOrderId: fillData.orderId,
@@ -1699,10 +1699,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         await placeBodyTp(merged);
 
         const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
-        console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy merged into ${merged.tier}: ${summary.totalSize} BTC @ $${summary.avgPrice}, body=${merged.id.slice(-8)} (${merged.btcQty.toFixed(6)} BTC, avg=$${merged.avgPrice.toFixed(2)})`);
+        console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy merged into ${merged.tier}: ${summary.totalSize} BTC @ $${summary.avgPrice}, body=${merged.id.slice(-8)} (${merged.assetQty.toFixed(6)} BTC, avg=$${merged.avgPrice.toFixed(2)})`);
 
         tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} BTC @ $${summary.avgPrice} [merged→${merged.tier}]`, {
-          btcAmount: summary.totalSize,
+          assetAmount: summary.totalSize,
           price: summary.avgPrice,
           bodyId: merged.id,
           bodyTier: merged.tier,
@@ -1731,7 +1731,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         fillLedger.annotateFillsByOrderId(fillData.orderId, { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier });
 
         tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} BTC @ $${summary.avgPrice} [new ${body.tier}]`, {
-          btcAmount: summary.totalSize,
+          assetAmount: summary.totalSize,
           price: summary.avgPrice,
           bodyId: body.id,
           bodyTier: body.tier,
@@ -1784,15 +1784,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const tierCfg = celestialHierarchy.getTierConfig(mergeSnapshot.tier);
         const proceeds = summary.totalValue - summary.totalFees;
         const pnl = proceeds - mergeSnapshot.costBasis;
-        const holdbackBtc = roundBTC(mergeSnapshot.btcQty - summary.totalSize);
+        const holdbackAsset = roundAsset(mergeSnapshot.assetQty - summary.totalSize);
 
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
         cs.bodiesCompleted += 1;
         cs.bodiesRealizedPnL += pnl;
-        cs.bodiesRealizedBtcPnL += holdbackBtc;
+        cs.bodiesRealizedAssetPnL += holdbackAsset;
         positionState.celestialState = cs;
         positionState.realizedPnL += pnl;
-        positionState.realizedBtcPnL += holdbackBtc;
+        positionState.realizedAssetPnL += holdbackAsset;
 
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
@@ -1809,17 +1809,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           bodyTier: mergeSnapshot.tier,
           bodyCostBasis: mergeSnapshot.costBasis,
           bodyAvgPrice: mergeSnapshot.avgPrice,
-          bodyBtcQty: mergeSnapshot.btcQty,
-          bodyHoldbackBtc: holdbackBtc,
+          bodyBtcQty: mergeSnapshot.assetQty,
+          bodyHoldbackAsset: holdbackAsset,
           bodyPnl: pnl,
           mergeSnapshot: true,
         });
 
         tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)} [merge-snapshot]`, {
-          btcAmount: summary.totalSize,
+          assetAmount: summary.totalSize,
           price: summary.avgPrice,
           pnl,
-          holdbackBtc,
+          holdbackAsset,
           bodyId: mergeSnapshot.id,
           bodyTier: mergeSnapshot.tier,
           mergeSnapshot: true,
@@ -1844,18 +1844,18 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const tierCfg = celestialHierarchy.getTierConfig(body.tier);
         const proceeds = summary.totalValue - summary.totalFees;
         const pnl = proceeds - body.costBasis;
-        const holdbackBtc = roundBTC(body.btcQty - summary.totalSize);
+        const holdbackAsset = roundAsset(body.assetQty - summary.totalSize);
 
         // Update celestial state
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
         cs.bodiesCompleted += 1;
         cs.bodiesRealizedPnL += pnl;
-        cs.bodiesRealizedBtcPnL += holdbackBtc;
+        cs.bodiesRealizedAssetPnL += holdbackAsset;
         positionState.celestialState = cs;
 
         // Update shared realized P&L
         positionState.realizedPnL += pnl;
-        positionState.realizedBtcPnL += holdbackBtc;
+        positionState.realizedAssetPnL += holdbackAsset;
 
         // Grow capital
         const prevMaxUsdc = config.maxUsdcDeployed;
@@ -1872,13 +1872,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
         const remaining = positionState.celestialBodies.length;
-        console.log(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackBtc.toFixed(6)} BTC, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
+        console.log(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} BTC, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
 
         tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} BTC @ $${summary.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
-          btcAmount: summary.totalSize,
+          assetAmount: summary.totalSize,
           price: summary.avgPrice,
           pnl,
-          holdbackBtc,
+          holdbackAsset,
           bodyId: body.id,
           bodyTier: body.tier,
           bodiesRemaining: remaining,
@@ -1893,8 +1893,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           bodyTier: body.tier,
           bodyCostBasis: body.costBasis,
           bodyAvgPrice: body.avgPrice,
-          bodyBtcQty: body.btcQty,
-          bodyHoldbackBtc: holdbackBtc,
+          bodyBtcQty: body.assetQty,
+          bodyHoldbackAsset: holdbackAsset,
           bodyPnl: pnl,
         });
 
@@ -1956,11 +1956,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           const proceeds = summary2.totalValue - summary2.totalFees;
           const soldCostBasis = summary2.totalSize * positionState.avgCostBasis;
           const pnl = proceeds - soldCostBasis;
-          const holdbackBtc = roundBTC(positionState.totalBTC - summary2.totalSize);
+          const holdbackAsset = roundAsset(positionState.totalAsset - summary2.totalSize);
 
           positionState.realizedPnL += pnl;
-          positionState.realizedBtcPnL += holdbackBtc;
-          positionState.btcOnOrder = 0;
+          positionState.realizedAssetPnL += holdbackAsset;
+          positionState.assetOnOrder = 0;
           positionState.cyclesCompleted += 1;
 
           const prevMaxUsdc = config.maxUsdcDeployed;
@@ -1978,10 +1978,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           }
 
           tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} BTC @ $${summary2.avgPrice}, PnL=$${pnl.toFixed(2)}`, {
-            btcAmount: summary2.totalSize,
+            assetAmount: summary2.totalSize,
             price: summary2.avgPrice,
             pnl,
-            holdbackBtc,
+            holdbackAsset,
             capitalGrowth: pnl,
             newMaxUsdcDeployed: config.maxUsdcDeployed,
           });
@@ -2176,7 +2176,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     logHourlySummary();
 
     // Place TP order if we have a position but no active TP order (e.g., after recovery)
-    if (!isDryRun && positionState.totalBTC > 0) {
+    if (!isDryRun && positionState.totalAsset > 0) {
       const bodies = positionState.celestialBodies || [];
       const bodiesWithoutTp = bodies.filter(b => !b.tpOrderId);
       const needsTp = bodies.length > 0 ? bodiesWithoutTp.length > 0 : !positionState.activeTpOrderId;
@@ -2263,7 +2263,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 orderExecutor.removeBodyTracking(body.tpOrderId);
                 body.tpOrderId = null;
                 body.tpPrice = 0;
-                body.btcOnOrder = 0;
+                body.assetOnOrder = 0;
                 saveLiveState();
               }
             })
@@ -2274,7 +2274,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 orderExecutor.removeBodyTracking(body.tpOrderId);
                 body.tpOrderId = null;
                 body.tpPrice = 0;
-                body.btcOnOrder = 0;
+                body.assetOnOrder = 0;
                 saveLiveState();
               }
             });
@@ -2319,7 +2319,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Don't switch modes mid-cycle if we have an active position
     // (prevents inconsistent behavior during a trade cycle)
-    if (positionState.totalBTC > 0) {
+    if (positionState.totalAsset > 0) {
       // If ladder is active, stay in ladder mode
       if (positionState.ladderActive) {
         effectiveMode = 'ladder';
@@ -2501,8 +2501,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     // Check risk caps
-    const btcQty = positionSizer.calculateBTCQuantity(sizing.sizeUsdc, marketState.bid);
-    const riskCheck = riskManager.canPlaceEntry(positionState, btcQty, sizing.sizeUsdc);
+    const assetQty = positionSizer.calculateBTCQuantity(sizing.sizeUsdc, marketState.bid);
+    const riskCheck = riskManager.canPlaceEntry(positionState, assetQty, sizing.sizeUsdc);
 
     // Handle cycle buys auto-reset (time-based reset after being at max limit)
     if (riskCheck.shouldResetCycleBuys) {
@@ -2563,7 +2563,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         positionState.pendingEntryOrders.push({
           orderId: result.orderId,
           price: result.price,
-          btcQty: result.btcQty,
+          assetQty: result.assetQty,
           sizeUsdc: sizing.sizeUsdc,
           placedAt: Date.now(),
         });
@@ -2648,7 +2648,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Holdback floor: TP% must generate enough profit for at least 1 satoshi holdback
     // Only applied when achievable within the tier's effective max TP —
     // tiny bodies that can't produce 1 sat holdback at a reasonable price just get normal TP
-    const holdbackFloorPct = (0.00000001 * body.avgPrice) / (body.btcQty * holdbackRatio) * 100;
+    const holdbackFloorPct = (0.00000001 * body.avgPrice) / (body.assetQty * holdbackRatio) * 100;
     const effectiveMax = config.tpMaxPercent * (tierCfg.tpMaxScale || 1);
 
     const minTpPct = holdbackFloorPct <= effectiveMax
@@ -2666,7 +2666,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Calculate sell qty with tier-specific holdback
     let { sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
-      body.btcQty,
+      body.assetQty,
       body.avgPrice,
       tpPrice,
       tierCfg.holdbackScale
@@ -2681,7 +2681,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       finalTpPct += 0.01;
       tpPrice = roundUSDC(body.avgPrice * (1 + finalTpPct / 100));
       ({ sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
-        body.btcQty, body.avgPrice, tpPrice, tierCfg.holdbackScale
+        body.assetQty, body.avgPrice, tpPrice, tierCfg.holdbackScale
       ));
     }
 
@@ -2703,7 +2703,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (result.success) {
       body.tpOrderId = result.orderId;
       body.tpPrice = tpPrice;
-      body.btcOnOrder = sellQty;
+      body.assetOnOrder = sellQty;
 
       // Link all source buy fills to this sell order (use both sourceOrderIds and buyOrders for coverage)
       const annotatedSrcIds = new Set();
@@ -2722,7 +2722,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       tradeEvents.emitTradeEvent('body_tp_placed', exchange, `${tierCfg.emoji} ${sellQty} BTC @ $${tpPrice}`, {
         bodyId: body.id,
         bodyTier: body.tier,
-        btcQty: body.btcQty,
+        assetQty: body.assetQty,
         costBasis: body.costBasis,
         avgPrice: body.avgPrice,
         tpPrice,
@@ -2759,7 +2759,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         }
         positionState.activeTpOrderId = null;
         positionState.lastTpPrice = 0;
-        positionState.btcOnOrder = 0;
+        positionState.assetOnOrder = 0;
       }
 
       // Snapshot the array to avoid visiting bodies added concurrently by fill handlers
@@ -2775,8 +2775,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Legacy path for untracked core position
     const tpPrice = calculateDynamicTP();
 
-    const { sellQty, holdbackQty, profitBtcValue } = positionSizer.calculateTakeProfitSize(
-      positionState.totalBTC,
+    const { sellQty, holdbackQty, profitAssetValue } = positionSizer.calculateTakeProfitSize(
+      positionState.totalAsset,
       positionState.avgCostBasis,
       tpPrice
     );
@@ -2806,7 +2806,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (result.success) {
       positionState.activeTpOrderId = result.orderId;
       positionState.lastTpPrice = tpPrice;
-      positionState.btcOnOrder = sellQty;
+      positionState.assetOnOrder = sellQty;
 
       // Link all current-cycle non-body buys to this sell order (skip body-owned buys)
       const cycleFills = fillLedger.getCurrentCycleFills();
@@ -2817,7 +2817,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }
 
       if (result.updated) {
-        console.log(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC ≈$${profitBtcValue.toFixed(2)})`);
+        console.log(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} BTC @ $${tpPrice} (holdback=${holdbackQty.toFixed(6)} BTC ≈$${profitAssetValue.toFixed(2)})`);
       }
     }
   };
@@ -2854,7 +2854,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.cycleBuys = 0;
     positionState.activeTpOrderId = null;
     positionState.lastTpPrice = 0;
-    positionState.btcOnOrder = 0;
+    positionState.assetOnOrder = 0;
     positionState.anchorPrice = 0;
     positionState.scalingDisabled = false;
     positionState.scalingDisabledReason = null;
@@ -2867,7 +2867,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (bodies.length > 0) {
       celestialHierarchy.syncPositionState(positionState, bodies);
     } else {
-      positionState.totalBTC = 0;
+      positionState.totalAsset = 0;
       positionState.totalCostBasis = 0;
       positionState.avgCostBasis = 0;
     }
@@ -2898,8 +2898,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
   // Set up dry-run callbacks now that all functions are defined
   if (isDryRun) {
-    dryRunCallbacks.onBuyFill = async (orderId, btcQty, price, costBasis) => {
-      const newBuy = { btcQty, costBasis, avgPrice: price, buyOrderId: orderId };
+    dryRunCallbacks.onBuyFill = async (orderId, assetQty, price, costBasis) => {
+      const newBuy = { assetQty, costBasis, avgPrice: price, buyOrderId: orderId };
       const candidateTpPrice = roundUSDC(price * (1 + calculateDynamicTpPercent() / 100));
 
       const bodies = positionState.celestialBodies || [];
@@ -2929,8 +2929,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
         await placeBodyTp(merged);
 
-        tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price} [merged→${merged.tier}]`, {
-          btcAmount: btcQty, price, bodyId: merged.id, bodyTier: merged.tier, isMerge: true, isDryRun: true,
+        tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${assetQty} BTC @ $${price} [merged→${merged.tier}]`, {
+          assetAmount: assetQty, price, bodyId: merged.id, bodyTier: merged.tier, isMerge: true, isDryRun: true,
         });
       } else {
         const body = celestialHierarchy.createNewBody(newBuy, orderId);
@@ -2939,15 +2939,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
         await placeBodyTp(body);
 
-        tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price} [new ${body.tier}]`, {
-          btcAmount: btcQty, price, bodyId: body.id, bodyTier: body.tier, isDryRun: true,
+        tradeEvents.emitTradeEvent('buy_filled', exchange, `[DRY-RUN] ${assetQty} BTC @ $${price} [new ${body.tier}]`, {
+          assetAmount: assetQty, price, bodyId: body.id, bodyTier: body.tier, isDryRun: true,
         });
       }
 
       saveDryRunState();
     };
 
-    dryRunCallbacks.onSellFill = async (orderId, btcQty, price, proceeds, pnl) => {
+    dryRunCallbacks.onSellFill = async (orderId, assetQty, price, proceeds, pnl) => {
       // Find matching celestial body by TP order ID
       const bodies = positionState.celestialBodies || [];
       const bodyIdx = bodies.findIndex(b => b.tpOrderId === orderId);
@@ -2956,16 +2956,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         // CELESTIAL BODY TP FILL in dry-run
         const body = bodies[bodyIdx];
         const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-        const holdbackBtc = roundBTC(body.btcQty - btcQty);
+        const holdbackAsset = roundAsset(body.assetQty - assetQty);
 
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
         cs.bodiesCompleted += 1;
         cs.bodiesRealizedPnL += pnl;
-        cs.bodiesRealizedBtcPnL += holdbackBtc;
+        cs.bodiesRealizedAssetPnL += holdbackAsset;
         positionState.celestialState = cs;
 
         positionState.realizedPnL += pnl;
-        positionState.realizedBtcPnL += holdbackBtc;
+        positionState.realizedAssetPnL += holdbackAsset;
 
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
@@ -2975,10 +2975,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         orderExecutor.removeBodyTracking(orderId);
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        console.log(`${tierCfg.emoji} [${exchange}] [DRY-RUN] Body TP filled (${body.tier}): ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc.toFixed(2)}→$${config.maxUsdcDeployed.toFixed(2)}`);
+        console.log(`${tierCfg.emoji} [${exchange}] [DRY-RUN] Body TP filled (${body.tier}): ${assetQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc.toFixed(2)}→$${config.maxUsdcDeployed.toFixed(2)}`);
 
-        tradeEvents.emitTradeEvent('body_tp_filled', exchange, `[DRY-RUN] ${tierCfg.emoji} ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}`, {
-          btcAmount: btcQty, price, pnl, holdbackBtc,
+        tradeEvents.emitTradeEvent('body_tp_filled', exchange, `[DRY-RUN] ${tierCfg.emoji} ${assetQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}`, {
+          assetAmount: assetQty, price, pnl, holdbackAsset,
           bodyId: body.id, bodyTier: body.tier, isDryRun: true,
         });
 
@@ -3002,10 +3002,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         }
       } else {
         // Fallback: untracked sell (legacy core TP or unknown)
-        const holdbackBtc = roundBTC(positionState.totalBTC - btcQty);
+        const holdbackAsset = roundAsset(positionState.totalAsset - assetQty);
         positionState.realizedPnL += pnl;
-        positionState.realizedBtcPnL += holdbackBtc;
-        positionState.btcOnOrder = 0;
+        positionState.realizedAssetPnL += holdbackAsset;
+        positionState.assetOnOrder = 0;
         positionState.cyclesCompleted += 1;
 
         const prevMaxUsdc = config.maxUsdcDeployed;
@@ -3014,8 +3014,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         console.log(`💰 [${exchange}] [DRY-RUN] Capital growth: $${prevMaxUsdc.toFixed(2)} → $${config.maxUsdcDeployed.toFixed(2)} (+$${pnl.toFixed(2)})`);
 
-        tradeEvents.emitTradeEvent('tp_filled', exchange, `[DRY-RUN] ${btcQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}`, {
-          btcAmount: btcQty, price, pnl, holdbackBtc, isDryRun: true,
+        tradeEvents.emitTradeEvent('tp_filled', exchange, `[DRY-RUN] ${assetQty} BTC @ $${price}, PnL=$${pnl.toFixed(2)}`, {
+          assetAmount: assetQty, price, pnl, holdbackAsset, isDryRun: true,
         });
 
         const actualTpPct = positionState.avgCostBasis > 0
@@ -3095,7 +3095,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             bodyTier: body ? body.tier : null,
             tierEmoji: tierCfg ? tierCfg.emoji : '🛰️',
             bodyAvgCost: avgPrice,
-            bodyBtcQty: body ? body.btcQty : order.size,
+            bodyBtcQty: body ? body.assetQty : order.size,
             bodyCostBasis: body ? body.costBasis : 0,
           };
         }
@@ -3154,20 +3154,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           id: b.id,
           tier: b.tier,
           emoji: tierCfg.emoji,
-          btcQty: b.btcQty,
+          assetQty: b.assetQty,
           costBasis: b.costBasis,
           avgPrice: b.avgPrice,
           tpOrderId: b.tpOrderId,
           tpPrice: b.tpPrice,
           tpPercent: b.avgPrice > 0 && b.tpPrice > 0 ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2) : null,
-          btcOnOrder: b.btcOnOrder,
+          assetOnOrder: b.assetOnOrder,
           createdAt: b.createdAt,
           lastMergedAt: b.lastMergedAt,
           mergeCount: b.mergeCount,
           buyOrders: (b.buyOrders || []).map(bo => ({
             orderId: bo.orderId,
             price: bo.price,
-            btcQty: bo.btcQty,
+            assetQty: bo.assetQty,
             sizeUsdc: bo.sizeUsdc,
             filledAt: bo.filledAt,
           })),
@@ -3176,7 +3176,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       bodiesActive: (positionState.celestialBodies || []).length,
       bodiesCompleted: positionState.celestialState?.bodiesCompleted || 0,
       bodiesRealizedPnL: positionState.celestialState?.bodiesRealizedPnL || 0,
-      bodiesRealizedBtcPnL: positionState.celestialState?.bodiesRealizedBtcPnL || 0,
+      bodiesRealizedAssetPnL: positionState.celestialState?.bodiesRealizedAssetPnL || 0,
       tierSummary: celestialHierarchy.getTierSummary(positionState.celestialBodies || []),
     },
     // Body TP aggregates (legacy key "satellites" kept for UI compat)
@@ -3185,15 +3185,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       active: (positionState.celestialBodies || []).length,
       completed: positionState.celestialState?.bodiesCompleted || 0,
       realizedPnL: positionState.celestialState?.bodiesRealizedPnL || 0,
-      realizedBtcPnL: positionState.celestialState?.bodiesRealizedBtcPnL || 0,
+      realizedAssetPnL: positionState.celestialState?.bodiesRealizedAssetPnL || 0,
       orders: (positionState.celestialBodies || []).map(b => ({
         buyOrderId: b.id?.substring(0, 8),
         tpOrderId: b.tpOrderId,
-        btcQty: b.btcQty,
+        assetQty: b.assetQty,
         costBasis: b.costBasis,
         avgPrice: b.avgPrice,
         tpPrice: b.tpPrice,
-        btcOnOrder: b.btcOnOrder,
+        assetOnOrder: b.assetOnOrder,
         placedAt: b.createdAt,
       })),
     },
@@ -3334,7 +3334,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     // Calculate current equity to set as new peak
-    const currentValue = positionState.totalBTC * marketState.lastPrice;
+    const currentValue = positionState.totalAsset * marketState.lastPrice;
     const currentEquity = currentValue - positionState.totalCostBasis;
 
     riskManager.forceResume(currentEquity);
@@ -3353,7 +3353,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       ...newPosition,
     };
     saveLiveState();
-    console.log(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, BTC reserves=${positionState.realizedBtcPnL}`);
+    console.log(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, BTC reserves=${positionState.realizedAssetPnL}`);
   };
 
   /**
@@ -3459,12 +3459,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     fillLedger.persist();
 
     const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
-    console.log(`${tierCfg.emoji} [${exchange}] Roll-up complete: body ${merged.id.slice(-8)} now ${merged.tier} (${merged.btcQty.toFixed(6)} BTC, $${merged.costBasis.toFixed(2)}, ${merged.buyOrders?.length || 0} buys)`);
+    console.log(`${tierCfg.emoji} [${exchange}] Roll-up complete: body ${merged.id.slice(-8)} now ${merged.tier} (${merged.assetQty.toFixed(6)} BTC, $${merged.costBasis.toFixed(2)}, ${merged.buyOrders?.length || 0} buys)`);
 
-    tradeEvents.emitTradeEvent('body_rollup', exchange, `${tierCfg.emoji} Merged → ${merged.tier}: ${merged.btcQty.toFixed(6)} BTC`, {
+    tradeEvents.emitTradeEvent('body_rollup', exchange, `${tierCfg.emoji} Merged → ${merged.tier}: ${merged.assetQty.toFixed(6)} BTC`, {
       mergedBodyId: merged.id,
       mergedTier: merged.tier,
-      btcQty: merged.btcQty,
+      assetQty: merged.assetQty,
       costBasis: merged.costBasis,
       avgPrice: merged.avgPrice,
       sourceBodyId: source.id,
@@ -3480,7 +3480,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       mergedBody: {
         id: merged.id,
         tier: merged.tier,
-        btcQty: merged.btcQty,
+        assetQty: merged.assetQty,
         costBasis: merged.costBasis,
         avgPrice: merged.avgPrice,
         buyCount: merged.buyOrders?.length || 0,
@@ -3497,12 +3497,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (!isRunning) {
       return { success: false, message: 'Engine not running' };
     }
-    if (positionState.totalBTC <= 0) {
+    if (positionState.totalAsset <= 0) {
       return { success: false, message: 'No position to protect' };
     }
-    console.log(`🔄 [${exchange}] Manual TP rebuild requested for ${positionState.totalBTC.toFixed(8)} BTC`);
+    console.log(`🔄 [${exchange}] Manual TP rebuild requested for ${positionState.totalAsset.toFixed(8)} BTC`);
     await placeTakeProfitOrder({ forceUpdate: true });
-    return { success: true, message: `TP rebuilt for ${positionState.totalBTC.toFixed(8)} BTC @ $${positionState.lastTpPrice}` };
+    return { success: true, message: `TP rebuilt for ${positionState.totalAsset.toFixed(8)} BTC @ $${positionState.lastTpPrice}` };
   };
 
   return {

@@ -159,7 +159,7 @@ const REGIME_DEFAULTS = {
   sizeMaxCycleBuys: 100,      // Max cycle buys if auto-adjusting
 
   // Risk Caps
-  maxBtcExposure: 0.5,
+  maxAssetExposure: 0.5,
   depositedCapital: 0,  // Total user deposits (0 = auto-derive from maxUsdcDeployed - realizedPnL)
   maxUsdcDeployed: 10000,
   maxDrawdownPercent: 20,
@@ -567,10 +567,17 @@ const getRegimeConfig = (exchange) => {
   const exchangeConfig = config.exchanges?.[exchange] || {};
   const regimeConfig = exchangeConfig.regime || {};
 
-  return {
+  const merged = {
     ...REGIME_DEFAULTS,
     ...regimeConfig,
   };
+  // Migrate old config key from disk
+  const _oldKey = 'max' + 'BtcExposure'; // constructed to avoid refactoring scripts
+  if (_oldKey in merged) {
+    merged.maxAssetExposure = merged[_oldKey];
+    delete merged[_oldKey];
+  }
+  return merged;
 };
 
 /**
@@ -768,8 +775,8 @@ const validateRegimeConfig = (config) => {
   }
 
   // Risk Caps validation
-  if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.01 || config.maxBtcExposure > 10.0)) {
-    errors.push('maxBtcExposure must be between 0.01 and 10.0');
+  if (config.maxAssetExposure !== undefined && (config.maxAssetExposure < 0.01 || config.maxAssetExposure > 10.0)) {
+    errors.push('maxAssetExposure must be between 0.01 and 10.0');
   }
   if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && (config.depositedCapital < 100 || config.depositedCapital > 100000)) {
     errors.push('depositedCapital must be 0 (auto-derive) or between 100 and 100000');
