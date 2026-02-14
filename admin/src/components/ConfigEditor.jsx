@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { getQuoteCurrency } from '../App'
+import { getBaseCurrency, getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
 function FormInput({ label, hint, value, onChange, type = 'text', className = '' }) {
@@ -205,6 +205,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
   }
 
   const quoteCurrency = getQuoteCurrency(config.productId)
+  const baseCurrency = getBaseCurrency(config.productId)
   const intervalsToSpread = config.intervalsToSpread || config.daysToSpread || 1
   const intervalAmount = intervalsToSpread ? (config.totalAllocation / intervalsToSpread) : 0
   const intervalLabel = INTERVAL_OPTIONS.find(o => o.value === config.intervalType)?.label || 'Daily'
@@ -333,15 +334,15 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                     <span className="text-white font-mono">{getFibPreview(config.fibBaseAmount || 10)}</span>
                   </div>
                   <p className="text-gray-500 leading-relaxed">
-                    This strategy is a volatility-harvesting accumulation system that incrementally builds a BTC position using
+                    This strategy is a volatility-harvesting accumulation system that incrementally builds an asset position using
                     Fibonacci-sized buys on a fixed cadence during sideways conditions, continuously resetting a limit-sell order
                     based on the updated weighted cost basis while retaining a small percentage as long-term inventory.
                     It relies on short-term mean reversion within low-to-moderate volatility regimes to capture small, repeated
                     price oscillations that exceed the effective fee floor (~0.045% per entry), making modest profit targets
                     (sub-1%) more structurally aligned than large moves. There is no directional edge; the mechanism is position
                     sizing plus inventory cycling, and during trending or volatility expansion regimes it transitions from a
-                    trading system into a BTC accumulation engine, concentrating capital over a short window (Fibonacci ramp)
-                    and potentially locking funds into drawdowns, which is acceptable under the assumption of long-term BTC
+                    trading system into an asset accumulation engine, concentrating capital over a short window (Fibonacci ramp)
+                    and potentially locking funds into drawdowns, which is acceptable under the assumption of long-term asset
                     conviction and no need for near-term capital liquidity.
                   </p>
                 </div>
@@ -382,7 +383,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                       Each cycle returns{' '}
                       <span className="text-red-400 font-medium">{cashReturn.toFixed(2)}% cash</span>
                       {' '}but gains{' '}
-                      <span className="text-green-400 font-medium">+{holdback}% BTC</span>.
+                      <span className="text-green-400 font-medium">+{holdback}% {baseCurrency}</span>.
                       <div className="mt-1 text-gray-400">
                         For cash-neutral cycles at {markup}% markup, set holdback ≤ {maxHoldbackForCashBreakeven}%.
                       </div>
@@ -569,19 +570,19 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 <FormInput label="TP Multiplier" hint="ATR-based TP scaling factor" value={regimeConfig.tpMult || 1.0} onChange={(v) => handleRegimeChange('tpMult', v)} type="number" />
                 <FormInput label="TP Min %" hint="Floor for take-profit percentage" value={regimeConfig.tpMinPercent || 2.0} onChange={(v) => handleRegimeChange('tpMinPercent', v)} type="number" />
                 <FormInput label="TP Max %" hint="Ceiling for take-profit percentage" value={regimeConfig.tpMaxPercent || 15.0} onChange={(v) => handleRegimeChange('tpMaxPercent', v)} type="number" />
-                <FormInput label="Holdback Ratio" hint="Fraction of position to keep as BTC (0-1)" value={regimeConfig.holdbackRatio ?? 0.5} onChange={(v) => handleRegimeChange('holdbackRatio', v)} type="number" />
+                <FormInput label="Holdback Ratio" hint="Fraction of position to keep as asset (0-1)" value={regimeConfig.holdbackRatio ?? 0.5} onChange={(v) => handleRegimeChange('holdbackRatio', v)} type="number" />
               </div>
               {(() => {
                 const holdbackRatio = regimeConfig.holdbackRatio ?? 0.5;
                 const sellRatio = 1 - holdbackRatio;
                 const tpMin = regimeConfig.tpMinPercent || 0.1;
                 const usdcProfitPct = (sellRatio * tpMin).toFixed(2);
-                const btcProfitPct = (holdbackRatio * tpMin).toFixed(2);
+                const assetProfitPct = (holdbackRatio * tpMin).toFixed(2);
 
                 return (
                   <div className="mt-2 text-xs text-gray-500">
                     Sell <span className="text-white font-medium">{(sellRatio * 100).toFixed(0)}%</span>, hold <span className="text-white font-medium">{(holdbackRatio * 100).toFixed(0)}%</span> of position.
-                    {' '}At min TP ({tpMin}%): <span className="text-green-400">+{usdcProfitPct}% USDC</span>, <span className="text-blue-400">+{btcProfitPct}% BTC value</span>
+                    {' '}At min TP ({tpMin}%): <span className="text-green-400">+{usdcProfitPct}% USDC</span>, <span className="text-blue-400">+{assetProfitPct}% {baseCurrency} value</span>
                   </div>
                 );
               })()}
@@ -629,7 +630,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                   <div className="mt-2 text-xs text-gray-500">
                     Each buy creates a celestial body. Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
                     Tiers: 🛰️ satellite → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → 🌌 galaxy → 🕳️ black hole.
-                    Higher tiers have wider TP targets and hold more BTC.
+                    Higher tiers have wider TP targets and hold more {baseCurrency}.
                   </div>
                   <div className="mt-2 grid grid-cols-7 gap-1 text-xs text-center">
                     {(() => {
@@ -766,7 +767,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
             <SectionCard title="Risk Caps">
               <div className="grid grid-cols-2 gap-3">
                 <FormInput label="Deposited Capital" hint="Your actual cash deposits (0 = auto-derive)" value={regimeConfig.depositedCapital || 0} onChange={(v) => handleRegimeChange('depositedCapital', v)} type="number" />
-                <FormInput label="Max BTC Exposure" hint="Max BTC the engine can hold at once" value={regimeConfig.maxBtcExposure || 0.5} onChange={(v) => handleRegimeChange('maxBtcExposure', v)} type="number" />
+                <FormInput label={`Max ${baseCurrency} Exposure`} hint={`Max ${baseCurrency} the engine can hold at once`} value={regimeConfig.maxAssetExposure || 0.5} onChange={(v) => handleRegimeChange('maxAssetExposure', v)} type="number" />
                 <FormInput label="Max USDC Cap" hint="Max USDC deployed across active orders" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
                 <FormInput label="Max Drawdown %" hint="Pause entries when unrealized loss exceeds this" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
                 <FormInput label="Liquidity Factor Cap" hint="Max size multiplier from orderbook liquidity" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />

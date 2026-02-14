@@ -67,7 +67,7 @@ const OrbitingGroup = ({ radius, speed, angleOffset = 0, children }) => {
  *   Same-tier group after body[0] → all orbit body[0] as siblings
  *   Next tier group → orbits first sibling of previous tier, etc.
  */
-const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, parentOrbitRadius, maxUsdcDeployed, angleOffset = 0 }) => {
+const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, parentOrbitRadius, maxUsdcDeployed, baseCurrency = 'BTC', angleOffset = 0 }) => {
   if (bodies.length === 0) return null
 
   const [current, ...rest] = bodies
@@ -94,7 +94,7 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, paren
     ? Math.max(...siblings.map(s => getDynamicOrbitRadius(depth + 1, current, s, maxUsdcDeployed)))
     : 0
 
-  const bodyProps = { body: current, showTooltip: activeBodyId === current.id, onHover: onBodyHover, maxUsdcDeployed }
+  const bodyProps = { body: current, showTooltip: activeBodyId === current.id, onHover: onBodyHover, maxUsdcDeployed, baseCurrency }
   const bodyElement = current.tier === 'black_hole' ? (
     <BlackHole {...bodyProps} />
   ) : current.tier === 'galaxy' ? (
@@ -122,6 +122,7 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, paren
             onBodyHover={onBodyHover}
             parentOrbitRadius={childOrbitRadius}
             maxUsdcDeployed={maxUsdcDeployed}
+            baseCurrency={baseCurrency}
             angleOffset={childAngleOffset}
           />
         )

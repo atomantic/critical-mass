@@ -82,7 +82,7 @@ const buildGalaxyGeometry = (size) => {
  * Spiral galaxy body — particle-based spiral arms + bright core.
  * Replaces the plain bright sphere for galaxy tier.
  */
-const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
+const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const pointsRef = useRef()
   const coreGlowRef = useRef()
 
@@ -165,7 +165,7 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
         />
       </points>
 
-      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} />}
+      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}
     </group>
   )
 }, (prev, next) =>
@@ -174,7 +174,8 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
   prev.body.tpPrice === next.body.tpPrice &&
   prev.body.mergeCount === next.body.mergeCount &&
   prev.showTooltip === next.showTooltip &&
-  prev.maxUsdcDeployed === next.maxUsdcDeployed
+  prev.maxUsdcDeployed === next.maxUsdcDeployed &&
+  prev.baseCurrency === next.baseCurrency
 )
 
 GalaxyBody.displayName = 'GalaxyBody'

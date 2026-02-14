@@ -391,7 +391,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   const hasFixedFund = fundSize > 0;
   let availableFunds = hasFixedFund ? fundSize : Infinity;
   let usdcBalance = 0;
-  let btcReserves = 0;
+  let assetReserves = 0;
   let totalInvested = 0;
   let totalFees = 0;
   let totalRebates = 0;
@@ -403,7 +403,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   // Fibonacci-specific state
   let fibPosition = 0;
   let fibCumulativeCost = 0;
-  let fibCumulativeBTC = 0;
+  let fibCumulativeAsset = 0;
   let fibActiveSellOrder = null;
   let fibCyclesCompleted = 0;
   let fibTotalBuys = 0;
@@ -429,7 +429,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     if (isFibonacci && fibActiveSellOrder) {
       // Fibonacci: check consolidated sell order
       if (highPrice >= fibActiveSellOrder.sellTargetPrice) {
-        const grossProceeds = fibActiveSellOrder.sellBTC * fibActiveSellOrder.sellTargetPrice;
+        const grossProceeds = fibActiveSellOrder.sellAsset * fibActiveSellOrder.sellTargetPrice;
         const sellFee = grossProceeds * (feePercent / 100);
         const sellRebate = grossProceeds * (rebatePercent / 100);
         const netSellFee = sellFee - sellRebate;
@@ -437,7 +437,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
 
         const msToFill = new Date(date) - new Date(fibActiveSellOrder.cycleStartDate);
         const intervalsToFill = Math.round(msToFill / intervalMs);
-        const realizedPnL = netProceeds - (fibActiveSellOrder.sellBTC * fibActiveSellOrder.costBasisPerBTC);
+        const realizedPnL = netProceeds - (fibActiveSellOrder.sellAsset * fibActiveSellOrder.costBasisPerAsset);
 
         totalFees += sellFee;
         totalRebates += sellRebate;
@@ -452,7 +452,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
           date,
           type: 'FIB_SELL_FILLED',
           price: fibActiveSellOrder.sellTargetPrice,
-          btcAmount: -fibActiveSellOrder.sellBTC,
+          assetAmount: -fibActiveSellOrder.sellAsset,
           usdcAmount: netProceeds,
           fee: sellFee,
           rebate: sellRebate,
@@ -467,7 +467,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         fibCyclesCompleted++;
         fibPosition = 0;
         fibCumulativeCost = 0;
-        fibCumulativeBTC = 0;
+        fibCumulativeAsset = 0;
         fibActiveSellOrder = null;
       }
     } else if (!isFibonacci) {
@@ -475,7 +475,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
       for (let j = pendingOrders.length - 1; j >= 0; j--) {
         const order = pendingOrders[j];
         if (highPrice >= order.sellTargetPrice) {
-          const grossProceeds = order.sellBTC * order.sellTargetPrice;
+          const grossProceeds = order.sellAsset * order.sellTargetPrice;
           const sellFee = grossProceeds * (feePercent / 100);
           const sellRebate = grossProceeds * (rebatePercent / 100);
           const netSellFee = sellFee - sellRebate;
@@ -484,7 +484,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
           // Calculate intervals to fill based on interval type
           const msToFill = new Date(date) - new Date(order.buyDate);
           const intervalsToFill = Math.round(msToFill / intervalMs);
-          const realizedPnL = netProceeds - (order.sellBTC * order.costBasisPerBTC);
+          const realizedPnL = netProceeds - (order.sellAsset * order.costBasisPerAsset);
 
           totalFees += sellFee;
           totalRebates += sellRebate;
@@ -499,7 +499,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
             date,
             type: 'SELL_FILLED',
             price: order.sellTargetPrice,
-            btcAmount: -order.sellBTC,
+            assetAmount: -order.sellAsset,
             usdcAmount: netProceeds,
             fee: sellFee,
             rebate: sellRebate,
@@ -529,7 +529,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
       const buyRebate = targetBuyAmount * (rebatePercent / 100);
       const netBuyFee = buyFee - buyRebate;
       const costBasis = targetBuyAmount + netBuyFee;
-      const costBasisPerBTC = costBasis / grossBTC;
+      const costBasisPerAsset = costBasis / grossBTC;
 
       if (hasFixedFund) {
         availableFunds -= targetBuyAmount;
@@ -542,25 +542,25 @@ const runBacktest = async (params, preFetchedPrices = null) => {
       if (isFibonacci) {
         // Fibonacci strategy: accumulate and update consolidated sell order
         fibCumulativeCost += costBasis;
-        fibCumulativeBTC += grossBTC;
+        fibCumulativeAsset += grossBTC;
         fibTotalBuys++;
 
         // Calculate holdback and sell amounts based on cumulative position
-        const cumulativeHoldback = fibCumulativeBTC * holdbackRate;
-        const sellBTC = getFibonacciSellQuantity(fibCumulativeBTC, holdbackPercent);
-        const avgCostBasis = getAverageCostBasis(fibCumulativeCost, fibCumulativeBTC);
+        const cumulativeHoldback = fibCumulativeAsset * holdbackRate;
+        const sellAsset = getFibonacciSellQuantity(fibCumulativeAsset, holdbackPercent);
+        const avgCostBasis = getAverageCostBasis(fibCumulativeCost, fibCumulativeAsset);
         const sellTargetPrice = getFibonacciSellPrice(avgCostBasis, sellMarkupPercent);
 
         // Track holdback delta for this buy
         const prevHoldback = fibActiveSellOrder ? fibActiveSellOrder.cumulativeHoldback : 0;
         const holdbackDelta = cumulativeHoldback - prevHoldback;
-        btcReserves += holdbackDelta;
+        assetReserves += holdbackDelta;
 
         // Update or create consolidated sell order
         fibActiveSellOrder = {
-          sellBTC,
+          sellAsset,
           sellTargetPrice,
-          costBasisPerBTC: avgCostBasis,
+          costBasisPerAsset: avgCostBasis,
           cycleStartDate: fibActiveSellOrder ? fibActiveSellOrder.cycleStartDate : date,
           buysInCycle: (fibActiveSellOrder ? fibActiveSellOrder.buysInCycle : 0) + 1,
           cumulativeHoldback
@@ -570,12 +570,12 @@ const runBacktest = async (params, preFetchedPrices = null) => {
           date,
           type: 'FIB_BUY',
           price: buyPrice,
-          btcAmount: grossBTC,
+          assetAmount: grossBTC,
           usdcAmount: -targetBuyAmount,
           fee: buyFee,
           rebate: buyRebate,
           fibPosition,
-          fibCumulativeBTC,
+          fibCumulativeAsset,
           fibCumulativeCost,
           avgCostBasis,
           sellTargetPrice,
@@ -585,16 +585,16 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         fibPosition++;
       } else {
         // Fixed strategy: individual sell order per buy
-        const holdbackBTC = grossBTC * holdbackRate;
-        const sellBTC = grossBTC - holdbackBTC;
+        const holdbackAsset = grossBTC * holdbackRate;
+        const sellAsset = grossBTC - holdbackAsset;
         const sellTargetPrice = buyPrice * sellMultiplier;
 
-        btcReserves += holdbackBTC;
+        assetReserves += holdbackAsset;
 
         pendingOrders.push({
-          sellBTC,
+          sellAsset,
           sellTargetPrice,
-          costBasisPerBTC,
+          costBasisPerAsset,
           buyDate: date,
           buyPrice
         });
@@ -603,11 +603,11 @@ const runBacktest = async (params, preFetchedPrices = null) => {
           date,
           type: 'BUY',
           price: buyPrice,
-          btcAmount: grossBTC,
+          assetAmount: grossBTC,
           usdcAmount: -targetBuyAmount,
           fee: buyFee,
           rebate: buyRebate,
-          holdbackBTC,
+          holdbackAsset,
           sellTargetPrice,
           availableFunds: hasFixedFund ? availableFunds : null
         });
@@ -618,7 +618,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         date,
         type: isFibonacci ? 'FIB_SKIP_NO_FUNDS' : 'SKIP_NO_FUNDS',
         price: buyPrice,
-        btcAmount: 0,
+        assetAmount: 0,
         usdcAmount: 0,
         availableFunds: availableFunds,
         requiredFunds: targetBuyAmount,
@@ -628,21 +628,21 @@ const runBacktest = async (params, preFetchedPrices = null) => {
 
     // 3. INTERVAL SNAPSHOT
     const btcOnOrders = isFibonacci
-      ? (fibActiveSellOrder ? fibActiveSellOrder.sellBTC : 0)
-      : pendingOrders.reduce((sum, o) => sum + o.sellBTC, 0);
-    const totalBTC = btcReserves + btcOnOrders;
-    const btcValue = totalBTC * closePrice;
+      ? (fibActiveSellOrder ? fibActiveSellOrder.sellAsset : 0)
+      : pendingOrders.reduce((sum, o) => sum + o.sellAsset, 0);
+    const totalAsset = assetReserves + btcOnOrders;
+    const assetValue = totalAsset * closePrice;
     const cashOnHand = hasFixedFund ? availableFunds : usdcBalance;
-    const totalValue = cashOnHand + btcValue;
+    const totalValue = cashOnHand + assetValue;
 
     const snapshot = {
       date,
-      btcPrice: closePrice,
+      assetPrice: closePrice,
       usdcBalance: cashOnHand,
-      btcReserves,
+      assetReserves,
       btcOnOrders,
-      totalBTC,
-      btcValue,
+      totalAsset,
+      assetValue,
       totalValue,
       totalInvested,
       pendingOrderCount: isFibonacci ? (fibActiveSellOrder ? 1 : 0) : pendingOrders.length,
@@ -654,7 +654,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     if (isFibonacci) {
       snapshot.fibPosition = fibPosition;
       snapshot.fibCyclesCompleted = fibCyclesCompleted;
-      snapshot.fibCumulativeBTC = fibCumulativeBTC;
+      snapshot.fibCumulativeAsset = fibCumulativeAsset;
     }
 
     intervalSnapshots.push(snapshot);
@@ -663,12 +663,12 @@ const runBacktest = async (params, preFetchedPrices = null) => {
   // Final calculations
   const finalPrice = priceData[priceData.length - 1].close;
   const btcOnOrders = isFibonacci
-    ? (fibActiveSellOrder ? fibActiveSellOrder.sellBTC : 0)
-    : pendingOrders.reduce((sum, o) => sum + o.sellBTC, 0);
-  const totalBTC = btcReserves + btcOnOrders;
-  const btcValue = totalBTC * finalPrice;
+    ? (fibActiveSellOrder ? fibActiveSellOrder.sellAsset : 0)
+    : pendingOrders.reduce((sum, o) => sum + o.sellAsset, 0);
+  const totalAsset = assetReserves + btcOnOrders;
+  const assetValue = totalAsset * finalPrice;
   const finalCash = hasFixedFund ? availableFunds : usdcBalance;
-  const totalValue = finalCash + btcValue;
+  const totalValue = finalCash + assetValue;
 
   const roiBasis = hasFixedFund ? fundSize : totalInvested;
   const roi = ((totalValue - roiBasis) / roiBasis) * 100;
@@ -706,10 +706,10 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     metrics: {
       totalInvested,
       finalUSDC: finalCash,
-      btcReserves,
+      assetReserves,
       btcOnOrders,
-      totalBTC,
-      btcValue,
+      totalAsset,
+      assetValue,
       totalValue,
       roi,
       roiBasis,
@@ -740,18 +740,18 @@ const runBacktest = async (params, preFetchedPrices = null) => {
       finalPosition: fibPosition,
       totalBuys: fibTotalBuys,
       activeSellOrder: fibActiveSellOrder ? {
-        sellBTC: fibActiveSellOrder.sellBTC,
+        sellAsset: fibActiveSellOrder.sellAsset,
         sellTargetPrice: fibActiveSellOrder.sellTargetPrice,
-        avgCostBasis: fibActiveSellOrder.costBasisPerBTC,
-        currentValue: fibActiveSellOrder.sellBTC * finalPrice,
-        unrealizedPnL: (fibActiveSellOrder.sellBTC * finalPrice) - (fibActiveSellOrder.sellBTC * fibActiveSellOrder.costBasisPerBTC)
+        avgCostBasis: fibActiveSellOrder.costBasisPerAsset,
+        currentValue: fibActiveSellOrder.sellAsset * finalPrice,
+        unrealizedPnL: (fibActiveSellOrder.sellAsset * finalPrice) - (fibActiveSellOrder.sellAsset * fibActiveSellOrder.costBasisPerAsset)
       } : null
     };
   } else {
     result.pendingOrders = pendingOrders.map(o => ({
       ...o,
-      currentValue: o.sellBTC * finalPrice,
-      unrealizedPnL: (o.sellBTC * finalPrice) - (o.sellBTC * o.costBasisPerBTC)
+      currentValue: o.sellAsset * finalPrice,
+      unrealizedPnL: (o.sellAsset * finalPrice) - (o.sellAsset * o.costBasisPerAsset)
     }));
   }
 

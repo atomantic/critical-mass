@@ -32,7 +32,7 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
       return {
         orderId,
         price: order.averageFilledPrice,
-        btcAmount: order.filledSize,
+        assetAmount: order.filledSize,
         usdcAmount: order.filledValue,
         // Fee details
         fees: fillSummary.totalFees,
@@ -81,7 +81,7 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
 
   // Extract base currency from product ID (e.g., CRO_USD -> CRO, BTC-USDC -> BTC)
   const baseCurrency = config.productId.split(/[-_]/)[0];
-  log('INFO', `Buy filled: ${fillDetails.btcAmount.toFixed(8)} ${baseCurrency} at ${fillDetails.price.toFixed(2)}`);
+  log('INFO', `Buy filled: ${fillDetails.assetAmount.toFixed(8)} ${baseCurrency} at ${fillDetails.price.toFixed(2)}`);
   log('INFO', `Fees: ${fillDetails.fees.toFixed(4)}, Rebates: ${fillDetails.rebates.toFixed(4)}, Net: ${fillDetails.netFees.toFixed(4)}`);
 
   return fillDetails;
@@ -98,7 +98,7 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
   adapter = adapter || getAdapter('coinbase');
 
   // Calculate sell quantity (minus holdback)
-  const sellQuantity = buyDetails.btcAmount * (1 - config.holdbackPercent / 100);
+  const sellQuantity = buyDetails.assetAmount * (1 - config.holdbackPercent / 100);
 
   // Calculate sell price (plus markup)
   const sellPrice = buyDetails.price * (1 + config.sellMarkupPercent / 100);
@@ -175,7 +175,7 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     // Get fresh price for each attempt
     const currentPrice = await adapter.getCurrentPrice(config.productId);
-    const sellQuantity = buyDetails.btcAmount * (1 - config.holdbackPercent / 100);
+    const sellQuantity = buyDetails.assetAmount * (1 - config.holdbackPercent / 100);
     const sellPrice = buyDetails.price * priceMultiplier;
 
     // Ensure sell price is above current market (for post-only)
@@ -257,12 +257,12 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   }
 
   // Step 2: Calculate weighted average sell price
-  const totalBTC = eligibleOrders.reduce((sum, o) => sum + o.sellQuantityBTC, 0);
-  const weightedPriceSum = eligibleOrders.reduce((sum, o) => sum + (o.sellQuantityBTC * o.sellPrice), 0);
-  const consolidatedPrice = weightedPriceSum / totalBTC;
+  const totalAsset = eligibleOrders.reduce((sum, o) => sum + o.sellQuantity, 0);
+  const weightedPriceSum = eligibleOrders.reduce((sum, o) => sum + (o.sellQuantity * o.sellPrice), 0);
+  const consolidatedPrice = weightedPriceSum / totalAsset;
   const baseCurrency = config.productId.split(/[-_]/)[0];
 
-  log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalBTC.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
+  log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
 
   // Step 3: Cancel all eligible orders
   log('INFO', `Cancelling ${eligibleOrders.length} orders...`);
@@ -281,8 +281,8 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   }
 
   // Step 4: Place new consolidated order
-  log('INFO', `Placing consolidated sell order: ${totalBTC.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
-  const sellResult = await adapter.placeLimitSell(config.productId, totalBTC, consolidatedPrice);
+  log('INFO', `Placing consolidated sell order: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
+  const sellResult = await adapter.placeLimitSell(config.productId, totalAsset, consolidatedPrice);
 
   if (!sellResult.success) {
     return {
@@ -299,7 +299,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     success: true,
     newOrderId: sellResult.orderId,
     consolidatedPrice,
-    consolidatedBTC: totalBTC,
+    consolidatedAsset: totalAsset,
     consolidatedCount: eligibleOrders.length,
     skippedOrderIds,
     cancelledOrderIds,
@@ -310,13 +310,13 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
  * Place or update a Fibonacci cycle consolidated sell order
  * Cancels previous sell order if exists and not filled, then places new order
  * @param {ExchangeConfig} config - Configuration
- * @param {number} cumulativeBTC - Total BTC accumulated in cycle
+ * @param {number} cumulativeAsset - Total BTC accumulated in cycle
  * @param {number} avgCostBasis - Weighted average cost basis per BTC
  * @param {string|null} prevOrderId - Previous sell order ID to cancel
  * @param {ExchangeAdapter} adapter - Exchange adapter
- * @returns {Promise<{sellOrder: SellOrder, sellQuantityBTC: number, holdbackBTC: number}>} Sell order result
+ * @returns {Promise<{sellOrder: SellOrder, sellQuantity: number, holdbackAsset: number}>} Sell order result
  */
-const placeFibonacciSellOrder = async (config, cumulativeBTC, avgCostBasis, prevOrderId, adapter) => {
+const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, prevOrderId, adapter) => {
   const baseCurrency = config.productId.split(/[-_]/)[0];
 
   // Cancel previous order if it exists and is not filled
@@ -329,16 +329,16 @@ const placeFibonacciSellOrder = async (config, cumulativeBTC, avgCostBasis, prev
     } else if (prevOrderStatus.status === 'FILLED') {
       // Order already filled - this should trigger cycle reset
       log('INFO', `Previous Fibonacci sell order ${prevOrderId} already filled`);
-      return { sellOrder: null, sellQuantityBTC: 0, holdbackBTC: 0, alreadyFilled: true };
+      return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
     }
   }
 
   // Calculate sell quantity and price
-  const holdbackBTC = cumulativeBTC * (config.holdbackPercent / 100);
-  const sellQuantityBTC = getFibonacciSellQuantity(cumulativeBTC, config.holdbackPercent);
+  const holdbackAsset = cumulativeAsset * (config.holdbackPercent / 100);
+  const sellQuantity = getFibonacciSellQuantity(cumulativeAsset, config.holdbackPercent);
   const sellPrice = getFibonacciSellPrice(avgCostBasis, config.sellMarkupPercent);
 
-  log('INFO', `Placing Fibonacci sell: ${sellQuantityBTC.toFixed(8)} ${baseCurrency} at $${sellPrice.toFixed(2)} (avg cost: $${avgCostBasis.toFixed(2)})`);
+  log('INFO', `Placing Fibonacci sell: ${sellQuantity.toFixed(8)} ${baseCurrency} at $${sellPrice.toFixed(2)} (avg cost: $${avgCostBasis.toFixed(2)})`);
 
   // Ensure sell price is above current market for post-only
   const currentPrice = await adapter.getCurrentPrice(config.productId);
@@ -349,7 +349,7 @@ const placeFibonacciSellOrder = async (config, cumulativeBTC, avgCostBasis, prev
     log('WARN', `Fibonacci sell price $${sellPrice.toFixed(2)} below market $${currentPrice.toFixed(2)}, adjusting to $${adjustedPrice.toFixed(2)}`);
   }
 
-  const sellResult = await adapter.placeLimitSell(config.productId, sellQuantityBTC, adjustedPrice);
+  const sellResult = await adapter.placeLimitSell(config.productId, sellQuantity, adjustedPrice);
 
   if (!sellResult.success) {
     throw new Error(`Fibonacci sell order failed: ${sellResult.errorMessage}`);
@@ -359,8 +359,8 @@ const placeFibonacciSellOrder = async (config, cumulativeBTC, avgCostBasis, prev
 
   return {
     sellOrder: sellResult,
-    sellQuantityBTC,
-    holdbackBTC,
+    sellQuantity,
+    holdbackAsset,
     alreadyFilled: false,
   };
 };

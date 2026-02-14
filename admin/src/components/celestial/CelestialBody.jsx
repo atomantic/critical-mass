@@ -20,7 +20,7 @@ import HypergiantGeometry from './HypergiantGeometry'
  *   Bright MeshBasicMaterial (unlit, full brightness → bloom does the glow)
  *   + one thin BackSide halo for color tint. Bloom handles the rest.
  */
-const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
+const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const meshRef = useRef()
   const glowRef = useRef()
 
@@ -114,7 +114,7 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => 
       )}
 
       {/* Pinned tooltip */}
-      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.5, 0]} maxUsdcDeployed={maxUsdcDeployed} />}
+      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.5, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}
     </group>
   )
 }, (prev, next) =>
@@ -124,7 +124,8 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => 
   prev.body.tpPrice === next.body.tpPrice &&
   prev.body.mergeCount === next.body.mergeCount &&
   prev.showTooltip === next.showTooltip &&
-  prev.maxUsdcDeployed === next.maxUsdcDeployed
+  prev.maxUsdcDeployed === next.maxUsdcDeployed &&
+  prev.baseCurrency === next.baseCurrency
 )
 
 CelestialBody.displayName = 'CelestialBody'

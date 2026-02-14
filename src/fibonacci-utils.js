@@ -50,12 +50,12 @@ const getFibonacciBuyAmount = (position, baseAmount) => {
 /**
  * Calculate weighted average cost basis per BTC
  * @param {number} cumulativeCost - Total cost spent (including fees)
- * @param {number} cumulativeBTC - Total BTC acquired
+ * @param {number} cumulativeAsset - Total BTC acquired
  * @returns {number} Average cost per BTC
  */
-const getAverageCostBasis = (cumulativeCost, cumulativeBTC) => {
-  if (cumulativeBTC <= 0) return 0;
-  return cumulativeCost / cumulativeBTC;
+const getAverageCostBasis = (cumulativeCost, cumulativeAsset) => {
+  if (cumulativeAsset <= 0) return 0;
+  return cumulativeCost / cumulativeAsset;
 };
 
 /**
@@ -70,12 +70,12 @@ const getFibonacciSellPrice = (avgCostBasis, markupPercent) => {
 
 /**
  * Calculate the quantity to sell in a Fibonacci cycle
- * @param {number} cumulativeBTC - Total BTC accumulated in cycle
+ * @param {number} cumulativeAsset - Total BTC accumulated in cycle
  * @param {number} holdbackPercent - Percentage to keep as reserves
  * @returns {number} Amount of BTC to sell
  */
-const getFibonacciSellQuantity = (cumulativeBTC, holdbackPercent) => {
-  return cumulativeBTC * (1 - holdbackPercent / 100);
+const getFibonacciSellQuantity = (cumulativeAsset, holdbackPercent) => {
+  return cumulativeAsset * (1 - holdbackPercent / 100);
 };
 
 /**
@@ -86,7 +86,7 @@ const createInitialFibState = () => ({
   fibPosition: 0,
   fibCycleStartTime: null,
   fibCumulativeCost: 0,
-  fibCumulativeBTC: 0,
+  fibCumulativeAsset: 0,
   fibActiveSellOrderId: null,
   fibPendingHoldback: 0, // Holdback tracked during cycle, credited to reserves on fill
 });
@@ -99,7 +99,7 @@ const resetFibState = () => ({
   fibPosition: 0,
   fibCycleStartTime: null,
   fibCumulativeCost: 0,
-  fibCumulativeBTC: 0,
+  fibCumulativeAsset: 0,
   fibActiveSellOrderId: null,
   fibPendingHoldback: 0,
 });

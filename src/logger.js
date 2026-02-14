@@ -115,16 +115,16 @@ const logTransaction = (type, details, state, exchange = 'coinbase') => {
     now.toISOString().split('T')[0],
     type,
     formatNumber(details.price, 2),
-    formatNumber(details.btcAmount, 8),
+    formatNumber(details.assetAmount, 8),
     formatNumber(details.usdcAmount, 2),
     formatNumber(details.fees || 0, 4),
     formatNumber(details.rebates || 0, 4),
     formatNumber(details.netFees || 0, 4),
     details.orderId || '',
     formatNumber(state.usdcFundSize, 2),
-    formatNumber(state.btcReserves, 8),
+    formatNumber(state.assetReserves, 8),
     formatNumber(state.outstandingOrdersUSDC, 2),
-    formatNumber(state.outstandingOrdersBTC, 8),
+    formatNumber(state.outstandingOrdersAsset, 8),
     formatNumber(state.totalFees || 0, 4),
     formatNumber(state.totalRebates || 0, 4),
   ];
@@ -142,7 +142,7 @@ const logTransaction = (type, details, state, exchange = 'coinbase') => {
 const logBuy = (buyDetails, state, exchange = 'coinbase') => {
   logTransaction('BUY', {
     price: buyDetails.price,
-    btcAmount: buyDetails.btcAmount,
+    assetAmount: buyDetails.assetAmount,
     usdcAmount: -buyDetails.usdcAmount,
     fees: buyDetails.fees || 0,
     rebates: buyDetails.rebates || 0,
@@ -161,7 +161,7 @@ const logBuy = (buyDetails, state, exchange = 'coinbase') => {
 const logSellOrder = (sellOrder, state, exchange = 'coinbase') => {
   logTransaction('SELL_ORDER', {
     price: sellOrder.limitPrice,
-    btcAmount: -sellOrder.baseSize,
+    assetAmount: -sellOrder.baseSize,
     usdcAmount: sellOrder.baseSize * sellOrder.limitPrice,
     orderId: sellOrder.orderId,
   }, state, exchange);
@@ -177,7 +177,7 @@ const logSellOrder = (sellOrder, state, exchange = 'coinbase') => {
 const logSellFilled = (fillDetails, state, exchange = 'coinbase') => {
   logTransaction('SELL_FILLED', {
     price: fillDetails.averageFilledPrice,
-    btcAmount: -fillDetails.filledSize,
+    assetAmount: -fillDetails.filledSize,
     usdcAmount: fillDetails.netProceeds || fillDetails.fillValue,
     fees: fillDetails.fees || 0,
     rebates: fillDetails.rebates || 0,
@@ -245,8 +245,8 @@ const log = (level, message, data = null) => {
 const logConsolidation = (consolidation, state, exchange = 'coinbase') => {
   logTransaction('CONSOLIDATE', {
     price: consolidation.consolidatedPrice,
-    btcAmount: consolidation.consolidatedBTC,
-    usdcAmount: consolidation.consolidatedBTC * consolidation.consolidatedPrice,
+    assetAmount: consolidation.consolidatedAsset,
+    usdcAmount: consolidation.consolidatedAsset * consolidation.consolidatedPrice,
     orderId: consolidation.newOrderId,
   }, state, exchange);
 };
@@ -262,7 +262,7 @@ const logConsolidation = (consolidation, state, exchange = 'coinbase') => {
 const logFibBuy = (buyDetails, state, cycleInfo, exchange = 'coinbase') => {
   logTransaction('FIB_BUY', {
     price: buyDetails.price,
-    btcAmount: buyDetails.btcAmount,
+    assetAmount: buyDetails.assetAmount,
     usdcAmount: -buyDetails.usdcAmount,
     fees: buyDetails.fees || 0,
     rebates: buyDetails.rebates || 0,
@@ -270,7 +270,7 @@ const logFibBuy = (buyDetails, state, cycleInfo, exchange = 'coinbase') => {
     orderId: buyDetails.orderId,
   }, state, exchange);
 
-  log('INFO', `[${exchange}] Fib position ${cycleInfo.position}: bought ${buyDetails.btcAmount.toFixed(8)} @ $${buyDetails.price.toFixed(2)}, cycle total: ${cycleInfo.cumulativeBTC.toFixed(8)} BTC, avg cost: $${cycleInfo.avgCostBasis.toFixed(2)}`);
+  log('INFO', `[${exchange}] Fib position ${cycleInfo.position}: bought ${buyDetails.assetAmount.toFixed(8)} @ $${buyDetails.price.toFixed(2)}, cycle total: ${cycleInfo.cumulativeAsset.toFixed(8)} BTC, avg cost: $${cycleInfo.avgCostBasis.toFixed(2)}`);
 };
 
 /**
@@ -284,7 +284,7 @@ const logFibBuy = (buyDetails, state, cycleInfo, exchange = 'coinbase') => {
 const logFibSellOrder = (sellOrder, state, cycleInfo, exchange = 'coinbase') => {
   logTransaction('FIB_SELL_ORDER', {
     price: sellOrder.limitPrice,
-    btcAmount: -sellOrder.baseSize,
+    assetAmount: -sellOrder.baseSize,
     usdcAmount: sellOrder.baseSize * sellOrder.limitPrice,
     orderId: sellOrder.orderId,
   }, state, exchange);
@@ -303,7 +303,7 @@ const logFibSellOrder = (sellOrder, state, cycleInfo, exchange = 'coinbase') => 
 const logFibSellFilled = (fillDetails, state, cyclePosition, exchange = 'coinbase') => {
   logTransaction('FIB_SELL_FILLED', {
     price: fillDetails.averageFilledPrice,
-    btcAmount: -fillDetails.filledSize,
+    assetAmount: -fillDetails.filledSize,
     usdcAmount: fillDetails.netProceeds || fillDetails.fillValue,
     fees: fillDetails.fees || 0,
     rebates: fillDetails.rebates || 0,

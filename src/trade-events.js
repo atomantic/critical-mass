@@ -60,16 +60,16 @@ class TradeEventEmitter extends EventEmitter {
     this.emitTradeEvent('buy_placing', exchange, `Placing buy order: $${amount.toFixed(2)} ${productId}`, { amount, productId });
   }
 
-  buyPlaced(exchange, orderId, btcAmount, price) {
-    this.emitTradeEvent('buy_placed', exchange, `Buy order placed: ${btcAmount.toFixed(8)} @ $${price.toFixed(2)}`, { orderId, btcAmount, price });
+  buyPlaced(exchange, orderId, assetAmount, price) {
+    this.emitTradeEvent('buy_placed', exchange, `Buy order placed: ${assetAmount.toFixed(8)} @ $${price.toFixed(2)}`, { orderId, assetAmount, price });
   }
 
-  buyFilled(exchange, btcAmount, price, fees) {
-    this.emitTradeEvent('buy_filled', exchange, `Buy filled: ${btcAmount.toFixed(8)} @ $${price.toFixed(2)} (fees: $${fees.toFixed(4)})`, { btcAmount, price, fees });
+  buyFilled(exchange, assetAmount, price, fees) {
+    this.emitTradeEvent('buy_filled', exchange, `Buy filled: ${assetAmount.toFixed(8)} @ $${price.toFixed(2)} (fees: $${fees.toFixed(4)})`, { assetAmount, price, fees });
   }
 
-  sellPlaced(exchange, orderId, btcAmount, price) {
-    this.emitTradeEvent('sell_placed', exchange, `Sell order placed: ${btcAmount.toFixed(8)} @ $${price.toFixed(2)}`, { orderId, btcAmount, price });
+  sellPlaced(exchange, orderId, assetAmount, price) {
+    this.emitTradeEvent('sell_placed', exchange, `Sell order placed: ${assetAmount.toFixed(8)} @ $${price.toFixed(2)}`, { orderId, assetAmount, price });
   }
 
   cycleComplete(exchange, status, summary) {
@@ -88,10 +88,10 @@ class TradeEventEmitter extends EventEmitter {
     this.emitTradeEvent('disabled', exchange, 'Trading is disabled', {});
   }
 
-  ordersConsolidated(exchange, count, newOrderId, newPrice, totalBTC) {
+  ordersConsolidated(exchange, count, newOrderId, newPrice, totalAsset) {
     this.emitTradeEvent('orders_consolidated', exchange,
       `Consolidated ${count} orders into 1 @ $${newPrice.toFixed(2)}`,
-      { count, newOrderId, newPrice, totalBTC });
+      { count, newOrderId, newPrice, totalAsset });
   }
 
   // ============================================================================
@@ -110,34 +110,34 @@ class TradeEventEmitter extends EventEmitter {
       { trigger, regime, buys, sizeUsdc });
   }
 
-  entryPlaced(exchange, orderId, btcAmount, price, regime) {
+  entryPlaced(exchange, orderId, assetAmount, price, regime) {
     this.emitTradeEvent('entry_placed', exchange,
-      `Entry placed: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (${regime})`,
-      { orderId, btcAmount, price, regime });
+      `Entry placed: ${assetAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (${regime})`,
+      { orderId, assetAmount, price, regime });
   }
 
-  entryFilled(exchange, btcAmount, price, avgCostBasis, cycleBuys) {
+  entryFilled(exchange, assetAmount, price, avgCostBasis, cycleBuys) {
     this.emitTradeEvent('entry_filled', exchange,
-      `Entry filled: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (buy ${cycleBuys}, avg $${avgCostBasis.toFixed(2)})`,
-      { btcAmount, price, avgCostBasis, cycleBuys });
+      `Entry filled: ${assetAmount.toFixed(8)} BTC @ $${price.toFixed(2)} (buy ${cycleBuys}, avg $${avgCostBasis.toFixed(2)})`,
+      { assetAmount, price, avgCostBasis, cycleBuys });
   }
 
-  tpPlaced(exchange, orderId, btcAmount, price) {
+  tpPlaced(exchange, orderId, assetAmount, price) {
     this.emitTradeEvent('tp_placed', exchange,
-      `TP placed: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)}`,
-      { orderId, btcAmount, price });
+      `TP placed: ${assetAmount.toFixed(8)} BTC @ $${price.toFixed(2)}`,
+      { orderId, assetAmount, price });
   }
 
-  tpUpdated(exchange, orderId, btcAmount, price) {
+  tpUpdated(exchange, orderId, assetAmount, price) {
     this.emitTradeEvent('tp_updated', exchange,
-      `TP updated: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)}`,
-      { orderId, btcAmount, price });
+      `TP updated: ${assetAmount.toFixed(8)} BTC @ $${price.toFixed(2)}`,
+      { orderId, assetAmount, price });
   }
 
-  tpFilled(exchange, btcAmount, price, pnl, cyclesCompleted) {
+  tpFilled(exchange, assetAmount, price, pnl, cyclesCompleted) {
     this.emitTradeEvent('tp_filled', exchange,
-      `TP filled: ${btcAmount.toFixed(8)} BTC @ $${price.toFixed(2)}, PnL: $${pnl.toFixed(2)}`,
-      { btcAmount, price, pnl, cyclesCompleted });
+      `TP filled: ${assetAmount.toFixed(8)} BTC @ $${price.toFixed(2)}, PnL: $${pnl.toFixed(2)}`,
+      { assetAmount, price, pnl, cyclesCompleted });
   }
 
   flashMove(exchange, delta, multiple) {

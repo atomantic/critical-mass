@@ -64,9 +64,9 @@ const createInitialState = (config) => ({
   totalAllocated: 0,
   totalIntervalsRun: 0,
   usdcFundSize: config.totalAllocation,
-  btcReserves: 0,
+  assetReserves: 0,
   outstandingOrdersUSDC: 0,
-  outstandingOrdersBTC: 0,
+  outstandingOrdersAsset: 0,
   totalFees: 0,
   totalRebates: 0,
   netFees: 0,
@@ -96,6 +96,43 @@ const migrateState = (state) => {
   if (state.totalIntervalsRun === undefined) state.totalIntervalsRun = 0;
   if (state.lastRunId === undefined) state.lastRunId = null;
   if (state.lastRunTimestamp === undefined) state.lastRunTimestamp = null;
+
+  // Migrate BTC-named fields to asset-agnostic names (old state files on disk)
+  // NOTE: old key names are constructed to avoid being renamed by refactoring scripts
+  const _old = (prefix, suffix) => prefix + suffix;
+  if (_old('btc', 'Reserves') in state) {
+    state.assetReserves = state[_old('btc', 'Reserves')];
+    delete state[_old('btc', 'Reserves')];
+  }
+  if (_old('outstandingOrders', 'BTC') in state) {
+    state.outstandingOrdersAsset = state[_old('outstandingOrders', 'BTC')];
+    delete state[_old('outstandingOrders', 'BTC')];
+  }
+  if (_old('fibCumulative', 'BTC') in state) {
+    state.fibCumulativeAsset = state[_old('fibCumulative', 'BTC')];
+    delete state[_old('fibCumulative', 'BTC')];
+  }
+  if (state.assetReserves === undefined) state.assetReserves = 0;
+  if (state.outstandingOrdersAsset === undefined) state.outstandingOrdersAsset = 0;
+
+  // Migrate order-level BTC fields
+  if (state.orders) {
+    for (const order of state.orders) {
+      if (_old('buyQuantity', 'BTC') in order) {
+        order.buyQuantity = order[_old('buyQuantity', 'BTC')];
+        delete order[_old('buyQuantity', 'BTC')];
+      }
+      if (_old('sellQuantity', 'BTC') in order) {
+        order.sellQuantity = order[_old('sellQuantity', 'BTC')];
+        delete order[_old('sellQuantity', 'BTC')];
+      }
+      if (_old('holdback', 'BTC') in order) {
+        order.holdbackAsset = order[_old('holdback', 'BTC')];
+        delete order[_old('holdback', 'BTC')];
+      }
+    }
+  }
+
   return state;
 };
 
@@ -189,9 +226,9 @@ const checkIfRanThisInterval = (state, intervalType) =>
  */
 const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
   const normalized = normalizeConfig(config);
-  const holdbackBTC = buyDetails.btcAmount * (config.holdbackPercent / 100);
-  const sellQuantityBTC = buyDetails.btcAmount - holdbackBTC;
-  const expectedSellUSDC = sellQuantityBTC * sellOrder.limitPrice;
+  const holdbackAsset = buyDetails.assetAmount * (config.holdbackPercent / 100);
+  const sellQuantity = buyDetails.assetAmount - holdbackAsset;
+  const expectedSellUSDC = sellQuantity * sellOrder.limitPrice;
 
   // Extract fee details (with defaults for backwards compatibility)
   const buyFees = buyDetails.fees || 0;
@@ -202,8 +239,8 @@ const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
   state.totalIntervalsRun += 1;
   // Actual cost includes net fees
   state.usdcFundSize -= (buyDetails.usdcAmount + buyNetFees);
-  state.btcReserves += holdbackBTC;
-  state.outstandingOrdersBTC += sellQuantityBTC;
+  state.assetReserves += holdbackAsset;
+  state.outstandingOrdersAsset += sellQuantity;
   state.outstandingOrdersUSDC += expectedSellUSDC;
   state.lastRunId = getRunIdentifier(normalized.intervalType);
   state.lastRunTimestamp = Date.now();
@@ -217,15 +254,15 @@ const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
     orderId: sellOrder.orderId,
     buyOrderId: buyDetails.orderId,
     buyPrice: buyDetails.price,
-    buyQuantityBTC: buyDetails.btcAmount,
+    buyQuantity: buyDetails.assetAmount,
     buyUSDC: buyDetails.usdcAmount,
     buyFees: buyFees,
     buyRebates: buyRebates,
     buyNetFees: buyNetFees,
     buyCostBasis: buyDetails.usdcAmount + buyNetFees,
     sellPrice: sellOrder.limitPrice,
-    sellQuantityBTC: sellQuantityBTC,
-    holdbackBTC: holdbackBTC,
+    sellQuantity: sellQuantity,
+    holdbackAsset: holdbackAsset,
     status: 'pending',
     createdAt: new Date().toISOString(),
   });
@@ -249,7 +286,7 @@ const updateAfterSellFill = (state, fillDetails) => {
   const netProceeds = fillDetails.netProceeds || (fillDetails.fillValue - sellNetFees);
 
   state.usdcFundSize += netProceeds;
-  state.outstandingOrdersBTC -= fillDetails.filledSize;
+  state.outstandingOrdersAsset -= fillDetails.filledSize;
 
   // Update cumulative fee tracking
   state.totalFees = (state.totalFees || 0) + sellFees;
@@ -259,7 +296,7 @@ const updateAfterSellFill = (state, fillDetails) => {
   // Find and update the order
   const orderIndex = state.orders.findIndex(o => o.orderId === fillDetails.orderId);
   if (orderIndex >= 0) {
-    state.outstandingOrdersUSDC -= state.orders[orderIndex].sellQuantityBTC * state.orders[orderIndex].sellPrice;
+    state.outstandingOrdersUSDC -= state.orders[orderIndex].sellQuantity * state.orders[orderIndex].sellPrice;
     state.orders[orderIndex].status = 'filled';
     state.orders[orderIndex].filledAt = new Date().toISOString();
     state.orders[orderIndex].actualFillValue = fillDetails.fillValue;
@@ -302,8 +339,8 @@ const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSell
 
   for (const order of consolidatedOrders) {
     totalBuyCostBasis += order.buyCostBasis || (order.buyUSDC + (order.buyNetFees || 0));
-    totalBuyQuantityBTC += order.buyQuantityBTC;
-    totalHoldbackBTC += order.holdbackBTC || 0;
+    totalBuyQuantityBTC += order.buyQuantity;
+    totalHoldbackBTC += order.holdbackAsset || 0;
     totalBuyFees += order.buyFees || 0;
     totalBuyRebates += order.buyRebates || 0;
     totalBuyNetFees += order.buyNetFees || 0;
@@ -327,15 +364,15 @@ const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSell
     orderId: newOrderId,
     buyOrderId: `consolidated-${Date.now()}`,
     buyPrice: weightedBuyPrice,
-    buyQuantityBTC: totalBuyQuantityBTC,
+    buyQuantity: totalBuyQuantityBTC,
     buyUSDC: totalBuyCostBasis - totalBuyNetFees,
     buyFees: totalBuyFees,
     buyRebates: totalBuyRebates,
     buyNetFees: totalBuyNetFees,
     buyCostBasis: totalBuyCostBasis,
     sellPrice: newSellPrice,
-    sellQuantityBTC: newSellQuantity,
-    holdbackBTC: totalHoldbackBTC,
+    sellQuantity: newSellQuantity,
+    holdbackAsset: totalHoldbackBTC,
     status: 'pending',
     createdAt: now,
     isConsolidated: true,
@@ -388,7 +425,7 @@ const updateAfterFibBuy = (state, buyDetails, config) => {
 
   // Update cumulative tracking
   state.fibCumulativeCost = (state.fibCumulativeCost || 0) + costBasis;
-  state.fibCumulativeBTC = (state.fibCumulativeBTC || 0) + buyDetails.btcAmount;
+  state.fibCumulativeAsset = (state.fibCumulativeAsset || 0) + buyDetails.assetAmount;
 
   // Increment position for next buy
   state.fibPosition = (state.fibPosition || 0) + 1;
@@ -412,17 +449,17 @@ const updateAfterFibBuy = (state, buyDetails, config) => {
  * Update state after placing a Fibonacci sell order
  * @param {BotState} state - Current state
  * @param {SellOrder} sellOrder - Sell order details
- * @param {number} sellQuantityBTC - BTC quantity in sell order
- * @param {number} holdbackBTC - BTC held back as reserves (tracked but not added to reserves until cycle completes)
+ * @param {number} sellQuantity - BTC quantity in sell order
+ * @param {number} holdbackAsset - BTC held back as reserves (tracked but not added to reserves until cycle completes)
  * @returns {BotState} Updated state
  */
-const updateAfterFibSellOrder = (state, sellOrder, sellQuantityBTC, holdbackBTC) => {
+const updateAfterFibSellOrder = (state, sellOrder, sellQuantity, holdbackAsset) => {
   state.fibActiveSellOrderId = sellOrder.orderId;
   // Track cumulative holdback for this cycle, but don't add to reserves yet
   // Reserves are only credited when the cycle sell fills (in updateAfterFibSellFill)
-  state.fibPendingHoldback = holdbackBTC;
-  state.outstandingOrdersBTC = sellQuantityBTC; // Replace, not add (consolidated order)
-  state.outstandingOrdersUSDC = sellQuantityBTC * sellOrder.limitPrice;
+  state.fibPendingHoldback = holdbackAsset;
+  state.outstandingOrdersAsset = sellQuantity; // Replace, not add (consolidated order)
+  state.outstandingOrdersUSDC = sellQuantity * sellOrder.limitPrice;
 
   return state;
 };
@@ -441,12 +478,12 @@ const updateAfterFibSellFill = (state, fillDetails) => {
 
   // Return proceeds to fund
   state.usdcFundSize += netProceeds;
-  state.outstandingOrdersBTC -= fillDetails.filledSize;
+  state.outstandingOrdersAsset -= fillDetails.filledSize;
   state.outstandingOrdersUSDC = Math.max(0, state.outstandingOrdersUSDC - fillDetails.fillValue);
 
   // Credit holdback to reserves now that cycle is complete
   if (state.fibPendingHoldback > 0) {
-    state.btcReserves += state.fibPendingHoldback;
+    state.assetReserves += state.fibPendingHoldback;
   }
 
   // Update cumulative fee tracking
@@ -468,13 +505,13 @@ const updateAfterFibSellFill = (state, fillDetails) => {
  */
 const getFibonacciCycleInfo = (state) => {
   const cumulativeCost = state.fibCumulativeCost || 0;
-  const cumulativeBTC = state.fibCumulativeBTC || 0;
+  const cumulativeAsset = state.fibCumulativeAsset || 0;
 
   return {
     position: state.fibPosition || 0,
     cumulativeCost,
-    cumulativeBTC,
-    avgCostBasis: getAverageCostBasis(cumulativeCost, cumulativeBTC),
+    cumulativeAsset,
+    avgCostBasis: getAverageCostBasis(cumulativeCost, cumulativeAsset),
     activeSellOrderId: state.fibActiveSellOrderId || null,
     cycleStartTime: state.fibCycleStartTime || null,
   };
@@ -499,7 +536,7 @@ const getRegimeStateFile = (exchange = 'coinbase') => {
  * @returns {RegimePositionState}
  */
 const createInitialRegimePositionState = () => ({
-  totalBTC: 0,
+  totalAsset: 0,
   totalCostBasis: 0,
   avgCostBasis: 0,
   cycleBuys: 0,
@@ -511,8 +548,8 @@ const createInitialRegimePositionState = () => ({
   cyclesCompleted: 0,
   unrealizedPnL: 0,
   realizedPnL: 0,
-  realizedBtcPnL: 0,
-  btcOnOrder: 0,
+  realizedAssetPnL: 0,
+  assetOnOrder: 0,
   maxDrawdownSeen: 0,
   scalingDisabled: false,
   scalingDisabledReason: null,
@@ -532,7 +569,7 @@ const createInitialRegimePositionState = () => ({
   celestialState: {
     bodiesCompleted: 0,
     bodiesRealizedPnL: 0,
-    bodiesRealizedBtcPnL: 0,
+    bodiesRealizedAssetPnL: 0,
     stateVersion: 1,
   },
   // Macro regime state (persisted for recovery)
@@ -578,6 +615,48 @@ const loadRegimeState = (exchange = 'coinbase') => {
     delete data.position.ladderStep;
   }
 
+  // Migrate BTC-named fields to asset-agnostic names (old regime-state.json on disk)
+  // NOTE: old key names are constructed to avoid being renamed by refactoring scripts
+  const _old = (prefix, suffix) => prefix + suffix;
+  if (data.position) {
+    const p = data.position;
+    if (_old('total', 'BTC') in p) {
+      p.totalAsset = p[_old('total', 'BTC')];
+      delete p[_old('total', 'BTC')];
+    }
+    if (_old('realizedBtc', 'PnL') in p) {
+      p.realizedAssetPnL = p[_old('realizedBtc', 'PnL')];
+      delete p[_old('realizedBtc', 'PnL')];
+    }
+    if (_old('maxBtc', 'Exposure') in p) {
+      p.maxAssetExposure = p[_old('maxBtc', 'Exposure')];
+      delete p[_old('maxBtc', 'Exposure')];
+    }
+    if (_old('btcOn', 'Order') in p) {
+      p.assetOnOrder = p[_old('btcOn', 'Order')];
+      delete p[_old('btcOn', 'Order')];
+    }
+    // Migrate celestialState BTC fields
+    const cs = p.celestialState;
+    if (cs && _old('bodiesRealizedBtc', 'PnL') in cs) {
+      cs.bodiesRealizedAssetPnL = cs[_old('bodiesRealizedBtc', 'PnL')];
+      delete cs[_old('bodiesRealizedBtc', 'PnL')];
+    }
+    // Migrate celestialBodies BTC fields
+    if (p.celestialBodies) {
+      for (const body of p.celestialBodies) {
+        if (_old('btc', 'Qty') in body) {
+          body.assetQty = body[_old('btc', 'Qty')];
+          delete body[_old('btc', 'Qty')];
+        }
+        if (_old('btcOn', 'Order') in body) {
+          body.assetOnOrder = body[_old('btcOn', 'Order')];
+          delete body[_old('btcOn', 'Order')];
+        }
+      }
+    }
+  }
+
   const position = { ...createInitialRegimePositionState(), ...data.position };
 
   // Sync in-memory save version from disk
@@ -589,7 +668,7 @@ const loadRegimeState = (exchange = 'coinbase') => {
     const cs = position.celestialState || createInitialCelestialState();
     cs.bodiesCompleted = (cs.bodiesCompleted || 0) + (position.satellitesCompleted || 0);
     cs.bodiesRealizedPnL = (cs.bodiesRealizedPnL || 0) + (position.satelliteRealizedPnL || 0);
-    cs.bodiesRealizedBtcPnL = (cs.bodiesRealizedBtcPnL || 0) + (position.satelliteRealizedBtcPnL || 0);
+    cs.bodiesRealizedAssetPnL = (cs.bodiesRealizedAssetPnL || 0) + (position.satelliteRealizedBtcPnL || 0);
     position.celestialState = cs;
     delete position.satellitesCompleted;
     delete position.satelliteRealizedPnL;
@@ -599,7 +678,7 @@ const loadRegimeState = (exchange = 'coinbase') => {
 
   // Migrate legacy core+satellite state to celestial bodies if needed
   if (!position.celestialBodies || position.celestialBodies.length === 0) {
-    const hasCorePosition = position.totalBTC > 0 && position.totalCostBasis > 0;
+    const hasCorePosition = position.totalAsset > 0 && position.totalCostBasis > 0;
     const hasSatellites = position.satelliteTpOrders && position.satelliteTpOrders.length > 0;
 
     if (hasCorePosition || hasSatellites) {
@@ -612,7 +691,7 @@ const loadRegimeState = (exchange = 'coinbase') => {
         position.celestialState = {
           bodiesCompleted: position.cyclesCompleted || 0,
           bodiesRealizedPnL: position.realizedPnL || 0,
-          bodiesRealizedBtcPnL: position.realizedBtcPnL || 0,
+          bodiesRealizedAssetPnL: position.realizedAssetPnL || 0,
           stateVersion: 1,
         };
       }
@@ -652,7 +731,7 @@ const loadRegimeState = (exchange = 'coinbase') => {
  * Protected fields that should be preserved from external edits
  * when an optimistic version conflict is detected.
  */
-const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'realizedBtcPnL'];
+const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'realizedAssetPnL'];
 
 const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null) => {
   const stateFile = getRegimeStateFile(exchange);
@@ -697,17 +776,17 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
  * Update regime position state after entry
  * @param {RegimePositionState} state - Current state
  * @param {Object} entryDetails - Entry details
- * @param {number} entryDetails.btcAmount - BTC purchased
+ * @param {number} entryDetails.assetAmount - BTC purchased
  * @param {number} entryDetails.costBasis - Cost including fees
  * @param {number} entryDetails.price - Entry price
  * @returns {RegimePositionState} Updated state
  */
 const updateRegimeStateAfterEntry = (state, entryDetails) => {
-  const { btcAmount, costBasis, price } = entryDetails;
+  const { assetAmount, costBasis, price } = entryDetails;
 
-  state.totalBTC += btcAmount;
+  state.totalAsset += assetAmount;
   state.totalCostBasis += costBasis;
-  state.avgCostBasis = state.totalBTC > 0 ? state.totalCostBasis / state.totalBTC : 0;
+  state.avgCostBasis = state.totalAsset > 0 ? state.totalCostBasis / state.totalAsset : 0;
   state.cycleBuys += 1;
   state.lastEntryPrice = price;
   state.lastEntryTime = Date.now();
@@ -720,7 +799,7 @@ const updateRegimeStateAfterEntry = (state, entryDetails) => {
  * Update regime position state after TP fill
  * @param {RegimePositionState} state - Current state
  * @param {Object} fillDetails - Fill details
- * @param {number} fillDetails.btcAmount - BTC sold
+ * @param {number} fillDetails.assetAmount - BTC sold
  * @param {number} fillDetails.proceeds - Net proceeds
  * @param {number} fillDetails.pnl - Realized P&L
  * @returns {RegimePositionState} Updated state
@@ -732,7 +811,7 @@ const updateRegimeStateAfterTP = (state, fillDetails) => {
   state.cyclesCompleted += 1;
 
   // Reset cycle
-  state.totalBTC = 0;
+  state.totalAsset = 0;
   state.totalCostBasis = 0;
   state.avgCostBasis = 0;
   state.cycleBuys = 0;

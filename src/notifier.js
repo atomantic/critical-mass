@@ -250,7 +250,7 @@ const createNotifier = () => {
       const state = loadRegimeState(exchange);
       const regime = state.regime?.mode || 'N/A';
       const pos = state.position || {};
-      const btc = pos.totalBTC || 0;
+      const btc = pos.totalAsset || 0;
       const pnl = pos.realizedPnL || 0;
       const cycles = pos.cyclesCompleted || 0;
       const buys = pos.cycleBuys || 0;

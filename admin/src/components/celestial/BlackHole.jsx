@@ -10,7 +10,7 @@ import CelestialTooltip from './CelestialTooltip'
  * photon ring, and gravitational lensing glow.
  * Tooltip is pinned by parent (stays on last-hovered body)
  */
-const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
+const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const diskRef = useRef()
   const outerGlowRef = useRef()
   const photonRingRef = useRef()
@@ -113,7 +113,7 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
       </mesh>
 
       {/* Pinned tooltip */}
-      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} />}
+      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}
     </group>
   )
 }, (prev, next) =>
@@ -122,7 +122,8 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
   prev.body.tpPrice === next.body.tpPrice &&
   prev.body.mergeCount === next.body.mergeCount &&
   prev.showTooltip === next.showTooltip &&
-  prev.maxUsdcDeployed === next.maxUsdcDeployed
+  prev.maxUsdcDeployed === next.maxUsdcDeployed &&
+  prev.baseCurrency === next.baseCurrency
 )
 
 BlackHole.displayName = 'BlackHole'

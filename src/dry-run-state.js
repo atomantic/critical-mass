@@ -25,7 +25,7 @@ const pendingStates = new Map();
  * @property {number} lastTpPrice - Last TP price
  * @property {number} lastTpSize - Last TP size
  * @property {number} simulatedRealizedPnL - Realized USD P&L
- * @property {number} simulatedRealizedBtcPnL - Realized BTC P&L (holdback)
+ * @property {number} simulatedRealizedAssetPnL - Realized BTC P&L (holdback)
  * @property {number} simulatedTotalBought - Total BTC bought
  * @property {number} simulatedTotalSold - Total BTC sold
  * @property {Object|null} currentCycleTracking - Current cycle tracking data
@@ -35,7 +35,7 @@ const pendingStates = new Map();
 
 /**
  * @typedef {Object} PositionState
- * @property {number} totalBTC - Total BTC position
+ * @property {number} totalAsset - Total BTC position
  * @property {number} totalCostBasis - Total cost basis in USD
  * @property {number} avgCostBasis - Average cost basis per BTC
  * @property {number} cycleBuys - Current ladder step
@@ -47,8 +47,8 @@ const pendingStates = new Map();
  * @property {number} cyclesCompleted - Number of completed cycles
  * @property {number} unrealizedPnL - Unrealized P&L
  * @property {number} realizedPnL - Realized P&L
- * @property {number} realizedBtcPnL - Realized BTC P&L
- * @property {number} btcOnOrder - BTC on open orders
+ * @property {number} realizedAssetPnL - Realized BTC P&L
+ * @property {number} assetOnOrder - BTC on open orders
  * @property {number} maxDrawdownSeen - Max drawdown seen
  * @property {boolean} scalingDisabled - Whether scaling is disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled

@@ -53,7 +53,7 @@ module.exports = (app, deps) => {
 
     let currentPrice = 0;
     let usdcBalance = { available: 0, hold: 0 };
-    let btcBalance = { available: 0, hold: 0 };
+    let assetBalance = { available: 0, hold: 0 };
     let keysConfigured = false;
     let apiError = null;
 
@@ -64,14 +64,14 @@ module.exports = (app, deps) => {
       try {
         currentPrice = await adapter.getCurrentPrice(config.productId);
         usdcBalance = await adapter.getAccountBalance('USDC');
-        btcBalance = await adapter.getAccountBalance('BTC');
+        assetBalance = await adapter.getAccountBalance(config.productId.split(/[-_]/)[0]);
       } catch (err) {
         apiError = err.message || 'API connection failed';
         log('ERROR', `[coinbase] Status check failed: ${apiError}`);
       }
     }
 
-    res.json({ currentPrice, usdcBalance, btcBalance, keysConfigured, apiError, config, state, lastUpdated: new Date().toISOString() });
+    res.json({ currentPrice, usdcBalance, assetBalance, keysConfigured, apiError, config, state, lastUpdated: new Date().toISOString() });
   });
 
   app.get('/api/summary', (req, res) => {
@@ -98,8 +98,8 @@ module.exports = (app, deps) => {
         pendingOrders: (state.orders || []).filter(o => o.status === 'pending').length,
         totalBought, totalSold, totalBTCBought, totalBTCSold,
         totalFees: state.totalFees || 0, totalRebates: state.totalRebates || 0, netFees: state.netFees || 0,
-        btcReserves: state.btcReserves || 0, usdcFundSize: state.usdcFundSize || 0,
-        outstandingOrdersUSDC: state.outstandingOrdersUSDC || 0, outstandingOrdersBTC: state.outstandingOrdersBTC || 0,
+        assetReserves: state.assetReserves || 0, usdcFundSize: state.usdcFundSize || 0,
+        outstandingOrdersUSDC: state.outstandingOrdersUSDC || 0, outstandingOrdersAsset: state.outstandingOrdersAsset || 0,
         allocationUsed: state.totalAllocated || 0, allocationRemaining: (config.totalAllocation || 0) - (state.totalAllocated || 0),
         intervalsRun: state.totalIntervalsRun || 0,
       },

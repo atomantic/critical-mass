@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { getBaseCurrency } from '../App'
 
 function TransactionsRegime({ exchange = 'coinbase' }) {
   const [fills, setFills] = useState([])
@@ -10,14 +11,16 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
   const [cycleFilter, setCycleFilter] = useState('all')
   const [sortField, setSortField] = useState('timestamp')
   const [sortDir, setSortDir] = useState('desc')
+  const [productId, setProductId] = useState(null)
 
-  const formatBTC = (n) => (n || 0).toFixed(8)
+  const formatAsset = (n) => (n || 0).toFixed(8)
 
   const fetchData = useCallback(async () => {
-    const [fillsRes, statusRes, ordersRes] = await Promise.all([
+    const [fillsRes, statusRes, ordersRes, configRes] = await Promise.all([
       fetch(`/api/${exchange}/regime/fills`),
       fetch(`/api/${exchange}/regime/status`),
       fetch(`/api/${exchange}/regime/open-orders`),
+      fetch(`/api/${exchange}/config`),
     ])
 
     if (fillsRes.ok) {
@@ -32,6 +35,10 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
       const data = await ordersRes.json()
       setOpenOrders(data.orders || [])
     }
+    if (configRes.ok) {
+      const data = await configRes.json()
+      setProductId(data.config?.productId || data.productId || null)
+    }
     setLoading(false)
   }, [exchange])
 
@@ -42,6 +49,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
   }, [fetchData])
 
   const isDryRun = status?.isDryRun
+  const baseCurrency = getBaseCurrency(productId)
 
   // Get unique cycle IDs for filtering
   const cycleIds = [...new Set(fills.map(f => f.cycleId || 'current'))].sort().reverse()
@@ -77,42 +85,87 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
     }
   }
 
-  // Calculate P&L for sell fills based on running avg cost
+  // Calculate P&L for sell fills using buy-sell linkage (sellOrderId) and running avg fallback
   const fillsWithPnL = (() => {
-    // Sort by timestamp to calculate running avg
-    const chronological = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
+    // Use ALL fills for P&L calculation (not filtered) so running avg is correct
+    const chronological = [...fills].sort((a, b) => a.timestamp - b.timestamp)
+
+    // Build buy→sell linkage map: buys annotated with sellOrderId point to their matching sell
+    const buysBySellId = new Map()
+    for (const fill of chronological) {
+      if (fill.side === 'buy' && fill.sellOrderId) {
+        if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, [])
+        buysBySellId.get(fill.sellOrderId).push(fill)
+      }
+    }
+
+    // Pre-compute total sell value per orderId for proportional P&L on multi-fill orders
+    const sellTotalsByOrderId = new Map()
+    for (const fill of chronological) {
+      if (fill.side !== 'sell') continue
+      const prev = sellTotalsByOrderId.get(fill.orderId)
+      if (prev) {
+        prev.totalQuote += fill.quoteAmount || fill.size * fill.price
+        prev.totalFee += fill.netFee || fill.fee || 0
+      } else {
+        sellTotalsByOrderId.set(fill.orderId, {
+          totalQuote: fill.quoteAmount || fill.size * fill.price,
+          totalFee: fill.netFee || fill.fee || 0,
+        })
+      }
+    }
+
     let totalBtc = 0
     let totalCost = 0
+    const pnlMap = new Map()
 
-    return chronological.map(fill => {
+    for (let i = 0; i < chronological.length; i++) {
+      const fill = chronological[i]
       if (fill.side === 'buy') {
-        // Only track non-body buys in running position (body buys have independent P&L)
         const isBody = fill.isBodyOwned || fill.isSatellite || fill.bodyId
         if (!isBody) {
           totalBtc += fill.size
           totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
         }
-        return { ...fill, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0, pnl: null, holdbackBtc: null, holdbackValue: null }
+        pnlMap.set(i, { pnl: null, holdbackAsset: null, holdbackValue: null, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0 })
+        continue
       }
-      // Sell fill - calculate P&L
-      // Use server annotations for body/satellite sells, fall back to running avg for core sells
+      // Sell fill
       const isBody = fill.isBodyOwned || fill.isSatellite || fill.bodyId
       const annotatedPnl = fill.bodyPnl ?? fill.satellitePnl
       let pnl
+
       if (annotatedPnl != null) {
+        // 1. Server-annotated P&L (most trusted)
         pnl = annotatedPnl
       } else {
-        const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
-        const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
-        pnl = proceeds - avgCost * fill.size
+        // 2. Try buy-sell linkage via sellOrderId
+        const linkedBuys = buysBySellId.get(fill.orderId)
+        if (linkedBuys && linkedBuys.length > 0) {
+          const buyCost = linkedBuys.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
+          const orderTotals = sellTotalsByOrderId.get(fill.orderId)
+          const totalSellProceeds = orderTotals.totalQuote - orderTotals.totalFee
+          const totalPnl = totalSellProceeds - buyCost
+          // Distribute proportionally for multi-fill orders
+          const fillValue = fill.quoteAmount || fill.size * fill.price
+          pnl = totalPnl * (fillValue / orderTotals.totalQuote)
+        } else if (isBody && (fill.bodyCostBasis ?? fill.satelliteCostBasis)) {
+          // 3. Body/satellite sell with cost basis annotation but no P&L
+          const costBasis = fill.bodyCostBasis ?? fill.satelliteCostBasis
+          pnl = (fill.quoteAmount - (fill.netFee || fill.fee || 0)) - costBasis
+        } else {
+          // 4. Fallback: running avg for truly unlinked core sells
+          const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
+          const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
+          pnl = proceeds - avgCost * fill.size
+        }
       }
 
-      // Use server-annotated holdback (BTC retained from this specific sell's position)
-      const holdbackBtc = fill.bodyHoldbackBtc ?? fill.satelliteHoldbackBtc ?? null
-      const holdbackValue = holdbackBtc != null && holdbackBtc > 0 ? holdbackBtc * fill.price : 0
+      const holdbackAsset = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset ?? null
+      const holdbackValue = holdbackAsset != null && holdbackAsset > 0 ? holdbackAsset * fill.price : 0
 
-      // Update running position for non-body sells (core TP)
-      if (!isBody) {
+      // Update running position for non-body sells without linkage (core TP)
+      if (!isBody && !buysBySellId.has(fill.orderId)) {
         const remainingBtc = totalBtc - fill.size
         if (remainingBtc > 0) {
           const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
@@ -124,8 +177,14 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
         }
       }
 
-      return { ...fill, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0, pnl, holdbackBtc: holdbackBtc != null && holdbackBtc > 0 ? holdbackBtc : null, holdbackValue: holdbackValue > 0 ? holdbackValue : null }
-    })
+      pnlMap.set(i, { pnl, holdbackAsset: holdbackAsset != null && holdbackAsset > 0 ? holdbackAsset : null, holdbackValue: holdbackValue > 0 ? holdbackValue : null, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0 })
+    }
+
+    // Map back to filtered fills with their P&L
+    const filteredSet = new Set(filteredFills)
+    return chronological
+      .map((fill, i) => filteredSet.has(fill) ? { ...fill, ...pnlMap.get(i) } : null)
+      .filter(Boolean)
   })()
 
   // Re-sort based on user preference
@@ -140,7 +199,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
   // Calculate summary stats
   const totalBuys = filteredFills.filter(f => f.side === 'buy').length
   const totalSells = filteredFills.filter(f => f.side === 'sell').length
-  const totalBtcBought = filteredFills
+  const totalAssetBought = filteredFills
     .filter(f => f.side === 'buy')
     .reduce((sum, f) => sum + f.size, 0)
   const totalBtcSold = filteredFills
@@ -151,8 +210,8 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
     .filter(f => f.pnl !== null)
     .reduce((sum, f) => sum + f.pnl, 0)
   const totalHoldbackBtc = fillsWithPnL
-    .filter(f => f.holdbackBtc !== null)
-    .reduce((sum, f) => sum + f.holdbackBtc, 0)
+    .filter(f => f.holdbackAsset !== null)
+    .reduce((sum, f) => sum + f.holdbackAsset, 0)
   const totalHoldbackValue = fillsWithPnL
     .filter(f => f.holdbackValue !== null)
     .reduce((sum, f) => sum + f.holdbackValue, 0)
@@ -187,7 +246,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
                 <tr className="text-gray-400 text-left border-b border-gray-700">
                   <th className="px-4 py-2">Type</th>
                   <th className="px-4 py-2">Side</th>
-                  <th className="px-4 py-2">Size (BTC)</th>
+                  <th className="px-4 py-2">Size ({baseCurrency})</th>
                   <th className="px-4 py-2">Price</th>
                   <th className="px-4 py-2">Value</th>
                   <th className="px-4 py-2">Status</th>
@@ -213,7 +272,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
                     }`}>
                       {(order.side || (order.type === 'take_profit' ? 'sell' : 'buy')).toUpperCase()}
                     </td>
-                    <td className="px-4 py-2 font-mono">{formatBTC(order.size)}</td>
+                    <td className="px-4 py-2 font-mono">{formatAsset(order.size)}</td>
                     <td className="px-4 py-2">{formatPrice(order.price)}</td>
                     <td className="px-4 py-2">{formatCurrency((order.price || 0) * (order.size || 0))}</td>
                     <td className="px-4 py-2">
@@ -280,11 +339,11 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
                   { key: 'timestamp', label: 'Time' },
                   { key: 'cycleId', label: 'Cycle' },
                   { key: 'side', label: 'Side' },
-                  { key: 'size', label: 'Size (BTC)' },
+                  { key: 'size', label: `Size (${baseCurrency})` },
                   { key: 'price', label: 'Price' },
                   { key: 'quoteAmount', label: 'Value' },
                   { key: 'fee', label: 'Fee' },
-                  { key: 'holdbackBtc', label: 'Holdback' },
+                  { key: 'holdbackAsset', label: 'Holdback' },
                   { key: 'pnl', label: 'P&L' },
                 ].map(col => (
                   <th
@@ -330,7 +389,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
                       {fill.side.toUpperCase()}
                     </td>
                     <td className="px-4 py-3 font-mono">
-                      {formatBTC(fill.size)}
+                      {formatAsset(fill.size)}
                     </td>
                     <td className="px-4 py-3">
                       {formatPrice(fill.price)}
@@ -342,9 +401,9 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
                       {formatCurrency(fill.netFee || fill.fee || 0)}
                     </td>
                     <td className="px-4 py-3">
-                      {fill.holdbackBtc !== null ? (
+                      {fill.holdbackAsset !== null ? (
                         <span className="text-cyan-400" title={`≈${formatCurrency(fill.holdbackValue)}`}>
-                          +{formatBTC(fill.holdbackBtc)}
+                          +{formatAsset(fill.holdbackAsset)}
                         </span>
                       ) : (
                         <span className="text-gray-500">—</span>
@@ -381,21 +440,21 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
               <span className="ml-2 text-red-400">{totalSells}</span>
             </div>
             <div>
-              <span className="text-gray-500">BTC Bought:</span>
-              <span className="ml-2 text-white font-mono">{formatBTC(totalBtcBought)}</span>
+              <span className="text-gray-500">{baseCurrency} Bought:</span>
+              <span className="ml-2 text-white font-mono">{formatAsset(totalAssetBought)}</span>
             </div>
             <div>
-              <span className="text-gray-500">BTC Sold:</span>
-              <span className="ml-2 text-white font-mono">{formatBTC(totalBtcSold)}</span>
+              <span className="text-gray-500">{baseCurrency} Sold:</span>
+              <span className="ml-2 text-white font-mono">{formatAsset(totalBtcSold)}</span>
             </div>
             <div>
               <span className="text-gray-500">Total Fees:</span>
               <span className="ml-2 text-gray-400">{formatCurrency(totalFees)}</span>
             </div>
             <div>
-              <span className="text-gray-500">BTC Holdback:</span>
+              <span className="text-gray-500">{baseCurrency} Holdback:</span>
               <span className="ml-2 text-cyan-400 font-mono" title={`≈${formatCurrency(totalHoldbackValue)}`}>
-                +{formatBTC(totalHoldbackBtc)}
+                +{formatAsset(totalHoldbackBtc)}
               </span>
             </div>
             <div>

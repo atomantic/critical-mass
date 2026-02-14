@@ -1,5 +1,6 @@
 import { useRef, useEffect, useMemo, useState } from 'react'
 import * as d3 from 'd3'
+import { formatPriceCompact } from './chartUtils'
 
 // Regime colors for background zones
 const REGIME_COLORS = {
@@ -175,7 +176,7 @@ function VolatilityChart({
     // Y axis left (ATR)
     const yAxisLeft = d3.axisLeft(yScaleAtr)
       .ticks(5)
-      .tickFormat(d => `$${d.toFixed(0)}`)
+      .tickFormat(d => formatPriceCompact(d))
 
     g.append('g')
       .call(yAxisLeft)

@@ -11,7 +11,7 @@
  * Replaces Fibonacci scaling with liquidity-aware sizing.
  */
 
-const { roundUSDC, roundBTC } = require('./volatility-utils');
+const { roundUSDC, roundAsset } = require('./volatility-utils');
 
 /**
  * @typedef {import('./types').RegimeMode} RegimeMode
@@ -127,7 +127,7 @@ const createPositionSizer = (exchange, config) => {
    */
   const calculateBTCQuantity = (sizeUsdc, price) => {
     if (price <= 0) return 0;
-    return roundBTC(sizeUsdc / price);
+    return roundAsset(sizeUsdc / price);
   };
 
   /**
@@ -145,19 +145,19 @@ const createPositionSizer = (exchange, config) => {
    * Recovers full cost basis + (1-holdbackRatio) of profit as USDC
    * Keeps holdbackRatio of profit as BTC appreciation
    *
-   * @param {number} totalBTC - Total BTC position
+   * @param {number} totalAsset - Total BTC position
    * @param {number} avgCostBasis - Average cost per BTC
    * @param {number} sellPrice - Target sell price
    * @param {number} [tierHoldbackScale=1.0] - Tier-specific holdback multiplier (higher tiers hold more)
-   * @returns {{sellQty: number, holdbackQty: number, profitUsdc: number, profitBtcValue: number}}
+   * @returns {{sellQty: number, holdbackQty: number, profitUsdc: number, profitAssetValue: number}}
    */
-  const calculateTakeProfitSize = (totalBTC, avgCostBasis, sellPrice, tierHoldbackScale = 1.0) => {
+  const calculateTakeProfitSize = (totalAsset, avgCostBasis, sellPrice, tierHoldbackScale = 1.0) => {
     const baseHoldback = config.holdbackRatio ?? 0.5;
     const holdbackRatio = Math.min(baseHoldback * tierHoldbackScale, 0.95); // Cap at 95%
 
     // Calculate profit per BTC and total profit
-    const profitPerBTC = sellPrice - avgCostBasis;
-    const totalProfit = totalBTC * profitPerBTC;
+    const profitPerAsset = sellPrice - avgCostBasis;
+    const totalProfit = totalAsset * profitPerAsset;
 
     // Calculate how much profit to keep as BTC value
     const profitToHoldAsBtcValue = totalProfit * holdbackRatio;
@@ -167,18 +167,18 @@ const createPositionSizer = (exchange, config) => {
     // the TP price isn't high enough (caller should raise minTpPct)
     const MIN_HOLDBACK = 0.00000001; // 1 satoshi
     const rawHoldback = profitToHoldAsBtcValue / sellPrice;
-    const holdbackQty = Math.max(roundBTC(rawHoldback), MIN_HOLDBACK);
-    const sellQty = roundBTC(totalBTC - holdbackQty);
+    const holdbackQty = Math.max(roundAsset(rawHoldback), MIN_HOLDBACK);
+    const sellQty = roundAsset(totalAsset - holdbackQty);
 
     // Calculate actual profit split
-    const profitUsdc = sellQty * profitPerBTC;  // USDC profit from selling
-    const profitBtcValue = holdbackQty * profitPerBTC;  // BTC profit value kept
+    const profitUsdc = sellQty * profitPerAsset;  // USDC profit from selling
+    const profitAssetValue = holdbackQty * profitPerAsset;  // BTC profit value kept
 
     return {
       sellQty,
       holdbackQty,
       profitUsdc,
-      profitBtcValue,
+      profitAssetValue,
     };
   };
 
