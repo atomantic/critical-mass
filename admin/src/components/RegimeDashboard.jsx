@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
+import { useToast } from './Toast'
+import { getBaseCurrency, getQuoteCurrency } from '../App'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
@@ -414,7 +416,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [rollingUp, setRollingUp] = useState(false)
   const [fillSearchId, setFillSearchId] = useState('')
   const [openSearchId, setOpenSearchId] = useState('')
+  const [dcaState, setDcaState] = useState(null)
+  const [convertPreview, setConvertPreview] = useState(null)
+  const [converting, setConverting] = useState(false)
+  const [showConvertConfirm, setShowConvertConfirm] = useState(false)
   const prevPriceRef = useRef(null)
+  const { addToast } = useToast()
 
   const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange)
 
@@ -527,6 +534,62 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }
   }, [])
 
+  // Fetch DCA state when engine is not running (for upgrade button)
+  const isRunning = status?.isRunning
+  useEffect(() => {
+    if (!isRunning) {
+      fetch(`/api/${exchange}/state`).then(r => r.json()).then(setDcaState).catch(() => {})
+    } else {
+      setDcaState(null)
+    }
+  }, [exchange, isRunning])
+
+  // DCA conversion handlers
+  const handlePreviewConvert = useCallback(async () => {
+    const res = await fetch(`/api/${exchange}/regime/convert-dca`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preview: true, merge: true }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      addToast({ type: 'error', title: 'Preview Failed', message: err.error || 'Could not preview conversion' })
+      return
+    }
+    const data = await res.json()
+    setConvertPreview(data)
+    setShowConvertConfirm(true)
+  }, [exchange, addToast])
+
+  const handleExecuteConvert = useCallback(async () => {
+    setConverting(true)
+    const res = await fetch(`/api/${exchange}/regime/convert-dca`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preview: false, merge: convertPreview?.merge }),
+    })
+    setConverting(false)
+    setShowConvertConfirm(false)
+    setConvertPreview(null)
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      addToast({ type: 'error', title: 'Conversion Failed', message: err.error || 'Could not convert DCA orders' })
+      return
+    }
+
+    const data = await res.json()
+    addToast({
+      type: 'success',
+      title: data.summary?.totalBodies ? 'DCA Orders Merged' : 'DCA Orders Converted',
+      message: `${data.summary?.pendingOrders || 0} positions imported. ${data.summary?.totalBodies ? `Total bodies: ${data.summary.totalBodies}.` : ''} Start the regime engine to place sell orders.`,
+    })
+    // Refresh status and fills
+    fetchStatus()
+    fetchFills()
+    setDcaState(null)
+  }, [exchange, addToast, fetchStatus, fetchFills, convertPreview?.merge])
+
   // Initial load only - no polling needed, socket provides live updates
   useEffect(() => {
     const load = async () => {
@@ -601,8 +664,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     )
   }
 
-  const isRunning = status?.isRunning
   const isDryRun = status?.isDryRun || config?.dryRun
+  const asset = getBaseCurrency(config?.productId)
   const market = status?.market || {}
   const position = status?.position || {}
   const regime = status?.regime || {}
@@ -628,7 +691,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       )}
 
       {/* Stopped banner when engine is not running but we have data */}
-      {!isRunning && (market.lastPrice > 0 || position.totalBTC > 0) && (
+      {!isRunning && (market.lastPrice > 0 || position.totalAsset > 0) && (
         <div className="bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 flex items-center gap-3">
           <span className="text-red-400 text-lg">■</span>
           <div>
@@ -638,7 +701,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
         </div>
       )}
 
-      {(!isRunning && !market.lastPrice && !position.totalBTC) ? (
+      {(!isRunning && !market.lastPrice && !position.totalAsset) ? (
         /* No data at all - show placeholder */
         <div className="bg-gray-800 rounded-lg p-8 text-center">
           <div className="text-gray-400">
@@ -656,6 +719,14 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 ' Click Start in the header to begin adaptive trading.'
               )}
             </p>
+            {dcaState?.orders?.some(o => o.status === 'pending') && (
+              <button
+                className="mt-4 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors"
+                onClick={handlePreviewConvert}
+              >
+                Upgrade DCA Orders to Regime Engine
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -665,7 +736,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 sm:gap-3">
               {/* Live Price */}
               <div className="col-span-1">
-                <span className="text-[10px] text-gray-500">BTC Price</span>
+                <span className="text-[10px] text-gray-500">{asset} Price</span>
                 <LivePriceTicker
                   price={market.lastPrice}
                   prevPrice={prevPriceRef.current}
@@ -1171,12 +1242,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <div className="text-center">
-                  <div className="text-[10px] text-gray-500 mb-1">BTC</div>
-                  <div className="text-xs text-white font-mono">{position.totalBTC?.toFixed(4) || 0}</div>
+                  <div className="text-[10px] text-gray-500 mb-1">{asset}</div>
+                  <div className="text-xs text-white font-mono">{position.totalAsset?.toFixed(4) || 0}</div>
                   <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, ((position.totalBTC || 0) / (config?.maxBtcExposure || 0.5)) * 100)}%` }} />
+                    <div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, ((position.totalAsset || 0) / (config?.maxAssetExposure || 0.5)) * 100)}%` }} />
                   </div>
-                  <div className="text-[9px] text-gray-600">/ {config?.maxBtcExposure || 0.5}</div>
+                  <div className="text-[9px] text-gray-600">/ {config?.maxAssetExposure || 0.5}</div>
                 </div>
                 <div className="text-center">
                   <div className="text-[10px] text-gray-500 mb-1">USDC</div>
@@ -1210,6 +1281,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   pendingOrders={pendingOrdersList}
                   currentPrice={market.lastPrice}
                   maxUsdcDeployed={config?.maxUsdcDeployed}
+                  baseCurrency={asset}
                 />
               </Suspense>
             )}
@@ -1225,16 +1297,16 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
                 <div>
-                  <div className="text-gray-500">BTC Held</div>
-                  <div className="text-orange-400 font-mono">{position.totalBTC?.toFixed(8) || '0'}</div>
+                  <div className="text-gray-500">{asset} Held</div>
+                  <div className="text-orange-400 font-mono">{position.totalAsset?.toFixed(8) || '0'}</div>
                 </div>
                 <div>
                   <div className="text-gray-500">On Order</div>
-                  <div className="text-yellow-400 font-mono">{(isDryRun && dryRunState?.pnl?.btcOnOrder ? dryRunState.pnl.btcOnOrder : position.btcOnOrder || 0).toFixed(8)}</div>
+                  <div className="text-yellow-400 font-mono">{(isDryRun && dryRunState?.pnl?.assetOnOrder ? dryRunState.pnl.assetOnOrder : position.assetOnOrder || 0).toFixed(8)}</div>
                 </div>
                 <div>
                   <div className="text-gray-500">Reserves</div>
-                  <div className="text-cyan-400 font-mono">{(position.realizedBtcPnL || 0).toFixed(8)}</div>
+                  <div className="text-cyan-400 font-mono">{(position.realizedAssetPnL || 0).toFixed(8)}</div>
                 </div>
                 <div>
                   <div className="text-gray-500">Cost Basis</div>
@@ -1260,7 +1332,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   <div className="text-gray-500">Realized P&L {apy.totalLiquidValuePercent ? `(${apy.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
                   <div className={`font-mono text-base ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     ${position.realizedPnL?.toFixed(2) || '0'}
-                    {(position.realizedBtcPnL || 0) > 0 && <span className="text-orange-400 text-xs ml-1">+{position.realizedBtcPnL?.toFixed(8)} BTC</span>}
+                    {(position.realizedAssetPnL || 0) > 0 && <span className="text-orange-400 text-xs ml-1">+{position.realizedAssetPnL?.toFixed(8)} {asset}</span>}
                     {apy.totalLiquidValue !== undefined && (
                       <span className="text-white text-xs ml-1">= <span className="text-cyan-400">${apy.totalLiquidValue?.toFixed(2)}</span></span>
                     )}
@@ -1325,10 +1397,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       ${recalcPreview.changes?.realizedPnL?.after?.toFixed(2)}
                     </div>
 
-                    <div className="text-gray-300">BTC Reserves</div>
-                    <div className="text-gray-500">{recalcPreview.changes?.realizedBtcPnL?.before?.toFixed(8)}</div>
-                    <div className={recalcPreview.changes?.realizedBtcPnL?.before !== recalcPreview.changes?.realizedBtcPnL?.after ? 'text-cyan-400' : 'text-gray-500'}>
-                      {recalcPreview.changes?.realizedBtcPnL?.after?.toFixed(8)}
+                    <div className="text-gray-300">{asset} Reserves</div>
+                    <div className="text-gray-500">{recalcPreview.changes?.realizedAssetPnL?.before?.toFixed(8)}</div>
+                    <div className={recalcPreview.changes?.realizedAssetPnL?.before !== recalcPreview.changes?.realizedAssetPnL?.after ? 'text-cyan-400' : 'text-gray-500'}>
+                      {recalcPreview.changes?.realizedAssetPnL?.after?.toFixed(8)}
                     </div>
 
                     <div className="text-gray-300">Cycle Buys</div>
@@ -1343,7 +1415,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <div className="text-xs text-gray-400 mb-1">Completed Cycles:</div>
                       {recalcPreview.cycleDetails.map((cycle, i) => (
                         <div key={i} className="text-xs text-gray-500 pl-2">
-                          {cycle.cycleId?.replace('cycle-', '#')} - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackBtc?.toFixed(8)} BTC
+                          {cycle.cycleId?.replace('cycle-', '#')} - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackAsset?.toFixed(8)} {asset}
                         </div>
                       ))}
                     </div>
@@ -1381,15 +1453,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5">
                       <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
                       <div className="flex flex-col font-mono text-xs">
-                        <span className="text-green-400">${(apy.estimatedDailyUsdc || 0).toFixed(2)} + <span className="text-orange-400">{(apy.estimatedDailyBtc || 0).toFixed(8)}</span></span>
-                        <span className="text-green-400">= ${((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyBtc || 0) * (market.lastPrice || 0)).toFixed(2)}</span>
+                        <span className="text-green-400">${(apy.estimatedDailyUsdc || 0).toFixed(2)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
+                        <span className="text-green-400">= ${((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)).toFixed(2)}</span>
                       </div>
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5">
                       <div className="text-cyan-400/70 text-[10px]">Annual ({(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}% APY)</div>
                       <div className="flex flex-col font-mono text-xs">
-                        <span className="text-green-400">${((apy.estimatedDailyUsdc || 0) * 365).toFixed(2)} + <span className="text-orange-400">{((apy.estimatedDailyBtc || 0) * 365).toFixed(6)} BTC</span></span>
-                        <span className="text-cyan-400">= ${(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyBtc || 0) * (market.lastPrice || 0)) * 365).toFixed(2)}</span>
+                        <span className="text-green-400">${((apy.estimatedDailyUsdc || 0) * 365).toFixed(2)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
+                        <span className="text-cyan-400">= ${(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365).toFixed(2)}</span>
                       </div>
                     </div>
                   </div>
@@ -1400,10 +1472,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 <div className="mt-3 pt-3 border-t border-gray-700 text-xs">
                   <div className="text-purple-400 mb-1">Dry-Run Stats</div>
                   <div className="grid grid-cols-2 gap-2 text-gray-400">
-                    <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(8) || 0} BTC</div>
-                    <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(8) || 0} BTC</div>
-                    <div>BTC on Order: <span className="text-yellow-400">{dryRunState.pnl.btcOnOrder?.toFixed(8) || 0}</span></div>
-                    <div>BTC Reserves: <span className="text-cyan-400">{position.realizedBtcPnL?.toFixed(8) || 0}</span></div>
+                    <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(8) || 0} {asset}</div>
+                    <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(8) || 0} {asset}</div>
+                    <div>{asset} on Order: <span className="text-yellow-400">{dryRunState.pnl.assetOnOrder?.toFixed(8) || 0}</span></div>
+                    <div>{asset} Reserves: <span className="text-cyan-400">{position.realizedAssetPnL?.toFixed(8) || 0}</span></div>
                     <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
                     <div>Avg Entry: ${dryRunState.pnl.avgEntryPrice?.toFixed(2) || 0}</div>
                   </div>
@@ -1598,7 +1670,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   const getRelatedBuys = (order) => {
                     const bodyData = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null
                     if (bodyData?.buyOrders?.length > 0) {
-                      const bodyBuys = bodyData.buyOrders.filter(bo => bo.btcQty > 0 && bo.orderId && bo.orderId !== 'core-migration')
+                      const bodyBuys = bodyData.buyOrders.filter(bo => bo.assetQty > 0 && bo.orderId && bo.orderId !== 'core-migration')
                       if (bodyBuys.length > 0) return bodyBuys
                     }
 
@@ -1610,8 +1682,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       const byOrderId = new Map()
                       linkedBuys.forEach(f => {
                         const ex = byOrderId.get(f.orderId)
-                        if (ex) { ex.btcQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
-                        else byOrderId.set(f.orderId, { orderId: f.orderId, price: f.price, btcQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
+                        if (ex) { ex.assetQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
+                        else byOrderId.set(f.orderId, { orderId: f.orderId, price: f.price, assetQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
                       })
                       if (byOrderId.size > 0) return Array.from(byOrderId.values())
                     }
@@ -1622,7 +1694,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         const sorted = [...(dryRunState?.filledOrders || [])].sort((a, b) => (a.filledAt || a.placedAt || 0) - (b.filledAt || b.placedAt || 0))
                         let pending = []
                         sorted.forEach(o => {
-                          if (o.side === 'buy') pending.push({ orderId: o.orderId, price: o.fillPrice || o.price, btcQty: o.size, sizeUsdc: (o.size || 0) * (o.fillPrice || o.price || 0), filledAt: o.filledAt })
+                          if (o.side === 'buy') pending.push({ orderId: o.orderId, price: o.fillPrice || o.price, assetQty: o.size, sizeUsdc: (o.size || 0) * (o.fillPrice || o.price || 0), filledAt: o.filledAt })
                           else if (o.type === 'take_profit') pending = []
                         })
                         return pending
@@ -1632,8 +1704,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       sorted.forEach(f => {
                         if (f.side === 'buy' && !(f.isBodyOwned ?? f.isSatellite)) {
                           const ex = pendingMap.get(f.orderId)
-                          if (ex) { ex.btcQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
-                          else pendingMap.set(f.orderId, { orderId: f.orderId, price: f.price, btcQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
+                          if (ex) { ex.assetQty += f.size; ex.sizeUsdc += (f.quoteAmount || f.size * f.price) }
+                          else pendingMap.set(f.orderId, { orderId: f.orderId, price: f.price, assetQty: f.size, sizeUsdc: f.quoteAmount || f.size * f.price, filledAt: f.timestamp })
                         } else if (f.side === 'sell' && !(f.isBodyOwned ?? f.isSatellite)) {
                           pendingMap.clear()
                         }
@@ -1664,17 +1736,17 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     const sellValue = order.size * order.price
                     const estSellFee = sellValue * 0.0006
                     const satCostBasis = (order.bodyCostBasis ?? order.satelliteCostBasis) || bodyData?.costBasis
-                    const satBtcQty = (order.bodyBtcQty ?? order.satelliteBtcQty) || bodyData?.btcQty
+                    const satBtcQty = (order.bodyBtcQty ?? order.satelliteBtcQty) || bodyData?.assetQty
                     const proratedCost = satCostBasis && satBtcQty
                       ? (satCostBasis / satBtcQty) * order.size
                       : null
                     const estPnl = isTpOrder && orderAvgCost > 0
                       ? (sellValue - estSellFee) - (proratedCost || orderAvgCost * order.size)
                       : null
-                    const profitPerBTC = order.price - orderAvgCost
+                    const profitPerAsset = order.price - orderAvgCost
                     const denominator = order.price * (1 - holdbackRatio) + orderAvgCost * holdbackRatio
-                    const estHoldback = isTpOrder && profitPerBTC > 0 && denominator > 0
-                      ? order.size * profitPerBTC * holdbackRatio / denominator
+                    const estHoldback = isTpOrder && profitPerAsset > 0 && denominator > 0
+                      ? order.size * profitPerAsset * holdbackRatio / denominator
                       : null
                     const estHoldbackValue = estHoldback ? estHoldback * order.price : null
                     const tpPercent = order.tpPercent
@@ -1719,7 +1791,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           <th className="text-left py-2 pr-2">Order ID</th>
                           <th className="text-left py-2 pr-2">Type</th>
                           <th className="text-right py-2 pr-2">TP%</th>
-                          <th className="text-right py-2 pr-2">Size (BTC)</th>
+                          <th className="text-right py-2 pr-2">Size ({asset})</th>
                           <th className="text-right py-2 pr-2">Price</th>
                           <th className="text-right py-2 pr-2">Value</th>
                           <th className="text-right py-2 pr-2">Est. P&L</th>
@@ -1832,7 +1904,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                   <td className="py-1 pr-2"></td>
                                   <td className="py-1 pr-2"></td>
                                   <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
-                                    {buy.btcQty?.toFixed(8)}
+                                    {buy.assetQty?.toFixed(8)}
                                   </td>
                                   <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
                                     ${buy.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1882,7 +1954,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       <thead>
                         <tr className="text-gray-400 text-xs border-b border-gray-700">
                           <th className="text-left py-2 pr-2">Order ID</th>
-                          <th className="text-right py-2 pr-2">Size (BTC)</th>
+                          <th className="text-right py-2 pr-2">Size ({asset})</th>
                           <th className="text-right py-2 pr-2">Price</th>
                           <th className="text-right py-2 pr-2">Value</th>
                           <th className="text-right py-2 pr-2">Age</th>
@@ -2023,10 +2095,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       } else if (fill.isBodyOwned ?? fill.isSatellite) {
                         const bodyPnl = fill.bodyPnl ?? fill.satellitePnl
                         const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0)
-                        const holdbackBtc = (fill.bodyHoldbackBtc ?? fill.satelliteHoldbackBtc) || 0
+                        const holdbackAsset = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0
                         const prev = pnlMap.get(fill.orderId)
-                        if (prev) { prev.pnl += pnl; prev.holdback += holdbackBtc }
-                        else pnlMap.set(fill.orderId, { pnl, holdback: holdbackBtc })
+                        if (prev) { prev.pnl += pnl; prev.holdback += holdbackAsset }
+                        else pnlMap.set(fill.orderId, { pnl, holdback: holdbackAsset })
                       } else {
                         const avgCost = runBtc > 0 ? runCost / runBtc : 0
                         const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
@@ -2097,10 +2169,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         ? buysByBodyId.get(order.bodyId) || []
                         : null
                       const buys = linkedBuys || bodyBuys || []
-                      // For body sells, prefer server-annotated holdback (computed from exact body.btcQty)
+                      // For body sells, prefer server-annotated holdback (computed from exact body.assetQty)
                       // Only fall back to buy-sell size diff when no server annotation exists
-                      if ((sell.isBodyOwned ?? sell.isSatellite) && (sell.bodyHoldbackBtc ?? sell.satelliteHoldbackBtc) != null) {
-                        sell.holdback = sell.bodyHoldbackBtc ?? sell.satelliteHoldbackBtc
+                      if ((sell.isBodyOwned ?? sell.isSatellite) && (sell.bodyHoldbackAsset ?? sell.satelliteHoldbackAsset) != null) {
+                        sell.holdback = sell.bodyHoldbackAsset ?? sell.satelliteHoldbackAsset
                       } else if (buys.length > 0) {
                         const buyTotal = buys.reduce((s, b) => s + (b.size || 0), 0)
                         sell.holdback = Math.max(0, buyTotal - (sell.size || 0))
@@ -2156,7 +2228,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     const sellPrice = sell.fillPrice || sell.price
                     const sellValue = sell.quoteAmount || ((sell.size || 0) * (sellPrice || 0))
                     const sellPnl = sell.pnl ?? sell.bodyPnl ?? sell.satellitePnl ?? null
-                    const sellHoldback = isDryRun ? sell.holdbackBtc : sell.holdback
+                    const sellHoldback = isDryRun ? sell.holdbackAsset : sell.holdback
                     const sellTime = sell.filledAt || sell.timestamp
 
                     return (
@@ -2187,7 +2259,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                             sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'
                           }`}>
                             {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}$${sellPnl.toFixed(2)}` : '—'}
-                            {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title="Holdback BTC">+{sellHoldback.toFixed(8)}</span>}
+                            {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title={`Holdback ${asset}`}>+{sellHoldback.toFixed(8)}</span>}
                           </td>
                           <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
                             {formatTimestamp(sellTime)}
@@ -2244,7 +2316,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <tr className="text-gray-400 text-xs border-b border-gray-700">
                       <th className="text-left py-1.5 pr-1 w-6"></th>
                       <th className="text-left py-1.5 pr-2">Order ID</th>
-                      <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                      <th className="text-right py-1.5 pr-2">Size ({asset})</th>
                       <th className="text-right py-1.5 pr-2">Price</th>
                       <th className="text-right py-1.5 pr-2">Value</th>
                       <th className="text-right py-1.5 pr-2">P&L</th>
@@ -2254,7 +2326,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                   // --- DryRun: flat table (no cycle grouping) ---
                   if (isDryRun) {
-                    totalHoldback = sellGroups.reduce((s, g) => s + (g.sell.holdbackBtc || 0), 0)
+                    totalHoldback = sellGroups.reduce((s, g) => s + (g.sell.holdbackAsset || 0), 0)
                     return (
                       <div className="overflow-x-auto max-h-[48rem] overflow-y-auto">
                         <table className="w-full text-sm">
@@ -2289,8 +2361,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     entry.sells.push(group)
                     entry.totalSize += group.sell.size || 0
                     entry.totalPnl += group.sell.pnl || 0
-                    // Sum per-sell realized holdback (dry-run uses holdbackBtc, live uses holdback from buy-sell diff)
-                    entry.totalHoldback += isDryRun ? (group.sell.holdbackBtc || 0) : (group.sell.holdback || 0)
+                    // Sum per-sell realized holdback (dry-run uses holdbackAsset, live uses holdback from buy-sell diff)
+                    entry.totalHoldback += isDryRun ? (group.sell.holdbackAsset || 0) : (group.sell.holdback || 0)
                     entry.buyCount += group.buys.length
                     const sellTs = group.sell.timestamp || group.sell.filledAt || 0
                     if (sellTs > 0) { entry.minTs = Math.min(entry.minTs, sellTs); entry.maxTs = Math.max(entry.maxTs, sellTs) }
@@ -2340,7 +2412,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                               <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
                               <span className="text-xs text-gray-500">{orphanedBuys.length} buys not linked to any sell</span>
                             </div>
-                            <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} BTC</span>
+                            <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} {asset}</span>
                           </div>
                           {expandedCycles.has('orphans') && (
                             <div className="border-t border-gray-700">
@@ -2349,7 +2421,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                   <tr className="text-gray-400 text-xs border-b border-gray-700">
                                     <th className="text-left py-1.5 pr-1 w-6"></th>
                                     <th className="text-left py-1.5 pr-2">Order ID</th>
-                                    <th className="text-right py-1.5 pr-2">Size (BTC)</th>
+                                    <th className="text-right py-1.5 pr-2">Size ({asset})</th>
                                     <th className="text-right py-1.5 pr-2">Price</th>
                                     <th className="text-right py-1.5 pr-2">Value</th>
                                     <th className="text-right py-1.5 pr-2">Cycle</th>
@@ -2498,6 +2570,79 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 disabled={rollingUp}
               >
                 {rollingUp ? 'Merging...' : 'Roll Up'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DCA-to-Regime conversion confirmation dialog */}
+      {showConvertConfirm && convertPreview && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !converting && setShowConvertConfirm(false)}>
+          <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white text-lg font-medium mb-3">{convertPreview.merge ? 'Import DCA Orders' : 'Upgrade DCA Orders'}</h3>
+            <p className="text-gray-300 text-sm mb-4">
+              {convertPreview.merge
+                ? `Merge DCA positions into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} BTC). New sell orders will be placed when the engine starts.`
+                : 'Convert your DCA order history into the Regime Engine format. Existing sell orders on the exchange will be preserved.'}
+            </p>
+            {(() => {
+              const asset = getBaseCurrency(convertPreview.productId)
+              const quote = getQuoteCurrency(convertPreview.productId)
+              return (
+            <div className="bg-gray-900 rounded-lg p-3 mb-4 text-sm space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-gray-400">Open positions (pending sells)</span>
+                <span className="text-white font-mono">{convertPreview.pending}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Completed orders</span>
+                <span className="text-white font-mono">{convertPreview.filled}</span>
+              </div>
+              {convertPreview.skipped > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Skipped (consolidated sources)</span>
+                  <span className="text-gray-500 font-mono">{convertPreview.skipped}</span>
+                </div>
+              )}
+              <div className="border-t border-gray-700 pt-1.5 flex justify-between">
+                <span className="text-gray-400">Pending {asset}</span>
+                <span className="text-yellow-400 font-mono">{convertPreview.pendingBaseQty?.toFixed(8)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Pending cost basis</span>
+                <span className="text-yellow-400 font-mono">{quote.startsWith('USD') ? '$' : ''}{convertPreview.pendingCostBasis?.toFixed(2)}{!quote.startsWith('USD') ? ` ${quote}` : ''}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Total filled {asset}</span>
+                <span className="text-green-400 font-mono">{convertPreview.totalBaseQty?.toFixed(8)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Total cost basis</span>
+                <span className="text-green-400 font-mono">{quote.startsWith('USD') ? '$' : ''}{convertPreview.totalCostBasis?.toFixed(2)}{!quote.startsWith('USD') ? ` ${quote}` : ''}</span>
+              </div>
+            </div>
+              )
+            })()}
+            <p className="text-gray-500 text-xs mb-4">
+              {convertPreview.merge
+                ? 'This will create backup files and add celestial bodies to the existing regime position. The regime engine will place new sell orders when started.'
+                : 'This will disable the DCA engine, create backup files, and build regime state with celestial bodies for each open position.'}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                onClick={() => setShowConvertConfirm(false)}
+                disabled={converting}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded transition-colors disabled:opacity-50"
+                onClick={handleExecuteConvert}
+                disabled={converting}
+              >
+                {converting ? 'Converting...' : convertPreview?.merge ? 'Confirm Import' : 'Confirm Upgrade'}
               </button>
             </div>
           </div>

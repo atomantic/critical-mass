@@ -1271,3 +1271,11 @@ async function executeArbitrageOpportunity(opportunity) {
 - `src/dca-converter.js` converts DCA orders into regime fill-ledger entries and celestial bodies
 - After conversion, marks all converted DCA orders as `status: 'migrated_to_regime'` to hide from DCA dashboard
 - DCA dashboard filters out migrated orders; "Upgrade DCA Orders" button hidden when no pending orders remain
+- **Merge mode**: `mergeToRegime()` imports DCA positions into an existing regime state non-destructively
+  - Preserves existing celestial bodies, regime state, tpOptimizer, sizeOptimizer
+  - Creates new bodies with `tpOrderId: null` — regime engine places sell orders on start
+  - Adds DCA `assetReserves` to `realizedAssetPnL` and `totalAllocated` to `depositedCapital`
+  - Buy fills marked `isBodyOwned: true` to avoid conflicting with core position tracking
+  - Preview response includes `merge` flag and existing body/asset counts
+  - API: `POST /api/:exchange/regime/convert-dca` with `{ merge: true }` in body
+  - Frontend: "Export to Regime" button on DCA Dashboard, updated "Import" flow on Regime Dashboard

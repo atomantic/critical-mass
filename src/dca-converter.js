@@ -9,9 +9,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { loadState, saveState, saveRegimeState } = require('./state-tracker');
+const { loadState, saveState, loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
-const { createNewBody, classifyTier } = require('./celestial-hierarchy');
+const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
 const { setExchangeEnabled, getRegimeConfig, getExchangeConfig } = require('./config-utils');
 const { getExchangeDataDir } = require('./migration');
 
@@ -58,6 +58,12 @@ const previewConversion = (exchange) => {
   const pendingBaseQty = pending.reduce((sum, o) => sum + (o.buyQuantity || 0), 0);
   const pendingCostBasis = pending.reduce((sum, o) => sum + (o.buyCostBasis || o.buyUSDC || 0), 0);
 
+  // Check if existing regime state has celestial bodies (merge mode)
+  const existingRegime = loadRegimeState(exchange);
+  const existingBodies = existingRegime?.position?.celestialBodies?.length || 0;
+  const existingAsset = existingRegime?.position?.totalAsset || 0;
+  const existingCostBasis = existingRegime?.position?.totalCostBasis || 0;
+
   return {
     pending: pending.length,
     filled: filled.length,
@@ -70,6 +76,10 @@ const previewConversion = (exchange) => {
     totalAllocated: state.totalAllocated || 0,
     assetReserves: state.assetReserves || 0,
     productId: exchangeConfig.productId,
+    merge: existingBodies > 0,
+    existingBodies,
+    existingAsset,
+    existingCostBasis,
   };
 };
 
@@ -274,7 +284,183 @@ const executeConversion = (exchange) => {
   };
 };
 
+/**
+ * Merge DCA positions into an existing regime state (non-destructive)
+ * Unlike executeConversion, this preserves existing celestial bodies, regime state, and optimizers.
+ * @param {string} exchange
+ * @returns {{ success: boolean, backupDir: string, summary: Object }}
+ */
+const mergeToRegime = (exchange) => {
+  const dataDir = getExchangeDataDir(exchange);
+  const timestamp = Date.now();
+  const backupSuffix = `.backup-dca-convert-${timestamp}`;
+
+  // 1. Backup existing state files
+  const filesToBackup = ['state.json', 'fill-ledger.json', 'regime-state.json'];
+  const backedUp = [];
+  for (const file of filesToBackup) {
+    const src = path.join(dataDir, file);
+    if (fs.existsSync(src)) {
+      const dest = path.join(dataDir, file + backupSuffix);
+      fs.copyFileSync(src, dest);
+      backedUp.push(file);
+    }
+  }
+  console.log(`💾 [${exchange}] DCA merge backup: ${backedUp.join(', ')} → ${backupSuffix}`);
+
+  // 2. Load existing regime state and DCA state
+  const existingState = loadRegimeState(exchange);
+  const position = existingState.position;
+  const state = loadState(null, exchange);
+  const orders = state.orders || [];
+  const { pending, filled } = categorizeOrders(orders);
+
+  // 3. Load existing fill ledger and ingest fills
+  const fillLedger = createFillLedger(exchange);
+
+  // Ingest filled (completed) DCA orders as completed cycle fills
+  let filledIngested = 0;
+  for (const order of filled) {
+    fillLedger.startNewCycle();
+
+    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
+    fillLedger.ingestFill({
+      tradeId: buyTradeId,
+      orderId: order.buyOrderId,
+      side: 'buy',
+      price: order.buyPrice,
+      size: order.buyQuantity,
+      totalCommission: order.buyFees || 0,
+      rebate: order.buyRebates || 0,
+      liquidityIndicator: 'TAKER',
+      tradeTime: order.createdAt,
+    });
+
+    const sellTradeId = `dca-convert-sell-${order.orderId}`;
+    fillLedger.ingestFill({
+      tradeId: sellTradeId,
+      orderId: order.orderId,
+      side: 'sell',
+      price: order.sellPrice,
+      size: order.sellQuantity,
+      totalCommission: order.sellFees || 0,
+      rebate: order.sellRebates || 0,
+      liquidityIndicator: 'MAKER',
+      tradeTime: order.filledAt || order.createdAt,
+    });
+
+    filledIngested++;
+  }
+
+  // Ingest pending order buy fills into the current active cycle
+  let pendingIngested = 0;
+  for (const order of pending) {
+    const buyTradeId = `dca-convert-buy-${order.buyOrderId}`;
+    const buyResult = fillLedger.ingestFill({
+      tradeId: buyTradeId,
+      orderId: order.buyOrderId,
+      side: 'buy',
+      price: order.buyPrice,
+      size: order.buyQuantity,
+      totalCommission: order.buyFees || 0,
+      rebate: order.buyRebates || 0,
+      liquidityIndicator: 'TAKER',
+      tradeTime: order.createdAt,
+    });
+
+    // Mark as body-owned so these fills don't conflict with core position tracking
+    if (buyResult.ingested && buyResult.fill) {
+      buyResult.fill.isBodyOwned = true;
+    }
+
+    if (buyResult.ingested) pendingIngested++;
+  }
+
+  fillLedger.persist();
+  console.log(`📝 [${exchange}] Fill ledger merge: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
+
+  // 4. Create celestial bodies from pending DCA orders
+  const regimeConfig = getRegimeConfig(exchange);
+  const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 500;
+  const newBodies = [];
+
+  for (const order of pending) {
+    const costBasis = order.buyCostBasis || (order.buyUSDC + (order.buyFees || 0));
+    const body = createNewBody({
+      totalSize: order.buyQuantity,
+      totalValue: order.buyUSDC,
+      totalFees: order.buyFees || 0,
+      avgPrice: order.buyPrice,
+    }, order.buyOrderId);
+
+    // Sell orders were canceled — regime engine will place new ones on start
+    body.tpOrderId = null;
+    body.tpPrice = 0;
+    body.assetOnOrder = 0;
+    body.createdAt = Date.parse(order.createdAt) || Date.now();
+
+    const tier = classifyTier(costBasis, maxUsdcDeployed);
+    body.tier = tier.name;
+
+    newBodies.push(body);
+  }
+
+  // 5. Append new bodies to existing position
+  position.celestialBodies = [...(position.celestialBodies || []), ...newBodies];
+
+  // 6. Update aggregates from all bodies
+  syncPositionState(position, position.celestialBodies);
+
+  // 7. Update celestialState counters
+  const cs = position.celestialState || { bodiesCompleted: 0, bodiesRealizedPnL: 0, bodiesRealizedAssetPnL: 0, stateVersion: 1 };
+  cs.totalBodiesCreated = (cs.totalBodiesCreated || 0) + newBodies.length;
+  position.celestialState = cs;
+
+  // 8. Add DCA assetReserves to position.realizedAssetPnL
+  position.realizedAssetPnL = (position.realizedAssetPnL || 0) + (state.assetReserves || 0);
+
+  // 9. Add DCA totalAllocated to position.depositedCapital
+  position.depositedCapital = (position.depositedCapital || 0) + (state.totalAllocated || 0);
+
+  // 10. Save regime state (preserving existing regime, tpOptimizer, sizeOptimizer)
+  saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer);
+  console.log(`🔗 [${exchange}] Regime state merged: +${newBodies.length} celestial bodies (total: ${position.celestialBodies.length})`);
+
+  // 11. Mark converted orders in DCA state
+  const dcaState = loadState(null, exchange);
+  const convertedOrderIds = new Set([
+    ...pending.map(o => o.orderId),
+    ...filled.map(o => o.orderId),
+  ]);
+  let migratedCount = 0;
+  for (const order of dcaState.orders || []) {
+    if (convertedOrderIds.has(order.orderId) || order.consolidatedInto) {
+      order.status = 'migrated_to_regime';
+      migratedCount++;
+    }
+  }
+  saveState(dcaState, exchange);
+  console.log(`🧹 [${exchange}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
+
+  return {
+    success: true,
+    backupDir: backupSuffix,
+    backedUpFiles: backedUp,
+    summary: {
+      filledOrders: filledIngested,
+      pendingOrders: pendingIngested,
+      celestialBodies: newBodies.length,
+      totalBodies: position.celestialBodies.length,
+      totalAsset: position.totalAsset,
+      totalCostBasis: position.totalCostBasis,
+      realizedAssetPnL: position.realizedAssetPnL,
+      depositedCapital: position.depositedCapital,
+    },
+  };
+};
+
 module.exports = {
   previewConversion,
   executeConversion,
+  mergeToRegime,
 };
