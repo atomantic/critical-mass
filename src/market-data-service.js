@@ -23,7 +23,7 @@ const { createFillLedger } = require('./fill-ledger');
 const marketDataServices = new Map();
 
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
-const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom'];
+const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 
 /**
  * Create a market data service for an exchange

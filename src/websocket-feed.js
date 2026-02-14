@@ -85,6 +85,10 @@ const createWebSocketFeed = (exchange, config) => {
     const { createCryptocomWebSocketFeed } = require('./adapters/cryptocom/websocket');
     return createCryptocomWebSocketFeed(exchange, config);
   }
+  if (exchange === 'gemini') {
+    const { createGeminiWebSocketFeed } = require('./adapters/gemini/websocket');
+    return createGeminiWebSocketFeed(exchange, config);
+  }
 
   let ws = null;
   let isConnected = false;
