@@ -83,10 +83,49 @@ module.exports = (app, deps) => {
 
     if (!engine) {
       const { loadRegimeState } = require('../state-tracker');
+      const celestialHierarchy = require('../celestial-hierarchy');
       const savedState = loadRegimeState(exchange);
+      const position = savedState?.position || null;
+      const config = getRegimeConfig(exchange);
 
       const marketService = getMarketDataService(exchange);
       const serviceStatus = marketService ? marketService.getStatus() : null;
+
+      // Build celestial object from saved position (mirrors regime-engine getStatus)
+      const bodies = position?.celestialBodies || [];
+      const celestial = {
+        enabled: config.celestialEnabled !== false,
+        bodies: bodies.map(b => {
+          const tierCfg = celestialHierarchy.getTierConfig(b.tier);
+          return {
+            id: b.id,
+            tier: b.tier,
+            emoji: tierCfg.emoji,
+            assetQty: b.assetQty,
+            costBasis: b.costBasis,
+            avgPrice: b.avgPrice,
+            tpOrderId: b.tpOrderId,
+            tpPrice: b.tpPrice,
+            tpPercent: b.avgPrice > 0 && b.tpPrice > 0 ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2) : null,
+            assetOnOrder: b.assetOnOrder,
+            createdAt: b.createdAt,
+            lastMergedAt: b.lastMergedAt,
+            mergeCount: b.mergeCount,
+            buyOrders: (b.buyOrders || []).map(bo => ({
+              orderId: bo.orderId,
+              price: bo.price,
+              assetQty: bo.assetQty,
+              sizeUsdc: bo.sizeUsdc,
+              filledAt: bo.filledAt,
+            })),
+          };
+        }),
+        bodiesActive: bodies.length,
+        bodiesCompleted: position?.celestialState?.bodiesCompleted || 0,
+        bodiesRealizedPnL: position?.celestialState?.bodiesRealizedPnL || 0,
+        bodiesRealizedAssetPnL: position?.celestialState?.bodiesRealizedAssetPnL || 0,
+        tierSummary: celestialHierarchy.getTierSummary(bodies),
+      };
 
       return res.json({
         success: true,
@@ -96,7 +135,8 @@ module.exports = (app, deps) => {
           isRunning: false,
           market: serviceStatus?.market || null,
           regime: serviceStatus?.regime || null,
-          position: savedState?.position || null,
+          position,
+          celestial,
           health: { mode: 'STOPPED' },
           isDryRun: savedState?.isDryRun || false,
         },
