@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 
-function TransactionsDCA({ transactions = [], quoteCurrency = 'USDC' }) {
+function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrency = 'USDC' }) {
   const [filter, setFilter] = useState('all')
   const [sortField, setSortField] = useState('Date')
   const [sortDir, setSortDir] = useState('desc')
 
   // Map data keys to display names (for dynamic currency)
   const getDisplayName = (key) => {
+    if (key === 'BTC Amount') return `${baseCurrency} Amount`
     if (key === 'USDC Amount') return `${quoteCurrency} Amount`
     return key
   }
