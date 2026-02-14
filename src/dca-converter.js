@@ -408,6 +408,20 @@ const mergeToRegime = (exchange) => {
     newBodies.push(body);
   }
 
+  // 4b. Annotate buy fills with bodyId now that bodies exist
+  for (let i = 0; i < pending.length; i++) {
+    const order = pending[i];
+    const body = newBodies[i];
+    if (body) {
+      fillLedger.annotateFillsByOrderId(order.buyOrderId, {
+        isBodyOwned: true,
+        bodyId: body.id,
+        bodyTier: body.tier,
+      });
+    }
+  }
+  fillLedger.persist();
+
   // 5. Append new bodies to existing position
   position.celestialBodies = [...(position.celestialBodies || []), ...newBodies];
 

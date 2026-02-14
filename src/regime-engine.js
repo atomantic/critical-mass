@@ -1035,12 +1035,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         let annotatedCount = 0;
 
         // 1. Annotate buy fills for active celestial bodies (use both sourceOrderIds and buyOrders)
+        // Also fix fills that have isBodyOwned but are missing bodyId (e.g. from DCA merge converter)
         for (const body of (positionState.celestialBodies || [])) {
           const annotation = { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier };
           if (body.tpOrderId) annotation.sellOrderId = body.tpOrderId;
           const seen = new Set();
           for (const srcOrderId of (body.sourceOrderIds || [])) {
-            const buyFills = cycleFills.filter(f => f.orderId === srcOrderId && !(f.isBodyOwned || f.isSatellite));
+            const buyFills = cycleFills.filter(f => f.orderId === srcOrderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
             if (buyFills.length > 0) {
               fillLedger.annotateFillsByOrderId(srcOrderId, annotation);
               annotatedCount += buyFills.length;
@@ -1049,7 +1050,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           }
           for (const buyOrder of (body.buyOrders || [])) {
             if (buyOrder.orderId === 'core-migration' || seen.has(buyOrder.orderId)) continue;
-            const buyFills = cycleFills.filter(f => f.orderId === buyOrder.orderId && !(f.isBodyOwned || f.isSatellite));
+            const buyFills = cycleFills.filter(f => f.orderId === buyOrder.orderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
             if (buyFills.length > 0) {
               fillLedger.annotateFillsByOrderId(buyOrder.orderId, annotation);
               annotatedCount += buyFills.length;
