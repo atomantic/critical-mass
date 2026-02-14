@@ -7,7 +7,23 @@ const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig, getExchangeCo
 const { getMarketDataService, startMarketDataService, stopMarketDataService } = require('../market-data-service');
 const { getChartDataBuffer, getChartData } = require('../chart-data-buffer');
 const { createRegimeEngine } = require('../regime-engine');
+const { createFillLedger } = require('../fill-ledger');
 const { log } = require('../logger');
+
+// Cached standalone fill ledgers for when engine isn't running (avoids re-creating on every request)
+const standaloneLedgers = new Map();
+
+const getStandaloneLedger = (exchange) => {
+  if (!standaloneLedgers.has(exchange)) {
+    standaloneLedgers.set(exchange, createFillLedger(exchange));
+  }
+  return standaloneLedgers.get(exchange);
+};
+
+/** Invalidate cached standalone ledger (call when engine starts/stops or data changes) */
+const invalidateStandaloneLedger = (exchange) => {
+  standaloneLedgers.delete(exchange);
+};
 
 /**
  * @param {import('express').Express} app
@@ -21,7 +37,7 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const regimeConfig = getRegimeConfig(exchange);
     const exchangeConfig = getExchangeConfig(exchange);
-    const config = { ...regimeConfig, dryRun: exchangeConfig.dryRun };
+    const config = { ...regimeConfig, dryRun: exchangeConfig.dryRun, productId: exchangeConfig.productId };
     res.json({ success: true, exchange, config });
   });
 
@@ -146,6 +162,7 @@ module.exports = (app, deps) => {
     }
 
     stopMarketDataService(exchange);
+    invalidateStandaloneLedger(exchange);
     saveRegimeRunningFlag(exchange, true);
 
     log('INFO', `🚀 [${exchange}] Regime engine started`);
@@ -176,6 +193,7 @@ module.exports = (app, deps) => {
     }
 
     regimeEngines.delete(exchange);
+    invalidateStandaloneLedger(exchange);
     saveRegimeRunningFlag(exchange, false);
 
     log('INFO', `✅ [${exchange}] Regime engine stopped successfully`);
@@ -275,8 +293,7 @@ module.exports = (app, deps) => {
     const engine = regimeEngines.get(exchange);
 
     if (!engine) {
-      const { createFillLedger } = require('../fill-ledger');
-      const ledger = createFillLedger(exchange);
+      const ledger = getStandaloneLedger(exchange);
       const fills = ledger.getAllFills();
       const stats = ledger.getStats();
       return res.json({ success: true, exchange, running: false, fills, stats });
@@ -318,7 +335,7 @@ module.exports = (app, deps) => {
           type: 'take_profit',
           side: 'sell',
           price: savedState.position.lastTpPrice || 0,
-          size: savedState.position.btcOnOrder || savedState.position.totalBTC || 0,
+          size: savedState.position.assetOnOrder || savedState.position.totalAsset || 0,
           status: 'open',
           placedAt: savedState.position.lastEntryTime || null,
         });
@@ -333,10 +350,11 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { apply = false } = req.body;
 
-    const { createFillLedger } = require('../fill-ledger');
     const { loadRegimeState, saveRegimeState } = require('../state-tracker');
 
-    const fillLedger = createFillLedger(exchange);
+    // Recalculate mutates cycle data, so invalidate cache and get a fresh ledger
+    invalidateStandaloneLedger(exchange);
+    const fillLedger = getStandaloneLedger(exchange);
     const currentState = loadRegimeState(exchange);
 
     const recalcResult = fillLedger.recalculateCycles();
@@ -345,32 +363,32 @@ module.exports = (app, deps) => {
 
     // Use global P&L computed from all fills (matches dashboard Filled Orders computation)
     const totalRealizedPnL = recalcResult.globalRealizedPnL;
-    const totalRealizedBtcPnL = recalcResult.globalRealizedBtcPnL;
+    const totalRealizedAssetPnL = recalcResult.globalRealizedAssetPnL;
 
     const changes = {
       cyclesCompleted: { before: currentState.position?.cyclesCompleted || 0, after: recalcResult.cyclesCompleted },
       realizedPnL: { before: currentState.position?.realizedPnL || 0, after: totalRealizedPnL },
-      realizedBtcPnL: { before: currentState.position?.realizedBtcPnL || 0, after: totalRealizedBtcPnL },
+      realizedAssetPnL: { before: currentState.position?.realizedAssetPnL || 0, after: totalRealizedAssetPnL },
       ladderStep: { before: currentState.position?.ladderStep || 0, after: currentPosition.ladderStep },
-      totalBTC: { before: currentState.position?.totalBTC || 0, after: currentPosition.totalBTC },
+      totalAsset: { before: currentState.position?.totalAsset || 0, after: currentPosition.totalAsset },
       totalCostBasis: { before: currentState.position?.totalCostBasis || 0, after: currentPosition.totalCostBasis },
     };
 
     if (apply) {
       // Compute body-only P&L to keep celestialState counter in sync
       const bodyOnlyPnL = totalRealizedPnL - recalcResult.realizedPnL;
-      const bodyOnlyBtcPnL = totalRealizedBtcPnL - recalcResult.realizedBtcPnL;
+      const bodyOnlyBtcPnL = totalRealizedAssetPnL - recalcResult.realizedAssetPnL;
       const celestialState = currentState.position?.celestialState || {};
       const updatedPosition = {
         ...currentState.position,
         ...currentPosition,
         cyclesCompleted: recalcResult.cyclesCompleted,
         realizedPnL: totalRealizedPnL,
-        realizedBtcPnL: totalRealizedBtcPnL,
+        realizedAssetPnL: totalRealizedAssetPnL,
         celestialState: {
           ...celestialState,
           bodiesRealizedPnL: Math.round(bodyOnlyPnL * 100) / 100,
-          bodiesRealizedBtcPnL: Math.round(bodyOnlyBtcPnL * 1e8) / 1e8,
+          bodiesRealizedAssetPnL: Math.round(bodyOnlyBtcPnL * 1e8) / 1e8,
         },
       };
 
@@ -382,7 +400,7 @@ module.exports = (app, deps) => {
         engine.updatePosition(updatedPosition);
       }
 
-      console.log(`🔧 [${exchange}] Regime state recalculated: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalRealizedPnL.toFixed(2)}, BTC reserves=${totalRealizedBtcPnL.toFixed(8)}`);
+      console.log(`🔧 [${exchange}] Regime state recalculated: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalRealizedPnL.toFixed(2)}, BTC reserves=${totalRealizedAssetPnL.toFixed(8)}`);
     }
 
     res.json({
@@ -395,6 +413,27 @@ module.exports = (app, deps) => {
       activeCycleId: recalcResult.activeCycleId,
       currentCycleFills: currentCycleFills.length,
     });
+  });
+
+  // Convert DCA orders to regime engine state
+  app.post('/api/:exchange/regime/convert-dca', (req, res) => {
+    const { exchange } = req.params;
+    const { preview = true } = req.body;
+
+    // Refuse if regime engine is already running
+    if (regimeEngines.has(exchange)) {
+      return res.status(400).json({ success: false, error: 'Regime engine is running — stop it before converting DCA orders' });
+    }
+
+    const { previewConversion, executeConversion } = require('../dca-converter');
+
+    if (preview) {
+      const summary = previewConversion(exchange);
+      return res.json({ success: true, preview: true, exchange, ...summary });
+    }
+
+    const result = executeConversion(exchange);
+    res.json({ success: true, preview: false, exchange, ...result });
   });
 
   // Dry-run endpoints
