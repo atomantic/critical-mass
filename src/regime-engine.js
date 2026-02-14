@@ -29,7 +29,7 @@ const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
 const { createLadderCalculator } = require('./ladder-calculator');
-const { calculateAllMetrics, clamp, roundAsset, roundUSDC } = require('./volatility-utils');
+const { calculateAllMetrics, clamp, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
@@ -183,6 +183,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   // State (initialized before executor so dry-run can reference marketState)
   let marketState = createInitialMarketState();
   let positionState = createInitialPositionState();
+  let priceIncrement = 0.01; // Updated from product details in start()
 
   // Track if cycle buys limit warning has been logged (to avoid log spam)
   let cycleBuysLimitWarningLogged = false;
@@ -730,6 +731,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     console.log(`🚀 [${exchange}] ${modeLabel}Starting regime engine for ${productId}`);
+
+    // Fetch product details for price tick size (affects TP price rounding)
+    const productDetails = await adapter.getProductDetails(productId).catch((err) => {
+      console.log(`⚠️ [${exchange}] Could not fetch product details: ${err.message}, using default price increment`);
+      return null;
+    });
+    if (productDetails?.quoteIncrement) {
+      priceIncrement = parseFloat(productDetails.quoteIncrement) || 0.01;
+      console.log(`📏 [${exchange}] Price increment: ${priceIncrement}`);
+    }
+    if (orderExecutor.setPriceIncrement) {
+      orderExecutor.setPriceIncrement(priceIncrement);
+    }
 
     // Recover state from exchange (skip in dry-run mode)
     if (!isDryRun) {
@@ -1652,7 +1666,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       };
 
       // Calculate candidate TP price for merge proximity check
-      const candidateTpPrice = roundUSDC(summary.avgPrice * (1 + calculateDynamicTpPercent() / 100));
+      const candidateTpPrice = roundPrice(summary.avgPrice * (1 + calculateDynamicTpPercent() / 100), priceIncrement);
 
       // Find merge target among existing celestial bodies
       const bodies = positionState.celestialBodies || [];
@@ -2665,7 +2679,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       : feeFloorPct;
     let finalTpPct = Math.min(Math.max(tierTpPct, minTpPct), effectiveMax);
 
-    let tpPrice = roundUSDC(body.avgPrice * (1 + finalTpPct / 100));
+    let tpPrice = roundPrice(body.avgPrice * (1 + finalTpPct / 100), priceIncrement);
 
     // Guard: never place a TP at or below the body's avg price (would realize a loss)
     if (tpPrice <= body.avgPrice) {
@@ -2688,7 +2702,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const estPnl = estSellProceeds - body.costBasis;
       if (estPnl >= 0.01 && holdbackQty >= 0.00000001) break;
       finalTpPct += 0.01;
-      tpPrice = roundUSDC(body.avgPrice * (1 + finalTpPct / 100));
+      tpPrice = roundPrice(body.avgPrice * (1 + finalTpPct / 100), priceIncrement);
       ({ sellQty, holdbackQty } = positionSizer.calculateTakeProfitSize(
         body.assetQty, body.avgPrice, tpPrice, tierCfg.holdbackScale
       ));
@@ -2838,7 +2852,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const calculateDynamicTP = () => {
     const { avgCostBasis } = positionState;
     const tpPercent = calculateDynamicTpPercent();
-    return roundUSDC(avgCostBasis * (1 + tpPercent / 100));
+    return roundPrice(avgCostBasis * (1 + tpPercent / 100), priceIncrement);
   };
 
   /**
@@ -2909,7 +2923,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   if (isDryRun) {
     dryRunCallbacks.onBuyFill = async (orderId, assetQty, price, costBasis) => {
       const newBuy = { assetQty, costBasis, avgPrice: price, buyOrderId: orderId };
-      const candidateTpPrice = roundUSDC(price * (1 + calculateDynamicTpPercent() / 100));
+      const candidateTpPrice = roundPrice(price * (1 + calculateDynamicTpPercent() / 100), priceIncrement);
 
       const bodies = positionState.celestialBodies || [];
       let mergeTarget = celestialHierarchy.findMergeTarget(

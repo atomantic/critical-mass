@@ -405,10 +405,11 @@ describe('validateRegimeConfig', () => {
     }
   });
 
-  it('reports maxBtcExposure out of range', () => {
-    assert.equal(validateRegimeConfig({ maxBtcExposure: 0.005 }).valid, false);
-    assert.equal(validateRegimeConfig({ maxBtcExposure: 11 }).valid, false);
-    assert.equal(validateRegimeConfig({ maxBtcExposure: 1.0 }).valid, true);
+  it('reports maxAssetExposure out of range', () => {
+    assert.equal(validateRegimeConfig({ maxAssetExposure: -1 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxAssetExposure: 11 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxAssetExposure: 0 }).valid, true);  // 0 = uncapped
+    assert.equal(validateRegimeConfig({ maxAssetExposure: 1.0 }).valid, true);
   });
 
   it('reports maxDrawdownPercent out of range', () => {

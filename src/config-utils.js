@@ -159,7 +159,7 @@ const REGIME_DEFAULTS = {
   sizeMaxCycleBuys: 100,      // Max cycle buys if auto-adjusting
 
   // Risk Caps
-  maxAssetExposure: 0.5,
+  maxAssetExposure: 0,  // 0 = uncapped
   depositedCapital: 0,  // Total user deposits (0 = auto-derive from maxUsdcDeployed - realizedPnL)
   maxUsdcDeployed: 10000,
   maxDrawdownPercent: 20,
@@ -775,8 +775,8 @@ const validateRegimeConfig = (config) => {
   }
 
   // Risk Caps validation
-  if (config.maxAssetExposure !== undefined && (config.maxAssetExposure < 0.01 || config.maxAssetExposure > 10.0)) {
-    errors.push('maxAssetExposure must be between 0.01 and 10.0');
+  if (config.maxAssetExposure !== undefined && config.maxAssetExposure !== 0 && (config.maxAssetExposure < 0.01 || config.maxAssetExposure > 10.0)) {
+    errors.push('maxAssetExposure must be 0 (uncapped) or between 0.01 and 10.0');
   }
   if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && (config.depositedCapital < 100 || config.depositedCapital > 100000)) {
     errors.push('depositedCapital must be 0 (auto-derive) or between 100 and 100000');

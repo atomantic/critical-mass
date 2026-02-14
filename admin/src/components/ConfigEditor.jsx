@@ -767,7 +767,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
             <SectionCard title="Risk Caps">
               <div className="grid grid-cols-2 gap-3">
                 <FormInput label="Deposited Capital" hint="Your actual cash deposits (0 = auto-derive)" value={regimeConfig.depositedCapital || 0} onChange={(v) => handleRegimeChange('depositedCapital', v)} type="number" />
-                <FormInput label={`Max ${baseCurrency} Exposure`} hint={`Max ${baseCurrency} the engine can hold at once`} value={regimeConfig.maxAssetExposure || 0.5} onChange={(v) => handleRegimeChange('maxAssetExposure', v)} type="number" />
+                <FormInput label={`Max ${baseCurrency} Exposure`} hint={`Max ${baseCurrency} the engine can hold (0 = uncapped)`} value={regimeConfig.maxAssetExposure ?? 0} onChange={(v) => handleRegimeChange('maxAssetExposure', v)} type="number" />
                 <FormInput label="Max USDC Cap" hint="Max USDC deployed across active orders" value={regimeConfig.maxUsdcDeployed || 10000} onChange={(v) => handleRegimeChange('maxUsdcDeployed', v)} type="number" />
                 <FormInput label="Max Drawdown %" hint="Pause entries when unrealized loss exceeds this" value={regimeConfig.maxDrawdownPercent || 20} onChange={(v) => handleRegimeChange('maxDrawdownPercent', v)} type="number" />
                 <FormInput label="Liquidity Factor Cap" hint="Max size multiplier from orderbook liquidity" value={regimeConfig.liquidityFactorCap || 2.0} onChange={(v) => handleRegimeChange('liquidityFactorCap', v)} type="number" />
