@@ -167,14 +167,14 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
         positionState.originalCapital = positionState.initialCapital;
       }
       ensureDepositedCapital();
-      console.log(`📊 [${exchange}] APY tracking backfilled: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
+      console.log(`📊 [${exchange}] APY tracking backfilled: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
       return;
     }
     if (!positionState.originalCapital) {
       positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
     }
     ensureDepositedCapital();
-    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
+    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
     return;
   }
 
@@ -183,7 +183,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
       positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
     }
     ensureDepositedCapital();
-    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
+    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
     return;
   }
 
@@ -191,7 +191,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
   positionState.initialCapital = config.maxUsdcDeployed || 10000;
   positionState.originalCapital = positionState.initialCapital;
   positionState.depositedCapital = positionState.initialCapital;
-  console.log(`📊 [${exchange}] APY tracking started fresh: deposited=$${positionState.depositedCapital}`);
+  console.log(`📊 [${exchange}] APY tracking started fresh: deposited=$${Number(positionState.depositedCapital).toFixed(2)}`);
 };
 
 module.exports = { calculateApyMetrics, initializeApyTracking };

@@ -540,7 +540,13 @@ const createFillLedger = (exchange, productId) => {
           const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount - fill.netFee) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0);
           const holdback = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0;
           const prev = sellPnlMap.get(fill.orderId);
-          if (prev) { prev.pnl += pnl; prev.holdback += holdback; prev.isBody = true; }
+          if (prev) {
+            // bodyPnl annotations are total body P&L, not per-fill — skip duplicates
+            if (bodyPnl == null) { prev.pnl += pnl; prev.holdback += holdback; }
+            prev.quoteAmount = (prev.quoteAmount || 0) + fill.quoteAmount;
+            prev.netFee = (prev.netFee || 0) + fill.netFee;
+            prev.isBody = true;
+          }
           else sellPnlMap.set(fill.orderId, { pnl, holdback, isBody: true, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: bodyPnl != null });
         } else {
           const avgCost = gRunAsset > 0 ? gRunCost / gRunAsset : 0;
@@ -597,6 +603,8 @@ const createFillLedger = (exchange, productId) => {
       if (!linkedBuys || linkedBuys.length === 0) continue;
       // Skip body sells with trusted bodyPnl annotations
       if (data.isBody && data.hasAnnotation) continue;
+      // Skip non-body sells — running average P&L is already correct
+      if (!data.isBody) continue;
       const buyCost = linkedBuys.reduce((s, b) => s + b.quoteAmount + b.netFee, 0);
       const sellProceeds = data.quoteAmount - data.netFee;
       data.pnl = sellProceeds - buyCost;
@@ -807,7 +815,28 @@ const createFillLedger = (exchange, productId) => {
     }
     nextCycleNumber = cycleNum;
 
-    if (orphansFixed > 0 || renumbered > 0) {
+    // Auto-link buys to sells within the same cycle (fixes orphaned buys display)
+    let linkedCount = 0;
+    const cycleSellIds = new Map(); // cycleId -> first sell orderId
+    for (const fill of fills.values()) {
+      if (fill.side === 'sell' && fill.cycleId && !cycleSellIds.has(fill.cycleId)) {
+        cycleSellIds.set(fill.cycleId, fill.orderId);
+      }
+    }
+    for (const fill of fills.values()) {
+      if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId) {
+        const sellId = cycleSellIds.get(fill.cycleId);
+        if (sellId) {
+          fill.sellOrderId = sellId;
+          linkedCount++;
+        }
+      }
+    }
+    if (linkedCount > 0) {
+      console.log(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`);
+    }
+
+    if (orphansFixed > 0 || renumbered > 0 || linkedCount > 0) {
       persist();
     }
 
