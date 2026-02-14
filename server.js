@@ -322,11 +322,11 @@ const rescheduleBackupTimer = () => {
 
 const sharedDeps = { regimeEngines, io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, wireMarketDataCallbacks, saveRegimeRunningFlag, rescheduleBackupTimer };
 
+require('./src/routes/settings-routes')(app, sharedDeps);
 require('./src/routes/exchange-routes')(app, sharedDeps);
 const { createEngineCallbacks } = require('./src/routes/regime-routes')(app, sharedDeps);
 require('./src/routes/keys-routes')(app, sharedDeps);
 require('./src/routes/backtest-routes')(app, sharedDeps);
-require('./src/routes/settings-routes')(app, sharedDeps);
 require('./src/routes/legacy-routes')(app, sharedDeps);
 
 // ============ Static Files ============
