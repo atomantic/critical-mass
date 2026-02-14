@@ -15,7 +15,7 @@ const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
-const { getRegimeConfig } = require('./config-utils');
+const { getRegimeConfig, getExchangeConfig } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 
@@ -97,7 +97,8 @@ const createMarketDataService = (exchange) => {
     }
 
     const config = getRegimeConfig(exchange);
-    const productId = config.productId || 'BTC-USDC';
+    const exchangeConfig = getExchangeConfig(exchange);
+    const productId = config.productId || exchangeConfig.productId || 'BTC-USDC';
 
     // Create regime detector for passive monitoring
     regimeDetector = createRegimeDetector(exchange, config);
