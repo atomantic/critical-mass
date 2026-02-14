@@ -140,13 +140,11 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
       return;
     }
 
-    // Handle subscription confirmations and errors
-    if (message.method === 'subscribe') {
-      if (message.code !== 0) {
-        const errorMsg = message.message || `Subscription error code ${message.code}`;
-        console.log(`❌ [${exchange}] Crypto.com subscription error: ${errorMsg}`);
-        config.onError?.(new Error(errorMsg));
-      }
+    // Handle subscription errors (successful subscribes carry data in result, so fall through)
+    if (message.method === 'subscribe' && message.code !== 0) {
+      const errorMsg = message.message || `Subscription error code ${message.code}`;
+      console.log(`❌ [${exchange}] Crypto.com subscription error: ${errorMsg}`);
+      config.onError?.(new Error(errorMsg));
       return;
     }
 
@@ -155,9 +153,9 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
 
     const channel = result.channel;
 
-    if (channel.startsWith('ticker.')) {
+    if (channel === 'ticker') {
       handleTickerData(result.data);
-    } else if (channel.startsWith('trade.')) {
+    } else if (channel === 'trade') {
       handleTradeData(result.data);
     }
   };
