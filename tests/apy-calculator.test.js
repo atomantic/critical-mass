@@ -11,7 +11,7 @@ const MS_PER_DAY = 24 * MS_PER_HOUR;
 const basePositionState = () => ({
   engineStartTime: null,
   realizedPnL: 0,
-  realizedBtcPnL: 0,
+  realizedAssetPnL: 0,
   totalCostBasis: 0,
   initialCapital: 0,
   depositedCapital: 0,
@@ -68,7 +68,7 @@ describe('calculateApyMetrics', () => {
     const pos = basePositionState();
     pos.engineStartTime = Date.now() - MS_PER_DAY;
     pos.realizedPnL = 0;
-    pos.realizedBtcPnL = 0;
+    pos.realizedAssetPnL = 0;
     const result = calculateApyMetrics(pos, baseConfig(), baseMarketState());
 
     assert.equal(result.totalLiquidValue, 0);
@@ -102,7 +102,7 @@ describe('calculateApyMetrics', () => {
     const pos = basePositionState();
     pos.engineStartTime = Date.now() - 5 * MS_PER_DAY;
     pos.realizedPnL = 50;        // $50 USDC
-    pos.realizedBtcPnL = 0.001;  // 0.001 BTC
+    pos.realizedAssetPnL = 0.001;  // 0.001 BTC
     pos.initialCapital = 10000;
     pos.cyclesCompleted = 10;
 
@@ -125,7 +125,7 @@ describe('calculateApyMetrics', () => {
     const pos = basePositionState();
     pos.engineStartTime = Date.now() - 3 * MS_PER_DAY;
     pos.realizedPnL = 0;
-    pos.realizedBtcPnL = 0.0005;
+    pos.realizedAssetPnL = 0.0005;
     pos.initialCapital = 10000;
     pos.cyclesCompleted = 5;
 
@@ -307,7 +307,7 @@ describe('calculateApyMetrics', () => {
     const pos = basePositionState();
     pos.engineStartTime = Date.now() - 2 * MS_PER_DAY;
     pos.realizedPnL = 0;
-    pos.realizedBtcPnL = 0.001; // non-zero BTC to avoid zero-return short-circuit
+    pos.realizedAssetPnL = 0.001; // non-zero BTC to avoid zero-return short-circuit
     pos.initialCapital = 10000;
     pos.cyclesCompleted = 0;
 
@@ -358,7 +358,7 @@ describe('calculateApyMetrics', () => {
     const pos = basePositionState();
     pos.engineStartTime = Date.now() - 365 * MS_PER_DAY;
     pos.realizedPnL = 500000;
-    pos.realizedBtcPnL = 5.0;
+    pos.realizedAssetPnL = 5.0;
     pos.initialCapital = 10000;
     pos.cyclesCompleted = 10000;
 
@@ -391,7 +391,7 @@ describe('calculateApyMetrics', () => {
     const pos = basePositionState();
     pos.engineStartTime = Date.now() - 5 * MS_PER_DAY;
     pos.realizedPnL = -50;       // lost $50 USDC
-    pos.realizedBtcPnL = 0.002;  // gained BTC
+    pos.realizedAssetPnL = 0.002;  // gained BTC
     pos.initialCapital = 10000;
     pos.cyclesCompleted = 10;
 

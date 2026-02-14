@@ -181,7 +181,7 @@ describe('createInitialFibState', () => {
     assert.equal(state.fibPosition, 0);
     assert.equal(state.fibCycleStartTime, null);
     assert.equal(state.fibCumulativeCost, 0);
-    assert.equal(state.fibCumulativeBTC, 0);
+    assert.equal(state.fibCumulativeAsset, 0);
     assert.equal(state.fibActiveSellOrderId, null);
     assert.equal(state.fibPendingHoldback, 0);
   });

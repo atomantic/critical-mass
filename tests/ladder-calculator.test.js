@@ -310,12 +310,12 @@ describe('buildLadder', () => {
     }
   });
 
-  it('each level has btcQty = sizeUsdc / price', () => {
+  it('each level has assetQty = sizeUsdc / price', () => {
     const lc = calc();
     const result = lc.buildLadder(100000, 2000, defaultContext());
     for (const level of result.levels) {
       const expected = Math.round((level.sizeUsdc / level.price) * 1e8) / 1e8;
-      assert.equal(level.btcQty, expected);
+      assert.equal(level.assetQty, expected);
     }
   });
 
@@ -406,8 +406,8 @@ describe('getSummary', () => {
     const ladder = {
       lowerBoundPct: 78,
       levels: [
-        { index: 0, price: 99000, sizeUsdc: 50, btcQty: 0.0005, distancePct: 1 },
-        { index: 1, price: 80000, sizeUsdc: 200, btcQty: 0.0025, distancePct: 20 },
+        { index: 0, price: 99000, sizeUsdc: 50, assetQty: 0.0005, distancePct: 1 },
+        { index: 1, price: 80000, sizeUsdc: 200, assetQty: 0.0025, distancePct: 20 },
       ],
     };
     const summary = lc.getSummary(ladder);

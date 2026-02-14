@@ -32,7 +32,14 @@ const calculateApyMetrics = (positionState, config, marketState) => {
             : autoDerivedCapital));
 
   const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
-  const deployedInPosition = positionState.totalCostBasis || 0;
+
+  // Derive deployed capital from source data (totalCostBasis can be stale/out-of-sync)
+  const bodyCost = (positionState.celestialBodies || [])
+    .reduce((sum, b) => sum + (b.costBasis || 0), 0);
+  const pendingEntryCost = (positionState.pendingEntryOrders || [])
+    .reduce((sum, o) => sum + (o.sizeUsdc || 0), 0);
+  const additionalCycleCost = Math.max(0, (positionState.totalCostBasis || 0) - bodyCost);
+  const deployedInPosition = bodyCost + pendingEntryCost + additionalCycleCost;
   const availableCapital = Math.max(0, maxUsdcDeployed - deployedInPosition);
   const currentPrice = marketState.lastPrice || 0;
 

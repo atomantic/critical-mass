@@ -128,6 +128,11 @@ module.exports = (app, deps) => {
         tierSummary: celestialHierarchy.getTierSummary(bodies),
       };
 
+      // Compute APY from saved state (mirrors engine's getStatus)
+      const { calculateApyMetrics } = require('../apy-calculator');
+      const lastPrice = serviceStatus?.market?.lastPrice || 0;
+      const apy = position ? calculateApyMetrics(position, config, { lastPrice }) : {};
+
       return res.json({
         success: true,
         exchange,
@@ -138,6 +143,7 @@ module.exports = (app, deps) => {
           regime: serviceStatus?.regime || null,
           position,
           celestial,
+          apy,
           health: { mode: 'STOPPED' },
           isDryRun: savedState?.isDryRun || false,
         },
@@ -432,6 +438,13 @@ module.exports = (app, deps) => {
           bodiesRealizedAssetPnL: Math.round(bodyOnlyBtcPnL * 1e8) / 1e8,
         },
       };
+
+      // Sync totalCostBasis from celestial bodies (rebuildPositionFromFills only has current cycle cost)
+      const bodies = updatedPosition.celestialBodies || [];
+      if (bodies.length > 0) {
+        const { syncPositionState } = require('../celestial-hierarchy');
+        syncPositionState(updatedPosition, bodies);
+      }
 
       saveRegimeState(updatedPosition, currentState.regime, exchange, currentState.tpOptimizer, currentState.sizeOptimizer);
       fillLedger.persist();
