@@ -50,6 +50,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   let lastTpSize = 0;
   let activeTpOrderId = null;
   let staleTimeoutMultiplier = 1.0; // Can be adjusted by regime
+  let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
 
   /** @type {Map<string, {tpOrderId: string, assetQty: number, tpPrice: number}>} */
   const bodyTpOrders = new Map(); // bodyId -> body TP tracking
@@ -152,7 +153,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       bidPrice = currentAsk * 0.999; // Back off to ensure maker
     }
 
-    bidPrice = roundPrice(bidPrice);
+    bidPrice = roundPrice(bidPrice, priceIncrement);
     const assetQty = roundAsset(sizeUsdc / bidPrice);
 
     console.log(`📝 [${exchange}] Placing entry bid: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
@@ -269,7 +270,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
     }
 
-    const roundedPrice = roundPrice(tpPrice);
+    const roundedPrice = roundPrice(tpPrice, priceIncrement);
     const roundedQty = roundAsset(assetQty);
 
     console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
@@ -762,7 +763,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
    */
   const placeBodyTpOrder = async (assetQty, tpPrice, bodyId) => {
-    const roundedPrice = roundPrice(tpPrice);
+    const roundedPrice = roundPrice(tpPrice, priceIncrement);
     const roundedQty = roundAsset(assetQty);
 
     console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
@@ -1061,6 +1062,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     isLadderOrder,
     // Timer cleanup
     clearTimers: () => { for (const t of staleTimers) clearTimeout(t); staleTimers.clear(); },
+    // Price precision
+    setPriceIncrement: (inc) => { priceIncrement = inc; },
   };
 };
 

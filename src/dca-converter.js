@@ -204,10 +204,13 @@ const executeConversion = (exchange) => {
       avgPrice: order.buyPrice,
     }, order.buyOrderId);
 
-    // Link to existing sell order on exchange
-    body.tpOrderId = order.orderId;
+    // Don't copy DCA sell order ID — regime engine will re-place TPs with proper pricing.
+    // Old DCA order IDs may not be valid for exchange lookup (e.g. crypto.com returns 40003).
+    // NOTE: Old DCA sell orders may still be active on the exchange and should be cancelled
+    // manually before starting the regime engine to avoid duplicate sells.
+    body.tpOrderId = null;
     body.tpPrice = order.sellPrice;
-    body.assetOnOrder = order.sellQuantity || order.buyQuantity;
+    body.assetOnOrder = 0; // No tracked sell order — regime engine will place new TPs
     body.createdAt = Date.parse(order.createdAt) || Date.now();
 
     // Classify tier based on cost basis

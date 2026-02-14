@@ -1257,9 +1257,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   <div className="text-[10px] text-gray-500 mb-1">{asset}</div>
                   <div className="text-xs text-white font-mono">{position.totalAsset?.toFixed(4) || 0}</div>
                   <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-orange-500 transition-all" style={{ width: `${Math.min(100, ((position.totalAsset || 0) / (config?.maxAssetExposure || 0.5)) * 100)}%` }} />
+                    <div className="h-full bg-orange-500 transition-all" style={{ width: config?.maxAssetExposure ? `${Math.min(100, ((position.totalAsset || 0) / config.maxAssetExposure) * 100)}%` : '0%' }} />
                   </div>
-                  <div className="text-[9px] text-gray-600">/ {config?.maxAssetExposure || 0.5}</div>
+                  <div className="text-[9px] text-gray-600">{config?.maxAssetExposure ? `/ ${config.maxAssetExposure}` : 'uncapped'}</div>
                 </div>
                 <div className="text-center">
                   <div className="text-[10px] text-gray-500 mb-1">USDC</div>

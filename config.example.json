@@ -36,7 +36,7 @@
         "tpMaxPercent": 0.51,
         "tpUpdateThresholdPct": 0.5,
         "holdbackRatio": 0.5,
-        "maxBtcExposure": 1,
+        "maxAssetExposure": 0,
         "depositedCapital": 10000,
         "maxUsdcDeployed": 10000,
         "maxDrawdownPercent": 50,

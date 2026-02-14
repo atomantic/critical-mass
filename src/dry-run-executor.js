@@ -93,6 +93,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   /** @type {Map<string, SimulatedOrder>} */
   const pendingOrders = new Map();
   const baseCurrency = productId ? productId.replace('_', '-').split('-')[0] : 'BTC';
+  let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
 
   /** @type {DecisionLogEntry[]} */
   const decisionLog = [];
@@ -167,7 +168,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       bidPrice = currentAsk * 0.999;
     }
 
-    bidPrice = roundPrice(bidPrice);
+    bidPrice = roundPrice(bidPrice, priceIncrement);
     const assetQty = roundAsset(sizeUsdc / bidPrice);
 
     const orderId = generateOrderId();
@@ -234,7 +235,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       await cancelTpOrder();
     }
 
-    const roundedPrice = roundPrice(tpPrice);
+    const roundedPrice = roundPrice(tpPrice, priceIncrement);
     const roundedQty = roundAsset(assetQty);
 
     const orderId = generateOrderId();
@@ -581,7 +582,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
    */
   const placeBodyTpOrder = async (assetQty, tpPrice, bodyId) => {
-    const roundedPrice = roundPrice(tpPrice);
+    const roundedPrice = roundPrice(tpPrice, priceIncrement);
     const roundedQty = roundAsset(assetQty);
     const orderId = generateOrderId();
 
@@ -1178,6 +1179,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     // State persistence methods
     exportState,
     importState,
+
+    // Price precision
+    setPriceIncrement: (inc) => { priceIncrement = inc; },
 
     // Flag to identify dry-run executor
     isDryRun: true,

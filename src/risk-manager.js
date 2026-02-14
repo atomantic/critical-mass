@@ -40,6 +40,11 @@ const createRiskManager = (exchange, config, productId) => {
    * @returns {{allowed: boolean, reason: string|null, currentAsset: number, maxAsset: number}}
    */
   const checkAssetCap = (currentAsset, entryAsset) => {
+    // 0 means uncapped — skip the check
+    if (!config.maxAssetExposure) {
+      return { allowed: true, reason: null, currentAsset, maxAsset: 0 };
+    }
+
     const newTotal = currentAsset + entryAsset;
 
     if (newTotal > config.maxAssetExposure) {
@@ -279,7 +284,7 @@ const createRiskManager = (exchange, config, productId) => {
    * @returns {{remainingAsset: number, remainingUsdc: number, remainingSteps: number}}
    */
   const getRemainingCapacity = (position, currentPrice) => {
-    const remainingAsset = roundAsset(config.maxAssetExposure - position.totalAsset);
+    const remainingAsset = config.maxAssetExposure ? roundAsset(config.maxAssetExposure - position.totalAsset) : Infinity;
     const remainingUsdc = roundUSDC(config.maxUsdcDeployed - position.totalCostBasis);
     const remainingSteps = config.maxCycleBuys - position.cycleBuys;
 
@@ -297,7 +302,7 @@ const createRiskManager = (exchange, config, productId) => {
    */
   const getUtilization = (position) => {
     return {
-      btcUtilization: (position.totalAsset / config.maxAssetExposure) * 100,
+      btcUtilization: config.maxAssetExposure ? (position.totalAsset / config.maxAssetExposure) * 100 : 0,
       usdcUtilization: (position.totalCostBasis / config.maxUsdcDeployed) * 100,
       cycleBuysUtilization: (position.cycleBuys / config.maxCycleBuys) * 100,
     };
@@ -311,7 +316,9 @@ const createRiskManager = (exchange, config, productId) => {
   const getSummary = (position) => {
     const util = getUtilization(position);
     const parts = [
-      `${assetLabel}=${position.totalAsset.toFixed(4)}/${config.maxAssetExposure}(${util.btcUtilization.toFixed(0)}%)`,
+      config.maxAssetExposure
+        ? `${assetLabel}=${position.totalAsset.toFixed(4)}/${config.maxAssetExposure}(${util.btcUtilization.toFixed(0)}%)`
+        : `${assetLabel}=${position.totalAsset.toFixed(4)}`,
       `usdc=$${position.totalCostBasis.toFixed(0)}/${config.maxUsdcDeployed}(${util.usdcUtilization.toFixed(0)}%)`,
       `buys=${position.cycleBuys}/${config.maxCycleBuys}`,
     ];

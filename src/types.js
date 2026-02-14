@@ -564,7 +564,7 @@
  * Celestial Body Parameters (legacy satellite aliases removed)
  *
  * Risk Cap Parameters
- * @property {number} maxAssetExposure - Maximum BTC position (default: 0.5)
+ * @property {number} maxAssetExposure - Maximum asset position, 0 = uncapped (default: 0)
  * @property {number} depositedCapital - Total user deposits, 0 = auto-derive from maxUsdcDeployed - realizedPnL (default: 0)
  * @property {number} maxUsdcDeployed - Maximum USDC cap for trading, grows with profits (default: 10000)
  * @property {number} maxDrawdownPercent - Pause threshold (default: 20)
