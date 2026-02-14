@@ -458,21 +458,22 @@ module.exports = (app, deps) => {
   // Convert DCA orders to regime engine state
   app.post('/api/:exchange/regime/convert-dca', (req, res) => {
     const { exchange } = req.params;
-    const { preview = true } = req.body;
+    const { preview = true, merge = false } = req.body;
 
     // Refuse if regime engine is already running
     if (regimeEngines.has(exchange)) {
       return res.status(400).json({ success: false, error: 'Regime engine is running — stop it before converting DCA orders' });
     }
 
-    const { previewConversion, executeConversion } = require('../dca-converter');
+    const { previewConversion, executeConversion, mergeToRegime } = require('../dca-converter');
 
     if (preview) {
       const summary = previewConversion(exchange);
       return res.json({ success: true, preview: true, exchange, ...summary });
     }
 
-    const result = executeConversion(exchange);
+    const result = merge ? mergeToRegime(exchange) : executeConversion(exchange);
+    invalidateStandaloneLedger(exchange);
     res.json({ success: true, preview: false, exchange, ...result });
   });
 

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import ActivityFeed from './ActivityFeed'
+import { useToast } from './Toast'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD", "CRO_USD" -> "USD")
@@ -95,6 +96,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
   const [countdown, setCountdown] = useState('')
   const [consolidating, setConsolidating] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [regimeRunning, setRegimeRunning] = useState(true)
+  const [convertPreview, setConvertPreview] = useState(null)
+  const [showConvertConfirm, setShowConvertConfirm] = useState(false)
+  const [converting, setConverting] = useState(false)
+  const { addToast } = useToast()
 
   useEffect(() => {
     const fetchLive = async () => {
@@ -164,15 +170,65 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
     setSyncing(false)
   }
 
+  // Check if regime engine is running (for Export to Regime button)
+  useEffect(() => {
+    fetch(`/api/${exchange}/regime/status`)
+      .then(r => r.json())
+      .then(data => setRegimeRunning(data.running || data.status?.isRunning || false))
+      .catch(() => {})
+  }, [exchange])
+
+  const handlePreviewExport = useCallback(async () => {
+    const res = await fetch(`/api/${exchange}/regime/convert-dca`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preview: true, merge: true }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      addToast({ type: 'error', title: 'Preview Failed', message: err.error || 'Could not preview export' })
+      return
+    }
+    const data = await res.json()
+    setConvertPreview(data)
+    setShowConvertConfirm(true)
+  }, [exchange, addToast])
+
+  const handleExecuteExport = useCallback(async () => {
+    setConverting(true)
+    const res = await fetch(`/api/${exchange}/regime/convert-dca`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preview: false, merge: true }),
+    })
+    setConverting(false)
+    setShowConvertConfirm(false)
+    setConvertPreview(null)
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      addToast({ type: 'error', title: 'Export Failed', message: err.error || 'Could not export to regime' })
+      return
+    }
+
+    const data = await res.json()
+    addToast({
+      type: 'success',
+      title: 'Positions Exported to Regime',
+      message: `${data.summary?.pendingOrders || 0} positions exported. Start the regime engine to place sell orders.`,
+    })
+    if (onRefresh) onRefresh()
+  }, [exchange, addToast, onRefresh])
+
   if (!summary) return null
 
   const { config, state, stats, costBasis, nextTrade } = summary
   const quoteCurrency = getQuoteCurrency(config?.productId)
   const baseCurrency = getBaseCurrency(config?.productId)
   const currentPrice = liveData?.currentPrice || 0
-  const assetValue = (state.btcReserves || 0) * currentPrice
-  const pendingAssetValue = (state.outstandingOrdersBTC || 0) * currentPrice
-  const totalAssetHeld = (state.btcReserves || 0) + (state.outstandingOrdersBTC || 0)
+  const assetValue = (state.assetReserves || 0) * currentPrice
+  const pendingAssetValue = (state.outstandingOrdersAsset || 0) * currentPrice
+  const totalAssetHeld = (state.assetReserves || 0) + (state.outstandingOrdersAsset || 0)
   const totalAssetCostBasis = (costBasis?.reservesCostBasis || 0) + (costBasis?.pendingCostBasis || 0)
 
   // formatCurrency for balances/totals, formatPrice for prices
@@ -241,13 +297,13 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
               <div className="grid grid-cols-3 gap-2 text-xs">
                 <div className="text-center">
                   <div className="text-gray-400 mb-1">Pending Sale</div>
-                  <div className="text-yellow-400 font-semibold">{formatAsset(state.outstandingOrdersBTC || 0)}</div>
+                  <div className="text-yellow-400 font-semibold">{formatAsset(state.outstandingOrdersAsset || 0)}</div>
                   <div className="text-gray-500">Cost: {formatCurrency(costBasis?.pendingCostBasis || 0)}</div>
                   <div className="text-green-400">Exp: {formatCurrency(state.outstandingOrdersUSDC || 0)}</div>
                 </div>
                 <div className="text-center">
                   <div className="text-gray-400 mb-1">Reserves</div>
-                  <div className="text-orange-400 font-semibold">{formatAsset(state.btcReserves || 0)}</div>
+                  <div className="text-orange-400 font-semibold">{formatAsset(state.assetReserves || 0)}</div>
                   <div className="text-gray-500">Cost: {formatCurrency(costBasis?.reservesCostBasis || 0)}</div>
                   <div className="text-gray-500">Val: {formatCurrency(assetValue)}</div>
                 </div>
@@ -393,6 +449,14 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                     {consolidating ? 'Consolidating...' : 'Consolidate'}
                   </button>
                 )}
+                {!regimeRunning && (
+                  <button
+                    onClick={handlePreviewExport}
+                    className="px-3 py-1 text-xs rounded font-medium bg-indigo-600 hover:bg-indigo-500 text-white"
+                  >
+                    Export to Regime
+                  </button>
+                )}
               </div>
             </div>
             <div className="overflow-x-auto">
@@ -412,8 +476,8 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                       <td className="py-2">{new Date(order.createdAt).toISOString().replace('T', ' ').slice(0, 19)}</td>
                       <td className="py-2">{formatPrice(order.buyPrice)}</td>
                       <td className="py-2">{formatPrice(order.sellPrice)}</td>
-                      <td className="py-2">{order.sellQuantityBTC?.toFixed(8)} {baseCurrency}</td>
-                      <td className="py-2">{formatCurrency(order.sellQuantityBTC * order.sellPrice)}</td>
+                      <td className="py-2">{order.sellQuantity?.toFixed(8)} {baseCurrency}</td>
+                      <td className="py-2">{formatCurrency(order.sellQuantity * order.sellPrice)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -476,6 +540,59 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
           <ActivityFeed exchange={exchange} maxEvents={15} />
         </div>
       </div>
+
+      {/* Export to Regime confirmation modal */}
+      {showConvertConfirm && convertPreview && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !converting && setShowConvertConfirm(false)}>
+          <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white text-lg font-medium mb-3">Export to Regime Engine</h3>
+            <p className="text-gray-300 text-sm mb-4">
+              {convertPreview.merge
+                ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}).`
+                : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state.`}
+            </p>
+            <div className="bg-gray-900 rounded-lg p-3 mb-4 text-sm space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-gray-400">Positions to import</span>
+                <span className="text-white font-mono">{convertPreview.pending}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">{baseCurrency} amount</span>
+                <span className="text-yellow-400 font-mono">{convertPreview.pendingBaseQty?.toFixed(8)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Cost basis</span>
+                <span className="text-yellow-400 font-mono">{formatCurrency(convertPreview.pendingCostBasis)}</span>
+              </div>
+              {convertPreview.merge && (
+                <div className="border-t border-gray-700 pt-1.5 flex justify-between">
+                  <span className="text-gray-400">Existing regime bodies</span>
+                  <span className="text-green-400 font-mono">{convertPreview.existingBodies}</span>
+                </div>
+              )}
+            </div>
+            <p className="text-gray-500 text-xs mb-4">
+              New sell orders will be placed automatically when the regime engine is started.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                onClick={() => setShowConvertConfirm(false)}
+                disabled={converting}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-indigo-600 hover:bg-indigo-500 rounded transition-colors disabled:opacity-50"
+                onClick={handleExecuteExport}
+                disabled={converting}
+              >
+                {converting ? 'Exporting...' : 'Confirm Export'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
