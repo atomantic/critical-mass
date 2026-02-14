@@ -81,6 +81,11 @@ const safeJsonParse = (data) => {
  * @returns {Object} WebSocket feed instance
  */
 const createWebSocketFeed = (exchange, config) => {
+  if (exchange === 'cryptocom') {
+    const { createCryptocomWebSocketFeed } = require('./adapters/cryptocom/websocket');
+    return createCryptocomWebSocketFeed(exchange, config);
+  }
+
   let ws = null;
   let isConnected = false;
   let shouldReconnect = true;

@@ -296,7 +296,7 @@ Multi-exchange BTC accumulation engine with celestial position management.
   - Liquidity-aware position sizing with ladder steps
   - Dynamic take-profit based on recent volatility
   - Hard exposure caps and drawdown protection
-  - WebSocket real-time data feed for Coinbase
+  - WebSocket real-time data feed for Coinbase and Crypto.com
   - Health monitoring with automatic SAFE mode transitions
 
 ### Regime Engine Architecture (v2.4)
@@ -785,7 +785,7 @@ src/
 │   ├── index.js        # Registry and factory
 │   ├── coinbase/       # Coinbase implementation
 │   ├── gemini/         # Gemini implementation
-│   └── cryptocom/      # Crypto.com implementation
+│   └── cryptocom/      # Crypto.com implementation (REST + WebSocket)
 ├── config-utils.js     # Multi-exchange config management
 ├── dca-engine.js       # Core trading logic (fixed + fibonacci strategies)
 ├── fibonacci-utils.js  # Fibonacci sequence and cycle calculations
@@ -812,7 +812,7 @@ src/
 ├── size-optimizer.js   # Dynamic position sizing based on available capital
 ├── health-monitor.js   # SAFE mode and system health
 ├── tail-events.js      # Flash/spread/depth event detection
-├── websocket-feed.js   # Coinbase WebSocket real-time feed
+├── websocket-feed.js   # WebSocket feed factory (dispatches to exchange-specific implementations)
 ├── fill-ledger.js      # Idempotent fill tracking with cost basis
 ├── recovery.js         # Startup state recovery from exchange
 ├── trade-events.js     # Trade event emitter for WebSocket updates
@@ -1251,3 +1251,13 @@ async function executeArbitrageOpportunity(opportunity) {
 - Market buy orders use `notional` field for quote amount
 - API documentation: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html
 - Keys file: `data/cryptocom-keys.json` with `{ "apiKey": "...", "apiSecret": "..." }`
+- WebSocket: `wss://stream.crypto.com/exchange/v1/market` (public channels, no auth needed)
+  - Ticker channel: `ticker.{instrument_name}` — fields: `a` (price), `b` (bid), `k` (ask), `v` (volume), `t` (timestamp)
+  - Trade channel: `trade.{instrument_name}` — fields: `p` (price), `q` (qty), `s` (side), `t` (timestamp), `d` (trade ID)
+  - Must wait 1s after connection before subscribing (rate limit protection)
+  - Server heartbeat: respond to `public/heartbeat` with `public/respond-heartbeat`
+
+### DCA-to-Regime Conversion
+- `src/dca-converter.js` converts DCA orders into regime fill-ledger entries and celestial bodies
+- After conversion, marks all converted DCA orders as `status: 'migrated_to_regime'` to hide from DCA dashboard
+- DCA dashboard filters out migrated orders; "Upgrade DCA Orders" button hidden when no pending orders remain

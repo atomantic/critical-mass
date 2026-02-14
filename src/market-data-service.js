@@ -23,7 +23,7 @@ const { createFillLedger } = require('./fill-ledger');
 const marketDataServices = new Map();
 
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
-const SUPPORTED_EXCHANGES = ['coinbase'];
+const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom'];
 
 /**
  * Create a market data service for an exchange
@@ -108,7 +108,7 @@ const createMarketDataService = (exchange) => {
       trackedOrders.set(savedState.position.activeTpOrderId, {
         type: 'take_profit',
         price: savedState.position.lastTpPrice || 0,
-        size: savedState.position.btcOnOrder || savedState.position.totalBTC || 0,
+        size: savedState.position.assetOnOrder || savedState.position.totalAsset || 0,
         placedAt: savedState.position.lastEntryTime || Date.now(),
         status: 'open',
       });
