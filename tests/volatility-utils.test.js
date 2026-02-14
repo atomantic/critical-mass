@@ -15,7 +15,7 @@ const {
   calculateVWAPDistance,
   calculateEMA,
   clamp,
-  roundBTC,
+  roundAsset,
   roundUSDC,
   roundPrice,
 } = require('../src/volatility-utils');
@@ -30,30 +30,30 @@ const mkCandle = (open, high, low, close, volume = 100, timestamp = Date.now()) 
 // ============================================================================
 // roundBTC
 // ============================================================================
-describe('roundBTC', () => {
+describe('roundAsset', () => {
   it('rounds to 8 decimal places', () => {
-    assert.equal(roundBTC(0.123456789), 0.12345679);
+    assert.equal(roundAsset(0.123456789), 0.12345679);
   });
 
   it('returns 0 for 0', () => {
-    assert.equal(roundBTC(0), 0);
+    assert.equal(roundAsset(0), 0);
   });
 
   it('handles negative values', () => {
     // -0.000000005 * 1e8 = -0.5, Math.round(-0.5) = -0 in JS
-    assert.equal(roundBTC(-0.000000005), -0);
+    assert.equal(roundAsset(-0.000000005), -0);
   });
 
   it('handles very small amounts below satoshi threshold', () => {
-    assert.equal(roundBTC(0.000000001), 0);
+    assert.equal(roundAsset(0.000000001), 0);
   });
 
   it('handles whole numbers', () => {
-    assert.equal(roundBTC(1), 1);
+    assert.equal(roundAsset(1), 1);
   });
 
   it('handles large BTC amounts', () => {
-    assert.equal(roundBTC(21000000.123456789), 21000000.12345679);
+    assert.equal(roundAsset(21000000.123456789), 21000000.12345679);
   });
 });
 

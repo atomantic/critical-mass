@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **Remove baseSizeUsdc from aggressiveness presets** - Base size is now a platform/fund config only, no longer overridden when switching aggressiveness levels
+
+### Fixed
+- **Sync test files with btc→asset rename** - Updated 7 test files to match the source code's multi-asset field renames (roundBTC→roundAsset, btcQty→assetQty, totalBTC→totalAsset, etc.), fixing 83 test failures
+
+### Changed
 - **Divergence-based liquidity scaling** - Position sizer now scales entry size based on price divergence from average cost basis instead of buy count
   - Old: `1 + (cycleBuys * 0.1)` (scaled with order count, disconnected from market)
   - New: `1 + (divergencePct / divergenceScalePct) * (cap - 1)` (scales when price drops below avg entry)

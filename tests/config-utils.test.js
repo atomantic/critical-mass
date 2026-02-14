@@ -890,7 +890,7 @@ describe('getAggressivenessPresets', () => {
     const result = getAggressivenessPresets();
     assert.equal(result.moderate.kFactor, 0.7);
     // Other moderate defaults should still be present
-    assert.equal(result.moderate.baseSizeUsdc, DEFAULT_AGGRESSIVENESS_PRESETS.moderate.baseSizeUsdc);
+    assert.equal(result.moderate.cautionScale, DEFAULT_AGGRESSIVENESS_PRESETS.moderate.cautionScale);
     // Other levels untouched
     assert.equal(result.conservative.kFactor, DEFAULT_AGGRESSIVENESS_PRESETS.conservative.kFactor);
   });
@@ -902,9 +902,9 @@ describe('updateAggressivenessPresets', () => {
   it('updates presets and saves', () => {
     setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
     const result = updateAggressivenessPresets({
-      aggressive: { baseSizeUsdc: 150 },
+      aggressive: { cautionScale: 0.75 },
     });
-    assert.equal(result.global.aggressivenessPresets.aggressive.baseSizeUsdc, 150);
+    assert.equal(result.global.aggressivenessPresets.aggressive.cautionScale, 0.75);
     // Other fields preserved from defaults
     assert.equal(
       result.global.aggressivenessPresets.aggressive.kFactor,

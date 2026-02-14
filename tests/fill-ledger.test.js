@@ -234,7 +234,7 @@ describe('Fill Ledger', () => {
 
     const pos = ledger.rebuildPositionFromFills();
 
-    assert.equal(pos.totalBTC, 0.01);
+    assert.equal(pos.totalAsset, 0.01);
     // costBasis = quoteAmount + netFee = 100000*0.01 + 1.00 = 1001.00
     assert.equal(pos.totalCostBasis, 1001);
     assert.equal(pos.avgCostBasis, 1001 / 0.01);
@@ -272,8 +272,8 @@ describe('Fill Ledger', () => {
 
     const pos = ledger.rebuildPositionFromFills();
 
-    // After selling all BTC, totalBTC should be 0
-    assert.equal(pos.totalBTC, 0);
+    // After selling all BTC, totalAsset should be 0
+    assert.equal(pos.totalAsset, 0);
     // costBasis for 0.01 BTC = 100000*0.01 + 1 = 1001
     // avgCost = 1001/0.01 = 100100
     // proceeds = 105000*0.01 - 1 = 1049
@@ -314,7 +314,7 @@ describe('Fill Ledger', () => {
 
     const pos = ledger.rebuildPositionFromFills();
 
-    assert.equal(pos.totalBTC, 0.02);
+    assert.equal(pos.totalAsset, 0.02);
     // costBasis = 1000 + 1100 = 2100
     assert.equal(pos.totalCostBasis, 2100);
     // avgCost = 2100 / 0.02 = 105000
@@ -325,7 +325,7 @@ describe('Fill Ledger', () => {
   // =======================================================================
   // 13. Negative BTC guard (Phase 1.10 fix) — sells exceeding buys clamp to 0
   // =======================================================================
-  it('clamps totalBTC to 0 when sells exceed buys (negative BTC guard)', () => {
+  it('clamps totalAsset to 0 when sells exceed buys (negative BTC guard)', () => {
     const ledger = createTestLedger();
     ledger.startNewCycle();
 
@@ -351,7 +351,7 @@ describe('Fill Ledger', () => {
 
     const pos = ledger.rebuildPositionFromFills();
 
-    assert.equal(pos.totalBTC, 0);
+    assert.equal(pos.totalAsset, 0);
     assert.equal(pos.totalCostBasis, 0);
   });
 
@@ -375,7 +375,7 @@ describe('Fill Ledger', () => {
 
     // When selling with 0 BTC, avgCost is 0 so soldCostBasis is 0
     // Negative BTC guard clamps to 0
-    assert.equal(pos.totalBTC, 0);
+    assert.equal(pos.totalAsset, 0);
     assert.equal(pos.totalCostBasis, 0);
   });
 
@@ -536,8 +536,8 @@ describe('Fill Ledger', () => {
     assert.equal(stats.totalFills, 2);
     assert.equal(stats.buyFills, 1);
     assert.equal(stats.sellFills, 1);
-    assert.equal(stats.totalBuyBTC, 0.01);
-    assert.equal(stats.totalSellBTC, 0.005);
+    assert.equal(stats.totalBuyAsset, 0.01);
+    assert.equal(stats.totalSellAsset, 0.005);
     assert.equal(stats.currentCycleId, 'cycle-1');
   });
 
@@ -661,7 +661,7 @@ describe('Fill Ledger', () => {
     const pos = ledger.rebuildPositionFromFills();
 
     // Only the regular fill should count
-    assert.equal(pos.totalBTC, 0.01);
+    assert.equal(pos.totalAsset, 0.01);
     assert.equal(pos.totalCostBasis, 1000); // 100000 * 0.01
   });
 
@@ -836,7 +836,7 @@ describe('Fill Ledger', () => {
     const firstFill = ledger.getAllFills().filter(f => f.tradeId === 'exp-1');
     const pos = ledger.rebuildPositionFromFills(firstFill);
 
-    assert.equal(pos.totalBTC, 0.01);
+    assert.equal(pos.totalAsset, 0.01);
     assert.equal(pos.totalCostBasis, 1000); // 100000 * 0.01
   });
 

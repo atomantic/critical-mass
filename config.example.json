@@ -83,7 +83,6 @@
           "minIntervalMs": 180000,
           "maxIntervalMs": 7200000,
           "entryOffsetBps": 25,
-          "baseSizeUsdc": 50,
           "cautionScale": 0.15,
           "trendScale": 0,
           "maxCycleBuys": 100
@@ -93,7 +92,6 @@
           "minIntervalMs": 120000,
           "maxIntervalMs": 3600000,
           "entryOffsetBps": 18,
-          "baseSizeUsdc": 100,
           "cautionScale": 0.35,
           "trendScale": 0.1,
           "maxCycleBuys": 150
@@ -103,7 +101,6 @@
           "minIntervalMs": 90000,
           "maxIntervalMs": 2400000,
           "entryOffsetBps": 12,
-          "baseSizeUsdc": 250,
           "cautionScale": 0.6,
           "trendScale": 0.25,
           "maxCycleBuys": 250
@@ -113,7 +110,6 @@
           "minIntervalMs": 60000,
           "maxIntervalMs": 1200000,
           "entryOffsetBps": 5,
-          "baseSizeUsdc": 500,
           "cautionScale": 1,
           "trendScale": 0.5,
           "maxCycleBuys": 500

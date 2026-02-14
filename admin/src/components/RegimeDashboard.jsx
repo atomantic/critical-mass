@@ -340,12 +340,6 @@ function AggressivenessControl({ config, exchange, onConfigUpdate, presets }) {
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">baseSize</span>
-              <span className={config?.baseSizeUsdc !== previewParams.baseSizeUsdc ? 'text-yellow-400' : 'text-gray-300'}>
-                ${previewParams.baseSizeUsdc}
-              </span>
-            </div>
-            <div className="flex justify-between">
               <span className="text-gray-500">cautionScale</span>
               <span className={config?.cautionScale !== previewParams.cautionScale ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.cautionScale}
@@ -364,11 +358,6 @@ function AggressivenessControl({ config, exchange, onConfigUpdate, presets }) {
               </span>
             </div>
           </div>
-          {config?.sizeAutoManaged && (
-            <div className="mt-1 text-[10px] text-purple-400">
-              Note: baseSizeUsdc may be overridden by auto-sizer
-            </div>
-          )}
         </div>
       )}
     </div>
