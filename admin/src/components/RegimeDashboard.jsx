@@ -2109,7 +2109,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0)
                         const holdbackAsset = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0
                         const prev = pnlMap.get(fill.orderId)
-                        if (prev) { prev.pnl += pnl; prev.holdback += holdbackAsset }
+                        if (prev) { if (bodyPnl == null) { prev.pnl += pnl; prev.holdback += holdbackAsset } }
                         else pnlMap.set(fill.orderId, { pnl, holdback: holdbackAsset })
                       } else {
                         const avgCost = runBtc > 0 ? runCost / runBtc : 0

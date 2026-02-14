@@ -433,7 +433,7 @@ module.exports = (app, deps) => {
         },
       };
 
-      saveRegimeState(exchange, { ...currentState, position: updatedPosition });
+      saveRegimeState(updatedPosition, currentState.regime, exchange, currentState.tpOptimizer, currentState.sizeOptimizer);
       fillLedger.persist();
 
       const engine = regimeEngines.get(exchange);
