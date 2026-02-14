@@ -2250,7 +2250,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           })
           .catch(err => {
             // Order not found might mean it was cancelled or doesn't exist
-            if (err.message?.includes('not found') || err.response?.status === 404) {
+            const errCode = err.response?.data?.code;
+            if (err.message?.includes('not found') || err.response?.status === 404 || errCode === 40003) {
               console.log(`⚠️ [${exchange}] TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
               positionState.activeTpOrderId = null;
               orderExecutor.handleOrderCancel(positionState.activeTpOrderId);
@@ -2291,8 +2292,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
               }
             })
             .catch((err) => {
-              // Order not found — likely cancelled externally
-              if (err.message?.includes('not found') || err.response?.status === 404) {
+              // Order not found or invalid — likely cancelled externally or ID no longer valid
+              const errCode = err.response?.data?.code;
+              const isNotFound = err.message?.includes('not found') || err.response?.status === 404 || errCode === 40003;
+              if (isNotFound) {
                 console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} not found on exchange — clearing for re-placement`);
                 orderExecutor.removeBodyTracking(body.tpOrderId);
                 body.tpOrderId = null;

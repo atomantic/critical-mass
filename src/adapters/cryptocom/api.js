@@ -374,6 +374,58 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
+   * Place a limit buy order
+   * @param {string} productId - Product ID
+   * @param {number} baseAmount - Amount of base currency to buy
+   * @param {number} price - Limit price
+   * @param {Object} [options] - Order options
+   * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
+   * @returns {Promise<Object>} Order result
+   */
+  adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
+    const instrument = toCryptocomSymbol(productId);
+    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 36);
+    const postOnly = options.postOnly !== false;
+
+    const details = await adapter.getProductDetails(productId);
+    const baseIncrement = parseFloat(details.baseIncrement);
+    const priceTickSize = parseFloat(details.quoteIncrement);
+
+    const priceDecimals = Math.max(0, -Math.floor(Math.log10(priceTickSize)));
+    const qtyDecimals = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+
+    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
+    const roundedPrice = Math.floor(price / priceTickSize) * priceTickSize;
+
+    const orderParams = {
+      instrument_name: instrument,
+      side: 'BUY',
+      type: 'LIMIT',
+      quantity: roundedAmount.toFixed(qtyDecimals),
+      price: roundedPrice.toFixed(priceDecimals),
+      client_oid: clientOrderId,
+      spot_margin: 'SPOT',
+      time_in_force: 'GOOD_TILL_CANCEL',
+      exec_inst: postOnly ? ['POST_ONLY'] : [],
+    };
+
+    console.log(`Crypto.com limit buy: ${orderParams.quantity} ${instrument.split('_')[0]} @ ${orderParams.price}`);
+
+    const result = await makePrivateRequest('private/create-order', orderParams);
+
+    const success = !!result.order_id;
+
+    return {
+      orderId: result.order_id?.toString() || '',
+      clientOrderId,
+      success,
+      errorMessage: success ? undefined : 'Order placement failed',
+      baseSize: roundedAmount,
+      limitPrice: roundedPrice,
+    };
+  };
+
+  /**
    * Get order status
    * @param {string} orderId - Order ID
    * @returns {Promise<OrderDetails>} Order details
@@ -481,8 +533,8 @@ const createCryptocomAdapter = (keysPath = null) => {
     const fills = trades
       .filter(trade => trade.order_id?.toString() === orderId.toString())
       .map(trade => {
-        const price = parseFloat(trade.price || 0);
-        const size = parseFloat(trade.quantity || trade.traded_quantity || 0);
+        const price = parseFloat(trade.traded_price || trade.price || 0);
+        const size = parseFloat(trade.traded_quantity || trade.quantity || 0);
         const feeAmount = parseFloat(trade.fee || 0);
 
         return {
@@ -497,8 +549,8 @@ const createCryptocomAdapter = (keysPath = null) => {
           totalCommission: feeAmount,
           rebate: 0,
           netFee: feeAmount,
-          tradeTime: trade.trade_time
-            ? new Date(trade.trade_time).toISOString()
+          tradeTime: (trade.create_time || trade.trade_time)
+            ? new Date(trade.create_time || trade.trade_time).toISOString()
             : new Date().toISOString(),
           liquidityIndicator: trade.liquidity_indicator || 'TAKER',
         };
