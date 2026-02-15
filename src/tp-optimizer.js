@@ -107,6 +107,14 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
   let avgVolBaseline = 0;
   let historicalVolBaseline = 0; // Slower-moving historical vol for volFactor comparison
 
+  // Volatility-based sampling state (parallel to cycle-based)
+  /** @type {Array<{impliedTpPct: number, timestamp: number}>} */
+  let volSamples = [];
+  /** @type {HistogramBucket[]} */
+  let volHistogram = createEmptyHistogram();
+  let totalVolSampleCount = 0;
+  let lastVolEvaluationTime = Date.now();
+
   // Cache for percentile calculations
   let cachedPercentiles = { p25: 0, p50: 0, p75: 0 };
   let percentileCacheValid = false;
@@ -141,12 +149,25 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
       return cachedPercentiles;
     }
 
-    // Combine histogram weights with recent cycle data
-    const combinedBuckets = histogram.map(b => ({ ...b }));
+    const cycleWeight = config.tpCycleWeight || 3.0;
 
-    // Add recent cycles to combined buckets with full weight
+    // Combine histogram weights with recent cycle data (cycle histogram gets cycle weight)
+    const combinedBuckets = histogram.map(b => ({ ...b, weight: b.weight * cycleWeight }));
+
+    // Add recent cycles with cycle weight
     for (const cycle of recentCycles) {
       const idx = getBucketIndex(cycle.optimalTpPct);
+      combinedBuckets[idx].weight += cycleWeight;
+    }
+
+    // Add vol histogram at 1.0x weight
+    for (let i = 0; i < BUCKET_COUNT; i++) {
+      combinedBuckets[i].weight += volHistogram[i].weight;
+    }
+
+    // Add recent vol samples at 1.0x weight
+    for (const sample of volSamples) {
+      const idx = getBucketIndex(sample.impliedTpPct);
       combinedBuckets[idx].weight += 1;
     }
 
@@ -196,6 +217,20 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
       const oldest = recentCycles.shift();
       if (oldest) {
         addToHistogram(oldest.optimalTpPct);
+      }
+    }
+  };
+
+  /**
+   * Compress old vol samples into vol histogram
+   */
+  const compressOldVolSamples = () => {
+    while (volSamples.length > MAX_RECENT_CYCLES) {
+      const oldest = volSamples.shift();
+      if (oldest) {
+        const idx = getBucketIndex(oldest.impliedTpPct);
+        volHistogram[idx].weight += 1;
+        volHistogram[idx].count += 1;
       }
     }
   };
@@ -282,6 +317,84 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
       });
 
       // Keep history manageable
+      if (adjustmentHistory.length > 50) {
+        adjustmentHistory.shift();
+      }
+
+      if (callbacks.onAdjustment) {
+        callbacks.onAdjustment(adjustment);
+      }
+    }
+
+    return adjustment;
+  };
+
+  /**
+   * Record a volatility-implied TP sample from streaming market data
+   * @param {{atr5m: number, lastPrice: number, realizedVol: number, volBaseline: number}} data
+   * @returns {TpAdjustment|null} Adjustment if vol evaluation triggered
+   */
+  const recordVolatilitySample = ({ atr5m, lastPrice, realizedVol, volBaseline }) => {
+    if (lastPrice <= 0 || atr5m <= 0) return null;
+
+    // ATR-to-TP% multiplier: default 8.0 ≈ sqrt(48) * 1.15, targeting ~4hrs of 5m candle movement
+    const multiplier = config.tpVolMultiplier || 8.0;
+    const impliedTpPct = Math.min((atr5m / lastPrice) * 100 * multiplier, BUCKET_RANGE_MAX);
+
+    volSamples.push({ impliedTpPct, timestamp: Date.now() });
+    totalVolSampleCount += 1;
+
+    // Update vol baselines with same EMA decay as cycle path
+    if (volBaseline > 0) {
+      avgVolBaseline = avgVolBaseline === 0
+        ? volBaseline
+        : avgVolBaseline * 0.95 + volBaseline * 0.05;
+      historicalVolBaseline = historicalVolBaseline === 0
+        ? volBaseline
+        : historicalVolBaseline * 0.99 + volBaseline * 0.01;
+    }
+
+    compressOldVolSamples();
+    percentileCacheValid = false;
+
+    return evaluateVol();
+  };
+
+  /**
+   * Evaluate if TP adjustment is needed based on vol samples (time-based trigger)
+   * @returns {TpAdjustment|null}
+   */
+  const evaluateVol = () => {
+    if (!config.tpAutoManaged) return null;
+
+    const now = Date.now();
+    const evalMinutes = config.tpVolEvaluationMinutes || 30;
+    const hoursSinceLastVolEval = (now - lastVolEvaluationTime) / (1000 * 60 * 60);
+
+    if (hoursSinceLastVolEval < evalMinutes / 60) return null;
+
+    // Min samples: combined cycle + vol must meet threshold
+    const minSamples = config.tpVolMinSamples || 10;
+    if (totalSampleCount + totalVolSampleCount < minSamples) return null;
+
+    const adjustment = calculateAdjustment();
+
+    if (adjustment) {
+      lastVolEvaluationTime = now;
+      // Also update cycle eval time so cycle-path evaluate() doesn't immediately re-fire
+      lastEvaluationTime = now;
+      lastEvaluationCycle = totalSampleCount;
+
+      applyTimeDecay();
+
+      adjustmentHistory.push({
+        timestamp: now,
+        tpMin: adjustment.tpMinPercent,
+        tpMax: adjustment.tpMaxPercent,
+        holdbackRatio: adjustment.holdbackRatio,
+        reason: adjustment.reason,
+      });
+
       if (adjustmentHistory.length > 50) {
         adjustmentHistory.shift();
       }
@@ -398,6 +511,10 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     lastEvaluationTime,
     lastEvaluationCycle,
     adjustmentHistory: [...adjustmentHistory],
+    volSamples: [...volSamples],
+    volHistogram: volHistogram.map(b => ({ ...b })),
+    totalVolSampleCount,
+    lastVolEvaluationTime,
   });
 
   /**
@@ -431,9 +548,19 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
       adjustmentHistory = state.adjustmentHistory.map(a => ({ ...a }));
     }
 
+    // Restore vol state
+    if (state.volSamples) {
+      volSamples = state.volSamples.map(s => ({ ...s }));
+    }
+    if (state.volHistogram && state.volHistogram.length === BUCKET_COUNT) {
+      volHistogram = state.volHistogram.map(b => ({ ...b }));
+    }
+    totalVolSampleCount = state.totalVolSampleCount || 0;
+    lastVolEvaluationTime = state.lastVolEvaluationTime || Date.now();
+
     percentileCacheValid = false;
 
-    console.log(`📊 [${exchange}] TP optimizer restored: ${totalSampleCount} samples, ${recentCycles.length} recent cycles`);
+    console.log(`📊 [${exchange}] TP optimizer restored: ${totalSampleCount} cycle samples, ${totalVolSampleCount} vol samples, ${recentCycles.length} recent cycles`);
   };
 
   /**
@@ -447,9 +574,12 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
       enabled: config.tpAutoManaged === true,
       sampleCount: totalSampleCount,
       recentCycleCount: recentCycles.length,
+      volSampleCount: totalVolSampleCount,
+      totalCombinedSamples: totalSampleCount + totalVolSampleCount,
       percentiles,
       avgVolBaseline,
       lastEvaluationTime,
+      lastVolEvaluationTime,
       lastEvaluationCycle,
       cyclesSinceEval: totalSampleCount - lastEvaluationCycle,
       adjustmentHistory: adjustmentHistory.slice(-10),
@@ -473,6 +603,10 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     totalSampleCount = 0;
     avgVolBaseline = 0;
     historicalVolBaseline = 0;
+    volSamples = [];
+    volHistogram = createEmptyHistogram();
+    totalVolSampleCount = 0;
+    lastVolEvaluationTime = Date.now();
     cachedPercentiles = { p25: 0, p50: 0, p75: 0 };
     percentileCacheValid = false;
     console.log(`📊 [${exchange}] TP optimizer reset`);
@@ -480,7 +614,9 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
 
   return {
     recordCycle,
+    recordVolatilitySample,
     evaluate,
+    evaluateVol,
     getStatus,
     exportState,
     importState,
@@ -488,6 +624,8 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     // For testing
     _getHistogram: () => histogram,
     _getRecentCycles: () => recentCycles,
+    _getVolSamples: () => volSamples,
+    _getVolHistogram: () => volHistogram,
     _calculatePercentiles: calculatePercentiles,
   };
 };

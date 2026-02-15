@@ -944,9 +944,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   </div>
 
                   {/* Observed Percentiles */}
-                  {tpOptimizer.sampleCount >= 3 && (
+                  {(tpOptimizer.totalCombinedSamples || tpOptimizer.sampleCount || 0) >= 3 && (
                     <div className="p-2 bg-cyan-900/20 border border-cyan-700/30 rounded">
-                      <div className="text-cyan-400/70 text-[10px] mb-1">Observed Percentiles ({tpOptimizer.sampleCount} samples)</div>
+                      <div className="text-cyan-400/70 text-[10px] mb-1">Observed Percentiles ({tpOptimizer.sampleCount || 0} cycles + {tpOptimizer.volSampleCount || 0} vol)</div>
                       <div className="grid grid-cols-3 gap-2">
                         <div>
                           <span className="text-gray-400">p25:</span>{' '}
@@ -966,8 +966,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
                   {/* Evaluation Status */}
                   <div className="flex justify-between text-gray-500 text-[10px]">
-                    <span>Cycles since eval: {tpOptimizer.cyclesSinceEval || 0}</span>
-                    <span>Samples: {tpOptimizer.sampleCount || 0}</span>
+                    <span>Last eval: {tpOptimizer.lastVolEvaluationTime
+                      ? `${Math.round((Date.now() - Math.max(tpOptimizer.lastEvaluationTime || 0, tpOptimizer.lastVolEvaluationTime || 0)) / 60000)}m ago`
+                      : `${tpOptimizer.cyclesSinceEval || 0} cycles ago`}</span>
+                    <span>{tpOptimizer.sampleCount || 0} cycles + {tpOptimizer.volSampleCount || 0} vol</span>
                   </div>
 
                   {/* Recent Adjustments */}
@@ -2193,11 +2195,18 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                       group.sell.pnl = sellProceeds - buyCost
                     })
 
-                    // Find orphaned buys: not linked to any filled sell and not waiting on an open TP
+                    // Find unclaimed buys: not linked to any filled sell
+                    // Include body-owned buys whose TP isn't in the Open Orders section
                     const claimedBuyIds = new Set()
                     sellGroups.forEach(g => g.buys.forEach(b => claimedBuyIds.add(b.orderId)))
+                    const bodiesWithActiveTp = new Set(
+                      pendingOrdersList
+                        .filter(o => o.status === 'open' && o.bodyId)
+                        .map(o => o.bodyId)
+                    )
                     orphanedBuys = aggBuysAll
-                      .filter(b => !claimedBuyIds.has(b.orderId) && !b.sellOrderId && !b.bodyId)
+                      .filter(b => !claimedBuyIds.has(b.orderId) &&
+                        !(b.bodyId && bodiesWithActiveTp.has(b.bodyId)))
                       .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
                   }
 

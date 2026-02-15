@@ -236,13 +236,12 @@ Multi-exchange BTC accumulation engine with celestial position management.
 
 ### Admin Dashboard
 - React-based web UI at port 5563
-- URL pattern: `/:exchange/:strategy/[tab]` (e.g., `/coinbase/regime/dashboard`)
-  - DCA routes: `/coinbase/dca`, `/coinbase/dca/cost-basis`, `/coinbase/dca/transactions`, etc.
-  - Regime routes: `/coinbase/regime`, `/coinbase/regime/cost-basis`, `/coinbase/regime/transactions`, etc.
-  - API Keys: `/:exchange/keys` (shared per exchange)
-- Exchange + Strategy selector showing both strategies per exchange with status indicators
-  - DCA: Active/Dry-Run/Off status
-  - Regime: Running/Dry-Run/Ready/Off status
+- URL pattern: `/:exchange/:pair/[tab]` (e.g., `/coinbase/BTC-USDC/config`)
+  - Overview: `/` (multi-exchange overview dashboard with aggregate P&L, APY, live status cards)
+  - Pair routes: `/coinbase/BTC-USDC`, `/coinbase/BTC-USDC/cost-basis`, `/coinbase/BTC-USDC/transactions`, etc.
+  - Strategy derived from exchange config (not URL) — regime vs DCA determined automatically
+  - API Keys: `/:exchange/:pair/keys` (in sub-nav tabs)
+- Exchange selector shows trading pair per exchange (strategy no longer in URL)
 - Strategy-specific views:
   - DCA: Order-based cost basis, TSV transactions, Backtest/Optimizer pages
   - Regime: Cycle-based cost basis, fill ledger transactions (no Backtest/Optimizer)
