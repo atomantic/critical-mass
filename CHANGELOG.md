@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **`simpleDcaEnabled` global config flag** - Gates simple DCA strategy behind opt-in flag (default: false); admin UI hides DCA routes/selector when disabled, API guards DCA-only endpoints
+- **`onEntryCancelled` callback in order executor** - Regime engine now cleans up pendingEntryOrders when entries are cancelled (stale timeout, refresh, or external cancel)
+- **Stale pending-entry purge on engine startup** - Removes saved pending entries that were filled/cancelled while engine was offline
+
+### Fixed
+- **avgPrice precision for low-priced assets** - Removed premature `roundUSDC` on avgPrice in fill-ledger aggregation so sub-cent assets (e.g. CRO at $0.08) aren't truncated
+- **Self-heal body avgPrice on regime startup** - Detects and corrects bodies where avgPrice diverged >0.1% from costBasis/assetQty due to prior rounding
+- **Recovery module currency parsing** - Use canonical `getBaseCurrency`/`getQuoteCurrency` helpers instead of fragile string split
+
 ### Removed
 - **Remove express-rate-limit from admin server** - Single-user local dashboard doesn't need request rate limiting; was causing 429 errors on page load
 

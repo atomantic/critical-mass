@@ -63,7 +63,7 @@ const getStrategyStatus = (exchange, strategyType) => {
   return { label: 'Off', color: 'bg-gray-600', textColor: 'text-gray-300' }
 }
 
-function ExchangeSelector({ currentExchange, currentStrategy, exchanges, onChange, onRefresh }) {
+function ExchangeSelector({ currentExchange, currentStrategy, exchanges, onChange, onRefresh, simpleDcaEnabled }) {
   const [isOpen, setIsOpen] = useState(false)
 
   const handleSelect = (exchangeName, strategy) => {
@@ -126,7 +126,7 @@ function ExchangeSelector({ currentExchange, currentStrategy, exchanges, onChang
 
                 {/* Strategy Options */}
                 <div className="pl-4 space-y-1">
-                  {['dca', 'regime'].map(strategyType => {
+                  {['dca', 'regime'].filter(s => s !== 'dca' || simpleDcaEnabled).map(strategyType => {
                     const strategyConfig = STRATEGY_CONFIG[strategyType]
                     const status = getStrategyStatus(exchange, strategyType)
                     const isSelected = exchange.name === currentExchange && strategyType === currentStrategy

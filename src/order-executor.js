@@ -38,6 +38,7 @@ const fmtPrice = (p) => {
  * @param {string} productId - Product to trade
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus)
+ * @param {Function} [callbacks.onEntryCancelled] - Called when an entry order is cancelled (stale timeout, refresh, etc.): (orderId)
  * @returns {Object} Order executor instance
  */
 const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {}) => {
@@ -392,11 +393,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             // Order was cancelled
             console.log(`⏰ [${exchange}] Stale check found cancelled order ${orderId}`);
             pendingOrders.delete(orderId);
+            callbacks.onEntryCancelled?.(orderId);
           } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
             // Not filled at all, cancel
             console.log(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`);
             return adapter.cancelOrder(orderId).then(() => {
               pendingOrders.delete(orderId);
+              callbacks.onEntryCancelled?.(orderId);
             });
           }
           // Partially filled orders are left alone - WebSocket should handle incremental fills
@@ -440,12 +443,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         } else if (normalizedStatus === 'CANCELLED') {
           console.log(`⏰ [${exchange}] Refresh found cancelled ${order.type} order ${orderId}`);
           pendingOrders.delete(orderId);
+          if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
           refreshed++;
         } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isTpType(order.type)) {
           // Only cancel stale ENTRY orders — TP orders should persist until filled
           await adapter.cancelOrder(orderId);
           lastCancelTime = now;
           pendingOrders.delete(orderId);
+          callbacks.onEntryCancelled?.(orderId);
           refreshed++;
         }
       }
@@ -481,6 +486,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       } else if (normalizedStatus === 'CANCELLED') {
         console.log(`⏰ [${exchange}] Fill check found cancelled ${order.type} order ${orderId}`);
         pendingOrders.delete(orderId);
+        if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
         cancelled++;
       }
     }

@@ -195,6 +195,10 @@ describe('GLOBAL_DEFAULTS', () => {
     assert.equal(GLOBAL_DEFAULTS.backup.enabled, true);
     assert.equal(GLOBAL_DEFAULTS.backup.maxBackups, 7);
   });
+
+  it('has simpleDcaEnabled defaulting to false', () => {
+    assert.equal(GLOBAL_DEFAULTS.simpleDcaEnabled, false);
+  });
 });
 
 // ============================================================================
@@ -731,6 +735,22 @@ describe('getGlobalConfig', () => {
     setupFsMocks({ base: { exchanges: {} }, user: null });
     const result = getGlobalConfig();
     assert.equal(result.schedulerInterval, GLOBAL_DEFAULTS.schedulerInterval);
+  });
+
+  it('returns simpleDcaEnabled false by default', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
+    const result = getGlobalConfig();
+    assert.equal(result.simpleDcaEnabled, false);
+  });
+
+  it('allows simpleDcaEnabled to be overridden to true via updateGlobalConfig', () => {
+    const baseConfig = {
+      exchanges: {},
+      global: {},
+    };
+    setupFsMocks({ base: baseConfig, user: null });
+    const result = updateGlobalConfig({ simpleDcaEnabled: true });
+    assert.equal(result.global.simpleDcaEnabled, true);
   });
 });
 

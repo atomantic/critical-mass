@@ -51,6 +51,7 @@
 /**
  * @typedef {Object} GlobalConfig
  * @property {number} schedulerInterval - Scheduler interval in milliseconds
+ * @property {boolean} [simpleDcaEnabled] - Whether simple DCA strategies (fixed/fibonacci) are enabled (default: false)
  */
 
 /**
