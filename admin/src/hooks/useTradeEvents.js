@@ -142,6 +142,37 @@ export function useRegimeEvents(exchange = null) {
   }
 }
 
+export function useMultiRegimeStatuses() {
+  const [statuses, setStatuses] = useState({})
+  const [connected, setConnected] = useState(false)
+
+  useEffect(() => {
+    const socket = getSocket()
+
+    const handleConnect = () => setConnected(true)
+    const handleDisconnect = () => setConnected(false)
+
+    const handleStatusUpdate = (data) => {
+      if (!data.exchange) return
+      setStatuses(prev => ({ ...prev, [data.exchange]: data.status }))
+    }
+
+    socket.on('connect', handleConnect)
+    socket.on('disconnect', handleDisconnect)
+    socket.on('regime:status', handleStatusUpdate)
+
+    setConnected(socket.connected)
+
+    return () => {
+      socket.off('connect', handleConnect)
+      socket.off('disconnect', handleDisconnect)
+      socket.off('regime:status', handleStatusUpdate)
+    }
+  }, [])
+
+  return { statuses, connected }
+}
+
 export function useOptimizerEvents() {
   const [progress, setProgress] = useState(null)
   const [bestResult, setBestResult] = useState(null)

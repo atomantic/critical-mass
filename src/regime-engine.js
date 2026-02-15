@@ -2207,6 +2207,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       marketState.vwapDistance = (marketState.lastPrice - marketState.vwap) / marketState.atr1m;
     }
 
+    // Feed volatility data to TP optimizer for continuous vol-based sampling
+    if (config.tpAutoManaged && marketState.atr5m > 0 && marketState.lastPrice > 0) {
+      const volAdj = tpOptimizer.recordVolatilitySample({
+        atr5m: marketState.atr5m,
+        lastPrice: marketState.lastPrice,
+        realizedVol: marketState.realizedVol,
+        volBaseline: marketState.volBaseline,
+      });
+      if (volAdj) handleTpAdjustment(volAdj);
+    }
+
     // Update ATH for ladder mode (daily refresh) - run async to avoid blocking metrics interval
     updateATH().catch(err => console.log(`⚠️ [${exchange}] ATH update failed: ${err.message}`));
 
@@ -2309,7 +2320,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 };
                 await handleOrderFill(fillData);
               } else if (bodyStatus.status === 'CANCELLED' || bodyStatus.status === 'FAILED') {
-                // TP was cancelled/failed externally — clear it so safety net re-places
+                // TP was cancelled/failed externally — clear and immediately re-place
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
                 console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`);
                 orderExecutor.removeBodyTracking(body.tpOrderId);
@@ -2317,9 +2328,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 body.tpPrice = 0;
                 body.assetOnOrder = 0;
                 saveLiveState();
+                await placeBodyTp(body);
               }
             })
-            .catch((err) => {
+            .catch(async (err) => {
               // Order not found or invalid — likely cancelled externally or ID no longer valid
               const errCode = err.response?.data?.code;
               const isNotFound = err.message?.includes('not found') || err.response?.status === 404 || errCode === 40003;
@@ -2330,6 +2342,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 body.tpPrice = 0;
                 body.assetOnOrder = 0;
                 saveLiveState();
+                await placeBodyTp(body);
               }
             });
         }

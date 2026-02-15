@@ -12,6 +12,7 @@ const { createBaseAdapter } = require('../base-adapter');
  * @typedef {import('../../types').ProductDetails} ProductDetails
  * @typedef {import('../../types').MarketBuyResult} MarketBuyResult
  * @typedef {import('../../types').LimitSellResult} LimitSellResult
+ * @typedef {import('../../types').LimitBuyResult} LimitBuyResult
  * @typedef {import('../../types').OrderDetails} OrderDetails
  * @typedef {import('../../types').OpenOrder} OpenOrder
  * @typedef {import('../../types').CancelResult} CancelResult
@@ -258,6 +259,52 @@ const createGeminiAdapter = (keysPath = null) => {
       amount: roundedAmount.toFixed(8),
       price: roundedPrice.toFixed(2),
       side: 'sell',
+      type: 'exchange limit',
+      client_order_id: clientOrderId,
+      options: postOnly ? ['maker-or-cancel'] : [],
+    };
+
+    const result = await makeRestRequest('/v1/order/new', orderPayload);
+
+    const success = !result.is_cancelled && result.order_id;
+
+    return {
+      orderId: result.order_id,
+      clientOrderId,
+      success,
+      errorMessage: result.reason || (result.is_cancelled ? 'Order was cancelled (maker-or-cancel rejected)' : null),
+      baseSize: roundedAmount,
+      limitPrice: roundedPrice,
+    };
+  };
+
+  /**
+   * Place a post-only limit buy order (maker-prefer)
+   * @param {string} productId - Product ID
+   * @param {number} baseAmount - Amount of base currency to buy
+   * @param {number} price - Limit price in quote currency
+   * @param {Object} [options] - Order options
+   * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
+   * @returns {Promise<LimitBuyResult>} Order result
+   */
+  adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
+    const symbol = toGeminiSymbol(productId);
+    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 32);
+    const postOnly = options.postOnly !== false; // Default to true
+
+    // Get product details for proper rounding
+    const product = await adapter.getProductDetails(productId);
+    const baseIncrement = parseFloat(product.baseIncrement);
+    const quoteIncrement = parseFloat(product.quoteIncrement);
+
+    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
+    const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
+
+    const orderPayload = {
+      symbol,
+      amount: roundedAmount.toFixed(8),
+      price: roundedPrice.toFixed(2),
+      side: 'buy',
       type: 'exchange limit',
       client_order_id: clientOrderId,
       options: postOnly ? ['maker-or-cancel'] : [],

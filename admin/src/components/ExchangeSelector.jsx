@@ -35,7 +35,9 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
   const [isOpen, setIsOpen] = useState(false)
 
   const handleSelect = (exchangeName) => {
-    onChange(exchangeName, 'regime')
+    const exchangeConfig = exchanges?.find(e => e.name === exchangeName)
+    const pair = exchangeConfig?.productId || 'BTC-USDC'
+    onChange(exchangeName, pair)
     setIsOpen(false)
   }
 
