@@ -3187,6 +3187,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       entryMode: config.entryMode || 'reactive',
       ladderAutoSwitch: config.ladderAutoSwitch || false,
       ladderMaxAthDropPct: config.ladderMaxAthDropPct || 80,
+      ladderSpacingMode: config.ladderSpacingMode || 'sqrt',
+      ladderSizeMode: config.ladderSizeMode || 'fibonacci',
+      ladderMinSpacingPct: config.ladderMinSpacingPct || 0.5,
       celestialEnabled: config.celestialEnabled !== false,
       maxCelestialBodies: config.maxCelestialBodies || 10,
       macroEnabled: config.macroEnabled || false,
@@ -3573,6 +3576,134 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     return { success: true, message: `TP rebuilt for ${positionState.totalAsset.toFixed(8)} ${baseCurrency} @ ${fmtPrice(positionState.lastTpPrice)}` };
   };
 
+  /**
+   * Preview what a ladder rebuild would place (dry calculation, no orders)
+   * @returns {{success: boolean, message?: string, preview?: Object}}
+   */
+  const previewLadder = () => {
+    if (!isRunning) {
+      return { success: false, message: 'Engine not running' };
+    }
+    if ((config.entryMode || 'reactive') !== 'ladder') {
+      return { success: false, message: 'Entry mode is not ladder' };
+    }
+
+    const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+    if (remainingBudget < (config.baseSizeUsdc || 50)) {
+      return { success: false, message: `Insufficient budget: $${remainingBudget.toFixed(2)}` };
+    }
+
+    const ladder = ladderCalculator.buildLadder(
+      marketState.lastPrice,
+      remainingBudget,
+      {
+        atr: marketState.atr1m,
+        volBaseline: marketState.volBaseline,
+        realizedVol: marketState.realizedVol,
+        athDistance: marketState.athDistance || 0,
+        ath: marketState.ath || 0,
+        priceIncrement,
+      }
+    );
+
+    return {
+      success: true,
+      preview: {
+        levelCount: ladder.levels.length,
+        levels: ladder.levels.map(l => ({
+          price: l.price,
+          sizeUsdc: l.sizeUsdc,
+          assetQty: l.assetQty,
+          distancePct: l.distancePct,
+        })),
+        lowerBound: ladder.lowerBound,
+        lowerBoundPct: ladder.lowerBoundPct,
+        totalBudget: ladder.totalBudget,
+        currentPrice: marketState.lastPrice,
+      },
+    };
+  };
+
+  /**
+   * Cancel existing ladder orders and rebuild from scratch
+   * Bypasses health/regime guards (user-initiated)
+   * @returns {Promise<{success: boolean, message: string}>}
+   */
+  const rebuildLadder = async () => {
+    if (!isRunning) {
+      return { success: false, message: 'Engine not running' };
+    }
+    if ((config.entryMode || 'reactive') !== 'ladder') {
+      return { success: false, message: 'Entry mode is not ladder' };
+    }
+
+    const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+    if (remainingBudget < (config.baseSizeUsdc || 50)) {
+      return { success: false, message: `Insufficient budget: $${remainingBudget.toFixed(2)}` };
+    }
+
+    console.log(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)}`);
+
+    // Cancel existing ladder orders
+    if (positionState.ladderActive) {
+      const cancelResult = await orderExecutor.cancelAllLadderOrders();
+      console.log(`🧹 [${exchange}] Cancelled ${cancelResult.cancelled} existing ladder orders`);
+    }
+
+    // Reset ladder state
+    positionState.ladderActive = false;
+    positionState.ladderPlacedAt = null;
+    positionState.ladderLowerBound = 0;
+    positionState.pendingLadderOrders = [];
+
+    // Build new ladder
+    const ladder = ladderCalculator.buildLadder(
+      marketState.lastPrice,
+      remainingBudget,
+      {
+        atr: marketState.atr1m,
+        volBaseline: marketState.volBaseline,
+        realizedVol: marketState.realizedVol,
+        athDistance: marketState.athDistance || 0,
+        ath: marketState.ath || 0,
+        priceIncrement,
+      }
+    );
+
+    if (ladder.levels.length === 0) {
+      return { success: false, message: 'Ladder build produced 0 levels — price may be at or below floor' };
+    }
+
+    console.log(`📊 [${exchange}] Rebuilding ladder: ${ladderCalculator.getSummary(ladder)}`);
+
+    // Place ladder orders
+    const result = await orderExecutor.placeLadderOrders(ladder.levels);
+
+    // Update position state
+    positionState.ladderActive = true;
+    positionState.ladderPlacedAt = Date.now();
+    positionState.ladderLowerBound = ladder.lowerBound;
+    positionState.pendingLadderOrders = result.orders;
+
+    const msg = `Ladder rebuilt: ${result.orders.length} levels from ${fmtPrice(marketState.lastPrice)} to ${fmtPrice(ladder.lowerBound)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`;
+    console.log(`📊 [${exchange}] ${msg}`);
+
+    tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to ${fmtPrice(ladder.lowerBound)}`, {
+      levels: result.orders.length,
+      topPrice: marketState.lastPrice,
+      bottomPrice: ladder.lowerBound,
+      lowerBoundPct: ladder.lowerBoundPct,
+      totalBudget: ladder.totalBudget,
+      failedCount: result.failedCount,
+      manual: true,
+    });
+
+    // Persist state
+    saveLiveState();
+
+    return { success: true, message: msg };
+  };
+
   return {
     start,
     stop,
@@ -3588,6 +3719,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     forceResumeDrawdown,
     manualMergeBody,
     rebuildTP,
+    previewLadder,
+    rebuildLadder,
     // Dry-run specific methods
     isDryRun,
     getDryRunLog,

@@ -463,6 +463,12 @@ The Regime Engine is an advanced trading system that adapts to market conditions
   - Spacing minimum: Enforces ladderMinSpacingPct between levels
   - Order limit: Validates maxOpenOrders capacity before placement
   - Mode switch protection: Doesn't switch modes mid-cycle with active position
+- Manual rebuild:
+  - "Rebuild Ladder" button in Open Orders card (visible when entryMode=ladder + engine running)
+  - Inline settings panel: edit ATH Drop %, spacing mode, size mode, min spacing %
+  - Preview auto-fetches on panel open and after settings change
+  - "Place Orders" executes rebuild: cancel existing → build new → place orders
+  - `previewLadder()` and `rebuildLadder()` engine methods bypass health/regime guards
 
 **Celestial Hierarchy System (v2.5+):**
 - Evolved from satellite TP orders into a unified celestial body system
@@ -643,6 +649,8 @@ POST /api/:exchange/regime/pause     - Pause (enter SAFE mode)
 POST /api/:exchange/regime/resume    - Resume from SAFE mode
 POST /api/:exchange/regime/force-regime - Force regime transition
 POST /api/:exchange/regime/rollup-body - Manual body roll-up merge
+GET  /api/:exchange/regime/preview-ladder - Preview ladder rebuild (dry calculation)
+POST /api/:exchange/regime/rebuild-ladder - Cancel + rebuild ladder orders
 GET  /api/:exchange/regime/fills     - Get fill ledger
 
 # Dry-Run specific routes

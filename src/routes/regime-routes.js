@@ -313,6 +313,36 @@ module.exports = (app, deps) => {
     res.json({ success: result.success, exchange, message: result.message, status: engine.getStatus() });
   });
 
+  // Preview ladder rebuild (dry calculation)
+  app.get('/api/:exchange/regime/preview-ladder', (req, res) => {
+    const { exchange } = req.params;
+    const engine = regimeEngines.get(exchange);
+
+    if (!engine) {
+      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
+    }
+
+    const result = engine.previewLadder();
+    res.json({ ...result, exchange, status: engine.getStatus() });
+  });
+
+  // Rebuild ladder orders (cancel existing + place new)
+  app.post('/api/:exchange/regime/rebuild-ladder', async (req, res) => {
+    const { exchange } = req.params;
+    const engine = regimeEngines.get(exchange);
+
+    if (!engine) {
+      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
+    }
+
+    const result = await engine.rebuildLadder();
+    if (result.success) {
+      log('INFO', `📊 [${exchange}] Ladder rebuild: ${result.message}`);
+    }
+
+    res.json({ success: result.success, exchange, message: result.message, status: engine.getStatus() });
+  });
+
   // Manual body roll-up merge
   app.post('/api/:exchange/regime/rollup-body', async (req, res) => {
     const { exchange } = req.params;

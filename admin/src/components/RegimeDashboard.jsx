@@ -421,6 +421,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [convertPreview, setConvertPreview] = useState(null)
   const [converting, setConverting] = useState(false)
   const [showConvertConfirm, setShowConvertConfirm] = useState(false)
+  const [showLadderPanel, setShowLadderPanel] = useState(false)
+  const [ladderPreview, setLadderPreview] = useState(null)
+  const [ladderEdits, setLadderEdits] = useState(null)
+  const [placingLadder, setPlacingLadder] = useState(false)
   const prevPriceRef = useRef(null)
   const { addToast } = useToast()
 
@@ -654,6 +658,50 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       // Directly update socket status from API response for immediate visual refresh
       // (avoids race where socketStatus overrides stale localStatus from fetchStatus)
       setSocketStatus(data.status)
+    }
+  }
+
+  // Fetch ladder preview
+  const fetchLadderPreview = useCallback(async () => {
+    const res = await fetch(`/api/${exchange}/regime/preview-ladder`)
+    const data = await res.json()
+    if (data.success) {
+      setLadderPreview(data.preview)
+    } else {
+      setLadderPreview(null)
+      addToast({ type: 'error', title: 'Preview Failed', message: data.message || 'Could not preview ladder' })
+    }
+  }, [exchange, addToast])
+
+  // Save ladder config edits
+  const saveLadderEdits = useCallback(async (edits) => {
+    const res = await fetch(`/api/${exchange}/regime/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(edits),
+    })
+    if (res.ok) {
+      await fetchConfig()
+      await fetchLadderPreview()
+    }
+  }, [exchange, fetchConfig, fetchLadderPreview])
+
+  // Place ladder orders
+  const handlePlaceLadder = async () => {
+    setPlacingLadder(true)
+    const res = await fetch(`/api/${exchange}/regime/rebuild-ladder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const data = await res.json()
+    setPlacingLadder(false)
+    if (data.success) {
+      addToast({ type: 'success', title: 'Ladder Placed', message: data.message })
+      if (data.status) setSocketStatus(data.status)
+      setShowLadderPanel(false)
+      setLadderPreview(null)
+    } else {
+      addToast({ type: 'error', title: 'Ladder Failed', message: data.message || 'Could not place ladder orders' })
     }
   }
 
@@ -1643,6 +1691,26 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               <h3 className="text-sm font-medium text-gray-400">Open Orders</h3>
               <div className="flex items-center gap-2">
                 {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
+                {status?.config?.entryMode === 'ladder' && status?.isRunning && (
+                  <button
+                    onClick={() => {
+                      const opening = !showLadderPanel
+                      setShowLadderPanel(opening)
+                      if (opening) {
+                        setLadderEdits({
+                          ladderMaxAthDropPct: config?.ladderMaxAthDropPct ?? status?.config?.ladderMaxAthDropPct ?? 80,
+                          ladderSpacingMode: config?.ladderSpacingMode ?? status?.config?.ladderSpacingMode ?? 'sqrt',
+                          ladderSizeMode: config?.ladderSizeMode ?? status?.config?.ladderSizeMode ?? 'fibonacci',
+                          ladderMinSpacingPct: config?.ladderMinSpacingPct ?? status?.config?.ladderMinSpacingPct ?? 0.5,
+                        })
+                        fetchLadderPreview()
+                      }
+                    }}
+                    className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
+                  >
+                    {showLadderPanel ? 'Close' : 'Rebuild Ladder'}
+                  </button>
+                )}
                 {pendingOrdersList.length > 0 && (
                   <input
                     type="text"
@@ -1654,6 +1722,113 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 )}
               </div>
             </div>
+            {/* Ladder Settings/Preview Panel */}
+            {showLadderPanel && ladderEdits && (
+              <div className="mb-4 p-3 bg-indigo-900/20 border border-indigo-700/50 rounded-lg space-y-3">
+                <div className="text-xs font-medium text-indigo-300">Ladder Settings</div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div>
+                    <label className="text-[10px] text-gray-400 block mb-1">ATH Drop %</label>
+                    <input
+                      type="number"
+                      value={ladderEdits.ladderMaxAthDropPct}
+                      onChange={e => setLadderEdits(prev => ({ ...prev, ladderMaxAthDropPct: parseFloat(e.target.value) || 0 }))}
+                      onBlur={() => saveLadderEdits({ ladderMaxAthDropPct: ladderEdits.ladderMaxAthDropPct })}
+                      className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
+                      min={1} max={99} step={1}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-400 block mb-1">Spacing Mode</label>
+                    <select
+                      value={ladderEdits.ladderSpacingMode}
+                      onChange={e => {
+                        const val = e.target.value
+                        setLadderEdits(prev => ({ ...prev, ladderSpacingMode: val }))
+                        saveLadderEdits({ ladderSpacingMode: val })
+                      }}
+                      className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
+                    >
+                      <option value="linear">Linear</option>
+                      <option value="sqrt">Sqrt</option>
+                      <option value="exponential">Exponential</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-400 block mb-1">Size Mode</label>
+                    <select
+                      value={ladderEdits.ladderSizeMode}
+                      onChange={e => {
+                        const val = e.target.value
+                        setLadderEdits(prev => ({ ...prev, ladderSizeMode: val }))
+                        saveLadderEdits({ ladderSizeMode: val })
+                      }}
+                      className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
+                    >
+                      <option value="flat">Flat</option>
+                      <option value="linear">Linear</option>
+                      <option value="sqrt">Sqrt</option>
+                      <option value="fibonacci">Fibonacci</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-400 block mb-1">Min Spacing %</label>
+                    <input
+                      type="number"
+                      value={ladderEdits.ladderMinSpacingPct}
+                      onChange={e => setLadderEdits(prev => ({ ...prev, ladderMinSpacingPct: parseFloat(e.target.value) || 0 }))}
+                      onBlur={() => saveLadderEdits({ ladderMinSpacingPct: ladderEdits.ladderMinSpacingPct })}
+                      className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
+                      min={0.01} max={5} step={0.1}
+                    />
+                  </div>
+                </div>
+                {/* Preview */}
+                {ladderPreview ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-4 text-xs text-gray-300">
+                      <span>{ladderPreview.levelCount} levels</span>
+                      <span>{formatPrice(ladderPreview.levels[0]?.price)} — {formatPrice(ladderPreview.levels[ladderPreview.levels.length - 1]?.price)}</span>
+                      <span>Budget: ${ladderPreview.totalBudget?.toFixed(2)}</span>
+                      <span>Range: {ladderPreview.lowerBoundPct?.toFixed(1)}%</span>
+                    </div>
+                    <div className="max-h-40 overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-gray-500 border-b border-gray-700">
+                            <th className="text-left py-1 pr-2">#</th>
+                            <th className="text-right py-1 pr-2">Price</th>
+                            <th className="text-right py-1 pr-2">Size (USDC)</th>
+                            <th className="text-right py-1 pr-2">Qty</th>
+                            <th className="text-right py-1">Distance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ladderPreview.levels.map((level, i) => (
+                            <tr key={i} className="border-b border-gray-700/30 text-gray-300">
+                              <td className="py-1 pr-2 text-gray-500">{i + 1}</td>
+                              <td className="text-right py-1 pr-2 font-mono">{formatPrice(level.price)}</td>
+                              <td className="text-right py-1 pr-2 font-mono">${level.sizeUsdc?.toFixed(2)}</td>
+                              <td className="text-right py-1 pr-2 font-mono">{level.assetQty?.toFixed(8)}</td>
+                              <td className="text-right py-1 font-mono text-gray-500">{level.distancePct?.toFixed(2)}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button
+                      onClick={handlePlaceLadder}
+                      disabled={placingLadder}
+                      className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded transition-colors"
+                    >
+                      {placingLadder ? 'Placing...' : `Place ${ladderPreview.levelCount} Orders`}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500">Loading preview...</div>
+                )}
+              </div>
+            )}
             {pendingOrdersList.length === 0 ? (
               <div className="text-gray-500 text-sm text-center py-4">No open orders</div>
             ) : (
