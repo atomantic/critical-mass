@@ -902,7 +902,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
                 <div className="text-[10px] text-gray-500">
                   {status?.ladder?.active
-                    ? `${status.ladder.pendingOrders} orders pending`
+                    ? `${status.ladder.pendingOrders} orders ($${status.ladder.committedUsdc?.toFixed(0) || 0})`
                     : status?.entryMode === 'ladder' ? 'Waiting for trigger' : 'Single order mode'}
                 </div>
                 {status?.autoSwitch && (
@@ -1302,11 +1302,20 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
                 <div className="text-center">
                   <div className="text-[10px] text-gray-500 mb-1">USDC</div>
-                  <div className="text-xs text-white font-mono">${position.totalCostBasis?.toFixed(0) || 0}</div>
-                  <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
-                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, ((position.totalCostBasis || 0) / (config?.maxUsdcDeployed || 10000)) * 100)}%` }} />
-                  </div>
-                  <div className="text-[9px] text-gray-600">/ ${config?.maxUsdcDeployed || 10000}</div>
+                  {(() => {
+                    const filled = position.totalCostBasis || 0
+                    const committed = status?.ladder?.committedUsdc || 0
+                    const total = filled + committed
+                    const max = config?.maxUsdcDeployed || 10000
+                    return <>
+                      <div className="text-xs text-white font-mono">${total.toFixed(0)}{committed > 0 && <span className="text-indigo-400 text-[9px]"> ({filled.toFixed(0)} + {committed.toFixed(0)} pending)</span>}</div>
+                      <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1 flex">
+                        <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, (filled / max) * 100)}%` }} />
+                        {committed > 0 && <div className="h-full bg-indigo-500 transition-all" style={{ width: `${Math.min(100 - (filled / max) * 100, (committed / max) * 100)}%` }} />}
+                      </div>
+                      <div className="text-[9px] text-gray-600">/ ${max}</div>
+                    </>
+                  })()}
                 </div>
                 <div className="text-center">
                   <div className="text-[10px] text-gray-500 mb-1">Drawdown</div>
@@ -1789,7 +1798,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <div className="flex items-center gap-4 text-xs text-gray-300">
                       <span>{ladderPreview.levelCount} levels</span>
                       <span>{formatPrice(ladderPreview.levels[0]?.price)} — {formatPrice(ladderPreview.levels[ladderPreview.levels.length - 1]?.price)}</span>
-                      <span>Budget: ${ladderPreview.totalBudget?.toFixed(2)}</span>
+                      <span title={`Max: $${ladderPreview.maxUsdcDeployed?.toFixed(2)} − Allocated: $${ladderPreview.allocatedCapital?.toFixed(2)}`}>Budget: ${ladderPreview.totalBudget?.toFixed(2)}</span>
                       <span>Range: {ladderPreview.lowerBoundPct?.toFixed(1)}%</span>
                     </div>
                     <div className="max-h-40 overflow-y-auto">
@@ -1943,8 +1952,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     if (order.relatedBuys?.some(b => b.orderId?.toLowerCase().includes(openFilter))) return true
                     return false
                   }
-                  const sellOrders = ordersWithCalcs.filter(o => o.type !== 'entry' && matchesOpenSearch(o))
-                  const entryOrders = ordersWithCalcs.filter(o => o.type === 'entry' && matchesOpenSearch(o))
+                  const isEntry = (o) => o.type === 'entry' || o.type === 'ladder_entry'
+                  const sellOrders = ordersWithCalcs.filter(o => !isEntry(o) && matchesOpenSearch(o))
+                  const entryOrders = ordersWithCalcs.filter(o => isEntry(o) && matchesOpenSearch(o))
 
                   // Sell order totals
                   const totalSellSize = sellOrders.reduce((sum, o) => sum + (o.size || 0), 0)

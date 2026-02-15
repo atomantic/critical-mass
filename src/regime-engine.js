@@ -3216,6 +3216,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       placedAt: positionState.ladderPlacedAt,
       lowerBound: positionState.ladderLowerBound,
       pendingOrders: positionState.pendingLadderOrders?.length || 0,
+      committedUsdc: (positionState.pendingLadderOrders || []).reduce((sum, o) => sum + (o.sizeUsdc || 0), 0),
     } : null,
     celestial: {
       enabled: config.celestialEnabled !== false,
@@ -3580,6 +3581,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * Preview what a ladder rebuild would place (dry calculation, no orders)
    * @returns {{success: boolean, message?: string, preview?: Object}}
    */
+  /**
+   * Compute allocated capital defensively: use totalCostBasis but floor at
+   * celestial body sum in case totalCostBasis is stale (e.g. after mode switch).
+   */
+  const getAllocatedCapital = () => {
+    const bodiesCost = (positionState.celestialBodies || []).reduce((sum, b) => sum + (b.costBasis || 0), 0);
+    return Math.max(positionState.totalCostBasis || 0, bodiesCost);
+  };
+
   const previewLadder = () => {
     if (!isRunning) {
       return { success: false, message: 'Engine not running' };
@@ -3588,9 +3598,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return { success: false, message: 'Entry mode is not ladder' };
     }
 
-    const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+    const allocatedCapital = getAllocatedCapital();
+    const remainingBudget = config.maxUsdcDeployed - allocatedCapital;
     if (remainingBudget < (config.baseSizeUsdc || 50)) {
-      return { success: false, message: `Insufficient budget: $${remainingBudget.toFixed(2)}` };
+      return { success: false, message: `Insufficient budget: $${remainingBudget.toFixed(2)} (allocated: $${allocatedCapital.toFixed(2)})` };
     }
 
     const ladder = ladderCalculator.buildLadder(
@@ -3619,6 +3630,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         lowerBound: ladder.lowerBound,
         lowerBoundPct: ladder.lowerBoundPct,
         totalBudget: ladder.totalBudget,
+        allocatedCapital,
+        maxUsdcDeployed: config.maxUsdcDeployed,
         currentPrice: marketState.lastPrice,
       },
     };
@@ -3637,12 +3650,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return { success: false, message: 'Entry mode is not ladder' };
     }
 
-    const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+    const allocatedCapital = getAllocatedCapital();
+    const remainingBudget = config.maxUsdcDeployed - allocatedCapital;
     if (remainingBudget < (config.baseSizeUsdc || 50)) {
-      return { success: false, message: `Insufficient budget: $${remainingBudget.toFixed(2)}` };
+      return { success: false, message: `Insufficient budget: $${remainingBudget.toFixed(2)} (allocated: $${allocatedCapital.toFixed(2)})` };
     }
 
-    console.log(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)}`);
+    console.log(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)} (allocated=$${allocatedCapital.toFixed(2)})`);
 
     // Cancel existing ladder orders
     if (positionState.ladderActive) {
