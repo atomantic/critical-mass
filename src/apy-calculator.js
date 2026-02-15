@@ -38,8 +38,10 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     .reduce((sum, b) => sum + (b.costBasis || 0), 0);
   const pendingEntryCost = (positionState.pendingEntryOrders || [])
     .reduce((sum, o) => sum + (o.sizeUsdc || 0), 0);
+  const pendingLadderCost = (positionState.pendingLadderOrders || [])
+    .reduce((sum, o) => sum + (o.sizeUsdc || 0), 0);
   const additionalCycleCost = Math.max(0, (positionState.totalCostBasis || 0) - bodyCost);
-  const deployedInPosition = bodyCost + pendingEntryCost + additionalCycleCost;
+  const deployedInPosition = bodyCost + pendingEntryCost + pendingLadderCost + additionalCycleCost;
   const availableCapital = Math.max(0, maxUsdcDeployed - deployedInPosition);
   const currentPrice = marketState.lastPrice || 0;
 
