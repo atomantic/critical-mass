@@ -202,6 +202,7 @@ const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
   target.costBasis = roundUSDC(target.costBasis + newCost);
   target.avgPrice = target.assetQty > 0 ? target.costBasis / target.assetQty : 0;
   target.lastMergedAt = Date.now();
+  if (!target.sourceOrderIds) target.sourceOrderIds = [];
   if (orderId) target.sourceOrderIds.push(orderId);
   if (!target.buyOrders) target.buyOrders = [];
   if (orderId) {
@@ -241,7 +242,7 @@ const mergeBodies = (target, source, maxUsdcDeployed) => {
   target.costBasis = roundUSDC(target.costBasis + source.costBasis);
   target.avgPrice = target.assetQty > 0 ? target.costBasis / target.assetQty : 0;
   target.lastMergedAt = Date.now();
-  target.sourceOrderIds = [...target.sourceOrderIds, ...source.sourceOrderIds];
+  target.sourceOrderIds = [...(target.sourceOrderIds || []), ...(source.sourceOrderIds || [])];
   target.buyOrders = [...(target.buyOrders || []), ...(source.buyOrders || [])];
   target.mergeCount += 1 + (source.mergeCount || 0);
 
