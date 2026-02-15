@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
+
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -253,19 +253,6 @@ const notifier = createNotifier();
 app.use(cors({ origin: CORS_ORIGINS }));
 app.use(express.json());
 
-// Rate limiting
-const readLimiter = rateLimit({ windowMs: 60_000, max: 100, standardHeaders: true, legacyHeaders: false });
-const writeLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
-const engineLimiter = rateLimit({ windowMs: 60_000, max: 5, standardHeaders: true, legacyHeaders: false });
-app.get('/api/*', readLimiter);
-app.post('/api/*', writeLimiter);
-app.put('/api/*', writeLimiter);
-app.patch('/api/*', writeLimiter);
-app.delete('/api/*', writeLimiter);
-// Stricter limits for engine start/stop
-app.post('/api/:exchange/regime/start', engineLimiter);
-app.post('/api/:exchange/regime/stop', engineLimiter);
-app.post('/api/:exchange/regime/convert-dca', engineLimiter);
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
@@ -363,6 +350,8 @@ io.on('connection', (socket) => {
 const schedulerState = {};
 
 const checkAndRunIntervalTrade = () => {
+  if (!getGlobalConfig().simpleDcaEnabled) return;
+
   const enabledExchanges = getEnabledExchanges();
 
   for (const exchange of enabledExchanges) {

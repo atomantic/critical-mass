@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+- **Remove express-rate-limit from admin server** - Single-user local dashboard doesn't need request rate limiting; was causing 429 errors on page load
+
 ### Changed
 - **Remove baseSizeUsdc from aggressiveness presets** - Base size is now a platform/fund config only, no longer overridden when switching aggressiveness levels
 
