@@ -4,7 +4,7 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, getConfiguredExchanges, getEnabledExchanges, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
+const { getExchangeConfig, getGlobalConfig, getConfiguredExchanges, getEnabledExchanges, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
@@ -39,7 +39,8 @@ module.exports = (app, deps) => {
       };
     });
 
-    res.json({ exchanges, enabled });
+    const globalConfig = getGlobalConfig();
+    res.json({ exchanges, enabled, simpleDcaEnabled: globalConfig.simpleDcaEnabled ?? false });
   });
 
   // Get config for an exchange
@@ -229,6 +230,11 @@ module.exports = (app, deps) => {
   // Sync pending orders for an exchange
   app.post('/api/:exchange/sync', async (req, res) => {
     const { exchange } = req.params;
+
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
+
     const config = getExchangeConfig(exchange);
     const state = stateTracker.loadState(config, exchange);
 
@@ -248,6 +254,11 @@ module.exports = (app, deps) => {
   // Trigger trade for an exchange
   app.post('/api/:exchange/trade', async (req, res) => {
     const { exchange } = req.params;
+
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
+
     log('INFO', `[${exchange}] Manual trade triggered via API`);
 
     const result = await runIntervalCycle(exchange);

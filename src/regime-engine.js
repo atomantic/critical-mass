@@ -214,6 +214,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }, productId)
     : createOrderExecutor(exchange, config, adapter, productId, {
         onFillDetected: (orderId, status) => liveCallbacks.onFillDetected && liveCallbacks.onFillDetected(orderId, status),
+        onEntryCancelled: (orderId) => {
+          if (positionState.pendingEntryOrders?.length > 0) {
+            positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
+          }
+        },
       });
 
   const recoveryModule = createRecoveryModule(exchange, adapter, productId);
@@ -859,6 +864,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           }
         }
 
+        // Self-heal avgPrice for bodies where roundUSDC truncated precision
+        for (const body of savedBodies) {
+          if (body.assetQty > 0 && body.costBasis > 0) {
+            const correctedAvg = body.costBasis / body.assetQty;
+            if (Math.abs(correctedAvg - body.avgPrice) / correctedAvg > 0.001) {
+              console.log(`🔧 [${exchange}] correcting body avgPrice bodyId=${body.id} old=${body.avgPrice} new=${correctedAvg}`);
+              body.avgPrice = correctedAvg;
+            }
+          }
+        }
+
         for (const body of [...savedBodies]) {
           if (!body.tpOrderId) continue;
 
@@ -1238,6 +1254,17 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }
       if (orphanedEntries > 0) {
         console.log(`ℹ️ [${exchange}] Ignored ${orphanedEntries} entry orders not belonging to regime engine`);
+      }
+
+      // Remove saved pending entries that are no longer open on the exchange
+      // (filled or cancelled while engine was offline)
+      const allOpenIds = new Set(exchangeOpenOrders.map(o => o.orderId));
+      if (savedPendingEntries.length > 0) {
+        positionState.pendingEntryOrders = savedPendingEntries.filter(e => allOpenIds.has(e.orderId));
+        const purged = savedPendingEntries.length - positionState.pendingEntryOrders.length;
+        if (purged > 0) {
+          console.log(`🧹 [${exchange}] Purged ${purged} stale pending entry orders (filled/cancelled while offline)`);
+        }
       }
 
       // Restore or cancel persisted ladder orders

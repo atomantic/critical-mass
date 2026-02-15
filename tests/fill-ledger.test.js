@@ -564,6 +564,32 @@ describe('Fill Ledger', () => {
   });
 
   // =======================================================================
+  // 22b. aggregateFills — low-priced asset preserves avgPrice precision
+  // =======================================================================
+  it('aggregateFills preserves avgPrice precision for low-priced assets', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+
+    // CRO-like fill: 597 units at $0.0837 each
+    ledger.ingestFill(makeBuyFill({
+      tradeId: 'low-price-1',
+      price: '0.0837',
+      size: '597',
+      totalCommission: '0.05',
+      rebate: '0',
+    }));
+
+    const allFills = ledger.getAllFills();
+    const agg = ledger.aggregateFills(allFills);
+
+    // avgPrice should be ~0.0837, not truncated to 0.08
+    assert.ok(
+      Math.abs(agg.avgPrice - 0.0837) < 0.0001,
+      `avgPrice ${agg.avgPrice} should be approximately 0.0837, not rounded to ${Math.round(agg.avgPrice * 100) / 100}`,
+    );
+  });
+
+  // =======================================================================
   // 23. getFillsSince
   // =======================================================================
   it('getFillsSince returns only fills after the given timestamp', () => {

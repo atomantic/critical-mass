@@ -12,6 +12,7 @@
  */
 
 const { roundAsset, roundUSDC } = require('./volatility-utils');
+const { getBaseCurrency, getQuoteCurrency } = require('./dca-engine');
 
 /**
  * @typedef {import('./types').ExchangeAdapter} ExchangeAdapter
@@ -46,7 +47,8 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     console.log(`📋 [${exchange}] Found ${recentFills.length} recent fills`);
 
     // 3. Fetch current balances
-    const [baseCurrency, quoteCurrency] = productId.replace('_', '-').split('-');
+    const baseCurrency = getBaseCurrency(productId);
+    const quoteCurrency = getQuoteCurrency(productId);
     const baseBalance = await adapter.getAccountBalance(baseCurrency);
     const quoteBalance = await adapter.getAccountBalance(quoteCurrency);
 

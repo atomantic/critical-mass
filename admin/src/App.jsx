@@ -123,6 +123,7 @@ function AppContent() {
   const [starting, setStarting] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [simpleDcaEnabled, setSimpleDcaEnabled] = useState(false)
 
   // WebSocket connection for regime strategy
   const { connected: wsConnected } = useRegimeEvents(currentStrategy === 'regime' ? currentExchange : null)
@@ -136,6 +137,7 @@ function AppContent() {
     if (res.ok) {
       const data = await res.json()
       setExchanges(data.exchanges || [])
+      setSimpleDcaEnabled(data.simpleDcaEnabled ?? false)
       // Only auto-select exchange on initial load if not already in URL
       if (autoSelect && !urlExchange) {
         const enabled = data.exchanges?.find(e => e.enabled || e.regimeEnabled)
@@ -244,6 +246,14 @@ function AppContent() {
     }
   }, [urlExchange, urlStrategy])
 
+  // Auto-redirect away from DCA when simpleDcaEnabled is false
+  useEffect(() => {
+    if (!simpleDcaEnabled && currentStrategy === 'dca') {
+      setCurrentStrategy('regime')
+      navigate(`/${currentExchange}/regime`, { replace: true })
+    }
+  }, [simpleDcaEnabled, currentStrategy, currentExchange])
+
   // Fetch data when exchange changes
   useEffect(() => {
     if (currentExchange) {
@@ -325,6 +335,7 @@ function AppContent() {
                     exchanges={exchanges}
                     onChange={handleExchangeStrategyChange}
                     onRefresh={fetchExchanges}
+                    simpleDcaEnabled={simpleDcaEnabled}
                   />
                   {/* Hamburger menu button for mobile */}
                   <button
@@ -430,6 +441,7 @@ function AppContent() {
                     exchanges={exchanges}
                     onChange={handleExchangeStrategyChange}
                     onRefresh={fetchExchanges}
+                    simpleDcaEnabled={simpleDcaEnabled}
                   />
                 </div>
               </div>
@@ -509,7 +521,8 @@ function AppContent() {
               {/* Redirect root to default exchange/strategy */}
               <Route path="/" element={<Navigate to={`/${currentExchange}/${currentStrategy}`} replace />} />
 
-              {/* DCA strategy routes */}
+              {/* DCA strategy routes (only when simpleDcaEnabled) */}
+              {simpleDcaEnabled && <>
               <Route path="/:exchange/dca" element={<Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />} />
               <Route path="/:exchange/dca/cost-basis" element={<CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
               <Route path="/:exchange/dca/transactions" element={<TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
@@ -517,6 +530,7 @@ function AppContent() {
               <Route path="/:exchange/dca/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
               <Route path="/:exchange/dca/optimizer" element={<Optimizer exchange={currentExchange} />} />
               <Route path="/:exchange/dca/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy="dca" />} />
+              </>}
 
               {/* Regime strategy routes */}
               <Route path="/:exchange/regime" element={<RegimeDashboard exchange={currentExchange} />} />

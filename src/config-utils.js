@@ -300,6 +300,7 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
  * @type {GlobalConfig}
  */
 const GLOBAL_DEFAULTS = {
+  simpleDcaEnabled: false,
   schedulerInterval: 30000,
   backup: {
     enabled: true,

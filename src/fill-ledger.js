@@ -462,7 +462,7 @@ const createFillLedger = (exchange, productId) => {
       totalSize: roundAsset(totalSize),
       totalValue: roundUSDC(totalValue),
       totalFees: roundUSDC(totalFees),
-      avgPrice: totalSize > 0 ? roundUSDC(totalValue / totalSize) : 0,
+      avgPrice: totalSize > 0 ? totalValue / totalSize : 0,
     };
   };
 
