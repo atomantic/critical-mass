@@ -45,6 +45,7 @@ const { getFibonacciMultiplier } = require('./fibonacci-utils');
  * @property {number} athDistance - Distance from ATH (negative when below, e.g., -0.43 for 43% below)
  * @property {number} [ath] - All-time high price
  * @property {number} [realizedVol] - Current realized volatility
+ * @property {number} [priceIncrement] - Price tick size for rounding (e.g. 0.00001 for CRO_USD)
  */
 
 /**
@@ -61,9 +62,9 @@ const createLadderCalculator = (exchange, config) => {
    * @param {number} maxAthDropPct - Max drop from ATH in percent (e.g. 80 → floor at 20% of ATH)
    * @returns {number|null} Floor price, or null if currentPrice is already below the floor
    */
-  const calculateLowerBound = (currentPrice, ath, maxAthDropPct) => {
+  const calculateLowerBound = (currentPrice, ath, maxAthDropPct, increment) => {
     const reference = ath > 0 ? ath : currentPrice;
-    const floor = roundPrice(reference * (1 - maxAthDropPct / 100));
+    const floor = roundPrice(reference * (1 - maxAthDropPct / 100), increment);
     return floor < currentPrice ? floor : null;
   };
 
@@ -99,7 +100,7 @@ const createLadderCalculator = (exchange, config) => {
    * @param {'linear' | 'sqrt' | 'exponential'} spacingMode - Spacing distribution
    * @returns {number[]} Array of prices from top to bottom
    */
-  const calculateLadderLevels = (topPrice, lowerBound, numLevels, spacingMode) => {
+  const calculateLadderLevels = (topPrice, lowerBound, numLevels, spacingMode, increment) => {
     if (numLevels <= 1) return [topPrice];
 
     const totalRange = topPrice - lowerBound;
@@ -125,7 +126,7 @@ const createLadderCalculator = (exchange, config) => {
           break;
       }
 
-      const price = roundPrice(topPrice - fraction * totalRange);
+      const price = roundPrice(topPrice - fraction * totalRange, increment);
       prices.push(price);
     }
 
@@ -229,9 +230,10 @@ const createLadderCalculator = (exchange, config) => {
     const sizeMode = config.ladderSizeMode || 'fibonacci';
     const ath = context.ath || 0;
     const baseSizeUsdc = config.baseSizeUsdc || 50;
+    const increment = context.priceIncrement || 0.01;
 
     // Calculate ATH-based floor
-    const lowerBound = calculateLowerBound(currentPrice, ath, maxAthDropPct);
+    const lowerBound = calculateLowerBound(currentPrice, ath, maxAthDropPct, increment);
     if (lowerBound === null) {
       // Price already at or below floor — no ladder to build
       return { lowerBound: 0, lowerBoundPct: 0, totalBudget, levels: [], athDistance: context.athDistance || 0 };
@@ -245,7 +247,7 @@ const createLadderCalculator = (exchange, config) => {
       firstDropPct = (kFactor * atr / currentPrice) * 100;
       firstDropPct = Math.max(firstDropPct, 0.1); // min 0.1%
     }
-    const topPrice = roundPrice(currentPrice * (1 - firstDropPct / 100));
+    const topPrice = roundPrice(currentPrice * (1 - firstDropPct / 100), increment);
 
     // Ensure topPrice is above floor
     if (topPrice <= lowerBound) {
@@ -266,7 +268,7 @@ const createLadderCalculator = (exchange, config) => {
     }
 
     // Generate price levels from topPrice to floor
-    const priceLevels = calculateLadderLevels(topPrice, lowerBound, numLevels, spacingMode);
+    const priceLevels = calculateLadderLevels(topPrice, lowerBound, numLevels, spacingMode, increment);
 
     // Allocate sizes
     const sizesRaw = calculateLevelSizes(totalBudget, priceLevels.length, sizeMode);

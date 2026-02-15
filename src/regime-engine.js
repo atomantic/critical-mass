@@ -2444,6 +2444,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           realizedVol: marketState.realizedVol,
           athDistance: marketState.athDistance || 0,
           ath: marketState.ath || 0,
+          priceIncrement,
         }
       );
 
