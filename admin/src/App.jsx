@@ -331,11 +331,9 @@ function AppContent() {
                   {/* Exchange selector - visible on mobile in top row */}
                   <ExchangeSelector
                     currentExchange={currentExchange}
-                    currentStrategy={currentStrategy}
                     exchanges={exchanges}
                     onChange={handleExchangeStrategyChange}
                     onRefresh={fetchExchanges}
-                    simpleDcaEnabled={simpleDcaEnabled}
                   />
                   {/* Hamburger menu button for mobile */}
                   <button
@@ -437,11 +435,9 @@ function AppContent() {
                 <div className="hidden md:block">
                   <ExchangeSelector
                     currentExchange={currentExchange}
-                    currentStrategy={currentStrategy}
                     exchanges={exchanges}
                     onChange={handleExchangeStrategyChange}
                     onRefresh={fetchExchanges}
-                    simpleDcaEnabled={simpleDcaEnabled}
                   />
                 </div>
               </div>
