@@ -318,12 +318,12 @@ function AppContent() {
       <div className="min-h-screen">
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-3 md:py-4">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-2 md:py-4">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-3">
               {/* Top row: Title + Exchange selector */}
               <div className="flex items-center justify-between">
-                <Link to="/" className="text-xl md:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2 whitespace-nowrap">
-                  <svg viewBox="0 0 32 32" className="w-7 h-7 md:w-8 md:h-8 shrink-0" aria-hidden="true">
+                <Link to="/" className="text-lg md:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2 whitespace-nowrap min-w-0 shrink">
+                  <svg viewBox="0 0 32 32" className="w-6 h-6 md:w-8 md:h-8 shrink-0" aria-hidden="true">
                     {/* Outer orbit ring */}
                     <ellipse cx="16" cy="16" rx="14" ry="5" fill="none" stroke="#6366f1" strokeWidth="0.8" opacity="0.5" transform="rotate(-20 16 16)" />
                     {/* Middle orbit ring */}
@@ -344,7 +344,7 @@ function AppContent() {
                   </svg>
                   Critical Mass
                 </Link>
-                <div className="flex items-center gap-2 md:hidden">
+                <div className="flex items-center gap-1.5 md:hidden shrink-0">
                   {/* Exchange selector - visible on mobile in top row (hidden on overview) */}
                   {!isOverview && (
                     <ExchangeSelector
@@ -374,7 +374,7 @@ function AppContent() {
               </div>
 
               {/* Bottom row on mobile / Right side on desktop */}
-              <div className="flex items-center justify-between md:justify-end gap-2 md:gap-4">
+              <div className="flex items-center justify-between md:justify-end gap-1.5 md:gap-4">
                 {/* Regime engine controls (hidden on overview) */}
                 {!isOverview && currentStrategy === 'regime' && (
                   <div className="flex items-center gap-2 md:gap-3 flex-wrap">
@@ -460,7 +460,7 @@ function AppContent() {
 
             {/* Mobile menu dropdown */}
             {mobileMenuOpen && (
-              <div className="md:hidden mt-3 pt-3 border-t border-gray-700 flex flex-col gap-1">
+              <div className="md:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
                 <Link
                   to="/notifications"
                   onClick={() => setMobileMenuOpen(false)}
