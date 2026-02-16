@@ -60,15 +60,15 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
     <div className="exchange-selector relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1.5 md:gap-2 px-2 md:px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+        className="flex items-center gap-1 md:gap-2 px-1.5 md:px-3 py-1.5 md:py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
       >
-        <span className={`w-6 h-6 flex items-center justify-center rounded shrink-0 ${EXCHANGE_COLORS[currentExchange] || 'bg-gray-600'}`}>
+        <span className={`w-5 h-5 md:w-6 md:h-6 text-xs md:text-sm flex items-center justify-center rounded shrink-0 ${EXCHANGE_COLORS[currentExchange] || 'bg-gray-600'}`}>
           {EXCHANGE_ICONS[currentExchange] || '?'}
         </span>
         <span className="font-medium capitalize hidden md:inline">{currentExchange}</span>
         <span className="text-gray-400 hidden md:inline">/</span>
-        <span className="text-sm text-gray-300 shrink-0">{currentPair}</span>
-        <span className={`text-xs px-1.5 md:px-2 py-0.5 rounded shrink-0 ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
+        <span className="text-xs md:text-sm text-gray-300 shrink-0">{currentPair}</span>
+        <span className={`text-[10px] md:text-xs px-1 md:px-2 py-0.5 rounded shrink-0 ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
           {currentStatus.label}
         </span>
         <svg className={`w-4 h-4 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
