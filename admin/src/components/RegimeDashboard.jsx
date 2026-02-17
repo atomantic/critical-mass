@@ -425,6 +425,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [ladderPreview, setLadderPreview] = useState(null)
   const [ladderEdits, setLadderEdits] = useState(null)
   const [placingLadder, setPlacingLadder] = useState(false)
+  const [cancellingLadder, setCancellingLadder] = useState(false)
   const prevPriceRef = useRef(null)
   const { addToast } = useToast()
 
@@ -702,6 +703,23 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       setLadderPreview(null)
     } else {
       addToast({ type: 'error', title: 'Ladder Failed', message: data.message || 'Could not place ladder orders' })
+    }
+  }
+
+  const handleCancelLadder = async () => {
+    setCancellingLadder(true)
+    const res = await fetch(`/api/${exchange}/regime/cancel-ladder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const data = await res.json()
+    setCancellingLadder(false)
+    if (data.success) {
+      addToast({ type: 'success', title: 'Ladder Cancelled', message: data.message })
+      if (data.status) setSocketStatus(data.status)
+      fetchConfig()
+    } else {
+      addToast({ type: 'error', title: 'Cancel Failed', message: data.message })
     }
   }
 
@@ -1718,6 +1736,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
                   >
                     {showLadderPanel ? 'Close' : 'Rebuild Ladder'}
+                  </button>
+                )}
+                {status?.position?.ladderActive && status?.isRunning && (
+                  <button
+                    onClick={handleCancelLadder}
+                    disabled={cancellingLadder}
+                    className="px-2 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded transition-colors disabled:opacity-50"
+                  >
+                    {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder → Reactive'}
                   </button>
                 )}
                 {pendingOrdersList.length > 0 && (

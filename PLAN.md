@@ -651,6 +651,7 @@ POST /api/:exchange/regime/force-regime - Force regime transition
 POST /api/:exchange/regime/rollup-body - Manual body roll-up merge
 GET  /api/:exchange/regime/preview-ladder - Preview ladder rebuild (dry calculation)
 POST /api/:exchange/regime/rebuild-ladder - Cancel + rebuild ladder orders
+POST /api/:exchange/regime/cancel-ladder - Cancel all ladder orders, switch to reactive mode
 GET  /api/:exchange/regime/fills     - Get fill ledger
 
 # Dry-Run specific routes

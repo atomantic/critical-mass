@@ -2778,7 +2778,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       return false;
     }
 
-    const result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id);
+    let result;
+    try {
+      result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id);
+    } catch (err) {
+      console.log(`⚠️ [${exchange}] Body TP placement error for ${body.id.slice(-8)}: ${err.message}`);
+      return false;
+    }
 
     if (result.success) {
       body.tpOrderId = result.orderId;
@@ -3752,6 +3758,36 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     return { success: true, message: msg };
   };
 
+  const cancelLadder = async () => {
+    if (!isRunning) return { success: false, message: 'Engine not running' };
+
+    const hadLadder = positionState.ladderActive;
+    let cancelled = 0;
+
+    if (hadLadder) {
+      const result = await orderExecutor.cancelAllLadderOrders();
+      cancelled = result.cancelled;
+      console.log(`🧹 [${exchange}] Cancelled ${cancelled} ladder orders`);
+    }
+
+    positionState.ladderActive = false;
+    positionState.ladderPlacedAt = null;
+    positionState.ladderLowerBound = 0;
+    positionState.pendingLadderOrders = [];
+
+    // Switch config to reactive
+    config.entryMode = 'reactive';
+    updateRegimeConfig(exchange, { entryMode: 'reactive' });
+
+    saveLiveState();
+
+    const msg = hadLadder
+      ? `Cancelled ${cancelled} ladder orders, switched to reactive mode`
+      : 'No active ladder — switched to reactive mode';
+    console.log(`🔄 [${exchange}] ${msg}`);
+    return { success: true, message: msg };
+  };
+
   return {
     start,
     stop,
@@ -3769,6 +3805,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     rebuildTP,
     previewLadder,
     rebuildLadder,
+    cancelLadder,
     // Dry-run specific methods
     isDryRun,
     getDryRunLog,
