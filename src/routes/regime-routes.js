@@ -343,6 +343,20 @@ module.exports = (app, deps) => {
     res.json({ success: result.success, exchange, message: result.message, status: engine.getStatus() });
   });
 
+  // Cancel ladder orders and switch to reactive mode
+  app.post('/api/:exchange/regime/cancel-ladder', async (req, res) => {
+    const { exchange } = req.params;
+    const engine = regimeEngines.get(exchange);
+    if (!engine) {
+      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
+    }
+    const result = await engine.cancelLadder();
+    if (result.success) {
+      log('INFO', `🔄 [${exchange}] Ladder cancelled → reactive: ${result.message}`);
+    }
+    res.json({ success: result.success, exchange, message: result.message, status: engine.getStatus() });
+  });
+
   // Manual body roll-up merge
   app.post('/api/:exchange/regime/rollup-body', async (req, res) => {
     const { exchange } = req.params;
