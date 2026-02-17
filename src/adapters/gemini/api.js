@@ -105,12 +105,14 @@ const createGeminiAdapter = (keysPath = null) => {
       });
       return response.data;
     } catch (err) {
-      // Enrich axios error with Gemini response details
+      // Create clean error without bloated axios internals (config, request, socket objects)
+      const status = err.response?.status || 'unknown';
       const detail = err.response?.data?.reason || err.response?.data?.message || '';
-      if (detail) {
-        err.message = `${err.message} (${detail})`;
-      }
-      throw err;
+      const cleanError = new Error(`Gemini API ${status}: ${err.message}${detail ? ` (${detail})` : ''}`);
+      cleanError.status = status;
+      cleanError.endpoint = `POST ${endpoint}`;
+      cleanError.responseData = err.response?.data;
+      throw cleanError;
     }
   };
 

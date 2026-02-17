@@ -101,10 +101,14 @@ const createCryptocomAdapter = (keysPath = null) => {
       },
       transformResponse: [safeParseBigInt],
     }).catch(err => {
-      // Log the full error for debugging
+      const status = err.response?.status || 'unknown';
       const errData = err.response?.data;
-      console.error(`Crypto.com API error (${method}):`, JSON.stringify(errData || err.message));
-      throw err;
+      const detail = errData?.message || errData?.description || '';
+      const cleanError = new Error(`Crypto.com API ${status}: ${err.message}${detail ? ` (${detail})` : ''}`);
+      cleanError.status = status;
+      cleanError.endpoint = method;
+      cleanError.responseData = errData;
+      throw cleanError;
     });
 
     if (response.data.code !== 0) {
