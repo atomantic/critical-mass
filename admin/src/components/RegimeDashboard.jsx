@@ -314,7 +314,7 @@ function AggressivenessControl({ config, exchange, onConfigUpdate, presets }) {
       {/* Preview panel */}
       {showPreview && previewParams && (
         <div className="bg-gray-900 rounded p-2 text-xs">
-          <div className="grid grid-cols-4 gap-x-3 gap-y-1">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1">
             <div className="flex justify-between">
               <span className="text-gray-500">kFactor</span>
               <span className={config?.kFactor !== previewParams.kFactor ? 'text-yellow-400' : 'text-gray-300'}>
@@ -1264,7 +1264,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                           <span className="text-gray-500">5%</span>
                         </div>
                         <div className="flex justify-between text-[9px] text-gray-500 mt-0.5">
-                          <span>Config: {config?.tpMinPercent}%-{config?.tpMaxPercent}%</span>
+                          <span>Config: {config?.tpMinPercent?.toFixed(4)}%-{config?.tpMaxPercent?.toFixed(4)}%</span>
                           <span className="text-blue-400">|</span>
                           <span>Observed</span>
                           <span className="text-cyan-400">|</span>
@@ -1668,7 +1668,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   <div>
                     <span className="text-gray-500">TP Range<ConfigTooltip tip={CONFIG_TOOLTIPS.tpRange} align="right" /></span>
                     <div className="flex items-center gap-1">
-                      <span className="text-white">{config.tpMinPercent}% - {config.tpMaxPercent}%</span>
+                      <span className="text-white">{config.tpMinPercent?.toFixed(4)}% - {config.tpMaxPercent?.toFixed(4)}%</span>
                       {config.tpAutoManaged && (
                         <span className="px-1 py-0.5 bg-cyan-900/50 text-cyan-400 text-xs rounded">Auto</span>
                       )}

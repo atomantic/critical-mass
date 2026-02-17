@@ -1195,6 +1195,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Reuse exchangeOpenOrders from orphan satellite detection above
       const openEntries = exchangeOpenOrders.filter(o => o.side.toUpperCase() === 'BUY');
 
+      // Pre-build ladder order ID set so we don't flag them as orphans
+      const savedLadderIds = new Set((positionState.pendingLadderOrders || []).map(o => o.orderId));
+
       let restoredEntries = 0;
       let orphanedEntries = 0;
 
@@ -1242,8 +1245,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
               positionState.lastEntryTime = lastFillTime;
             }
           }
-        } else {
-          // True orphan - not in our saved state, must be from another engine
+        } else if (!savedLadderIds.has(order.orderId)) {
+          // True orphan - not in our saved state or ladder orders, must be from another engine
           orphanedEntries++;
           console.log(`⚠️ [${exchange}] Found orphan entry order ${order.orderId} (not from regime engine), ignoring`);
         }
@@ -1270,7 +1273,6 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Restore or cancel persisted ladder orders
       const savedLadderOrders = positionState.pendingLadderOrders || [];
       if (positionState.ladderActive && savedLadderOrders.length > 0) {
-        const savedLadderIds = new Set(savedLadderOrders.map(o => o.orderId));
         let restoredLadder = 0;
         let cancelledLadder = 0;
 
@@ -2459,13 +2461,23 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Check regime allows entries
     if (!regimeDetector.allowsEntries()) return;
 
-    // Calculate remaining budget
-    const remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+    // Calculate remaining budget, capped at actual available balance
+    let remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+    const quoteCurrency = productId.replace('_', '-').split('-')[1] || 'USD';
+    const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+    if (!quoteBalance) {
+      // Can't verify balance — skip ladder to avoid placing orders we can't fund
+      return;
+    }
+    const availableQuote = parseFloat(quoteBalance.available) || 0;
+    if (availableQuote < remainingBudget) {
+      remainingBudget = availableQuote;
+    }
 
     // Quick sanity check - need at least 1 order worth of budget
     if (remainingBudget < config.baseSizeUsdc) {
       if (!budgetExhaustedWarningLogged) {
-        console.log(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} < $${config.baseSizeUsdc}`);
+        console.log(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} available (${quoteCurrency}=${availableQuote.toFixed(2)}) < $${config.baseSizeUsdc}`);
         budgetExhaustedWarningLogged = true;
       }
       return;
@@ -3590,7 +3602,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     return Math.max(positionState.totalCostBasis || 0, bodiesCost);
   };
 
-  const previewLadder = () => {
+  const previewLadder = async () => {
     if (!isRunning) {
       return { success: false, message: 'Engine not running' };
     }
@@ -3599,9 +3611,20 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     const allocatedCapital = getAllocatedCapital();
-    const remainingBudget = config.maxUsdcDeployed - allocatedCapital;
+    let remainingBudget = config.maxUsdcDeployed - allocatedCapital;
+
+    // Fetch actual exchange balance to cap budget at reality
+    const quoteCurrency = productId.replace('_', '-').split('-')[1] || 'USD';
+    const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+    const exchangeBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : null;
+    if (exchangeBalance !== null && exchangeBalance < remainingBudget) {
+      remainingBudget = exchangeBalance;
+    }
+
     if (remainingBudget < (config.baseSizeUsdc || 50)) {
-      return { success: false, message: `Insufficient budget: $${remainingBudget.toFixed(2)} (allocated: $${allocatedCapital.toFixed(2)})` };
+      const budgetRemaining = (config.maxUsdcDeployed - allocatedCapital).toFixed(2);
+      const balanceStr = exchangeBalance !== null ? `$${exchangeBalance.toFixed(2)}` : 'unknown';
+      return { success: false, message: `Exchange ${quoteCurrency} balance (${balanceStr}) below min order ($${config.baseSizeUsdc || 50}). Budget shows $${budgetRemaining} remaining but exchange only has ${balanceStr} ${quoteCurrency}.` };
     }
 
     const ladder = ladderCalculator.buildLadder(
@@ -3631,6 +3654,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         lowerBoundPct: ladder.lowerBoundPct,
         totalBudget: ladder.totalBudget,
         allocatedCapital,
+        exchangeBalance,
         maxUsdcDeployed: config.maxUsdcDeployed,
         currentPrice: marketState.lastPrice,
       },
@@ -3651,9 +3675,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     const allocatedCapital = getAllocatedCapital();
-    const remainingBudget = config.maxUsdcDeployed - allocatedCapital;
+    let remainingBudget = config.maxUsdcDeployed - allocatedCapital;
+    const quoteCurrency = productId.replace('_', '-').split('-')[1] || 'USD';
+    const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+    if (!quoteBalance) {
+      return { success: false, message: 'Could not fetch account balance — skipping ladder' };
+    }
+    const availableQuote = parseFloat(quoteBalance.available) || 0;
+    if (availableQuote < remainingBudget) {
+      remainingBudget = availableQuote;
+    }
     if (remainingBudget < (config.baseSizeUsdc || 50)) {
-      return { success: false, message: `Insufficient budget: $${remainingBudget.toFixed(2)} (allocated: $${allocatedCapital.toFixed(2)})` };
+      const budgetRemaining = (config.maxUsdcDeployed - allocatedCapital).toFixed(2);
+      return { success: false, message: `Exchange ${quoteCurrency} balance ($${availableQuote.toFixed(2)}) below min order size ($${config.baseSizeUsdc || 50}). Budget says $${budgetRemaining} available but only $${availableQuote.toFixed(2)} ${quoteCurrency} on exchange. Deposit more ${quoteCurrency} or lower baseSizeUsdc.` };
     }
 
     console.log(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)} (allocated=$${allocatedCapital.toFixed(2)})`);

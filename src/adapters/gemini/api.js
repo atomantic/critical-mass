@@ -93,16 +93,25 @@ const createGeminiAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
-    const response = await axios.post(`${REST_BASE_URL}${endpoint}`, null, {
-      headers,
-      // Preserve big integers as strings using regex before JSON parse
-      transformResponse: [data => {
-        // Convert large numbers (order_id, tid) to strings before JSON.parse
-        const preserved = data.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
-        return JSON.parse(preserved);
-      }],
-    });
-    return response.data;
+    try {
+      const response = await axios.post(`${REST_BASE_URL}${endpoint}`, null, {
+        headers,
+        // Preserve big integers as strings using regex before JSON parse
+        transformResponse: [data => {
+          // Convert large numbers (order_id, tid) to strings before JSON.parse
+          const preserved = data.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
+          return JSON.parse(preserved);
+        }],
+      });
+      return response.data;
+    } catch (err) {
+      // Enrich axios error with Gemini response details
+      const detail = err.response?.data?.reason || err.response?.data?.message || '';
+      if (detail) {
+        err.message = `${err.message} (${detail})`;
+      }
+      throw err;
+    }
   };
 
   /**

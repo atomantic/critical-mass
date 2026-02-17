@@ -10,7 +10,6 @@
  * - Recommends new TP values with safety bounds and rate limiting
  */
 
-const { roundUSDC } = require('./volatility-utils');
 
 /**
  * @typedef {Object} CycleRecord
@@ -471,9 +470,9 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
       reason = 'rate_limited';
     }
 
-    // Round to 2 decimal places
-    newTpMin = roundUSDC(newTpMin * 100) / 100;
-    newTpMax = roundUSDC(newTpMax * 100) / 100;
+    // Round to 4 decimal places (single division avoids floating-point noise)
+    newTpMin = Math.round(newTpMin * 10000) / 10000;
+    newTpMax = Math.round(newTpMax * 10000) / 10000;
 
     // Check if values actually changed (beyond 0.01% threshold)
     const minChanged = Math.abs(newTpMin - currentTpMin) > 0.01;

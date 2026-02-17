@@ -419,13 +419,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const now = Date.now();
     let refreshed = 0;
 
-    const isTpType = (type) => type === 'take_profit' || type === 'body_tp';
+    const isPersistentType = (type) => type === 'take_profit' || type === 'body_tp' || type === 'ladder_entry';
     const effectiveStaleMs = getEffectiveStaleMs();
     for (const [orderId, order] of pendingOrders) {
       // Check if order is stale (using regime-adjusted timeout)
       if (now - order.placedAt > effectiveStaleMs) {
-        // Rate limit cancels (only relevant for non-TP orders)
-        if (!isTpType(order.type) && now - lastCancelTime < config.cancelRateLimitMs) {
+        // Rate limit cancels (only relevant for non-persistent orders)
+        if (!isPersistentType(order.type) && now - lastCancelTime < config.cancelRateLimitMs) {
           continue;
         }
 
@@ -445,8 +445,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           pendingOrders.delete(orderId);
           if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
           refreshed++;
-        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isTpType(order.type)) {
-          // Only cancel stale ENTRY orders — TP orders should persist until filled
+        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isPersistentType(order.type)) {
+          // Only cancel stale reactive ENTRY orders — TP and ladder orders should persist until filled
           await adapter.cancelOrder(orderId);
           lastCancelTime = now;
           pendingOrders.delete(orderId);
