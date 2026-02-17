@@ -9,3 +9,5 @@ dry-run-state.json
 .playwright-mcp
 admin/dist/
 tmp-*
+*.png
+.ghostty-theme
