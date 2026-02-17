@@ -17,6 +17,15 @@ import NotificationsConfig from './components/NotificationsConfig'
 import BackupRestore from './components/BackupRestore'
 import RegimeDashboard from './components/RegimeDashboard'
 const Systems = lazy(() => import('./components/Systems'))
+const KalshiDashboard = lazy(() => import('./components/kalshi/Dashboard'))
+const KalshiConfig = lazy(() => import('./components/kalshi/Config'))
+const KalshiGeneralConfig = lazy(() => import('./components/kalshi/GeneralConfig'))
+const KalshiKeysConfig = lazy(() => import('./components/kalshi/KeysConfig'))
+const KalshiRiskConfig = lazy(() => import('./components/kalshi/RiskConfig'))
+const KalshiStrategiesConfig = lazy(() => import('./components/kalshi/StrategiesConfig'))
+const KalshiMarkets = lazy(() => import('./components/kalshi/Markets'))
+const KalshiMarketDetail = lazy(() => import('./components/kalshi/MarketDetail'))
+const KalshiPositions = lazy(() => import('./components/kalshi/Positions'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
@@ -153,8 +162,10 @@ function AppContent() {
         const targetPair = exchangeConfig?.productId || 'BTC-USDC'
         setCurrentExchange(targetExchange)
         setCurrentStrategy(targetStrategy)
-        // Don't redirect away from the overview page
-        if (location.pathname !== '/') {
+        // Don't redirect away from non-exchange pages (overview, kalshi, notifications, etc.)
+        const nonExchangePaths = ['/', '/kalshi', '/notifications', '/backups', '/systems']
+        const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
+        if (!isNonExchangePage) {
           navigate(`/${targetExchange}/${targetPair}`, { replace: true })
         }
       } else if (autoSelect && urlExchange && !urlPair) {
@@ -260,13 +271,13 @@ function AppContent() {
     }
   }, [urlExchange, urlPair])
 
-  // Auto-redirect away from DCA when simpleDcaEnabled is false
+  // Auto-redirect away from DCA when simpleDcaEnabled is false (only on exchange pages)
   useEffect(() => {
-    if (!simpleDcaEnabled && currentStrategy === 'dca') {
+    if (!simpleDcaEnabled && currentStrategy === 'dca' && urlExchange) {
       setCurrentStrategy('regime')
       navigate(`/${currentExchange}/${currentPair}`, { replace: true })
     }
-  }, [simpleDcaEnabled, currentStrategy, currentExchange, currentPair])
+  }, [simpleDcaEnabled, currentStrategy, currentExchange, currentPair, urlExchange])
 
   // Fetch data when exchange changes
   useEffect(() => {
@@ -303,6 +314,9 @@ function AppContent() {
 
   // Check if on overview page
   const isOverview = location.pathname === '/'
+
+  // Check if on Kalshi pages (independent of exchange-based routing)
+  const isKalshi = location.pathname.startsWith('/kalshi')
 
   // Build full path with exchange and pair prefix
   const buildPath = (tabPath) => `/${currentExchange}/${currentPair}${tabPath}`
@@ -345,15 +359,6 @@ function AppContent() {
                   Critical Mass
                 </Link>
                 <div className="flex items-center gap-1.5 md:hidden shrink-0">
-                  {/* Exchange selector - visible on mobile in top row (hidden on overview) */}
-                  {!isOverview && (
-                    <ExchangeSelector
-                      currentExchange={currentExchange}
-                      exchanges={exchanges}
-                      onChange={handleExchangeChange}
-                      onRefresh={fetchExchanges}
-                    />
-                  )}
                   {/* Hamburger menu button for mobile */}
                   <button
                     onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
@@ -375,9 +380,98 @@ function AppContent() {
 
               {/* Bottom row on mobile / Right side on desktop */}
               <div className="flex items-center justify-between md:justify-end gap-1.5 md:gap-4">
-                {/* Regime engine controls (hidden on overview) */}
-                {!isOverview && currentStrategy === 'regime' && (
-                  <div className="flex items-center gap-2 md:gap-3 flex-wrap">
+                <Link
+                  to="/notifications"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Notifications
+                </Link>
+                <Link
+                  to="/backups"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Backups
+                </Link>
+                <Link
+                  to="/systems"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Systems
+                </Link>
+                <Link
+                  to="/kalshi"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Kalshi
+                </Link>
+              </div>
+            </div>
+
+            {/* Mobile menu dropdown */}
+            {mobileMenuOpen && (
+              <div className="md:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
+                <Link
+                  to="/notifications"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Notifications
+                </Link>
+                <Link
+                  to="/backups"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Backups
+                </Link>
+                <Link
+                  to="/systems"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Systems
+                </Link>
+                <Link
+                  to="/kalshi"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Kalshi
+                </Link>
+              </div>
+            )}
+          </div>
+        </header>
+
+        {/* Exchange sub-nav (hidden on overview and Kalshi pages) */}
+        {!isOverview && !isKalshi && (
+          <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
+            <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
+              <div className="flex items-center justify-between gap-2 min-w-max">
+                <div className="flex gap-1">
+                  {tabs.map(tab => (
+                    <Link
+                      key={tab.path}
+                      to={buildPath(tab.path)}
+                      className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                        isActiveTab(tab.path)
+                          ? 'text-white border-b-2 border-blue-500'
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {tab.name}
+                    </Link>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 md:gap-3 flex-wrap py-1.5">
+                  <ExchangeSelector
+                    currentExchange={currentExchange}
+                    exchanges={exchanges}
+                    onChange={handleExchangeChange}
+                    onRefresh={fetchExchanges}
+                  />
+                {currentStrategy === 'regime' && (<>
+
                     {regimeDryRun && (
                       <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded">
                         DRY-RUN
@@ -424,87 +518,58 @@ function AppContent() {
                         {starting ? '...' : 'Start'}
                       </button>
                     )}
-                  </div>
-                )}
-                <Link
-                  to="/notifications"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Notifications
-                </Link>
-                <Link
-                  to="/backups"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Backups
-                </Link>
-                <Link
-                  to="/systems"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Systems
-                </Link>
-                {/* Exchange selector - hidden on mobile (shown in top row), hidden on overview */}
-                {!isOverview && (
-                  <div className="hidden md:block">
-                    <ExchangeSelector
-                      currentExchange={currentExchange}
-                      exchanges={exchanges}
-                      onChange={handleExchangeChange}
-                      onRefresh={fetchExchanges}
-                    />
-                  </div>
-                )}
+                </>)}
+                </div>
               </div>
             </div>
+          </nav>
+        )}
 
-            {/* Mobile menu dropdown */}
-            {mobileMenuOpen && (
-              <div className="md:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
-                <Link
-                  to="/notifications"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-                >
-                  Notifications
-                </Link>
-                <Link
-                  to="/backups"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-                >
-                  Backups
-                </Link>
-                <Link
-                  to="/systems"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-                >
-                  Systems
-                </Link>
-              </div>
-            )}
-          </div>
-        </header>
-
-        {/* Navigation (hidden on overview) */}
-        {!isOverview && (
+        {/* Kalshi sub-nav (shown on /kalshi/* pages) */}
+        {isKalshi && (
           <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex gap-1 min-w-max">
-                {tabs.map(tab => (
-                  <Link
-                    key={tab.path}
-                    to={buildPath(tab.path)}
-                    className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                      isActiveTab(tab.path)
-                        ? 'text-white border-b-2 border-blue-500'
-                        : 'text-gray-400 hover:text-white'
-                    }`}
-                  >
-                    {tab.name}
-                  </Link>
-                ))}
+                <Link
+                  to="/kalshi"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname === '/kalshi'
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Dashboard
+                </Link>
+                <Link
+                  to="/kalshi/markets"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname.startsWith('/kalshi/markets')
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Markets
+                </Link>
+                <Link
+                  to="/kalshi/positions"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname.startsWith('/kalshi/positions')
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Positions
+                </Link>
+                <Link
+                  to="/kalshi/config"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname.startsWith('/kalshi/config')
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Config
+                </Link>
               </div>
             </div>
           </nav>
@@ -518,7 +583,7 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary && !isOverview ? (
+          {loading && !summary && !isOverview && !isKalshi ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
             </div>
@@ -567,6 +632,19 @@ function AppContent() {
 
               {/* Systems - debug showcase of all celestial body types */}
               <Route path="/systems" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><Systems /></Suspense>} />
+
+              {/* Kalshi prediction market routes */}
+              <Route path="/kalshi" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiDashboard /></Suspense>} />
+              <Route path="/kalshi/markets" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiMarkets /></Suspense>} />
+              <Route path="/kalshi/markets/:ticker" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiMarketDetail /></Suspense>} />
+              <Route path="/kalshi/positions" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiPositions /></Suspense>} />
+              <Route path="/kalshi/config" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiConfig /></Suspense>}>
+                <Route index element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiGeneralConfig /></Suspense>} />
+                <Route path="general" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiGeneralConfig /></Suspense>} />
+                <Route path="keys" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiKeysConfig /></Suspense>} />
+                <Route path="risk" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiRiskConfig /></Suspense>} />
+                <Route path="strategies" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiStrategiesConfig /></Suspense>} />
+              </Route>
 
               {/* Legacy route - redirect /:exchange (without pair) to /:exchange/:pair */}
               <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />

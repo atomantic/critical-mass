@@ -912,6 +912,19 @@ const updateBackupConfig = (updates) => {
   return config;
 };
 
+/**
+ * Get Kalshi configuration
+ * Reads the top-level kalshi section from config.json
+ * @returns {{ enabled: boolean }}
+ */
+const getKalshiConfig = () => {
+  const raw = loadRawConfig();
+  return {
+    enabled: false,
+    ...raw.kalshi,
+  };
+};
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -941,6 +954,8 @@ module.exports = {
   // Backups
   getBackupConfig,
   updateBackupConfig,
+  // Kalshi
+  getKalshiConfig,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,

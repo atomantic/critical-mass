@@ -15,6 +15,7 @@ const {
   getGlobalConfig,
   getRegimeConfig,
   getBackupConfig,
+  getKalshiConfig,
 } = require('./src/config-utils');
 const {
   normalizeConfig,
@@ -310,6 +311,20 @@ const rescheduleBackupTimer = () => {
 
 const sharedDeps = { regimeEngines, io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, wireMarketDataCallbacks, saveRegimeRunningFlag, rescheduleBackupTimer };
 
+// Kalshi prediction market routes (mounted before exchange routes to prevent /api/:exchange/* from intercepting /api/kalshi/*)
+let kalshiLifecycle = null;
+const kalshiConfig = getKalshiConfig();
+if (kalshiConfig.enabled) {
+  kalshiLifecycle = require('./src/routes/kalshi-routes')(app, sharedDeps);
+  log('INFO', '📊 Kalshi routes mounted at /api/kalshi/');
+} else {
+  // Return proper JSON errors when Kalshi is disabled (instead of falling through to HTML catch-all)
+  app.all('/api/kalshi/*', (req, res) => {
+    res.status(503).json({ error: 'Kalshi is not enabled. Set kalshi.enabled to true in config.json and restart the server.' });
+  });
+  log('INFO', '📊 Kalshi disabled — /api/kalshi/* returns 503');
+}
+
 require('./src/routes/settings-routes')(app, sharedDeps);
 require('./src/routes/exchange-routes')(app, sharedDeps);
 const { createEngineCallbacks } = require('./src/routes/regime-routes')(app, sharedDeps);
@@ -318,6 +333,11 @@ require('./src/routes/backtest-routes')(app, sharedDeps);
 require('./src/routes/legacy-routes')(app, sharedDeps);
 
 // ============ Static Files ============
+
+// Catch-all for unhandled API routes — return JSON 404 instead of falling through to HTML
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 app.use(express.static(path.join(__dirname, 'admin', 'dist')));
 
@@ -444,6 +464,13 @@ server.listen(PORT, async () => {
     }
   }
 
+  // Auto-start Kalshi engine if it was running before restart
+  if (kalshiLifecycle) {
+    kalshiLifecycle.autoStartEngine().catch(err => {
+      log('WARN', `⚠️ Kalshi auto-start failed: ${err.message}`);
+    });
+  }
+
   // Start notification system
   notifier.start(() => regimeEngines);
 
@@ -474,6 +501,11 @@ const gracefulShutdown = async (signal) => {
 
   await Promise.all(stopPromises);
   log('INFO', 'All regime engines stopped');
+
+  // Stop Kalshi services
+  if (kalshiLifecycle) {
+    kalshiLifecycle.shutdown();
+  }
 
   notifier.stop();
 
