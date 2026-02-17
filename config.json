@@ -135,7 +135,12 @@
       "consolidateAfterOrders": 25,
       "consolidateInterval": "never",
       "dcaStrategy": "fixed",
-      "fibBaseAmount": 10
+      "fibBaseAmount": 10,
+      "regime": {
+        "enabled": true,
+        "maxUsdcDeployed": 5024,
+        "depositedCapital": 5024
+      }
     },
     "cryptocom": {
       "enabled": true,
