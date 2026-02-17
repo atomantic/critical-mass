@@ -314,7 +314,7 @@ module.exports = (app, deps) => {
   });
 
   // Preview ladder rebuild (dry calculation)
-  app.get('/api/:exchange/regime/preview-ladder', (req, res) => {
+  app.get('/api/:exchange/regime/preview-ladder', async (req, res) => {
     const { exchange } = req.params;
     const engine = regimeEngines.get(exchange);
 
@@ -322,7 +322,7 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
     }
 
-    const result = engine.previewLadder();
+    const result = await engine.previewLadder();
     res.json({ ...result, exchange, status: engine.getStatus() });
   });
 

@@ -292,7 +292,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                 <span className="text-red-400"> TREND</span> (strong momentum, exit only). Uses real-time WebSocket data,
                 dynamic take-profit based on recent volatility, and automatic safety modes.
               </p>
-              <div className="grid grid-cols-3 gap-3 text-gray-400">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-gray-400">
                 <div>
                   <span className="text-gray-500">Entry Trigger:</span>
                   <span className="ml-1 text-white">k × ATR price move</span>
@@ -354,7 +354,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
         {/* Regular DCA Trading Settings - 3 column grid */}
         {!isRegime && (
           <>
-            <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-4">
               <FormInput label="Product ID" value={config.productId} onChange={(v) => handleChange('productId', v)} />
               {!isFibonacci && (
                 <>
@@ -429,7 +429,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
 
             {/* Calculated Values - compact */}
             <div className="border-t border-gray-700 pt-3 mb-4">
-              <div className="grid grid-cols-4 gap-3 text-xs">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 {!isFibonacci && (
                   <div>
                     <span className="text-gray-500">Buy per {intervalLabel}:</span>
@@ -493,7 +493,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
 
             {/* Entry Mode & Ladder - full width */}
             <SectionCard title="Entry Mode & Ladder" className="lg:col-span-2">
-              <div className="grid grid-cols-4 gap-3 mb-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
                 <FormSelect
                   label="Entry Mode"
                   hint="Reactive: one order per trigger. Ladder: multiple orders spread across price levels"
@@ -529,7 +529,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                       down to an ATH-based floor with Fibonacci-weighted sizing. Orders stay in place during flash events; rebuild only after cycle reset.
                     </div>
                   </div>
-                  <div className="grid grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <FormInput label="Max ATH Drop %" hint="Floor = ATH × (1 - this/100). 80 means lowest bid at 20% of ATH" value={regimeConfig.ladderMaxAthDropPct || 80} onChange={(v) => handleRegimeChange('ladderMaxAthDropPct', v)} type="number" />
                     <FormInput label="Min Spacing %" hint="Minimum gap between adjacent rungs" value={regimeConfig.ladderMinSpacingPct || 0.5} onChange={(v) => handleRegimeChange('ladderMinSpacingPct', v)} type="number" />
                     <FormSelect
@@ -601,7 +601,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
 
             {/* Celestial Hierarchy - full width */}
             <SectionCard title="Celestial Hierarchy" className="lg:col-span-2">
-              <div className="flex items-center gap-4 mb-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
                 <label className="flex items-center gap-2 text-sm">
                   <span className="text-gray-400">Enable Celestial Bodies</span>
                   <button
@@ -624,7 +624,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
               </div>
               {regimeConfig.celestialEnabled !== false && (
                 <>
-                  <div className="grid grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <FormInput label="Max Celestial Bodies" hint="Max concurrent body TP orders (1-15)" value={regimeConfig.maxCelestialBodies ?? 10} onChange={(v) => handleRegimeChange('maxCelestialBodies', Math.round(v))} type="number" />
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
@@ -632,7 +632,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                     Tiers: 🛰️ satellite → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → 🌌 galaxy → 🕳️ black hole.
                     Higher tiers have wider TP targets and hold more {baseCurrency}.
                   </div>
-                  <div className="mt-2 grid grid-cols-7 gap-1 text-xs text-center">
+                  <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-1 text-xs text-center">
                     {(() => {
                       const cap = regimeConfig.maxUsdcDeployed || 10000;
                       return [
@@ -658,7 +658,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
 
             {/* Macro Regime - full width */}
             <SectionCard title="Macro Regime (Multi-Timeframe)" className="lg:col-span-2">
-              <div className="flex items-center gap-4 mb-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
                 <label className="flex items-center gap-2 text-sm">
                   <span className="text-gray-400">Enable Macro Regime</span>
                   <button
@@ -681,7 +681,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
               </div>
               {regimeConfig.macroEnabled && (
                 <>
-                  <div className="grid grid-cols-5 gap-3 mb-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
                     <FormInput label="Update Interval (ms)" hint="How often to re-score macro (60000-600000)" value={regimeConfig.macroUpdateIntervalMs ?? 300000} onChange={(v) => handleRegimeChange('macroUpdateIntervalMs', v)} type="number" />
                     <FormInput label="Hysteresis" hint="Score buffer to prevent mode chatter (1-20)" value={regimeConfig.macroHysteresis ?? 5} onChange={(v) => handleRegimeChange('macroHysteresis', v)} type="number" />
                     <FormInput label="Accumulation Threshold" hint="Score below this = ACCUMULATION" value={regimeConfig.macroAccumulationThreshold ?? -15} onChange={(v) => handleRegimeChange('macroAccumulationThreshold', v)} type="number" />
@@ -723,7 +723,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
 
             {/* TP Auto-Management - full width */}
             <SectionCard title="TP Auto-Management" className="lg:col-span-2">
-              <div className="flex items-center gap-4 mb-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
                 <label className="flex items-center gap-2 text-sm">
                   <span className="text-gray-400">Enable Auto-Management</span>
                   <button
@@ -746,7 +746,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
               </div>
               {regimeConfig.tpAutoManaged && (
                 <>
-                  <div className="grid grid-cols-6 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                     <FormInput label="Evaluation Cycles" hint="Re-evaluate TP after this many completed cycles" value={regimeConfig.tpEvaluationCycles || 5} onChange={(v) => handleRegimeChange('tpEvaluationCycles', v)} type="number" />
                     <FormInput label="Eval Max Hours" hint="Max hours before forcing TP re-evaluation" value={regimeConfig.tpEvaluationMaxHours || 24} onChange={(v) => handleRegimeChange('tpEvaluationMaxHours', v)} type="number" />
                     <FormInput label="Min Sample Size" hint="Min fills needed before first auto-adjust" value={regimeConfig.tpMinSampleSize || 10} onChange={(v) => handleRegimeChange('tpMinSampleSize', v)} type="number" />
@@ -866,7 +866,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                         </button>
                         {isExpanded && (
                           <div className="px-3 pb-3">
-                            <div className="grid grid-cols-4 gap-3">
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                               <FormInput label="k Factor" value={params.kFactor} onChange={(v) => handlePresetParamChange(id, 'kFactor', v)} type="number" />
                               <FormInput label="Min Interval (ms)" value={params.minIntervalMs} onChange={(v) => handlePresetParamChange(id, 'minIntervalMs', v)} type="number" />
                               <FormInput label="Max Interval (ms)" value={params.maxIntervalMs} onChange={(v) => handlePresetParamChange(id, 'maxIntervalMs', v)} type="number" />

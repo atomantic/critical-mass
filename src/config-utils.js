@@ -182,7 +182,7 @@ const REGIME_DEFAULTS = {
   safeRecoveryMs: 60000,
 
   // Invariants
-  maxOpenOrders: 3,
+  maxOpenOrders: 100,
   reconcileIntervalMs: 300000,
 
   // Tail Events
