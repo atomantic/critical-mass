@@ -376,10 +376,18 @@ class MomentumRiderStrategy extends BaseStrategy {
       metadata: { strategy: this.name }
     })
 
-    // 1. Force exit before settlement (only if exitBeforeSettlement > 0)
+    // 1a. Force exit before settlement (configurable)
     if (params.exitBeforeSettlement > 0 && secondsToSettlement <= params.exitBeforeSettlement) {
       this.log(`EXIT (time) ${ticker}: ${Math.round(secondsToSettlement)}s to settlement, delta ${priceDelta > 0 ? '+' : ''}${priceDelta.toFixed(0)}¢`)
       return makeExit(`Time exit: ${Math.round(secondsToSettlement)}s left, P&L ${priceDelta > 0 ? '+' : ''}${priceDelta.toFixed(0)}¢`)
+    }
+
+    // 1b. Safety net: always exit at 45s before settlement regardless of config.
+    // Settlement-riding strategies have 0% win rate on live trades. Binary risk
+    // (all-or-nothing at $0/$1) is too high. Pre-settlement exits preserve capital.
+    if (secondsToSettlement <= 45) {
+      this.log(`EXIT (safety) ${ticker}: ${Math.round(secondsToSettlement)}s to settlement, delta ${priceDelta > 0 ? '+' : ''}${priceDelta.toFixed(0)}¢`)
+      return makeExit(`Safety exit: ${Math.round(secondsToSettlement)}s before settlement, P&L ${priceDelta > 0 ? '+' : ''}${priceDelta.toFixed(0)}¢`)
     }
 
     // 2. Take profit (only if profitTarget > 0 and delta exceeds it)

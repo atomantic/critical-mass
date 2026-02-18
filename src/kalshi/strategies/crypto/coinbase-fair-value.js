@@ -40,6 +40,7 @@ class CoinbaseFairValueStrategy extends BaseStrategy {
       exitEdgeThreshold: 0.10,    // Exit when edge shrinks to 10%
       minSecondsToSettlement: 30, // Trade closer to settlement (was 60s)
       maxSecondsToSettlement: 300, // 5 min window to find edge before settlement
+      forceExitSeconds: 60,       // Force exit at 60s before settlement to avoid binary risk
       stopLossPct: 0.30,          // 30% stop loss (was 15% - too tight)
       takeProfitPct: 0.15,        // 15% take profit (was 20% - take wins earlier)
       positionSize: 5,            // 5 contracts per trade
@@ -304,6 +305,22 @@ class CoinbaseFairValueStrategy extends BaseStrategy {
     // Note: No raw price stop loss — we rely on edge-based exits (Exit 4 below).
     // Raw price stop losses caused whipsaw: the model still shows edge after price drops,
     // so the strategy would re-enter immediately after stopping out.
+
+    // Exit 0: Force exit before settlement to avoid binary all-or-nothing risk.
+    // Data shows 3/4 CFV settlement rides went to $0. Pre-settlement exits are safer.
+    const forceExitSec = params.forceExitSeconds ?? 60
+    if (forceExitSec > 0 && secondsToSettlement <= forceExitSec) {
+      this.log(`Exit signal (forced pre-settlement): ${ticker}`, { secondsToSettlement: Math.round(secondsToSettlement), exitPrice, pnlPct: `${(pnlPct * 100).toFixed(1)}%` })
+      return {
+        ticker,
+        side: position.side,
+        action: 'sell',
+        count: contractCount,
+        price: exitPrice,
+        reason: `Forced pre-settlement exit (${Math.round(secondsToSettlement)}s remaining, P&L ${(pnlPct * 100).toFixed(1)}%)`,
+        confidence: 0.95
+      }
+    }
 
     // Exit 1: Take profit
     if (pnlPct > params.takeProfitPct) {
