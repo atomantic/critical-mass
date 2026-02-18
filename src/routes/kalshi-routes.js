@@ -663,6 +663,15 @@ module.exports = (app, sharedDeps) => {
       simulationEngine?.onPriceUpdate?.(ticker, price);
     });
 
+    // Initialize orderbook service and wire to the Kalshi WebSocket
+    kalshiOrderbookService.initKalshiOrderBookService(io, (ticker, metrics) => {
+      simulationEngine?.onKalshiOrderBookMetrics?.(ticker, metrics);
+    });
+    const kalshiWsForOb = kalshiPriceService.getWsClient?.();
+    if (kalshiWsForOb) {
+      kalshiOrderbookService.connectToWebSocket(kalshiWsForOb);
+    }
+
     trackedMarketTickers = cryptoMarkets.map(m => m.ticker);
     if (trackedMarketTickers.length > 0) {
       kalshiPriceService.subscribeMany(trackedMarketTickers);
@@ -791,6 +800,10 @@ module.exports = (app, sharedDeps) => {
 
     if (!config.dryRun) {
       liveExecutionService.shutdownLiveExecution();
+    }
+
+    if (kalshiOrderbookService) {
+      kalshiOrderbookService.shutdownKalshiOrderBookService();
     }
 
     if (marketRefreshTimer) {
@@ -1192,8 +1205,9 @@ module.exports = (app, sharedDeps) => {
       await startEngine();
     },
     shutdown: () => {
+      // Preserve engineRunning=true so the engine auto-starts after pm2 restart.
       if (simulationEngine) {
-        simulationEngine.stop();
+        simulationEngine.stop({ preserveRunningFlag: true });
       }
       if (marketRefreshTimer) {
         clearInterval(marketRefreshTimer);
@@ -1205,6 +1219,9 @@ module.exports = (app, sharedDeps) => {
       }
       if (liveExecutionService) {
         liveExecutionService.shutdownLiveExecution();
+      }
+      if (kalshiOrderbookService) {
+        kalshiOrderbookService.shutdownKalshiOrderBookService();
       }
       log('INFO', `[${ts()}] 🛑 Kalshi services shut down`);
     },

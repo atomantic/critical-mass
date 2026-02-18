@@ -270,14 +270,14 @@ class SimulationEngine {
   /**
    * Stop the evaluation loop
    */
-  stop() {
+  stop({ preserveRunningFlag = false } = {}) {
     if (this.evaluationLoop) {
       clearInterval(this.evaluationLoop)
       this.evaluationLoop = null
     }
 
     if (this.state) {
-      this.state.engineRunning = false
+      if (!preserveRunningFlag) this.state.engineRunning = false
       this.state.shadowState = this.shadowState
     }
 

@@ -689,6 +689,7 @@ module.exports = {
   updateUnrealizedPnl,
   setDailyPnl,
   resetDailyPnl,
+  getExecutionTelemetry,
   getAccountBalance,
   reconcilePositions,
   shutdownLiveExecution
