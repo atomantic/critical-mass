@@ -994,7 +994,8 @@ module.exports = (app, sharedDeps) => {
       byReason[reason].avgPnl = byReason[reason].count > 0 ? byReason[reason].pnl / byReason[reason].count : 0;
     }
 
-    const recentTrades = trades.slice(-50).reverse();
+    const tradeLimit = parseInt(req.query.limit) || 50;
+    const recentTrades = trades.slice(-tradeLimit).reverse();
 
     const totalPnl = sells.reduce((sum, t) => sum + (t.pnl || 0), 0);
     const totalWins = sells.filter(t => (t.pnl || 0) > 0).length;

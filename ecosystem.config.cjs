@@ -30,7 +30,7 @@ module.exports = {
       max_restarts: 10,
       min_uptime: '10s',
       restart_delay: 5000,
-      max_memory_restart: '300M',
+      max_memory_restart: '1G',
       out_file: './logs/critical-mass-out.log',
       error_file: './logs/critical-mass-error.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',

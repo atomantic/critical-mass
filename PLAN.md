@@ -66,8 +66,15 @@ Consolidated kalshibot prediction market trading engine into critical-mass as a 
 - Enabled Kalshi in config.json (kalshi.enabled: true)
 - Fixed admin UI mobile responsiveness for exchange selector and sub-nav
 
+## Account Reconciliation (2026-02-18)
+
+- Added account reconciliation service (`src/kalshi/services/account-reconciliation.js`) that fetches all fills from Kalshi API and rebuilds P&L from ground truth
+- Added GET/POST `/api/kalshi/account/reconcile` endpoints for preview and apply
+- Fixed P&L display bug in Positions UI: analytics data is in dollars, but `formatCents()` was dividing by 100 again
+- Fixed open positions showing 0-contract settled entries from API
+- Expanded Positions page with trade history table, strategy breakdown, and analytics summary
+- Added `min_ts` to FillsQueryParams type definitions
+
 ## Next Steps
 
-1. Add Kalshi API keys via the UI (/kalshi/config/keys)
-2. Test dry-run mode first
-3. Future: Hedged BTC + prediction market insurance engine
+1. Future: Hedged BTC + prediction market insurance engine

@@ -23,7 +23,6 @@ const KalshiGeneralConfig = lazy(() => import('./components/kalshi/GeneralConfig
 const KalshiKeysConfig = lazy(() => import('./components/kalshi/KeysConfig'))
 const KalshiRiskConfig = lazy(() => import('./components/kalshi/RiskConfig'))
 const KalshiStrategiesConfig = lazy(() => import('./components/kalshi/StrategiesConfig'))
-const KalshiMarkets = lazy(() => import('./components/kalshi/Markets'))
 const KalshiMarketDetail = lazy(() => import('./components/kalshi/MarketDetail'))
 const KalshiPositions = lazy(() => import('./components/kalshi/Positions'))
 const AIProviders = lazy(() => import('./components/ai/Providers'))
@@ -558,16 +557,6 @@ function AppContent() {
                   Dashboard
                 </Link>
                 <Link
-                  to="/kalshi/markets"
-                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                    location.pathname.startsWith('/kalshi/markets')
-                      ? 'text-white border-b-2 border-blue-500'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  Markets
-                </Link>
-                <Link
                   to="/kalshi/positions"
                   className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
                     location.pathname.startsWith('/kalshi/positions')
@@ -652,7 +641,6 @@ function AppContent() {
 
               {/* Kalshi prediction market routes */}
               <Route path="/kalshi" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiDashboard /></Suspense>} />
-              <Route path="/kalshi/markets" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiMarkets /></Suspense>} />
               <Route path="/kalshi/markets/:ticker" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiMarketDetail /></Suspense>} />
               <Route path="/kalshi/positions" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiPositions /></Suspense>} />
               <Route path="/kalshi/config" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiConfig /></Suspense>}>
