@@ -11,6 +11,7 @@ const { writeEntry, writeExit, writeSettlement, writeSkips, writeReject, writeSe
 const { calculateKalshiFee, calculateFairProbability } = require('../services/volatility-service.js')
 const { getBracketInfo } = require('../adapters/markets.js')
 const { sendAlert } = require('../services/alert-service.js')
+const { analyzeTrade } = require('../services/trade-analyst.js')
 
 const ts = () => new Date().toISOString().split('T')[1].slice(0, 12)
 
@@ -587,6 +588,7 @@ class SimulationEngine {
     if (this.onTrade) this.onTrade(trade)
 
     writeSettlement(trade, btcSpot, winningSide)
+    analyzeTrade({ trade, resolutionType: 'settlement', btcSpot, winningSide, trades: this.state?.trades }).catch(() => {})
 
     this.log('trade', `Settlement ${won ? 'WIN' : 'LOSS'}: ${ticker} ${contracts}x ${position.side.toUpperCase()} -- P&L $${pnl.toFixed(2)}`, {
       ticker, action: 'settlement', side: position.side, outcome: winningSide,
@@ -1054,7 +1056,7 @@ class SimulationEngine {
               }
 
               // Record settlement as a trade
-              this.state.trades.push({
+              const reconTrade = {
                 id: `settlement-${Date.now()}-${d.ticker}`,
                 ticker: d.ticker,
                 side: pos.side,
@@ -1068,7 +1070,9 @@ class SimulationEngine {
                 pnl,
                 strategy: pos.metadata?.strategy || 'unknown',
                 timestamp: new Date().toISOString()
-              })
+              }
+              this.state.trades.push(reconTrade)
+              analyzeTrade({ trade: reconTrade, resolutionType: 'reconciliation', btcSpot: reconBtcSpot, winningSide: outcome === null ? undefined : (won ? pos.side : (pos.side === 'yes' ? 'no' : 'yes')), trades: this.state?.trades }).catch(() => {})
 
               // Update stats
               this.state.todayStats.trades = (this.state.todayStats.trades || 0) + 1
@@ -1425,6 +1429,7 @@ class SimulationEngine {
       writeEntry(trade, enrichedSignal)
     } else if (signal.action === 'sell') {
       writeExit(trade, enrichedSignal, { avgCost: tradeCostBasis ? (tradeCostBasis / trade.count) * 100 : null })
+      analyzeTrade({ trade, resolutionType: 'exit', btcSpot: this.evalBtcSpot, trades: this.state?.trades }).catch(() => {})
     }
 
     // Emit trade event
@@ -1570,6 +1575,7 @@ class SimulationEngine {
       writeEntry(trade, enrichedSignal)
     } else if (fill.action === 'sell') {
       writeExit(trade, enrichedSignal, { avgCost: tradeCostBasis ? (tradeCostBasis / fillCount) * 100 : null })
+      analyzeTrade({ trade, resolutionType: 'exit', btcSpot: this.evalBtcSpot, trades: this.state?.trades }).catch(() => {})
     }
 
     if (this.onTrade) this.onTrade(trade)
