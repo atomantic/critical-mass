@@ -125,9 +125,24 @@ class SimulationEngine {
     this.maxSignalsPerEval = config?.risk?.maxSignalsPerEval || 3
 
     // Create strategy instances — separate into enabled (live) and disabled (shadow)
+    // Evaluation order matters: pre-settlement-exit strategies first (lower risk),
+    // then settlement-riding strategies (higher risk). This prevents high-risk strategies
+    // from grabbing settlement windows before lower-risk alternatives can evaluate.
+    const STRATEGY_EVAL_ORDER = [
+      'gamma-scalper',      // Lowest risk per trade (~$4), exits before settlement
+      'momentum-rider',     // Pre-settlement exit, only consistently profitable strategy
+      'swing-flipper',      // Pre-settlement exit via take-profit/stop-loss
+      'coinbase-fair-value', // Settlement-riding, higher risk
+      'settlement-sniper'   // Settlement-riding, highest risk
+    ]
     const allStrategies = createStrategies(config.strategies || {})
-    this.strategies = allStrategies.filter(s => s.enabled)
-    this.shadowStrategies = allStrategies.filter(s => !s.enabled)
+    const sortByEvalOrder = (a, b) => {
+      const ai = STRATEGY_EVAL_ORDER.indexOf(a.name)
+      const bi = STRATEGY_EVAL_ORDER.indexOf(b.name)
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+    }
+    this.strategies = allStrategies.filter(s => s.enabled).sort(sortByEvalOrder)
+    this.shadowStrategies = allStrategies.filter(s => !s.enabled).sort(sortByEvalOrder)
 
     // Restore shadow state from saved state (or initialize fresh)
     if (state.shadowState) {

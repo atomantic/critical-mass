@@ -60,7 +60,7 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
     <div className="exchange-selector relative">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1 md:gap-2 px-1.5 md:px-3 py-1.5 md:py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+        className="flex items-center gap-1 md:gap-2 px-1.5 md:px-3 py-1.5 md:py-2 min-h-[40px] bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
       >
         <span className={`w-5 h-5 md:w-6 md:h-6 text-xs md:text-sm flex items-center justify-center rounded shrink-0 ${EXCHANGE_COLORS[currentExchange] || 'bg-gray-600'}`}>
           {EXCHANGE_ICONS[currentExchange] || '?'}
@@ -77,7 +77,7 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-[calc(100vw-2rem)] md:w-80 max-w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
+        <div className="fixed left-4 right-4 md:absolute md:left-auto md:right-0 mt-2 md:w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
           <div className="p-2">
             <div className="text-xs text-gray-500 uppercase tracking-wider px-2 py-1">Select Exchange & Pair</div>
 

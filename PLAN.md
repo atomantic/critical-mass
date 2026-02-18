@@ -58,9 +58,16 @@ Consolidated kalshibot prediction market trading engine into critical-mass as a 
 - Kalshi routes isolated, no conflicts - PASS
 - Socket.IO events all prefixed - PASS
 
+## Post-Integration Changes (2026-02-18)
+
+- Added forced pre-settlement exits to CFV (60s) and momentum-rider (45s safety net) to avoid binary settlement risk
+- Reordered strategy evaluation: pre-settlement-exit strategies first (gamma-scalper, momentum-rider) before settlement-riding strategies (CFV, sniper)
+- Promoted momentum-rider to LIVE based on 2/2 wins
+- Enabled Kalshi in config.json (kalshi.enabled: true)
+- Fixed admin UI mobile responsiveness for exchange selector and sub-nav
+
 ## Next Steps
 
-1. Set kalshi.enabled: true in config.json to activate
-2. Add Kalshi API keys via the UI (/kalshi/config/keys)
-3. Test dry-run mode first
-4. Future: Hedged BTC + prediction market insurance engine
+1. Add Kalshi API keys via the UI (/kalshi/config/keys)
+2. Test dry-run mode first
+3. Future: Hedged BTC + prediction market insurance engine

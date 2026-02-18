@@ -160,6 +160,9 @@
       "fibBaseAmount": 10
     }
   },
+  "kalshi": {
+    "enabled": true
+  },
   "global": {
     "schedulerInterval": 30000,
     "aggressivenessPresets": {

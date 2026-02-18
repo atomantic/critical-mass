@@ -445,10 +445,10 @@ function AppContent() {
 
         {/* Exchange sub-nav (hidden on overview and Kalshi pages) */}
         {!isOverview && !isKalshi && (
-          <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
+          <nav className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
-              <div className="flex items-center justify-between gap-2 min-w-max">
-                <div className="flex gap-1">
+              <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
+                <div className="flex gap-1 overflow-x-auto min-w-0">
                   {tabs.map(tab => (
                     <Link
                       key={tab.path}
@@ -463,7 +463,7 @@ function AppContent() {
                     </Link>
                   ))}
                 </div>
-                <div className="flex items-center gap-2 md:gap-3 flex-wrap py-1.5">
+                <div className="flex items-center gap-2 md:gap-3 flex-wrap px-3 md:px-0 py-1.5 shrink-0 md:ml-auto">
                   <ExchangeSelector
                     currentExchange={currentExchange}
                     exchanges={exchanges}

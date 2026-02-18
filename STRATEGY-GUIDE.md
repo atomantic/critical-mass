@@ -12,7 +12,7 @@ This document serves as the authoritative reference for strategy configuration, 
 
 4. **Binary bracket markets are all-or-nothing.** Positions settle at $0 or $1. Risk control comes from POSITION SIZING (small bets), not from entry threshold tuning. A 25% edge threshold with $50 bets is riskier than a 15% threshold with $10 bets.
 
-## Current Strategy Configuration (as of 2026-02-17)
+## Current Strategy Configuration (as of 2026-02-18)
 
 ### Settlement Sniper (LIVE)
 - **What it does**: Uses Black-Scholes-style probability model to find mispriced brackets 2-5 min before settlement
@@ -26,6 +26,7 @@ This document serves as the authoritative reference for strategy configuration, 
 - **Edge threshold**: 0.15 (15%) — see "Why 0.15, not 0.25" below
 - **Max seconds to settlement**: 300 (5 min) — see "Why 300s, not 180s" below
 - **Time scaling**: Capped at 1.3x (effective max threshold: 19.5% at 300s TTL)
+- **Force exit**: 60s before settlement (avoids binary risk; see failure mode #5)
 - **Position sizing**: kellyFraction 0.15, maxBetPct 0.03, maxContracts 100
 
 ### Gamma Scalper (LIVE)
@@ -44,10 +45,11 @@ This document serves as the authoritative reference for strategy configuration, 
 - **Status**: Shadow mode — needs real oscillation data before going live
 - **Do NOT change**: `takeProfitCents` to >10 (greed kills), `stopLossCents` to >8 (must cut fast), `minOscillationRange` to <10 (need proven swings)
 
-### Momentum Rider (SHADOW ONLY)
+### Momentum Rider (LIVE)
 - **What it does**: Rides Kalshi price momentum with Coinbase spot confirmation
-- **Status**: Shadow mode — needs more data before going live
-- **Shadow result so far**: 1 trade, 1 win, +$46
+- **Status**: Live — promoted based on 2/2 wins (+$46 shadow, +$3.49 live)
+- **Safety exit**: 45s before settlement (code-level, always active)
+- **Result so far**: 2 trades, 2 wins, +$49.49 total
 
 ## Why These Settings (Do NOT Revert Without Reading This)
 
@@ -97,6 +99,24 @@ This document serves as the authoritative reference for strategy configuration, 
 ### 7. edgeThreshold at 0.20 + maxSecondsToSettlement at 300
 **Result**: Allowed 2 losing trades (moderate edge, entered too early). But the problem was position SIZING ($52/trade), not the threshold. After fixing sizing (maxBetPct 0.03, maxContracts 100), the same settings would risk ~$10/trade max.
 
+### 8. CFV without forced pre-settlement exit (Feb 16-18)
+**Result**: 3 of 4 CFV settlement-rides went to $0 (-$148 total). The edge model identified opportunities correctly (1 of 4 won +$241), but a 25% win rate on settlement rides means negative EV at typical position sizes. Fixed by adding `forceExitSeconds: 60` that converts binary settlement risk into known P&L at 60s before close.
+
+### 9. Evaluating high-risk strategies before low-risk ones (Feb 16-18)
+**Result**: Settlement-sniper and CFV evaluated first, claiming settlement windows via the one-position-per-window rule. Gamma-scalper (shadow: +$46 on $4 bet) and momentum-rider (live: +$3.49) never got window access. Fixed by reordering eval: gamma-scalper first, momentum-rider second.
+
+## Strategy Evaluation Order (as of 2026-02-18)
+
+Strategies are evaluated in this order. Within each settlement window, only one position is allowed — so evaluation order determines which strategy gets priority.
+
+1. **Gamma Scalper** — lowest risk per trade (~$4), exits before settlement
+2. **Momentum Rider** — pre-settlement exit via profit target + safety exit at 45s
+3. **Swing Flipper** — pre-settlement exit via take-profit/stop-loss
+4. **Coinbase Fair Value** — forced exit at 60s before settlement
+5. **Settlement Sniper** — settlement-riding (highest risk, disabled ride = exits at 60s)
+
+**Rationale**: Pre-settlement-exit strategies should evaluate first because they have demonstrated positive returns (momentum-rider: +$49.49, gamma-scalper shadow: +$46) while settlement-riding strategies have a 0% win rate on 4 live settlement rides.
+
 ## Risk Controls (Do NOT Weaken)
 
 | Control | Setting | Purpose |
@@ -111,7 +131,7 @@ This document serves as the authoritative reference for strategy configuration, 
 | Cross-position conflict | Code | Only 1 position per settlement window |
 | Liquidity-aware sizing | Code | Orders capped to available orderbook depth |
 
-## Known Failure Modes (Documented 2026-02-17)
+## Known Failure Modes (Updated 2026-02-18)
 
 ### 1. Cross-bracket double-entry (-$96 loss)
 Two strategies entered the same settlement window on adjacent brackets with opposing views — both lost. The engine's window conflict check existed but relied on in-memory `pendingReservations` which are lost on restart. **Fix**: The conflict check now also scans `state.trades` for recent buy trades in the same settlement window, surviving restarts.
@@ -120,7 +140,16 @@ Two strategies entered the same settlement window on adjacent brackets with oppo
 When the engine found positions it lost track of (`engine_only` discrepancies), it hardcoded `price: 0` (full loss) regardless of actual outcome. Positions that actually won were still recorded as losses. **Fix**: Reconciliation now uses `determineBracketOutcome()` with current BTC spot to determine the correct win/loss outcome before recording.
 
 ### 3. Momentum-rider pre-settlement exits are the only consistently profitable pattern
-The shadow momentum-rider strategy (1 trade, 1 win, +$46) exits before settlement, avoiding the binary all-or-nothing risk. Settlement-riding strategies (sniper, CFV) have a 0% win rate on 3 live trades. Until model accuracy improves, pre-settlement exit strategies should be prioritized.
+The momentum-rider strategy (2 trades, 2 wins: +$46 shadow, +$3.49 live) exits before settlement via profit target, avoiding binary all-or-nothing risk. Settlement-riding strategies (sniper, CFV) have a 0% win rate on 4 live settlement-rides. **Fix (2026-02-18)**: Added 45s safety exit to momentum-rider and 60s forced pre-settlement exit to CFV.
+
+### 4. Strategy evaluation order let high-risk strategies crowd out low-risk ones
+Strategies evaluated in config order: sniper first, CFV second. Both claimed settlement windows before gamma-scalper or momentum-rider could evaluate. Gamma-scalper (shadow: 1 trade, 1 win, +$46 on a $4 bet) never got a chance at live windows. **Fix (2026-02-18)**: Strategy evaluation reordered: gamma-scalper → momentum-rider → swing-flipper → CFV → sniper. Lower-risk pre-settlement-exit strategies now evaluate first.
+
+### 5. CFV held positions to binary settlement (-$148 over 3 trades)
+CFV had no forced pre-settlement exit — it relied on edge-reversal or take-profit exits, which often didn't trigger before settlement. Result: 3 of 4 CFV trades rode to $0 at settlement. **Fix (2026-02-18)**: Added `forceExitSeconds` param (default 60s) that forces exit before settlement window closes, converting binary risk into a known P&L.
+
+### 6. Reconciled positions are a persistent P&L leak (-$106 over 2 trades)
+Positions from 15min markets (KXBTC15M) appeared as API-only during reconciliation. These likely originated from previous engine runs or manual orders. Both settled at $0. The engine has no control over these positions since it didn't create them. Monitor reconciliation logs for recurring `api_only` discrepancies.
 
 ## Health Checks
 
@@ -131,5 +160,6 @@ When analyzing performance:
 3. **Do NOT lower `maxEdgeSanity` below 0.85** — large edges near settlement are legitimate, not bugs.
 4. **Do NOT lower sniper momentum below 0.40** — already at the floor for illiquid OTM markets.
 5. **DO reduce position sizing** (`maxBetPct`, `maxContracts`) if losses are too high per trade.
-6. **DO check if gamma-scalper is being crowded out** by higher-risk strategies claiming windows first.
+6. **DO check if gamma-scalper is being crowded out** by higher-risk strategies claiming windows first. (Fixed in eval order 2026-02-18.)
 7. **DO verify balance and position reconciliation** is running (every ~60s in logs).
+8. **DO check that CFV `forceExitSeconds` is set** — if 0 or absent, CFV will ride to binary settlement (historically 0% win rate on settlement rides).
