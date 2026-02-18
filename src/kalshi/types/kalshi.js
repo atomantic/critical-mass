@@ -224,6 +224,7 @@
  * @typedef {Object} FillsQueryParams
  * @property {string} [ticker] - Filter by ticker
  * @property {string} [order_id] - Filter by order
+ * @property {number} [min_ts] - Minimum timestamp (epoch seconds)
  * @property {number} [limit] - Max results
  * @property {string} [cursor] - Pagination cursor
  */

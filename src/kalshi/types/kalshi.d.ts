@@ -254,6 +254,7 @@ export interface OrdersQueryParams {
 export interface FillsQueryParams {
   ticker?: string;
   order_id?: string;
+  min_ts?: number;
   limit?: number;
   cursor?: string;
 }
