@@ -502,7 +502,7 @@ const gracefulShutdown = async (signal) => {
   await Promise.all(stopPromises);
   log('INFO', 'All regime engines stopped');
 
-  // Stop Kalshi services
+  // Stop Kalshi services (preserves engineRunning flag for auto-restart)
   if (kalshiLifecycle) {
     kalshiLifecycle.shutdown();
   }
