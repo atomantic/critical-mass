@@ -26,6 +26,7 @@ const KalshiStrategiesConfig = lazy(() => import('./components/kalshi/Strategies
 const KalshiMarkets = lazy(() => import('./components/kalshi/Markets'))
 const KalshiMarketDetail = lazy(() => import('./components/kalshi/MarketDetail'))
 const KalshiPositions = lazy(() => import('./components/kalshi/Positions'))
+const AIProviders = lazy(() => import('./components/ai/Providers'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
@@ -163,7 +164,7 @@ function AppContent() {
         setCurrentExchange(targetExchange)
         setCurrentStrategy(targetStrategy)
         // Don't redirect away from non-exchange pages (overview, kalshi, notifications, etc.)
-        const nonExchangePaths = ['/', '/kalshi', '/notifications', '/backups', '/systems']
+        const nonExchangePaths = ['/', '/kalshi', '/notifications', '/backups', '/systems', '/ai']
         const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
         if (!isNonExchangePage) {
           navigate(`/${targetExchange}/${targetPair}`, { replace: true })
@@ -318,6 +319,9 @@ function AppContent() {
   // Check if on Kalshi pages (independent of exchange-based routing)
   const isKalshi = location.pathname.startsWith('/kalshi')
 
+  // Check if on AI pages
+  const isAI = location.pathname.startsWith('/ai')
+
   // Build full path with exchange and pair prefix
   const buildPath = (tabPath) => `/${currentExchange}/${currentPair}${tabPath}`
 
@@ -404,6 +408,12 @@ function AppContent() {
                 >
                   Kalshi
                 </Link>
+                <Link
+                  to="/ai"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  AI
+                </Link>
               </div>
             </div>
 
@@ -438,13 +448,20 @@ function AppContent() {
                 >
                   Kalshi
                 </Link>
+                <Link
+                  to="/ai"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  AI Providers
+                </Link>
               </div>
             )}
           </div>
         </header>
 
-        {/* Exchange sub-nav (hidden on overview and Kalshi pages) */}
-        {!isOverview && !isKalshi && (
+        {/* Exchange sub-nav (hidden on overview, Kalshi, and AI pages) */}
+        {!isOverview && !isKalshi && !isAI && (
           <nav className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
@@ -583,7 +600,7 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary && !isOverview && !isKalshi ? (
+          {loading && !summary && !isOverview && !isKalshi && !isAI ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
             </div>
@@ -645,6 +662,9 @@ function AppContent() {
                 <Route path="risk" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiRiskConfig /></Suspense>} />
                 <Route path="strategies" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiStrategiesConfig /></Suspense>} />
               </Route>
+
+              {/* AI Provider management */}
+              <Route path="/ai" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><AIProviders /></Suspense>} />
 
               {/* Legacy route - redirect /:exchange (without pair) to /:exchange/:pair */}
               <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />

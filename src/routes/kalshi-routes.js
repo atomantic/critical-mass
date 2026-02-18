@@ -27,6 +27,8 @@ let autoTunerModule = null;
 let convictionTracker = null;
 let polymarketPriceService = null;
 let alertService = null;
+let tradeAnalyst = null;
+let accountReconciliation = null;
 
 /** Tracked market tickers for the engine */
 let trackedMarketTickers = [];
@@ -199,6 +201,12 @@ const loadModules = () => {
   }
   if (!alertService) {
     alertService = require('../kalshi/services/alert-service');
+  }
+  if (!tradeAnalyst) {
+    tradeAnalyst = require('../kalshi/services/trade-analyst');
+  }
+  if (!accountReconciliation) {
+    accountReconciliation = require('../kalshi/services/account-reconciliation');
   }
 };
 
@@ -609,6 +617,54 @@ module.exports = (app, sharedDeps) => {
     res.json({ alerts: alertService.getRecentAlerts() });
   }));
 
+  // ====== ANALYSES ROUTES ======
+
+  app.get('/api/kalshi/analyses/:date', asyncHandler(async (req, res) => {
+    loadModules();
+    const { date } = req.params;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Date must be YYYY-MM-DD format' });
+    }
+    const analyses = await tradeAnalyst.readAnalyses(date);
+    res.json({ analyses, total: analyses.length });
+  }));
+
+  // ====== ACCOUNT RECONCILIATION ROUTES ======
+
+  app.get('/api/kalshi/account/reconcile', asyncHandler(async (req, res) => {
+    loadModules();
+    const [keys, config] = await Promise.all([
+      readJson('keys.json'),
+      readJson('config.json'),
+    ]);
+    if (!requireKeys(keys, res)) return;
+
+    const stateFile = config.dryRun ? 'state-dry-run.json' : 'state.json';
+    const state = await readJson(stateFile);
+
+    const report = await accountReconciliation.reconcile(kalshiAdapters.api, keys, state);
+    res.json(report);
+  }));
+
+  app.post('/api/kalshi/account/reconcile', asyncHandler(async (req, res) => {
+    loadModules();
+    const [keys, config] = await Promise.all([
+      readJson('keys.json'),
+      readJson('config.json'),
+    ]);
+    if (!requireKeys(keys, res)) return;
+
+    const stateFile = config.dryRun ? 'state-dry-run.json' : 'state.json';
+    const state = await readJson(stateFile);
+
+    const report = await accountReconciliation.reconcile(kalshiAdapters.api, keys, state);
+    const corrected = accountReconciliation.applyCorrections(state, report);
+    await writeJson(stateFile, corrected);
+
+    log('INFO', `[${ts()}] ✅ Reconciliation applied: adjustment=$${report.summary.totalAdjustment.toFixed(2)}`);
+    res.json({ success: true, report });
+  }));
+
   // ====== ENGINE ROUTES ======
 
   app.get('/api/kalshi/engine/status', asyncHandler(async (req, res) => {
@@ -645,6 +701,14 @@ module.exports = (app, sharedDeps) => {
 
     // Initialize alert service
     alertService.initAlertService({ webhookUrl: config.alerts?.webhookUrl, io });
+
+    // Initialize trade analyst service
+    tradeAnalyst.initTradeAnalyst({
+      io,
+      onConfigChange: (strategyName, strategyConfig) => {
+        simulationEngine?.updateStrategy?.(strategyName, strategyConfig);
+      }
+    });
 
     const stateFile = config.dryRun ? 'state-dry-run.json' : 'state.json';
     const state = await readJson(stateFile);

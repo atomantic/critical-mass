@@ -325,6 +325,7 @@ if (kalshiConfig.enabled) {
   log('INFO', '📊 Kalshi disabled — /api/kalshi/* returns 503');
 }
 
+require('./src/routes/ai-routes')(app, sharedDeps);
 require('./src/routes/settings-routes')(app, sharedDeps);
 require('./src/routes/exchange-routes')(app, sharedDeps);
 const { createEngineCallbacks } = require('./src/routes/regime-routes')(app, sharedDeps);
