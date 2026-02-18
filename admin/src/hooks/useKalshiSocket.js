@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { io } from 'socket.io-client'
 
 /**
@@ -175,8 +175,12 @@ export const useKalshiSocket = () => {
     setLogs([])
   }, [])
 
-  // Extract latest diagnostics from most recent eval log
-  const latestDiagnostics = logs.find(l => l.type === 'eval')?.data?.results?.flatMap(r => r.diagnostics || []) || []
+  // Extract latest diagnostics from most recent eval log (memoized to prevent infinite re-render loops)
+  const evalLog = logs.find(l => l.type === 'eval')
+  const latestDiagnostics = useMemo(
+    () => evalLog?.data?.results?.flatMap(r => r.diagnostics || []) || [],
+    [evalLog]
+  )
 
   return { connected, prices, logs, balance, positions, stats, subscribe, unsubscribe, getPrice, clearLogs, latestDiagnostics, aiReview, aiReviewStatus, windowSummaries }
 }
