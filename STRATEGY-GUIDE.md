@@ -16,37 +16,44 @@ This document serves as the authoritative reference for strategy configuration, 
 
 ### Settlement Sniper (LIVE)
 - **What it does**: Uses Black-Scholes-style probability model to find mispriced brackets 2-5 min before settlement
-- **Edge threshold**: 0.18 (18%)
+- **Edge threshold**: 0.15 (15%) — reduced from 0.18 on 2026-02-19 (see "Why 0.15 for Sniper" below)
 - **Momentum requirement**: 0.40 (40%) — lowered from 0.60 which blocked all signals on illiquid OTM markets
 - **Settlement ride**: DISABLED (threshold 1.0) — rides to settlement caused 100% losses when model was wrong
 - **Position sizing**: kellyFraction 0.12, maxBetPct 0.03, maxContracts 100
 
-### Coinbase Fair Value (LIVE)
+### Coinbase Fair Value (LIVE — minEntryPrice lowered 2026-02-18)
 - **What it does**: Compares Coinbase spot price to Kalshi bracket strike, trades when divergence exceeds threshold
+- **Min entry price**: 8c (lowered from 15c on 2026-02-18 — see "Why minEntryPrice 8 not 15" below)
 - **Edge threshold**: 0.15 (15%) — see "Why 0.15, not 0.25" below
 - **Max seconds to settlement**: 300 (5 min) — see "Why 300s, not 180s" below
 - **Time scaling**: Capped at 1.3x (effective max threshold: 19.5% at 300s TTL)
 - **Force exit**: 60s before settlement (avoids binary risk; see failure mode #5)
 - **Position sizing**: kellyFraction 0.15, maxBetPct 0.03, maxContracts 100
 
-### Gamma Scalper (LIVE)
+### Gamma Scalper (SHADOW — disabled 2026-02-19)
 - **What it does**: Buys cheap OTM brackets (5-15c) with asymmetric 12:1 payoff when spot trends toward strike
 - **Edge threshold**: 0.08 (8%)
 - **Position sizing**: maxBetPct 0.02, maxContracts 50, maxPositions 3
-- **Note**: Lowest risk per trade (~$4) with highest potential return. Should evaluate BEFORE higher-risk strategies.
+- **Status**: Disabled — 10% dry-run win rate, and 100% of live signals blocked by slippage guard (95¢ fills on 5-9¢ limits). OTM brackets have no resting liquidity. Re-enable when Kalshi OTM liquidity improves.
+- **Note**: Still evaluates first in shadow mode. Lowest risk per trade (~$4).
 
-### Swing Flipper (SHADOW — new)
-- **What it does**: Rides intra-window oscillation on ATM brackets (30-60¢). Buys pullbacks (8¢ below recent peak) and sells recoveries for 8¢ flips. Never holds to settlement.
+### Swing Flipper (LIVE — promoted 2026-02-19, widened 2026-02-18)
+- **What it does**: Rides intra-window oscillation on ATM brackets (25-65¢). Buys pullbacks (8¢ below recent peak) and sells recoveries for 8¢ flips. Never holds to settlement.
 - **Key insight**: ATM contracts MUST oscillate as BTC spot moves around the bracket boundary. We don't predict settlement — we scalp the swings.
-- **Oscillation requirement**: Contract must show 12¢+ range in last 15 snapshots (proves it's swinging)
+- **ATM range**: 25-65c (widened from 30-60c on 2026-02-18 to catch brackets transitioning into/out of ATM range)
+- **Oscillation requirement**: Contract must show 10¢+ range in last 15 snapshots (reduced from 12¢ on 2026-02-18 — 10¢ range is still meaningful, and the wider range lets thinner patterns through)
 - **Spot confirmation**: Coinbase spot must be (a) near the bracket boundary and (b) moving toward it
 - **Exit conditions**: Take profit at +8¢, stop loss at -6¢, time exit at 90s to settlement, oscillation collapse at <6¢ range
-- **Position sizing**: maxBetPct 0.02, maxContracts 30, maxPositions 2
-- **Status**: Shadow mode — needs real oscillation data before going live
-- **Do NOT change**: `takeProfitCents` to >10 (greed kills), `stopLossCents` to >8 (must cut fast), `minOscillationRange` to <10 (need proven swings)
+- **Position sizing**: maxBetPct 0.01, maxContracts 15, maxPositions 1 (conservative initial live sizing)
+- **Status**: Live with reduced sizing — promoted from shadow after observing profitable ATM oscillation trades (+$1.90 on B66625 flip)
+- **Do NOT change**: `takeProfitCents` to >10 (greed kills), `stopLossCents` to >8 (must cut fast), `minOscillationRange` to <8 (need proven swings)
 
-### Momentum Rider (LIVE)
+### Momentum Rider (LIVE — ATM tuned 2026-02-18)
 - **What it does**: Rides Kalshi price momentum with Coinbase spot confirmation
+- **Entry range**: 45-70c (lowered from 65-80c on 2026-02-18 — see "Why entryThreshold 45 not 65" below)
+- **Stop loss**: 10c (added 2026-02-18 — ride-to-settlement at ATM prices is too risky without a stop)
+- **Profit target**: 10c (reduced from 15c — 10c on a 50c entry = 20% return)
+- **minTrendTicks**: 5 (increased from 3 on 2026-02-19 — 3 ticks produced too much noise, 20.4% dry-run WR with -$83 P&L)
 - **Status**: Live — promoted based on 2/2 wins (+$46 shadow, +$3.49 live)
 - **Safety exit**: 45s before settlement (code-level, always active)
 - **Result so far**: 2 trades, 2 wins, +$49.49 total
@@ -67,6 +74,20 @@ This document serves as the authoritative reference for strategy configuration, 
 - **2026-02-17 14:00 UTC**: CFV found 61% edge on B68125 (YES), which WAS the winning bracket. Blocked by 0.50 cap. This was the ONLY winning live signal in 54 windows.
 - **Why it's legitimate**: BTC was at $68,074, solidly in the [$68,000, $68,250) bracket with 40s to settlement. Market was still priced at ~34c (stale). Fair value was ~95%. Edge = 61%. Not a bug.
 - **Why not 1.0**: Edges above 85% usually indicate a data error or stale WebSocket feed. Keep some guard rail.
+
+### Momentum Rider entryThreshold: 45 not 65
+- **Problem at 65**: ATM brackets price at 40-55c — the YES-side where real liquidity exists. The 65c threshold blocked every ATM entry, forcing the strategy to only target 65-80c brackets that are already directionally committed.
+- **Why 45**: Conviction tracker data (281 settled brackets) shows 85% accuracy at the 65c threshold. ATM prices (40-55c) have real YES-side orderbook depth (unlike NO-side OTM brackets). At 50c, the fee is only 2c per contract (breakeven at 51% accuracy). Adding a 10c stop loss manages risk at these symmetric payoff prices — room for normal oscillation while cutting real reversals.
+- **Existing safeguards**: 5 consecutive tick trend requirement, Coinbase spot momentum confirmation (0.05% in 60s), fair value premium guard (15c max), 45s safety exit before settlement, maxBetPct 0.02, maxContracts 50.
+
+### CFV minEntryPrice: 8 not 15
+- **Problem at 15**: B66875 YES had a 90% edge at 9c — blocked by the 15c floor. The bracket was the eventual winner.
+- **Why 8**: YES-side asks at 8-9c are real market maker orders (bid=4, ask=8). This is different from the gamma scalper's NO-side problem where OTM brackets have zero resting liquidity. The code default was 10; the config was even more conservative at 15.
+- **Why not lower**: Below 8c, spread width (bid-ask gap) makes fills unreliable and slippage guard will likely block.
+
+### Swing Flipper range: 25-65c not 30-60c
+- **Problem at 30-60**: Tonight swing-flipper rejected all brackets (0/3 shadow record). Brackets transitioning into or out of ATM range at 25-30c and 60-65c were excluded.
+- **Why 25-65**: Catches brackets in their full ATM lifecycle. Combined with reducing minOscillationRange from 12c to 10c, lets thinner but still meaningful oscillation patterns qualify.
 
 ### Sniper Momentum: 0.40 not 0.60
 - **Problem at 0.60**: OTM bracket markets are illiquid with choppy price movement. Momentum rarely exceeds 40-50%, blocking every sniper signal.
@@ -105,7 +126,16 @@ This document serves as the authoritative reference for strategy configuration, 
 ### 9. Evaluating high-risk strategies before low-risk ones (Feb 16-18)
 **Result**: Settlement-sniper and CFV evaluated first, claiming settlement windows via the one-position-per-window rule. Gamma-scalper (shadow: +$46 on $4 bet) and momentum-rider (live: +$3.49) never got window access. Fixed by reordering eval: gamma-scalper first, momentum-rider second.
 
-## Strategy Evaluation Order (as of 2026-02-18)
+### 10. Gamma scalper live: 100% slippage-blocked (Feb 18-19)
+**Result**: Gamma scalper generated signals every 5 seconds targeting OTM NO contracts at 5-9¢, but every single one was blocked by the slippage guard (estimated fill 95¢ vs limit 7¢ + 3¢ max slippage). OTM brackets on Kalshi have no resting limit orders at the NO side — the only available liquidity is the YES ask at 95-96¢. Dry-run: 10% WR, -$15.37 P&L. Disabled on 2026-02-19, demoted to shadow mode.
+
+### 11. Momentum rider noise at minTrendTicks=3 (Feb 18-19)
+**Result**: 98 dry-run trades (highest volume by far) but only 20.4% WR, -$83.35 P&L. With only 3 consecutive tick confirmation required, normal market noise frequently triggers false signals. Increased to 5 on 2026-02-19 to reduce noise.
+
+### 12. Settlement sniper at edgeThreshold=0.18 (Feb 18-19)
+**Result**: In 34 dry-run trades, edges consistently fell in the 12-15% range — just below the 18% threshold. Best edges found per window were typically 10-15%, meaning the threshold blocked signals that the model identified as profitable. Reduced to 0.15 on 2026-02-19 to align with data. Note: Golden Rule #4 still applies — risk is managed via position sizing (maxBetPct 0.03), not threshold tuning.
+
+## Strategy Evaluation Order (as of 2026-02-19)
 
 Strategies are evaluated in this order. Within each settlement window, only one position is allowed — so evaluation order determines which strategy gets priority.
 
@@ -163,3 +193,5 @@ When analyzing performance:
 6. **DO check if gamma-scalper is being crowded out** by higher-risk strategies claiming windows first. (Fixed in eval order 2026-02-18.)
 7. **DO verify balance and position reconciliation** is running (every ~60s in logs).
 8. **DO check that CFV `forceExitSeconds` is set** — if 0 or absent, CFV will ride to binary settlement (historically 0% win rate on settlement rides).
+9. **DO review sigma calibration** in window summaries. If ratio (predicted/realized) is consistently >2 or <0.5, the vol model is miscalibrated. Check `sigmaCalibration` in journal window-summary entries.
+10. **DO review entry metadata** on settlements. Journal settlement records now include `entryEdge`, `entrySigma`, `entryFairProb`, `entryMarketProb`, and `entryBtcSpot` for post-trade calibration analysis.

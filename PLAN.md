@@ -75,6 +75,15 @@ Consolidated kalshibot prediction market trading engine into critical-mass as a 
 - Expanded Positions page with trade history table, strategy breakdown, and analytics summary
 - Added `min_ts` to FillsQueryParams type definitions
 
+## ATM Strategy Tuning (2026-02-18)
+
+- Tuned momentum-rider for ATM bracket access: entryThreshold 65→45, maxEntryPrice 80→70, profitTarget 15→10, added stopLoss 10
+- Widened swing-flipper ATM range: minContractPrice 30→25, maxContractPrice 60→65, minOscillationRange 12→10
+- Lowered CFV minEntryPrice 15→8 (YES-side at 8-9c has real market maker asks)
+- Added entry metadata (edge, sigma, fairProb, marketProb, btcSpot) to settlement records for calibration
+- Added sigmaCalibration to journal window summaries
+- Updated STRATEGY-GUIDE.md with full rationale
+
 ## Next Steps
 
 1. Future: Hedged BTC + prediction market insurance engine
