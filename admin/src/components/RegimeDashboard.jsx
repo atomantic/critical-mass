@@ -659,6 +659,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       // Directly update socket status from API response for immediate visual refresh
       // (avoids race where socketStatus overrides stale localStatus from fetchStatus)
       setSocketStatus(data.status)
+      // Re-fetch fills so buy order annotations (bodyId, sellOrderId) reflect the merge
+      fetchFills()
     }
   }
 
