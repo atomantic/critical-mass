@@ -1198,6 +1198,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       // Pre-build ladder order ID set so we don't flag them as orphans
       const savedLadderIds = new Set((positionState.pendingLadderOrders || []).map(o => o.orderId));
 
+      // Load corrective buy order IDs to avoid cancelling them as orphans
+      const correctiveBuyIds = new Set();
+      try {
+        const cbPath = require('path').join(__dirname, '..', 'data', exchange, 'pending-corrective-buys.json');
+        const cbData = JSON.parse(require('fs').readFileSync(cbPath, 'utf8'));
+        for (const cb of cbData) {
+          if (!cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
+        }
+      } catch { /* no corrective buys file */ }
+
       let restoredEntries = 0;
       let orphanedEntries = 0;
 
@@ -1245,10 +1255,23 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
               positionState.lastEntryTime = lastFillTime;
             }
           }
+        } else if (correctiveBuyIds.has(order.orderId)) {
+          console.log(`📋 [${exchange}] Skipping corrective buy order ${order.orderId.slice(0, 8)} (tracked in pending-corrective-buys)`);
         } else if (!savedLadderIds.has(order.orderId)) {
-          // True orphan - not in our saved state or ladder orders, must be from another engine
+          // Orphan entry — not in saved state or ladder orders, cancel it
           orphanedEntries++;
-          console.log(`⚠️ [${exchange}] Found orphan entry order ${order.orderId} (not from regime engine), ignoring`);
+          console.log(`🧹 [${exchange}] Cancelling orphan entry order ${order.orderId} (not tracked by regime engine)`);
+          const cancelResult = await adapter.cancelOrder(order.orderId);
+          if (cancelResult.success) {
+            console.log(`✅ [${exchange}] Cancelled orphan entry ${order.orderId.slice(0, 8)}`);
+          } else {
+            const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
+            if (orphanStatus?.status === 'FILLED') {
+              console.log(`📋 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} already filled — recovery will process`);
+            } else {
+              console.log(`⚠️ [${exchange}] Failed to cancel orphan entry ${order.orderId.slice(0, 8)}: ${cancelResult.errorMessage || 'unknown'}`);
+            }
+          }
         }
       }
 
@@ -1256,7 +1279,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         console.log(`✅ [${exchange}] Restored ${restoredEntries} pending entry orders from state`);
       }
       if (orphanedEntries > 0) {
-        console.log(`ℹ️ [${exchange}] Ignored ${orphanedEntries} entry orders not belonging to regime engine`);
+        console.log(`🧹 [${exchange}] Cancelled ${orphanedEntries} orphan entry orders`);
       }
 
       // Remove saved pending entries that are no longer open on the exchange
