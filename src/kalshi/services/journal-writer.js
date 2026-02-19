@@ -120,7 +120,12 @@ const writeSettlement = (trade, btcSpot, winningSide) => {
     won: trade.pnl > 0,
     winningSide,
     btcSpot,
-    strategy: trade.strategy
+    strategy: trade.strategy,
+    entryEdge: trade.entryEdge ?? null,
+    entrySigma: trade.entrySigma ?? null,
+    entryFairProb: trade.entryFairProb ?? null,
+    entryMarketProb: trade.entryMarketProb ?? null,
+    entryBtcSpot: trade.entryBtcSpot ?? null
   }).catch(() => {})
 }
 
@@ -318,7 +323,8 @@ const writeWindowSummary = (summary) => {
     noActionReason: summary.noActionReason ?? null,
     marketsEvaluated: summary.marketsEvaluated,
     marketsWithPrices: summary.marketsWithPrices,
-    bracketCount: summary.brackets?.length ?? 0
+    bracketCount: summary.brackets?.length ?? 0,
+    sigmaCalibration: summary.sigmaCalibration ?? null
   }).catch(() => {})
 }
 

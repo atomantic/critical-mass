@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Tune Kalshi strategies for ATM trading** - Lower momentum-rider entry threshold (65→45c), add 10c stop loss, widen swing-flipper ATM range (25-65c), lower CFV min entry price (15→8c) to access YES-side liquidity on ATM brackets
+- **Add entry metadata to settlement records** - Settlement trades and journal entries now include entryEdge, entrySigma, entryFairProb, entryMarketProb, entryBtcSpot for post-trade calibration analysis
+- **Add sigma calibration to window summaries** - Journal window-summary entries now include sigmaCalibration data
+
 ### Added
 - **`simpleDcaEnabled` global config flag** - Gates simple DCA strategy behind opt-in flag (default: false); admin UI hides DCA routes/selector when disabled, API guards DCA-only endpoints
 - **`onEntryCancelled` callback in order executor** - Regime engine now cleans up pendingEntryOrders when entries are cancelled (stale timeout, refresh, or external cancel)

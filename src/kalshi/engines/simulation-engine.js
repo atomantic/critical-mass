@@ -8,7 +8,7 @@ const { computeBracketAnalytics } = require('../services/cross-market-analytics.
 const { trackPriceUpdate, settleExpiredTrackedMarkets, recordSettlement } = require('../services/conviction-tracker.js')
 const { writeSnapshot } = require('../services/snapshot-writer.js')
 const { writeEntry, writeExit, writeSettlement, writeSkips, writeReject, writeSessionSummary, writeShadowEntry, writeShadowExit, writeShadowSettlement, writeWindowSummary } = require('../services/journal-writer.js')
-const { calculateKalshiFee, calculateFairProbability } = require('../services/volatility-service.js')
+const { calculateKalshiFee, calculateFairProbability, calculateRollingVolatility, getSigma } = require('../services/volatility-service.js')
 const { getBracketInfo } = require('../adapters/markets.js')
 const { sendAlert } = require('../services/alert-service.js')
 const { analyzeTrade } = require('../services/trade-analyst.js')
@@ -567,7 +567,8 @@ class SimulationEngine {
     // Remove position
     this.state.positions = this.state.positions.filter(p => p !== position)
 
-    // Record settlement trade
+    // Record settlement trade with entry metadata for calibration
+    const entryMeta = position.metadata || {}
     const trade = {
       id: `sim-settle-${Date.now()}`,
       ticker,
@@ -579,8 +580,13 @@ class SimulationEngine {
       costBasis,
       proceeds,
       pnl,
-      strategy: position.metadata?.strategy || 'unknown',
+      strategy: entryMeta.strategy || 'unknown',
       reason: `Settlement ${won ? 'WIN' : 'LOSS'}: BTC $${btcSpot.toLocaleString()} ${winningSide === 'yes' ? 'in' : 'outside'} bracket`,
+      entryEdge: entryMeta.entryEdge ?? null,
+      entrySigma: entryMeta.entrySigma ?? null,
+      entryFairProb: entryMeta.entryFairProb ?? null,
+      entryMarketProb: entryMeta.entryMarketProb ?? null,
+      entryBtcSpot: entryMeta.entryBtcSpot ?? null,
       timestamp: new Date().toISOString()
     }
     if (!this.state.trades) this.state.trades = []
@@ -1314,13 +1320,22 @@ class SimulationEngine {
         if (!strategies.includes(strategyName)) strategies.push(strategyName)
         existingPos.metadata = { ...existingPos.metadata, strategy: strategies[0], strategies }
       } else {
+        const signalMeta = signal.metadata || {}
         this.state.positions.push({
           ticker: signal.ticker,
           side: signal.side,
           contracts: signal.count,
           avgCost: fillPrice,
           feesPaid: fee,
-          metadata: { strategy: strategyName }
+          metadata: {
+            strategy: strategyName,
+            entryEdge: signalMeta.edge ?? null,
+            entrySigma: signalMeta.sigma ?? null,
+            entryFairProb: signalMeta.fairProb ?? null,
+            entryMarketProb: signalMeta.marketProb ?? null,
+            entryBtcSpot: this.evalBtcSpot ?? null,
+            entryTTL: signalMeta.ttl ?? null
+          }
         })
       }
 
@@ -1499,7 +1514,15 @@ class SimulationEngine {
           contracts: fillCount,
           avgCost: fillPrice,
           feesPaid: fee,
-          metadata: { strategy: strategyName }
+          metadata: {
+            strategy: strategyName,
+            entryEdge: fill.metadata?.edge ?? null,
+            entrySigma: fill.metadata?.sigma ?? null,
+            entryFairProb: fill.metadata?.fairProb ?? null,
+            entryMarketProb: fill.metadata?.marketProb ?? null,
+            entryBtcSpot: this.evalBtcSpot ?? null,
+            entryTTL: fill.metadata?.ttl ?? null
+          }
         })
       }
 
@@ -1869,6 +1892,31 @@ class SimulationEngine {
         }
       }
 
+      // Sigma calibration: compare predicted vs realized volatility
+      let sigmaCalibration = null
+      const compositeHistory = this.compositePriceHistory.get('BTC-USD') || this.coinbasePriceHistory.get('BTC-USD')
+      if (compositeHistory?.length >= 2) {
+        // Predicted sigma: what the model was using (without bracket analytics since they're computed per-eval)
+        const predicted = getSigma({ priceHistory: compositeHistory, volatilityWindow: 300, minSigma: 0.40 })
+
+        // Realized sigma: actual BTC movement in the last 300s (same window the model uses)
+        const realized = calculateRollingVolatility(compositeHistory, 300)
+
+        // Also compute realized price range for intuitive comparison
+        const recentPrices = compositeHistory.filter(h => h.timestamp >= Date.now() - 300000)
+        const priceRange = recentPrices.length >= 2
+          ? { high: Math.max(...recentPrices.map(h => h.price)), low: Math.min(...recentPrices.map(h => h.price)) }
+          : null
+
+        sigmaCalibration = {
+          predictedSigma: predicted.sigma,
+          predictedSource: predicted.source,
+          realizedSigma: realized?.sigma ?? null,
+          ratio: realized?.sigma ? +(predicted.sigma / realized.sigma).toFixed(2) : null,
+          priceRange: priceRange ? { high: priceRange.high, low: priceRange.low, pctRange: +((priceRange.high - priceRange.low) / priceRange.low * 100).toFixed(3) } : null
+        }
+      }
+
       const summary = {
         closeTime,
         btcSpot: btcSpot ?? null,
@@ -1879,6 +1927,7 @@ class SimulationEngine {
         noActionReason,
         marketsEvaluated: tickers.length,
         marketsWithPrices,
+        sigmaCalibration,
         settledAt: Date.now()
       }
 
@@ -1894,7 +1943,8 @@ class SimulationEngine {
 
       if (this.onWindowSummary) this.onWindowSummary(summary)
 
-      console.log(`[${ts()}] Window summary: ${closeTime.slice(11, 16)} UTC | BTC $${btcSpot?.toLocaleString() || '?'} | winner: ${winningBracket?.ticker?.split('-').pop() || 'unknown'} | best edge: ${bestEdge ? `${(bestEdge.edge * 100).toFixed(1)}% (${bestEdge.strategy})` : 'none'} | action: ${ourAction ? `${ourAction.side} ${ourAction.contracts}x -> $${ourAction.pnl?.toFixed(2)}` : noActionReason ? `none (${noActionReason})` : 'none'} | ${marketsWithPrices}/${tickers.length} priced`)
+      const sigmaLog = sigmaCalibration ? ` | sigma: predicted=${(sigmaCalibration.predictedSigma * 100).toFixed(0)}%(${sigmaCalibration.predictedSource}) realized=${sigmaCalibration.realizedSigma ? (sigmaCalibration.realizedSigma * 100).toFixed(0) + '%' : '?'} ratio=${sigmaCalibration.ratio ?? '?'}` : ''
+      console.log(`[${ts()}] Window summary: ${closeTime.slice(11, 16)} UTC | BTC $${btcSpot?.toLocaleString() || '?'} | winner: ${winningBracket?.ticker?.split('-').pop() || 'unknown'} | best edge: ${bestEdge ? `${(bestEdge.edge * 100).toFixed(1)}% (${bestEdge.strategy})` : 'none'} | action: ${ourAction ? `${ourAction.side} ${ourAction.contracts}x -> $${ourAction.pnl?.toFixed(2)}` : noActionReason ? `none (${noActionReason})` : 'none'} | ${marketsWithPrices}/${tickers.length} priced${sigmaLog}`)
     }
   }
 
