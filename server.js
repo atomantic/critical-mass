@@ -16,6 +16,7 @@ const {
   getRegimeConfig,
   getBackupConfig,
   getKalshiConfig,
+  getHedgeConfig,
 } = require('./src/config-utils');
 const {
   normalizeConfig,
@@ -325,6 +326,19 @@ if (kalshiConfig.enabled) {
   log('INFO', '📊 Kalshi disabled — /api/kalshi/* returns 503');
 }
 
+// Hedge engine routes
+let hedgeLifecycle = null;
+const hedgeConfig = getHedgeConfig();
+if (hedgeConfig.enabled) {
+  hedgeLifecycle = require('./src/routes/hedge-routes')(app, sharedDeps);
+  log('INFO', '🛡️ Hedge routes mounted at /api/hedge/');
+} else {
+  app.all('/api/hedge/*', (req, res) => {
+    res.status(503).json({ error: 'Hedge engine is not enabled. Set hedge.enabled to true in config.json and restart the server.' });
+  });
+  log('INFO', '🛡️ Hedge disabled — /api/hedge/* returns 503');
+}
+
 require('./src/routes/ai-routes')(app, sharedDeps);
 require('./src/routes/settings-routes')(app, sharedDeps);
 require('./src/routes/exchange-routes')(app, sharedDeps);
@@ -472,6 +486,13 @@ server.listen(PORT, async () => {
     });
   }
 
+  // Auto-start hedge engine if it was running before restart
+  if (hedgeLifecycle) {
+    hedgeLifecycle.autoStartEngine().catch(err => {
+      log('WARN', `⚠️ Hedge auto-start failed: ${err.message}`);
+    });
+  }
+
   // Start notification system
   notifier.start(() => regimeEngines);
 
@@ -506,6 +527,11 @@ const gracefulShutdown = async (signal) => {
   // Stop Kalshi services (preserves engineRunning flag for auto-restart)
   if (kalshiLifecycle) {
     kalshiLifecycle.shutdown();
+  }
+
+  // Stop hedge engine
+  if (hedgeLifecycle) {
+    hedgeLifecycle.shutdown();
   }
 
   notifier.stop();

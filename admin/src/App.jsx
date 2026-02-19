@@ -26,6 +26,7 @@ const KalshiStrategiesConfig = lazy(() => import('./components/kalshi/Strategies
 const KalshiMarketDetail = lazy(() => import('./components/kalshi/MarketDetail'))
 const KalshiPositions = lazy(() => import('./components/kalshi/Positions'))
 const AIProviders = lazy(() => import('./components/ai/Providers'))
+const HedgeDashboard = lazy(() => import('./components/hedge/Dashboard'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
@@ -163,7 +164,7 @@ function AppContent() {
         setCurrentExchange(targetExchange)
         setCurrentStrategy(targetStrategy)
         // Don't redirect away from non-exchange pages (overview, kalshi, notifications, etc.)
-        const nonExchangePaths = ['/', '/kalshi', '/notifications', '/backups', '/systems', '/ai']
+        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/notifications', '/backups', '/systems', '/ai']
         const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
         if (!isNonExchangePage) {
           navigate(`/${targetExchange}/${targetPair}`, { replace: true })
@@ -321,6 +322,9 @@ function AppContent() {
   // Check if on AI pages
   const isAI = location.pathname.startsWith('/ai')
 
+  // Check if on Hedge pages
+  const isHedge = location.pathname.startsWith('/hedge')
+
   // Build full path with exchange and pair prefix
   const buildPath = (tabPath) => `/${currentExchange}/${currentPair}${tabPath}`
 
@@ -408,6 +412,12 @@ function AppContent() {
                   Kalshi
                 </Link>
                 <Link
+                  to="/hedge"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Hedge
+                </Link>
+                <Link
                   to="/ai"
                   className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
@@ -448,6 +458,13 @@ function AppContent() {
                   Kalshi
                 </Link>
                 <Link
+                  to="/hedge"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Hedge
+                </Link>
+                <Link
                   to="/ai"
                   onClick={() => setMobileMenuOpen(false)}
                   className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
@@ -460,7 +477,7 @@ function AppContent() {
         </header>
 
         {/* Exchange sub-nav (hidden on overview, Kalshi, and AI pages) */}
-        {!isOverview && !isKalshi && !isAI && (
+        {!isOverview && !isKalshi && !isAI && !isHedge && (
           <nav className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
@@ -581,6 +598,26 @@ function AppContent() {
           </nav>
         )}
 
+        {/* Hedge sub-nav (shown on /hedge/* pages) */}
+        {isHedge && (
+          <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
+            <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
+              <div className="flex gap-1 min-w-max">
+                <Link
+                  to="/hedge"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname === '/hedge'
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Dashboard
+                </Link>
+              </div>
+            </div>
+          </nav>
+        )}
+
         {/* Main Content */}
         <main className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6">
           {error && (
@@ -589,7 +626,7 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary && !isOverview && !isKalshi && !isAI ? (
+          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
             </div>
@@ -653,6 +690,9 @@ function AppContent() {
 
               {/* AI Provider management */}
               <Route path="/ai" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><AIProviders /></Suspense>} />
+
+              {/* Hedge engine dashboard */}
+              <Route path="/hedge" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><HedgeDashboard /></Suspense>} />
 
               {/* Legacy route - redirect /:exchange (without pair) to /:exchange/:pair */}
               <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />

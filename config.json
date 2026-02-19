@@ -163,6 +163,55 @@
   "kalshi": {
     "enabled": true
   },
+  "hedge": {
+    "enabled": true,
+    "dryRun": true,
+    "exchange": "coinbase",
+    "productId": "BTC-USDC",
+    "kalshi": {
+      "allowedSeries": ["KXBTC15M", "KXBTC"],
+      "maxPremiumCents": 50,
+      "maxContracts": 100,
+      "maxSlippageCents": 3,
+      "hedgeRatio": 1.0
+    },
+    "position": {
+      "btcAmount": 0.05,
+      "minBtcAmount": 0.01,
+      "maxBtcAmount": 1.0
+    },
+    "exitMode": "hybrid",
+    "stopLoss": {
+      "percentFromEntry": 1.0,
+      "slippageBps": 10
+    },
+    "takeProfit": {
+      "mode": "software",
+      "percentFromEntry": 0.5,
+      "trailingEnabled": false,
+      "trailingActivationPct": 0.3,
+      "trailingStepPct": 0.1
+    },
+    "entry": {
+      "minVolatility15m": 0.003,
+      "maxVolatility15m": 0.03,
+      "minExpectedProfit": 5,
+      "maxSpreadBps": 20,
+      "cooldownMs": 900000
+    },
+    "holdBeyondSettlement": false,
+    "risk": {
+      "maxDailyLoss": 200,
+      "maxOpenPairs": 1,
+      "maxDailyPairs": 10,
+      "circuitBreakerConsecutiveLosses": 3
+    },
+    "fees": {
+      "exchangeMakerBps": 5,
+      "exchangeTakerBps": 10,
+      "kalshiTakerCoeff": 0.07
+    }
+  },
   "global": {
     "schedulerInterval": 30000,
     "aggressivenessPresets": {

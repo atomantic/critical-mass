@@ -104,21 +104,32 @@ const readJson = async (filename) => {
   return JSON.parse(trimmed);
 };
 
+/** @type {Map<string, Promise<void>>} Per-file write serialization */
+const writeLocks = new Map();
+let writeSeq = 0;
+
 /**
- * Write JSON data to file (atomic)
+ * Write JSON data to file (atomic, serialized per file)
  * @param {string} filename
  * @param {any} data
  * @returns {Promise<void>}
  */
-const writeJson = async (filename, data) => {
-  const filepath = path.join(DATA_DIR, filename);
-  const dir = path.dirname(filepath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const tmp = `${filepath}.${process.pid}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(data, null, 2));
-  await fsp.rename(tmp, filepath);
+const writeJson = (filename, data) => {
+  const prev = writeLocks.get(filename) || Promise.resolve();
+  const current = prev.then(async () => {
+    const filepath = path.join(DATA_DIR, filename);
+    const dir = path.dirname(filepath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const tmp = `${filepath}.${process.pid}.${++writeSeq}.tmp`;
+    await fsp.writeFile(tmp, JSON.stringify(data, null, 2));
+    await fsp.rename(tmp, filepath);
+  }).catch((err) => {
+    log('ERROR', `[${ts()}] writeJson(${filename}) failed: ${err.message}`);
+  });
+  writeLocks.set(filename, current);
+  return current;
 };
 
 /**
