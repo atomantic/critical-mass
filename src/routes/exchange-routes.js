@@ -8,13 +8,14 @@ const { getExchangeConfig, getGlobalConfig, getConfiguredExchanges, getEnabledEx
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
+const { shouldAutoResumeRegime } = require('../shared-utils');
 
 /**
  * @param {import('express').Express} app
- * @param {{regimeEngines: Map, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
+ * @param {{coinbaseIPC: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { regimeEngines, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
+  const { coinbaseIPC, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
 
   // Get list of all exchanges
   app.get('/api/exchanges', (req, res) => {
@@ -23,7 +24,6 @@ module.exports = (app, deps) => {
 
     const exchanges = configured.map(name => {
       const config = getExchangeConfig(name);
-      const regimeEngine = regimeEngines.get(name);
       const strategy = config.dcaStrategy || 'fixed';
       const regimeConfig = config.regime || {};
       const hasRegimeConfig = !!(config.regime && Object.keys(config.regime).length > 0);
@@ -34,7 +34,7 @@ module.exports = (app, deps) => {
         productId: config.productId,
         strategy,
         regimeEnabled: regimeConfig.enabled || false,
-        regimeRunning: regimeEngine?.getState?.()?.isRunning || false,
+        regimeRunning: shouldAutoResumeRegime(name),
         hasRegimeConfig,
       };
     });
@@ -57,10 +57,7 @@ module.exports = (app, deps) => {
     const config = updateExchangeConfig(exchange, updates);
 
     if (updates.regime) {
-      const engine = regimeEngines.get(exchange);
-      if (engine) {
-        engine.updateConfig(updates.regime);
-      }
+      coinbaseIPC.request('regime:update-config', updates.regime, exchange).catch(() => {});
     }
 
     res.json({ success: true, config: config.exchanges[exchange] });

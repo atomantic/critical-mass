@@ -5,7 +5,6 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
-const stateTracker = require('./src/state-tracker');
 const { log } = require('./src/logger');
 const { runMigrationIfNeeded } = require('./src/migration');
 const {
@@ -13,10 +12,7 @@ const {
   getEnabledExchanges,
   getConfiguredExchanges,
   getGlobalConfig,
-  getRegimeConfig,
   getBackupConfig,
-  getKalshiConfig,
-  getHedgeConfig,
 } = require('./src/config-utils');
 const {
   normalizeConfig,
@@ -27,11 +23,18 @@ const {
   getTimeUntilNext,
 } = require('./src/interval-utils');
 const { runIntervalCycle } = require('./src/dca-engine');
-const { createRegimeEngine } = require('./src/regime-engine');
-const { startMarketDataService, stopAllMarketDataServices, getMarketDataService } = require('./src/market-data-service');
-const { getChartDataBuffer, shutdownAllBuffers } = require('./src/chart-data-buffer');
 const { createNotifier } = require('./src/notifier');
 const { createBackup, pruneBackups } = require('./src/backup-service');
+const {
+  DATA_DIR,
+  readJSON,
+  writeJSON,
+  parseTSV,
+  calculateCostBasis,
+  getNextTradeInfo,
+} = require('./src/shared-utils');
+const { createIPCClient } = require('./src/ipc/ipc-client');
+const { createProxy } = require('./src/ipc/http-proxy');
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -48,204 +51,6 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http
 const io = new Server(server, {
   cors: { origin: CORS_ORIGINS }
 });
-
-// Active regime engines by exchange
-const regimeEngines = new Map();
-
-// ============ Shared Helpers ============
-
-const DATA_DIR = path.join(__dirname, 'data');
-
-// Helper to read JSON file
-const readJSON = (filepath, defaultValue = {}) => {
-  if (!fs.existsSync(filepath)) return defaultValue;
-  const content = fs.readFileSync(filepath, 'utf8');
-  if (!content || content.trim() === '') return defaultValue;
-  try {
-    return JSON.parse(content);
-  } catch (err) {
-    console.error(`Error parsing JSON from ${filepath}:`, err.message);
-    return defaultValue;
-  }
-};
-
-// Helper to write JSON file (atomic: write .tmp then rename to prevent corruption)
-const { atomicWriteSync } = stateTracker;
-const writeJSON = (filepath, data) => {
-  const dir = path.dirname(filepath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  atomicWriteSync(filepath, JSON.stringify(data, null, 2));
-};
-
-// Helper to parse TSV
-const parseTSV = (filepath) => {
-  if (!fs.existsSync(filepath)) return [];
-  const content = fs.readFileSync(filepath, 'utf8');
-  const lines = content.trim().split('\n');
-  if (lines.length <= 1) return [];
-
-  const headers = lines[0].split('\t');
-  return lines.slice(1).map(line => {
-    const values = line.split('\t');
-    const record = {};
-    headers.forEach((header, i) => {
-      const value = values[i] || '';
-      if (header === 'Date' || header === 'Timestamp') {
-        record[header] = value;
-      } else {
-        const num = parseFloat(value);
-        record[header] = isNaN(num) ? value : num;
-      }
-    });
-    return record;
-  });
-};
-
-// Calculate cost basis from orders
-const calculateCostBasis = (state, transactions) => {
-  const orders = state.orders || [];
-  const buys = transactions.filter(t => t.Type === 'BUY');
-
-  let totalCostBasis = 0;
-  let totalBTCFromOrders = 0;
-  let reservesCostBasis = 0;
-  let pendingCostBasis = 0;
-  let pendingBTC = 0;
-
-  orders.forEach(order => {
-    const costBasis = order.buyCostBasis || (order.buyUSDC || (order.buyQuantityBTC * order.buyPrice));
-    const btcAmount = order.buyQuantityBTC || 0;
-    const holdback = order.holdbackBTC || 0;
-    const sellQuantity = order.sellQuantityBTC || 0;
-    const costPerBTC = btcAmount > 0 ? costBasis / btcAmount : 0;
-
-    reservesCostBasis += holdback * costPerBTC;
-
-    if (order.status === 'pending') {
-      pendingCostBasis += sellQuantity * costPerBTC;
-      pendingBTC += sellQuantity;
-    }
-
-    totalCostBasis += costBasis;
-    totalBTCFromOrders += btcAmount;
-  });
-
-  if (orders.length === 0 && buys.length > 0) {
-    buys.forEach(buy => {
-      const cost = Math.abs(buy['USDC Amount'] || 0) + (buy['Net Fees'] || 0);
-      const btc = buy['BTC Amount'] || 0;
-      totalCostBasis += cost;
-      totalBTCFromOrders += btc;
-    });
-
-    const avgCost = totalBTCFromOrders > 0 ? totalCostBasis / totalBTCFromOrders : 0;
-    reservesCostBasis = (state.btcReserves || 0) * avgCost;
-    pendingCostBasis = (state.outstandingOrdersBTC || 0) * avgCost;
-    pendingBTC = state.outstandingOrdersBTC || 0;
-  }
-
-  const avgCostPerBTC = totalBTCFromOrders > 0 ? totalCostBasis / totalBTCFromOrders : 0;
-  const reservesAvgCost = (state.btcReserves || 0) > 0 ? reservesCostBasis / state.btcReserves : avgCostPerBTC;
-
-  return {
-    totalCostBasis,
-    totalBTCBought: totalBTCFromOrders,
-    avgCostPerBTC,
-    reservesBTC: state.btcReserves || 0,
-    reservesCostBasis,
-    reservesAvgCost,
-    pendingBTC,
-    pendingCostBasis,
-    pendingAvgCost: pendingBTC > 0 ? pendingCostBasis / pendingBTC : 0,
-    orderBreakdown: orders.map(order => {
-      const costBasis = order.buyCostBasis || (order.buyUSDC || (order.buyQuantityBTC * order.buyPrice));
-      const btcAmount = order.buyQuantityBTC || 0;
-      const costPerBTC = btcAmount > 0 ? costBasis / btcAmount : 0;
-      return {
-        date: order.createdAt ? order.createdAt.split('T')[0] : 'Unknown',
-        buyPrice: order.buyPrice,
-        btcBought: btcAmount,
-        costBasis,
-        costPerBTC,
-        fees: order.buyFees || 0,
-        rebates: order.buyRebates || 0,
-        netFees: order.buyNetFees || 0,
-        holdback: order.holdbackBTC || 0,
-        holdbackCost: (order.holdbackBTC || 0) * costPerBTC,
-        sellQuantity: order.sellQuantityBTC || 0,
-        sellPrice: order.sellPrice,
-        status: order.status,
-        realizedPnL: order.status === 'filled'
-          ? (order.netProceeds || order.actualFillValue || 0) - ((order.sellQuantityBTC || 0) * costPerBTC)
-          : null,
-      };
-    }),
-  };
-};
-
-// Calculate next trade info for an exchange
-const getNextTradeInfo = (config, state) => {
-  const normalized = normalizeConfig(config);
-  const { intervalType, intervalsToSpread, totalAllocation } = normalized;
-
-  const ranThisInterval = hasRunThisInterval(state.lastRunId, intervalType);
-  const nextExecutionTime = getNextExecutionTime(intervalType, state.lastRunTimestamp);
-  const timeUntilNext = getTimeUntilNext(intervalType);
-
-  const remaining = (totalAllocation || 0) - (state.totalAllocated || 0);
-  const intervalAmount = Math.min(
-    (totalAllocation || 0) / (intervalsToSpread || 1),
-    remaining
-  );
-
-  const fullyAllocated = remaining <= 0;
-
-  return {
-    nextTradeTime: new Date(nextExecutionTime).toISOString(),
-    nextTradeAmount: fullyAllocated ? 0 : intervalAmount,
-    timeUntilNext: timeUntilNext.formatted,
-    intervalType,
-    intervalLabel: formatInterval(intervalType),
-    ranThisInterval,
-    fullyAllocated,
-    remaining,
-    enabled: config.enabled !== false,
-    dryRun: config.dryRun === true,
-  };
-};
-
-// ============ Regime Engine Helpers ============
-
-const getRegimeRunningFlagPath = (exchange) => path.join(__dirname, 'data', exchange, 'regime-engine-running.json');
-
-const saveRegimeRunningFlag = (exchange, isRunning) => {
-  const flagPath = getRegimeRunningFlagPath(exchange);
-  const dir = path.dirname(flagPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  if (isRunning) {
-    fs.writeFileSync(flagPath, JSON.stringify({ running: true, startedAt: new Date().toISOString() }));
-  } else if (fs.existsSync(flagPath)) {
-    fs.unlinkSync(flagPath);
-  }
-};
-
-const shouldAutoResumeRegime = (exchange) => {
-  const flagPath = getRegimeRunningFlagPath(exchange);
-  return fs.existsSync(flagPath);
-};
-
-const wireMarketDataCallbacks = (exchange) => {
-  const service = getMarketDataService(exchange);
-  if (!service) return;
-  service.setOnStatusUpdate((status) => {
-    getChartDataBuffer(exchange).processStatus(status);
-    io.emit('regime:status', { exchange, status });
-  });
-};
 
 // Notification system
 const notifier = createNotifier();
@@ -308,41 +113,57 @@ const rescheduleBackupTimer = () => {
   log('INFO', `💾 Backup scheduler started: every ${hours}h, max ${backupConfig.maxBackups} backups`);
 };
 
+// ============ Kalshi+Hedge IPC + HTTP Proxy ============
+
+const KALSHI_HTTP_PORT = parseInt(process.env.KALSHI_HTTP_PORT) || 5572;
+const KALSHI_IPC_PORT = parseInt(process.env.KALSHI_IPC_PORT) || 5573;
+
+// IPC client: receives Socket.IO events from the Kalshi engine process
+const kalshiIPC = createIPCClient(`ws://127.0.0.1:${KALSHI_IPC_PORT}`, 'kalshi', {
+  onEvent: (msg) => {
+    // Forward IPC events to Socket.IO clients
+    if (msg.room) {
+      io.to(msg.room).emit(msg.channel, msg.payload);
+    } else {
+      io.emit(msg.channel, msg.payload);
+    }
+  },
+  onConnect: () => log('INFO', '🔗 Gateway connected to Kalshi engine IPC'),
+  onDisconnect: () => log('INFO', '🔗 Gateway disconnected from Kalshi engine IPC'),
+});
+kalshiIPC.connect();
+
+// HTTP reverse proxy: forwards /api/kalshi/* and /api/hedge/* to the Kalshi engine's Express server
+const kalshiProxy = createProxy('127.0.0.1', KALSHI_HTTP_PORT, 'Kalshi');
+app.use('/api/kalshi', kalshiProxy);
+app.use('/api/hedge', kalshiProxy);
+log('INFO', `📊 Kalshi+Hedge routes proxied to :${KALSHI_HTTP_PORT}`);
+
+// ============ Coinbase Engine IPC ============
+
+const COINBASE_IPC_PORT = parseInt(process.env.COINBASE_IPC_PORT) || 5570;
+
+const coinbaseIPC = createIPCClient(`ws://127.0.0.1:${COINBASE_IPC_PORT}`, 'coinbase', {
+  onEvent: (msg) => {
+    if (msg.room) {
+      io.to(msg.room).emit(msg.channel, msg.payload);
+    } else {
+      io.emit(msg.channel, msg.payload);
+    }
+  },
+  onConnect: () => log('INFO', '🔗 Gateway connected to Coinbase engine IPC'),
+  onDisconnect: () => log('INFO', '🔗 Gateway disconnected from Coinbase engine IPC'),
+});
+coinbaseIPC.connect();
+
 // ============ Route Modules ============
 
-const sharedDeps = { regimeEngines, io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, wireMarketDataCallbacks, saveRegimeRunningFlag, rescheduleBackupTimer };
-
-// Kalshi prediction market routes (mounted before exchange routes to prevent /api/:exchange/* from intercepting /api/kalshi/*)
-let kalshiLifecycle = null;
-const kalshiConfig = getKalshiConfig();
-if (kalshiConfig.enabled) {
-  kalshiLifecycle = require('./src/routes/kalshi-routes')(app, sharedDeps);
-  log('INFO', '📊 Kalshi routes mounted at /api/kalshi/');
-} else {
-  // Return proper JSON errors when Kalshi is disabled (instead of falling through to HTML catch-all)
-  app.all('/api/kalshi/*', (req, res) => {
-    res.status(503).json({ error: 'Kalshi is not enabled. Set kalshi.enabled to true in config.json and restart the server.' });
-  });
-  log('INFO', '📊 Kalshi disabled — /api/kalshi/* returns 503');
-}
-
-// Hedge engine routes
-let hedgeLifecycle = null;
-const hedgeConfig = getHedgeConfig();
-if (hedgeConfig.enabled) {
-  hedgeLifecycle = require('./src/routes/hedge-routes')(app, sharedDeps);
-  log('INFO', '🛡️ Hedge routes mounted at /api/hedge/');
-} else {
-  app.all('/api/hedge/*', (req, res) => {
-    res.status(503).json({ error: 'Hedge engine is not enabled. Set hedge.enabled to true in config.json and restart the server.' });
-  });
-  log('INFO', '🛡️ Hedge disabled — /api/hedge/* returns 503');
-}
+const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, coinbaseIPC, rescheduleBackupTimer };
 
 require('./src/routes/ai-routes')(app, sharedDeps);
 require('./src/routes/settings-routes')(app, sharedDeps);
 require('./src/routes/exchange-routes')(app, sharedDeps);
-const { createEngineCallbacks } = require('./src/routes/regime-routes')(app, sharedDeps);
+require('./src/routes/regime-routes')(app, sharedDeps);
 require('./src/routes/keys-routes')(app, sharedDeps);
 require('./src/routes/backtest-routes')(app, sharedDeps);
 require('./src/routes/legacy-routes')(app, sharedDeps);
@@ -378,6 +199,15 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     log('INFO', `WebSocket client disconnected: ${socket.id}`);
   });
+
+  // Room subscriptions for Kalshi/Hedge events (forwarded from engine via IPC)
+  socket.on('kalshi:join', () => { socket.join('kalshi'); socket.join('kalshi:coinbase'); });
+  socket.on('kalshi:leave', () => { socket.leave('kalshi'); socket.leave('kalshi:coinbase'); });
+  socket.on('coinbase:subscribe', () => socket.join('coinbase'));
+  socket.on('coinbase:unsubscribe', () => socket.leave('coinbase'));
+  socket.on('composite:subscribe', () => socket.join('composite'));
+  socket.on('kraken:subscribe', () => socket.join('kraken'));
+  socket.on('kraken:unsubscribe', () => socket.leave('kraken'));
 });
 
 // ============ Scheduler ============
@@ -423,7 +253,7 @@ const checkAndRunIntervalTrade = () => {
 
 // ============ Start Server ============
 
-server.listen(PORT, async () => {
+server.listen(PORT, () => {
   const enabledExchanges = getEnabledExchanges();
 
   const { version } = require('./package.json');
@@ -439,62 +269,11 @@ server.listen(PORT, async () => {
     log('INFO', `[${exchange}] Interval: ${intervalLabel}, next trade in ${timeUntilNext.formatted}`);
   }
 
-  // Auto-resume regime engines that were running before restart
-  const configuredExchanges = getConfiguredExchanges();
-  for (const exchange of configuredExchanges) {
-    if (shouldAutoResumeRegime(exchange)) {
-      log('INFO', `🔄 [${exchange}] Auto-resuming regime engine from previous session...`);
-
-      const { getAdapter } = require('./src/adapters');
-      const exchangeConfig = getExchangeConfig(exchange);
-      const adapter = getAdapter(exchange);
-
-      if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-        const engine = createRegimeEngine(exchange, exchangeConfig, createEngineCallbacks(exchange));
-        regimeEngines.set(exchange, engine);
-
-        const startResult = await engine.start();
-        if (startResult.success) {
-          log('INFO', `✅ [${exchange}] Regime engine auto-resumed successfully`);
-        } else {
-          log('ERROR', `❌ [${exchange}] Failed to auto-resume regime engine: ${startResult.error}`);
-          regimeEngines.delete(exchange);
-          saveRegimeRunningFlag(exchange, false);
-        }
-      } else {
-        log('WARN', `⚠️ [${exchange}] Cannot auto-resume regime engine: API keys not configured`);
-        saveRegimeRunningFlag(exchange, false);
-      }
-    }
-  }
-
-  // Start market data services for exchanges with regime config (but not running engines)
-  for (const exchange of configuredExchanges) {
-    const regimeConfig = getRegimeConfig(exchange);
-    if (regimeConfig && Object.keys(regimeConfig).length > 0 && !regimeEngines.has(exchange)) {
-      log('INFO', `📊 [${exchange}] Starting market data service for live price streaming...`);
-      startMarketDataService(exchange).then(() => wireMarketDataCallbacks(exchange)).catch(err => {
-        log('WARN', `⚠️ [${exchange}] Failed to start market data service: ${err.message}`);
-      });
-    }
-  }
-
-  // Auto-start Kalshi engine if it was running before restart
-  if (kalshiLifecycle) {
-    kalshiLifecycle.autoStartEngine().catch(err => {
-      log('WARN', `⚠️ Kalshi auto-start failed: ${err.message}`);
-    });
-  }
-
-  // Auto-start hedge engine if it was running before restart
-  if (hedgeLifecycle) {
-    hedgeLifecycle.autoStartEngine().catch(err => {
-      log('WARN', `⚠️ Hedge auto-start failed: ${err.message}`);
-    });
-  }
+  // Regime engine auto-resume is handled by engine processes (cm-coinbase, cm-kalshi)
+  // Market data services are handled by engine processes
 
   // Start notification system
-  notifier.start(() => regimeEngines);
+  notifier.start();
 
   // Start backup scheduler
   rescheduleBackupTimer();
@@ -512,27 +291,9 @@ server.listen(PORT, async () => {
 const gracefulShutdown = async (signal) => {
   log('INFO', `Received ${signal}, shutting down gracefully...`);
 
-  log('INFO', 'Stopping market data services...');
-  stopAllMarketDataServices();
-
-  const stopPromises = [];
-  for (const [exchange, engine] of regimeEngines) {
-    log('INFO', `Stopping regime engine for ${exchange}...`);
-    stopPromises.push(engine.stop());
-  }
-
-  await Promise.all(stopPromises);
-  log('INFO', 'All regime engines stopped');
-
-  // Stop Kalshi services (preserves engineRunning flag for auto-restart)
-  if (kalshiLifecycle) {
-    kalshiLifecycle.shutdown();
-  }
-
-  // Stop hedge engine
-  if (hedgeLifecycle) {
-    hedgeLifecycle.shutdown();
-  }
+  // Engine processes handle their own shutdown via PM2
+  kalshiIPC.disconnect();
+  coinbaseIPC.disconnect();
 
   notifier.stop();
 
@@ -540,8 +301,6 @@ const gracefulShutdown = async (signal) => {
     clearInterval(backupTimer);
     backupTimer = null;
   }
-
-  shutdownAllBuffers();
 
   server.close(() => {
     log('INFO', 'Server closed');

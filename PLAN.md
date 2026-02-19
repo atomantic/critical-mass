@@ -84,6 +84,61 @@ Consolidated kalshibot prediction market trading engine into critical-mass as a 
 - Added sigmaCalibration to journal window summaries
 - Updated STRATEGY-GUIDE.md with full rationale
 
+## PM2 Process Isolation (2026-02-19)
+
+**Status: Phase 3 COMPLETE** — Kalshi+Hedge and Coinbase engines extracted into separate PM2 processes.
+
+### Architecture
+
+```
+┌──────────────────────────────────┐
+│   critical-mass (:5563)          │  API gateway, Socket.IO hub, admin UI,
+│   server.js                      │  DCA scheduler, backup, notifier, settings
+└────────┬─────────┬───────────────┘
+    IPC WS    HTTP proxy + IPC WS
+         │         │
+┌────────┴──┐  ┌───┴──────────────────┐
+│ cm-coinbase│  │ cm-kalshi            │
+│ IPC :5570  │  │ HTTP :5572, IPC :5573│
+│            │  │                      │
+│ Regime eng │  │ Kalshi sim engine    │
+│ Market data│  │ Hedge engine         │
+│ Chart buf  │  │ Own CB public WS     │
+│ CB/Gem WS  │  │ Own CB adapter       │
+└────────────┘  └──────────────────────┘
+```
+
+### What Was Done
+
+**Phase 1 — IPC Layer:**
+- `src/ipc/ipc-protocol.js` — Message types, serialization, UUID correlation
+- `src/ipc/ipc-server.js` — WS server for engine processes (request/response)
+- `src/ipc/ipc-client.js` — WS client for gateway (auto-reconnect, backoff)
+- `src/ipc/socket-io-proxy.js` — Drop-in `io` replacement forwarding over IPC
+- `src/ipc/http-proxy.js` — Lightweight HTTP reverse proxy (Node built-in)
+- `src/shared-utils.js` — Extracted shared utilities from server.js
+
+**Phase 2 — Kalshi+Hedge Engine:**
+- `engines/kalshi-engine.js` — Own Express (:5572), IPC WS (:5573)
+- Gateway proxies `/api/kalshi/*` and `/api/hedge/*` via HTTP reverse proxy
+- Gateway forwards Kalshi Socket.IO events via IPC client
+
+**Phase 3 — Coinbase Engine:**
+- `engines/coinbase-engine.js` — IPC WS (:5570), handles all spot exchanges
+- All regime engine lifecycle moved to engine process (auto-resume, market data)
+- `src/routes/regime-routes.js` rewritten as IPC proxy (config stays file-based)
+- `src/routes/exchange-routes.js` uses IPC for regime config updates
+- `src/routes/settings-routes.js` uses IPC for backup-restore engine stop
+- Gateway (server.js) is now a thin API proxy — no direct engine management
+
+**ecosystem.config.cjs:**
+- 4 PM2 processes: critical-mass (gateway), critical-mass-kalshi, critical-mass-coinbase, critical-mass-ui
+
+### Remaining
+
+- Phase 4 (optional): Extract Gemini into own process (currently handled by cm-coinbase)
+- Phase 5: Add `/api/health` aggregating engine health, per-engine memory tuning
+
 ## Next Steps
 
 1. Future: Hedged BTC + prediction market insurance engine
