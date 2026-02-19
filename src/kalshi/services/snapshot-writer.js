@@ -45,11 +45,25 @@ const writeSnapshot = async (context, bracketAnalytics, signals) => {
     }
   }
 
+  // Coinbase/composite bid/ask spread
+  const composite = context.compositePrices?.get('BTC-USD')
+  const cbSpread = composite?.bid && composite?.ask ? { b: composite.bid, a: composite.ask } : null
+
+  // Kalshi orderbook depth for tickers with data
+  const book = {}
+  if (context.kalshiBookMetrics?.size) {
+    for (const [ticker, m] of context.kalshiBookMetrics) {
+      book[ticker] = { yd: m.yesDepth5 ?? 0, nd: m.noDepth5 ?? 0, sp: m.yesSpread ?? 0 }
+    }
+  }
+
   const snapshot = {
     ts: new Date().toISOString(),
     btcSpot,
     kalshiPrices,
     bracketAnalytics: serializeBracketAnalytics(bracketAnalytics),
+    book: Object.keys(book).length > 0 ? book : undefined,
+    cbSpread: cbSpread || undefined,
     signals: signals.map(s => ({
       t: s.ticker,
       a: s.action,
@@ -82,13 +96,31 @@ const serializeBracketAnalytics = (analytics) => {
   const groups = []
   for (const [closeTime, group] of analytics.groups) {
     if (!group.bracketSum?.pricedCount) continue
-    groups.push({
+    const entry = {
       ct: closeTime,
       sum: group.bracketSum.mid,
       iv: group.impliedVol?.sigma ?? null,
       ivR: group.impliedVol?.reliable ?? false,
       ttl: Math.round(group.secondsToSettlement ?? 0)
-    })
+    }
+
+    // Add per-bracket fair value data from byTicker
+    if (analytics.byTicker?.size && group.brackets?.length) {
+      const bk = []
+      for (const b of group.brackets) {
+        const td = analytics.byTicker.get(b.ticker)
+        if (!td) continue
+        bk.push({
+          t: b.ticker,
+          mp: td.modelProb != null ? Math.round(td.modelProb * 10000) / 10000 : null,
+          kp: b.marketProb != null ? Math.round(b.marketProb * 10000) / 10000 : null,
+          si: td.spotInBracket ? 1 : 0
+        })
+      }
+      if (bk.length > 0) entry.bk = bk
+    }
+
+    groups.push(entry)
   }
   return groups.length > 0 ? groups : null
 }

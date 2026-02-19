@@ -14,9 +14,9 @@ const ts = () => new Date().toISOString().slice(11, 23)
 
 const JOURNAL_DIR = path.join(__dirname, '..', '..', '..', 'data', 'kalshi', 'journals')
 
-/** @type {Map<string, number>} ticker -> last skip write timestamp */
+/** @type {Map<string, number>} ticker:strategy -> last skip write timestamp */
 const skipThrottles = new Map()
-const SKIP_THROTTLE_MS = 60000
+const SKIP_THROTTLE_MS = 15000
 
 /** @type {Map<string, number>} reason+ticker -> last reject write timestamp */
 const rejectThrottles = new Map()
@@ -83,6 +83,7 @@ const writeEntry = (trade, signal) => {
  * @param {Object} position - Position being exited
  */
 const writeExit = (trade, signal, position) => {
+  const meta = signal.metadata || {}
   appendRecord({
     type: 'exit',
     ts: new Date().toISOString(),
@@ -96,8 +97,12 @@ const writeExit = (trade, signal, position) => {
     fee: trade.fee,
     strategy: trade.strategy,
     exitReason: signal.reason || trade.reason,
-    btcSpot: signal.metadata?.btcSpot ?? null,
-    avgCost: position?.avgCost ?? null
+    btcSpot: meta.btcSpot ?? null,
+    avgCost: position?.avgCost ?? null,
+    exitFairProb: meta.exitFairProb ?? null,
+    exitMarketProb: meta.exitMarketProb ?? null,
+    exitEdge: meta.exitEdge ?? null,
+    holdDuration: meta.holdDuration ?? null
   }).catch(() => {})
 }
 
@@ -131,7 +136,7 @@ const writeSettlement = (trade, btcSpot, winningSide) => {
 
 /**
  * Record skipped opportunities from strategy diagnostics.
- * Throttled: max once per ticker per 60s, only logs diagnostics with meaningful data.
+ * Throttled: max once per ticker:strategy pair per 15s.
  * @param {Array<Object>} diagnostics - Strategy diagnostics array
  * @param {string} strategyName
  * @param {number} btcSpot
@@ -141,12 +146,10 @@ const writeSkips = (diagnostics, strategyName, btcSpot) => {
   const now = Date.now()
 
   for (const d of diagnostics) {
-    // Only log diagnostics with meaningful analysis data
-    if (!d.edge && !d.fairProb) continue
-
-    const lastWrite = skipThrottles.get(d.ticker)
+    const throttleKey = `${d.ticker}:${strategyName}`
+    const lastWrite = skipThrottles.get(throttleKey)
     if (lastWrite && now - lastWrite < SKIP_THROTTLE_MS) continue
-    skipThrottles.set(d.ticker, now)
+    skipThrottles.set(throttleKey, now)
 
     appendRecord({
       type: 'skip',
@@ -161,7 +164,8 @@ const writeSkips = (diagnostics, strategyName, btcSpot) => {
       ttl: d.ttl ?? null,
       window: d.window ?? null,
       btcSpot: btcSpot ?? null,
-      strike: d.strike ?? null
+      strike: d.strike ?? null,
+      sigmaSource: d.sigmaSource ?? null
     }).catch(() => {})
   }
 }
@@ -312,6 +316,14 @@ const writeShadowSettlement = (trade, btcSpot, winningSide) => {
  * @param {Object} summary - Window summary object
  */
 const writeWindowSummary = (summary) => {
+  // Include per-bracket details for post-session analysis
+  const brackets = summary.brackets?.map(b => ({
+    ticker: b.ticker,
+    strike: b.strike ?? b.lower ?? null,
+    lastYes: b.lastYes ?? b.marketPrice ?? null,
+    won: b.won ?? null
+  })) ?? null
+
   appendRecord({
     type: 'window-summary',
     ts: new Date().toISOString(),
@@ -324,6 +336,7 @@ const writeWindowSummary = (summary) => {
     marketsEvaluated: summary.marketsEvaluated,
     marketsWithPrices: summary.marketsWithPrices,
     bracketCount: summary.brackets?.length ?? 0,
+    brackets,
     sigmaCalibration: summary.sigmaCalibration ?? null
   }).catch(() => {})
 }

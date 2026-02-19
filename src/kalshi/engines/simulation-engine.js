@@ -9,7 +9,7 @@ const { trackPriceUpdate, settleExpiredTrackedMarkets, recordSettlement } = requ
 const { writeSnapshot } = require('../services/snapshot-writer.js')
 const { writeEntry, writeExit, writeSettlement, writeSkips, writeReject, writeSessionSummary, writeShadowEntry, writeShadowExit, writeShadowSettlement, writeWindowSummary } = require('../services/journal-writer.js')
 const { calculateKalshiFee, calculateFairProbability, calculateRollingVolatility, getSigma } = require('../services/volatility-service.js')
-const { getBracketInfo } = require('../adapters/markets.js')
+const { getBracketInfo, parseStrikePrice } = require('../adapters/markets.js')
 const { sendAlert } = require('../services/alert-service.js')
 const { analyzeTrade } = require('../services/trade-analyst.js')
 
@@ -676,6 +676,7 @@ class SimulationEngine {
       compositePrices: this.compositePrices,
       compositePriceHistory: this.compositePriceHistory,
       orderBookMetrics: this.orderBookMetrics,
+      kalshiBookMetrics: this.kalshiBookMetrics,
       polymarketSentiment: this.polymarketSentiment,
       bracketAnalytics,
       positions: this.state.positions || [],
@@ -1267,6 +1268,7 @@ class SimulationEngine {
     let tradeProceeds = null
     let tradeCostBasis = null
     let tradeFee = null
+    let exitEdgeData = null
 
     // Calculate taker fee (most orders are market/taker in fast markets)
     const fee = calculateKalshiFee(signal.count, fillPrice, 'taker')
@@ -1334,7 +1336,8 @@ class SimulationEngine {
             entryFairProb: signalMeta.fairProb ?? null,
             entryMarketProb: signalMeta.marketProb ?? null,
             entryBtcSpot: this.evalBtcSpot ?? null,
-            entryTTL: signalMeta.ttl ?? null
+            entryTTL: signalMeta.ttl ?? null,
+            entryTs: Date.now()
           }
         })
       }
@@ -1360,6 +1363,27 @@ class SimulationEngine {
         console.log(`[${ts()}] No position to sell`)
         this.log('error', `No position to sell for ${signal.ticker} ${signal.side}`, { ticker: signal.ticker, side: signal.side })
         return { success: false }
+      }
+
+      // Compute exit-time edge before position is modified
+      const mInfo = this.marketInfo.get(signal.ticker)
+      const strike = mInfo ? parseStrikePrice(mInfo.title, signal.ticker) : null
+      const { bracketWidth } = getBracketInfo(signal.ticker)
+      if (strike && this.evalBtcSpot) {
+        const priceHistory = this.compositePriceHistory?.get('BTC-USD') || this.coinbasePriceHistory?.get('BTC-USD')
+        const sigmaResult = getSigma({ priceHistory })
+        const secsLeft = mInfo?.close_time ? Math.max(0, (new Date(mInfo.close_time).getTime() - Date.now()) / 1000) : 0
+        if (sigmaResult?.sigma && secsLeft > 0) {
+          const exitFairProb = calculateFairProbability(this.evalBtcSpot, strike, secsLeft, sigmaResult.sigma, bracketWidth)
+          const pd = this.currentPrices.get(signal.ticker)
+          const exitMarketProb = pd ? (pd.yesBid + pd.yesAsk) / 200 : null
+          exitEdgeData = {
+            exitFairProb: Math.round(exitFairProb * 10000) / 10000,
+            exitMarketProb: exitMarketProb != null ? Math.round(exitMarketProb * 10000) / 10000 : null,
+            exitEdge: exitMarketProb != null ? Math.round((exitFairProb - exitMarketProb) * 10000) / 10000 : null,
+            holdDuration: position.metadata?.entryTs ? Math.round((Date.now() - position.metadata.entryTs) / 1000) : null
+          }
+        }
       }
 
       const sellCount = Math.min(signal.count, position.contracts)
@@ -1439,7 +1463,7 @@ class SimulationEngine {
     this.state.trades.push(trade)
 
     // Journal: record entry or exit
-    const enrichedSignal = { ...signal, metadata: { ...signal.metadata, btcSpot: this.evalBtcSpot } }
+    const enrichedSignal = { ...signal, metadata: { ...signal.metadata, btcSpot: this.evalBtcSpot, ...exitEdgeData } }
     if (signal.action === 'buy') {
       writeEntry(trade, enrichedSignal)
     } else if (signal.action === 'sell') {
@@ -1521,7 +1545,8 @@ class SimulationEngine {
             entryFairProb: fill.metadata?.fairProb ?? null,
             entryMarketProb: fill.metadata?.marketProb ?? null,
             entryBtcSpot: this.evalBtcSpot ?? null,
-            entryTTL: fill.metadata?.ttl ?? null
+            entryTTL: fill.metadata?.ttl ?? null,
+            entryTs: Date.now()
           }
         })
       }
@@ -1536,6 +1561,28 @@ class SimulationEngine {
       if (!position) {
         console.log(`[${ts()}] Fill received for unknown position: ${fill.ticker} ${fill.side}`)
         return
+      }
+
+      // Compute exit-time edge before position is modified
+      let fillExitEdgeData = null
+      const mInfo = this.marketInfo.get(fill.ticker)
+      const strike = mInfo ? parseStrikePrice(mInfo.title, fill.ticker) : null
+      const { bracketWidth } = getBracketInfo(fill.ticker)
+      if (strike && this.evalBtcSpot) {
+        const priceHistory = this.compositePriceHistory?.get('BTC-USD') || this.coinbasePriceHistory?.get('BTC-USD')
+        const sigmaResult = getSigma({ priceHistory })
+        const secsLeft = mInfo?.close_time ? Math.max(0, (new Date(mInfo.close_time).getTime() - Date.now()) / 1000) : 0
+        if (sigmaResult?.sigma && secsLeft > 0) {
+          const exitFairProb = calculateFairProbability(this.evalBtcSpot, strike, secsLeft, sigmaResult.sigma, bracketWidth)
+          const pd = this.currentPrices.get(fill.ticker)
+          const exitMarketProb = pd ? (pd.yesBid + pd.yesAsk) / 200 : null
+          fillExitEdgeData = {
+            exitFairProb: Math.round(exitFairProb * 10000) / 10000,
+            exitMarketProb: exitMarketProb != null ? Math.round(exitMarketProb * 10000) / 10000 : null,
+            exitEdge: exitMarketProb != null ? Math.round((exitFairProb - exitMarketProb) * 10000) / 10000 : null,
+            holdDuration: position.metadata?.entryTs ? Math.round((Date.now() - position.metadata.entryTs) / 1000) : null
+          }
+        }
       }
 
       const sellCount = Math.min(fillCount, position.contracts)
@@ -1593,7 +1640,7 @@ class SimulationEngine {
     this.state.trades.push(trade)
 
     // Journal: record live fill
-    const enrichedSignal = { metadata: { strategy: strategyName, btcSpot: this.evalBtcSpot } }
+    const enrichedSignal = { metadata: { strategy: strategyName, btcSpot: this.evalBtcSpot, ...(fill.action === 'sell' ? fillExitEdgeData : null) } }
     if (fill.action === 'buy') {
       writeEntry(trade, enrichedSignal)
     } else if (fill.action === 'sell') {
