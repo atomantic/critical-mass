@@ -492,6 +492,38 @@ const createGeminiAdapter = (keysPath = null) => {
     }));
   };
 
+  /**
+   * Start sending periodic heartbeats to keep orders alive.
+   * Gemini API keys with "Requires Heartbeat" enabled will cancel
+   * all open orders if no heartbeat is received within ~5 minutes.
+   */
+  let heartbeatTimer = null;
+  adapter.startHeartbeat = () => {
+    if (heartbeatTimer) return;
+    const HEARTBEAT_MS = 60000; // Send every 60s (well within 5-min timeout)
+    const sendHeartbeat = () => {
+      makeRestRequest('/v1/heartbeat')
+        .then(res => {
+          if (res?.result !== 'ok') {
+            console.log(`⚠️ [gemini] Heartbeat response: ${JSON.stringify(res)}`);
+          }
+        })
+        .catch(err => {
+          console.log(`⚠️ [gemini] Heartbeat failed: ${err.message}`);
+        });
+    };
+    sendHeartbeat(); // Send immediately
+    heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
+    console.log(`💓 [gemini] Heartbeat started (every ${HEARTBEAT_MS / 1000}s)`);
+  };
+
+  adapter.stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
+
   return adapter;
 };
 
