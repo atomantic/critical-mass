@@ -925,6 +925,95 @@ const getKalshiConfig = () => {
   };
 };
 
+/**
+ * Default hedge configuration
+ */
+const HEDGE_DEFAULTS = {
+  enabled: false,
+  dryRun: true,
+  exchange: 'coinbase',
+  productId: 'BTC-USDC',
+  kalshi: {
+    allowedSeries: ['KXBTC15M', 'KXBTC'],
+    maxPremiumCents: 50,
+    maxContracts: 100,
+    maxSlippageCents: 3,
+    hedgeRatio: 1.0,
+  },
+  position: {
+    btcAmount: 0.05,
+    minBtcAmount: 0.01,
+    maxBtcAmount: 1.0,
+  },
+  exitMode: 'hybrid',
+  stopLoss: {
+    percentFromEntry: 1.0,
+    slippageBps: 10,
+  },
+  takeProfit: {
+    mode: 'software',
+    percentFromEntry: 0.5,
+    trailingEnabled: false,
+    trailingActivationPct: 0.3,
+    trailingStepPct: 0.1,
+  },
+  entry: {
+    minVolatility15m: 0.003,
+    maxVolatility15m: 0.03,
+    minExpectedProfit: 5,
+    maxSpreadBps: 20,
+    cooldownMs: 900000,
+  },
+  holdBeyondSettlement: false,
+  risk: {
+    maxDailyLoss: 200,
+    maxOpenPairs: 1,
+    maxDailyPairs: 10,
+    circuitBreakerConsecutiveLosses: 3,
+  },
+  fees: {
+    exchangeMakerBps: 5,
+    exchangeTakerBps: 10,
+    kalshiTakerCoeff: 0.07,
+  },
+};
+
+/**
+ * Get hedge engine configuration with defaults
+ * @returns {Object} Hedge config with defaults applied
+ */
+const getHedgeConfig = () => {
+  const raw = loadRawConfig();
+  const userHedge = raw.hedge || {};
+  return {
+    ...HEDGE_DEFAULTS,
+    ...userHedge,
+    kalshi: { ...HEDGE_DEFAULTS.kalshi, ...userHedge.kalshi },
+    position: { ...HEDGE_DEFAULTS.position, ...userHedge.position },
+    stopLoss: { ...HEDGE_DEFAULTS.stopLoss, ...userHedge.stopLoss },
+    takeProfit: { ...HEDGE_DEFAULTS.takeProfit, ...userHedge.takeProfit },
+    entry: { ...HEDGE_DEFAULTS.entry, ...userHedge.entry },
+    risk: { ...HEDGE_DEFAULTS.risk, ...userHedge.risk },
+    fees: { ...HEDGE_DEFAULTS.fees, ...userHedge.fees },
+  };
+};
+
+/**
+ * Update hedge configuration
+ * @param {Object} updates - Hedge config updates
+ * @returns {void}
+ */
+const updateHedgeConfig = (updates) => {
+  const config = loadConfig();
+  const raw = loadRawConfig();
+  const current = raw.hedge || {};
+
+  const merged = deepMerge(current, updates);
+  // Store hedge at top level (same as kalshi)
+  const fullConfig = { ...config, hedge: merged };
+  saveConfig(fullConfig);
+};
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -956,6 +1045,10 @@ module.exports = {
   updateBackupConfig,
   // Kalshi
   getKalshiConfig,
+  // Hedge
+  getHedgeConfig,
+  updateHedgeConfig,
+  HEDGE_DEFAULTS,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,
