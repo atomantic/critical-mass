@@ -1412,6 +1412,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     }
 
     isRunning = true;
+
+    // Start Gemini heartbeat to prevent order auto-cancellation
+    if (!isDryRun && adapter.startHeartbeat) {
+      adapter.startHeartbeat();
+    }
+
     console.log(`✅ [${exchange}] ${modeLabel}Regime engine started`);
 
     // SIGUSR1: reload state from disk (for applying manual state fixes without restart)
@@ -1479,6 +1485,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         process.removeListener('SIGUSR1', positionState._sigusr1Handler);
         delete positionState._sigusr1Handler;
       }
+    }
+
+    // Stop heartbeat
+    if (adapter.stopHeartbeat) {
+      adapter.stopHeartbeat();
     }
 
     // Stop intervals first
@@ -2376,8 +2387,22 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       recoveryModule.reconcile(positionState, fillLedger)
         .then(result => {
           if (result.updated) {
+            // Preserve celestial body state (rebuildPositionFromFills only returns core fields)
+            const savedBodies = positionState.celestialBodies;
+            const savedCelestialState = positionState.celestialState;
+            const savedRealizedPnL = positionState.realizedPnL;
+            const savedRealizedAssetPnL = positionState.realizedAssetPnL;
             positionState = result.position;
-            console.log(`🔄 [${exchange}] Position reconciled from exchange`);
+            if (savedBodies) positionState.celestialBodies = savedBodies;
+            if (savedCelestialState) positionState.celestialState = savedCelestialState;
+            if (savedRealizedPnL) positionState.realizedPnL = savedRealizedPnL;
+            if (savedRealizedAssetPnL) positionState.realizedAssetPnL = savedRealizedAssetPnL;
+            // Re-sync totals from bodies
+            const bodies = positionState.celestialBodies || [];
+            if (bodies.length > 0) {
+              celestialHierarchy.syncPositionState(positionState, bodies);
+            }
+            console.log(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies preserved)`);
           }
         })
         .catch(err => {

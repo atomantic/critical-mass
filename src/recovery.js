@@ -134,6 +134,13 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     const trackedAsset = position.totalAsset;
     const accountAsset = baseBalance.available + baseBalance.hold;
 
+    // Skip validation if exchange returned 0 balance but we have tracked position
+    // (likely a flaky API response — don't nuke state based on it)
+    if (trackedAsset > 0 && accountAsset === 0) {
+      console.log(`⚠️ [${exchange}] Balance API returned 0 ${baseCurrency} but tracking ${trackedAsset.toFixed(8)} — skipping reconciliation (possible API issue)`);
+      return { valid: true, discrepancies: [] };
+    }
+
     // Only flag as discrepancy if we're tracking MORE than exists in account
     // Account having extra asset is fine (user's other holdings)
     if (trackedAsset > accountAsset + 0.00001) {
