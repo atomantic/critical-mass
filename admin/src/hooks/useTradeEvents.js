@@ -7,7 +7,7 @@ const MAX_EVENTS = 50
 // Singleton socket connection
 let socket = null
 
-const getSocket = () => {
+export const getSocket = () => {
   if (!socket) {
     socket = io(window.location.origin, {
       transports: ['websocket', 'polling'],
