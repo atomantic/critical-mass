@@ -167,6 +167,12 @@ Based on 4 days of live + shadow trading data:
 - Added "Gateway" link in header nav → `/gateway/logs` for the gateway process logs
 - Process allowlist: `critical-mass`, `critical-mass-coinbase`, `critical-mass-gemini`, `critical-mass-cryptocom`, `critical-mass-kalshi`
 
+## Swing Flipper Admin UI + Auto-Tune Persistence (2026-02-20)
+
+- Added `swing-flipper` strategy config to admin StrategiesConfig (15 params: ATM price range, oscillation detection, pullback entry, take-profit/stop-loss, time exit, collapse detection, sizing)
+- Persisted auto-tune enable/disable state to `config.json` so it survives PM2 restarts
+- Added startup sync: auto-tune status endpoint reads persisted config on first check
+
 ## Next Steps
 
 1. Fix sigma calibration (predicted/realized ratio averages 1.45x — overestimates bracket probabilities)

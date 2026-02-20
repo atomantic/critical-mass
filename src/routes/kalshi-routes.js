@@ -1044,6 +1044,12 @@ module.exports = (app, sharedDeps) => {
 
   app.get('/api/kalshi/auto-tune/status', asyncHandler(async (req, res) => {
     loadModules();
+    // Sync auto-tuner state from persisted config on first status check
+    if (!autoTunerModule.autoTuner._configSynced) {
+      const config = await readJson('config.json');
+      if (config.autoTune?.enabled) autoTunerModule.autoTuner.enable();
+      autoTunerModule.autoTuner._configSynced = true;
+    }
     res.json({
       enabled: autoTunerModule.autoTuner.enabled,
       lastAdjustment: autoTunerModule.autoTuner.lastAdjustment,
@@ -1054,12 +1060,18 @@ module.exports = (app, sharedDeps) => {
   app.post('/api/kalshi/auto-tune/enable', asyncHandler(async (req, res) => {
     loadModules();
     autoTunerModule.autoTuner.enable();
+    const config = await readJson('config.json');
+    config.autoTune = { ...config.autoTune, enabled: true };
+    await writeJson('config.json', config);
     res.json({ success: true, enabled: true });
   }));
 
   app.post('/api/kalshi/auto-tune/disable', asyncHandler(async (req, res) => {
     loadModules();
     autoTunerModule.autoTuner.disable();
+    const config = await readJson('config.json');
+    config.autoTune = { ...config.autoTune, enabled: false };
+    await writeJson('config.json', config);
     res.json({ success: true, enabled: false });
   }));
 
