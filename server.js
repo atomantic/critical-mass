@@ -139,26 +139,37 @@ app.use('/api/kalshi', kalshiProxy);
 app.use('/api/hedge', kalshiProxy);
 log('INFO', `📊 Kalshi+Hedge routes proxied to :${KALSHI_HTTP_PORT}`);
 
-// ============ Coinbase Engine IPC ============
+// ============ Crypto Exchange Engine IPC ============
 
 const COINBASE_IPC_PORT = parseInt(process.env.COINBASE_IPC_PORT) || 5570;
+const GEMINI_IPC_PORT = parseInt(process.env.GEMINI_IPC_PORT) || 5571;
+const CRYPTOCOM_IPC_PORT = parseInt(process.env.CRYPTOCOM_IPC_PORT) || 5574;
 
-const coinbaseIPC = createIPCClient(`ws://127.0.0.1:${COINBASE_IPC_PORT}`, 'coinbase', {
-  onEvent: (msg) => {
-    if (msg.room) {
-      io.to(msg.room).emit(msg.channel, msg.payload);
-    } else {
-      io.emit(msg.channel, msg.payload);
-    }
-  },
-  onConnect: () => log('INFO', '🔗 Gateway connected to Coinbase engine IPC'),
-  onDisconnect: () => log('INFO', '🔗 Gateway disconnected from Coinbase engine IPC'),
-});
-coinbaseIPC.connect();
+const createExchangeIPC = (port, name) => {
+  const client = createIPCClient(`ws://127.0.0.1:${port}`, name, {
+    onEvent: (msg) => {
+      if (msg.room) {
+        io.to(msg.room).emit(msg.channel, msg.payload);
+      } else {
+        io.emit(msg.channel, msg.payload);
+      }
+    },
+    onConnect: () => log('INFO', `🔗 Gateway connected to ${name} engine IPC`),
+    onDisconnect: () => log('INFO', `🔗 Gateway disconnected from ${name} engine IPC`),
+  });
+  client.connect();
+  return client;
+};
+
+const coinbaseIPC = createExchangeIPC(COINBASE_IPC_PORT, 'coinbase');
+const geminiIPC = createExchangeIPC(GEMINI_IPC_PORT, 'gemini');
+const cryptocomIPC = createExchangeIPC(CRYPTOCOM_IPC_PORT, 'cryptocom');
+
+const exchangeIPCMap = { coinbase: coinbaseIPC, gemini: geminiIPC, cryptocom: cryptocomIPC };
 
 // ============ Route Modules ============
 
-const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, coinbaseIPC, rescheduleBackupTimer };
+const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
 
 require('./src/routes/ai-routes')(app, sharedDeps);
 require('./src/routes/settings-routes')(app, sharedDeps);
@@ -205,6 +216,10 @@ io.on('connection', (socket) => {
   socket.on('kalshi:leave', () => { socket.leave('kalshi'); socket.leave('kalshi:coinbase'); });
   socket.on('coinbase:subscribe', () => socket.join('coinbase'));
   socket.on('coinbase:unsubscribe', () => socket.leave('coinbase'));
+  socket.on('gemini:subscribe', () => socket.join('gemini'));
+  socket.on('gemini:unsubscribe', () => socket.leave('gemini'));
+  socket.on('cryptocom:subscribe', () => socket.join('cryptocom'));
+  socket.on('cryptocom:unsubscribe', () => socket.leave('cryptocom'));
   socket.on('composite:subscribe', () => socket.join('composite'));
   socket.on('kraken:subscribe', () => socket.join('kraken'));
   socket.on('kraken:unsubscribe', () => socket.leave('kraken'));
@@ -294,6 +309,8 @@ const gracefulShutdown = async (signal) => {
   // Engine processes handle their own shutdown via PM2
   kalshiIPC.disconnect();
   coinbaseIPC.disconnect();
+  geminiIPC.disconnect();
+  cryptocomIPC.disconnect();
 
   notifier.stop();
 

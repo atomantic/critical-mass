@@ -134,11 +134,30 @@ Consolidated kalshibot prediction market trading engine into critical-mass as a 
 **ecosystem.config.cjs:**
 - 4 PM2 processes: critical-mass (gateway), critical-mass-kalshi, critical-mass-coinbase, critical-mass-ui
 
+**Phase 4 — Gemini & Crypto.com Engine Isolation (2026-02-20):**
+- `engines/coinbase-engine.js` — Generalized to read `EXCHANGE_NAME` env var, single-exchange startup
+- `engines/gemini-engine.js` — Thin wrapper setting `EXCHANGE_NAME=gemini` and IPC port 5571
+- `engines/cryptocom-engine.js` — Thin wrapper setting `EXCHANGE_NAME=cryptocom` and IPC port 5574
+- `server.js` — Added `geminiIPC`/`cryptocomIPC` clients, `exchangeIPCMap` for per-exchange routing
+- `src/routes/regime-routes.js` — Routes IPC by exchange name via `getIPC(exchange)`
+- `src/routes/exchange-routes.js` — Same `exchangeIPCMap` pattern
+- `src/routes/settings-routes.js` — Backup restore sends stop-all to all engines in parallel
+- `ecosystem.config.cjs` — 6 PM2 processes: gateway, kalshi, coinbase, gemini, cryptocom, ui
+
 ### Remaining
 
-- Phase 4 (optional): Extract Gemini into own process (currently handled by cm-coinbase)
 - Phase 5: Add `/api/health` aggregating engine health, per-engine memory tuning
+
+## Kalshi Strategy Rebalance (2026-02-20)
+
+Based on 4 days of live + shadow trading data:
+
+- **Disabled CFV** (0% live win rate, -$134 P&L, sigma model overpredicts vol by 1.45x)
+- **Re-enabled Gamma Scalper** (+$172 shadow P&L, 35% win rate, 12:1 asymmetric payoff)
+- **Bumped Sniper sizing** (kellyFraction 0.12→0.15, maxBetPct 0.03→0.04) — 75% win rate, +$105 P&L
+- **Fixed CFV enter-then-dump bug**: minSecondsToSettlement was 30s but forceExitSeconds was 60s, causing immediate forced exits on new positions. Set minSecondsToSettlement to 90s.
 
 ## Next Steps
 
-1. Future: Hedged BTC + prediction market insurance engine
+1. Fix sigma calibration (predicted/realized ratio averages 1.45x — overestimates bracket probabilities)
+2. Future: Hedged BTC + prediction market insurance engine

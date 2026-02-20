@@ -10,10 +10,10 @@ const { log } = require('../logger');
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, coinbaseIPC: Object, rescheduleBackupTimer: Function}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, coinbaseIPC, rescheduleBackupTimer } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer } = deps;
 
   // ============ Aggressiveness Presets ============
 
@@ -136,13 +136,16 @@ module.exports = (app, deps) => {
     const { filename } = req.params;
     log('INFO', `💾 Restore requested: ${filename}`);
 
-    // Stop all regime engines in the Coinbase engine process before restore
+    // Stop all regime engines across all exchange processes before restore
     let stoppedEngines = [];
-    const stopResult = await coinbaseIPC.request('regime:stop-all', {}).catch((err) => {
-      log('WARN', `💾 Could not stop engines via IPC: ${err.message}`);
-      return { stopped: [] };
-    });
-    stoppedEngines = stopResult.stopped || [];
+    const stopPromises = Object.entries(exchangeIPCMap).map(([name, ipc]) =>
+      ipc.request('regime:stop-all', {}).catch((err) => {
+        log('WARN', `💾 Could not stop ${name} engine via IPC: ${err.message}`);
+        return { stopped: [] };
+      })
+    );
+    const stopResults = await Promise.all(stopPromises);
+    stoppedEngines = stopResults.flatMap((r) => r.stopped || []);
 
     const result = restoreBackup(filename);
     if (!result.success) {
