@@ -388,6 +388,12 @@ function AppContent() {
               {/* Bottom row on mobile / Right side on desktop */}
               <div className="flex items-center justify-between md:justify-end gap-1.5 md:gap-4">
                 <Link
+                  to="/"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  DCA
+                </Link>
+                <Link
                   to="/notifications"
                   className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
@@ -429,6 +435,13 @@ function AppContent() {
             {/* Mobile menu dropdown */}
             {mobileMenuOpen && (
               <div className="md:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
+                <Link
+                  to="/"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  DCA
+                </Link>
                 <Link
                   to="/notifications"
                   onClick={() => setMobileMenuOpen(false)}
