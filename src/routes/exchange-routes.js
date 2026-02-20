@@ -12,10 +12,11 @@ const { shouldAutoResumeRegime } = require('../shared-utils');
 
 /**
  * @param {import('express').Express} app
- * @param {{coinbaseIPC: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
+ * @param {{exchangeIPCMap: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { coinbaseIPC, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
+  const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
+  const getIPC = (exchange) => exchangeIPCMap[exchange] || exchangeIPCMap.coinbase;
 
   // Get list of all exchanges
   app.get('/api/exchanges', (req, res) => {
@@ -57,7 +58,7 @@ module.exports = (app, deps) => {
     const config = updateExchangeConfig(exchange, updates);
 
     if (updates.regime) {
-      coinbaseIPC.request('regime:update-config', updates.regime, exchange).catch(() => {});
+      getIPC(exchange).request('regime:update-config', updates.regime, exchange).catch(() => {});
     }
 
     res.json({ success: true, config: config.exchanges[exchange] });

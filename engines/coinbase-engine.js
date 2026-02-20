@@ -1,12 +1,15 @@
 // @ts-check
 /**
- * Coinbase Engine Process
+ * Crypto Exchange Engine Process
  *
- * Standalone PM2 process that runs:
- * - Coinbase regime engine (buy/sell cycle management)
+ * Standalone PM2 process that runs a single exchange's:
+ * - Regime engine (buy/sell cycle management)
  * - Market data service (WebSocket price feeds, ATR, regime detection)
  * - Chart data buffer
- * - IPC WebSocket server (:5570) for communication with the gateway
+ * - IPC WebSocket server for communication with the gateway
+ *
+ * Set EXCHANGE_NAME env var to select which exchange this process manages.
+ * Thin wrappers (gemini-engine.js, cryptocom-engine.js) set env and require this file.
  *
  * The gateway (server.js) connects as an IPC client and forwards:
  * - Socket.IO events from the engine (regime:status, trade:event, etc.)
@@ -35,8 +38,9 @@ const { saveRegimeRunningFlag, shouldAutoResumeRegime } = require('../src/shared
 
 // ============ Configuration ============
 
-const IPC_PORT = parseInt(process.env.COINBASE_IPC_PORT) || 5570;
-const ENGINE_NAME = 'cm-coinbase';
+const EXCHANGE_NAME = process.env.EXCHANGE_NAME || 'coinbase';
+const IPC_PORT = parseInt(process.env.EXCHANGE_IPC_PORT || process.env.COINBASE_IPC_PORT) || 5570;
+const ENGINE_NAME = `cm-${EXCHANGE_NAME}`;
 
 // ============ IPC Server ============
 
@@ -472,52 +476,49 @@ ipcServer.onRequest('regime:convert-dca', async (payload, exchange) => {
 
 const startup = async () => {
   const { version } = require('../package.json');
-  log('INFO', `\n📡 Coinbase Engine v${version}`);
+  const label = EXCHANGE_NAME.charAt(0).toUpperCase() + EXCHANGE_NAME.slice(1);
+  log('INFO', `\n📡 ${label} Engine v${version}`);
   log('INFO', `   IPC: ws://127.0.0.1:${IPC_PORT}`);
 
   ipcServer.start();
 
-  // Auto-resume regime engines that were running before restart
-  const configuredExchanges = getConfiguredExchanges();
-  for (const exchange of configuredExchanges) {
-    // Kalshi has its own engine process (cm-kalshi)
-    if (exchange === 'kalshi') continue;
+  const exchange = EXCHANGE_NAME;
 
-    if (shouldAutoResumeRegime(exchange)) {
-      log('INFO', `🔄 [${exchange}] Auto-resuming regime engine from previous session...`);
+  // Auto-resume regime engine if it was running before restart
+  if (shouldAutoResumeRegime(exchange)) {
+    log('INFO', `🔄 [${exchange}] Auto-resuming regime engine from previous session...`);
 
-      const { getAdapter } = require('../src/adapters');
-      const exchangeConfig = getExchangeConfig(exchange);
-      const adapter = getAdapter(exchange);
+    const { getAdapter } = require('../src/adapters');
+    const exchangeConfig = getExchangeConfig(exchange);
+    const adapter = getAdapter(exchange);
 
-      if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-        const engine = createRegimeEngine(exchange, exchangeConfig, createEngineCallbacks(exchange));
-        regimeEngines.set(exchange, engine);
+    if (adapter.hasValidKeys && adapter.hasValidKeys()) {
+      const engine = createRegimeEngine(exchange, exchangeConfig, createEngineCallbacks(exchange));
+      regimeEngines.set(exchange, engine);
 
-        const startResult = await engine.start();
-        if (startResult.success) {
-          log('INFO', `✅ [${exchange}] Regime engine auto-resumed successfully`);
-        } else {
-          log('ERROR', `❌ [${exchange}] Failed to auto-resume: ${startResult.error}`);
-          regimeEngines.delete(exchange);
-          saveRegimeRunningFlag(exchange, false);
-        }
+      const startResult = await engine.start();
+      if (startResult.success) {
+        log('INFO', `✅ [${exchange}] Regime engine auto-resumed successfully`);
       } else {
-        log('WARN', `⚠️ [${exchange}] Cannot auto-resume: API keys not configured`);
+        log('ERROR', `❌ [${exchange}] Failed to auto-resume: ${startResult.error}`);
+        regimeEngines.delete(exchange);
         saveRegimeRunningFlag(exchange, false);
       }
+    } else {
+      log('WARN', `⚠️ [${exchange}] Cannot auto-resume: API keys not configured`);
+      saveRegimeRunningFlag(exchange, false);
     }
+  }
 
-    // Start market data service for passive streaming
-    const regimeConfig = getRegimeConfig(exchange);
-    if (regimeConfig && Object.keys(regimeConfig).length > 0 && !regimeEngines.has(exchange)) {
-      log('INFO', `📊 [${exchange}] Starting market data service...`);
-      startMarketDataService(exchange)
-        .then(() => wireMarketDataCallbacks(exchange))
-        .catch((err) => {
-          log('WARN', `⚠️ [${exchange}] Failed to start market data service: ${err.message}`);
-        });
-    }
+  // Start market data service for passive streaming
+  const regimeConfig = getRegimeConfig(exchange);
+  if (regimeConfig && Object.keys(regimeConfig).length > 0 && !regimeEngines.has(exchange)) {
+    log('INFO', `📊 [${exchange}] Starting market data service...`);
+    startMarketDataService(exchange)
+      .then(() => wireMarketDataCallbacks(exchange))
+      .catch((err) => {
+        log('WARN', `⚠️ [${exchange}] Failed to start market data service: ${err.message}`);
+      });
   }
 };
 

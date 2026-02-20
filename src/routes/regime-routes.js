@@ -17,10 +17,11 @@ const errStatus = (result) => result.error?.includes('unavailable') ? 503 : 400;
 
 /**
  * @param {import('express').Express} app
- * @param {{coinbaseIPC: Object}} deps
+ * @param {{exchangeIPCMap: Object}} deps
  */
 module.exports = (app, deps) => {
-  const { coinbaseIPC } = deps;
+  const { exchangeIPCMap } = deps;
+  const getIPC = (exchange) => exchangeIPCMap[exchange] || exchangeIPCMap.coinbase;
 
   // ============ Config (file-based, stays in gateway) ============
 
@@ -59,7 +60,7 @@ module.exports = (app, deps) => {
     log('INFO', `🔧 [${exchange}] Regime config updated`);
 
     // Notify engine of config change (fire-and-forget)
-    coinbaseIPC.request('regime:update-config', updates, exchange).catch(() => {});
+    getIPC(exchange).request('regime:update-config', updates, exchange).catch(() => {});
 
     res.json({ success: true, exchange, config });
   });
@@ -68,35 +69,35 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/status', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:status', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:status', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/start', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:start', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:start', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/stop', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:stop', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:stop', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/pause', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:pause', { reason: req.body?.reason }, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:pause', { reason: req.body?.reason }, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/resume', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:resume', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:resume', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -110,35 +111,35 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: `Invalid regime. Must be one of: ${validRegimes.join(', ')}` });
     }
 
-    const result = await coinbaseIPC.request('regime:force-regime', { regime: regime.toUpperCase(), reason }, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:force-regime', { regime: regime.toUpperCase(), reason }, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/resume-drawdown', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:resume-drawdown', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:resume-drawdown', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.get('/api/:exchange/regime/preview-ladder', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:preview-ladder', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:preview-ladder', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/rebuild-ladder', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:rebuild-ladder', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:rebuild-ladder', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/cancel-ladder', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:cancel-ladder', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:cancel-ladder', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -148,7 +149,7 @@ module.exports = (app, deps) => {
     const { bodyId } = req.body || {};
     if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
 
-    const result = await coinbaseIPC.request('regime:rollup-body', { bodyId }, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:rollup-body', { bodyId }, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -157,7 +158,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/chart-data', async (req, res) => {
     const { exchange } = req.params;
-    const data = await coinbaseIPC.request('regime:chart-data', {}, exchange).catch(() =>
+    const data = await getIPC(exchange).request('regime:chart-data', {}, exchange).catch(() =>
       ({ priceHistory: [], atrHistory: [], regimeHistory: [], exchange, timestamp: Date.now() })
     );
     res.json({ success: true, exchange, data });
@@ -165,14 +166,14 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/fills', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:fills', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:fills', {}, exchange).catch(engineError);
     if (result.success === false) return res.status(errStatus(result)).json(result);
     res.json({ success: true, exchange, ...result });
   });
 
   app.get('/api/:exchange/regime/open-orders', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:open-orders', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:open-orders', {}, exchange).catch(engineError);
     if (result.success === false) return res.status(errStatus(result)).json(result);
     res.json({ success: true, exchange, ...result });
   });
@@ -180,7 +181,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/recalculate', async (req, res) => {
     const { exchange } = req.params;
     const { apply = false } = req.body;
-    const result = await coinbaseIPC.request('regime:recalculate', { apply }, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:recalculate', { apply }, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -188,7 +189,7 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/convert-dca', async (req, res) => {
     const { exchange } = req.params;
     const { preview = true, merge = false } = req.body;
-    const result = await coinbaseIPC.request('regime:convert-dca', { preview, merge }, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:convert-dca', { preview, merge }, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -198,28 +199,28 @@ module.exports = (app, deps) => {
   app.get('/api/:exchange/regime/dry-run/log', async (req, res) => {
     const { exchange } = req.params;
     const limit = parseInt(req.query.limit) || 100;
-    const result = await coinbaseIPC.request('regime:dry-run-log', { limit }, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:dry-run-log', { limit }, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.get('/api/:exchange/regime/dry-run/pnl', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:dry-run-pnl', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:dry-run-pnl', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/dry-run/reset', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:dry-run-reset', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:dry-run-reset', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.get('/api/:exchange/regime/dry-run/state', async (req, res) => {
     const { exchange } = req.params;
-    const result = await coinbaseIPC.request('regime:dry-run-state', {}, exchange).catch(engineError);
+    const result = await getIPC(exchange).request('regime:dry-run-state', {}, exchange).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });

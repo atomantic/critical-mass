@@ -38,7 +38,7 @@ class CoinbaseFairValueStrategy extends BaseStrategy {
     return {
       edgeThreshold: 0.15,        // 15% divergence required (was 25% - too restrictive for efficiently-priced markets)
       exitEdgeThreshold: 0.10,    // Exit when edge shrinks to 10%
-      minSecondsToSettlement: 30, // Trade closer to settlement (was 60s)
+      minSecondsToSettlement: 90, // Must be > forceExitSeconds (60s) to avoid enter-then-immediately-dump
       maxSecondsToSettlement: 300, // 5 min window to find edge before settlement
       forceExitSeconds: 60,       // Force exit at 60s before settlement to avoid binary risk
       stopLossPct: 0.30,          // 30% stop loss (was 15% - too tight)
