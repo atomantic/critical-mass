@@ -11,14 +11,15 @@
 - [x] **PM2 Log Viewer** (2026-02-20) — Live log streaming over Socket.IO, LogViewer component with tail/auto-scroll/fullscreen, logs tab on all exchanges + gateway
 - [x] **Swing Flipper Admin UI + Auto-Tune Persistence** (2026-02-20) — 15-param admin config for swing-flipper, auto-tune state persisted to config.json
 
-## In Progress
-
-- [ ] **Sigma Calibration** — Predicted/realized ratio averages 1.45x, overestimates bracket probabilities. CFV unusable until fixed.
+- [x] **Sigma Calibration Fix** (2026-02-20) — Lowered minSigma floor 0.40→0.18 based on 170 data points (realized vol ~0.16-0.20), default fallback 0.55→0.30, fixed settlement-sniper hardcoded floors
+- [x] **Entry Metadata Fix** (2026-02-20) — Added sigma/marketProb/ttl to CFV, gamma-scalper, momentum-rider, swing-flipper, settlement-sniper signal metadata for journal calibration
+- [x] **Auto-Tuner Wiring** (2026-02-20) — Connected autoTuner.check() to window-summary callback in engine loop; persists adjusted params to config.json and hot-reloads strategies
+- [x] **Health Aggregation Endpoint** (2026-02-20) — `GET /api/health` fans out to all engine IPC clients, returns per-engine status/uptime/memory. Extended kalshi:status IPC handler with engineRunning state
 
 ## Next Actions
 
-1. **Fix sigma calibration model** — Analyze calibration data from journal window summaries, adjust vol scaling to bring predicted/realized ratio closer to 1.0
-2. **Add `/api/health` endpoint** — Aggregate engine health across all PM2 processes, expose per-engine memory/uptime/connectivity status
+1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22
+2. **Re-evaluate CFV** — With calibrated sigma, CFV's probability model should be more accurate. Shadow-run for 24h then decide on re-enabling
 3. **Hedged BTC + prediction market insurance engine** — Design strategy combining spot BTC positions with Kalshi bracket hedging
 4. **Per-engine memory tuning** — Profile each PM2 process under load, set `max_memory_restart` appropriately in ecosystem.config.cjs
 

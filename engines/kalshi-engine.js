@@ -86,12 +86,14 @@ ipcServer.onRequest('config_update', async (payload) => {
 
 // Handle status queries from gateway
 ipcServer.onRequest('kalshi:status', async () => {
-  // Return basic status for gateway health aggregation
+  const engineRunning = kalshiLifecycle?.getEngineStatus?.()?.engineRunning ?? null;
   return {
     engine: ENGINE_NAME,
     kalshiEnabled: kalshiConfig.enabled,
     hedgeEnabled: hedgeConfig.enabled,
+    engineRunning,
     uptime: process.uptime(),
+    memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
   };
 });
 

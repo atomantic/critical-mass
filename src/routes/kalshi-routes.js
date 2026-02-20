@@ -816,8 +816,56 @@ module.exports = (app, sharedDeps) => {
       onLog: (logEntry) => {
         if (io) io.emit('kalshi:log', logEntry);
       },
-      onWindowSummary: (summary) => {
+      onWindowSummary: async (summary) => {
         if (io) io.emit('kalshi:window-summary', summary);
+
+        // Auto-tuner: check if parameters need adjustment after each window
+        if (!autoTunerModule) return;
+        const tuner = autoTunerModule.autoTuner;
+        if (!tuner.enabled) return;
+
+        const currentState = simulationEngine.state;
+        const sells = (currentState?.trades || []).filter(t => t.action === 'sell' || t.action === 'settlement');
+        if (sells.length < 10) return;
+
+        const totalPnl = sells.reduce((sum, t) => sum + (t.pnl || 0), 0);
+        const wins = sells.filter(t => (t.pnl || 0) > 0).length;
+        const byReason = {};
+        for (const t of sells) {
+          const reason = t.action === 'settlement'
+            ? (t.pnl > 0 ? 'Settlement (win)' : 'Settlement (loss)')
+            : (t.reason?.split(':')[0]?.trim() || 'unknown');
+          if (!byReason[reason]) byReason[reason] = { count: 0, pnl: 0 };
+          byReason[reason].count++;
+          byReason[reason].pnl += t.pnl || 0;
+        }
+
+        const analytics = {
+          summary: {
+            totalTrades: sells.length,
+            totalPnl,
+            winRate: (wins / sells.length) * 100,
+            avgPnl: totalPnl / sells.length,
+          },
+          byReason,
+        };
+
+        const currentConfig = await readJson('config.json');
+        const strategies = currentConfig.strategies || {};
+
+        const result = await tuner.check(analytics, strategies, async (updatedStrategies) => {
+          currentConfig.strategies = updatedStrategies;
+          await writeJson('config.json', currentConfig);
+          for (const [name, strat] of Object.entries(updatedStrategies)) {
+            simulationEngine.updateStrategy(name, strat);
+          }
+          log('INFO', `[${ts()}] 🤖 Auto-tuner applied adjustments`);
+          if (io) io.emit('kalshi:auto-tune', { adjusted: true, timestamp: Date.now() });
+        });
+
+        if (result) {
+          log('INFO', `[${ts()}] 🤖 Auto-tune: ${result.suggestion.message} → ${result.suggestion.recommendation}`);
+        }
       },
     });
 
@@ -1292,6 +1340,9 @@ module.exports = (app, sharedDeps) => {
       log('INFO', `[${ts()}] 🔄 Auto-starting Kalshi engine (was running before server restart)...`);
       await startEngine();
     },
+    getEngineStatus: () => ({
+      engineRunning: simulationEngine?.state?.engineRunning ?? false,
+    }),
     shutdown: () => {
       // Preserve engineRunning=true so the engine auto-starts after pm2 restart.
       if (simulationEngine) {
