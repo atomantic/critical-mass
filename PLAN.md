@@ -157,6 +157,16 @@ Based on 4 days of live + shadow trading data:
 - **Bumped Sniper sizing** (kellyFraction 0.12→0.15, maxBetPct 0.03→0.04) — 75% win rate, +$105 P&L
 - **Fixed CFV enter-then-dump bug**: minSecondsToSettlement was 30s but forceExitSeconds was 60s, causing immediate forced exits on new positions. Set minSecondsToSettlement to 90s.
 
+## PM2 Log Viewer (2026-02-20)
+
+- Added live PM2 log streaming over Socket.IO (server.js: `logs:subscribe`, `logs:unsubscribe`, `logs:flush`)
+- Created `useLogStream` hook — subscribes to log events, 2000-line circular buffer, clear/flush controls
+- Created `LogViewer` component — tail-lines dropdown, auto-scroll, stderr in red, fullscreen mode, flush with toast feedback
+- Added "Logs" tab to all exchange pages (`/:exchange/:pair/logs`)
+- Added "Logs" tab to Kalshi and Hedge sub-navs
+- Added "Gateway" link in header nav → `/gateway/logs` for the gateway process logs
+- Process allowlist: `critical-mass`, `critical-mass-coinbase`, `critical-mass-gemini`, `critical-mass-cryptocom`, `critical-mass-kalshi`
+
 ## Next Steps
 
 1. Fix sigma calibration (predicted/realized ratio averages 1.45x — overestimates bracket probabilities)

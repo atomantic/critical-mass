@@ -26,6 +26,7 @@ const KalshiStrategiesConfig = lazy(() => import('./components/kalshi/Strategies
 const KalshiMarketDetail = lazy(() => import('./components/kalshi/MarketDetail'))
 const KalshiPositions = lazy(() => import('./components/kalshi/Positions'))
 const AIProviders = lazy(() => import('./components/ai/Providers'))
+const LogViewer = lazy(() => import('./components/LogViewer'))
 const HedgeDashboard = lazy(() => import('./components/hedge/Dashboard'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
@@ -76,6 +77,7 @@ const getTabsForStrategy = (strategy) => {
     { name: 'Charts', path: '/charts' },
     { name: 'Config', path: '/config' },
     { name: 'API Keys', path: '/keys' },
+    { name: 'Logs', path: '/logs' },
   ]
 
   if (strategy === 'regime') {
@@ -164,7 +166,7 @@ function AppContent() {
         setCurrentExchange(targetExchange)
         setCurrentStrategy(targetStrategy)
         // Don't redirect away from non-exchange pages (overview, kalshi, notifications, etc.)
-        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/notifications', '/backups', '/systems', '/ai']
+        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/gateway', '/notifications', '/backups', '/systems', '/ai']
         const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
         if (!isNonExchangePage) {
           navigate(`/${targetExchange}/${targetPair}`, { replace: true })
@@ -325,6 +327,9 @@ function AppContent() {
   // Check if on Hedge pages
   const isHedge = location.pathname.startsWith('/hedge')
 
+  // Check if on Gateway logs page
+  const isGateway = location.pathname.startsWith('/gateway')
+
   // Build full path with exchange and pair prefix
   const buildPath = (tabPath) => `/${currentExchange}/${currentPair}${tabPath}`
 
@@ -429,6 +434,12 @@ function AppContent() {
                 >
                   AI
                 </Link>
+                <Link
+                  to="/gateway/logs"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Gateway
+                </Link>
               </div>
             </div>
 
@@ -484,13 +495,20 @@ function AppContent() {
                 >
                   AI Providers
                 </Link>
+                <Link
+                  to="/gateway/logs"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Gateway
+                </Link>
               </div>
             )}
           </div>
         </header>
 
         {/* Exchange sub-nav (hidden on overview, Kalshi, and AI pages) */}
-        {!isOverview && !isKalshi && !isAI && !isHedge && (
+        {!isOverview && !isKalshi && !isAI && !isHedge && !isGateway && (
           <nav className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
@@ -606,6 +624,16 @@ function AppContent() {
                 >
                   Config
                 </Link>
+                <Link
+                  to="/kalshi/logs"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname === '/kalshi/logs'
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Logs
+                </Link>
               </div>
             </div>
           </nav>
@@ -626,6 +654,16 @@ function AppContent() {
                 >
                   Dashboard
                 </Link>
+                <Link
+                  to="/hedge/logs"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname === '/hedge/logs'
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Logs
+                </Link>
               </div>
             </div>
           </nav>
@@ -639,7 +677,7 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge ? (
+          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge && !isGateway ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
             </div>
@@ -680,6 +718,9 @@ function AppContent() {
               {/* API Keys - in sub-nav tabs */}
               <Route path="/:exchange/:pair/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
 
+              {/* PM2 Logs - per exchange engine */}
+              <Route path="/:exchange/:pair/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName={`critical-mass-${currentExchange}`} /></Suspense>} />
+
               {/* Notifications - global (not exchange-specific) */}
               <Route path="/notifications" element={<NotificationsConfig />} />
 
@@ -701,11 +742,18 @@ function AppContent() {
                 <Route path="strategies" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiStrategiesConfig /></Suspense>} />
               </Route>
 
+              {/* Kalshi logs */}
+              <Route path="/kalshi/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass-kalshi" /></Suspense>} />
+
               {/* AI Provider management */}
               <Route path="/ai" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><AIProviders /></Suspense>} />
 
-              {/* Hedge engine dashboard */}
+              {/* Hedge engine dashboard + logs */}
               <Route path="/hedge" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><HedgeDashboard /></Suspense>} />
+              <Route path="/hedge/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass-kalshi" /></Suspense>} />
+
+              {/* Gateway logs */}
+              <Route path="/gateway/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass" /></Suspense>} />
 
               {/* Legacy route - redirect /:exchange (without pair) to /:exchange/:pair */}
               <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />
