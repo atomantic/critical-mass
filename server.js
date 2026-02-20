@@ -180,6 +180,64 @@ require('./src/routes/keys-routes')(app, sharedDeps);
 require('./src/routes/backtest-routes')(app, sharedDeps);
 require('./src/routes/legacy-routes')(app, sharedDeps);
 
+// ============ Health Aggregation ============
+
+app.get('/api/health', async (req, res) => {
+  const timeout = 3000;
+  const engines = {};
+  let overallStatus = 'ok';
+
+  // Fan out IPC health checks to all exchange engines
+  const exchangeChecks = Object.entries(exchangeIPCMap).map(async ([name, ipc]) => {
+    if (!ipc.isConnected()) {
+      engines[name] = { status: 'unreachable', connected: false };
+      overallStatus = 'degraded';
+      return;
+    }
+    const status = await ipc.request('regime:status', {}, timeout).catch(() => null);
+    engines[name] = {
+      status: status?.health?.mode?.toLowerCase() || (status ? 'ok' : 'timeout'),
+      connected: true,
+      isRunning: status?.isRunning ?? false,
+      mode: status?.health?.mode ?? null,
+      uptime: status?.uptime ?? null,
+    };
+    if (engines[name].status === 'timeout') overallStatus = 'degraded';
+  });
+
+  // Kalshi engine via IPC
+  const kalshiCheck = (async () => {
+    if (!kalshiIPC.isConnected()) {
+      engines.kalshi = { status: 'unreachable', connected: false };
+      overallStatus = 'degraded';
+      return;
+    }
+    const status = await kalshiIPC.request('kalshi:status', {}, timeout).catch(() => null);
+    engines.kalshi = {
+      status: status ? 'ok' : 'timeout',
+      connected: true,
+      kalshiEnabled: status?.kalshiEnabled ?? false,
+      hedgeEnabled: status?.hedgeEnabled ?? false,
+      engineRunning: status?.engineRunning ?? null,
+      uptime: status?.uptime ?? null,
+    };
+    if (!status) overallStatus = 'degraded';
+  })();
+
+  await Promise.all([...exchangeChecks, kalshiCheck]);
+
+  // If any engine is unreachable and all are down, it's critical
+  const allDown = Object.values(engines).every(e => e.status === 'unreachable' || e.status === 'timeout');
+  if (allDown) overallStatus = 'critical';
+
+  res.json({
+    status: overallStatus,
+    gateway: { uptime: process.uptime(), pid: process.pid },
+    engines,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // ============ Static Files ============
 
 // Catch-all for unhandled API routes — return JSON 404 instead of falling through to HTML

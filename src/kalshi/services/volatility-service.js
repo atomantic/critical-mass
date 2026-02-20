@@ -131,10 +131,10 @@ const calculateFairProbability = (spot, strike, secondsToSettlement, sigma, brac
  * @param {Object} [options.bracketData] - Bracket analytics data for the ticker
  * @param {Array<{price: number, timestamp: number}>} [options.priceHistory] - Coinbase/composite price history
  * @param {number} [options.volatilityWindow=300] - Rolling vol window in seconds
- * @param {number} [options.minSigma=0.40] - Floor for sigma
+ * @param {number} [options.minSigma=0.18] - Floor for sigma (calibrated from 170 data points: realized vol typically 0.16-0.20 annualized)
  * @returns {{ sigma: number, source: 'implied' | 'rolling' | 'default', dataPoints: number }}
  */
-const getSigma = ({ bracketData, priceHistory, volatilityWindow = 300, minSigma = 0.40 } = {}) => {
+const getSigma = ({ bracketData, priceHistory, volatilityWindow = 300, minSigma = 0.18 } = {}) => {
   // 1a. Skew-adjusted sigma for this specific bracket (most accurate for OTM)
   if (bracketData?.skewSigma && bracketData?.skewParams?.reliable) {
     return {
@@ -165,8 +165,8 @@ const getSigma = ({ bracketData, priceHistory, volatilityWindow = 300, minSigma 
     }
   }
 
-  // 3. Default fallback (0.55 better calibrated than old 0.70)
-  return { sigma: 0.55, source: 'default', dataPoints: 0 }
+  // 3. Default fallback (0.30 — calibrated from 170 data points showing 0.55 was ~2.5x too high)
+  return { sigma: 0.30, source: 'default', dataPoints: 0 }
 }
 
 /**

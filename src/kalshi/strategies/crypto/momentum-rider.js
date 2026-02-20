@@ -333,7 +333,8 @@ class MomentumRiderStrategy extends BaseStrategy {
           entryPrice,
           trendTicks: trend.trendTicks,
           spotDeltaPct: spotMomentum.spotDeltaPct,
-          secondsToSettlement
+          secondsToSettlement,
+          ttl: Math.round(secondsToSettlement)
         }
       })
       this.diagnostics.push(diag)

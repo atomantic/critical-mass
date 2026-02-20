@@ -1944,7 +1944,7 @@ class SimulationEngine {
       const compositeHistory = this.compositePriceHistory.get('BTC-USD') || this.coinbasePriceHistory.get('BTC-USD')
       if (compositeHistory?.length >= 2) {
         // Predicted sigma: what the model was using (without bracket analytics since they're computed per-eval)
-        const predicted = getSigma({ priceHistory: compositeHistory, volatilityWindow: 300, minSigma: 0.40 })
+        const predicted = getSigma({ priceHistory: compositeHistory, volatilityWindow: 300 })
 
         // Realized sigma: actual BTC movement in the last 300s (same window the model uses)
         const realized = calculateRollingVolatility(compositeHistory, 300)

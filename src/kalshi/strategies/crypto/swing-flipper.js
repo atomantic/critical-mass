@@ -280,6 +280,7 @@ class SwingFlipperStrategy extends BaseStrategy {
           spotPrice,
           strikePrice,
           secondsToSettlement,
+          ttl: Math.round(secondsToSettlement),
           oscillationRange: oscillation.range,
           recentPeak: oscillation.recentPeak,
           pullback,

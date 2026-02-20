@@ -248,10 +248,13 @@ class CoinbaseFairValueStrategy extends BaseStrategy {
           metadata: {
             strategy: this.name,
             fairProb,
+            marketProb: kalshiProb,
             kalshiProb,
             spotPrice,
             strikePrice,
             edge,
+            sigma,
+            ttl: Math.round(secondsToSettlement),
             compositePrice: context.compositePrices?.get(coinbaseTicker)?.price ?? null,
             exchangeCount: context.compositePrices?.get(coinbaseTicker)?.exchangeCount ?? null,
             bookImbalance: bookMetrics?.imbalance ?? null

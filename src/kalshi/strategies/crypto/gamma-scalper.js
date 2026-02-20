@@ -253,7 +253,10 @@ class GammaScalperStrategy extends BaseStrategy {
         metadata: {
           strategy: this.name,
           fairProb,
+          marketProb: entryPrice / 100,
           edge,
+          sigma,
+          ttl: Math.round(secondsToSettlement),
           entryPrice,
           spotPrice,
           strikePrice,

@@ -60,7 +60,7 @@ class SettlementSniperStrategy extends BaseStrategy {
       stopLossEdge: 0.08,
       settlementRideThreshold: 0.40,
       settlementRideMaxSeconds: 180,
-      minSigma: 0.40
+      minSigma: 0.18
     }
   }
 
@@ -130,9 +130,8 @@ class SettlementSniperStrategy extends BaseStrategy {
     const vol = calculateRollingVolatility(history, params.volatilityWindow)
     if (!vol) return null
 
-    // Apply volatility floor — BTC intraday vol is never below ~40% annualized;
-    // low estimates create false signals with extreme probabilities
-    vol.sigma = Math.max(vol.sigma, params.minSigma || 0.40)
+    // Apply volatility floor — calibrated from 170 data points (realized ~0.16-0.20 annualized)
+    vol.sigma = Math.max(vol.sigma, params.minSigma || 0.18)
 
     this.volCache.set(coinbaseTicker, { ...vol, updatedAt: now })
     return vol
@@ -190,7 +189,7 @@ class SettlementSniperStrategy extends BaseStrategy {
       const bracketData = context.bracketAnalytics?.byTicker?.get(ticker)
       if (vol && bracketData?.impliedVol?.reliable) {
         vol = {
-          sigma: Math.max(bracketData.impliedVol.sigma, params.minSigma || 0.40),
+          sigma: Math.max(bracketData.impliedVol.sigma, params.minSigma || 0.18),
           dataPoints: vol.dataPoints,
           source: 'implied'
         }
@@ -465,6 +464,7 @@ class SettlementSniperStrategy extends BaseStrategy {
           marketProb,
           edge,
           sigma: vol.sigma,
+          ttl: Math.round(secondsToSettlement),
           momentumConfirm,
           secondsToSettlement,
           bookImbalance: bookMetrics?.imbalance ?? null,
