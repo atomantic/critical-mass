@@ -92,6 +92,30 @@ const STRATEGY_INFO = {
       { key: 'maxContracts', label: 'Max Contracts', type: 'number', default: 50, hint: 'Hard cap on contracts per trade' },
       { key: 'maxPositions', label: 'Max Positions', type: 'number', default: 2, hint: 'Max concurrent OTM positions' }
     ]
+  },
+  'swing-flipper': {
+    name: 'Swing Flipper',
+    description: 'Rides intra-window oscillation on ATM brackets (25-65c). Buys pullbacks below recent peak, sells recoveries for 8c flips. Never holds to settlement.',
+    type: 'crypto',
+    icon: RefreshCw,
+    recommended: false,
+    params: [
+      { key: 'minContractPrice', label: 'Min Contract Price (c)', type: 'number', default: 25, hint: 'Only target ATM brackets at or above this price' },
+      { key: 'maxContractPrice', label: 'Max Contract Price (c)', type: 'number', default: 65, hint: 'Only target ATM brackets at or below this price' },
+      { key: 'minOscillationRange', label: 'Min Oscillation Range (c)', type: 'number', default: 10, hint: 'Contract must show this range in recent snapshots' },
+      { key: 'oscillationLookback', label: 'Oscillation Lookback', type: 'number', default: 15, hint: 'Number of recent snapshots to check for oscillation' },
+      { key: 'pullbackEntry', label: 'Pullback Entry (c)', type: 'number', default: 8, hint: 'Buy when price is this many cents below recent peak' },
+      { key: 'takeProfitCents', label: 'Take Profit (c)', type: 'number', default: 8, hint: 'Exit at entry + this (do not exceed 10c)' },
+      { key: 'stopLossCents', label: 'Stop Loss (c)', type: 'number', default: 6, hint: 'Max loss per contract in cents (must cut fast)' },
+      { key: 'minSecondsToSettlement', label: 'Time Exit (sec)', type: 'number', default: 90, hint: 'Force exit when this close to settlement' },
+      { key: 'maxSecondsToSettlement', label: 'Max Sec to Settlement', type: 'number', default: 540, hint: 'Don\'t enter more than 9 min out' },
+      { key: 'collapseRangeThreshold', label: 'Collapse Threshold (c)', type: 'number', default: 6, hint: 'Exit if oscillation range collapses below this' },
+      { key: 'collapseLookback', label: 'Collapse Lookback', type: 'number', default: 8, hint: 'Recent snapshots to check for oscillation collapse' },
+      { key: 'minSpotNearBracket', label: 'Min Spot Near Bracket (%)', type: 'number', default: 0.5, step: 0.1, hint: 'Spot must be within this % of bracket boundary' },
+      { key: 'maxBetPct', label: 'Max Bet % of Bankroll', type: 'number', default: 0.01, step: 0.01, hint: 'Conservative 1% max (initial live sizing)' },
+      { key: 'maxContracts', label: 'Max Contracts', type: 'number', default: 15, hint: 'Hard cap on contracts per trade' },
+      { key: 'maxPositions', label: 'Max Positions', type: 'number', default: 1, hint: 'Max concurrent positions (keep at 1 for now)' }
+    ]
   }
 }
 
