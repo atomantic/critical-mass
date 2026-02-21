@@ -264,7 +264,7 @@ const generateDecisionReport = (state, dryRunTracker) => {
  * @returns {string} File path
  */
 const saveDecisionReport = (report) => {
-  if (!fs.existsSync(REPORT_DIR)) fs.mkdirSync(REPORT_DIR, { recursive: true })
+  fs.mkdirSync(REPORT_DIR, { recursive: true })
 
   const filename = `decision-report-${new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-')}.json`
   const filepath = path.join(REPORT_DIR, filename)

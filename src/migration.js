@@ -207,9 +207,7 @@ const runMigrationIfNeeded = () => {
  */
 const getExchangeDataDir = (exchange) => {
   const dir = path.join(DATA_DIR, exchange);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  fs.mkdirSync(dir, { recursive: true });
   return dir;
 };
 

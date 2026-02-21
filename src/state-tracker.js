@@ -181,11 +181,7 @@ const loadState = (config = null, exchange = 'coinbase') => {
 const saveState = (state, exchange = 'coinbase') => {
   const stateFile = getStateFile(exchange);
   const dir = path.dirname(stateFile);
-
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
+  fs.mkdirSync(dir, { recursive: true });
   atomicWriteSync(stateFile, JSON.stringify(state, null, 2));
 };
 
@@ -736,9 +732,7 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   const stateFile = getRegimeStateFile(exchange);
   const dir = path.dirname(stateFile);
 
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  fs.mkdirSync(dir, { recursive: true });
 
   // Optimistic version locking: detect external edits
   const myVersion = saveVersions.get(stateFile) || 0;

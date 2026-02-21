@@ -62,7 +62,7 @@ const createChartDataBuffer = (exchange) => {
     if (!dirty) return;
     const filePath = getFilePath(exchange);
     const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true });
     const data = {
       priceHistory: trimOldData(priceHistory),
       atrHistory: trimOldData(atrHistory),
