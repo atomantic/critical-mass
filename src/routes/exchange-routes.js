@@ -57,6 +57,12 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
+
+    // regime is a nested object — pass through without schema validation
+    if (req.body?.regime && typeof req.body.regime === 'object') {
+      updates.regime = req.body.regime;
+    }
+
     const config = updateExchangeConfig(exchange, updates);
 
     if (updates.regime) {

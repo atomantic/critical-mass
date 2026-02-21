@@ -36,6 +36,11 @@ export const useSocketPrice = (config) => {
   const pricesRef = useRef(new Map())
   const subscribedRef = useRef(new Set())
   const throttleRef = useRef(null)
+  const initialTickersRef = useRef(initialTickers)
+  initialTickersRef.current = initialTickers
+
+  // Stable key for dependency tracking — avoids reconnect on new array identity
+  const tickersKey = initialTickers.join(',')
 
   useEffect(() => {
     if (!autoConnect) return
@@ -50,7 +55,7 @@ export const useSocketPrice = (config) => {
       setConnected(true)
       const tickersToSubscribe = subscribedRef.current.size > 0
         ? Array.from(subscribedRef.current)
-        : initialTickers
+        : initialTickersRef.current
 
       if (tickersToSubscribe.length > 0) {
         tickersToSubscribe.forEach(t => subscribedRef.current.add(t))
@@ -79,7 +84,8 @@ export const useSocketPrice = (config) => {
       if (throttleRef.current) clearTimeout(throttleRef.current)
       socket.disconnect()
     }
-  }, [autoConnect, subscribeEvent, unsubscribeEvent, priceEvent, throttleMs, initialTickers])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoConnect, subscribeEvent, unsubscribeEvent, priceEvent, throttleMs, tickersKey])
 
   const subscribe = useCallback((tickers) => {
     const tickerList = Array.isArray(tickers) ? tickers : [tickers]
