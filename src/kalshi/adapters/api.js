@@ -1,7 +1,5 @@
 const { createAuthHeaders, getBaseUrl } = require('./auth')
-
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
 
 /**
  * @typedef {import('../types/kalshi').KalshiKeys} KalshiKeys

@@ -12,8 +12,9 @@ const { getHedgeConfig, updateHedgeConfig } = require('../config-utils')
 const { createHedgeEngine } = require('../hedge/hedge-engine')
 const { loadState } = require('../hedge/hedge-state')
 const { createDryRunTracker, generateDecisionReport, saveDecisionReport } = require('../hedge/hedge-dry-run')
+const { prefixedTs } = require('../time-utils')
 
-const ts = () => `[HEDGE] ${new Date().toISOString().slice(11, 23)}`
+const ts = () => prefixedTs('HEDGE')
 
 /**
  * Async error wrapper
