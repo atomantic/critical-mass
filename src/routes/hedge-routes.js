@@ -13,20 +13,10 @@ const { createHedgeEngine } = require('../hedge/hedge-engine')
 const { loadState } = require('../hedge/hedge-state')
 const { createDryRunTracker, generateDecisionReport, saveDecisionReport } = require('../hedge/hedge-dry-run')
 const { prefixedTs } = require('../time-utils')
+const { createAsyncHandler } = require('./async-handler')
 
 const ts = () => prefixedTs('HEDGE')
-
-/**
- * Async error wrapper
- * @param {Function} fn
- * @returns {Function}
- */
-const asyncHandler = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch((err) => {
-    const message = err?.message || 'Unknown error'
-    log('ERROR', `[${ts()}] ❌ hedge ${req.method} ${req.path} failed: ${message}`)
-    res.status(err?.status || 500).json({ error: message })
-  })
+const asyncHandler = createAsyncHandler('hedge', ts)
 
 /**
  * @param {import('express').Application} app

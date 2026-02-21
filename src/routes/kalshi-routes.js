@@ -14,8 +14,10 @@ const path = require('path');
 const { log } = require('../logger');
 const { KALSHI_DATA_DIR } = require('../paths');
 const { ts } = require('../time-utils');
+const { createAsyncHandler } = require('./async-handler');
 
 const DATA_DIR = KALSHI_DATA_DIR;
+const asyncHandler = createAsyncHandler('kalshi', ts);
 
 // Lazy-loaded service references (initialized on first engine start)
 let kalshiAdapters = null;
@@ -59,35 +61,6 @@ const msUntilNextSettlement = (offsetMs = 2000) => {
   if (nextBoundaryMin >= 60) next.setHours(next.getHours() + 1);
   return Math.max(0, next.getTime() + offsetMs - now);
 };
-
-/**
- * Extract error message from various error types
- * @param {unknown} err
- * @returns {string}
- */
-const getErrorMessage = (err) => {
-  if (typeof err === 'string') return err;
-  if (err instanceof Error) return err.message;
-  if (err && typeof err === 'object') {
-    if ('message' in err) return String(err.message);
-    if ('error' in err) return String(err.error);
-    return JSON.stringify(err);
-  }
-  return 'Unknown error';
-};
-
-/**
- * Async error wrapper
- * @param {Function} fn
- * @returns {Function}
- */
-const asyncHandler = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch((err) => {
-    const message = getErrorMessage(err);
-    const status = err?.status || 500;
-    log('ERROR', `[${ts()}] ❌ kalshi ${req.method} ${req.path} failed: ${message}`);
-    res.status(status).json({ error: message });
-  });
 
 /**
  * Read and parse JSON file from data/kalshi directory
