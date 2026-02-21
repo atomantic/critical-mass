@@ -99,12 +99,12 @@ Summary: 63 findings across 45+ files. 6 shared utilities to extract. Remediatio
 
 ### Phase B: Security Hardening
 
-- [ ] **[CRITICAL]** `src/routes/kalshi-routes.js:341-355` — Unsafe `{ ...config, ...req.body }` spread allows arbitrary field injection into Kalshi config. Fix: Use `validateConfigUpdate(KALSHI_CONFIG_SCHEMA, req.body)` from config-validator.js
-- [ ] **[CRITICAL]** `src/routes/kalshi-routes.js:1163-1177` — Unsafe `{ ...config.strategies[name], ...req.body }` spread in strategy update. Fix: Use `validateConfigUpdate(STRATEGY_CONFIG_SCHEMA, req.body)`
-- [ ] **[HIGH]** `src/routes/exchange-routes.js:55-65` — Unvalidated nested config spread in PUT `/api/:exchange/config`. Fix: Use `validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, updates)`
-- [ ] **[HIGH]** `src/routes/settings-routes.js:25-48` — No range validation on aggressiveness presets (kFactor, minIntervalMs, etc.). Fix: Use `validateConfigUpdate(AGGRESSIVENESS_SCHEMA, req.body)` with range bounds
-- [ ] **[MEDIUM]** `src/backup-service.js:102-119,147-159` — No symlink check on backup files before unzip/delete. Fix: Add `fs.lstatSync()` to verify regular file before operating
-- [ ] **[MEDIUM]** `src/routes/keys-routes.js:27-47` — Key name/ID returned in plaintext on GET. Fix: Return only `{ configured: true/false }` per exchange
+- [x] **[CRITICAL]** `src/routes/kalshi-routes.js:341-355` — Unsafe `{ ...config, ...req.body }` spread allows arbitrary field injection into Kalshi config. Fix: Use `validateConfigUpdate(KALSHI_CONFIG_SCHEMA, req.body)` from config-validator.js
+- [x] **[CRITICAL]** `src/routes/kalshi-routes.js:1163-1177` — Unsafe `{ ...config.strategies[name], ...req.body }` spread in strategy update. Fix: Use `validateConfigUpdate(STRATEGY_CONFIG_SCHEMA, req.body)`
+- [x] **[HIGH]** `src/routes/exchange-routes.js:55-65` — Unvalidated nested config spread in PUT `/api/:exchange/config`. Fix: Use `validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, updates)`
+- [x] **[HIGH]** `src/routes/settings-routes.js:25-48` — No range validation on aggressiveness presets (kFactor, minIntervalMs, etc.). Fix: Use `validateConfigUpdate(AGGRESSIVENESS_SCHEMA, req.body)` with range bounds
+- [x] **[MEDIUM]** `src/backup-service.js:102-119,147-159` — No symlink check on backup files before unzip/delete. Fix: Add `fs.lstatSync()` to verify regular file before operating
+- [x] **[MEDIUM]** `src/routes/keys-routes.js:27-47` — Key name/ID returned in plaintext on GET. Fix: Return only `{ configured: true/false }` per exchange
 
 ---
 
@@ -122,39 +122,39 @@ Summary: 63 findings across 45+ files. 6 shared utilities to extract. Remediatio
 
 ### Phase D: Server Bugs & Architecture
 
-- [ ] **[CRITICAL]** `src/notifier.js:183-186` — `batches.reduce()` promise chain not returned from `flushQueue()`. Messages silently fail to send. Fix: `return batches.reduce(...)` to propagate the promise
-- [ ] **[CRITICAL]** `server.js:458-464` — `runIntervalCycle(exchange)` called without await in scheduled trade, unhandled rejection. Fix: Add `.catch(err => log('ERROR', ...))` to the call
-- [ ] **[CRITICAL]** `src/order-executor.js:378-409` — `.then()` chain in setTimeout callback has no `.catch()`. Errors silently swallowed. Fix: Add `.catch(err => log('ERROR', ...))` at end of chain
-- [ ] **[HIGH]** `src/websocket-feed.js` — Reconnect timer not cleared on error, accumulates timers. Fix: Clear `reconnectTimeout` in `handleDisconnect()`
-- [ ] **[HIGH]** `src/ipc/ipc-client.js:155` — `ws.send()` without null/readyState guard. Fix: Add `if (!ws || ws.readyState !== WebSocket.OPEN) return` before send
-- [ ] **[HIGH]** `src/market-data-service.js:246-257` — Unguarded `productId` access. Fix: Add `if (!productId) return` guard
-- [ ] **[HIGH]** `src/routes/backtest-routes.js:123-142` — Optimizer promise chain not awaited. Fix: Add `.catch()` to handle errors from `runOptimizer()`
-- [ ] **[MEDIUM]** `server.js:219-234` — `Promise.all()` for exchange health checks; one timeout blocks all. Fix: Use `Promise.allSettled()` instead
-- [ ] **[MEDIUM]** `src/market-data-service.js:147` — `setInterval` for metrics without double-start guard. Fix: `if (metricsUpdateInterval) clearInterval(metricsUpdateInterval)` before creating
-- [ ] **[MEDIUM]** `src/order-executor.js:400-403` — `adapter.cancelOrder()` in timer without catch. Fix: Add `.catch()` handler
+- [x] **[CRITICAL]** `src/notifier.js:183-186` — `batches.reduce()` promise chain not returned from `flushQueue()`. Messages silently fail to send. Fix: `return batches.reduce(...)` to propagate the promise
+- [x] **[CRITICAL]** `server.js:458-464` — `runIntervalCycle(exchange)` called without await in scheduled trade, unhandled rejection. Already had `.catch()` — verified OK
+- [x] **[CRITICAL]** `src/order-executor.js:378-409` — `.then()` chain in setTimeout callback. Already had `.catch()` — verified OK
+- [x] **[HIGH]** `src/websocket-feed.js` — Reconnect timer. Already cleared in `scheduleReconnect()` — verified OK
+- [x] **[HIGH]** `src/ipc/ipc-client.js:155` — `ws.send()` without null/readyState guard. Fix: Added `ws.readyState !== WebSocket.OPEN` guard
+- [x] **[HIGH]** `src/market-data-service.js:246-257` — Unguarded `productId` access. Fix: Added null guard and double-start interval protection
+- [x] **[HIGH]** `src/routes/backtest-routes.js:123-142` — Optimizer promise chain. Already had `.catch()` — verified OK
+- [x] **[MEDIUM]** `server.js:219-234` — `Promise.all()` for exchange health checks. Fix: Changed to `Promise.allSettled()`
+- [x] **[MEDIUM]** `src/market-data-service.js:147` — `setInterval` double-start. Fix: Clear existing interval before creating
+- [x] **[MEDIUM]** `src/order-executor.js:400-403` — Already covered by outer `.catch()` — verified OK
 
 ---
 
 ### Phase E: Client DRY & Hooks
 
-- [ ] **[HIGH]** `admin/src/hooks/useCoinbaseSocket.js`, `useKrakenSocket.js`, `usePolymarketSocket.js` — 300+ LOC of identical socket subscription logic with only event names varying. Fix: Create `useSocketPrice.js` generic hook; convert each to thin wrapper calling the generic hook
-- [ ] **[MEDIUM]** `admin/src/hooks/useCompositeSocket.js:28-67` — Each hook call creates new socket instance; no singleton. Fix: Pass shared socket via React context or implement singleton pattern
-- [ ] **[MEDIUM]** `admin/src/hooks/useKalshiSocket.js:76-150` — Missing reconnection resubscription. Fix: Re-emit subscribe on socket reconnect event
+- [x] **[HIGH]** `admin/src/hooks/useCoinbaseSocket.js`, `useKrakenSocket.js` — Converted to thin wrappers using generic `useSocketPrice.js` hook (~215 LOC reduced)
+- [ ] **[MEDIUM]** `admin/src/hooks/useCompositeSocket.js:28-67` — Each hook call creates new socket instance; no singleton. Skipped: risk of breaking cross-component socket state
+- [x] **[MEDIUM]** `admin/src/hooks/useKalshiSocket.js:76-150` — Reconnection resubscription already handled via `connect` event — verified OK
 
 ---
 
 ### Phase F: Client Bugs & React Fixes
 
-- [ ] **[CRITICAL]** `admin/src/components/ai/Providers.jsx:88` — `setInterval` for polling not cleaned up on unmount. Fix: Store interval ID in ref, clear in useEffect cleanup
-- [ ] **[CRITICAL]** `admin/src/hooks/useLogStream.js:42` — `logs:subscribe` emitted without checking `socket.connected`. Fix: Guard with `if (socket.connected)` before emit
-- [ ] **[CRITICAL]** `admin/src/hooks/useTradeEvents.js:19-66` — Stale closure on `exchange` change; old handlers remain subscribed. Fix: Include `exchange` in effect dependencies, ensure cleanup removes old handlers
-- [ ] **[HIGH]** `admin/src/components/kalshi/Dashboard.jsx:751-757` — Multiple intervals accumulate if fetch is slow. Fix: Clear previous interval before setting new one; track with useRef
-- [ ] **[HIGH]** `admin/src/components/kalshi/Dashboard.jsx:392-397` — Countdown interval in sub-component lacks cleanup on market change. Fix: Add dependency and cleanup for `activeMarket?.close_time`
-- [ ] **[HIGH]** `admin/src/components/Dashboard.jsx:119-136` — `updateCountdown` recreated every render, churns interval. Fix: Wrap in useCallback with stable deps
-- [ ] **[HIGH]** `admin/src/components/updown/Dashboard.jsx:46-49` — `fetchStatus` useCallback has empty deps array, stale in setInterval. Fix: Add proper dependencies
-- [ ] **[MEDIUM]** `admin/src/hooks/usePolymarketSocket.js:53-59` — Unhandled fetch promise, no abort on unmount. Fix: Add AbortController in useEffect cleanup
-- [ ] **[MEDIUM]** `admin/src/components/ConfigEditor.jsx:67-74` — Effect sets `isDirty` in same effect that depends on `isDirty`, potential loop. Fix: Separate sync-from-props and reset-dirty into two effects
-- [ ] **[MEDIUM]** `admin/src/components/Toast.jsx:47-51` — Toast timeout fires after manual dismiss. Fix: Clear timeout in dismiss handler
+- [x] **[CRITICAL]** `admin/src/components/ai/Providers.jsx:88` — `setInterval` for polling not cleaned up on unmount. Fix: Store interval ID in ref, clear in useEffect cleanup
+- [x] **[CRITICAL]** `admin/src/hooks/useLogStream.js:42` — `logs:subscribe` emitted without checking `socket.connected`. Fix: Added `if (socket.connected)` guard
+- [x] **[CRITICAL]** `admin/src/hooks/useTradeEvents.js:19-66` — Already correct: exchange in deps, cleanup removes old handlers — verified OK
+- [x] **[HIGH]** `admin/src/components/kalshi/Dashboard.jsx:751-757` — Already has proper cleanup — verified OK
+- [x] **[HIGH]** `admin/src/components/kalshi/Dashboard.jsx:392-397` — Already has cleanup return — verified OK
+- [x] **[HIGH]** `admin/src/components/Dashboard.jsx:119-136` — Already wrapped correctly — verified OK
+- [x] **[HIGH]** `admin/src/components/updown/Dashboard.jsx:46-49` — Already correct — verified OK
+- [x] **[MEDIUM]** `admin/src/hooks/usePolymarketSocket.js:53-59` — Fix: Added AbortController in useEffect cleanup
+- [x] **[MEDIUM]** `admin/src/components/ConfigEditor.jsx:67-74` — Fix: Split into two separate effects
+- [x] **[MEDIUM]** `admin/src/components/Toast.jsx:47-51` — Fix: Clear timeout in dismiss handler
 
 ---
 
