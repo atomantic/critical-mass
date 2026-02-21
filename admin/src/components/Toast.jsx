@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext, useCallback } from 'react'
+import { useState, useEffect, useRef, createContext, useContext, useCallback } from 'react'
 
 const ToastContext = createContext({
   addToast: () => {},
@@ -45,10 +45,17 @@ const toastIcons = {
 }
 
 function Toast({ id, type, title, message, onClose }) {
+  const timerRef = useRef(null)
+
   useEffect(() => {
-    const timer = setTimeout(() => onClose(id), 5000)
-    return () => clearTimeout(timer)
+    timerRef.current = setTimeout(() => onClose(id), 5000)
+    return () => clearTimeout(timerRef.current)
   }, [id, onClose])
+
+  const handleDismiss = () => {
+    clearTimeout(timerRef.current)
+    onClose(id)
+  }
 
   return (
     <div
@@ -61,7 +68,7 @@ function Toast({ id, type, title, message, onClose }) {
         <div className="text-sm opacity-90">{message}</div>
       </div>
       <button
-        onClick={() => onClose(id)}
+        onClick={handleDismiss}
         className="flex-shrink-0 opacity-70 hover:opacity-100 transition-opacity"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
