@@ -13,7 +13,7 @@ const { getBracketInfo, parseStrikePrice } = require('../adapters/markets.js')
 const { sendAlert } = require('../services/alert-service.js')
 const { analyzeTrade } = require('../services/trade-analyst.js')
 
-const ts = () => new Date().toISOString().split('T')[1].slice(0, 12)
+const { ts } = require('../../time-utils')
 
 /**
  * @typedef {Object} EngineState
