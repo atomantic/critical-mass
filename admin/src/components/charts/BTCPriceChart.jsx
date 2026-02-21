@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import {
-  ComposedChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine,
-  ResponsiveContainer, CartesianGrid, LineChart,
+  ComposedChart, Line, XAxis, YAxis, Tooltip, ReferenceLine,
+  ResponsiveContainer, CartesianGrid, LineChart, Customized,
 } from 'recharts'
 import { BarChart3 } from 'lucide-react'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
@@ -9,6 +9,79 @@ import { BTC_TOOLTIP_STYLE, formatBTCPrice } from './chartUtils'
 
 // Stable empty arrays to avoid re-render loops from default prop values
 const EMPTY_ARRAY = []
+
+/**
+ * Render atomoku cloud fills as raw SVG polygons.
+ * Uses formattedGraphicalItems for accurate X positions and yAxis.scale for Y.
+ */
+const AtomokuCloudRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
+  const yAxis = yAxisMap && Object.values(yAxisMap)[0]
+  if (!yAxis?.scale || !formattedGraphicalItems?.length) return null
+
+  const yScale = yAxis.scale
+
+  // Get X positions and data payload from any graphical item's points
+  let points = null
+  for (const item of formattedGraphicalItems) {
+    const pts = item?.props?.points
+    if (pts?.length > 1) { points = pts; break }
+  }
+  if (!points) return null
+
+  const n = points.length
+  const polygons = []
+  let polyKey = 0
+
+  const buildCloud = (key1, key2, bullColor, bearColor) => {
+    let segStart = -1
+    let segBull = null
+
+    const flush = (end) => {
+      if (segStart < 0 || end <= segStart) return
+      const top = []
+      const bot = []
+      for (let i = segStart; i <= end; i++) {
+        const d = points[i]?.payload
+        const v1 = d?.[key1]
+        const v2 = d?.[key2]
+        if (v1 == null || v2 == null) continue
+        const x = points[i].x
+        const yT = yScale(Math.max(v1, v2))
+        const yB = yScale(Math.min(v1, v2))
+        if (x == null || isNaN(yT) || isNaN(yB)) continue
+        top.push(`${x},${yT}`)
+        bot.unshift(`${x},${yB}`)
+      }
+      if (top.length < 2) return
+      polygons.push(
+        <polygon key={`cloud-${polyKey++}`} points={[...top, ...bot].join(' ')}
+          fill={segBull ? bullColor : bearColor} strokeWidth={0} />
+      )
+    }
+
+    for (let i = 0; i < n; i++) {
+      const d = points[i]?.payload
+      const v1 = d?.[key1]
+      const v2 = d?.[key2]
+      if (v1 == null || v2 == null) {
+        flush(i - 1); segStart = -1; segBull = null
+        continue
+      }
+      const bull = v1 >= v2
+      if (segStart < 0) {
+        segStart = i; segBull = bull
+      } else if (bull !== segBull) {
+        flush(i); segStart = i; segBull = bull
+      }
+    }
+    flush(n - 1)
+  }
+
+  buildCloud('atomokuLead1', 'atomokuLead2', 'rgba(0,128,0,0.4)', 'rgba(255,0,0,0.4)')
+  buildCloud('atomokuConv', 'atomokuBase', 'rgba(0,51,51,0.3)', 'rgba(128,0,0,0.3)')
+
+  return <g>{polygons}</g>
+}
 
 /**
  * Shared composable BTC price chart.
@@ -22,7 +95,7 @@ const EMPTY_ARRAY = []
  * @param {string} [props.defaultView] - default view key ('1d')
  * @param {boolean} [props.showViewSelector] - show view selector buttons (true)
  *
- * @param {Array<string>} [props.overlays] - ['bollinger', 'vwap']
+ * @param {Array<string>} [props.overlays] - ['bollinger', 'vwap', 'atomoku']
  * @param {Object} [props.indicators] - indicator data from socket (keyed by timeframe)
  * @param {Array<{y: number, stroke: string, strokeDasharray?: string, label?: string, labelFill?: string}>} [props.referenceLines]
  *
@@ -89,67 +162,46 @@ export default function BTCPriceChart({
     // The periodic syncChart() in the hook will pick it up.
   }, [indicators, indicatorTf])
 
-  // Build indicator-attached data
-  const dataWithIndicators = useMemo(() => {
-    if (!indicators || !indicatorTf || !enrichedData.length) return enrichedData
-
-    const tfData = indicators[indicatorTf]
-    if (!tfData) return enrichedData
-
-    // Attach current indicators to the last data point for display
-    const data = enrichedData.map(d => ({ ...d }))
-    const last = data[data.length - 1]
-    if (last && tfData) {
-      const bb = tfData.bollingerBands || tfData.bollinger
-      if (bb) {
-        last.bollingerUpper = bb.upper
-        last.bollingerLower = bb.lower
-        last.bollingerMiddle = bb.middle
-      }
-      if (tfData.vwap != null) last.vwap = tfData.vwap
-      if (tfData.rsi != null) last.rsi = tfData.rsi
-      if (tfData.stochastic) {
-        last.stochK = tfData.stochastic.k
-        last.stochD = tfData.stochastic.d
-      }
-      if (tfData.macd) {
-        last.macdLine = tfData.macd.macd
-        last.macdSignal = tfData.macd.signal
-        last.macdHistogram = tfData.macd.histogram
-      }
-    }
-    return data
-  }, [enrichedData, indicators, indicatorTf])
-
-  const displayData = dataWithIndicators
+  // displayData = enrichedData (indicators are now computed client-side in useCandleData)
+  const displayData = enrichedData
 
   const showBollinger = overlays.includes('bollinger')
   const showVwap = overlays.includes('vwap')
+  const showAtomoku = overlays.includes('atomoku')
 
   // Current indicator values (for display badges below chart)
   const currentInd = indicators?.[indicatorTf]
 
-  // Y-axis domain
+  // Y-axis domain — only include positive numeric values
   const priceDomain = useMemo(() => {
     if (!displayData.length) return ['auto', 'auto']
     const vals = []
     for (const d of displayData) {
-      if (d.price) vals.push(d.price)
-      if (d.bollingerUpper) vals.push(d.bollingerUpper)
-      if (d.bollingerLower) vals.push(d.bollingerLower)
+      if (d.price > 0) vals.push(d.price)
+      if (d.high > 0) vals.push(d.high)
+      if (d.low > 0) vals.push(d.low)
+      if (d.bollingerUpper > 0) vals.push(d.bollingerUpper)
+      if (d.bollingerLower > 0) vals.push(d.bollingerLower)
+      if (showAtomoku) {
+        if (d.atomokuConv > 0) vals.push(d.atomokuConv)
+        if (d.atomokuBase > 0) vals.push(d.atomokuBase)
+        if (d.atomokuLead1 > 0) vals.push(d.atomokuLead1)
+        if (d.atomokuLead2 > 0) vals.push(d.atomokuLead2)
+        if (d.atomokuLagging > 0) vals.push(d.atomokuLagging)
+      }
       for (const line of exchangeLines) {
-        if (d[line.dataKey]) vals.push(d[line.dataKey])
+        if (d[line.dataKey] > 0) vals.push(d[line.dataKey])
       }
     }
     for (const ref of referenceLines) {
-      if (ref.y) vals.push(ref.y)
+      if (ref.y > 0) vals.push(ref.y)
     }
     if (!vals.length) return ['auto', 'auto']
     const min = Math.min(...vals)
     const max = Math.max(...vals)
     const pad = (max - min) * 0.05 || 50
     return [min - pad, max + pad]
-  }, [displayData, referenceLines, exchangeLines])
+  }, [displayData, referenceLines, exchangeLines, showAtomoku])
 
   const hasRsi = subCharts.includes('rsi') && displayData.some(d => d.rsi != null)
   const hasStoch = subCharts.includes('stochastic') && displayData.some(d => d.stochK != null)
@@ -200,16 +252,19 @@ export default function BTCPriceChart({
             <ComposedChart data={displayData} margin={{ top: 5, right: 5, bottom: 0, left: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
               <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#9ca3af' }} interval="preserveStartEnd" />
-              <YAxis domain={priceDomain} tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={formatBTCPrice} width={70} />
+              <YAxis domain={priceDomain} allowDataOverflow tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={formatBTCPrice} width={70} />
               <Tooltip
                 contentStyle={BTC_TOOLTIP_STYLE}
                 labelStyle={{ color: '#9ca3af' }}
                 formatter={(value, name) => {
+                  if (value == null || value <= 0) return [null, null]
                   const labels = {
                     price: 'Price', bollingerUpper: 'BB Upper', bollingerLower: 'BB Lower',
                     bollingerMiddle: 'BB Mid', vwap: 'VWAP',
+                    atomokuConv: 'Conversion', atomokuBase: 'Base Line',
+                    atomokuLead1: 'Lead 1', atomokuLead2: 'Lead 2',
+                    atomokuLagging: 'Lagging Span',
                   }
-                  // Add exchange line labels
                   for (const line of exchangeLines) {
                     labels[line.dataKey] = line.label
                   }
@@ -217,14 +272,28 @@ export default function BTCPriceChart({
                 }}
               />
 
+              {/* Atomoku cloud fills (rendered behind everything via Customized SVG) */}
+              {showAtomoku && (
+                <Customized component={AtomokuCloudRenderer} />
+              )}
+
+              {/* Atomoku lines */}
+              {showAtomoku && (
+                <>
+                  <Line type="monotone" dataKey="atomokuConv" stroke="#0496ff" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="monotone" dataKey="atomokuBase" stroke="#991515" strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="monotone" dataKey="atomokuLead1" stroke="green" strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="monotone" dataKey="atomokuLead2" stroke="red" strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="monotone" dataKey="atomokuLagging" stroke="#459915" strokeWidth={1} dot={false} connectNulls isAnimationActive={false} />
+                </>
+              )}
+
               {/* Bollinger Band overlays */}
               {showBollinger && (
                 <>
-                  <Area type="monotone" dataKey="bollingerUpper" stroke="none" fill="none" connectNulls />
-                  <Area type="monotone" dataKey="bollingerLower" stroke="none" fill="rgba(99,102,241,0.08)" connectNulls />
-                  <Line type="monotone" dataKey="bollingerUpper" stroke="#6366f1" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls />
-                  <Line type="monotone" dataKey="bollingerLower" stroke="#6366f1" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls />
-                  <Line type="monotone" dataKey="bollingerMiddle" stroke="#818cf8" strokeWidth={1} strokeDasharray="5 5" dot={false} connectNulls />
+                  <Line type="monotone" dataKey="bollingerUpper" stroke="#6366f1" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="monotone" dataKey="bollingerLower" stroke="#6366f1" strokeWidth={1} strokeDasharray="3 3" dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="monotone" dataKey="bollingerMiddle" stroke="#818cf8" strokeWidth={1} strokeDasharray="5 5" dot={false} connectNulls isAnimationActive={false} />
                 </>
               )}
 
