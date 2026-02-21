@@ -252,7 +252,7 @@ app.get('/api/health', async (req, res) => {
     if (!status) overallStatus = 'degraded';
   })();
 
-  await Promise.all([...exchangeChecks, kalshiCheck]);
+  await Promise.allSettled([...exchangeChecks, kalshiCheck]);
 
   // UpDown service (in-process, no IPC needed)
   const updownStatus = updownService.getStatus();
