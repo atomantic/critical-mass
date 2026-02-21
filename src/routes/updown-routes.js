@@ -97,7 +97,7 @@ const parseExpiryToMs = (value) => {
  * @param {{updownService: Object, readJSON: Function, DATA_DIR: string}} deps
  */
 module.exports = (app, deps) => {
-  const { updownService, readJSON, DATA_DIR } = deps;
+  const { updownService, candleCache, readJSON, DATA_DIR } = deps;
   const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json');
   const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 
@@ -287,6 +287,13 @@ module.exports = (app, deps) => {
     log('INFO', '🔄 PM2 restart requested via API');
     res.json({ success: true, message: 'Restarting...' });
     setTimeout(() => exec('pm2 restart critical-mass'), 500);
+  });
+
+  app.get('/api/updown/candles', (req, res) => {
+    res.json({
+      success: true,
+      candles: candleCache.getAllCandles('cryptocom'),
+    });
   });
 
   app.get('/api/updown/signals', (req, res) => {

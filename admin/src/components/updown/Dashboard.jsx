@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Play, Square, RotateCcw, Volume2, VolumeX } from 'lucide-react'
+import { Play, Square, RotateCcw, Volume2, VolumeX, Clock } from 'lucide-react'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
 import { signalBadgeColors, getSignalIcon } from '../../constants/signals'
 import PriceChart from './PriceChart'
@@ -7,7 +7,7 @@ import ContractSetup from './ContractSetup'
 import PositionTracker from './PositionTracker'
 import SignalPanel from './SignalPanel'
 import TradeHistory from './TradeHistory'
-import TimeWarningBanner from './TimeWarningBanner'
+import { getTimeColor, parseExpiry, formatCountdown } from './TimeWarningBanner'
 
 function formatCurrency(value) {
   if (value == null) return '---'
@@ -97,6 +97,14 @@ export default function UpDownDashboard() {
   const currentPrice = tick?.price || status?.lastPrice
   const timeRemaining = tick?.timeRemaining
 
+  // Time remaining (compact header display)
+  const expiryMs = parseExpiry(status?.contract?.expiry)
+  const msLeft = timeRemaining ?? (Number.isFinite(expiryMs) ? expiryMs - Date.now() : NaN)
+  const hasTime = Number.isFinite(msLeft)
+  const timeExpired = hasTime && msLeft <= 0
+  const hoursLeft = hasTime ? msLeft / 3600000 : 0
+  const timeColors = hasTime && !timeExpired ? getTimeColor(hoursLeft) : null
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -140,6 +148,24 @@ export default function UpDownDashboard() {
               <SignalIcon size={12} />
               {signalType.replace(/_/g, ' ')}
             </span>
+
+            {/* Time Remaining (compact) */}
+            {hasTime && (
+              timeExpired ? (
+                <div className="flex items-center gap-1 text-xs text-gray-500">
+                  <Clock size={12} />
+                  <span>Expired</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <Clock size={12} className={timeColors.text} />
+                  <span className={`text-xs font-mono font-semibold ${timeColors.text} ${timeColors.pulse ? 'animate-pulse' : ''}`}>
+                    {formatCountdown(msLeft)}
+                  </span>
+                  <span className={`px-1 py-0.5 text-[10px] rounded ${timeColors.text} bg-gray-700`}>{timeColors.label}</span>
+                </div>
+              )
+            )}
 
             {/* Live indicator */}
             <div className="flex items-center gap-1.5 text-xs">
@@ -195,12 +221,6 @@ export default function UpDownDashboard() {
           </div>
         </div>
       </div>
-
-      {/* Time Warning Banner */}
-      <TimeWarningBanner
-        timeRemaining={timeRemaining}
-        expiry={status?.contract?.expiry}
-      />
 
       {/* Price Chart */}
       <PriceChart
