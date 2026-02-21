@@ -39,7 +39,9 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     socket.on('logs:error', handleError)
     socket.on('logs:flushed', handleFlushed)
 
-    socket.emit('logs:subscribe', { processName, lines })
+    if (socket.connected) {
+      socket.emit('logs:subscribe', { processName, lines })
+    }
 
     return () => {
       socket.emit('logs:unsubscribe')

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
 
@@ -18,8 +18,16 @@ export default function AIProviders() {
   const [showSamples, setShowSamples] = useState(false)
   const [loadingSamples, setLoadingSamples] = useState(false)
   const [addingSample, setAddingSample] = useState({})
+  const pollRef = useRef(null)
 
   useEffect(() => { loadData() }, [])
+
+  // Clean up polling interval on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
 
   const loadData = async () => {
     setLoading(true)
@@ -85,10 +93,12 @@ export default function AIProviders() {
 
     setRunningId(result.runId)
     // Poll for completion
-    const poll = setInterval(async () => {
+    if (pollRef.current) clearInterval(pollRef.current)
+    pollRef.current = setInterval(async () => {
       const meta = await fetch(`/api/runs/${result.runId}`).then(r => r.json()).catch(() => null)
       if (!meta || meta.endTime) {
-        clearInterval(poll)
+        clearInterval(pollRef.current)
+        pollRef.current = null
         setRunningId(null)
         if (meta) {
           const output = await fetch(`/api/runs/${result.runId}/output`).then(r => r.text()).catch(() => '')
