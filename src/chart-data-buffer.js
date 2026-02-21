@@ -7,8 +7,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const { DATA_DIR } = require('./paths');
 
 // Maximum data retention (1 hour in milliseconds)
 const MAX_RETENTION_MS = 60 * 60 * 1000;

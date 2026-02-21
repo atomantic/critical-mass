@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const stateTracker = require('./state-tracker');
+const { DATA_DIR } = require('./paths');
 const {
   normalizeConfig,
   getNextExecutionTime,
@@ -16,8 +17,6 @@ const {
   formatInterval,
   getTimeUntilNext,
 } = require('./interval-utils');
-
-const DATA_DIR = path.join(__dirname, '..', 'data');
 
 // ============ JSON / TSV Helpers ============
 

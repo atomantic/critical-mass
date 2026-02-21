@@ -26,8 +26,7 @@ const { getExchangeDataDir } = require('./migration');
 const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
 const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
 const { loadRawConfig } = require('./config-utils');
-
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const { DATA_DIR } = require('./paths');
 
 /**
  * Atomic write: write to .tmp then rename (POSIX-atomic).

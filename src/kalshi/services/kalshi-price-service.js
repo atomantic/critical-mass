@@ -1,9 +1,7 @@
 const { createKalshiWebSocket, CHANNELS } = require('../adapters/websocket')
 const { readFile } = require('fs/promises')
 const path = require('path')
-
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
 
 /**
  * @typedef {import('../types/kalshi').KalshiKeys} KalshiKeys
@@ -22,7 +20,8 @@ const ts = () => new Date().toISOString().slice(11, 23)
  * @property {number} updatedAt - Timestamp of last update
  */
 
-const DATA_DIR = path.join(__dirname, '..', '..', '..', 'data', 'kalshi')
+const { KALSHI_DATA_DIR } = require('../../paths')
+const DATA_DIR = KALSHI_DATA_DIR
 
 /** @type {Map<string, CachedPrice>} */
 const priceCache = new Map()
