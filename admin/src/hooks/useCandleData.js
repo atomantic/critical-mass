@@ -1,4 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import {
+  computeAtomoku,
+  computeBollingerSeries,
+  computeVWAPSeries,
+  computeRSISeries,
+  computeStochasticSeries,
+  computeMACDSeries,
+} from '../utils/computeIndicatorSeries'
 
 /**
  * Default view configurations for BTC price charts.
@@ -31,6 +39,11 @@ const emptyBucket = (time, price) => ({
   macdLine: null,
   macdSignal: null,
   macdHistogram: null,
+  atomokuConv: null,
+  atomokuBase: null,
+  atomokuLead1: null,
+  atomokuLead2: null,
+  atomokuLagging: null,
 })
 
 /**
@@ -74,11 +87,13 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
 
   /**
    * Populate buckets from historical candle data for the current view.
+   * Computes all indicator series client-side from the raw candle array.
    */
   const populateFromCandles = useCallback((candles) => {
     if (!candles?.length) return
     const map = new Map()
 
+    // Build bucket map from candles
     for (const c of candles) {
       const bKey = Math.floor(c.timestamp / bucketMs) * bucketMs
       const existing = map.get(bKey)
@@ -94,14 +109,69 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       }
     }
 
+    // Sort bucket keys for ordered access
+    const sortedKeys = [...map.keys()].sort((a, b) => a - b)
+
+    // Build candle-index → bucket-key mapping
+    // Each candle maps to the bucket it falls into
+    const candleBucketKeys = candles.map(c => Math.floor(c.timestamp / bucketMs) * bucketMs)
+
+    // Compute indicator series from raw candles
+    const bollinger = computeBollingerSeries(candles)
+    const vwap = computeVWAPSeries(candles)
+    const rsi = computeRSISeries(candles)
+    const stoch = computeStochasticSeries(candles)
+    const macd = computeMACDSeries(candles)
+    const atomoku = computeAtomoku(candles)
+
+    // Attach indicators: for each candle, apply values to its bucket.
+    // When multiple candles map to the same bucket, last candle wins (most recent).
+    for (let i = 0; i < candles.length; i++) {
+      const bKey = candleBucketKeys[i]
+      const bucket = map.get(bKey)
+      if (!bucket) continue
+
+      if (bollinger[i]) {
+        bucket.bollingerUpper = bollinger[i].upper
+        bucket.bollingerMiddle = bollinger[i].middle
+        bucket.bollingerLower = bollinger[i].lower
+      }
+      if (vwap[i] != null) bucket.vwap = vwap[i]
+      if (rsi[i] != null) bucket.rsi = rsi[i]
+      if (stoch[i]) {
+        bucket.stochK = stoch[i].k
+        bucket.stochD = stoch[i].d
+      }
+      if (macd[i]) {
+        bucket.macdLine = macd[i].macd
+        bucket.macdSignal = macd[i].signal
+        bucket.macdHistogram = macd[i].histogram
+      }
+      if (atomoku.conversionLine[i] != null) bucket.atomokuConv = atomoku.conversionLine[i]
+      if (atomoku.baseLine[i] != null) bucket.atomokuBase = atomoku.baseLine[i]
+      if (atomoku.laggingSpan[i] != null) bucket.atomokuLagging = atomoku.laggingSpan[i]
+    }
+
+    // Apply displaced lead lines to existing buckets.
+    // leadLine1/2 arrays (length N + displacement) are pre-indexed for display position:
+    // leadLine1[j] = value to show at candle position j.
+    // We only apply indices 0..N-1 (within existing data range).
+    for (let i = 0; i < candles.length; i++) {
+      const bKey = candleBucketKeys[i]
+      const bucket = map.get(bKey)
+      if (!bucket) continue
+      if (atomoku.leadLine1[i] != null) bucket.atomokuLead1 = atomoku.leadLine1[i]
+      if (atomoku.leadLine2[i] != null) bucket.atomokuLead2 = atomoku.leadLine2[i]
+    }
+
     // Prune to maxBuckets
-    const sorted = [...map.keys()].sort((a, b) => a - b)
-    if (sorted.length > maxBuckets) {
-      for (const k of sorted.slice(0, sorted.length - maxBuckets)) map.delete(k)
+    if (sortedKeys.length > maxBuckets) {
+      for (const k of sortedKeys.slice(0, sortedKeys.length - maxBuckets)) map.delete(k)
     }
 
     bucketsRef.current = map
-    lastBucketKeyRef.current = sorted.length ? sorted[sorted.length - 1] : null
+    const finalKeys = [...map.keys()].sort((a, b) => a - b)
+    lastBucketKeyRef.current = finalKeys.length ? finalKeys[finalKeys.length - 1] : null
   }, [bucketMs, maxBuckets])
 
   // Fetch historical candles on mount

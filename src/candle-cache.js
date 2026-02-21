@@ -16,10 +16,10 @@ const SEED_RETRY_INTERVAL_MS = 5_000;
  * Seed configs: timeframe → { hours of history, API granularity }
  */
 const SEED_TIMEFRAMES = [
-  { tf: '1m',  hours: 2,   coinbaseGranularity: 60,   cryptocomTf: '1m'  },
-  { tf: '5m',  hours: 6,   coinbaseGranularity: 300,  cryptocomTf: '5m'  },
-  { tf: '15m', hours: 24,  coinbaseGranularity: 900,  cryptocomTf: '15m' },
-  { tf: '1h',  hours: 168, coinbaseGranularity: 3600, cryptocomTf: '1h'  },
+  { tf: '1m',  hours: 3,   coinbaseGranularity: 60,   cryptocomTf: '1m'  },
+  { tf: '5m',  hours: 15,  coinbaseGranularity: 300,  cryptocomTf: '5m'  },
+  { tf: '15m', hours: 45,  coinbaseGranularity: 900,  cryptocomTf: '15m' },
+  { tf: '1h',  hours: 200, coinbaseGranularity: 3600, cryptocomTf: '1h'  },
 ];
 
 const COINBASE_EXCHANGE_URL = 'https://api.exchange.coinbase.com';

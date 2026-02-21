@@ -32,7 +32,7 @@ export default function PriceChart({ tick, indicators, contract }) {
       tickPrice={tick?.price}
       tickTimestamp={tick?.timestamp}
       indicators={indicators}
-      overlays={['bollinger', 'vwap']}
+      overlays={['atomoku', 'bollinger', 'vwap']}
       subCharts={['rsi', 'stochastic', 'macd']}
       referenceLines={referenceLines}
     />
