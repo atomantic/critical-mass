@@ -187,6 +187,17 @@ These are SOLID/architecture findings documented for future refactoring. They're
 Remediating: CRITICAL (15) + HIGH (16) + MEDIUM (19) = **50 findings**
 Architecture tracked only: **20 findings** (Phase G, no code changes)
 
+## Shared BTC Price Chart & Candle Service (2026-02-21)
+
+- [x] **Server candle cache** — `src/candle-cache.js`: per-exchange CandleAggregator, Crypto.com + Coinbase public API seeding, `GET /api/candles/:exchange`
+- [x] **Shared chart component** — `admin/src/components/charts/BTCPriceChart.jsx`: composable chart with overlays, sub-charts, reference lines, multi-exchange lines
+- [x] **Shared candle hook** — `admin/src/hooks/useCandleData.js`: bucket accumulation, view switching, 5s sync
+- [x] **UpDown migration** — PriceChart.jsx now thin wrapper around BTCPriceChart (Crypto.com primary)
+- [x] **Kalshi migration** — LiveBTCChart.jsx uses BTCPriceChart for chart section (Coinbase + exchange lines)
+- [x] **Hedge chart** — BTCPriceChart added to hedge Dashboard with entry/SL/TP reference lines
+- [x] **UpDown service cleanup** — Removed internal aggregator, delegates to shared candle-cache
+- [x] **Compact time remaining** — Moved from standalone banner into UpDown header bar
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22

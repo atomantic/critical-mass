@@ -187,7 +187,7 @@ const scoreToSignal = (score) => {
 
 /**
  * Create a signal engine instance
- * @param {ReturnType<import('./candle-aggregator').createCandleAggregator>} candleAggregator
+ * @param {{getCandles: (tf: string) => Array}} candleAggregator
  * @returns {{computeSignals: (contractExpiry?: number | null) => {type: string, score: number, confidence: number, timeframes: Record<string, any>, noTradeZone: boolean, warningZone: boolean, timestamp: number}}}
  */
 const createSignalEngine = (candleAggregator) => {

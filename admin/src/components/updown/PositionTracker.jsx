@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Crosshair, Save, Trash2 } from 'lucide-react'
 
 function formatCurrency(value) {
@@ -14,15 +14,18 @@ export default function PositionTracker({ initialPosition, tick }) {
   const [clearing, setClearing] = useState(false)
   const [hasPosition, setHasPosition] = useState(false)
 
+  // Only update form when the server-side position actually changes
+  const prevPositionRef = useRef(null)
   useEffect(() => {
-    if (!initialPosition) return
-    if (initialPosition.entryPrice) {
-      setEntryPrice(initialPosition.entryPrice.toString())
-      setAmount(initialPosition.contracts?.toString() || '')
-      const dir = initialPosition.direction || 'up'
-      setDirection(dir.charAt(0).toUpperCase() + dir.slice(1))
-      setHasPosition(true)
-    }
+    if (!initialPosition?.entryPrice) return
+    const key = `${initialPosition.entryPrice}-${initialPosition.contracts}-${initialPosition.direction}`
+    if (prevPositionRef.current === key) return
+    prevPositionRef.current = key
+    setEntryPrice(initialPosition.entryPrice.toString())
+    setAmount(initialPosition.contracts?.toString() || '')
+    const dir = initialPosition.direction || 'up'
+    setDirection(dir.charAt(0).toUpperCase() + dir.slice(1))
+    setHasPosition(true)
   }, [initialPosition])
 
   const handleSave = async () => {

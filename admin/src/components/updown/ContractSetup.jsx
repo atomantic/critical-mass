@@ -24,9 +24,13 @@ export default function ContractSetup({ initialContract, onPositionSet }) {
   const fileInputRef = useRef(null)
   const dropZoneRef = useRef(null)
 
+  // Only update form when the server-side contract actually changes
+  const prevContractRef = useRef(null)
   useEffect(() => {
     if (!initialContract) return
-    // Expiry is stored as ms timestamp; display as ISO string for the user
+    const key = `${initialContract.expiry}-${initialContract.target}-${initialContract.stop}-${initialContract.range}-${initialContract.direction}`
+    if (prevContractRef.current === key) return
+    prevContractRef.current = key
     const expiryVal = initialContract.expiry
     if (typeof expiryVal === 'number' && expiryVal > 0) {
       setExpiry(new Date(expiryVal).toISOString())

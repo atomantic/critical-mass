@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Shield, Play, Square, RefreshCw, TrendingUp, TrendingDown, Activity, AlertTriangle, Clock, DollarSign, BarChart3, Target, Zap } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, Area, AreaChart, CartesianGrid } from 'recharts'
+import BTCPriceChart from '../charts/BTCPriceChart'
+import { formatBTCPrice } from '../charts/chartUtils'
 
 function formatCurrency(value) {
   if (value == null) return '---'
@@ -408,6 +410,39 @@ export default function HedgeDashboard() {
   const closedPairs = state?.closedPairs || []
   const btcPrice = status?.lastBtcPrice || 0
 
+  // Reference lines for the BTC price chart (entry, stop loss, take profit from active pair)
+  const hedgeReferenceLines = useMemo(() => {
+    const lines = []
+    if (activePair?.exchange?.entryPrice) {
+      lines.push({
+        y: activePair.exchange.entryPrice,
+        stroke: '#3b82f6',
+        strokeDasharray: '6 3',
+        label: `Entry ${formatBTCPrice(activePair.exchange.entryPrice)}`,
+        labelFill: '#3b82f6',
+      })
+    }
+    if (activePair?.exchange?.stopPrice) {
+      lines.push({
+        y: activePair.exchange.stopPrice,
+        stroke: '#ef4444',
+        strokeDasharray: '3 3',
+        label: `SL ${formatBTCPrice(activePair.exchange.stopPrice)}`,
+        labelFill: '#ef4444',
+      })
+    }
+    if (activePair?.exchange?.tpPrice) {
+      lines.push({
+        y: activePair.exchange.tpPrice,
+        stroke: '#10b981',
+        strokeDasharray: '3 3',
+        label: `TP ${formatBTCPrice(activePair.exchange.tpPrice)}`,
+        labelFill: '#10b981',
+      })
+    }
+    return lines
+  }, [activePair?.exchange?.entryPrice, activePair?.exchange?.stopPrice, activePair?.exchange?.tpPrice])
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -485,6 +520,15 @@ export default function HedgeDashboard() {
           </div>
         </div>
       </div>
+
+      {/* BTC Price Chart */}
+      <BTCPriceChart
+        exchange="cryptocom"
+        tickPrice={btcPrice || undefined}
+        referenceLines={hedgeReferenceLines}
+        height={200}
+        defaultView="6h"
+      />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">

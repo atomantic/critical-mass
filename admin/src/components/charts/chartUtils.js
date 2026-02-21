@@ -157,3 +157,17 @@ export const colorWithOpacity = (color, opacity = 0.3) => {
   const b = parseInt(hex.substring(4, 6), 16)
   return `rgba(${r}, ${g}, ${b}, ${opacity})`
 }
+
+// BTC chart shared tooltip style (dark theme)
+export const BTC_TOOLTIP_STYLE = {
+  backgroundColor: '#1f2937',
+  border: '1px solid #374151',
+  borderRadius: '8px',
+  fontSize: '12px',
+}
+
+// Format BTC price for chart display ($XX,XXX)
+export function formatBTCPrice(value) {
+  if (value == null) return ''
+  return `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+}

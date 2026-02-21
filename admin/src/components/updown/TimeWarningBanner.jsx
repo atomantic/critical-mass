@@ -4,13 +4,13 @@ import { Clock } from 'lucide-react'
 const WARNING_ZONE_H = 8
 const NO_TRADE_ZONE_H = 6
 
-function getTimeColor(hoursLeft) {
+export function getTimeColor(hoursLeft) {
   if (hoursLeft > WARNING_ZONE_H) return { bg: 'bg-green-500', border: 'border-green-500/30', text: 'text-green-400', label: 'Safe' }
   if (hoursLeft >= NO_TRADE_ZONE_H) return { bg: 'bg-yellow-500', border: 'border-yellow-500/30', text: 'text-yellow-400', label: 'Caution' }
   return { bg: 'bg-red-500', border: 'border-red-500/30', text: 'text-red-400', label: 'Critical', pulse: true }
 }
 
-function formatCountdown(ms) {
+export function formatCountdown(ms) {
   if (ms <= 0) return '00:00:00'
   const hours = Math.floor(ms / 3600000)
   const minutes = Math.floor((ms % 3600000) / 60000)
@@ -23,7 +23,7 @@ function formatCountdown(ms) {
  * @param {number | string} expiry - Unix ms timestamp or ISO 8601 date string
  * @returns {number} Epoch ms, or NaN if invalid/missing
  */
-const parseExpiry = (expiry) => {
+export const parseExpiry = (expiry) => {
   if (!expiry) return NaN
   if (typeof expiry === 'number') return expiry
   const ms = new Date(expiry).getTime()

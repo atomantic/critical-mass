@@ -3,12 +3,11 @@
  * UpDown Service
  *
  * Top-level coordinator for the UpDown BTC Options Signal Dashboard.
- * Manages candle aggregation, signal computation, state persistence,
- * and Socket.IO emission to subscribed clients.
+ * Manages signal computation, state persistence, and Socket.IO emission.
+ * Candle aggregation is delegated to the shared candle-cache.
  */
 
 const path = require('path');
-const { createCandleAggregator } = require('./candle-aggregator');
 const { createSignalEngine } = require('./signal-engine');
 const { log } = require('../logger');
 
@@ -25,14 +24,18 @@ const MAX_SIGNAL_HISTORY = 100;
  * @param {Function} deps.readJSON - Read JSON file
  * @param {Function} deps.writeJSON - Write JSON file
  * @param {string} deps.DATA_DIR - Data directory path
+ * @param {Object} deps.candleCache - Shared candle cache instance
  * @returns {Object}
  */
 const createUpDownService = (io, deps) => {
-  const { exchangeIPCMap, readJSON, writeJSON, DATA_DIR } = deps;
+  const { readJSON, writeJSON, DATA_DIR, candleCache } = deps;
   const stateFilePath = path.join(DATA_DIR, STATE_FILE);
 
-  const aggregator = createCandleAggregator();
-  const signalEngine = createSignalEngine(aggregator);
+  // Signal engine uses a thin adapter over the shared candle cache (cryptocom exchange)
+  const candleAdapter = {
+    getCandles: (tf) => candleCache.getCandles('cryptocom', tf),
+  };
+  const signalEngine = createSignalEngine(candleAdapter);
 
   /** @type {NodeJS.Timeout | null} */
   let signalInterval = null;
@@ -84,16 +87,13 @@ const createUpDownService = (io, deps) => {
   };
 
   /**
-   * Handle a price tick from the coinbase IPC stream
+   * Handle a price tick from the exchange IPC stream
    * @param {number} price - Current BTC price
    * @param {number} timestamp - Tick timestamp (ms)
-   * @param {number} [volume=0] - Tick volume
    */
-  const handlePriceTick = (price, timestamp, volume = 0) => {
+  const handlePriceTick = (price, timestamp) => {
     if (!running) return;
     lastPrice = price;
-
-    aggregator.processTick(price, timestamp, volume);
 
     // Throttled tick emission to updown room (max 1/sec)
     const now = Date.now();
@@ -152,36 +152,21 @@ const createUpDownService = (io, deps) => {
   };
 
   /**
-   * Seed candles from coinbase exchange via IPC request
-   */
-  const seedFromExchange = async () => {
-    const coinbaseIPC = exchangeIPCMap?.coinbase;
-    if (!coinbaseIPC?.isConnected()) {
-      log('WARN', '📊 UpDown: coinbase IPC not connected, skipping seed');
-      return;
-    }
-
-    // Request candles from coinbase engine for each timeframe we can get
-    for (const tf of ['1m', '5m', '15m', '1h']) {
-      const candles = await coinbaseIPC.request('getCandles', { product: 'BTC-USD', timeframe: tf }, 'coinbase', 10_000).catch(() => null);
-      if (candles?.length) {
-        aggregator.seedCandles(tf, candles);
-        log('INFO', `📊 UpDown: seeded ${candles.length} ${tf} candles from coinbase`);
-      }
-    }
-  };
-
-  /**
    * Start the service
    */
   const start = async () => {
     if (running) return;
     loadState();
 
-    await seedFromExchange();
-
     running = true;
     signalInterval = setInterval(runSignalCycle, SIGNAL_INTERVAL_MS);
+
+    // Set lastPrice from most recent candle if available
+    const candles1m = candleCache.getCandles('cryptocom', '1m');
+    if (candles1m.length > 0) {
+      lastPrice = candles1m[candles1m.length - 1].close;
+    }
+
     log('INFO', '📊 UpDown service started interval=5s');
   };
 
@@ -213,11 +198,11 @@ const createUpDownService = (io, deps) => {
       latestSignal,
       signalHistory: signalHistory.slice(-20),
       candleCounts: {
-        '1m': aggregator.getCandles('1m').length,
-        '3m': aggregator.getCandles('3m').length,
-        '5m': aggregator.getCandles('5m').length,
-        '15m': aggregator.getCandles('15m').length,
-        '1h': aggregator.getCandles('1h').length,
+        '1m': candleCache.getCandles('cryptocom', '1m').length,
+        '3m': candleCache.getCandles('cryptocom', '3m').length,
+        '5m': candleCache.getCandles('cryptocom', '5m').length,
+        '15m': candleCache.getCandles('cryptocom', '15m').length,
+        '1h': candleCache.getCandles('cryptocom', '1h').length,
       },
     };
   };
