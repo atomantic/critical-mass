@@ -15,6 +15,7 @@ const { log } = require('../logger');
 const { KALSHI_DATA_DIR } = require('../paths');
 const { ts } = require('../time-utils');
 const { createAsyncHandler } = require('./async-handler');
+const { validateConfigUpdate, KALSHI_CONFIG_SCHEMA, STRATEGY_CONFIG_SCHEMA } = require('../config-validator');
 
 const DATA_DIR = KALSHI_DATA_DIR;
 const asyncHandler = createAsyncHandler('kalshi', ts);
@@ -311,18 +312,22 @@ module.exports = (app, sharedDeps) => {
   }));
 
   app.put('/api/kalshi/config', asyncHandler(async (req, res) => {
+    const { value: validated, errors } = validateConfigUpdate(KALSHI_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
     const config = await readJson('config.json');
-    const updated = { ...config, ...req.body };
+    const updated = { ...config, ...validated };
     await writeJson('config.json', updated);
     log('INFO', `[${ts()}] ⚙️ Kalshi config updated`);
     res.json(updated);
   }));
 
   app.patch('/api/kalshi/config', asyncHandler(async (req, res) => {
+    const { value: validated, errors } = validateConfigUpdate(KALSHI_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
     const config = await readJson('config.json');
-    const updated = { ...config, ...req.body };
+    const updated = { ...config, ...validated };
     await writeJson('config.json', updated);
-    log('INFO', `[${ts()}] ⚙️ Kalshi config patched: ${Object.keys(req.body).join(', ')}`);
+    log('INFO', `[${ts()}] ⚙️ Kalshi config patched: ${Object.keys(validated).join(', ')}`);
     res.json(updated);
   }));
 
@@ -1137,9 +1142,12 @@ module.exports = (app, sharedDeps) => {
     const { name } = req.params;
     if (!name) return res.status(400).json({ error: 'Strategy name is required' });
 
+    const { value: validated, errors } = validateConfigUpdate(STRATEGY_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
+
     const config = await readJson('config.json');
     config.strategies = config.strategies || {};
-    config.strategies[name] = { ...config.strategies[name], ...req.body };
+    config.strategies[name] = { ...config.strategies[name], ...validated };
     await writeJson('config.json', config);
 
     simulationEngine.updateStrategy(name, config.strategies[name]);
