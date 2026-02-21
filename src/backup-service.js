@@ -10,9 +10,9 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { DATA_DIR, BACKUP_DIR } = require('./paths');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
+const BACKUPS_DIR = BACKUP_DIR;
 
 /**
  * Ensure backups directory exists

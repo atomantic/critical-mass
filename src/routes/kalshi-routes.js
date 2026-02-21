@@ -12,8 +12,9 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const { log } = require('../logger');
+const { KALSHI_DATA_DIR } = require('../paths');
 
-const DATA_DIR = path.join(__dirname, '..', '..', 'data', 'kalshi');
+const DATA_DIR = KALSHI_DATA_DIR;
 
 // Lazy-loaded service references (initialized on first engine start)
 let kalshiAdapters = null;

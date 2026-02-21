@@ -20,9 +20,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { DATA_DIR } = require('./paths');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const KEYS_DIR = path.join(__dirname, '..', 'data'); // Keys stored alongside data
+const KEYS_DIR = DATA_DIR; // Keys stored alongside data
 
 /**
  * Check if migration is needed
