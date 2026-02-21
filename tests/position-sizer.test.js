@@ -16,6 +16,7 @@ const defaultConfig = () => ({
   cautionScale: 0.75,
   trendScale: 1.5,
   liquidityFactorCap: 3.0,
+  divergenceScalePct: 5,
   holdbackRatio: 0.5,
 });
 
@@ -69,27 +70,44 @@ describe('calculateLiquidityFactor', () => {
     assert.equal(factor, 1.0);
   });
 
-  it('falls back to geometric scaling when depth is undefined', () => {
-    // cycleBuys=3 => 1 + (3 * 0.1) = 1.3
-    const factor = sizer.calculateLiquidityFactor(3, undefined, undefined);
-    assert.equal(factor, 1.3);
+  it('returns 1.0 for first entry (cycleBuys=0)', () => {
+    const factor = sizer.calculateLiquidityFactor(0, undefined, undefined, 100000, 100000);
+    assert.equal(factor, 1.0);
   });
 
-  it('falls back to geometric scaling when baselineDepth is zero', () => {
-    // baselineDepth <= 0 triggers fallback; cycleBuys=5 => 1 + 0.5 = 1.5
-    const factor = sizer.calculateLiquidityFactor(5, 10000, 0);
-    assert.equal(factor, 1.5);
+  it('returns 1.0 when no avgCostBasis provided', () => {
+    const factor = sizer.calculateLiquidityFactor(3, undefined, undefined, 100000, undefined);
+    assert.equal(factor, 1.0);
   });
 
-  it('geometric fallback caps at liquidityFactorCap', () => {
-    // cycleBuys=30 => 1 + 3.0 = 4.0 => capped at 3.0
-    const factor = sizer.calculateLiquidityFactor(30, undefined, undefined);
+  it('returns 1.0 when price is at avg cost basis', () => {
+    const factor = sizer.calculateLiquidityFactor(3, undefined, undefined, 100000, 100000);
+    assert.equal(factor, 1.0);
+  });
+
+  it('scales proportionally when price is below avg cost', () => {
+    // avgCost=100000, price=97500 => divergence=2.5%, scalePct=5
+    // factor = 1 + (2.5/5) * (3.0-1) = 1 + 0.5 * 2 = 2.0
+    const factor = sizer.calculateLiquidityFactor(3, undefined, undefined, 97500, 100000);
+    assert.equal(factor, 2.0);
+  });
+
+  it('caps at liquidityFactorCap when divergence exceeds scale', () => {
+    // avgCost=100000, price=90000 => divergence=10%, scalePct=5
+    // factor = 1 + (10/5) * (3.0-1) = 1 + 2 * 2 = 5.0 => capped at 3.0
+    const factor = sizer.calculateLiquidityFactor(3, undefined, undefined, 90000, 100000);
     assert.equal(factor, 3.0);
   });
 
-  it('returns 1.0 for cycleBuys=0 with no depth data', () => {
-    const factor = sizer.calculateLiquidityFactor(0, undefined, undefined);
+  it('returns 1.0 when price is above avg cost (no negative divergence)', () => {
+    const factor = sizer.calculateLiquidityFactor(3, undefined, undefined, 105000, 100000);
     assert.equal(factor, 1.0);
+  });
+
+  it('falls back to divergence path when baselineDepth is zero', () => {
+    // baselineDepth <= 0 triggers divergence fallback; price 2.5% below avg
+    const factor = sizer.calculateLiquidityFactor(5, 10000, 0, 97500, 100000);
+    assert.equal(factor, 2.0);
   });
 
   it('handles fractional depth ratios (< 1.0)', () => {
@@ -174,17 +192,15 @@ describe('calculateEntrySize', () => {
   });
 
   it('rounds sizeUsdc to 2 decimal places', () => {
-    // baseSizeUsdc=33, trendScale=1.5 => 33 * 1.5 = 49.5 (already 1 decimal)
-    // Let's pick values that produce more decimals:
-    // 33.33 * 0.75 * 1.3 = 32.497... => rounds to 32.50
+    // Without avgCostBasis, divergence factor is 1.0
+    // 33.33 * 0.75 * 1.0 = 24.9975 => roundUSDC => 25.00
     const sizer = makeSizer({ baseSizeUsdc: 33.33, cautionScale: 0.75 });
     const result = sizer.calculateEntrySize({
       regime: 'CAUTION',
-      cycleBuys: 3, // geometric fallback: 1 + 0.3 = 1.3
+      cycleBuys: 3,
       totalCostBasis: 0,
     });
-    // 33.33 * 0.75 * 1.3 = 32.49675 => roundUSDC => 32.50
-    assert.equal(result.sizeUsdc, 32.5);
+    assert.equal(result.sizeUsdc, 25);
   });
 });
 
@@ -258,7 +274,7 @@ describe('calculateTakeProfitSize', () => {
     assert.ok(result.sellQty > 0);
     assert.ok(result.holdbackQty > 0);
     assert.ok(result.profitUsdc > 0);
-    assert.ok(result.profitBtcValue > 0);
+    assert.ok(result.profitAssetValue > 0);
     // sellQty + holdbackQty should approximate totalBTC (rounding may cause tiny diff)
     const total = result.sellQty + result.holdbackQty;
     assert.ok(Math.abs(total - 0.01) < 0.000001, `sellQty + holdbackQty ~ 0.01: ${total}`);
@@ -316,8 +332,10 @@ describe('getSizingSummary', () => {
       remainingBudget: 4500,
       regime: 'TREND',
       cycleBuys: 2,
+      currentPrice: 97500,
+      avgCostBasis: 100000,
     });
-    assert.equal(summary, 'base=$100 regime=TREND(1.5) liq=1.20 buys=2 budget=$4500');
+    assert.equal(summary, 'base=$100 regime=TREND(1.5) liq=1.20 div=2.5% buys=2 budget=$4500');
   });
 
   it('handles zero values gracefully', () => {
@@ -329,8 +347,10 @@ describe('getSizingSummary', () => {
       remainingBudget: 0,
       regime: 'HARVEST',
       cycleBuys: 0,
+      currentPrice: undefined,
+      avgCostBasis: undefined,
     });
-    assert.equal(summary, 'base=$0 regime=HARVEST(0) liq=0.00 buys=0 budget=$0');
+    assert.equal(summary, 'base=$0 regime=HARVEST(0) liq=0.00 div=0.0% buys=0 budget=$0');
   });
 });
 
@@ -338,16 +358,16 @@ describe('getSizingSummary', () => {
 // previewLadder
 // ============================================================================
 describe('previewLadder', () => {
-  it('returns an array of steps with increasing sizes (geometric fallback)', () => {
+  it('returns an array of uniform steps (no divergence data in preview)', () => {
     const sizer = makeSizer();
     const preview = sizer.previewLadder('TREND', 5);
     assert.ok(Array.isArray(preview));
     assert.ok(preview.length > 0);
     assert.equal(preview[0].step, 0);
-    // Each step should scale up due to geometric liquidity factor
+    // Without price/avgCostBasis, all steps have factor=1.0 (uniform sizing)
     for (let i = 1; i < preview.length; i++) {
-      assert.ok(preview[i].sizeUsdc >= preview[i - 1].sizeUsdc,
-        `step ${i} size ${preview[i].sizeUsdc} >= step ${i - 1} size ${preview[i - 1].sizeUsdc}`);
+      assert.equal(preview[i].sizeUsdc, preview[0].sizeUsdc,
+        `step ${i} size ${preview[i].sizeUsdc} === step 0 size ${preview[0].sizeUsdc}`);
     }
   });
 
@@ -415,5 +435,38 @@ describe('Integration: full sizing workflow', () => {
     assert.equal(btcQty, 0.0015);
     assert.equal(sizer.meetsMinimum(entry.sizeUsdc, 10), true);
     assert.equal(sizer.meetsMinimum(entry.sizeUsdc, 200), false);
+  });
+
+  it('sizes up when price drops below avg cost basis', () => {
+    const sizer = makeSizer({ liquidityFactorCap: 2.0, divergenceScalePct: 5 });
+    // First entry: no avg cost, factor=1.0
+    const first = sizer.calculateEntrySize({
+      regime: 'HARVEST',
+      cycleBuys: 0,
+      totalCostBasis: 0,
+    });
+    assert.equal(first.factors.liquidityFactor, 1.0);
+
+    // Second entry: price at avg cost, factor=1.0
+    const atCost = sizer.calculateEntrySize({
+      regime: 'HARVEST',
+      cycleBuys: 1,
+      totalCostBasis: 50,
+      currentPrice: 100000,
+      avgCostBasis: 100000,
+    });
+    assert.equal(atCost.factors.liquidityFactor, 1.0);
+
+    // Third entry: price 5% below avg, factor=2.0 (capped)
+    const belowCost = sizer.calculateEntrySize({
+      regime: 'HARVEST',
+      cycleBuys: 2,
+      totalCostBasis: 100,
+      currentPrice: 95000,
+      avgCostBasis: 100000,
+    });
+    assert.equal(belowCost.factors.liquidityFactor, 2.0);
+    assert.ok(belowCost.sizeUsdc > atCost.sizeUsdc,
+      `Below-cost size ${belowCost.sizeUsdc} > at-cost size ${atCost.sizeUsdc}`);
   });
 });

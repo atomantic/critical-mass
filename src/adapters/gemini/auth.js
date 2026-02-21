@@ -55,8 +55,13 @@ const stringifyPayload = (payload) => {
  * @param {Object} requestPayload - Request payload object
  * @returns {Object} Headers for REST API request
  */
+let lastNonce = 0;
+
 const getRestAuthHeaders = (apiKey, apiSecret, endpoint, requestPayload = {}) => {
-  const nonce = Date.now();
+  // Monotonic nonce: always advances even under concurrent calls
+  const now = Date.now();
+  lastNonce = Math.max(now, lastNonce + 1);
+  const nonce = lastNonce;
   const payload = {
     request: endpoint,
     nonce,

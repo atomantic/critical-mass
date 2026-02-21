@@ -1,31 +1,38 @@
 // @ts-check
 /**
- * Regime Engine API Routes
+ * Regime Engine API Routes (Gateway Proxy)
+ *
+ * Forwards regime engine commands and queries to the Coinbase engine
+ * process via IPC WebSocket. Config reads/writes stay local (file-based).
  */
 
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig, getExchangeConfig } = require('../config-utils');
-const { getMarketDataService, startMarketDataService, stopMarketDataService } = require('../market-data-service');
-const { getChartDataBuffer, getChartData } = require('../chart-data-buffer');
-const { createRegimeEngine } = require('../regime-engine');
 const { log } = require('../logger');
+
+/** Convert IPC connection errors to standard response */
+const engineError = (err) => ({ success: false, error: `Engine unavailable: ${err.message}` });
+
+/** HTTP status code for error responses */
+const errStatus = (result) => result.error?.includes('unavailable') ? 503 : 400;
 
 /**
  * @param {import('express').Express} app
- * @param {{regimeEngines: Map, io: Object, wireMarketDataCallbacks: Function, saveRegimeRunningFlag: Function}} deps
+ * @param {{exchangeIPCMap: Object}} deps
  */
 module.exports = (app, deps) => {
-  const { regimeEngines, io, wireMarketDataCallbacks, saveRegimeRunningFlag } = deps;
+  const { exchangeIPCMap } = deps;
+  const getIPC = (exchange) => exchangeIPCMap[exchange] || exchangeIPCMap.coinbase;
 
-  // Get regime configuration for an exchange
+  // ============ Config (file-based, stays in gateway) ============
+
   app.get('/api/:exchange/regime/config', (req, res) => {
     const { exchange } = req.params;
     const regimeConfig = getRegimeConfig(exchange);
     const exchangeConfig = getExchangeConfig(exchange);
-    const config = { ...regimeConfig, dryRun: exchangeConfig.dryRun };
+    const config = { ...regimeConfig, dryRun: exchangeConfig.dryRun, productId: exchangeConfig.productId };
     res.json({ success: true, exchange, config });
   });
 
-  // Update regime configuration for an exchange
   app.put('/api/:exchange/regime/config', (req, res) => {
     const { exchange } = req.params;
     const updates = req.body;
@@ -52,399 +59,169 @@ module.exports = (app, deps) => {
     const config = updateRegimeConfig(exchange, updates);
     log('INFO', `🔧 [${exchange}] Regime config updated`);
 
-    const engine = regimeEngines.get(exchange);
-    if (engine) {
-      engine.updateConfig(updates);
-    }
+    // Notify engine of config change (fire-and-forget)
+    getIPC(exchange).request('regime:update-config', updates, exchange).catch(() => {});
 
     res.json({ success: true, exchange, config });
   });
 
-  // Get regime engine status
-  app.get('/api/:exchange/regime/status', (req, res) => {
+  // ============ Engine Commands (forwarded via IPC) ============
+
+  app.get('/api/:exchange/regime/status', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) {
-      const { loadRegimeState } = require('../state-tracker');
-      const savedState = loadRegimeState(exchange);
-
-      const marketService = getMarketDataService(exchange);
-      const serviceStatus = marketService ? marketService.getStatus() : null;
-
-      return res.json({
-        success: true,
-        exchange,
-        running: false,
-        status: {
-          isRunning: false,
-          market: serviceStatus?.market || null,
-          regime: serviceStatus?.regime || null,
-          position: savedState?.position || null,
-          health: { mode: 'STOPPED' },
-          isDryRun: savedState?.isDryRun || false,
-        },
-      });
-    }
-
-    const status = engine.getStatus();
-    res.json({ success: true, exchange, running: true, status });
+    const result = await getIPC(exchange).request('regime:status', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Get cached chart data for regime dashboard
-  app.get('/api/:exchange/regime/chart-data', (req, res) => {
-    const { exchange } = req.params;
-    const chartData = getChartData(exchange);
-
-    if (!chartData) {
-      return res.json({
-        success: true,
-        exchange,
-        data: { priceHistory: [], atrHistory: [], regimeHistory: [], exchange, timestamp: Date.now() },
-      });
-    }
-
-    res.json({ success: true, exchange, data: chartData });
-  });
-
-  // Helper: create engine callbacks for an exchange
-  const createEngineCallbacks = (exchange) => ({
-    onTradeEvent: (event) => io.emit('trade:event', event),
-    onRegimeChange: (prevMode, newMode, reason) => io.emit('regime:change', { exchange, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
-    onHealthChange: (mode, reason) => io.emit('regime:health', { exchange, mode, reason, message: reason || `Health: ${mode}` }),
-    onPositionUpdate: (data) => io.emit('regime:position', { exchange, ...data }),
-    onStatusUpdate: (status) => {
-      getChartDataBuffer(exchange).processStatus(status);
-      io.emit('regime:status', { exchange, status });
-    },
-  });
-
-  // Start regime engine for an exchange
   app.post('/api/:exchange/regime/start', async (req, res) => {
     const { exchange } = req.params;
-    const { getAdapter } = require('../adapters');
-
-    if (regimeEngines.has(exchange)) {
-      return res.status(400).json({ success: false, error: 'Regime engine already running for this exchange' });
-    }
-
-    const exchangeConfig = getExchangeConfig(exchange);
-    const adapter = getAdapter(exchange);
-
-    if (!adapter.hasValidKeys || !adapter.hasValidKeys()) {
-      return res.status(400).json({ success: false, error: 'API keys not configured for this exchange' });
-    }
-
-    const engine = createRegimeEngine(exchange, exchangeConfig, createEngineCallbacks(exchange));
-    regimeEngines.set(exchange, engine);
-
-    const startResult = await engine.start();
-
-    if (!startResult.success) {
-      regimeEngines.delete(exchange);
-      return res.status(500).json({ success: false, error: startResult.error || 'Failed to start regime engine' });
-    }
-
-    stopMarketDataService(exchange);
-    saveRegimeRunningFlag(exchange, true);
-
-    log('INFO', `🚀 [${exchange}] Regime engine started`);
-    res.json({ success: true, exchange, status: engine.getStatus() });
+    const result = await getIPC(exchange).request('regime:start', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Stop regime engine for an exchange
   app.post('/api/:exchange/regime/stop', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) {
-      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
-    }
-
-    log('INFO', `🛑 [${exchange}] Stopping regime engine...`);
-
-    await startMarketDataService(exchange);
-    wireMarketDataCallbacks(exchange);
-
-    const stopResult = await engine.stop().catch(err => {
-      log('ERROR', `❌ [${exchange}] Error stopping engine: ${err.message}`);
-      return { error: err.message };
-    });
-
-    if (stopResult?.error) {
-      return res.status(500).json({ success: false, error: stopResult.error });
-    }
-
-    regimeEngines.delete(exchange);
-    saveRegimeRunningFlag(exchange, false);
-
-    log('INFO', `✅ [${exchange}] Regime engine stopped successfully`);
-    res.json({ success: true, exchange, stopped: true });
+    const result = await getIPC(exchange).request('regime:stop', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Pause regime engine
-  app.post('/api/:exchange/regime/pause', (req, res) => {
+  app.post('/api/:exchange/regime/pause', async (req, res) => {
     const { exchange } = req.params;
-    const { reason } = req.body;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) {
-      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
-    }
-
-    engine.pause(reason || 'Manual pause via API');
-    log('INFO', `⏸️ [${exchange}] Regime engine paused: ${reason || 'manual'}`);
-    res.json({ success: true, exchange, paused: true, status: engine.getStatus() });
+    const result = await getIPC(exchange).request('regime:pause', { reason: req.body?.reason }, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Resume regime engine
-  app.post('/api/:exchange/regime/resume', (req, res) => {
+  app.post('/api/:exchange/regime/resume', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) {
-      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
-    }
-
-    engine.resume();
-    log('INFO', `▶️ [${exchange}] Regime engine resumed`);
-    res.json({ success: true, exchange, resumed: true, status: engine.getStatus() });
+    const result = await getIPC(exchange).request('regime:resume', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Force regime transition
-  app.post('/api/:exchange/regime/force-regime', (req, res) => {
+  app.post('/api/:exchange/regime/force-regime', async (req, res) => {
     const { exchange } = req.params;
     const { regime, reason } = req.body;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) {
-      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
-    }
 
     const validRegimes = ['HARVEST', 'CAUTION', 'TREND'];
     if (!regime || !validRegimes.includes(regime.toUpperCase())) {
       return res.status(400).json({ success: false, error: `Invalid regime. Must be one of: ${validRegimes.join(', ')}` });
     }
 
-    engine.forceRegime(regime.toUpperCase(), reason || 'Forced via API');
-    log('INFO', `🔄 [${exchange}] Regime forced to ${regime.toUpperCase()}: ${reason || 'manual'}`);
-    res.json({ success: true, exchange, regime: regime.toUpperCase(), status: engine.getStatus() });
+    const result = await getIPC(exchange).request('regime:force-regime', { regime: regime.toUpperCase(), reason }, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Force resume from drawdown pause
-  app.post('/api/:exchange/regime/resume-drawdown', (req, res) => {
+  app.post('/api/:exchange/regime/resume-drawdown', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) {
-      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
-    }
-
-    const result = engine.forceResumeDrawdown();
-    if (result.success) {
-      log('INFO', `▶️ [${exchange}] Drawdown pause manually resumed: ${result.message}`);
-    }
-
-    res.json({ success: result.success, exchange, message: result.message, status: engine.getStatus() });
+    const result = await getIPC(exchange).request('regime:resume-drawdown', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Manual body roll-up merge
+  app.get('/api/:exchange/regime/preview-ladder', async (req, res) => {
+    const { exchange } = req.params;
+    const result = await getIPC(exchange).request('regime:preview-ladder', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.post('/api/:exchange/regime/rebuild-ladder', async (req, res) => {
+    const { exchange } = req.params;
+    const result = await getIPC(exchange).request('regime:rebuild-ladder', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.post('/api/:exchange/regime/cancel-ladder', async (req, res) => {
+    const { exchange } = req.params;
+    const result = await getIPC(exchange).request('regime:cancel-ladder', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
   app.post('/api/:exchange/regime/rollup-body', async (req, res) => {
     const { exchange } = req.params;
     const { bodyId } = req.body || {};
-    const engine = regimeEngines.get(exchange);
+    if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
 
-    if (!engine) {
-      return res.status(400).json({ success: false, error: 'Regime engine not running for this exchange' });
-    }
-    if (!bodyId) {
-      return res.status(400).json({ success: false, error: 'bodyId is required' });
-    }
-
-    const result = await engine.manualMergeBody(bodyId);
-    if (result.success) {
-      log('INFO', `🔗 [${exchange}] Body roll-up: ${result.message}`);
-    }
-
-    res.json({ success: result.success, exchange, message: result.message, mergedBody: result.mergedBody || null, status: engine.getStatus() });
+    const result = await getIPC(exchange).request('regime:rollup-body', { bodyId }, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Get regime engine fill ledger
-  app.get('/api/:exchange/regime/fills', (req, res) => {
+  // ============ Data Queries (forwarded via IPC) ============
+
+  app.get('/api/:exchange/regime/chart-data', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) {
-      const { createFillLedger } = require('../fill-ledger');
-      const ledger = createFillLedger(exchange);
-      const fills = ledger.getAllFills();
-      const stats = ledger.getStats();
-      return res.json({ success: true, exchange, running: false, fills, stats });
-    }
-
-    const fills = engine.getFills();
-    const stats = engine.getFillStats();
-    res.json({ success: true, exchange, running: true, fills, stats });
+    const data = await getIPC(exchange).request('regime:chart-data', {}, exchange).catch(() =>
+      ({ priceHistory: [], atrHistory: [], regimeHistory: [], exchange, timestamp: Date.now() })
+    );
+    res.json({ success: true, exchange, data });
   });
 
-  // Get open orders for regime engine
+  app.get('/api/:exchange/regime/fills', async (req, res) => {
+    const { exchange } = req.params;
+    const result = await getIPC(exchange).request('regime:fills', {}, exchange).catch(engineError);
+    if (result.success === false) return res.status(errStatus(result)).json(result);
+    res.json({ success: true, exchange, ...result });
+  });
+
   app.get('/api/:exchange/regime/open-orders', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (engine) {
-      const openOrders = engine.getOpenOrders ? engine.getOpenOrders() : [];
-      return res.json({ success: true, exchange, running: true, orders: openOrders });
-    }
-
-    const marketService = getMarketDataService(exchange);
-    const { loadRegimeState } = require('../state-tracker');
-    const savedState = loadRegimeState(exchange);
-
-    const orders = [];
-
-    if (marketService?.getOpenOrders) {
-      orders.push(...marketService.getOpenOrders());
-    }
-
-    if (orders.length === 0 && savedState.position?.activeTpOrderId) {
-      const { getAdapter } = require('../adapters');
-      const adapter = getAdapter(exchange);
-
-      const orderStatus = await adapter.getOrder(savedState.position.activeTpOrderId).catch(() => null);
-      if (orderStatus && orderStatus.status === 'OPEN') {
-        orders.push({
-          orderId: savedState.position.activeTpOrderId,
-          type: 'take_profit',
-          side: 'sell',
-          price: savedState.position.lastTpPrice || 0,
-          size: savedState.position.btcOnOrder || savedState.position.totalBTC || 0,
-          status: 'open',
-          placedAt: savedState.position.lastEntryTime || null,
-        });
-      }
-    }
-
-    res.json({ success: true, exchange, running: false, orders });
+    const result = await getIPC(exchange).request('regime:open-orders', {}, exchange).catch(engineError);
+    if (result.success === false) return res.status(errStatus(result)).json(result);
+    res.json({ success: true, exchange, ...result });
   });
 
-  // Recalculate regime state from fill history
   app.post('/api/:exchange/regime/recalculate', async (req, res) => {
     const { exchange } = req.params;
     const { apply = false } = req.body;
-
-    const { createFillLedger } = require('../fill-ledger');
-    const { loadRegimeState, saveRegimeState } = require('../state-tracker');
-
-    const fillLedger = createFillLedger(exchange);
-    const currentState = loadRegimeState(exchange);
-
-    const recalcResult = fillLedger.recalculateCycles();
-    const currentCycleFills = fillLedger.getCurrentCycleFills();
-    const currentPosition = fillLedger.rebuildPositionFromFills(currentCycleFills);
-
-    // Use global P&L computed from all fills (matches dashboard Filled Orders computation)
-    const totalRealizedPnL = recalcResult.globalRealizedPnL;
-    const totalRealizedBtcPnL = recalcResult.globalRealizedBtcPnL;
-
-    const changes = {
-      cyclesCompleted: { before: currentState.position?.cyclesCompleted || 0, after: recalcResult.cyclesCompleted },
-      realizedPnL: { before: currentState.position?.realizedPnL || 0, after: totalRealizedPnL },
-      realizedBtcPnL: { before: currentState.position?.realizedBtcPnL || 0, after: totalRealizedBtcPnL },
-      ladderStep: { before: currentState.position?.ladderStep || 0, after: currentPosition.ladderStep },
-      totalBTC: { before: currentState.position?.totalBTC || 0, after: currentPosition.totalBTC },
-      totalCostBasis: { before: currentState.position?.totalCostBasis || 0, after: currentPosition.totalCostBasis },
-    };
-
-    if (apply) {
-      // Compute body-only P&L to keep celestialState counter in sync
-      const bodyOnlyPnL = totalRealizedPnL - recalcResult.realizedPnL;
-      const bodyOnlyBtcPnL = totalRealizedBtcPnL - recalcResult.realizedBtcPnL;
-      const celestialState = currentState.position?.celestialState || {};
-      const updatedPosition = {
-        ...currentState.position,
-        ...currentPosition,
-        cyclesCompleted: recalcResult.cyclesCompleted,
-        realizedPnL: totalRealizedPnL,
-        realizedBtcPnL: totalRealizedBtcPnL,
-        celestialState: {
-          ...celestialState,
-          bodiesRealizedPnL: Math.round(bodyOnlyPnL * 100) / 100,
-          bodiesRealizedBtcPnL: Math.round(bodyOnlyBtcPnL * 1e8) / 1e8,
-        },
-      };
-
-      saveRegimeState(exchange, { ...currentState, position: updatedPosition });
-      fillLedger.persist();
-
-      const engine = regimeEngines.get(exchange);
-      if (engine?.updatePosition) {
-        engine.updatePosition(updatedPosition);
-      }
-
-      console.log(`🔧 [${exchange}] Regime state recalculated: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalRealizedPnL.toFixed(2)}, BTC reserves=${totalRealizedBtcPnL.toFixed(8)}`);
-    }
-
-    res.json({
-      success: true,
-      exchange,
-      applied: apply,
-      changes,
-      cycleDetails: recalcResult.cycleDetails,
-      orphansFixed: recalcResult.orphansFixed,
-      activeCycleId: recalcResult.activeCycleId,
-      currentCycleFills: currentCycleFills.length,
-    });
+    const result = await getIPC(exchange).request('regime:recalculate', { apply }, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  // Dry-run endpoints
-  app.get('/api/:exchange/regime/dry-run/log', (req, res) => {
+  app.post('/api/:exchange/regime/convert-dca', async (req, res) => {
+    const { exchange } = req.params;
+    const { preview = true, merge = false } = req.body;
+    const result = await getIPC(exchange).request('regime:convert-dca', { preview, merge }, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  // ============ Dry-Run Routes (forwarded via IPC) ============
+
+  app.get('/api/:exchange/regime/dry-run/log', async (req, res) => {
     const { exchange } = req.params;
     const limit = parseInt(req.query.limit) || 100;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) return res.status(400).json({ success: false, error: 'Regime engine not running' });
-    if (!engine.isDryRun) return res.status(400).json({ success: false, error: 'Regime engine is not in dry-run mode' });
-
-    const dryLog = engine.getDryRunLog(limit);
-    res.json({ success: true, exchange, isDryRun: true, log: dryLog });
+    const result = await getIPC(exchange).request('regime:dry-run-log', { limit }, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  app.get('/api/:exchange/regime/dry-run/pnl', (req, res) => {
+  app.get('/api/:exchange/regime/dry-run/pnl', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) return res.status(400).json({ success: false, error: 'Regime engine not running' });
-    if (!engine.isDryRun) return res.status(400).json({ success: false, error: 'Regime engine is not in dry-run mode' });
-
-    const pnl = engine.getDryRunPnL();
-    const state = engine.getState();
-    res.json({ success: true, exchange, isDryRun: true, pnl, position: state.position, cyclesCompleted: state.position.cyclesCompleted, realizedPnL: state.position.realizedPnL, unrealizedPnL: state.position.unrealizedPnL });
+    const result = await getIPC(exchange).request('regime:dry-run-pnl', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  app.post('/api/:exchange/regime/dry-run/reset', (req, res) => {
+  app.post('/api/:exchange/regime/dry-run/reset', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) return res.status(400).json({ success: false, error: 'Regime engine not running' });
-    if (!engine.isDryRun) return res.status(400).json({ success: false, error: 'Regime engine is not in dry-run mode' });
-
-    const reset = engine.resetDryRun();
-    res.json({ success: reset, exchange, message: reset ? 'Dry-run state reset successfully' : 'Failed to reset dry-run state', status: engine.getStatus() });
+    const result = await getIPC(exchange).request('regime:dry-run-reset', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
 
-  app.get('/api/:exchange/regime/dry-run/state', (req, res) => {
+  app.get('/api/:exchange/regime/dry-run/state', async (req, res) => {
     const { exchange } = req.params;
-    const engine = regimeEngines.get(exchange);
-
-    if (!engine) return res.status(400).json({ success: false, error: 'Regime engine not running' });
-
-    const state = engine.getState();
-    if (!state.isDryRun) return res.status(400).json({ success: false, error: 'Regime engine is not in dry-run mode' });
-
-    res.json({ success: true, exchange, isDryRun: true, dryRunState: state.dryRun, position: state.position, regime: state.regime, market: state.market });
+    const result = await getIPC(exchange).request('regime:dry-run-state', {}, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
   });
-
-  // Expose createEngineCallbacks for auto-resume
-  return { createEngineCallbacks };
 };

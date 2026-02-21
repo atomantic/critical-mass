@@ -6,7 +6,7 @@
  * Extracted from regime-engine.js for modularity.
  */
 
-const { roundBTC, roundUSDC } = require('./volatility-utils');
+const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /**
  * Calculate APY and return metrics
@@ -32,7 +32,16 @@ const calculateApyMetrics = (positionState, config, marketState) => {
             : autoDerivedCapital));
 
   const initialCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
-  const deployedInPosition = positionState.totalCostBasis || 0;
+
+  // Derive deployed capital from source data (totalCostBasis can be stale/out-of-sync)
+  const bodyCost = (positionState.celestialBodies || [])
+    .reduce((sum, b) => sum + (b.costBasis || 0), 0);
+  const pendingEntryCost = (positionState.pendingEntryOrders || [])
+    .reduce((sum, o) => sum + (o.sizeUsdc || 0), 0);
+  const pendingLadderCost = (positionState.pendingLadderOrders || [])
+    .reduce((sum, o) => sum + (o.sizeUsdc || 0), 0);
+  const additionalCycleCost = Math.max(0, (positionState.totalCostBasis || 0) - bodyCost);
+  const deployedInPosition = bodyCost + pendingEntryCost + pendingLadderCost + additionalCycleCost;
   const availableCapital = Math.max(0, maxUsdcDeployed - deployedInPosition);
   const currentPrice = marketState.lastPrice || 0;
 
@@ -41,10 +50,10 @@ const calculateApyMetrics = (positionState, config, marketState) => {
   const deployedCapital = deployedInPosition;
   const originalCapital = depositedCapital;
 
-  // BTC value in USD terms
-  const totalBtcReturn = positionState.realizedBtcPnL || 0;
-  const btcValueUsd = totalBtcReturn * currentPrice;
-  const totalLiquidValue = totalUsdcReturn + btcValueUsd;
+  // Asset (e.g. BTC, ETH) value in USD terms
+  const totalAssetReturn = positionState.realizedAssetPnL || 0;
+  const assetValueUsd = totalAssetReturn * currentPrice;
+  const totalLiquidValue = totalUsdcReturn + assetValueUsd;
 
   // Zero return template
   const zeroMetrics = {
@@ -54,14 +63,14 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     elapsedMs: startTime ? now - startTime : 0,
     elapsedDays: 0,
     totalUsdcReturn: 0, totalUsdcReturnPercent: 0, estimatedDailyUsdc: 0,
-    totalBtcReturn: 0, btcValueUsd: 0, estimatedDailyBtc: 0,
+    totalAssetReturn: 0, assetValueUsd: 0, estimatedDailyAsset: 0,
     totalLiquidValue: 0, totalLiquidValuePercent: 0,
     dailyReturnPercent: 0, estimatedAnnualReturn: 0, estimatedApy: 0,
     cyclesPerDay: 0, avgPnlPerCycle: 0,
     totalReturn: 0, totalReturnPercent: 0,
   };
 
-  if (!startTime || (totalUsdcReturn === 0 && totalBtcReturn === 0)) {
+  if (!startTime || (totalUsdcReturn === 0 && totalAssetReturn === 0)) {
     return zeroMetrics;
   }
 
@@ -96,7 +105,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     : 0;
 
   const estimatedDailyUsdc = hasEnoughData && elapsedDays > 0 ? totalUsdcReturn / elapsedDays : 0;
-  const estimatedDailyBtc = hasEnoughData && elapsedDays > 0 ? totalBtcReturn / elapsedDays : 0;
+  const estimatedDailyAsset = hasEnoughData && elapsedDays > 0 ? totalAssetReturn / elapsedDays : 0;
   const estimatedDailyLiquid = hasEnoughData && elapsedDays > 0 ? totalLiquidValue / elapsedDays : 0;
 
   return {
@@ -114,9 +123,9 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     totalUsdcReturn: roundUSDC(totalUsdcReturn),
     totalUsdcReturnPercent: roundUSDC(totalUsdcReturnPercent * 100) / 100,
     estimatedDailyUsdc: roundUSDC(estimatedDailyUsdc),
-    totalBtcReturn: roundBTC(totalBtcReturn),
-    btcValueUsd: roundUSDC(btcValueUsd),
-    estimatedDailyBtc: roundBTC(estimatedDailyBtc),
+    totalAssetReturn: roundAsset(totalAssetReturn),
+    assetValueUsd: roundUSDC(assetValueUsd),
+    estimatedDailyAsset: roundAsset(estimatedDailyAsset),
     totalLiquidValue: roundUSDC(totalLiquidValue),
     totalLiquidValuePercent: roundUSDC(totalLiquidValuePercent * 100) / 100,
     estimatedDailyLiquid: roundUSDC(estimatedDailyLiquid),
@@ -167,14 +176,14 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
         positionState.originalCapital = positionState.initialCapital;
       }
       ensureDepositedCapital();
-      console.log(`📊 [${exchange}] APY tracking backfilled: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
+      console.log(`📊 [${exchange}] APY tracking backfilled: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
       return;
     }
     if (!positionState.originalCapital) {
       positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
     }
     ensureDepositedCapital();
-    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
+    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
     return;
   }
 
@@ -183,7 +192,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
       positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
     }
     ensureDepositedCapital();
-    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${positionState.depositedCapital} max=$${config.maxUsdcDeployed}`);
+    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
     return;
   }
 
@@ -191,7 +200,7 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
   positionState.initialCapital = config.maxUsdcDeployed || 10000;
   positionState.originalCapital = positionState.initialCapital;
   positionState.depositedCapital = positionState.initialCapital;
-  console.log(`📊 [${exchange}] APY tracking started fresh: deposited=$${positionState.depositedCapital}`);
+  console.log(`📊 [${exchange}] APY tracking started fresh: deposited=$${Number(positionState.depositedCapital).toFixed(2)}`);
 };
 
 module.exports = { calculateApyMetrics, initializeApyTracking };

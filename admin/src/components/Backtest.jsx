@@ -401,7 +401,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency: defaultQuoteC
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">{baseCurrency} Reserves (holdback)</span>
-                  <span className="text-yellow-400">{formatBase(results.metrics.btcReserves)} {baseCurrency}</span>
+                  <span className="text-yellow-400">{formatBase(results.metrics.assetReserves)} {baseCurrency}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">{baseCurrency} on Orders (pending)</span>
@@ -409,11 +409,11 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency: defaultQuoteC
                 </div>
                 <div className="flex justify-between border-t border-gray-700 pt-2">
                   <span className="text-gray-400">Total {baseCurrency}</span>
-                  <span className="text-white">{formatBase(results.metrics.totalBTC)} {baseCurrency}</span>
+                  <span className="text-white">{formatBase(results.metrics.totalAsset)} {baseCurrency}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">{baseCurrency} Value @ {formatPrice(results.metrics.endPrice)}</span>
-                  <span className="text-white">{formatCurrency(results.metrics.btcValue)}</span>
+                  <span className="text-white">{formatCurrency(results.metrics.assetValue)}</span>
                 </div>
               </div>
             </div>
@@ -547,7 +547,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency: defaultQuoteC
                   <Area
                     yAxisId="usd"
                     type="monotone"
-                    dataKey="btcValue"
+                    dataKey="assetValue"
                     name={`${baseCurrency} Value`}
                     stackId="portfolio"
                     fill="#F59E0B"
@@ -566,7 +566,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency: defaultQuoteC
                   <Line
                     yAxisId="btc"
                     type="monotone"
-                    dataKey="btcPrice"
+                    dataKey="assetPrice"
                     name="basePrice"
                     stroke="#F59E0B"
                     strokeWidth={1}
@@ -600,7 +600,7 @@ function Backtest({ summary, exchange = 'coinbase', quoteCurrency: defaultQuoteC
                         <td className="py-2">{order.buyDate}</td>
                         <td className="py-2">{formatPrice(order.buyPrice)}</td>
                         <td className="py-2">{formatPrice(order.sellTargetPrice)}</td>
-                        <td className="py-2 font-mono">{formatBase(order.sellBTC)}</td>
+                        <td className="py-2 font-mono">{formatBase(order.sellAsset)}</td>
                         <td className="py-2">{formatCurrency(order.currentValue)}</td>
                         <td className={`py-2 ${order.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {order.unrealizedPnL >= 0 ? '+' : ''}{formatCurrency(order.unrealizedPnL)}

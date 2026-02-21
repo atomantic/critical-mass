@@ -6,6 +6,9 @@ import {
   GLOW_INTENSITY, EMISSIVE_INTENSITY, STELLAR_TIERS, getBodySize,
 } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
+import MoonGeometry from './MoonGeometry'
+import SatelliteGeometry from './SatelliteGeometry'
+import HypergiantGeometry from './HypergiantGeometry'
 
 /**
  * Individual celestial body (visual only — parent handles orbital positioning).
@@ -17,7 +20,7 @@ import CelestialTooltip from './CelestialTooltip'
  *   Bright MeshBasicMaterial (unlit, full brightness → bloom does the glow)
  *   + one thin BackSide halo for color tint. Bloom handles the rest.
  */
-const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => {
+const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const meshRef = useRef()
   const glowRef = useRef()
 
@@ -47,37 +50,55 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => 
     }
   })
 
+  const isMoon = body.tier === 'moon'
+  const isSatellite = body.tier === 'satellite'
+  const isHypergiant = body.tier === 'hypergiant'
+  const useGroupGeometry = isMoon || isSatellite || isHypergiant
+
   return (
     <group>
-      {/* Main body sphere */}
-      <mesh
-        ref={meshRef}
-        onPointerOver={(e) => { e.stopPropagation(); onHover(body.id) }}
-      >
-        <sphereGeometry args={[size, 24, 24]} />
-        {isStellar ? (
-          <meshBasicMaterial color={coreColor} />
-        ) : (
-          <meshStandardMaterial
-            color={color}
-            emissive={color}
-            emissiveIntensity={emissiveInt}
-            roughness={0.4}
-            metalness={0.3}
-          />
-        )}
-      </mesh>
+      {/* Main body */}
+      {useGroupGeometry ? (
+        <group
+          ref={meshRef}
+          onPointerOver={(e) => { e.stopPropagation(); onHover(body.id) }}
+        >
+          {isMoon && <MoonGeometry size={size} color={color} emissiveInt={emissiveInt} />}
+          {isSatellite && <SatelliteGeometry size={size} color={color} emissiveInt={emissiveInt} />}
+          {isHypergiant && <HypergiantGeometry size={size} />}
+        </group>
+      ) : (
+        <mesh
+          ref={meshRef}
+          onPointerOver={(e) => { e.stopPropagation(); onHover(body.id) }}
+        >
+          <sphereGeometry args={[size, 24, 24]} />
+          {isStellar ? (
+            <meshBasicMaterial color={coreColor} />
+          ) : (
+            <meshStandardMaterial
+              color={color}
+              emissive={color}
+              emissiveIntensity={emissiveInt}
+              roughness={0.4}
+              metalness={0.3}
+            />
+          )}
+        </mesh>
+      )}
 
-      {/* Single thin BackSide glow halo */}
-      <mesh ref={glowRef} scale={isStellar ? 1.3 : 1.4}>
-        <sphereGeometry args={[size, 16, 16]} />
-        <meshBasicMaterial
-          color={color}
-          transparent
-          opacity={0.12}
-          side={THREE.BackSide}
-        />
-      </mesh>
+      {/* Glow halo — skip for moon (no atmosphere) and satellite (mechanical) */}
+      {!isMoon && !isSatellite && (
+        <mesh ref={glowRef} scale={isStellar ? 1.3 : 1.4}>
+          <sphereGeometry args={[size, 16, 16]} />
+          <meshBasicMaterial
+            color={color}
+            transparent
+            opacity={0.12}
+            side={THREE.BackSide}
+          />
+        </mesh>
+      )}
 
       {/* Saturn-like ring for merged planets (mergeCount > 2) */}
       {body.tier === 'planet' && body.mergeCount > 2 && (
@@ -93,7 +114,7 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => 
       )}
 
       {/* Pinned tooltip */}
-      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.5, 0]} maxUsdcDeployed={maxUsdcDeployed} />}
+      {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.5, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}
     </group>
   )
 }, (prev, next) =>
@@ -103,7 +124,8 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed }) => 
   prev.body.tpPrice === next.body.tpPrice &&
   prev.body.mergeCount === next.body.mergeCount &&
   prev.showTooltip === next.showTooltip &&
-  prev.maxUsdcDeployed === next.maxUsdcDeployed
+  prev.maxUsdcDeployed === next.maxUsdcDeployed &&
+  prev.baseCurrency === next.baseCurrency
 )
 
 CelestialBody.displayName = 'CelestialBody'

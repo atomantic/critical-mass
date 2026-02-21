@@ -148,7 +148,7 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
       consolidatedOrders,
       result.newOrderId,
       result.consolidatedPrice,
-      result.consolidatedBTC
+      result.consolidatedAsset
     );
 
     // Track consolidation run for interval-based scheduling
@@ -169,7 +169,7 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
       result.consolidatedCount,
       result.newOrderId,
       result.consolidatedPrice,
-      result.consolidatedBTC
+      result.consolidatedAsset
     );
 
     logger.log('INFO', `[${exchange}] Consolidation complete: ${result.consolidatedCount} orders -> 1 @ $${result.consolidatedPrice.toFixed(2)}`);
@@ -343,7 +343,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   // Emit buy placing event
   tradeEvents.buyPlacing(exchange, actualBuyAmount, config.productId);
 
-  let holdbackBTC;
+  let holdbackAsset;
 
   if (isDryRun) {
     // Simulate the trade without executing
@@ -354,7 +354,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     buyResult = {
       orderId: `dry-run-buy-${Date.now()}`,
       price: currentPrice,
-      btcAmount: simulatedBtcAmount,
+      assetAmount: simulatedBtcAmount,
       usdcAmount: actualBuyAmount,
       fees: simulatedFees,
       rebates: simulatedRebates,
@@ -363,18 +363,18 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       status: 'SIMULATED',
     };
 
-    const baseCcy = getBaseCurrency(config.productId);
-    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated buy: ${buyResult.btcAmount.toFixed(8)} ${baseCcy} at ${buyResult.price.toFixed(2)}`);
-    tradeEvents.buyFilled(exchange, buyResult.btcAmount, buyResult.price, buyResult.fees);
+    const assetCcy = getBaseCurrency(config.productId);
+    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated buy: ${buyResult.assetAmount.toFixed(8)} ${assetCcy} at ${buyResult.price.toFixed(2)}`);
+    tradeEvents.buyFilled(exchange, buyResult.assetAmount, buyResult.price, buyResult.fees);
 
     if (isFibonacci) {
       // Fibonacci dry run: update state first to get cumulative values
       stateTracker.updateAfterFibBuy(state, buyResult, config);
       const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
 
-      const sellQuantity = cycleInfo.cumulativeBTC * (1 - config.holdbackPercent / 100);
+      const sellQuantity = cycleInfo.cumulativeAsset * (1 - config.holdbackPercent / 100);
       const sellPrice = cycleInfo.avgCostBasis * (1 + config.sellMarkupPercent / 100);
-      holdbackBTC = cycleInfo.cumulativeBTC * (config.holdbackPercent / 100);
+      holdbackAsset = cycleInfo.cumulativeAsset * (config.holdbackPercent / 100);
 
       sellOrder = {
         orderId: `dry-run-fib-sell-${Date.now()}`,
@@ -384,14 +384,14 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
         status: 'SIMULATED',
       };
 
-      stateTracker.updateAfterFibSellOrder(state, sellOrder, sellQuantity, holdbackBTC);
+      stateTracker.updateAfterFibSellOrder(state, sellOrder, sellQuantity, holdbackAsset);
       logger.logFibBuy(buyResult, state, cycleInfo, exchange);
       logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange);
     } else {
       // Fixed dry run
       const sellQuantity = simulatedBtcAmount * (1 - config.holdbackPercent / 100);
       const sellPrice = currentPrice * (1 + config.sellMarkupPercent / 100);
-      holdbackBTC = simulatedBtcAmount * (config.holdbackPercent / 100);
+      holdbackAsset = simulatedBtcAmount * (config.holdbackPercent / 100);
 
       sellOrder = {
         orderId: `dry-run-sell-${Date.now()}`,
@@ -406,12 +406,12 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       logger.logSellOrder(sellOrder, state, exchange);
     }
 
-    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} ${baseCcy} at ${sellOrder.limitPrice.toFixed(2)}`);
+    logger.log('INFO', `[${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} ${assetCcy} at ${sellOrder.limitPrice.toFixed(2)}`);
     tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
   } else {
     // Execute real trades
     buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter);
-    tradeEvents.buyFilled(exchange, buyResult.btcAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
+    tradeEvents.buyFilled(exchange, buyResult.assetAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
 
     if (isFibonacci) {
       // Fibonacci strategy: consolidated sell order
@@ -420,7 +420,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
 
       const fibSellResult = await orderManager.placeFibonacciSellOrder(
         config,
-        cycleInfo.cumulativeBTC,
+        cycleInfo.cumulativeAsset,
         cycleInfo.avgCostBasis,
         state.fibActiveSellOrderId,
         adapter
@@ -434,18 +434,18 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
         // Now place new sell order for this buy
         const newFibSellResult = await orderManager.placeFibonacciSellOrder(
           config,
-          buyResult.btcAmount,
-          buyResult.price + (buyResult.netFees || 0) / buyResult.btcAmount,
+          buyResult.assetAmount,
+          buyResult.price + (buyResult.netFees || 0) / buyResult.assetAmount,
           null,
           adapter
         );
         sellOrder = newFibSellResult.sellOrder;
-        holdbackBTC = newFibSellResult.holdbackBTC;
-        stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantityBTC, holdbackBTC);
+        holdbackAsset = newFibSellResult.holdbackAsset;
+        stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
       } else {
         sellOrder = fibSellResult.sellOrder;
-        holdbackBTC = fibSellResult.holdbackBTC;
-        stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantityBTC, holdbackBTC);
+        holdbackAsset = fibSellResult.holdbackAsset;
+        stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantity, holdbackAsset);
       }
 
       logger.logFibBuy(buyResult, state, cycleInfo, exchange);
@@ -454,7 +454,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     } else {
       // Fixed strategy: individual sell order
       sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter);
-      holdbackBTC = buyResult.btcAmount * (config.holdbackPercent / 100);
+      holdbackAsset = buyResult.assetAmount * (config.holdbackPercent / 100);
       stateTracker.updateAfterBuy(state, buyResult, sellOrder, config);
       logger.logBuy(buyResult, state, exchange);
       logger.logSellOrder(sellOrder, state, exchange);
@@ -468,19 +468,19 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   const baseCurrency = getBaseCurrency(config.productId);
 
   logger.log('INFO', `[${exchange}] ${modeLabel}=== ${intervalLabel} Cycle Complete ===`);
-  logger.log('INFO', `[${exchange}] ${modeLabel}Bought: ${buyResult.btcAmount.toFixed(8)} ${baseCurrency} at ${buyResult.price.toFixed(2)}`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Bought: ${buyResult.assetAmount.toFixed(8)} ${baseCurrency} at ${buyResult.price.toFixed(2)}`);
   logger.log('INFO', `[${exchange}] ${modeLabel}Sell order: ${sellOrder.baseSize.toFixed(8)} ${baseCurrency} at ${sellOrder.limitPrice.toFixed(2)}`);
-  logger.log('INFO', `[${exchange}] ${modeLabel}Holdback (reserves): ${holdbackBTC.toFixed(8)} ${baseCurrency}`);
-  logger.log('INFO', `[${exchange}] ${modeLabel}Total ${baseCurrency} reserves: ${state.btcReserves.toFixed(8)} ${baseCurrency}`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Holdback (reserves): ${holdbackAsset.toFixed(8)} ${baseCurrency}`);
+  logger.log('INFO', `[${exchange}] ${modeLabel}Total ${baseCurrency} reserves: ${state.assetReserves.toFixed(8)} ${baseCurrency}`);
   logger.log('INFO', `[${exchange}] ${modeLabel}Outstanding sell orders: ${state.outstandingOrdersUSDC.toFixed(2)}`);
 
   // Emit cycle complete event
   tradeEvents.cycleComplete(exchange, isDryRun ? 'dry_run_success' : 'success', {
-    btcAmount: buyResult.btcAmount,
+    assetAmount: buyResult.assetAmount,
     buyPrice: buyResult.price,
     sellPrice: sellOrder.limitPrice,
-    holdbackBTC,
-    btcReserves: state.btcReserves,
+    holdbackAsset,
+    assetReserves: state.assetReserves,
     outstandingOrdersUSDC: state.outstandingOrdersUSDC,
   });
 
@@ -492,12 +492,22 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     // Threshold-based consolidation
     if (config.consolidateAfterOrders > 0 && pendingCount > config.consolidateAfterOrders) {
       logger.log('INFO', `[${exchange}] Auto-consolidation triggered: ${pendingCount} orders > ${config.consolidateAfterOrders} threshold`);
-      await executeConsolidation(exchange);
+      const consolResult = await executeConsolidation(exchange).catch(err => {
+        logger.log('ERROR', `[${exchange}] Auto-consolidation failed: ${err.message}`);
+        tradeEvents.error(exchange, `Auto-consolidation failed: ${err.message}`);
+        return { success: false, error: err.message };
+      });
+      if (!consolResult?.success) {
+        logger.log('WARN', `[${exchange}] Auto-consolidation unsuccessful, will retry next cycle`);
+      }
     }
     // Interval-based consolidation (only if threshold didn't trigger and we have 2+ orders)
     else if (pendingCount >= 2 && shouldRunConsolidation(state.lastConsolidationId, config.consolidateInterval)) {
       logger.log('INFO', `[${exchange}] Scheduled consolidation triggered: ${config.consolidateInterval} interval`);
-      await executeConsolidation(exchange);
+      await executeConsolidation(exchange).catch(err => {
+        logger.log('ERROR', `[${exchange}] Scheduled consolidation failed: ${err.message}`);
+        tradeEvents.error(exchange, `Scheduled consolidation failed: ${err.message}`);
+      });
     }
   }
 
@@ -507,11 +517,11 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     intervalType: config.intervalType,
     buyResult,
     sellOrder,
-    holdbackBTC,
+    holdbackAsset,
     exchange,
     state: {
       totalAllocated: state.totalAllocated,
-      btcReserves: state.btcReserves,
+      assetReserves: state.assetReserves,
       outstandingOrdersUSDC: state.outstandingOrdersUSDC,
       intervalsRun: state.totalIntervalsRun,
     },
@@ -523,7 +533,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     result.fibonacci = {
       position: cycleInfo.position,
       cumulativeCost: cycleInfo.cumulativeCost,
-      cumulativeBTC: cycleInfo.cumulativeBTC,
+      cumulativeAsset: cycleInfo.cumulativeAsset,
       avgCostBasis: cycleInfo.avgCostBasis,
       activeSellOrderId: cycleInfo.activeSellOrderId,
     };
@@ -588,9 +598,9 @@ const checkStatus = async (exchange = 'coinbase') => {
       intervalAmount,
       totalIntervalsRun: state.totalIntervalsRun,
       usdcFundSize: state.usdcFundSize,
-      btcReserves: state.btcReserves,
+      assetReserves: state.assetReserves,
       outstandingOrdersUSDC: state.outstandingOrdersUSDC,
-      outstandingOrdersBTC: state.outstandingOrdersBTC,
+      outstandingOrdersAsset: state.outstandingOrdersAsset,
       pendingOrders: stateTracker.getPendingOrders(state).length,
       lastRunId: state.lastRunId,
       lastRunTimestamp: state.lastRunTimestamp,

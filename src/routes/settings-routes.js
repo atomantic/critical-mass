@@ -10,10 +10,10 @@ const { log } = require('../logger');
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, regimeEngines: Map, saveRegimeRunningFlag: Function, rescheduleBackupTimer: Function}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, regimeEngines, saveRegimeRunningFlag, rescheduleBackupTimer } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer } = deps;
 
   // ============ Aggressiveness Presets ============
 
@@ -136,16 +136,16 @@ module.exports = (app, deps) => {
     const { filename } = req.params;
     log('INFO', `💾 Restore requested: ${filename}`);
 
-    const stoppedEngines = [];
-    for (const [exchange, engine] of regimeEngines) {
-      log('INFO', `💾 Stopping regime engine for ${exchange} before restore...`);
-      await engine.stop().catch(err => {
-        log('ERROR', `💾 Error stopping ${exchange} engine: ${err.message}`);
-      });
-      stoppedEngines.push(exchange);
-      saveRegimeRunningFlag(exchange, false);
-    }
-    regimeEngines.clear();
+    // Stop all regime engines across all exchange processes before restore
+    let stoppedEngines = [];
+    const stopPromises = Object.entries(exchangeIPCMap).map(([name, ipc]) =>
+      ipc.request('regime:stop-all', {}).catch((err) => {
+        log('WARN', `💾 Could not stop ${name} engine via IPC: ${err.message}`);
+        return { stopped: [] };
+      })
+    );
+    const stopResults = await Promise.all(stopPromises);
+    stoppedEngines = stopResults.flatMap((r) => r.stopped || []);
 
     const result = restoreBackup(filename);
     if (!result.success) {

@@ -121,6 +121,7 @@ const REGIME_DEFAULTS = {
   maxCycleBuys: 15,
   cycleResetHours: 72, // Auto-reset cycle buys counter after 72 hours (3 days) at max, 0 to disable
   liquidityFactorCap: 2.0,
+  divergenceScalePct: 5,
 
   // Take-Profit
   tpMult: 1.0,
@@ -158,7 +159,7 @@ const REGIME_DEFAULTS = {
   sizeMaxCycleBuys: 100,      // Max cycle buys if auto-adjusting
 
   // Risk Caps
-  maxBtcExposure: 0.5,
+  maxAssetExposure: 0,  // 0 = uncapped
   depositedCapital: 0,  // Total user deposits (0 = auto-derive from maxUsdcDeployed - realizedPnL)
   maxUsdcDeployed: 10000,
   maxDrawdownPercent: 20,
@@ -181,7 +182,7 @@ const REGIME_DEFAULTS = {
   safeRecoveryMs: 60000,
 
   // Invariants
-  maxOpenOrders: 3,
+  maxOpenOrders: 100,
   reconcileIntervalMs: 300000,
 
   // Tail Events
@@ -261,7 +262,6 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     minIntervalMs: 180000,
     maxIntervalMs: 7200000,
     entryOffsetBps: 25,
-    baseSizeUsdc: 25,
     cautionScale: 0.15,
     trendScale: 0,
     maxCycleBuys: 10,
@@ -271,7 +271,6 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     minIntervalMs: 120000,
     maxIntervalMs: 3600000,
     entryOffsetBps: 18,
-    baseSizeUsdc: 50,
     cautionScale: 0.35,
     trendScale: 0.1,
     maxCycleBuys: 15,
@@ -281,7 +280,6 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     minIntervalMs: 90000,
     maxIntervalMs: 2400000,
     entryOffsetBps: 12,
-    baseSizeUsdc: 100,
     cautionScale: 0.6,
     trendScale: 0.25,
     maxCycleBuys: 25,
@@ -291,7 +289,6 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     minIntervalMs: 60000,
     maxIntervalMs: 1200000,
     entryOffsetBps: 5,
-    baseSizeUsdc: 200,
     cautionScale: 1.0,
     trendScale: 0.5,
     maxCycleBuys: 50,
@@ -303,6 +300,7 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
  * @type {GlobalConfig}
  */
 const GLOBAL_DEFAULTS = {
+  simpleDcaEnabled: false,
   schedulerInterval: 30000,
   backup: {
     enabled: true,
@@ -566,10 +564,17 @@ const getRegimeConfig = (exchange) => {
   const exchangeConfig = config.exchanges?.[exchange] || {};
   const regimeConfig = exchangeConfig.regime || {};
 
-  return {
+  const merged = {
     ...REGIME_DEFAULTS,
     ...regimeConfig,
   };
+  // Migrate old config key from disk
+  const _oldKey = 'max' + 'BtcExposure'; // constructed to avoid refactoring scripts
+  if (_oldKey in merged) {
+    merged.maxAssetExposure = merged[_oldKey];
+    delete merged[_oldKey];
+  }
+  return merged;
 };
 
 /**
@@ -585,10 +590,12 @@ const updateRegimeConfig = (exchange, updates) => {
     config.exchanges[exchange] = { ...DEFAULTS };
   }
 
-  config.exchanges[exchange].regime = {
+  const merged = {
     ...(config.exchanges[exchange].regime || {}),
     ...updates,
   };
+
+  config.exchanges[exchange].regime = merged;
 
   saveConfig(config);
   return config;
@@ -623,7 +630,6 @@ const validateRegimeConfig = (config) => {
   if (config.maxIntervalMs !== undefined && config.maxIntervalMs > 14400000) {
     errors.push('maxIntervalMs must not exceed 14400000 (4 hours)');
   }
-
   // Regime Detection validation
   if (config.momentumMult !== undefined && (config.momentumMult < 1.0 || config.momentumMult > 2.5)) {
     errors.push('momentumMult must be between 1.0 and 2.5');
@@ -641,6 +647,9 @@ const validateRegimeConfig = (config) => {
   }
   if (config.maxCycleBuys !== undefined && (config.maxCycleBuys < 3 || config.maxCycleBuys > 1000)) {
     errors.push('maxCycleBuys must be between 3 and 1000');
+  }
+  if (config.divergenceScalePct !== undefined && (config.divergenceScalePct < 0.5 || config.divergenceScalePct > 20)) {
+    errors.push('divergenceScalePct must be between 0.5 and 20');
   }
 
   // Take-Profit validation
@@ -763,8 +772,8 @@ const validateRegimeConfig = (config) => {
   }
 
   // Risk Caps validation
-  if (config.maxBtcExposure !== undefined && (config.maxBtcExposure < 0.01 || config.maxBtcExposure > 10.0)) {
-    errors.push('maxBtcExposure must be between 0.01 and 10.0');
+  if (config.maxAssetExposure !== undefined && config.maxAssetExposure !== 0 && (config.maxAssetExposure < 0.01 || config.maxAssetExposure > 10.0)) {
+    errors.push('maxAssetExposure must be 0 (uncapped) or between 0.01 and 10.0');
   }
   if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && (config.depositedCapital < 100 || config.depositedCapital > 100000)) {
     errors.push('depositedCapital must be 0 (auto-derive) or between 100 and 100000');
@@ -903,6 +912,108 @@ const updateBackupConfig = (updates) => {
   return config;
 };
 
+/**
+ * Get Kalshi configuration
+ * Reads the top-level kalshi section from config.json
+ * @returns {{ enabled: boolean }}
+ */
+const getKalshiConfig = () => {
+  const raw = loadRawConfig();
+  return {
+    enabled: false,
+    ...raw.kalshi,
+  };
+};
+
+/**
+ * Default hedge configuration
+ */
+const HEDGE_DEFAULTS = {
+  enabled: false,
+  dryRun: true,
+  exchange: 'coinbase',
+  productId: 'BTC-USDC',
+  kalshi: {
+    allowedSeries: ['KXBTC15M', 'KXBTC'],
+    maxPremiumCents: 50,
+    maxContracts: 100,
+    maxSlippageCents: 3,
+    hedgeRatio: 1.0,
+  },
+  position: {
+    btcAmount: 0.05,
+    minBtcAmount: 0.01,
+    maxBtcAmount: 1.0,
+  },
+  exitMode: 'hybrid',
+  stopLoss: {
+    percentFromEntry: 1.0,
+    slippageBps: 10,
+  },
+  takeProfit: {
+    mode: 'software',
+    percentFromEntry: 0.5,
+    trailingEnabled: false,
+    trailingActivationPct: 0.3,
+    trailingStepPct: 0.1,
+  },
+  entry: {
+    minVolatility15m: 0.003,
+    maxVolatility15m: 0.03,
+    minExpectedProfit: 5,
+    maxSpreadBps: 20,
+    cooldownMs: 900000,
+  },
+  holdBeyondSettlement: false,
+  risk: {
+    maxDailyLoss: 200,
+    maxOpenPairs: 1,
+    maxDailyPairs: 10,
+    circuitBreakerConsecutiveLosses: 3,
+  },
+  fees: {
+    exchangeMakerBps: 5,
+    exchangeTakerBps: 10,
+    kalshiTakerCoeff: 0.07,
+  },
+};
+
+/**
+ * Get hedge engine configuration with defaults
+ * @returns {Object} Hedge config with defaults applied
+ */
+const getHedgeConfig = () => {
+  const raw = loadRawConfig();
+  const userHedge = raw.hedge || {};
+  return {
+    ...HEDGE_DEFAULTS,
+    ...userHedge,
+    kalshi: { ...HEDGE_DEFAULTS.kalshi, ...userHedge.kalshi },
+    position: { ...HEDGE_DEFAULTS.position, ...userHedge.position },
+    stopLoss: { ...HEDGE_DEFAULTS.stopLoss, ...userHedge.stopLoss },
+    takeProfit: { ...HEDGE_DEFAULTS.takeProfit, ...userHedge.takeProfit },
+    entry: { ...HEDGE_DEFAULTS.entry, ...userHedge.entry },
+    risk: { ...HEDGE_DEFAULTS.risk, ...userHedge.risk },
+    fees: { ...HEDGE_DEFAULTS.fees, ...userHedge.fees },
+  };
+};
+
+/**
+ * Update hedge configuration
+ * @param {Object} updates - Hedge config updates
+ * @returns {void}
+ */
+const updateHedgeConfig = (updates) => {
+  const config = loadConfig();
+  const raw = loadRawConfig();
+  const current = raw.hedge || {};
+
+  const merged = deepMerge(current, updates);
+  // Store hedge at top level (same as kalshi)
+  const fullConfig = { ...config, hedge: merged };
+  saveConfig(fullConfig);
+};
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -932,6 +1043,12 @@ module.exports = {
   // Backups
   getBackupConfig,
   updateBackupConfig,
+  // Kalshi
+  getKalshiConfig,
+  // Hedge
+  getHedgeConfig,
+  updateHedgeConfig,
+  HEDGE_DEFAULTS,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,

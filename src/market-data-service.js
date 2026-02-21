@@ -15,7 +15,7 @@ const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
-const { getRegimeConfig } = require('./config-utils');
+const { getRegimeConfig, getExchangeConfig } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 
@@ -23,7 +23,7 @@ const { createFillLedger } = require('./fill-ledger');
 const marketDataServices = new Map();
 
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
-const SUPPORTED_EXCHANGES = ['coinbase'];
+const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 
 /**
  * Create a market data service for an exchange
@@ -97,7 +97,8 @@ const createMarketDataService = (exchange) => {
     }
 
     const config = getRegimeConfig(exchange);
-    const productId = config.productId || 'BTC-USDC';
+    const exchangeConfig = getExchangeConfig(exchange);
+    const productId = config.productId || exchangeConfig.productId || 'BTC-USDC';
 
     // Create regime detector for passive monitoring
     regimeDetector = createRegimeDetector(exchange, config);
@@ -108,7 +109,7 @@ const createMarketDataService = (exchange) => {
       trackedOrders.set(savedState.position.activeTpOrderId, {
         type: 'take_profit',
         price: savedState.position.lastTpPrice || 0,
-        size: savedState.position.btcOnOrder || savedState.position.totalBTC || 0,
+        size: savedState.position.assetOnOrder || savedState.position.totalAsset || 0,
         placedAt: savedState.position.lastEntryTime || Date.now(),
         status: 'open',
       });
@@ -116,7 +117,7 @@ const createMarketDataService = (exchange) => {
     }
 
     // Create fill ledger for order fill tracking
-    fillLedger = createFillLedger(exchange);
+    fillLedger = createFillLedger(exchange, productId);
 
     // Create WebSocket feed
     wsFeed = createWebSocketFeed(exchange, {
@@ -242,7 +243,8 @@ const createMarketDataService = (exchange) => {
     const trackedOrder = trackedOrders.get(orderId);
 
     if (status === 'FILLED') {
-      console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} BTC @ $${averageFilledPrice}`);
+      const baseCurr = productId.replace('_', '-').split('-')[0];
+      console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
 
       // Get fills for this order and ingest them
       const adapter = getAdapter(exchange);

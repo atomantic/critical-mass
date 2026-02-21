@@ -4,17 +4,19 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, getConfiguredExchanges, getEnabledExchanges, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
+const { getExchangeConfig, getGlobalConfig, getConfiguredExchanges, getEnabledExchanges, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
+const { shouldAutoResumeRegime } = require('../shared-utils');
 
 /**
  * @param {import('express').Express} app
- * @param {{regimeEngines: Map, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
+ * @param {{exchangeIPCMap: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { regimeEngines, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
+  const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
+  const getIPC = (exchange) => exchangeIPCMap[exchange] || exchangeIPCMap.coinbase;
 
   // Get list of all exchanges
   app.get('/api/exchanges', (req, res) => {
@@ -23,7 +25,6 @@ module.exports = (app, deps) => {
 
     const exchanges = configured.map(name => {
       const config = getExchangeConfig(name);
-      const regimeEngine = regimeEngines.get(name);
       const strategy = config.dcaStrategy || 'fixed';
       const regimeConfig = config.regime || {};
       const hasRegimeConfig = !!(config.regime && Object.keys(config.regime).length > 0);
@@ -34,12 +35,13 @@ module.exports = (app, deps) => {
         productId: config.productId,
         strategy,
         regimeEnabled: regimeConfig.enabled || false,
-        regimeRunning: regimeEngine?.getState?.()?.isRunning || false,
+        regimeRunning: shouldAutoResumeRegime(name),
         hasRegimeConfig,
       };
     });
 
-    res.json({ exchanges, enabled });
+    const globalConfig = getGlobalConfig();
+    res.json({ exchanges, enabled, simpleDcaEnabled: globalConfig.simpleDcaEnabled ?? false });
   });
 
   // Get config for an exchange
@@ -56,10 +58,7 @@ module.exports = (app, deps) => {
     const config = updateExchangeConfig(exchange, updates);
 
     if (updates.regime) {
-      const engine = regimeEngines.get(exchange);
-      if (engine) {
-        engine.updateConfig(updates.regime);
-      }
+      getIPC(exchange).request('regime:update-config', updates.regime, exchange).catch(() => {});
     }
 
     res.json({ success: true, config: config.exchanges[exchange] });
@@ -110,7 +109,7 @@ module.exports = (app, deps) => {
 
     let currentPrice = 0;
     let quoteBalance = { available: 0, hold: 0 };
-    let btcBalance = { available: 0, hold: 0 };
+    let assetBalance = { available: 0, hold: 0 };
     let keysConfigured = false;
     let apiError = null;
     const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
@@ -122,7 +121,7 @@ module.exports = (app, deps) => {
       try {
         currentPrice = await adapter.getCurrentPrice(config.productId);
         quoteBalance = await adapter.getAccountBalance(quoteCurrency);
-        btcBalance = await adapter.getAccountBalance('BTC');
+        assetBalance = await adapter.getAccountBalance(config.productId.split(/[-_]/)[0]);
       } catch (err) {
         apiError = err.message || 'API connection failed';
         log('ERROR', `[${exchange}] Status check failed: ${apiError}`);
@@ -133,7 +132,7 @@ module.exports = (app, deps) => {
       exchange,
       currentPrice,
       quoteBalance,
-      btcBalance,
+      assetBalance,
       quoteCurrency,
       keysConfigured,
       apiError,
@@ -161,9 +160,9 @@ module.exports = (app, deps) => {
 
     const filledOrders = (state.orders || []).filter(o => o.status === 'filled');
     const realizedProfit = filledOrders.reduce((sum, o) => {
-      const proceeds = o.netProceeds || (o.sellQuantityBTC * (o.filledPrice || o.sellPrice));
-      const cost = o.buyCostBasis || (o.buyQuantityBTC * o.buyPrice);
-      const costForSold = o.buyQuantityBTC > 0 ? cost * (o.sellQuantityBTC / o.buyQuantityBTC) : 0;
+      const proceeds = o.netProceeds || (o.sellQuantity * (o.filledPrice || o.sellPrice));
+      const cost = o.buyCostBasis || (o.buyQuantity * o.buyPrice);
+      const costForSold = o.buyQuantity > 0 ? cost * (o.sellQuantity / o.buyQuantity) : 0;
       return sum + (proceeds - costForSold);
     }, 0);
 
@@ -185,10 +184,10 @@ module.exports = (app, deps) => {
         totalFees: state.totalFees || 0,
         totalRebates: state.totalRebates || 0,
         netFees: state.netFees || 0,
-        btcReserves: state.btcReserves || 0,
+        assetReserves: state.assetReserves || 0,
         usdcFundSize: state.usdcFundSize || 0,
         outstandingOrdersUSDC: state.outstandingOrdersUSDC || 0,
-        outstandingOrdersBTC: state.outstandingOrdersBTC || 0,
+        outstandingOrdersAsset: state.outstandingOrdersAsset || 0,
         allocationUsed: state.totalAllocated || 0,
         allocationRemaining: (config.totalAllocation || 0) - (state.totalAllocated || 0),
         intervalsRun: state.totalIntervalsRun || 0,
@@ -229,6 +228,11 @@ module.exports = (app, deps) => {
   // Sync pending orders for an exchange
   app.post('/api/:exchange/sync', async (req, res) => {
     const { exchange } = req.params;
+
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
+
     const config = getExchangeConfig(exchange);
     const state = stateTracker.loadState(config, exchange);
 
@@ -248,6 +252,11 @@ module.exports = (app, deps) => {
   // Trigger trade for an exchange
   app.post('/api/:exchange/trade', async (req, res) => {
     const { exchange } = req.params;
+
+    if (!getGlobalConfig().simpleDcaEnabled) {
+      return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
+    }
+
     log('INFO', `[${exchange}] Manual trade triggered via API`);
 
     const result = await runIntervalCycle(exchange);
