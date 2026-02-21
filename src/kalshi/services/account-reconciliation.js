@@ -8,8 +8,7 @@
  */
 
 const { log } = require('../../logger');
-
-const ts = () => new Date().toISOString().slice(11, 23);
+const { ts } = require('../../time-utils');
 
 // ---------------------------------------------------------------------------
 // API helpers (paginated fetchers)

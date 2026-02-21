@@ -29,10 +29,12 @@ const {
 } = require('./hedge-state')
 const { createHedgeExecutor } = require('./hedge-executor')
 
+const { prefixedTs } = require('../time-utils')
+
 const EVAL_INTERVAL_MS = 5000
 const SAVE_INTERVAL_MS = 30000 // batch-save excursion updates
 
-const ts = () => `[HEDGE] ${new Date().toISOString().slice(11, 23)}`
+const ts = () => prefixedTs('HEDGE')
 
 /**
  * Create and return a hedge engine instance

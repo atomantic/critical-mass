@@ -1,5 +1,4 @@
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
 
 /** Max levels to keep per side */
 const MAX_LEVELS = 50

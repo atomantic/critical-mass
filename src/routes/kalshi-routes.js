@@ -13,6 +13,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const { log } = require('../logger');
 const { KALSHI_DATA_DIR } = require('../paths');
+const { ts } = require('../time-utils');
 
 const DATA_DIR = KALSHI_DATA_DIR;
 
@@ -42,9 +43,6 @@ let marketRefreshTimer = null;
 
 /** @type {NodeJS.Timeout | null} */
 let nextSettlementTimer = null;
-
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23);
 
 /**
  * Calculate ms until the next 15-min settlement boundary + offset.

@@ -11,9 +11,9 @@
 
 const { log } = require('../logger')
 const { createPair } = require('./hedge-state')
+const { prefixedTs } = require('../time-utils')
 
-/** @type {string} Timestamp for logs */
-const ts = () => `[HEDGE] ${new Date().toISOString().slice(11, 23)}`
+const ts = () => prefixedTs('HEDGE')
 
 /**
  * Create a hedge executor with injected dependencies

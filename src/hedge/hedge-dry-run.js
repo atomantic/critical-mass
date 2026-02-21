@@ -10,10 +10,12 @@
 const { log } = require('../logger')
 const fs = require('fs')
 const path = require('path')
+const { prefixedTs } = require('../time-utils')
+const { HEDGE_DATA_DIR } = require('../paths')
 
-const REPORT_DIR = path.join(__dirname, '..', '..', 'data', 'hedge')
+const REPORT_DIR = HEDGE_DATA_DIR
 
-const ts = () => `[HEDGE] ${new Date().toISOString().slice(11, 23)}`
+const ts = () => prefixedTs('HEDGE')
 
 /**
  * Create a dry-run tracker that wraps around the hedge engine state

@@ -11,8 +11,7 @@
 const { Router } = require('express');
 const path = require('path');
 const { log } = require('../logger');
-
-const ts = () => new Date().toISOString().slice(11, 23);
+const { ts } = require('../time-utils');
 
 module.exports = (app, sharedDeps) => {
   const { io } = sharedDeps;
