@@ -194,7 +194,7 @@ app.get('/api/health', async (req, res) => {
       overallStatus = 'degraded';
       return;
     }
-    const status = await ipc.request('regime:status', {}, timeout).catch(() => null);
+    const status = await ipc.request('regime:status', {}, name, timeout).catch(() => null);
     engines[name] = {
       status: status?.health?.mode?.toLowerCase() || (status ? 'ok' : 'timeout'),
       connected: true,
@@ -212,7 +212,7 @@ app.get('/api/health', async (req, res) => {
       overallStatus = 'degraded';
       return;
     }
-    const status = await kalshiIPC.request('kalshi:status', {}, timeout).catch(() => null);
+    const status = await kalshiIPC.request('kalshi:status', {}, 'kalshi', timeout).catch(() => null);
     engines.kalshi = {
       status: status ? 'ok' : 'timeout',
       connected: true,
