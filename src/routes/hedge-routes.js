@@ -6,26 +6,17 @@
  * Follows critical-mass route pattern: module.exports = (app, sharedDeps) => { ... }
  */
 
-const path = require('path')
 const { log } = require('../logger')
 const { getHedgeConfig, updateHedgeConfig } = require('../config-utils')
 const { createHedgeEngine } = require('../hedge/hedge-engine')
 const { loadState } = require('../hedge/hedge-state')
 const { createDryRunTracker, generateDecisionReport, saveDecisionReport } = require('../hedge/hedge-dry-run')
+const { prefixedTs } = require('../time-utils')
+const { createAsyncHandler } = require('./async-handler')
+const { loadKalshiKeys } = require('../kalshi/load-keys')
 
-const ts = () => `[HEDGE] ${new Date().toISOString().slice(11, 23)}`
-
-/**
- * Async error wrapper
- * @param {Function} fn
- * @returns {Function}
- */
-const asyncHandler = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch((err) => {
-    const message = err?.message || 'Unknown error'
-    log('ERROR', `[${ts()}] ❌ hedge ${req.method} ${req.path} failed: ${message}`)
-    res.status(err?.status || 500).json({ error: message })
-  })
+const ts = () => prefixedTs('HEDGE')
+const asyncHandler = createAsyncHandler('hedge', ts)
 
 /**
  * @param {import('express').Application} app
@@ -90,13 +81,9 @@ module.exports = (app, sharedDeps) => {
     // Lazy-load dependencies
     const { getAdapter } = require('../adapters')
     const kalshiApi = require('../kalshi/adapters/api')
-    const kalshiKeysPath = path.join(__dirname, '..', '..', 'data', 'kalshi', 'keys.json')
-    const fs = require('fs')
 
-    if (!fs.existsSync(kalshiKeysPath)) {
-      return res.status(400).json({ error: 'Kalshi API keys not configured (data/kalshi/keys.json)' })
-    }
-    const kalshiKeys = JSON.parse(fs.readFileSync(kalshiKeysPath, 'utf8'))
+    const { keys: kalshiKeys, error: keysError } = loadKalshiKeys()
+    if (keysError) return res.status(400).json({ error: keysError })
 
     const exchangeAdapter = getAdapter(config.exchange)
 
@@ -208,14 +195,12 @@ module.exports = (app, sharedDeps) => {
         // Import dependencies inline (same as start route)
         const { getAdapter } = require('../adapters')
         const kalshiApi = require('../kalshi/adapters/api')
-        const kalshiKeysPath = path.join(__dirname, '..', '..', 'data', 'kalshi', 'keys.json')
-        const fs = require('fs')
 
-        if (!fs.existsSync(kalshiKeysPath)) {
-          log('WARN', `[${ts()}] ⚠️ Hedge auto-start skipped: no Kalshi keys`)
+        const { keys: kalshiKeys, error: keysError } = loadKalshiKeys()
+        if (keysError) {
+          log('WARN', `[${ts()}] ⚠️ Hedge auto-start skipped: ${keysError}`)
           return
         }
-        const kalshiKeys = JSON.parse(fs.readFileSync(kalshiKeysPath, 'utf8'))
         const exchangeAdapter = getAdapter(config.exchange)
         const priceBridge = sharedDeps.priceBridge || null
 

@@ -10,17 +10,15 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { DATA_DIR, BACKUP_DIR } = require('./paths');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
+const BACKUPS_DIR = BACKUP_DIR;
 
 /**
  * Ensure backups directory exists
  */
 const ensureBackupsDir = () => {
-  if (!fs.existsSync(BACKUPS_DIR)) {
-    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
-  }
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 };
 
 /**
@@ -114,7 +112,22 @@ const deleteBackup = (filename) => {
     return { success: false, error: 'Backup not found' };
   }
 
-  fs.unlinkSync(filePath);
+  // Symlink protection: only operate on regular files
+  let stat;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch (err) {
+    return { success: false, error: err?.code === 'ENOENT' ? 'Backup not found' : 'Failed to access backup file' };
+  }
+  if (!stat.isFile()) {
+    return { success: false, error: 'Invalid backup file' };
+  }
+
+  try {
+    fs.unlinkSync(filePath);
+  } catch (err) {
+    return { success: false, error: err?.code === 'ENOENT' ? 'Backup not found' : 'Failed to delete backup file' };
+  }
   return { success: true };
 };
 
@@ -157,6 +170,17 @@ const restoreBackup = (filename) => {
   const zipPath = path.join(BACKUPS_DIR, filename);
   if (!fs.existsSync(zipPath)) {
     return { success: false, error: 'Backup not found' };
+  }
+
+  // Symlink protection: only operate on regular files
+  let stat;
+  try {
+    stat = fs.lstatSync(zipPath);
+  } catch (err) {
+    return { success: false, error: err?.code === 'ENOENT' ? 'Backup not found' : 'Failed to access backup file' };
+  }
+  if (!stat.isFile()) {
+    return { success: false, error: 'Invalid backup file' };
   }
 
   // Create temp directory for extraction

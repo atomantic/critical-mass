@@ -7,6 +7,7 @@ const fs = require('fs');
 const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig } = require('../config-utils');
 const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('../backup-service');
 const { log } = require('../logger');
+const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA } = require('../config-validator');
 
 /**
  * @param {import('express').Express} app
@@ -24,24 +25,27 @@ module.exports = (app, deps) => {
 
   app.put('/api/presets/aggressiveness', (req, res) => {
     const updates = req.body;
+    if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+      return res.status(400).json({ success: false, errors: ['Request body must be an object'] });
+    }
+
     const validLevels = Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS);
-    const validParams = Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS.conservative);
     const errors = [];
+    const sanitized = {};
 
     for (const [level, params] of Object.entries(updates)) {
       if (!validLevels.includes(level)) { errors.push(`Unknown level: ${level}`); continue; }
       if (typeof params !== 'object' || params === null) { errors.push(`${level}: params must be an object`); continue; }
-      for (const [key, value] of Object.entries(params)) {
-        if (!validParams.includes(key)) errors.push(`${level}: unknown param "${key}"`);
-        else if (typeof value !== 'number') errors.push(`${level}.${key}: must be a number`);
-      }
+      const { value: validParams, errors: paramErrors } = validateConfigUpdate(AGGRESSIVENESS_SCHEMA, params);
+      for (const err of paramErrors) errors.push(`${level}.${err}`);
+      sanitized[level] = validParams;
     }
 
     if (errors.length > 0) {
       return res.status(400).json({ success: false, errors });
     }
 
-    updateAggressivenessPresets(updates);
+    updateAggressivenessPresets(sanitized);
     log('INFO', '🔧 Aggressiveness presets updated');
     const presets = getAggressivenessPresets();
     res.json({ success: true, presets });

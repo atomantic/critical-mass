@@ -9,8 +9,9 @@
 const fs = require('fs')
 const path = require('path')
 const { v4: uuidv4 } = require('uuid')
+const { HEDGE_DATA_DIR } = require('../paths')
 
-const STATE_FILE = path.join(__dirname, '..', '..', 'data', 'hedge', 'state.json')
+const STATE_FILE = path.join(HEDGE_DATA_DIR, 'state.json')
 
 /**
  * Atomic write: .tmp then rename
@@ -19,7 +20,7 @@ const STATE_FILE = path.join(__dirname, '..', '..', 'data', 'hedge', 'state.json
  */
 const atomicWriteSync = (filePath, data) => {
   const dir = path.dirname(filePath)
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(dir, { recursive: true })
   const tmpPath = `${filePath}.tmp`
   fs.writeFileSync(tmpPath, data)
   fs.renameSync(tmpPath, filePath)

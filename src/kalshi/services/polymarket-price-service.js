@@ -6,9 +6,7 @@
  */
 
 const { createPolymarketWebSocket } = require('../adapters/polymarket-websocket')
-
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
 
 const GAMMA_API = 'https://gamma-api.polymarket.com'
 

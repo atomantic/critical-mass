@@ -1,10 +1,8 @@
 const WebSocket = require('ws')
 const { EventEmitter } = require('events')
+const { ts } = require('../../time-utils')
 
 const KRAKEN_WS_URL = 'wss://ws.kraken.com/v2'
-
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
 
 /** Map Kraken symbols to normalized product IDs */
 const normalizeSymbol = (symbol) => symbol.replace('/', '-')

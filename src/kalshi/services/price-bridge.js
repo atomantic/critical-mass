@@ -28,8 +28,7 @@ let isRunning = false;
 /** @type {NodeJS.Timeout | null} */
 let pollInterval = null;
 
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23);
+const { ts } = require('../../time-utils');
 
 /**
  * Initialize the price bridge

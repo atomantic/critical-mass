@@ -8,9 +8,7 @@ const { placeOrder, cancelOrder, getPositions, getFills, getBalance } = require(
 const { canFill, availableContracts, estimatedFillPrice } = require('./kalshi-orderbook-service')
 const { sendAlert } = require('./alert-service')
 const crypto = require('crypto')
-
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
 
 /** @type {import('../types/kalshi').KalshiKeys | null} */
 let keys = null

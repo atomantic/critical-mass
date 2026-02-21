@@ -20,30 +20,26 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const keysPath = getExchangeKeysPath(exchange);
     const exists = fs.existsSync(keysPath);
-    res.json({ exchange, configured: exists, path: keysPath });
+    res.json({ exchange, configured: exists });
   });
 
-  // Get keys for an exchange (with secrets partially masked)
+  // Get keys configuration status for an exchange (returns per-field boolean flags)
   app.get('/api/:exchange/keys', (req, res) => {
     const { exchange } = req.params;
     const keysPath = getExchangeKeysPath(exchange);
+    const configured = fs.existsSync(keysPath);
+    if (!configured) return res.json({ configured, keys: null });
 
-    if (!fs.existsSync(keysPath)) {
-      return res.json({ configured: false, keys: {} });
+    let keysData;
+    try { keysData = JSON.parse(fs.readFileSync(keysPath, 'utf8')); } catch { return res.json({ configured: false, keys: null }); }
+
+    // Return boolean flags per field — never return values (even masked) to prevent round-trip overwrites
+    const fields = {};
+    for (const k of Object.keys(keysData)) {
+      if (k === 'createdAt') continue;
+      fields[k] = true;
     }
-
-    const keysData = JSON.parse(fs.readFileSync(keysPath, 'utf8'));
-    const maskedKeys = {};
-
-    if (exchange === 'coinbase') {
-      maskedKeys.name = keysData.name || keysData.apiKey || '';
-      maskedKeys.privateKey = keysData.privateKey || keysData.apiSecret || '';
-    } else {
-      maskedKeys.apiKey = keysData.apiKey || keysData.key || '';
-      maskedKeys.apiSecret = keysData.apiSecret || keysData.secret || '';
-    }
-
-    res.json({ configured: true, keys: maskedKeys });
+    res.json({ configured, fields, createdAt: keysData.createdAt || null });
   });
 
   // Save keys for an exchange (shared handler for POST and PUT)

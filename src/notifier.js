@@ -180,7 +180,7 @@ const createNotifier = () => {
     if (batch) batches.push(batch);
 
     // Send each batch
-    batches.reduce(
+    return batches.reduce(
       (chain, b) => chain.then(() => sendTelegram(b)),
       Promise.resolve(true)
     );

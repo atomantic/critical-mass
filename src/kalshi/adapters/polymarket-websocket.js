@@ -6,11 +6,9 @@
 
 const WebSocket = require('ws')
 const { EventEmitter } = require('events')
+const { ts } = require('../../time-utils')
 
 const WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market'
-
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
 
 /**
  * PolymarketWebSocket manages the connection and subscriptions

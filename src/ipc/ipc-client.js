@@ -152,6 +152,11 @@ const createIPCClient = (url, name, options = {}) => {
       }, timeout);
 
       pendingRequests.set(msg.id, { resolve, reject, timer });
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        clearTimeout(timer);
+        pendingRequests.delete(msg.id);
+        return reject(new Error(`IPC WebSocket not open (${name})`));
+      }
       ws.send(serialize(msg));
     });
   };
@@ -162,7 +167,7 @@ const createIPCClient = (url, name, options = {}) => {
    * @param {string} [exchange] - Exchange name
    */
   const sendConfigUpdate = (payload, exchange) => {
-    if (!connected) return;
+    if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
     const msg = createMessage(MSG_TYPE.CONFIG_UPDATE, 'config_update', payload, { exchange });
     ws.send(serialize(msg));
   };
