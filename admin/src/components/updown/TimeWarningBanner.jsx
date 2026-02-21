@@ -1,0 +1,56 @@
+import { Clock } from 'lucide-react'
+
+function getTimeColor(hoursLeft) {
+  if (hoursLeft > 8) return { bg: 'bg-green-500', border: 'border-green-500/30', text: 'text-green-400', label: 'Safe' }
+  if (hoursLeft >= 6) return { bg: 'bg-yellow-500', border: 'border-yellow-500/30', text: 'text-yellow-400', label: 'Caution' }
+  return { bg: 'bg-red-500', border: 'border-red-500/30', text: 'text-red-400', label: 'Critical', pulse: true }
+}
+
+function formatCountdown(ms) {
+  if (ms <= 0) return '00:00:00'
+  const hours = Math.floor(ms / 3600000)
+  const minutes = Math.floor((ms % 3600000) / 60000)
+  const seconds = Math.floor((ms % 60000) / 1000)
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+export default function TimeWarningBanner({ timeRemaining, expiry }) {
+  if (!timeRemaining && !expiry) return null
+
+  const msLeft = timeRemaining ?? (expiry ? new Date(expiry).getTime() - Date.now() : 0)
+  if (msLeft <= 0) {
+    return (
+      <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 flex items-center gap-3">
+        <Clock size={16} className="text-gray-500" />
+        <span className="text-sm text-gray-400">Contract has expired</span>
+      </div>
+    )
+  }
+
+  const hoursLeft = msLeft / 3600000
+  const totalMs = expiry ? new Date(expiry).getTime() - (Date.now() - msLeft) : msLeft * 2
+  const progressPct = Math.max(0, Math.min(100, ((totalMs - msLeft) / totalMs) * 100))
+  const colors = getTimeColor(hoursLeft)
+
+  return (
+    <div className={`rounded-lg border ${colors.border} bg-gray-800/50 p-3`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Clock size={16} className={colors.text} />
+          <span className="text-sm font-medium text-white">Time Remaining</span>
+          <span className={`px-1.5 py-0.5 text-xs rounded ${colors.text} bg-gray-700`}>{colors.label}</span>
+          {colors.pulse && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />}
+        </div>
+        <span className={`text-lg font-mono font-bold ${colors.text}`}>
+          {formatCountdown(msLeft)}
+        </span>
+      </div>
+      <div className="w-full bg-gray-700 rounded-full h-2">
+        <div
+          className={`${colors.bg} h-2 rounded-full transition-all duration-1000`}
+          style={{ width: `${progressPct}%` }}
+        />
+      </div>
+    </div>
+  )
+}

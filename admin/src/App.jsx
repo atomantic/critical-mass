@@ -28,6 +28,7 @@ const KalshiPositions = lazy(() => import('./components/kalshi/Positions'))
 const AIProviders = lazy(() => import('./components/ai/Providers'))
 const LogViewer = lazy(() => import('./components/LogViewer'))
 const HedgeDashboard = lazy(() => import('./components/hedge/Dashboard'))
+const UpDownDashboard = lazy(() => import('./components/updown/Dashboard'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
@@ -166,7 +167,7 @@ function AppContent() {
         setCurrentExchange(targetExchange)
         setCurrentStrategy(targetStrategy)
         // Don't redirect away from non-exchange pages (overview, kalshi, notifications, etc.)
-        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/gateway', '/notifications', '/backups', '/systems', '/ai']
+        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/updown', '/gateway', '/notifications', '/backups', '/systems', '/ai']
         const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
         if (!isNonExchangePage) {
           navigate(`/${targetExchange}/${targetPair}`, { replace: true })
@@ -327,6 +328,9 @@ function AppContent() {
   // Check if on Hedge pages
   const isHedge = location.pathname.startsWith('/hedge')
 
+  // Check if on UpDown pages
+  const isUpDown = location.pathname.startsWith('/updown')
+
   // Check if on Gateway logs page
   const isGateway = location.pathname.startsWith('/gateway')
 
@@ -429,6 +433,12 @@ function AppContent() {
                   Hedge
                 </Link>
                 <Link
+                  to="/updown"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  UpDown
+                </Link>
+                <Link
                   to="/ai"
                   className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
@@ -489,6 +499,13 @@ function AppContent() {
                   Hedge
                 </Link>
                 <Link
+                  to="/updown"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  UpDown
+                </Link>
+                <Link
                   to="/ai"
                   onClick={() => setMobileMenuOpen(false)}
                   className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
@@ -508,7 +525,7 @@ function AppContent() {
         </header>
 
         {/* Exchange sub-nav (hidden on overview, Kalshi, and AI pages) */}
-        {!isOverview && !isKalshi && !isAI && !isHedge && !isGateway && (
+        {!isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isGateway && (
           <nav className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
@@ -677,7 +694,7 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge && !isGateway ? (
+          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isGateway ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
             </div>
@@ -751,6 +768,9 @@ function AppContent() {
               {/* Hedge engine dashboard + logs */}
               <Route path="/hedge" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><HedgeDashboard /></Suspense>} />
               <Route path="/hedge/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass-kalshi" /></Suspense>} />
+
+              {/* UpDown BTC Options dashboard */}
+              <Route path="/updown" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><UpDownDashboard /></Suspense>} />
 
               {/* Gateway logs */}
               <Route path="/gateway/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass" /></Suspense>} />
