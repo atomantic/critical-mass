@@ -9,6 +9,7 @@ const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterva
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
+const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 
 /**
  * @param {import('express').Express} app
@@ -54,7 +55,8 @@ module.exports = (app, deps) => {
   // Update config for an exchange
   app.put('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
-    const updates = req.body;
+    const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
     const config = updateExchangeConfig(exchange, updates);
 
     if (updates.regime) {
