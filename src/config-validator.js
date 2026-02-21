@@ -121,8 +121,56 @@ const AGGRESSIVENESS_SCHEMA = {
   maxCycleBuys: { type: 'number', min: 1, max: 100 },
 };
 
+/**
+ * Validate a nested strategies object — each key maps to a strategy config.
+ * Returns sanitized strategies with only allowed fields per entry.
+ * @param {Object} strategies - e.g. { momentum: { enabled: true, sizing: 100 }, ... }
+ * @returns {{ value: Object, errors: string[] }}
+ */
+const validateStrategies = (strategies) => {
+  if (typeof strategies !== 'object' || strategies === null || Array.isArray(strategies)) {
+    return { value: {}, errors: ['strategies must be an object'] };
+  }
+  const result = {};
+  const errors = [];
+  for (const [name, config] of Object.entries(strategies)) {
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+      errors.push(`strategies.${name}: must be an object`);
+      continue;
+    }
+    const { value, errors: fieldErrors } = validateConfigUpdate(STRATEGY_CONFIG_SCHEMA, config);
+    fieldErrors.forEach(e => errors.push(`strategies.${name}.${e}`));
+    result[name] = value;
+  }
+  return { value: result, errors };
+};
+
+/**
+ * Validate a nested markets object — each key maps to a market config.
+ * Only allows plain objects as values (no arrays, no primitives).
+ * @param {Object} markets
+ * @returns {{ value: Object, errors: string[] }}
+ */
+const validateMarkets = (markets) => {
+  if (typeof markets !== 'object' || markets === null || Array.isArray(markets)) {
+    return { value: {}, errors: ['markets must be an object'] };
+  }
+  const result = {};
+  const errors = [];
+  for (const [key, value] of Object.entries(markets)) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      errors.push(`markets.${key}: must be an object`);
+      continue;
+    }
+    result[key] = value;
+  }
+  return { value: result, errors };
+};
+
 module.exports = {
   validateConfigUpdate,
+  validateStrategies,
+  validateMarkets,
   KALSHI_CONFIG_SCHEMA,
   STRATEGY_CONFIG_SCHEMA,
   EXCHANGE_CONFIG_SCHEMA,

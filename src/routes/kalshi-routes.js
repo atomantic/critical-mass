@@ -15,7 +15,7 @@ const { log } = require('../logger');
 const { KALSHI_DATA_DIR } = require('../paths');
 const { ts } = require('../time-utils');
 const { createAsyncHandler } = require('./async-handler');
-const { validateConfigUpdate, KALSHI_CONFIG_SCHEMA, STRATEGY_CONFIG_SCHEMA } = require('../config-validator');
+const { validateConfigUpdate, validateStrategies, validateMarkets, KALSHI_CONFIG_SCHEMA } = require('../config-validator');
 
 const DATA_DIR = KALSHI_DATA_DIR;
 const asyncHandler = createAsyncHandler('kalshi', ts);
@@ -315,12 +315,16 @@ module.exports = (app, sharedDeps) => {
     const config = await readJson('config.json');
     const updated = { ...config, ...validated };
 
-    // strategies and markets are nested objects — pass through without schema validation
-    if (req.body?.strategies && typeof req.body.strategies === 'object' && !Array.isArray(req.body.strategies)) {
-      updated.strategies = req.body.strategies;
+    // strategies and markets are nested objects — validate per-entry
+    if (req.body?.strategies) {
+      const { value: strats, errors: stratErrors } = validateStrategies(req.body.strategies);
+      if (stratErrors.length > 0) return res.status(400).json({ error: stratErrors.join('; ') });
+      updated.strategies = strats;
     }
-    if (req.body?.markets && typeof req.body.markets === 'object' && !Array.isArray(req.body.markets)) {
-      updated.markets = req.body.markets;
+    if (req.body?.markets) {
+      const { value: mkts, errors: mktErrors } = validateMarkets(req.body.markets);
+      if (mktErrors.length > 0) return res.status(400).json({ error: mktErrors.join('; ') });
+      updated.markets = mkts;
     }
 
     await writeJson('config.json', updated);
@@ -334,12 +338,16 @@ module.exports = (app, sharedDeps) => {
     const config = await readJson('config.json');
     const updated = { ...config, ...validated };
 
-    // strategies and markets are nested objects — pass through without schema validation
-    if (req.body?.strategies && typeof req.body.strategies === 'object' && !Array.isArray(req.body.strategies)) {
-      updated.strategies = req.body.strategies;
+    // strategies and markets are nested objects — validate per-entry
+    if (req.body?.strategies) {
+      const { value: strats, errors: stratErrors } = validateStrategies(req.body.strategies);
+      if (stratErrors.length > 0) return res.status(400).json({ error: stratErrors.join('; ') });
+      updated.strategies = strats;
     }
-    if (req.body?.markets && typeof req.body.markets === 'object' && !Array.isArray(req.body.markets)) {
-      updated.markets = req.body.markets;
+    if (req.body?.markets) {
+      const { value: mkts, errors: mktErrors } = validateMarkets(req.body.markets);
+      if (mktErrors.length > 0) return res.status(400).json({ error: mktErrors.join('; ') });
+      updated.markets = mkts;
     }
 
     await writeJson('config.json', updated);
