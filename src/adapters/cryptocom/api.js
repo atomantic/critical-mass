@@ -5,6 +5,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
+const { incrementToDecimals } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -342,9 +343,8 @@ const createCryptocomAdapter = (keysPath = null) => {
     const baseIncrement = parseFloat(details.baseIncrement);
     const priceTickSize = parseFloat(details.quoteIncrement);
 
-    // Calculate decimal places from tick size (e.g., 0.00001 -> 5 decimals)
-    const priceDecimals = Math.max(0, -Math.floor(Math.log10(priceTickSize)));
-    const qtyDecimals = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+    const priceDecimals = incrementToDecimals(details.quoteIncrement);
+    const qtyDecimals = incrementToDecimals(details.baseIncrement);
 
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / priceTickSize) * priceTickSize;

@@ -30,7 +30,14 @@ const IncomingOrder = memo(({ order, index, total }) => {
     if (meshRef.current) {
       const opacity = 0.2 + Math.sin(time * 3 + index) * 0.1
       meshRef.current.traverse((child) => {
-        if (child.material) child.material.opacity = opacity
+        if (!child.material) return;
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        materials.forEach((mat) => {
+          if (mat && 'opacity' in mat) {
+            mat.opacity = opacity;
+            if ('transparent' in mat) mat.transparent = opacity < 1;
+          }
+        });
       })
       meshRef.current.rotation.y += 0.01
       meshRef.current.rotation.x += 0.005

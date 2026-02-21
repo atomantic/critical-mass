@@ -254,6 +254,17 @@ const shouldAutoResumeRegime = (exchange) => {
   return fs.existsSync(flagPath);
 };
 
+/**
+ * Derive decimal precision from an increment/tick-size value.
+ * Handles non-power-of-10 increments (e.g. 0.0025 → 4) by inspecting
+ * the string representation rather than using log10.
+ */
+const incrementToDecimals = (increment) => {
+  const s = String(increment);
+  const dot = s.indexOf('.');
+  return dot === -1 ? 0 : s.length - dot - 1;
+};
+
 module.exports = {
   DATA_DIR,
   readJSON,
@@ -264,4 +275,5 @@ module.exports = {
   getRegimeRunningFlagPath,
   saveRegimeRunningFlag,
   shouldAutoResumeRegime,
+  incrementToDecimals,
 };
