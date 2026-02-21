@@ -50,7 +50,8 @@ export const usePolymarketSocket = () => {
     })
 
     // Fetch initial history
-    fetch('/api/kalshi/polymarket')
+    const abortController = new AbortController()
+    fetch('/api/kalshi/polymarket', { signal: abortController.signal })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data?.sentiment) setSentiment(data.sentiment)
@@ -59,6 +60,7 @@ export const usePolymarketSocket = () => {
       .catch(() => {})
 
     return () => {
+      abortController.abort()
       if (throttleRef.current) clearTimeout(throttleRef.current)
       socket.disconnect()
     }
