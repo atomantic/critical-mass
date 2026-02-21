@@ -114,6 +114,12 @@ const deleteBackup = (filename) => {
     return { success: false, error: 'Backup not found' };
   }
 
+  // Symlink protection: only operate on regular files
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile()) {
+    return { success: false, error: 'Invalid backup file' };
+  }
+
   fs.unlinkSync(filePath);
   return { success: true };
 };
@@ -157,6 +163,12 @@ const restoreBackup = (filename) => {
   const zipPath = path.join(BACKUPS_DIR, filename);
   if (!fs.existsSync(zipPath)) {
     return { success: false, error: 'Backup not found' };
+  }
+
+  // Symlink protection: only operate on regular files
+  const stat = fs.lstatSync(zipPath);
+  if (!stat.isFile()) {
+    return { success: false, error: 'Invalid backup file' };
   }
 
   // Create temp directory for extraction

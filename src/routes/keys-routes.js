@@ -20,30 +20,15 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const keysPath = getExchangeKeysPath(exchange);
     const exists = fs.existsSync(keysPath);
-    res.json({ exchange, configured: exists, path: keysPath });
+    res.json({ exchange, configured: exists });
   });
 
-  // Get keys for an exchange (with secrets partially masked)
+  // Get keys configuration status for an exchange
   app.get('/api/:exchange/keys', (req, res) => {
     const { exchange } = req.params;
     const keysPath = getExchangeKeysPath(exchange);
-
-    if (!fs.existsSync(keysPath)) {
-      return res.json({ configured: false, keys: {} });
-    }
-
-    const keysData = JSON.parse(fs.readFileSync(keysPath, 'utf8'));
-    const maskedKeys = {};
-
-    if (exchange === 'coinbase') {
-      maskedKeys.name = keysData.name || keysData.apiKey || '';
-      maskedKeys.privateKey = keysData.privateKey || keysData.apiSecret || '';
-    } else {
-      maskedKeys.apiKey = keysData.apiKey || keysData.key || '';
-      maskedKeys.apiSecret = keysData.apiSecret || keysData.secret || '';
-    }
-
-    res.json({ configured: true, keys: maskedKeys });
+    const configured = fs.existsSync(keysPath);
+    res.json({ configured });
   });
 
   // Save keys for an exchange (shared handler for POST and PUT)
