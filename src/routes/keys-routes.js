@@ -23,7 +23,7 @@ module.exports = (app, deps) => {
     res.json({ exchange, configured: exists });
   });
 
-  // Get keys configuration status for an exchange (returns masked metadata)
+  // Get keys configuration status for an exchange (returns per-field boolean flags)
   app.get('/api/:exchange/keys', (req, res) => {
     const { exchange } = req.params;
     const keysPath = getExchangeKeysPath(exchange);
@@ -33,13 +33,13 @@ module.exports = (app, deps) => {
     let keysData;
     try { keysData = JSON.parse(fs.readFileSync(keysPath, 'utf8')); } catch { return res.json({ configured: false, keys: null }); }
 
-    // Return masked metadata so the UI can show which fields are set
-    const masked = {};
-    for (const [k, v] of Object.entries(keysData)) {
-      if (k === 'createdAt') { masked[k] = v; continue; }
-      masked[k] = typeof v === 'string' && v.length > 6 ? v.slice(0, 3) + '***' + v.slice(-3) : '***';
+    // Return boolean flags per field — never return values (even masked) to prevent round-trip overwrites
+    const fields = {};
+    for (const k of Object.keys(keysData)) {
+      if (k === 'createdAt') continue;
+      fields[k] = true;
     }
-    res.json({ configured, keys: masked });
+    res.json({ configured, fields, createdAt: keysData.createdAt || null });
   });
 
   // Save keys for an exchange (shared handler for POST and PUT)

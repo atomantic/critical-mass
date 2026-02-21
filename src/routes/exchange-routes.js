@@ -59,7 +59,7 @@ module.exports = (app, deps) => {
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
     // regime is a nested object — pass through without schema validation
-    if (req.body?.regime && typeof req.body.regime === 'object') {
+    if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
       updates.regime = req.body.regime;
     }
 
