@@ -44,7 +44,7 @@ describe('calculateApyMetrics', () => {
     assert.equal(result.elapsedMs, 0);
     assert.equal(result.elapsedDays, 0);
     assert.equal(result.totalUsdcReturn, 0);
-    assert.equal(result.totalBtcReturn, 0);
+    assert.equal(result.totalAssetReturn, 0);
     assert.equal(result.totalLiquidValue, 0);
     assert.equal(result.estimatedApy, 0);
     assert.equal(result.dailyReturnPercent, 0);
@@ -112,7 +112,7 @@ describe('calculateApyMetrics', () => {
     const result = calculateApyMetrics(pos, baseConfig(), market);
 
     // BTC value in USD: 0.001 * 100000 = $100
-    assert.equal(result.btcValueUsd, 100);
+    assert.equal(result.assetValueUsd, 100);
     // Total liquid: $50 + $100 = $150
     assert.equal(result.totalLiquidValue, 150);
     assert.equal(result.totalReturn, 150);
@@ -135,7 +135,7 @@ describe('calculateApyMetrics', () => {
     const result = calculateApyMetrics(pos, baseConfig(), market);
 
     // BTC value: 0.0005 * 100000 = $50
-    assert.equal(result.btcValueUsd, 50);
+    assert.equal(result.assetValueUsd, 50);
     assert.equal(result.totalLiquidValue, 50);
     assert.equal(result.totalUsdcReturn, 0);
     assert.ok(result.estimatedApy > 0, 'APY should be positive from BTC returns');
@@ -403,7 +403,7 @@ describe('calculateApyMetrics', () => {
     // totalLiquid = -50 + 0.002 * 100000 = -50 + 200 = 150
     assert.equal(result.totalLiquidValue, 150);
     assert.equal(result.totalUsdcReturn, -50);
-    assert.equal(result.btcValueUsd, 200);
+    assert.equal(result.assetValueUsd, 200);
   });
 
   it('clamps availableCapital to zero when totalCostBasis exceeds maxUsdcDeployed', () => {

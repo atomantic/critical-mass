@@ -41,7 +41,7 @@ export function formatAsset(value, currency = 'BTC') {
   return `${(value || 0).toFixed(8)} ${currency}`
 }
 
-// Short BTC format for axes
+// Short asset format for axes
 export function formatAssetCompact(value) {
   const absValue = Math.abs(value)
   if (absValue >= 1) return `${value.toFixed(2)}`

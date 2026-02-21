@@ -11,12 +11,11 @@ const TOTAL = ARM_COUNT * POINTS_PER_ARM + CORE_POINTS
 
 /**
  * Generate spiral galaxy particle positions and colors.
- * Returns { positions, colors, sizes } Float32Arrays.
+ * Returns { positions, colors } Float32Arrays.
  */
 const buildGalaxyGeometry = (size) => {
   const positions = new Float32Array(TOTAL * 3)
   const colors = new Float32Array(TOTAL * 3)
-  const sizes = new Float32Array(TOTAL)
 
   const coreColor = new THREE.Color('#FCE7F3') // pink-white core
   const armColor = new THREE.Color('#EC4899')   // pink
@@ -47,7 +46,6 @@ const buildGalaxyGeometry = (size) => {
       colors[idx * 3 + 1] = c.g
       colors[idx * 3 + 2] = c.b
 
-      sizes[idx] = (1 - t * 0.6) * 0.06 * size
       idx++
     }
   }
@@ -71,11 +69,10 @@ const buildGalaxyGeometry = (size) => {
     colors[idx * 3 + 1] = c.g
     colors[idx * 3 + 2] = c.b
 
-    sizes[idx] = (1 - t * 0.4) * 0.08 * size
     idx++
   }
 
-  return { positions, colors, sizes }
+  return { positions, colors }
 }
 
 /**
@@ -89,7 +86,7 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
   const size = getBodySize(body.costBasis, maxUsdcDeployed)
   const hasTP = body.tpPrice > 0
 
-  const { positions, colors, sizes } = useMemo(() => buildGalaxyGeometry(size), [size])
+  const { positions, colors } = useMemo(() => buildGalaxyGeometry(size), [size])
 
   useFrame((state) => {
     // Slow rotation of the entire galaxy
@@ -146,12 +143,6 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
             count={TOTAL}
             array={colors}
             itemSize={3}
-          />
-          <bufferAttribute
-            attach="attributes-size"
-            count={TOTAL}
-            array={sizes}
-            itemSize={1}
           />
         </bufferGeometry>
         <pointsMaterial
