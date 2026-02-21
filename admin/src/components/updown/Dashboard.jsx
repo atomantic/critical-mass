@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Play, Square, RefreshCw, Volume2, VolumeX } from 'lucide-react'
+import { Play, Square, RotateCcw, Volume2, VolumeX } from 'lucide-react'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
 import { signalBadgeColors, getSignalIcon } from '../../constants/signals'
 import PriceChart from './PriceChart'
 import ContractSetup from './ContractSetup'
 import PositionTracker from './PositionTracker'
-import IndicatorCharts from './IndicatorCharts'
 import SignalPanel from './SignalPanel'
+import TradeHistory from './TradeHistory'
 import TimeWarningBanner from './TimeWarningBanner'
 
 function formatCurrency(value) {
@@ -29,6 +29,7 @@ export default function UpDownDashboard() {
   const [loading, setLoading] = useState(true)
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
+  const [restarting, setRestarting] = useState(false)
   const [audioEnabled, setAudioEnabled] = useState(false)
   const [error, setError] = useState(null)
   const prevSignalRef = useRef(null)
@@ -157,13 +158,18 @@ export default function UpDownDashboard() {
               {audioEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
             </button>
 
-            {/* Refresh */}
+            {/* Restart server */}
             <button
-              onClick={fetchStatus}
-              className="p-1.5 rounded bg-gray-700 hover:bg-gray-600 transition-colors"
-              title="Refresh"
+              onClick={async () => {
+                setRestarting(true)
+                await fetch('/api/updown/restart', { method: 'POST' }).catch(() => {})
+                setTimeout(() => setRestarting(false), 5000)
+              }}
+              disabled={restarting}
+              className={`p-1.5 rounded transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+              title="Restart server (pm2)"
             >
-              <RefreshCw size={14} />
+              <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
             </button>
 
             {/* Start/Stop */}
@@ -205,14 +211,14 @@ export default function UpDownDashboard() {
 
       {/* Contract Setup + Position Tracker side by side */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ContractSetup initialContract={status?.contract} />
+        <ContractSetup initialContract={status?.contract} onPositionSet={fetchStatus} />
         <PositionTracker initialPosition={status?.position} tick={tick} />
       </div>
 
-      {/* Indicator Charts + Signal Panel */}
+      {/* Trade History + Signal Panel */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2">
-          <IndicatorCharts indicators={indicators} />
+          <TradeHistory />
         </div>
         <div>
           <SignalPanel signal={signal || status?.latestSignal} />

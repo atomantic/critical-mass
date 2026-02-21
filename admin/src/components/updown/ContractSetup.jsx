@@ -4,7 +4,7 @@ import { FileText, Save, Camera, Upload, Check, X, Loader2 } from 'lucide-react'
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
 
-export default function ContractSetup({ initialContract }) {
+export default function ContractSetup({ initialContract, onPositionSet }) {
   const [expiry, setExpiry] = useState('')
   const [target, setTarget] = useState('')
   const [stop, setStop] = useState('')
@@ -163,34 +163,65 @@ export default function ContractSetup({ initialContract }) {
   const applyPreview = async () => {
     const d = preview
     if (!d) return
-    if (d.direction) setDirection(d.direction)
-    if (d.range) setRange(d.range.toString())
-    if (d.target) setTarget(d.target.toString())
-    if (d.stop) setStop(d.stop.toString())
-    if (d.expiryISO) setExpiry(d.expiryISO)
     setPreview(null)
+    setScreenshotError('')
 
-    // Auto-save after applying — route parses expiry (ISO string or ms) to ms timestamp
-    setSaving(true)
-    setSaved(false)
-    const res = await fetch('/api/updown/contract', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        expiry: d.expiryISO || expiry,
-        target: d.target ?? parseFloat(target),
-        stop: d.stop ?? parseFloat(stop),
-        range: d.range ?? parseInt(range, 10),
-        direction: (d.direction || direction).toLowerCase(),
-      }),
-    })
-    if (res.ok) {
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } else {
-      setScreenshotError('Failed to save contract')
+    const screenType = d.screenType || 'select'
+    const dir = d.direction || direction
+
+    // Update contract form fields and save (all screen types can have contract-relevant data)
+    const hasContractData = d.target || d.stop || d.range || d.expiryISO
+    if (screenType === 'select' || screenType === 'order' || hasContractData) {
+      if (d.direction) setDirection(d.direction)
+      if (d.range) setRange(d.range.toString())
+      if (d.target) setTarget(d.target.toString())
+      if (d.stop) setStop(d.stop.toString())
+      if (d.expiryISO) setExpiry(d.expiryISO)
+
+      setSaving(true)
+      setSaved(false)
+      const res = await fetch('/api/updown/contract', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expiry: d.expiryISO || expiry,
+          target: d.target ?? parseFloat(target),
+          stop: d.stop ?? parseFloat(stop),
+          range: d.range ?? parseInt(range, 10),
+          direction: (dir).toLowerCase(),
+        }),
+      })
+      if (res.ok) {
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+      } else {
+        setScreenshotError('Failed to save contract')
+      }
+      setSaving(false)
     }
-    setSaving(false)
+
+    // For order and position screens, also set the position
+    if (screenType === 'order' || screenType === 'position') {
+      const entryPrice = screenType === 'order' ? d.contractPrice : d.entryPrice
+      if (!entryPrice || !dir) {
+        setScreenshotError('Missing entry price or direction for position')
+        return
+      }
+      const posRes = await fetch('/api/updown/position', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entryPrice,
+          contracts: d.contracts || 1,
+          direction: dir.toLowerCase(),
+        }),
+      })
+      if (!posRes.ok) {
+        setScreenshotError('Failed to save position')
+        return
+      }
+      onPositionSet?.()
+    }
   }
 
   const currentProviderModels = providers.find(p => p.id === selectedProvider)?.models || []
@@ -282,7 +313,18 @@ export default function ContractSetup({ initialContract }) {
         {/* Preview overlay */}
         {preview && (
           <div className="bg-gray-900 border border-purple-500/50 rounded-lg p-3 space-y-2">
-            <div className="text-xs font-medium text-purple-400 mb-2">Extracted Values</div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-medium text-purple-400">Extracted Values</span>
+              {preview.screenType && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                  preview.screenType === 'select' ? 'bg-blue-900/50 text-blue-400' :
+                  preview.screenType === 'order' ? 'bg-yellow-900/50 text-yellow-400' :
+                  'bg-green-900/50 text-green-400'
+                }`}>
+                  {preview.screenType === 'select' ? 'Select Screen' : preview.screenType === 'order' ? 'Order Screen' : 'Position Screen'}
+                </span>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
               {preview.direction && (
                 <div className="flex justify-between">
@@ -290,19 +332,20 @@ export default function ContractSetup({ initialContract }) {
                   <span className={`font-medium ${preview.direction === 'Up' ? 'text-green-400' : 'text-red-400'}`}>{preview.direction}</span>
                 </div>
               )}
-              {preview.range && (
+              {/* Select screen fields */}
+              {preview.screenType !== 'position' && preview.range && (
                 <div className="flex justify-between">
                   <span className="text-gray-400">Range</span>
                   <span className="text-white font-medium">${preview.range}</span>
                 </div>
               )}
-              {preview.target && (
+              {preview.screenType !== 'position' && preview.target && (
                 <div className="flex justify-between">
                   <span className="text-gray-400">Target</span>
                   <span className="text-green-400 font-medium">${preview.target.toLocaleString()}</span>
                 </div>
               )}
-              {preview.stop && (
+              {preview.screenType !== 'position' && preview.stop && (
                 <div className="flex justify-between">
                   <span className="text-gray-400">Stop</span>
                   <span className="text-red-400 font-medium">${preview.stop.toLocaleString()}</span>
@@ -320,16 +363,81 @@ export default function ContractSetup({ initialContract }) {
                   <span className="text-white font-medium">{preview.expiresIn}</span>
                 </div>
               )}
-              {preview.maxProfit && (
+              {/* Select screen: string maxProfit/maxLoss */}
+              {preview.screenType === 'select' && preview.maxProfit && (
                 <div className="flex justify-between">
                   <span className="text-gray-400">Max Profit</span>
                   <span className="text-green-400 font-medium">{preview.maxProfit}</span>
                 </div>
               )}
-              {preview.maxLoss && (
+              {preview.screenType === 'select' && preview.maxLoss && (
                 <div className="flex justify-between">
                   <span className="text-gray-400">Max Loss</span>
                   <span className="text-red-400 font-medium">{preview.maxLoss}</span>
+                </div>
+              )}
+              {/* Order screen fields */}
+              {preview.screenType === 'order' && preview.contractPrice && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Contract Price</span>
+                  <span className="text-white font-medium">${preview.contractPrice.toLocaleString()}</span>
+                </div>
+              )}
+              {preview.screenType === 'order' && preview.contracts && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Contracts</span>
+                  <span className="text-white font-medium">{preview.contracts}</span>
+                </div>
+              )}
+              {preview.screenType === 'order' && preview.maxProfitAmount != null && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Max Profit</span>
+                  <span className="text-green-400 font-medium">${preview.maxProfitAmount.toLocaleString()}</span>
+                </div>
+              )}
+              {preview.screenType === 'order' && preview.maxLossAmount != null && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Max Loss</span>
+                  <span className="text-red-400 font-medium">${preview.maxLossAmount.toLocaleString()}</span>
+                </div>
+              )}
+              {preview.screenType === 'order' && preview.youPay != null && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">You Pay</span>
+                  <span className="text-yellow-400 font-medium">${preview.youPay.toLocaleString()}</span>
+                </div>
+              )}
+              {/* Position screen fields */}
+              {preview.screenType === 'position' && preview.entryPrice && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Entry Price</span>
+                  <span className="text-white font-medium">${preview.entryPrice.toLocaleString()}</span>
+                </div>
+              )}
+              {preview.screenType === 'position' && preview.priceToClose != null && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Price to Close</span>
+                  <span className="text-white font-medium">${preview.priceToClose.toLocaleString()}</span>
+                </div>
+              )}
+              {preview.screenType === 'position' && preview.unrealizedPnl != null && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Unrealized P&L</span>
+                  <span className={`font-medium ${preview.unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {preview.unrealizedPnl >= 0 ? '+' : ''}${preview.unrealizedPnl.toLocaleString()}
+                  </span>
+                </div>
+              )}
+              {preview.screenType === 'position' && preview.contracts && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Contracts</span>
+                  <span className="text-white font-medium">{preview.contracts}</span>
+                </div>
+              )}
+              {preview.screenType === 'position' && preview.expiresOn && (
+                <div className="flex justify-between col-span-2">
+                  <span className="text-gray-400">Expires on</span>
+                  <span className="text-white font-medium">{preview.expiresOn}</span>
                 </div>
               )}
             </div>
