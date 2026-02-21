@@ -152,10 +152,11 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
     if (!result?.channel || !result.data) return;
 
     const channel = result.channel;
+    const channelPrefix = typeof channel === 'string' ? channel.split('.')[0] : '';
 
-    if (channel === 'ticker') {
+    if (channelPrefix === 'ticker') {
       handleTickerData(result.data);
-    } else if (channel === 'trade') {
+    } else if (channelPrefix === 'trade') {
       handleTradeData(result.data);
     }
   };

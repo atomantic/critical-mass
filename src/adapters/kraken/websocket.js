@@ -65,7 +65,14 @@ class KrakenWebSocket extends EventEmitter {
     })
 
     this.ws.on('message', (data) => {
-      const message = JSON.parse(data.toString())
+      let message;
+      try {
+        message = JSON.parse(data.toString());
+      } catch (err) {
+        console.log(`[${ts()}] ❌ Failed to parse Kraken WebSocket message: ${err?.message ?? err}`);
+        this.emit('error', err);
+        return;
+      }
       this._handleMessage(message)
     })
 

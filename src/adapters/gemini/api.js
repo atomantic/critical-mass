@@ -6,6 +6,7 @@ const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
+const { incrementToDecimals } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -261,14 +262,16 @@ const createGeminiAdapter = (keysPath = null) => {
     const product = await adapter.getProductDetails(productId);
     const baseIncrement = parseFloat(product.baseIncrement);
     const quoteIncrement = parseFloat(product.quoteIncrement);
+    const baseDecimals = incrementToDecimals(product.baseIncrement);
+    const quoteDecimals = incrementToDecimals(product.quoteIncrement);
 
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
     const orderPayload = {
       symbol,
-      amount: roundedAmount.toFixed(8),
-      price: roundedPrice.toFixed(2),
+      amount: roundedAmount.toFixed(baseDecimals),
+      price: roundedPrice.toFixed(quoteDecimals),
       side: 'sell',
       type: 'exchange limit',
       client_order_id: clientOrderId,
@@ -307,14 +310,16 @@ const createGeminiAdapter = (keysPath = null) => {
     const product = await adapter.getProductDetails(productId);
     const baseIncrement = parseFloat(product.baseIncrement);
     const quoteIncrement = parseFloat(product.quoteIncrement);
+    const baseDecimals = incrementToDecimals(product.baseIncrement);
+    const quoteDecimals = incrementToDecimals(product.quoteIncrement);
 
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
     const orderPayload = {
       symbol,
-      amount: roundedAmount.toFixed(8),
-      price: roundedPrice.toFixed(2),
+      amount: roundedAmount.toFixed(baseDecimals),
+      price: roundedPrice.toFixed(quoteDecimals),
       side: 'buy',
       type: 'exchange limit',
       client_order_id: clientOrderId,
