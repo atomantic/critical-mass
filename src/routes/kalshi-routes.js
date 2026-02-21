@@ -314,6 +314,15 @@ module.exports = (app, sharedDeps) => {
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
     const config = await readJson('config.json');
     const updated = { ...config, ...validated };
+
+    // strategies and markets are nested objects — pass through without schema validation
+    if (req.body?.strategies && typeof req.body.strategies === 'object' && !Array.isArray(req.body.strategies)) {
+      updated.strategies = req.body.strategies;
+    }
+    if (req.body?.markets && typeof req.body.markets === 'object' && !Array.isArray(req.body.markets)) {
+      updated.markets = req.body.markets;
+    }
+
     await writeJson('config.json', updated);
     log('INFO', `[${ts()}] ⚙️ Kalshi config updated`);
     res.json(updated);
@@ -324,6 +333,15 @@ module.exports = (app, sharedDeps) => {
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
     const config = await readJson('config.json');
     const updated = { ...config, ...validated };
+
+    // strategies and markets are nested objects — pass through without schema validation
+    if (req.body?.strategies && typeof req.body.strategies === 'object' && !Array.isArray(req.body.strategies)) {
+      updated.strategies = req.body.strategies;
+    }
+    if (req.body?.markets && typeof req.body.markets === 'object' && !Array.isArray(req.body.markets)) {
+      updated.markets = req.body.markets;
+    }
+
     await writeJson('config.json', updated);
     log('INFO', `[${ts()}] ⚙️ Kalshi config patched: ${Object.keys(validated).join(', ')}`);
     res.json(updated);

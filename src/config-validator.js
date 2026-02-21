@@ -69,6 +69,7 @@ const KALSHI_CONFIG_SCHEMA = {
   minProfitCents: { type: 'number', min: 0, max: 100 },
   maxLossCents: { type: 'number', min: 0, max: 100 },
   enableAutoTuner: { type: 'boolean' },
+  // strategies and markets are nested objects — validated via pass-through in route handler
 };
 
 // ── Strategy config schema (common fields across all strategies) ─
@@ -98,6 +99,11 @@ const EXCHANGE_CONFIG_SCHEMA = {
   amount: { type: 'number', min: 0 },
   totalAllocation: { type: 'number', min: 0 },
   intervalsToSpread: { type: 'number', min: 1 },
+  sellMarkupPercent: { type: 'number', min: 0 },
+  holdbackPercent: { type: 'number', min: 0, max: 100 },
+  minOrderSize: { type: 'number', min: 0 },
+  maxBuyPrice: { type: 'number', min: 0 },
+  fibBaseAmount: { type: 'number', min: 0 },
 };
 
 // ── Aggressiveness preset schema ─────────────────────────────────
@@ -109,6 +115,10 @@ const AGGRESSIVENESS_SCHEMA = {
   minMarkup: { type: 'number', min: 0, max: 1 },
   maxMarkup: { type: 'number', min: 0, max: 1 },
   sizeMultiplier: { type: 'number', min: 0.1, max: 10 },
+  entryOffsetBps: { type: 'number', min: 0, max: 1000 },
+  cautionScale: { type: 'number', min: 0, max: 10 },
+  trendScale: { type: 'number', min: 0, max: 10 },
+  maxCycleBuys: { type: 'number', min: 1, max: 100 },
 };
 
 module.exports = {
