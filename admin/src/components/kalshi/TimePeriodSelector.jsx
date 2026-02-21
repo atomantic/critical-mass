@@ -70,7 +70,7 @@ export default function TimePeriodSelector({ markets, activeMarketTicker, onSele
               ref={isSelected ? activeRef : null}
               onClick={() => onSelect(m)}
               disabled={status === 'settled'}
-              className={`shrink-0 px-3 py-2 min-h-[44px] md:py-1.5 md:min-h-0 rounded border text-xs font-medium transition-all touch-manipulation ${
+              className={`shrink-0 px-3 py-2 min-h-[44px] md:py-1.5 md:min-h-[40px] rounded border text-xs font-medium transition-all touch-manipulation ${
                 isSelected ? selectedStyles : statusStyles[status]
               } ${status === 'settled' ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
             >

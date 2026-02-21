@@ -33,9 +33,9 @@ const IncomingOrder = memo(({ order, index, total }) => {
         if (!child.material) return;
         const materials = Array.isArray(child.material) ? child.material : [child.material];
         materials.forEach((mat) => {
-          if (mat && 'opacity' in mat) {
+          if (mat) {
             mat.opacity = opacity;
-            if ('transparent' in mat) mat.transparent = opacity < 1;
+            mat.transparent = opacity < 1;
           }
         });
       })
