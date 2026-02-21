@@ -395,8 +395,8 @@ const createCryptocomAdapter = (keysPath = null) => {
     const baseIncrement = parseFloat(details.baseIncrement);
     const priceTickSize = parseFloat(details.quoteIncrement);
 
-    const priceDecimals = Math.max(0, -Math.floor(Math.log10(priceTickSize)));
-    const qtyDecimals = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+    const priceDecimals = incrementToDecimals(details.quoteIncrement);
+    const qtyDecimals = incrementToDecimals(details.baseIncrement);
 
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / priceTickSize) * priceTickSize;

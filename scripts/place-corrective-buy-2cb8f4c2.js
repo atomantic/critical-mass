@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 /**
+ * DEPRECATED — One-off script for a specific corrective buy (order 2cb8f4c2).
+ * Kept for audit trail only. Use scripts/place-corrective-buys.js for future corrections.
+ *
  * Place corrective limit buy for remaining uncovered portion of orphan sell 2cb8f4c2.
  *
  * Original sell: 0.00596282 BTC @ $67,237.60

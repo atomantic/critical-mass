@@ -163,20 +163,20 @@ function NotificationsConfig() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div className="bg-gray-800 rounded-lg p-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4" role="group" aria-label="Notification statistics">
+          <div className="bg-gray-800 rounded-lg p-4" role="group" aria-label="Messages Sent">
             <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Messages Sent</div>
             <div className="text-2xl font-semibold tabular-nums">{stats.sent}</div>
           </div>
-          <div className="bg-gray-800 rounded-lg p-4">
+          <div className="bg-gray-800 rounded-lg p-4" role="group" aria-label="Errors">
             <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Errors</div>
             <div className={`text-2xl font-semibold tabular-nums ${stats.errors > 0 ? 'text-red-400' : ''}`}>{stats.errors}</div>
           </div>
-          <div className="bg-gray-800 rounded-lg p-4">
+          <div className="bg-gray-800 rounded-lg p-4" role="group" aria-label="Queue Depth">
             <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Queue Depth</div>
             <div className="text-2xl font-semibold tabular-nums">{stats.queueDepth}</div>
           </div>
-          <div className="bg-gray-800 rounded-lg p-4">
+          <div className="bg-gray-800 rounded-lg p-4" role="group" aria-label="Last Sent">
             <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Last Sent</div>
             <div className="text-sm font-medium mt-1">
               {stats.lastSentAt ? new Date(stats.lastSentAt).toLocaleString() : 'Never'}
