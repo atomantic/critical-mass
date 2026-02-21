@@ -18,9 +18,7 @@ const BACKUPS_DIR = BACKUP_DIR;
  * Ensure backups directory exists
  */
 const ensureBackupsDir = () => {
-  if (!fs.existsSync(BACKUPS_DIR)) {
-    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
-  }
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 };
 
 /**

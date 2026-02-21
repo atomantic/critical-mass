@@ -92,9 +92,7 @@ const writeJson = (filename, data) => {
   const current = prev.then(async () => {
     const filepath = path.join(DATA_DIR, filename);
     const dir = path.dirname(filepath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    fs.mkdirSync(dir, { recursive: true });
     const tmp = `${filepath}.${process.pid}.${++writeSeq}.tmp`;
     await fsp.writeFile(tmp, JSON.stringify(data, null, 2));
     await fsp.rename(tmp, filepath);
