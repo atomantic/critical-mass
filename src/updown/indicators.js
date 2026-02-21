@@ -84,10 +84,9 @@ const calculateStochastic = (candles, kPeriod = 14, dPeriod = 3) => {
 
   // Calculate raw %K values for enough periods to compute %D
   const kValues = [];
-  const neededK = Math.min(candles.length - kPeriod + 1, kPeriod + dPeriod);
+  const startIdx = Math.max(kPeriod - 1, candles.length - dPeriod - kPeriod);
 
-  for (let i = candles.length - neededK; i <= candles.length - 1; i++) {
-    if (i < kPeriod - 1) continue;
+  for (let i = startIdx; i < candles.length; i++) {
     const window = candles.slice(i - kPeriod + 1, i + 1);
     let highest = -Infinity;
     let lowest = Infinity;

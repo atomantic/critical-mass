@@ -35,7 +35,7 @@ const WARNING_ZONE_MS = 8 * 60 * 60 * 1000;
  * @returns {number}
  */
 const scoreRSI = (rsi) => {
-  if (rsi === 0) return 0;
+  if (rsi == null) return 0;
   if (rsi < 30) return 80;
   if (rsi < 35) return 50;
   if (rsi > 70) return -80;
@@ -50,7 +50,7 @@ const scoreRSI = (rsi) => {
  * @returns {number}
  */
 const scoreStochastic = (stoch, prevStoch) => {
-  if (stoch.k === 0 && stoch.d === 0) return 0;
+  if (!stoch || (stoch.k === 0 && stoch.d === 0)) return 0;
 
   const bullishCross = prevStoch && prevStoch.k <= prevStoch.d && stoch.k > stoch.d;
   const bearishCross = prevStoch && prevStoch.k >= prevStoch.d && stoch.k < stoch.d;
@@ -69,7 +69,7 @@ const scoreStochastic = (stoch, prevStoch) => {
  * @returns {number}
  */
 const scoreMACD = (macd, prevMacd) => {
-  if (macd.macd === 0 && macd.signal === 0) return 0;
+  if (!macd || (macd.macd === 0 && macd.signal === 0)) return 0;
 
   const bullishCross = prevMacd && prevMacd.macd <= prevMacd.signal && macd.macd > macd.signal;
   const bearishCross = prevMacd && prevMacd.macd >= prevMacd.signal && macd.macd < macd.signal;
@@ -90,7 +90,7 @@ const scoreMACD = (macd, prevMacd) => {
  * @returns {number}
  */
 const scoreBollinger = (percentB) => {
-  if (percentB === 0) return 0;
+  if (percentB == null) return 0;
   if (percentB < 0) return 80;
   if (percentB < 0.2) return 50;
   if (percentB > 1) return -80;
@@ -106,7 +106,7 @@ const scoreBollinger = (percentB) => {
  * @returns {number}
  */
 const scoreVWAP = (price, vwap, atr) => {
-  if (atr <= 0 || vwap <= 0) return 0;
+  if (!atr || atr < 0.001 || !vwap || vwap <= 0) return 0;
   const distance = (price - vwap) / atr;
   if (distance < -2) return 70;
   if (distance > 2) return -70;
@@ -121,7 +121,7 @@ const scoreVWAP = (price, vwap, atr) => {
  * @returns {number}
  */
 const scoreMomentum = (momentum, rsi) => {
-  if (momentum.magnitude === 0) return 0;
+  if (!momentum || momentum.magnitude === 0) return 0;
   if (momentum.direction === 'up' && rsi < 35) return 60;
   if (momentum.direction === 'up') return 30;
   if (momentum.direction === 'down') return -60;
@@ -188,7 +188,7 @@ const scoreToSignal = (score) => {
 /**
  * Create a signal engine instance
  * @param {ReturnType<import('./candle-aggregator').createCandleAggregator>} candleAggregator
- * @returns {{computeSignals: (contractExpiry?: number | null) => {signal: string, score: number, timeframes: Record<string, any>, noTradeZone: boolean, warningZone: boolean, timestamp: number}}}
+ * @returns {{computeSignals: (contractExpiry?: number | null) => {type: string, score: number, confidence: number, timeframes: Record<string, any>, noTradeZone: boolean, warningZone: boolean, timestamp: number}}}
  */
 const createSignalEngine = (candleAggregator) => {
   /** @type {Record<string, Record<string, any> | null>} */
@@ -226,11 +226,13 @@ const createSignalEngine = (candleAggregator) => {
       compositeScore += result.weightedScore * weight;
     }
 
-    const signal = noTradeZone ? 'NO_TRADE_ZONE' : scoreToSignal(compositeScore);
+    const type = noTradeZone ? 'NO_TRADE_ZONE' : scoreToSignal(compositeScore);
+    const confidence = Math.min(1, Math.abs(compositeScore) / 60);
 
     return {
-      signal,
+      type,
       score: Math.round(compositeScore * 100) / 100,
+      confidence: Math.round(confidence * 100) / 100,
       timeframes,
       noTradeZone,
       warningZone,
@@ -252,4 +254,6 @@ module.exports = {
   scoreMomentum,
   INDICATOR_WEIGHTS,
   TIMEFRAME_WEIGHTS,
+  NO_TRADE_ZONE_MS,
+  WARNING_ZONE_MS,
 };

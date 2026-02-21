@@ -10,6 +10,13 @@ const path = require('path');
 const fs = require('fs');
 const { log } = require('../logger');
 
+const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+
+const ALLOWED_EXTRACTED_KEYS = new Set([
+  'currentPrice', 'direction', 'range', 'target', 'stop',
+  'expiresIn', 'upPrice', 'downPrice', 'maxProfit', 'maxLoss',
+]);
+
 const VISION_PROMPT = `You are analyzing a screenshot from the Crypto.com UpDown Bitcoin options trading screen.
 
 Extract the following data from the screenshot and return ONLY valid JSON (no markdown, no explanation):
@@ -28,6 +35,22 @@ Extract the following data from the screenshot and return ONLY valid JSON (no ma
 }
 
 If you cannot read a value, use null. Return ONLY the JSON object.`;
+
+/**
+ * Parse an expiry value to a millisecond timestamp.
+ * Accepts: number (ms), ISO string, or null.
+ * @param {*} value
+ * @returns {number | null}
+ */
+const parseExpiryToMs = (value) => {
+  if (value == null) return null;
+  if (typeof value === 'number' && value > 0) return value;
+  if (typeof value === 'string') {
+    const ms = new Date(value).getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return null;
+};
 
 /**
  * @param {import('express').Express} app
@@ -61,9 +84,12 @@ module.exports = (app, deps) => {
     const imageBuffer = Buffer.concat(chunks);
     if (!imageBuffer.length) return res.status(400).json({ success: false, error: 'Empty image body' });
 
-    // Save screenshot
+    // Validate and save screenshot
+    const ext = (req.headers['content-type'] || 'image/png').split('/')[1]?.split(';')[0] || 'png';
+    if (!ALLOWED_IMAGE_EXTS.has(ext)) {
+      return res.status(400).json({ success: false, error: `Unsupported image type: ${ext}. Allowed: ${[...ALLOWED_IMAGE_EXTS].join(', ')}` });
+    }
     if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
-    const ext = (req.headers['content-type'] || 'image/png').split('/')[1] || 'png';
     const filename = `updown-${Date.now()}.${ext}`;
     fs.writeFileSync(path.join(SCREENSHOTS_DIR, filename), imageBuffer);
     log('INFO', `📸 UpDown screenshot saved: ${filename} (${imageBuffer.length} bytes)`);
@@ -112,7 +138,7 @@ module.exports = (app, deps) => {
 
       if (!response.ok) {
         const errBody = await response.text().catch(() => '');
-        log('ERROR', `🤖 UpDown screenshot AI error: ${response.status} ${errBody.slice(0, 200)}`);
+        log('ERROR', `🤖 UpDown screenshot AI error: ${response.status}`);
         return res.status(502).json({ success: false, error: `AI provider returned ${response.status}: ${errBody.slice(0, 200)}` });
       }
 
@@ -135,19 +161,28 @@ module.exports = (app, deps) => {
       // Extract first JSON object from the response
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('No JSON object found');
-      extracted = JSON.parse(jsonMatch[0]);
+      const raw = JSON.parse(jsonMatch[0]);
+
+      // Sanitize: only keep expected keys
+      extracted = {};
+      for (const key of Object.keys(raw)) {
+        if (ALLOWED_EXTRACTED_KEYS.has(key)) {
+          extracted[key] = raw[key];
+        }
+      }
     } catch (err) {
-      log('ERROR', `🤖 UpDown screenshot parse failed: ${aiResponse.slice(0, 300)}`);
+      log('ERROR', `🤖 UpDown screenshot parse failed`);
       return res.status(422).json({ success: false, error: 'AI returned unparseable response', raw: aiResponse.slice(0, 500) });
     }
 
-    // Convert "Expires in Xh Ym" to absolute ISO datetime
+    // Convert "Expires in Xh Ym" to absolute ms timestamp
     if (extracted.expiresIn) {
-      const match = extracted.expiresIn.match(/(\d+)h\s*(\d+)m/);
-      if (match) {
-        const hours = parseInt(match[1], 10);
-        const minutes = parseInt(match[2], 10);
-        extracted.expiryISO = new Date(Date.now() + hours * 3600000 + minutes * 60000).toISOString();
+      const match = extracted.expiresIn.match(/(?:(\d+)h)?\s*(?:(\d+)m)?/);
+      if (match && (match[1] || match[2])) {
+        const hours = parseInt(match[1] || '0', 10);
+        const minutes = parseInt(match[2] || '0', 10);
+        extracted.expiryMs = Date.now() + hours * 3600000 + minutes * 60000;
+        extracted.expiryISO = new Date(extracted.expiryMs).toISOString();
       }
     }
 
@@ -164,7 +199,8 @@ module.exports = (app, deps) => {
     if (direction && direction !== 'up' && direction !== 'down') {
       return res.status(400).json({ success: false, error: 'direction must be "up" or "down"' });
     }
-    updownService.setContract({ expiry: expiry ?? null, target: target ?? null, stop: stop ?? null, range: range ?? null, direction: direction ?? null });
+    const expiryMs = parseExpiryToMs(expiry);
+    updownService.setContract({ expiry: expiryMs, target: target ?? null, stop: stop ?? null, range: range ?? null, direction: direction ?? null });
     res.json({ success: true });
   });
 
@@ -176,7 +212,7 @@ module.exports = (app, deps) => {
     if (direction !== 'up' && direction !== 'down') {
       return res.status(400).json({ success: false, error: 'direction must be "up" or "down"' });
     }
-    updownService.setPosition({ entryPrice, contracts, direction, entryTime: req.body.entryTime });
+    updownService.setPosition({ entryPrice: parseFloat(entryPrice), contracts: parseFloat(contracts), direction, entryTime: req.body.entryTime });
     res.json({ success: true });
   });
 

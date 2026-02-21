@@ -127,11 +127,12 @@ const createUpDownService = (io, deps) => {
     });
 
     // Emit signal change event only when signal changes
-    if (result.signal !== lastSignal) {
-      lastSignal = result.signal;
+    if (result.type !== lastSignal) {
+      lastSignal = result.type;
       signalHistory.push({
-        signal: result.signal,
+        type: result.type,
         score: result.score,
+        confidence: result.confidence,
         timestamp: result.timestamp,
       });
       if (signalHistory.length > MAX_SIGNAL_HISTORY) {
@@ -139,8 +140,9 @@ const createUpDownService = (io, deps) => {
       }
 
       io.to('updown').emit('updown:signal', {
-        signal: result.signal,
+        type: result.type,
         score: result.score,
+        confidence: result.confidence,
         noTradeZone: result.noTradeZone,
         warningZone: result.warningZone,
         timeframes: result.timeframes,
@@ -174,11 +176,11 @@ const createUpDownService = (io, deps) => {
    */
   const start = async () => {
     if (running) return;
-    running = true;
     loadState();
 
     await seedFromExchange();
 
+    running = true;
     signalInterval = setInterval(runSignalCycle, SIGNAL_INTERVAL_MS);
     log('INFO', '📊 UpDown service started interval=5s');
   };
