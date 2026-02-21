@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { getBaseCurrency } from '../App'
 
 function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
+  const baseCurrency = getBaseCurrency(summary?.config?.productId)
   const { exchange = 'coinbase' } = useParams()
   const [currentPrice, setCurrentPrice] = useState(0)
 
@@ -31,16 +33,16 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
 
   const { costBasis } = summary
   // formatCurrency for totals, formatPrice for per-unit prices
-  const formatBTC = (n) => (n || 0).toFixed(8)
+  const formatAsset = (n) => (n || 0).toFixed(8)
 
   // Calculate unrealized P&L
-  const reservesCurrentValue = costBasis.reservesBTC * currentPrice
+  const reservesCurrentValue = costBasis.reservesAsset * currentPrice
   const reservesUnrealizedPnL = reservesCurrentValue - costBasis.reservesCostBasis
   const reservesPnLPercent = costBasis.reservesCostBasis > 0
     ? ((reservesCurrentValue / costBasis.reservesCostBasis) - 1) * 100
     : 0
 
-  const pendingCurrentValue = costBasis.pendingBTC * currentPrice
+  const pendingCurrentValue = costBasis.pendingAsset * currentPrice
   const pendingUnrealizedPnL = pendingCurrentValue - costBasis.pendingCostBasis
   const pendingPnLPercent = costBasis.pendingCostBasis > 0
     ? ((pendingCurrentValue / costBasis.pendingCostBasis) - 1) * 100
@@ -63,12 +65,12 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
       {/* Current Price Banner */}
       <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
         <div>
-          <span className="text-gray-400">Current BTC Price:</span>
+          <span className="text-gray-400">Current {baseCurrency} Price:</span>
           <span className="text-3xl font-bold ml-4">{formatPrice(currentPrice)}</span>
         </div>
         <div>
           <span className="text-gray-400">Avg Cost Basis:</span>
-          <span className="text-2xl font-semibold ml-4">{formatPrice(costBasis.avgCostPerBTC)}</span>
+          <span className="text-2xl font-semibold ml-4">{formatPrice(costBasis.avgCostPerAsset)}</span>
         </div>
       </div>
 
@@ -76,18 +78,18 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Reserves */}
         <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-yellow-400 mb-3">BTC Reserves (Holdback)</h3>
+          <h3 className="text-lg font-semibold text-yellow-400 mb-3">{baseCurrency} Reserves (Holdback)</h3>
           <div className="space-y-2">
             <div className="flex justify-between">
               <span className="text-gray-400">Amount:</span>
-              <span className="font-mono">{formatBTC(costBasis.reservesBTC)} BTC</span>
+              <span className="font-mono">{formatAsset(costBasis.reservesAsset)} {baseCurrency}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Cost Basis:</span>
               <span>{formatCurrency(costBasis.reservesCostBasis)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Avg Cost/BTC:</span>
+              <span className="text-gray-400">Avg Cost/{baseCurrency}:</span>
               <span>{formatPrice(costBasis.reservesAvgCost)}</span>
             </div>
             <div className="flex justify-between">
@@ -110,14 +112,14 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
           <div className="space-y-2">
             <div className="flex justify-between">
               <span className="text-gray-400">Amount:</span>
-              <span className="font-mono">{formatBTC(costBasis.pendingBTC)} BTC</span>
+              <span className="font-mono">{formatAsset(costBasis.pendingAsset)} {baseCurrency}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Cost Basis:</span>
               <span>{formatCurrency(costBasis.pendingCostBasis)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Avg Cost/BTC:</span>
+              <span className="text-gray-400">Avg Cost/{baseCurrency}:</span>
               <span>{formatPrice(costBasis.pendingAvgCost)}</span>
             </div>
             <div className="flex justify-between">
@@ -136,19 +138,19 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
 
         {/* Total */}
         <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-blue-400 mb-3">Total BTC Holdings</h3>
+          <h3 className="text-lg font-semibold text-blue-400 mb-3">Total {baseCurrency} Holdings</h3>
           <div className="space-y-2">
             <div className="flex justify-between">
               <span className="text-gray-400">Amount:</span>
-              <span className="font-mono">{formatBTC(costBasis.reservesBTC + costBasis.pendingBTC)} BTC</span>
+              <span className="font-mono">{formatAsset(costBasis.reservesAsset + costBasis.pendingAsset)} {baseCurrency}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Cost Basis:</span>
               <span>{formatCurrency(totalHeldCostBasis)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Avg Cost/BTC:</span>
-              <span>{formatPrice(costBasis.avgCostPerBTC)}</span>
+              <span className="text-gray-400">Avg Cost/{baseCurrency}:</span>
+              <span>{formatPrice(costBasis.avgCostPerAsset)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
@@ -184,10 +186,10 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
               <tr className="text-gray-400 text-left border-b border-gray-700">
                 <th className="pb-2">Date</th>
                 <th className="pb-2">Buy Price</th>
-                <th className="pb-2">BTC Bought</th>
+                <th className="pb-2">{baseCurrency} Bought</th>
                 <th className="pb-2">Cost Basis</th>
                 <th className="pb-2">Net Fees</th>
-                <th className="pb-2">Cost/BTC</th>
+                <th className="pb-2">Cost/{baseCurrency}</th>
                 <th className="pb-2">Holdback</th>
                 <th className="pb-2">Sell Order</th>
                 <th className="pb-2">Status</th>
@@ -213,13 +215,13 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
                     <tr key={i} className="border-t border-gray-700">
                       <td className="py-2">{order.date}</td>
                       <td className="py-2">{formatPrice(order.buyPrice)}</td>
-                      <td className="py-2 font-mono">{formatBTC(order.btcBought)}</td>
+                      <td className="py-2 font-mono">{formatAsset(order.btcBought)}</td>
                       <td className="py-2">{formatCurrency(order.costBasis)}</td>
                       <td className="py-2 text-red-400">{formatCurrency(order.netFees)}</td>
-                      <td className="py-2">{formatPrice(order.costPerBTC)}</td>
-                      <td className="py-2 font-mono text-yellow-400">{formatBTC(order.holdback)}</td>
+                      <td className="py-2">{formatPrice(order.costPerAsset)}</td>
+                      <td className="py-2 font-mono text-yellow-400">{formatAsset(order.holdback)}</td>
                       <td className="py-2">
-                        {formatBTC(order.sellQuantity)} @ {formatPrice(order.sellPrice)}
+                        {formatAsset(order.sellQuantity)} @ {formatPrice(order.sellPrice)}
                       </td>
                       <td className="py-2">
                         <span className={`px-2 py-0.5 rounded text-xs ${
@@ -255,8 +257,8 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
         <h4 className="font-semibold text-gray-300 mb-2">Understanding Cost Basis</h4>
         <ul className="list-disc list-inside space-y-1">
           <li><strong>Cost Basis</strong> = Amount spent ({quoteCurrency}) + Net fees paid</li>
-          <li><strong>Reserves</strong> = BTC held permanently (holdback from each buy)</li>
-          <li><strong>Pending</strong> = BTC in open sell orders (may convert back to {quoteCurrency})</li>
+          <li><strong>Reserves</strong> = {baseCurrency} held permanently (holdback from each buy)</li>
+          <li><strong>Pending</strong> = {baseCurrency} in open sell orders (may convert back to {quoteCurrency})</li>
           <li><strong>Unrealized P&L</strong> = Current market value - Cost basis</li>
           <li><strong>Realized P&L</strong> = Actual profit from completed sell orders</li>
         </ul>

@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect, createContext, useContext, lazy, Suspense } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, useParams, Navigate } from 'react-router-dom'
 import Dashboard from './components/Dashboard'
 import ConfigEditor from './components/ConfigEditor'
@@ -10,22 +10,52 @@ import CostBasisDCA from './components/CostBasisDCA'
 import CostBasisRegime from './components/CostBasisRegime'
 import Backtest from './components/Backtest'
 import Optimizer from './components/Optimizer'
+import Overview from './components/Overview'
 import ExchangeSelector from './components/ExchangeSelector'
 import KeysConfig from './components/KeysConfig'
 import NotificationsConfig from './components/NotificationsConfig'
 import BackupRestore from './components/BackupRestore'
 import RegimeDashboard from './components/RegimeDashboard'
+const Systems = lazy(() => import('./components/Systems'))
+const KalshiDashboard = lazy(() => import('./components/kalshi/Dashboard'))
+const KalshiConfig = lazy(() => import('./components/kalshi/Config'))
+const KalshiGeneralConfig = lazy(() => import('./components/kalshi/GeneralConfig'))
+const KalshiKeysConfig = lazy(() => import('./components/kalshi/KeysConfig'))
+const KalshiRiskConfig = lazy(() => import('./components/kalshi/RiskConfig'))
+const KalshiStrategiesConfig = lazy(() => import('./components/kalshi/StrategiesConfig'))
+const KalshiMarketDetail = lazy(() => import('./components/kalshi/MarketDetail'))
+const KalshiPositions = lazy(() => import('./components/kalshi/Positions'))
+const AIProviders = lazy(() => import('./components/ai/Providers'))
+const LogViewer = lazy(() => import('./components/LogViewer'))
+const HedgeDashboard = lazy(() => import('./components/hedge/Dashboard'))
+const UpDownDashboard = lazy(() => import('./components/updown/Dashboard'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
-// Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD")
+// Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "CRO_USD" -> "USD", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
   if (!productId) return 'USDC'
   if (productId.includes('-')) {
     return productId.split('-')[1]
   }
+  if (productId.includes('_')) {
+    return productId.split('_')[1]
+  }
   // For Gemini-style (BTCUSD), strip BTC prefix
   return productId.replace(/^BTC/, '') || 'USD'
+}
+
+// Extract base currency from product ID (e.g., "BTC-USDC" -> "BTC", "CRO_USD" -> "CRO", "BTCUSD" -> "BTC")
+export function getBaseCurrency(productId) {
+  if (!productId) return 'BTC'
+  if (productId.includes('-')) {
+    return productId.split('-')[0]
+  }
+  if (productId.includes('_')) {
+    return productId.split('_')[0]
+  }
+  // For Gemini-style (BTCUSD), assume BTC prefix
+  return 'BTC'
 }
 
 // Exchange context for sharing current exchange and strategy across components
@@ -47,6 +77,8 @@ const getTabsForStrategy = (strategy) => {
     { name: 'Transactions', path: '/transactions' },
     { name: 'Charts', path: '/charts' },
     { name: 'Config', path: '/config' },
+    { name: 'API Keys', path: '/keys' },
+    { name: 'Logs', path: '/logs' },
   ]
 
   if (strategy === 'regime') {
@@ -59,13 +91,12 @@ const getTabsForStrategy = (strategy) => {
     ...commonTabs.slice(0, 4), // Dashboard, Cost Basis, Transactions, Charts
     { name: 'Backtest', path: '/backtest' },
     { name: 'Optimizer', path: '/optimizer' },
-    ...commonTabs.slice(4), // Config
+    ...commonTabs.slice(4), // Config, API Keys
   ]
 }
 
-// Valid exchange names and strategies
-const VALID_EXCHANGES = ['coinbase', 'gemini']
-const VALID_STRATEGIES = ['dca', 'regime']
+// Valid exchange names
+const VALID_EXCHANGES = ['coinbase', 'gemini', 'cryptocom']
 
 // Component that listens to trade events and shows toasts
 function TradeEventListener() {
@@ -89,13 +120,13 @@ function AppContent() {
   const location = useLocation()
   const navigate = useNavigate()
 
-  // Extract exchange and strategy from URL path (e.g., /coinbase/regime/config -> coinbase, regime)
+  // Extract exchange and pair from URL path (e.g., /coinbase/BTC-USDC/config -> coinbase, BTC-USDC)
   const pathParts = location.pathname.split('/').filter(Boolean)
   const urlExchange = VALID_EXCHANGES.includes(pathParts[0]) ? pathParts[0] : null
-  const urlStrategy = VALID_STRATEGIES.includes(pathParts[1]) ? pathParts[1] : null
+  const urlPair = urlExchange && pathParts[1] ? pathParts[1] : null
 
   const [currentExchange, setCurrentExchange] = useState(urlExchange || 'coinbase')
-  const [currentStrategy, setCurrentStrategy] = useState(urlStrategy || 'dca')
+  const [currentStrategy, setCurrentStrategy] = useState('regime')
   const [exchanges, setExchanges] = useState([])
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -105,9 +136,14 @@ function AppContent() {
   const [stopping, setStopping] = useState(false)
   const [starting, setStarting] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [simpleDcaEnabled, setSimpleDcaEnabled] = useState(false)
 
   // WebSocket connection for regime strategy
   const { connected: wsConnected } = useRegimeEvents(currentStrategy === 'regime' ? currentExchange : null)
+
+  // Derive current pair from exchange config or URL
+  const currentPair = exchanges?.find(e => e.name === currentExchange)?.productId || urlPair || 'BTC-USDC'
 
   // Get tabs based on current strategy
   const tabs = getTabsForStrategy(currentStrategy)
@@ -118,41 +154,53 @@ function AppContent() {
     if (res.ok) {
       const data = await res.json()
       setExchanges(data.exchanges || [])
+      setSimpleDcaEnabled(data.simpleDcaEnabled ?? false)
       // Only auto-select exchange on initial load if not already in URL
+      // On root "/" (overview page), just set defaults without navigating away
       if (autoSelect && !urlExchange) {
         const enabled = data.exchanges?.find(e => e.enabled || e.regimeEnabled)
         const first = data.exchanges?.[0]
         const targetExchange = enabled?.name || first?.name || 'coinbase'
-        // Determine strategy based on exchange config
         const exchangeConfig = enabled || first
         const targetStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
+        const targetPair = exchangeConfig?.productId || 'BTC-USDC'
         setCurrentExchange(targetExchange)
         setCurrentStrategy(targetStrategy)
-        navigate(`/${targetExchange}/${targetStrategy}`, { replace: true })
-      } else if (autoSelect && urlExchange && !urlStrategy) {
-        // URL has exchange but no strategy - redirect to strategy path
+        // Don't redirect away from non-exchange pages (overview, kalshi, notifications, etc.)
+        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/updown', '/gateway', '/notifications', '/backups', '/systems', '/ai']
+        const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
+        if (!isNonExchangePage) {
+          navigate(`/${targetExchange}/${targetPair}`, { replace: true })
+        }
+      } else if (autoSelect && urlExchange && !urlPair) {
+        // URL has exchange but no pair - redirect to pair path
         const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
         const targetStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
+        const targetPair = exchangeConfig?.productId || 'BTC-USDC'
         setCurrentExchange(urlExchange)
         setCurrentStrategy(targetStrategy)
-        navigate(`/${urlExchange}/${targetStrategy}`, { replace: true })
-      } else if (autoSelect && urlExchange && urlStrategy) {
-        // URL already has exchange and strategy
+        navigate(`/${urlExchange}/${targetPair}`, { replace: true })
+      } else if (autoSelect && urlExchange && urlPair) {
+        // URL already has exchange and pair - derive strategy from config
         setCurrentExchange(urlExchange)
-        setCurrentStrategy(urlStrategy)
+        const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
+        const targetStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
+        setCurrentStrategy(targetStrategy)
       }
     }
   }
 
-  // Handle exchange/strategy change from selector - update URL
-  const handleExchangeStrategyChange = (newExchange, newStrategy) => {
+  // Handle exchange change from selector - update URL with pair
+  const handleExchangeChange = (newExchange, newPair) => {
+    const exchangeConfig = exchanges?.find(e => e.name === newExchange)
+    const newStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
     setCurrentExchange(newExchange)
     setCurrentStrategy(newStrategy)
-    // Navigate to new exchange/strategy, preserving current tab if valid
+    // Navigate to new exchange/pair, preserving current tab if valid
     const currentTab = pathParts[2] || ''
     const newTabs = getTabsForStrategy(newStrategy)
     const tabValid = currentTab === '' || newTabs.some(t => t.path === `/${currentTab}`)
-    navigate(`/${newExchange}/${newStrategy}${tabValid && currentTab ? `/${currentTab}` : ''}`)
+    navigate(`/${newExchange}/${newPair}${tabValid && currentTab ? `/${currentTab}` : ''}`)
   }
 
   const fetchData = async () => {
@@ -216,15 +264,24 @@ function AppContent() {
     fetchExchanges(true)
   }, [])
 
-  // Sync exchange and strategy from URL when they change
+  // Sync exchange from URL when it changes, derive strategy from config
   useEffect(() => {
     if (urlExchange && urlExchange !== currentExchange) {
       setCurrentExchange(urlExchange)
+      const exchangeConfig = exchanges?.find(e => e.name === urlExchange)
+      if (exchangeConfig) {
+        setCurrentStrategy(exchangeConfig.strategy === 'regime' ? 'regime' : 'dca')
+      }
     }
-    if (urlStrategy && urlStrategy !== currentStrategy) {
-      setCurrentStrategy(urlStrategy)
+  }, [urlExchange, urlPair])
+
+  // Auto-redirect away from DCA when simpleDcaEnabled is false (only on exchange pages)
+  useEffect(() => {
+    if (!simpleDcaEnabled && currentStrategy === 'dca' && urlExchange) {
+      setCurrentStrategy('regime')
+      navigate(`/${currentExchange}/${currentPair}`, { replace: true })
     }
-  }, [urlExchange, urlStrategy])
+  }, [simpleDcaEnabled, currentStrategy, currentExchange, currentPair, urlExchange])
 
   // Fetch data when exchange changes
   useEffect(() => {
@@ -247,10 +304,10 @@ function AppContent() {
     }
   }, [currentExchange, currentStrategy])
 
-  // Get the current sub-path (tab) without the exchange/strategy prefix
+  // Get the current sub-path (tab) without the exchange/pair prefix
   const getSubPath = () => {
-    if (!urlExchange || !urlStrategy) return location.pathname
-    return location.pathname.replace(`/${urlExchange}/${urlStrategy}`, '') || ''
+    if (!urlExchange || !urlPair) return location.pathname
+    return location.pathname.replace(`/${urlExchange}/${urlPair}`, '') || ''
   }
 
   const isActiveTab = (tabPath) => {
@@ -259,8 +316,26 @@ function AppContent() {
     return subPath.startsWith(tabPath)
   }
 
-  // Build full path with exchange and strategy prefix
-  const buildPath = (tabPath) => `/${currentExchange}/${currentStrategy}${tabPath}`
+  // Check if on overview page
+  const isOverview = location.pathname === '/'
+
+  // Check if on Kalshi pages (independent of exchange-based routing)
+  const isKalshi = location.pathname.startsWith('/kalshi')
+
+  // Check if on AI pages
+  const isAI = location.pathname.startsWith('/ai')
+
+  // Check if on Hedge pages
+  const isHedge = location.pathname.startsWith('/hedge')
+
+  // Check if on UpDown pages
+  const isUpDown = location.pathname.startsWith('/updown')
+
+  // Check if on Gateway logs page
+  const isGateway = location.pathname.startsWith('/gateway')
+
+  // Build full path with exchange and pair prefix
+  const buildPath = (tabPath) => `/${currentExchange}/${currentPair}${tabPath}`
 
   return (
     <ExchangeContext.Provider value={{
@@ -273,12 +348,12 @@ function AppContent() {
       <div className="min-h-screen">
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-3 sm:py-4">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-2 md:py-4">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-3">
               {/* Top row: Title + Exchange selector */}
               <div className="flex items-center justify-between">
-                <Link to={buildPath('')} className="text-xl sm:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2">
-                  <svg viewBox="0 0 32 32" className="w-7 h-7 sm:w-8 sm:h-8 shrink-0" aria-hidden="true">
+                <Link to="/" className="text-lg md:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2 whitespace-nowrap min-w-0 shrink">
+                  <svg viewBox="0 0 32 32" className="w-6 h-6 md:w-8 md:h-8 shrink-0" aria-hidden="true">
                     {/* Outer orbit ring */}
                     <ellipse cx="16" cy="16" rx="14" ry="5" fill="none" stroke="#6366f1" strokeWidth="0.8" opacity="0.5" transform="rotate(-20 16 16)" />
                     {/* Middle orbit ring */}
@@ -299,36 +374,198 @@ function AppContent() {
                   </svg>
                   Critical Mass
                 </Link>
-                {/* Exchange selector - visible on mobile in top row */}
-                <div className="sm:hidden">
-                  <ExchangeSelector
-                    currentExchange={currentExchange}
-                    currentStrategy={currentStrategy}
-                    exchanges={exchanges}
-                    onChange={handleExchangeStrategyChange}
-                    onRefresh={fetchExchanges}
-                  />
+                <div className="flex items-center gap-1.5 md:hidden shrink-0">
+                  {/* Hamburger menu button for mobile */}
+                  <button
+                    onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                    className="p-2 text-gray-400 hover:text-white transition-colors"
+                    aria-label="Toggle menu"
+                  >
+                    {mobileMenuOpen ? (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                      </svg>
+                    )}
+                  </button>
                 </div>
               </div>
 
               {/* Bottom row on mobile / Right side on desktop */}
-              <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-4">
-                {/* Regime engine controls */}
-                {currentStrategy === 'regime' && (
-                  <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+              <div className="flex items-center justify-between md:justify-end gap-1.5 md:gap-4">
+                <Link
+                  to="/"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  DCA
+                </Link>
+                <Link
+                  to="/notifications"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Notifications
+                </Link>
+                <Link
+                  to="/backups"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Backups
+                </Link>
+                <Link
+                  to="/systems"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Systems
+                </Link>
+                <Link
+                  to="/kalshi"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Kalshi
+                </Link>
+                <Link
+                  to="/hedge"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Hedge
+                </Link>
+                <Link
+                  to="/updown"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  UpDown
+                </Link>
+                <Link
+                  to="/ai"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  AI
+                </Link>
+                <Link
+                  to="/gateway/logs"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Gateway
+                </Link>
+              </div>
+            </div>
+
+            {/* Mobile menu dropdown */}
+            {mobileMenuOpen && (
+              <div className="md:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
+                <Link
+                  to="/"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  DCA
+                </Link>
+                <Link
+                  to="/notifications"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Notifications
+                </Link>
+                <Link
+                  to="/backups"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Backups
+                </Link>
+                <Link
+                  to="/systems"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Systems
+                </Link>
+                <Link
+                  to="/kalshi"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Kalshi
+                </Link>
+                <Link
+                  to="/hedge"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Hedge
+                </Link>
+                <Link
+                  to="/updown"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  UpDown
+                </Link>
+                <Link
+                  to="/ai"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  AI Providers
+                </Link>
+                <Link
+                  to="/gateway/logs"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Gateway
+                </Link>
+              </div>
+            )}
+          </div>
+        </header>
+
+        {/* Exchange sub-nav (hidden on overview, Kalshi, and AI pages) */}
+        {!isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isGateway && (
+          <nav className="bg-gray-800 border-b border-gray-700">
+            <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
+              <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
+                <div className="flex gap-1 overflow-x-auto min-w-0">
+                  {tabs.map(tab => (
+                    <Link
+                      key={tab.path}
+                      to={buildPath(tab.path)}
+                      className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                        isActiveTab(tab.path)
+                          ? 'text-white border-b-2 border-blue-500'
+                          : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {tab.name}
+                    </Link>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 md:gap-3 flex-wrap px-3 md:px-0 py-1.5 shrink-0 md:ml-auto">
+                  <ExchangeSelector
+                    currentExchange={currentExchange}
+                    exchanges={exchanges}
+                    onChange={handleExchangeChange}
+                    onRefresh={fetchExchanges}
+                  />
+                {currentStrategy === 'regime' && (<>
+
                     {regimeDryRun && (
-                      <span className="px-1.5 sm:px-2 py-0.5 sm:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] sm:text-xs font-medium rounded">
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded">
                         DRY-RUN
                       </span>
                     )}
-                    <div className="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm">
-                      <span className={`w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full ${regimeRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
+                    <div className="flex items-center gap-1 md:gap-1.5 text-xs md:text-sm">
+                      <span className={`w-1.5 md:w-2 h-1.5 md:h-2 rounded-full ${regimeRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
                       <span className={regimeRunning ? 'text-green-400' : 'text-gray-400'}>
                         {regimeRunning ? 'Running' : 'Stopped'}
                       </span>
                     </div>
-                    <div className="flex items-center gap-1 sm:gap-1.5 text-xs sm:text-sm">
-                      <span className={`w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full ${wsConnected ? 'bg-blue-500' : 'bg-red-500'}`} />
+                    <div className="flex items-center gap-1 md:gap-1.5 text-xs md:text-sm">
+                      <span className={`w-1.5 md:w-2 h-1.5 md:h-2 rounded-full ${wsConnected ? 'bg-blue-500' : 'bg-red-500'}`} />
                       <span className={wsConnected ? 'text-blue-400' : 'text-red-400'}>
                         {wsConnected ? 'Live' : 'Offline'}
                       </span>
@@ -339,7 +576,7 @@ function AppContent() {
                           <button
                             onClick={handleResetDryRun}
                             disabled={resetting}
-                            className="px-1.5 sm:px-2 py-0.5 sm:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-[10px] sm:text-xs transition-colors"
+                            className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-[10px] md:text-xs transition-colors"
                             title="Reset dry-run state"
                           >
                             {resetting ? '...' : 'Reset'}
@@ -348,7 +585,7 @@ function AppContent() {
                         <button
                           onClick={handleStopRegime}
                           disabled={stopping}
-                          className="px-2 sm:px-3 py-1 sm:py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-xs sm:text-sm font-medium transition-colors"
+                          className="px-2 md:px-3 py-1 md:py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-xs md:text-sm font-medium transition-colors"
                         >
                           {stopping ? '...' : 'Stop'}
                         </button>
@@ -357,66 +594,97 @@ function AppContent() {
                       <button
                         onClick={handleStartRegime}
                         disabled={starting}
-                        className="px-2 sm:px-3 py-1 sm:py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-xs sm:text-sm font-medium transition-colors"
+                        className="px-2 md:px-3 py-1 md:py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-xs md:text-sm font-medium transition-colors"
                       >
                         {starting ? '...' : 'Start'}
                       </button>
                     )}
-                  </div>
-                )}
-                <Link
-                  to="/notifications"
-                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
-                >
-                  Notifications
-                </Link>
-                <Link
-                  to="/backups"
-                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
-                >
-                  Backups
-                </Link>
-                <Link
-                  to={`/${currentExchange}/keys`}
-                  className="hidden sm:block px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
-                >
-                  API Keys
-                </Link>
-                {/* Exchange selector - hidden on mobile (shown in top row) */}
-                <div className="hidden sm:block">
-                  <ExchangeSelector
-                    currentExchange={currentExchange}
-                    currentStrategy={currentStrategy}
-                    exchanges={exchanges}
-                    onChange={handleExchangeStrategyChange}
-                    onRefresh={fetchExchanges}
-                  />
+                </>)}
                 </div>
               </div>
             </div>
-          </div>
-        </header>
+          </nav>
+        )}
 
-        {/* Navigation */}
-        <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
-          <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
-            <div className="flex gap-1 min-w-max">
-              {tabs.map(tab => (
+        {/* Kalshi sub-nav (shown on /kalshi/* pages) */}
+        {isKalshi && (
+          <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
+            <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
+              <div className="flex gap-1 min-w-max">
                 <Link
-                  key={tab.path}
-                  to={buildPath(tab.path)}
+                  to="/kalshi"
                   className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                    isActiveTab(tab.path)
+                    location.pathname === '/kalshi'
                       ? 'text-white border-b-2 border-blue-500'
                       : 'text-gray-400 hover:text-white'
                   }`}
                 >
-                  {tab.name}
+                  Dashboard
                 </Link>
-              ))}
+                <Link
+                  to="/kalshi/positions"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname.startsWith('/kalshi/positions')
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Positions
+                </Link>
+                <Link
+                  to="/kalshi/config"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname.startsWith('/kalshi/config')
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Config
+                </Link>
+                <Link
+                  to="/kalshi/logs"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname === '/kalshi/logs'
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Logs
+                </Link>
+              </div>
             </div>
-          </div>
-        </nav>
+          </nav>
+        )}
+
+        {/* Hedge sub-nav (shown on /hedge/* pages) */}
+        {isHedge && (
+          <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
+            <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
+              <div className="flex gap-1 min-w-max">
+                <Link
+                  to="/hedge"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname === '/hedge'
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Dashboard
+                </Link>
+                <Link
+                  to="/hedge/logs"
+                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                    location.pathname === '/hedge/logs'
+                      ? 'text-white border-b-2 border-blue-500'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  Logs
+                </Link>
+              </div>
+            </div>
+          </nav>
+        )}
 
         {/* Main Content */}
         <main className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6">
@@ -426,30 +694,49 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary ? (
+          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isGateway ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
             </div>
           ) : (
             <Routes>
-              {/* Redirect root to default exchange/strategy */}
-              <Route path="/" element={<Navigate to={`/${currentExchange}/${currentStrategy}`} replace />} />
+              {/* Overview dashboard at root */}
+              <Route path="/" element={<Overview />} />
 
-              {/* DCA strategy routes */}
-              <Route path="/:exchange/dca" element={<Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />} />
-              <Route path="/:exchange/dca/cost-basis" element={<CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/dca/transactions" element={<TransactionsDCA transactions={summary?.transactions} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/dca/charts" element={<ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/dca/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/dca/optimizer" element={<Optimizer exchange={currentExchange} />} />
-              <Route path="/:exchange/dca/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy="dca" />} />
+              {/* Pair-based routes - strategy determined from exchange config */}
+              <Route path="/:exchange/:pair" element={
+                currentStrategy === 'regime'
+                  ? <RegimeDashboard exchange={currentExchange} />
+                  : <Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />
+              } />
+              <Route path="/:exchange/:pair/cost-basis" element={
+                currentStrategy === 'regime'
+                  ? <CostBasisRegime exchange={currentExchange} />
+                  : <CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
+              } />
+              <Route path="/:exchange/:pair/transactions" element={
+                currentStrategy === 'regime'
+                  ? <TransactionsRegime exchange={currentExchange} />
+                  : <TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
+              } />
+              <Route path="/:exchange/:pair/charts" element={
+                currentStrategy === 'regime'
+                  ? <ChartsRegime exchange={currentExchange} />
+                  : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
+              } />
+              <Route path="/:exchange/:pair/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy={currentStrategy} />} />
 
-              {/* Regime strategy routes */}
-              <Route path="/:exchange/regime" element={<RegimeDashboard exchange={currentExchange} />} />
-              <Route path="/:exchange/regime/cost-basis" element={<CostBasisRegime exchange={currentExchange} />} />
-              <Route path="/:exchange/regime/transactions" element={<TransactionsRegime exchange={currentExchange} />} />
-              <Route path="/:exchange/regime/charts" element={<ChartsRegime exchange={currentExchange} />} />
-              <Route path="/:exchange/regime/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy="regime" />} />
+              {/* DCA-only routes (backtest, optimizer) */}
+              {simpleDcaEnabled && currentStrategy !== 'regime' && <>
+              <Route path="/:exchange/:pair/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/:pair/optimizer" element={<Optimizer exchange={currentExchange} />} />
+              </>}
+
+              {/* API Keys - in sub-nav tabs */}
+              <Route path="/:exchange/:pair/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
+
+              {/* PM2 Logs - per exchange engine */}
+              <Route path="/:exchange/:pair/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName={`critical-mass-${currentExchange}`} /></Suspense>} />
 
               {/* Notifications - global (not exchange-specific) */}
               <Route path="/notifications" element={<NotificationsConfig />} />
@@ -457,14 +744,42 @@ function AppContent() {
               {/* Backups - global (not exchange-specific) */}
               <Route path="/backups" element={<BackupRestore />} />
 
-              {/* API Keys - shared per exchange (not strategy-specific) */}
-              <Route path="/:exchange/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
+              {/* Systems - debug showcase of all celestial body types */}
+              <Route path="/systems" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><Systems /></Suspense>} />
 
-              {/* Legacy route - redirect old /:exchange (without strategy) to new /:exchange/:strategy */}
-              <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentStrategy}`} replace />} />
+              {/* Kalshi prediction market routes */}
+              <Route path="/kalshi" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiDashboard /></Suspense>} />
+              <Route path="/kalshi/markets/:ticker" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiMarketDetail /></Suspense>} />
+              <Route path="/kalshi/positions" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiPositions /></Suspense>} />
+              <Route path="/kalshi/config" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiConfig /></Suspense>}>
+                <Route index element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiGeneralConfig /></Suspense>} />
+                <Route path="general" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiGeneralConfig /></Suspense>} />
+                <Route path="keys" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiKeysConfig /></Suspense>} />
+                <Route path="risk" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiRiskConfig /></Suspense>} />
+                <Route path="strategies" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiStrategiesConfig /></Suspense>} />
+              </Route>
 
-              {/* Catch invalid routes - redirect to current exchange/strategy */}
-              <Route path="*" element={<Navigate to={`/${currentExchange}/${currentStrategy}`} replace />} />
+              {/* Kalshi logs */}
+              <Route path="/kalshi/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass-kalshi" /></Suspense>} />
+
+              {/* AI Provider management */}
+              <Route path="/ai" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><AIProviders /></Suspense>} />
+
+              {/* Hedge engine dashboard + logs */}
+              <Route path="/hedge" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><HedgeDashboard /></Suspense>} />
+              <Route path="/hedge/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass-kalshi" /></Suspense>} />
+
+              {/* UpDown BTC Options dashboard */}
+              <Route path="/updown" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><UpDownDashboard /></Suspense>} />
+
+              {/* Gateway logs */}
+              <Route path="/gateway/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass" /></Suspense>} />
+
+              {/* Legacy route - redirect /:exchange (without pair) to /:exchange/:pair */}
+              <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />
+
+              {/* Catch invalid routes - redirect to current exchange/pair */}
+              <Route path="*" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />
             </Routes>
           )}
         </main>

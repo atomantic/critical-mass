@@ -89,7 +89,7 @@ export const RING_OPACITY = {
 }
 
 // Tiers that render as stellar bodies (bright core + corona, triggers bloom)
-export const STELLAR_TIERS = new Set(['sun', 'hypergiant', 'galaxy'])
+export const STELLAR_TIERS = new Set(['sun', 'hypergiant'])
 
 // Base body scale — sqrt curve from percentage of max capital, range [0.15, 2.0]
 export const BASE_BODY_SCALE = 0.15
@@ -127,13 +127,13 @@ const MIN_ORBIT_GAP = 0.8
 // Visual extent multiplier per tier (accounts for glow halo + bloom bleed)
 // Stellar bodies bloom heavily so they appear much larger than their geometry
 const VISUAL_EXTENT_SCALE = {
-  satellite:  1.4,
+  satellite:  2.0,
   moon:       1.4,
   planet:     1.5,
   sun:        2.2,
   hypergiant: 2.5,
-  galaxy:     2.8,
-  black_hole: 3.5,
+  galaxy:     3.5, // spiral arms extend far
+  black_hole: 2.5, // tighter accretion disk
 }
 
 /**

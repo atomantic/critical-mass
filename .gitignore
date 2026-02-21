@@ -1,5 +1,7 @@
 node_modules/
+config.json
 keys.json
+keys/
 data/
 logs/
 dry-run-state.json
@@ -7,3 +9,5 @@ dry-run-state.json
 .playwright-mcp
 admin/dist/
 tmp-*
+*.png
+.ghostty-theme

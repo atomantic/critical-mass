@@ -502,6 +502,93 @@ const createCoinbaseAdapter = (keysPath = null) => {
     }));
   };
 
+  /**
+   * Place a stop-limit sell order (GTC)
+   * Triggers a limit sell when price drops to stopPrice
+   * @param {string} productId - Product ID (e.g., 'BTC-USDC')
+   * @param {number} baseAmount - Amount of base currency to sell
+   * @param {number} stopPrice - Price that triggers the order
+   * @param {number} limitPrice - Limit price for execution once triggered
+   * @returns {Promise<{orderId: string, clientOrderId: string, success: boolean, errorMessage?: string, baseSize: number, stopPrice: number, limitPrice: number}>}
+   */
+  adapter.placeStopLimitSell = async (productId, baseAmount, stopPrice, limitPrice) => {
+    const clientOrderId = uuidv4();
+
+    const product = await adapter.getProductDetails(productId);
+
+    const baseIncrement = parseFloat(product.baseIncrement);
+    const quoteIncrement = parseFloat(product.quoteIncrement);
+
+    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
+    const roundedStopPrice = Math.floor(stopPrice / quoteIncrement) * quoteIncrement;
+    const roundedLimitPrice = Math.floor(limitPrice / quoteIncrement) * quoteIncrement;
+
+    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+    const quotePrecision = Math.max(0, -Math.floor(Math.log10(quoteIncrement)));
+
+    const orderData = {
+      client_order_id: clientOrderId,
+      product_id: productId,
+      side: 'SELL',
+      order_configuration: {
+        stop_limit_stop_limit_gtc: {
+          base_size: roundedAmount.toFixed(basePrecision),
+          limit_price: roundedLimitPrice.toFixed(quotePrecision),
+          stop_price: roundedStopPrice.toFixed(quotePrecision),
+          stop_direction: 'STOP_DIRECTION_STOP_DOWN',
+        },
+      },
+    };
+
+    const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
+
+    return {
+      orderId: result.order_id || result.success_response?.order_id,
+      clientOrderId,
+      success: result.success || !!result.success_response,
+      errorMessage: result.failure_response?.message || result.error_response?.message,
+      baseSize: roundedAmount,
+      stopPrice: roundedStopPrice,
+      limitPrice: roundedLimitPrice,
+    };
+  };
+
+  /**
+   * Place a market sell order using base currency amount
+   * @param {string} productId - Product ID (e.g., 'BTC-USDC')
+   * @param {number} baseAmount - Amount of base currency to sell
+   * @returns {Promise<{orderId: string, clientOrderId: string, success: boolean, errorMessage?: string, baseSize: number}>}
+   */
+  adapter.placeMarketSell = async (productId, baseAmount) => {
+    const clientOrderId = uuidv4();
+
+    const product = await adapter.getProductDetails(productId);
+    const baseIncrement = parseFloat(product.baseIncrement);
+    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
+    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+
+    const orderData = {
+      client_order_id: clientOrderId,
+      product_id: productId,
+      side: 'SELL',
+      order_configuration: {
+        market_market_ioc: {
+          base_size: roundedAmount.toFixed(basePrecision),
+        },
+      },
+    };
+
+    const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
+
+    return {
+      orderId: result.order_id || result.success_response?.order_id,
+      clientOrderId,
+      success: result.success || !!result.success_response,
+      errorMessage: result.failure_response?.message || result.error_response?.message,
+      baseSize: roundedAmount,
+    };
+  };
+
   return adapter;
 };
 
@@ -525,4 +612,6 @@ module.exports = {
   getOrderFills: defaultAdapter.getOrderFills,
   getOrderFillSummary: defaultAdapter.getOrderFillSummary,
   getCandles: defaultAdapter.getCandles,
+  placeStopLimitSell: defaultAdapter.placeStopLimitSell,
+  placeMarketSell: defaultAdapter.placeMarketSell,
 };

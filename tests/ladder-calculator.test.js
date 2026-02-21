@@ -65,6 +65,12 @@ describe('calculateLowerBound', () => {
     const floor = lc.calculateLowerBound(50000, 100000, 100);
     assert.equal(floor, 0);
   });
+
+  it('respects 5-decimal priceIncrement for low-priced assets like CRO', () => {
+    // ATH=0.12, maxDrop=80% => floor = 0.12 * 0.20 = 0.024
+    const floor = lc.calculateLowerBound(0.08371, 0.12, 80, 0.00001);
+    assert.equal(floor, 0.024);
+  });
 });
 
 // ============================================================================
@@ -161,6 +167,21 @@ describe('calculateLadderLevels', () => {
         assert.ok(levels[i] < levels[i - 1], `${mode}: level ${i} should be < level ${i - 1}`);
       }
     }
+  });
+
+  it('respects 5-decimal priceIncrement for CRO-like prices', () => {
+    const lc2 = calc({ ladderMinSpacingPct: 0 });
+    const levels = lc2.calculateLadderLevels(0.08300, 0.02400, 5, 'linear', 0.00001);
+    assert.equal(levels.length, 5);
+    // All prices should be rounded to tick-size precision, not the default 0.01
+    for (const p of levels) {
+      const rounded = Math.round(p * 100000) / 100000;
+      assert.ok(Math.abs(p - rounded) < 1e-10, `price ${p} should be aligned to 0.00001 tick`);
+      assert.ok(p > 0.02, `price ${p} should retain sub-cent precision, not round to 0`);
+    }
+    // First and last should match top and lower bound
+    assert.equal(levels[0], 0.083);
+    assert.ok(Math.abs(levels[levels.length - 1] - 0.024) < 1e-10);
   });
 
   it('minimum spacing enforcement removes levels that are too close', () => {
@@ -310,12 +331,12 @@ describe('buildLadder', () => {
     }
   });
 
-  it('each level has btcQty = sizeUsdc / price', () => {
+  it('each level has assetQty = sizeUsdc / price', () => {
     const lc = calc();
     const result = lc.buildLadder(100000, 2000, defaultContext());
     for (const level of result.levels) {
       const expected = Math.round((level.sizeUsdc / level.price) * 1e8) / 1e8;
-      assert.equal(level.btcQty, expected);
+      assert.equal(level.assetQty, expected);
     }
   });
 
@@ -339,6 +360,22 @@ describe('buildLadder', () => {
     const lc = calc();
     const result = lc.buildLadder(100000, 1000, defaultContext({ athDistance: -0.25 }));
     assert.equal(result.athDistance, -0.25);
+  });
+
+  it('uses 5-decimal precision for CRO-like low-priced assets', () => {
+    const lc = calc({ baseSizeUsdc: 5, minOrderSizeUsdc: 1 });
+    const result = lc.buildLadder(0.08371, 100, defaultContext({
+      atr: 0.00006,
+      ath: 0.12,
+      athDistance: -0.30,
+      priceIncrement: 0.00001,
+    }));
+    assert.ok(result.levels.length > 0, 'should produce ladder levels for CRO');
+    // All prices should retain sub-cent precision (not rounded to $0.08 or $0.00)
+    for (const level of result.levels) {
+      assert.ok(level.price > 0.01, `price ${level.price} should not be rounded to near-zero`);
+      assert.ok(level.price < 0.09, `price ${level.price} should be in CRO range`);
+    }
   });
 });
 
@@ -406,8 +443,8 @@ describe('getSummary', () => {
     const ladder = {
       lowerBoundPct: 78,
       levels: [
-        { index: 0, price: 99000, sizeUsdc: 50, btcQty: 0.0005, distancePct: 1 },
-        { index: 1, price: 80000, sizeUsdc: 200, btcQty: 0.0025, distancePct: 20 },
+        { index: 0, price: 99000, sizeUsdc: 50, assetQty: 0.0005, distancePct: 1 },
+        { index: 1, price: 80000, sizeUsdc: 200, assetQty: 0.0025, distancePct: 20 },
       ],
     };
     const summary = lc.getSummary(ladder);

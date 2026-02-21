@@ -195,6 +195,10 @@ describe('GLOBAL_DEFAULTS', () => {
     assert.equal(GLOBAL_DEFAULTS.backup.enabled, true);
     assert.equal(GLOBAL_DEFAULTS.backup.maxBackups, 7);
   });
+
+  it('has simpleDcaEnabled defaulting to false', () => {
+    assert.equal(GLOBAL_DEFAULTS.simpleDcaEnabled, false);
+  });
 });
 
 // ============================================================================
@@ -349,6 +353,7 @@ describe('validateRegimeConfig', () => {
     assert.equal(validateRegimeConfig({ maxIntervalMs: 14400000 }).valid, true);
   });
 
+
   it('reports invalid entryMode', () => {
     assert.equal(validateRegimeConfig({ entryMode: 'unknown' }).valid, false);
     assert.equal(validateRegimeConfig({ entryMode: 'reactive' }).valid, true);
@@ -404,10 +409,11 @@ describe('validateRegimeConfig', () => {
     }
   });
 
-  it('reports maxBtcExposure out of range', () => {
-    assert.equal(validateRegimeConfig({ maxBtcExposure: 0.005 }).valid, false);
-    assert.equal(validateRegimeConfig({ maxBtcExposure: 11 }).valid, false);
-    assert.equal(validateRegimeConfig({ maxBtcExposure: 1.0 }).valid, true);
+  it('reports maxAssetExposure out of range', () => {
+    assert.equal(validateRegimeConfig({ maxAssetExposure: -1 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxAssetExposure: 11 }).valid, false);
+    assert.equal(validateRegimeConfig({ maxAssetExposure: 0 }).valid, true);  // 0 = uncapped
+    assert.equal(validateRegimeConfig({ maxAssetExposure: 1.0 }).valid, true);
   });
 
   it('reports maxDrawdownPercent out of range', () => {
@@ -730,6 +736,22 @@ describe('getGlobalConfig', () => {
     const result = getGlobalConfig();
     assert.equal(result.schedulerInterval, GLOBAL_DEFAULTS.schedulerInterval);
   });
+
+  it('returns simpleDcaEnabled false by default', () => {
+    setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
+    const result = getGlobalConfig();
+    assert.equal(result.simpleDcaEnabled, false);
+  });
+
+  it('allows simpleDcaEnabled to be overridden to true via updateGlobalConfig', () => {
+    const baseConfig = {
+      exchanges: {},
+      global: {},
+    };
+    setupFsMocks({ base: baseConfig, user: null });
+    const result = updateGlobalConfig({ simpleDcaEnabled: true });
+    assert.equal(result.global.simpleDcaEnabled, true);
+  });
 });
 
 // ============================================================================
@@ -801,6 +823,7 @@ describe('updateRegimeConfig', () => {
     assert.equal(result.exchanges.kraken.regime.enabled, true);
     assert.equal(result.exchanges.kraken.dryRun, DEFAULTS.dryRun);
   });
+
 });
 
 // ============================================================================
@@ -887,7 +910,7 @@ describe('getAggressivenessPresets', () => {
     const result = getAggressivenessPresets();
     assert.equal(result.moderate.kFactor, 0.7);
     // Other moderate defaults should still be present
-    assert.equal(result.moderate.baseSizeUsdc, DEFAULT_AGGRESSIVENESS_PRESETS.moderate.baseSizeUsdc);
+    assert.equal(result.moderate.cautionScale, DEFAULT_AGGRESSIVENESS_PRESETS.moderate.cautionScale);
     // Other levels untouched
     assert.equal(result.conservative.kFactor, DEFAULT_AGGRESSIVENESS_PRESETS.conservative.kFactor);
   });
@@ -899,9 +922,9 @@ describe('updateAggressivenessPresets', () => {
   it('updates presets and saves', () => {
     setupFsMocks({ base: { exchanges: {}, global: {} }, user: null });
     const result = updateAggressivenessPresets({
-      aggressive: { baseSizeUsdc: 150 },
+      aggressive: { cautionScale: 0.75 },
     });
-    assert.equal(result.global.aggressivenessPresets.aggressive.baseSizeUsdc, 150);
+    assert.equal(result.global.aggressivenessPresets.aggressive.cautionScale, 0.75);
     // Other fields preserved from defaults
     assert.equal(
       result.global.aggressivenessPresets.aggressive.kFactor,

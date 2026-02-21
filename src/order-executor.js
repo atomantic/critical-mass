@@ -9,7 +9,7 @@
  * - Anti-churn logic for TP updates
  */
 
-const { roundBTC, roundPrice } = require('./volatility-utils');
+const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 
 /**
@@ -19,6 +19,18 @@ const { createMutex } = require('./async-mutex');
  */
 
 /**
+ * Format a price with appropriate decimal places
+ * @param {number} p - Price value
+ * @returns {string} Formatted price string
+ */
+const fmtPrice = (p) => {
+  if (p == null || isNaN(p)) return '-';
+  if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
+  if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
+  return `$${p.toFixed(5)}`;
+};
+
+/**
  * Create order executor instance
  * @param {string} exchange - Exchange name
  * @param {RegimeStrategyConfig} config - Configuration
@@ -26,19 +38,22 @@ const { createMutex } = require('./async-mutex');
  * @param {string} productId - Product to trade
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus)
+ * @param {Function} [callbacks.onEntryCancelled] - Called when an entry order is cancelled (stale timeout, refresh, etc.): (orderId)
  * @returns {Object} Order executor instance
  */
 const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {}) => {
   /** @type {Map<string, PendingOrder>} */
   const pendingOrders = new Map();
+  const baseCurrency = productId.replace('_', '-').split('-')[0];
 
   let lastCancelTime = 0;
   let lastTpPrice = 0;
   let lastTpSize = 0;
   let activeTpOrderId = null;
   let staleTimeoutMultiplier = 1.0; // Can be adjusted by regime
+  let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
 
-  /** @type {Map<string, {tpOrderId: string, btcQty: number, tpPrice: number}>} */
+  /** @type {Map<string, {tpOrderId: string, assetQty: number, tpPrice: number}>} */
   const bodyTpOrders = new Map(); // bodyId -> body TP tracking
 
   /** @type {Map<string, string>} tpOrderId -> buyOrderId/bodyId for O(1) reverse lookups */
@@ -70,19 +85,52 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @returns {Promise<{cancelled: boolean, filled: boolean}>}
    */
   const safeCancelOrder = async (orderId) => {
-    const result = await adapter.cancelOrder(orderId);
-    if (result.success) return { cancelled: true, filled: false };
+    const maxRetries = 2;
+    const verifyDelayMs = 500;
 
-    const status = await adapter.getOrder(orderId).catch(() => null);
-    if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
-      console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
-      return { cancelled: false, filled: true };
-    }
-    if (status && status.status === 'CANCELLED') {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const result = await adapter.cancelOrder(orderId);
+
+      if (!result.success) {
+        // Cancel call itself failed — check if already filled or cancelled
+        const status = await adapter.getOrder(orderId).catch(() => null);
+        if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
+          console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
+          return { cancelled: false, filled: true };
+        }
+        if (status && status.status === 'CANCELLED') {
+          return { cancelled: true, filled: false };
+        }
+        console.log(`⚠️ [${exchange}] Cancel failed for ${orderId.slice(0, 8)}, status=${status?.status || 'unknown'}`);
+        return { cancelled: false, filled: false };
+      }
+
+      // Cancel reported success — verify the order is actually cancelled
+      await new Promise(r => setTimeout(r, verifyDelayMs));
+      const verified = await adapter.getOrder(orderId).catch(() => null);
+
+      if (verified?.status === 'CANCELLED') {
+        return { cancelled: true, filled: false };
+      }
+      if (verified?.status === 'FILLED' || verified?.completionPercentage >= 100) {
+        console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
+        return { cancelled: false, filled: true };
+      }
+      if (verified?.status === 'OPEN' && attempt < maxRetries) {
+        console.log(`⚠️ [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} still OPEN — retrying (${attempt + 1}/${maxRetries})`);
+        continue;
+      }
+
+      // Retries exhausted or unexpected status
+      if (verified?.status === 'OPEN') {
+        console.log(`🚨 [${exchange}] Cancel verification failed for ${orderId.slice(0, 8)} — still OPEN after ${maxRetries} retries`);
+        return { cancelled: false, filled: false };
+      }
+
+      // Verified status is null/unknown but cancel said success — trust it
       return { cancelled: true, filled: false };
     }
 
-    console.log(`⚠️ [${exchange}] Cancel failed for ${orderId.slice(0, 8)}, status=${status?.status || 'unknown'}`);
     return { cancelled: false, filled: false };
   };
 
@@ -93,7 +141,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @param {number} currentAsk - Current best ask
    * @param {number} [retryCount=0] - Current retry attempt
    * @param {number} [effectiveOffsetBps] - Optional dynamic offset (defaults to config.entryOffsetBps)
-   * @returns {Promise<{success: boolean, orderId?: string, price?: number, btcQty?: number, errorMessage?: string}>}
+   * @returns {Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>}
    */
   const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null) => {
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
@@ -106,14 +154,15 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       bidPrice = currentAsk * 0.999; // Back off to ensure maker
     }
 
-    bidPrice = roundPrice(bidPrice);
-    const btcQty = roundBTC(sizeUsdc / bidPrice);
+    bidPrice = roundPrice(bidPrice, priceIncrement);
+    const assetQty = roundAsset(sizeUsdc / bidPrice);
 
-    console.log(`📝 [${exchange}] Placing entry bid: ${btcQty} BTC @ $${bidPrice} (size $${sizeUsdc})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
+    console.log(`📝 [${exchange}] Placing entry bid: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
 
-    const result = await adapter.placeLimitBuy(productId, btcQty, bidPrice, { postOnly: true });
+    const result = await adapter.placeLimitBuy(productId, assetQty, bidPrice, { postOnly: true });
 
     if (result.success) {
+      console.log(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)}`);
       // Verify order is actually open on exchange (post-only orders can be immediately cancelled)
       const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
 
@@ -138,7 +187,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       pendingOrders.set(result.orderId, {
         type: 'entry',
         price: bidPrice,
-        size: btcQty,
+        size: assetQty,
         sizeUsdc,
         placedAt: Date.now(),
       });
@@ -150,7 +199,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         success: true,
         orderId: result.orderId,
         price: bidPrice,
-        btcQty,
+        assetQty,
       };
     }
 
@@ -171,20 +220,20 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Place or update take-profit sell order (mutex-serialized)
-   * @param {number} btcQty - BTC quantity to sell
+   * @param {number} assetQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
    * @param {Object} [options] - Options
    * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
    * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, filledDuringCancel?: boolean, filledOrderId?: string, errorMessage?: string}>}
    */
-  const placeTakeProfitOrder = async (btcQty, tpPrice, options = {}) => {
+  const placeTakeProfitOrder = async (assetQty, tpPrice, options = {}) => {
     // Serialize concurrent TP updates to prevent duplicate sells
     const release = await tpMutex.acquire();
 
     // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
     if (!options.forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
       const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
-      const sizeChange = Math.abs(btcQty - lastTpSize) / lastTpSize * 100;
+      const sizeChange = Math.abs(assetQty - lastTpSize) / lastTpSize * 100;
       // Update if neither price nor size changed significantly
       if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
         release();
@@ -222,14 +271,15 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
     }
 
-    const roundedPrice = roundPrice(tpPrice);
-    const roundedQty = roundBTC(btcQty);
+    const roundedPrice = roundPrice(tpPrice, priceIncrement);
+    const roundedQty = roundAsset(assetQty);
 
-    console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} BTC @ $${roundedPrice}`);
+    console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
 
     const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
 
     if (result.success) {
+      console.log(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
       activeTpOrderId = result.orderId;
       lastTpPrice = roundedPrice;
       lastTpSize = roundedQty;
@@ -343,11 +393,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             // Order was cancelled
             console.log(`⏰ [${exchange}] Stale check found cancelled order ${orderId}`);
             pendingOrders.delete(orderId);
+            callbacks.onEntryCancelled?.(orderId);
           } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
             // Not filled at all, cancel
             console.log(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`);
             return adapter.cancelOrder(orderId).then(() => {
               pendingOrders.delete(orderId);
+              callbacks.onEntryCancelled?.(orderId);
             });
           }
           // Partially filled orders are left alone - WebSocket should handle incremental fills
@@ -367,13 +419,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const now = Date.now();
     let refreshed = 0;
 
-    const isTpType = (type) => type === 'take_profit' || type === 'body_tp';
+    const isPersistentType = (type) => type === 'take_profit' || type === 'body_tp' || type === 'ladder_entry';
     const effectiveStaleMs = getEffectiveStaleMs();
     for (const [orderId, order] of pendingOrders) {
       // Check if order is stale (using regime-adjusted timeout)
       if (now - order.placedAt > effectiveStaleMs) {
-        // Rate limit cancels (only relevant for non-TP orders)
-        if (!isTpType(order.type) && now - lastCancelTime < config.cancelRateLimitMs) {
+        // Rate limit cancels (only relevant for non-persistent orders)
+        if (!isPersistentType(order.type) && now - lastCancelTime < config.cancelRateLimitMs) {
           continue;
         }
 
@@ -391,12 +443,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         } else if (normalizedStatus === 'CANCELLED') {
           console.log(`⏰ [${exchange}] Refresh found cancelled ${order.type} order ${orderId}`);
           pendingOrders.delete(orderId);
+          if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
           refreshed++;
-        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isTpType(order.type)) {
-          // Only cancel stale ENTRY orders — TP orders should persist until filled
+        } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isPersistentType(order.type)) {
+          // Only cancel stale reactive ENTRY orders — TP and ladder orders should persist until filled
           await adapter.cancelOrder(orderId);
           lastCancelTime = now;
           pendingOrders.delete(orderId);
+          callbacks.onEntryCancelled?.(orderId);
           refreshed++;
         }
       }
@@ -432,6 +486,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       } else if (normalizedStatus === 'CANCELLED') {
         console.log(`⏰ [${exchange}] Fill check found cancelled ${order.type} order ${orderId}`);
         pendingOrders.delete(orderId);
+        if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
         cancelled++;
       }
     }
@@ -443,7 +498,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * Atomic order replacement (cancel then place)
    * @param {string} oldOrderId - Order to cancel
    * @param {Object} newOrderParams - New order parameters
-   * @param {number} newOrderParams.btcQty - BTC quantity
+   * @param {number} newOrderParams.assetQty - BTC quantity
    * @param {number} newOrderParams.price - Price
    * @param {'entry' | 'take_profit'} newOrderParams.type - Order type
    * @returns {Promise<{success: boolean, newOrderId?: string, reason?: string}>}
@@ -483,31 +538,31 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     pendingOrders.delete(oldOrderId);
 
     // Step 4: Place new order
-    const { btcQty, price, type } = newOrderParams;
+    const { assetQty, price, type } = newOrderParams;
 
     if (type === 'entry') {
-      const result = await adapter.placeLimitBuy(productId, btcQty, price, { postOnly: true });
+      const result = await adapter.placeLimitBuy(productId, assetQty, price, { postOnly: true });
       if (result.success) {
         pendingOrders.set(result.orderId, {
           type: 'entry',
           price,
-          size: btcQty,
-          sizeUsdc: btcQty * price,
+          size: assetQty,
+          sizeUsdc: assetQty * price,
           placedAt: Date.now(),
         });
         return { success: true, newOrderId: result.orderId };
       }
     } else {
-      const result = await adapter.placeLimitSell(productId, btcQty, price);
+      const result = await adapter.placeLimitSell(productId, assetQty, price);
       if (result.success) {
         activeTpOrderId = result.orderId;
         lastTpPrice = price;
-        lastTpSize = btcQty;
+        lastTpSize = assetQty;
         pendingOrders.set(result.orderId, {
           type: 'take_profit',
           price,
-          size: btcQty,
-          sizeUsdc: btcQty * price,
+          size: assetQty,
+          sizeUsdc: assetQty * price,
           placedAt: Date.now(),
         });
         return { success: true, newOrderId: result.orderId };
@@ -708,24 +763,25 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Place a body TP sell order (celestial hierarchy)
-   * @param {number} btcQty - BTC quantity to sell
+   * @param {number} assetQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
    * @param {string} bodyId - Celestial body ID
    * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
    */
-  const placeBodyTpOrder = async (btcQty, tpPrice, bodyId) => {
-    const roundedPrice = roundPrice(tpPrice);
-    const roundedQty = roundBTC(btcQty);
+  const placeBodyTpOrder = async (assetQty, tpPrice, bodyId) => {
+    const roundedPrice = roundPrice(tpPrice, priceIncrement);
+    const roundedQty = roundAsset(assetQty);
 
-    console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} BTC @ $${roundedPrice} (body=${bodyId.slice(-8)})`);
+    console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
 
     // Body TPs should not use post_only — when market reaches TP price, the order must fill
     const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
 
     if (result.success) {
+      console.log(`✅ [${exchange}] Body TP placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
       bodyTpOrders.set(bodyId, {
         tpOrderId: result.orderId,
-        btcQty: roundedQty,
+        assetQty: roundedQty,
         tpPrice: roundedPrice,
       });
       tpOrderToKey.set(result.orderId, bodyId);
@@ -802,7 +858,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   /**
    * Get body tracking info by TP order ID
    * @param {string} tpOrderId - Exchange sell order ID
-   * @returns {{bodyId: string, btcQty: number, tpPrice: number}|null}
+   * @returns {{bodyId: string, assetQty: number, tpPrice: number}|null}
    */
   const getBodyByTpOrderId = (tpOrderId) => {
     const bodyId = tpOrderToKey.get(tpOrderId);
@@ -815,19 +871,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * Restore body TP order tracking (for recovery)
    * @param {string} bodyId - Body ID
    * @param {string} tpOrderId - Exchange sell order ID
-   * @param {number} btcQty - BTC quantity
+   * @param {number} assetQty - BTC quantity
    * @param {number} tpPrice - TP price
    * @param {number} [placedAt] - Original placement timestamp (ms), defaults to now
    */
-  const restoreBodyTpOrder = (bodyId, tpOrderId, btcQty, tpPrice, placedAt) => {
-    bodyTpOrders.set(bodyId, { tpOrderId, btcQty, tpPrice });
+  const restoreBodyTpOrder = (bodyId, tpOrderId, assetQty, tpPrice, placedAt) => {
+    bodyTpOrders.set(bodyId, { tpOrderId, assetQty, tpPrice });
     tpOrderToKey.set(tpOrderId, bodyId);
 
     pendingOrders.set(tpOrderId, {
       type: 'body_tp',
       price: tpPrice,
-      size: btcQty,
-      sizeUsdc: btcQty * tpPrice,
+      size: assetQty,
+      sizeUsdc: assetQty * tpPrice,
       placedAt: placedAt || Date.now(),
     });
   };
@@ -858,15 +914,15 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Place multiple ladder entry orders
-   * @param {Array<{index: number, price: number, sizeUsdc: number, btcQty: number}>} levels - Ladder levels
-   * @returns {Promise<{orders: Array<{orderId: string, index: number, price: number, sizeUsdc: number, btcQty: number}>, failedCount: number}>}
+   * @param {Array<{index: number, price: number, sizeUsdc: number, assetQty: number}>} levels - Ladder levels
+   * @returns {Promise<{orders: Array<{orderId: string, index: number, price: number, sizeUsdc: number, assetQty: number}>, failedCount: number}>}
    */
   const placeLadderOrders = async (levels) => {
     const results = [];
     let failedCount = 0;
 
     for (const level of levels) {
-      const result = await adapter.placeLimitBuy(productId, level.btcQty, level.price, { postOnly: true }).catch(err => {
+      const result = await adapter.placeLimitBuy(productId, level.assetQty, level.price, { postOnly: true }).catch(err => {
         console.log(`⚠️ [${exchange}] Error placing ladder order at $${level.price}: ${err.message}`);
         return { success: false, errorMessage: err.message };
       });
@@ -890,7 +946,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         pendingOrders.set(result.orderId, {
           type: 'ladder_entry',
           price: level.price,
-          size: level.btcQty,
+          size: level.assetQty,
           sizeUsdc: level.sizeUsdc,
           ladderIndex: level.index,
           placedAt: Date.now(),
@@ -901,7 +957,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           ladderIndex: level.index,
           price: level.price,
           sizeUsdc: level.sizeUsdc,
-          btcQty: level.btcQty,
+          assetQty: level.assetQty,
         });
       } else {
         console.log(`⚠️ [${exchange}] Failed to place ladder order at $${level.price}: ${result.errorMessage}`);
@@ -1012,6 +1068,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     isLadderOrder,
     // Timer cleanup
     clearTimers: () => { for (const t of staleTimers) clearTimeout(t); staleTimers.clear(); },
+    // Price precision
+    setPriceIncrement: (inc) => { priceIncrement = inc; },
   };
 };
 

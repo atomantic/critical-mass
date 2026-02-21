@@ -259,7 +259,7 @@ const runOptimizer = async ({
             sellsFilled: result.metrics.sellsFilled,
             totalSells: result.metrics.totalSells,
             avgIntervalsToFill: result.metrics.avgIntervalsToFill,
-            btcReserves: result.metrics.btcReserves,
+            assetReserves: result.metrics.assetReserves,
             netFees: result.metrics.netFees,
             intervalsSkipped: result.metrics.intervalsSkipped
           }

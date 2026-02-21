@@ -28,12 +28,12 @@ const {
 const makeBody = (overrides = {}) => ({
   id: 'body-test-001',
   tier: 'satellite',
-  btcQty: 0.001,
+  assetQty: 0.001,
   costBasis: 100,
   avgPrice: 100000,
   tpOrderId: null,
   tpPrice: 0,
-  btcOnOrder: 0,
+  assetOnOrder: 0,
   createdAt: Date.now(),
   lastMergedAt: Date.now(),
   sourceOrderIds: ['order-1'],
@@ -202,20 +202,20 @@ describe('createNewBody', () => {
     assert.equal(body.mergeCount, 0);
     assert.equal(body.tpOrderId, null);
     assert.equal(body.tpPrice, 0);
-    assert.equal(body.btcOnOrder, 0);
+    assert.equal(body.assetOnOrder, 0);
   });
 
   it('uses totalSize and totalValue+fees for costBasis', () => {
     const newBuy = makeNewBuy({ totalSize: 0.005, totalValue: 500, totalFees: 0.50 });
     const body = createNewBody(newBuy, 'buy-order-2');
-    assert.equal(body.btcQty, 0.005);
+    assert.equal(body.assetQty, 0.005);
     assert.equal(body.costBasis, 500.50);
   });
 
-  it('prefers btcQty and costBasis fields when present', () => {
-    const newBuy = { btcQty: 0.01, costBasis: 1000, avgPrice: 100000, totalSize: 0.005, totalValue: 500 };
+  it('prefers assetQty and costBasis fields when present', () => {
+    const newBuy = { assetQty: 0.01, costBasis: 1000, avgPrice: 100000, totalSize: 0.005, totalValue: 500 };
     const body = createNewBody(newBuy, 'buy-order-3');
-    assert.equal(body.btcQty, 0.01);
+    assert.equal(body.assetQty, 0.01);
     assert.equal(body.costBasis, 1000);
   });
 
@@ -319,16 +319,16 @@ describe('findMergeTarget', () => {
 // ============================================================================
 describe('mergeIntoBody', () => {
   it('combines BTC and cost basis', () => {
-    const body = makeBody({ btcQty: 0.001, costBasis: 100 });
+    const body = makeBody({ assetQty: 0.001, costBasis: 100 });
     const newBuy = makeNewBuy({ totalSize: 0.002, totalValue: 200, totalFees: 0.20 });
     mergeIntoBody(body, newBuy, 10000, 'order-merge-1');
 
-    assert.ok(Math.abs(body.btcQty - 0.003) < 1e-8);
+    assert.ok(Math.abs(body.assetQty - 0.003) < 1e-8);
     assert.ok(Math.abs(body.costBasis - 300.20) < 0.01);
   });
 
   it('recalculates avgPrice after merge', () => {
-    const body = makeBody({ btcQty: 0.001, costBasis: 100 });
+    const body = makeBody({ assetQty: 0.001, costBasis: 100 });
     const newBuy = makeNewBuy({ totalSize: 0.001, totalValue: 120, totalFees: 0 });
     mergeIntoBody(body, newBuy, 10000, 'order-merge-2');
 
@@ -351,7 +351,7 @@ describe('mergeIntoBody', () => {
   it('promotes tier when cost basis crosses threshold', () => {
     // satellite maxPct is 2%, moon starts at 2%
     // With maxCapital=10000, costBasis >= 200 => moon
-    const body = makeBody({ btcQty: 0.001, costBasis: 150, tier: 'satellite' });
+    const body = makeBody({ assetQty: 0.001, costBasis: 150, tier: 'satellite' });
     const newBuy = makeNewBuy({ totalSize: 0.001, totalValue: 100, totalFees: 0 });
     mergeIntoBody(body, newBuy, 10000, 'order-promote');
 
@@ -372,22 +372,22 @@ describe('mergeIntoBody', () => {
 // ============================================================================
 describe('mergeBodies', () => {
   it('combines two bodies quantities and costs', () => {
-    const target = makeBody({ btcQty: 0.002, costBasis: 200 });
-    const source = makeBody({ btcQty: 0.003, costBasis: 300 });
+    const target = makeBody({ assetQty: 0.002, costBasis: 200 });
+    const source = makeBody({ assetQty: 0.003, costBasis: 300 });
     mergeBodies(target, source, 10000);
 
-    assert.ok(Math.abs(target.btcQty - 0.005) < 1e-8);
+    assert.ok(Math.abs(target.assetQty - 0.005) < 1e-8);
     assert.ok(Math.abs(target.costBasis - 500) < 0.01);
   });
 
   it('clears TP fields on merged body', () => {
-    const target = makeBody({ tpOrderId: 'tp-1', tpPrice: 105000, btcOnOrder: 0.001 });
-    const source = makeBody({ tpOrderId: 'tp-2', tpPrice: 106000, btcOnOrder: 0.002 });
+    const target = makeBody({ tpOrderId: 'tp-1', tpPrice: 105000, assetOnOrder: 0.001 });
+    const source = makeBody({ tpOrderId: 'tp-2', tpPrice: 106000, assetOnOrder: 0.002 });
     mergeBodies(target, source, 10000);
 
     assert.equal(target.tpOrderId, null);
     assert.equal(target.tpPrice, 0);
-    assert.equal(target.btcOnOrder, 0);
+    assert.equal(target.assetOnOrder, 0);
   });
 
   it('concatenates sourceOrderIds from both bodies', () => {
@@ -409,8 +409,8 @@ describe('mergeBodies', () => {
 
   it('promotes tier if combined cost crosses threshold', () => {
     // planet starts at 5% of maxCapital=10000 => costBasis >= 500
-    const target = makeBody({ btcQty: 0.002, costBasis: 300, tier: 'moon' });
-    const source = makeBody({ btcQty: 0.003, costBasis: 300, tier: 'moon' });
+    const target = makeBody({ assetQty: 0.002, costBasis: 300, tier: 'moon' });
+    const source = makeBody({ assetQty: 0.003, costBasis: 300, tier: 'moon' });
     mergeBodies(target, source, 10000);
 
     assert.equal(target.tier, 'planet'); // 600/10000 = 6%
@@ -428,8 +428,8 @@ describe('mergeBodies', () => {
   });
 
   it('recalculates avgPrice correctly', () => {
-    const target = makeBody({ btcQty: 0.01, costBasis: 1000 });
-    const source = makeBody({ btcQty: 0.02, costBasis: 1800 });
+    const target = makeBody({ assetQty: 0.01, costBasis: 1000 });
+    const source = makeBody({ assetQty: 0.02, costBasis: 1800 });
     mergeBodies(target, source, 100000);
 
     const expectedAvg = 2800 / 0.03;
@@ -519,14 +519,14 @@ describe('syncPositionState', () => {
   it('aggregates BTC and cost basis from multiple bodies', () => {
     const state = {};
     const bodies = [
-      makeBody({ btcQty: 0.001, costBasis: 100, btcOnOrder: 0.0005 }),
-      makeBody({ btcQty: 0.002, costBasis: 200, btcOnOrder: 0.001 }),
+      makeBody({ assetQty: 0.001, costBasis: 100, assetOnOrder: 0.0005 }),
+      makeBody({ assetQty: 0.002, costBasis: 200, assetOnOrder: 0.001 }),
     ];
     syncPositionState(state, bodies);
 
-    assert.ok(Math.abs(state.totalBTC - 0.003) < 1e-8);
+    assert.ok(Math.abs(state.totalAsset - 0.003) < 1e-8);
     assert.ok(Math.abs(state.totalCostBasis - 300) < 0.01);
-    assert.ok(Math.abs(state.btcOnOrder - 0.0015) < 1e-8);
+    assert.ok(Math.abs(state.assetOnOrder - 0.0015) < 1e-8);
     assert.ok(Math.abs(state.avgCostBasis - 100000) < 0.01);
   });
 
@@ -534,15 +534,15 @@ describe('syncPositionState', () => {
     const state = {};
     syncPositionState(state, []);
 
-    assert.equal(state.totalBTC, 0);
+    assert.equal(state.totalAsset, 0);
     assert.equal(state.totalCostBasis, 0);
     assert.equal(state.avgCostBasis, 0);
-    assert.equal(state.btcOnOrder, 0);
+    assert.equal(state.assetOnOrder, 0);
   });
 
-  it('sets avgCostBasis to 0 when totalBTC is 0', () => {
+  it('sets avgCostBasis to 0 when totalAsset is 0', () => {
     const state = {};
-    syncPositionState(state, [makeBody({ btcQty: 0, costBasis: 0, btcOnOrder: 0 })]);
+    syncPositionState(state, [makeBody({ assetQty: 0, costBasis: 0, assetOnOrder: 0 })]);
     assert.equal(state.avgCostBasis, 0);
   });
 });
@@ -601,7 +601,7 @@ describe('createInitialCelestialState', () => {
     const state = createInitialCelestialState();
     assert.equal(state.bodiesCompleted, 0);
     assert.equal(state.bodiesRealizedPnL, 0);
-    assert.equal(state.bodiesRealizedBtcPnL, 0);
+    assert.equal(state.bodiesRealizedAssetPnL, 0);
     assert.equal(state.stateVersion, 1);
   });
 });
@@ -629,10 +629,10 @@ describe('TIER_COLORS', () => {
 describe('migrateFromLegacy', () => {
   it('migrates a core position into a single body', () => {
     const positionState = {
-      totalBTC: 0.1,
+      totalAsset: 0.1,
       totalCostBasis: 5000,
       avgCostBasis: 50000,
-      btcOnOrder: 0.09,
+      assetOnOrder: 0.09,
       activeTpOrderId: 'tp-legacy',
       lastTpPrice: 55000,
       lastEntryTime: 1700000000000,
@@ -640,7 +640,7 @@ describe('migrateFromLegacy', () => {
     const bodies = migrateFromLegacy(positionState, 10000);
 
     assert.equal(bodies.length, 1);
-    assert.equal(bodies[0].btcQty, 0.1);
+    assert.equal(bodies[0].assetQty, 0.1);
     assert.equal(bodies[0].costBasis, 5000);
     assert.equal(bodies[0].tpOrderId, 'tp-legacy');
     assert.equal(bodies[0].tpPrice, 55000);
@@ -649,37 +649,37 @@ describe('migrateFromLegacy', () => {
 
   it('migrates legacy satellite TP orders', () => {
     const positionState = {
-      totalBTC: 0,
+      totalAsset: 0,
       totalCostBasis: 0,
       satelliteTpOrders: [  // legacy field name for migration test
-        { orderId: 'sat-1', btcQty: 0.001, costBasis: 100, avgPrice: 100000, tpOrderId: 'tp-sat-1', tpPrice: 102000, btcOnOrder: 0.0009, placedAt: 1700000000000 },
-        { orderId: 'sat-2', btcQty: 0.002, costBasis: 200, avgPrice: 100000, tpOrderId: null, tpPrice: 0, btcOnOrder: 0 },
+        { orderId: 'sat-1', assetQty: 0.001, costBasis: 100, avgPrice: 100000, tpOrderId: 'tp-sat-1', tpPrice: 102000, assetOnOrder: 0.0009, placedAt: 1700000000000 },
+        { orderId: 'sat-2', assetQty: 0.002, costBasis: 200, avgPrice: 100000, tpOrderId: null, tpPrice: 0, assetOnOrder: 0 },
       ],
     };
     const bodies = migrateFromLegacy(positionState, 10000);
 
     assert.equal(bodies.length, 2);
-    assert.equal(bodies[0].btcQty, 0.001);
-    assert.equal(bodies[1].btcQty, 0.002);
+    assert.equal(bodies[0].assetQty, 0.001);
+    assert.equal(bodies[1].assetQty, 0.002);
   });
 
   it('returns empty array when no position and no bodies', () => {
-    const bodies = migrateFromLegacy({ totalBTC: 0, totalCostBasis: 0 }, 10000);
+    const bodies = migrateFromLegacy({ totalAsset: 0, totalCostBasis: 0 }, 10000);
     assert.equal(bodies.length, 0);
   });
 
   it('handles missing legacy satelliteTpOrders', () => {
-    const bodies = migrateFromLegacy({ totalBTC: 0, totalCostBasis: 0 }, 10000);
+    const bodies = migrateFromLegacy({ totalAsset: 0, totalCostBasis: 0 }, 10000);
     assert.equal(bodies.length, 0);
   });
 
   it('migrates both core and legacy satellites', () => {
     const positionState = {
-      totalBTC: 0.05,
+      totalAsset: 0.05,
       totalCostBasis: 5000,
       avgCostBasis: 100000,
       satelliteTpOrders: [  // legacy field name for migration test
-        { orderId: 'sat-1', btcQty: 0.001, costBasis: 100, avgPrice: 100000 },
+        { orderId: 'sat-1', assetQty: 0.001, costBasis: 100, avgPrice: 100000 },
       ],
     };
     const bodies = migrateFromLegacy(positionState, 10000);

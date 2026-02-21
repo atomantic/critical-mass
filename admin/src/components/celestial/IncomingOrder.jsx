@@ -1,6 +1,7 @@
 import { useRef, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { ORBITAL_RADII, ORBITAL_SPEEDS, TIER_COLORS } from './celestialConstants'
+import SatelliteGeometry from './SatelliteGeometry'
 
 /**
  * Open buy orders rendered as wireframe "under construction" satellites
@@ -8,6 +9,7 @@ import { ORBITAL_RADII, ORBITAL_SPEEDS, TIER_COLORS } from './celestialConstants
 const IncomingOrder = memo(({ order, index, total }) => {
   const groupRef = useRef()
   const meshRef = useRef()
+  const materialsRef = useRef(null)
 
   const radius = ORBITAL_RADII.satellite + 1 // Slightly outside satellite orbit
   const speed = ORBITAL_SPEEDS.satellite * 0.7
@@ -25,9 +27,22 @@ const IncomingOrder = memo(({ order, index, total }) => {
       Math.sin(angle) * radius
     )
 
-    // Pulsing opacity
+    // Pulsing opacity + rotation on composite group
     if (meshRef.current) {
-      meshRef.current.material.opacity = 0.2 + Math.sin(time * 3 + index) * 0.1
+      // Cache material refs on first frame to avoid per-frame traversal
+      if (!materialsRef.current) {
+        materialsRef.current = []
+        meshRef.current.traverse((child) => {
+          if (!child.material) return
+          const mats = Array.isArray(child.material) ? child.material : [child.material]
+          materialsRef.current.push(...mats.filter(Boolean))
+        })
+      }
+      const opacity = 0.2 + Math.sin(time * 3 + index) * 0.1
+      materialsRef.current.forEach((mat) => {
+        mat.opacity = opacity
+        mat.transparent = opacity < 1
+      })
       meshRef.current.rotation.y += 0.01
       meshRef.current.rotation.x += 0.005
     }
@@ -35,15 +50,9 @@ const IncomingOrder = memo(({ order, index, total }) => {
 
   return (
     <group ref={groupRef} position={[radius, 0, 0]}>
-      <mesh ref={meshRef}>
-        <sphereGeometry args={[size, 12, 12]} />
-        <meshBasicMaterial
-          color={TIER_COLORS.satellite}
-          wireframe
-          transparent
-          opacity={0.3}
-        />
-      </mesh>
+      <group ref={meshRef}>
+        <SatelliteGeometry size={size} color={TIER_COLORS.satellite} wireframe />
+      </group>
     </group>
   )
 }, (prev, next) =>

@@ -118,226 +118,238 @@ function NotificationsConfig() {
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
-      {/* Telegram Setup */}
-      <div className="bg-gray-800 rounded-lg p-6">
-        <h2 className="text-xl font-semibold mb-4">Telegram Notifications</h2>
-        <p className="text-gray-400 text-sm mb-6">
-          Get notified of critical events via Telegram. Create a bot with{' '}
-          <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">@BotFather</a>
-          {' '}and get your chat ID from{' '}
-          <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">@userinfobot</a>.
-        </p>
-
-        {message && (
-          <div className={`mb-4 p-3 rounded-lg ${
-            message.type === 'success'
-              ? 'bg-green-900/50 border border-green-700 text-green-200'
-              : 'bg-red-900/50 border border-red-700 text-red-200'
-          }`}>
-            {message.text}
-          </div>
-        )}
-
-        {/* Enable toggle */}
-        <div className="flex items-center gap-3 mb-4">
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={config.enabled}
-              onChange={e => setConfig(prev => ({ ...prev, enabled: e.target.checked }))}
-              className="sr-only peer"
-            />
-            <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
-          </label>
-          <span className="text-sm font-medium">Enable Notifications</span>
+    <div className="space-y-6">
+      {/* Status banner + actions */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-semibold">Telegram Notifications</h1>
+          {stats && (
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${
+              stats.isRunning ? 'bg-green-900/50 text-green-300 border border-green-700/50' : 'bg-gray-700 text-gray-400 border border-gray-600/50'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${stats.isRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
+              {stats.isRunning ? 'Running' : 'Stopped'}
+            </span>
+          )}
         </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Bot Token</label>
-            <input
-              type="password"
-              value={rawToken || ''}
-              onChange={e => setRawToken(e.target.value)}
-              placeholder={config.telegram.botToken || 'Enter bot token from @BotFather'}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-            />
-            {config.telegram.botToken && !rawToken && (
-              <p className="mt-1 text-xs text-gray-500">Token configured (masked). Enter a new value to change.</p>
-            )}
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Chat ID</label>
-            <input
-              type="text"
-              value={config.telegram.chatId || ''}
-              onChange={e => setConfig(prev => ({
-                ...prev,
-                telegram: { ...prev.telegram, chatId: e.target.value },
-              }))}
-              placeholder="Your Telegram chat ID"
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-            />
-          </div>
+        <div className="flex gap-3">
+          <button
+            onClick={handleTest}
+            disabled={testing || !config.telegram.chatId}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+          >
+            {testing ? 'Sending...' : 'Send Test'}
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
         </div>
       </div>
 
-      {/* Event Toggles */}
-      <div className="bg-gray-800 rounded-lg p-6">
-        <h3 className="text-lg font-semibold mb-4">Event Filters</h3>
-        <div className="space-y-5">
-          {Object.entries(EVENT_GROUPS).map(([group, events]) => (
-            <div key={group}>
-              <h4 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-2">{group}</h4>
-              <div className="grid grid-cols-2 gap-2">
-                {events.map(evt => (
-                  <label key={evt.key} className="flex items-center gap-2 text-sm cursor-pointer hover:text-white text-gray-300">
-                    <input
-                      type="checkbox"
-                      checked={config.events[evt.key] !== false}
-                      onChange={e => updateEvent(evt.key, e.target.checked)}
-                      className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
-                    />
-                    {evt.label}
-                  </label>
-                ))}
-              </div>
-            </div>
-          ))}
+      {/* Toast message */}
+      {message && (
+        <div className={`p-3 rounded-lg ${
+          message.type === 'success'
+            ? 'bg-green-900/50 border border-green-700 text-green-200'
+            : 'bg-red-900/50 border border-red-700 text-red-200'
+        }`}>
+          {message.text}
         </div>
-      </div>
+      )}
 
-      {/* Timing */}
-      <div className="bg-gray-800 rounded-lg p-6">
-        <h3 className="text-lg font-semibold mb-4">Timing</h3>
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Rate Limit (ms)</label>
-              <input
-                type="number"
-                value={config.rateLimitMs}
-                onChange={e => setConfig(prev => ({ ...prev, rateLimitMs: parseInt(e.target.value) || 5000 }))}
-                min={1000}
-                max={60000}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              />
-              <p className="mt-1 text-xs text-gray-500">Batch window for rapid events</p>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
-              <input
-                type="number"
-                value={config.dailySummaryHour}
-                onChange={e => setConfig(prev => ({ ...prev, dailySummaryHour: parseInt(e.target.value) || 20 }))}
-                min={0}
-                max={23}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-              />
-              <p className="mt-1 text-xs text-gray-500">Hour (0-23) for daily summary</p>
-            </div>
-          </div>
-
-          {/* Quiet hours */}
-          <div>
-            <div className="flex items-center gap-3 mb-3">
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={config.quietHours.enabled}
-                  onChange={e => setConfig(prev => ({
-                    ...prev,
-                    quietHours: { ...prev.quietHours, enabled: e.target.checked },
-                  }))}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
-              </label>
-              <span className="text-sm font-medium">Quiet Hours</span>
-              <span className="text-xs text-gray-500">(critical events still sent)</span>
-            </div>
-            {config.quietHours.enabled && (
-              <div className="grid grid-cols-2 gap-4 ml-14">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">Start Hour</label>
-                  <input
-                    type="number"
-                    value={config.quietHours.start}
-                    onChange={e => setConfig(prev => ({
-                      ...prev,
-                      quietHours: { ...prev.quietHours, start: parseInt(e.target.value) || 23 },
-                    }))}
-                    min={0}
-                    max={23}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">End Hour</label>
-                  <input
-                    type="number"
-                    value={config.quietHours.end}
-                    onChange={e => setConfig(prev => ({
-                      ...prev,
-                      quietHours: { ...prev.quietHours, end: parseInt(e.target.value) || 7 },
-                    }))}
-                    min={0}
-                    max={23}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Stats */}
+      {/* Stats bar */}
       {stats && (
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h3 className="text-lg font-semibold mb-3">Stats</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
-            <div>
-              <div className="text-gray-400">Status</div>
-              <div className={stats.isRunning ? 'text-green-400' : 'text-gray-500'}>
-                {stats.isRunning ? 'Running' : 'Stopped'}
-              </div>
-            </div>
-            <div>
-              <div className="text-gray-400">Messages Sent</div>
-              <div className="text-white">{stats.sent}</div>
-            </div>
-            <div>
-              <div className="text-gray-400">Errors</div>
-              <div className={stats.errors > 0 ? 'text-red-400' : 'text-white'}>{stats.errors}</div>
-            </div>
-            <div>
-              <div className="text-gray-400">Last Sent</div>
-              <div className="text-white text-xs">
-                {stats.lastSentAt ? new Date(stats.lastSentAt).toLocaleString() : 'Never'}
-              </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4" role="group" aria-label="Notification statistics">
+          <div className="bg-gray-800 rounded-lg p-4" role="group" aria-label="Messages Sent">
+            <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Messages Sent</div>
+            <div className="text-2xl font-semibold tabular-nums">{stats.sent}</div>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-4" role="group" aria-label="Errors">
+            <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Errors</div>
+            <div className={`text-2xl font-semibold tabular-nums ${stats.errors > 0 ? 'text-red-400' : ''}`}>{stats.errors}</div>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-4" role="group" aria-label="Queue Depth">
+            <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Queue Depth</div>
+            <div className="text-2xl font-semibold tabular-nums">{stats.queueDepth}</div>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-4" role="group" aria-label="Last Sent">
+            <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Last Sent</div>
+            <div className="text-sm font-medium mt-1">
+              {stats.lastSentAt ? new Date(stats.lastSentAt).toLocaleString() : 'Never'}
             </div>
           </div>
         </div>
       )}
 
-      {/* Action Buttons */}
-      <div className="flex gap-3">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
-        >
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-        <button
-          onClick={handleTest}
-          disabled={testing || !config.telegram.chatId}
-          className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
-        >
-          {testing ? 'Sending...' : 'Send Test'}
-        </button>
+      {/* Two-column layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Left column: Connection setup + Timing */}
+        <div className="space-y-6">
+          {/* Telegram Setup */}
+          <div className="bg-gray-800 rounded-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Connection</h2>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={config.enabled}
+                  onChange={e => setConfig(prev => ({ ...prev, enabled: e.target.checked }))}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+              </label>
+            </div>
+            <p className="text-gray-400 text-sm mb-5">
+              Create a bot with{' '}
+              <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">@BotFather</a>
+              {' '}and get your chat ID from{' '}
+              <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">@userinfobot</a>.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Bot Token</label>
+                <input
+                  type="password"
+                  value={rawToken || ''}
+                  onChange={e => setRawToken(e.target.value)}
+                  placeholder={config.telegram.botToken || 'Enter bot token from @BotFather'}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                />
+                {config.telegram.botToken && !rawToken && (
+                  <p className="mt-1 text-xs text-gray-500">Token configured (masked). Enter a new value to change.</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Chat ID</label>
+                <input
+                  type="text"
+                  value={config.telegram.chatId || ''}
+                  onChange={e => setConfig(prev => ({
+                    ...prev,
+                    telegram: { ...prev.telegram, chatId: e.target.value },
+                  }))}
+                  placeholder="Your Telegram chat ID"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Timing */}
+          <div className="bg-gray-800 rounded-lg p-6">
+            <h2 className="text-lg font-semibold mb-4">Timing</h2>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Rate Limit (ms)</label>
+                  <input
+                    type="number"
+                    value={config.rateLimitMs}
+                    onChange={e => setConfig(prev => ({ ...prev, rateLimitMs: parseInt(e.target.value) || 5000 }))}
+                    min={1000}
+                    max={60000}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Batch window for rapid events</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
+                  <input
+                    type="number"
+                    value={config.dailySummaryHour}
+                    onChange={e => setConfig(prev => ({ ...prev, dailySummaryHour: parseInt(e.target.value) || 20 }))}
+                    min={0}
+                    max={23}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Hour (0-23) for daily summary</p>
+                </div>
+              </div>
+
+              {/* Quiet hours */}
+              <div>
+                <div className="flex items-center gap-3 mb-3">
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={config.quietHours.enabled}
+                      onChange={e => setConfig(prev => ({
+                        ...prev,
+                        quietHours: { ...prev.quietHours, enabled: e.target.checked },
+                      }))}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+                  </label>
+                  <span className="text-sm font-medium">Quiet Hours</span>
+                  <span className="text-xs text-gray-500">(critical events still sent)</span>
+                </div>
+                {config.quietHours.enabled && (
+                  <div className="grid grid-cols-2 gap-4 ml-14">
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-1">Start Hour</label>
+                      <input
+                        type="number"
+                        value={config.quietHours.start}
+                        onChange={e => setConfig(prev => ({
+                          ...prev,
+                          quietHours: { ...prev.quietHours, start: parseInt(e.target.value) || 23 },
+                        }))}
+                        min={0}
+                        max={23}
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-1">End Hour</label>
+                      <input
+                        type="number"
+                        value={config.quietHours.end}
+                        onChange={e => setConfig(prev => ({
+                          ...prev,
+                          quietHours: { ...prev.quietHours, end: parseInt(e.target.value) || 7 },
+                        }))}
+                        min={0}
+                        max={23}
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right column: Event Filters */}
+        <div className="bg-gray-800 rounded-lg p-6">
+          <h2 className="text-lg font-semibold mb-4">Event Filters</h2>
+          <div className="space-y-5">
+            {Object.entries(EVENT_GROUPS).map(([group, events]) => (
+              <div key={group}>
+                <h4 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-2">{group}</h4>
+                <div className="grid grid-cols-2 gap-2">
+                  {events.map(evt => (
+                    <label key={evt.key} className="flex items-center gap-2 text-sm cursor-pointer hover:text-white text-gray-300">
+                      <input
+                        type="checkbox"
+                        checked={config.events[evt.key] !== false}
+                        onChange={e => updateEvent(evt.key, e.target.checked)}
+                        className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
+                      />
+                      {evt.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )

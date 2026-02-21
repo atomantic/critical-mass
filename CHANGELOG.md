@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **Tune Kalshi strategies for ATM trading** - Lower momentum-rider entry threshold (65→45c), add 10c stop loss, widen swing-flipper ATM range (25-65c), lower CFV min entry price (15→8c) to access YES-side liquidity on ATM brackets
+- **Add entry metadata to settlement records** - Settlement trades and journal entries now include entryEdge, entrySigma, entryFairProb, entryMarketProb, entryBtcSpot for post-trade calibration analysis
+- **Add sigma calibration to window summaries** - Journal window-summary entries now include sigmaCalibration data
+
+### Added
+- **`simpleDcaEnabled` global config flag** - Gates simple DCA strategy behind opt-in flag (default: false); admin UI hides DCA routes/selector when disabled, API guards DCA-only endpoints
+- **`onEntryCancelled` callback in order executor** - Regime engine now cleans up pendingEntryOrders when entries are cancelled (stale timeout, refresh, or external cancel)
+- **Stale pending-entry purge on engine startup** - Removes saved pending entries that were filled/cancelled while engine was offline
+
+### Fixed
+- **avgPrice precision for low-priced assets** - Removed premature `roundUSDC` on avgPrice in fill-ledger aggregation so sub-cent assets (e.g. CRO at $0.08) aren't truncated
+- **Self-heal body avgPrice on regime startup** - Detects and corrects bodies where avgPrice diverged >0.1% from costBasis/assetQty due to prior rounding
+- **Recovery module currency parsing** - Use canonical `getBaseCurrency`/`getQuoteCurrency` helpers instead of fragile string split
+
+### Removed
+- **Remove express-rate-limit from admin server** - Single-user local dashboard doesn't need request rate limiting; was causing 429 errors on page load
+
+### Changed
+- **Remove baseSizeUsdc from aggressiveness presets** - Base size is now a platform/fund config only, no longer overridden when switching aggressiveness levels
+
+### Fixed
+- **Sync test files with btc→asset rename** - Updated 7 test files to match the source code's multi-asset field renames (roundBTC→roundAsset, btcQty→assetQty, totalBTC→totalAsset, etc.), fixing 83 test failures
+
+### Changed
+- **Divergence-based liquidity scaling** - Position sizer now scales entry size based on price divergence from average cost basis instead of buy count
+  - Old: `1 + (cycleBuys * 0.1)` (scaled with order count, disconnected from market)
+  - New: `1 + (divergencePct / divergenceScalePct) * (cap - 1)` (scales when price drops below avg entry)
+  - First entry or no avg cost: factor 1.0 (base size)
+  - New config param `divergenceScalePct` (default: 5) controls how much divergence reaches the cap
+  - Size optimizer simplified to assume factor=1.0 per step (conservative; divergence acts as bonus capacity)
+
 ## [2.4.14] - 2026-02-06
 
 ### Fixed

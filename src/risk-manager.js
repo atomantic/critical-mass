@@ -11,7 +11,7 @@
  * All checks return structured results for consistent handling.
  */
 
-const { roundBTC, roundUSDC } = require('./volatility-utils');
+const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -22,9 +22,11 @@ const { roundBTC, roundUSDC } = require('./volatility-utils');
  * Create risk manager instance
  * @param {string} exchange - Exchange name
  * @param {RegimeStrategyConfig} config - Configuration
+ * @param {string} [productId] - Product ID (e.g. BTC-USDC, CRO_USD)
  * @returns {Object} Risk manager instance
  */
-const createRiskManager = (exchange, config) => {
+const createRiskManager = (exchange, config, productId) => {
+  const assetLabel = productId ? productId.replace('_', '-').split('-')[0].toLowerCase() : 'asset';
   let peakEquity = null; // null = uninitialized, will be set to first observed equity
   let maxDrawdownSeen = 0;
   let isDrawdownPaused = false;
@@ -32,28 +34,33 @@ const createRiskManager = (exchange, config) => {
   let cycleBuysLimitReachedAt = null; // Timestamp when ladder limit was first reached
 
   /**
-   * Check if entry would exceed BTC exposure cap
-   * @param {number} currentBTC - Current BTC position
-   * @param {number} entryBTC - BTC amount to add
-   * @returns {{allowed: boolean, reason: string|null, currentBTC: number, maxBTC: number}}
+   * Check if entry would exceed asset exposure cap
+   * @param {number} currentAsset - Current asset position
+   * @param {number} entryAsset - Asset amount to add
+   * @returns {{allowed: boolean, reason: string|null, currentAsset: number, maxAsset: number}}
    */
-  const checkBTCCap = (currentBTC, entryBTC) => {
-    const newTotal = currentBTC + entryBTC;
+  const checkAssetCap = (currentAsset, entryAsset) => {
+    // 0 means uncapped — skip the check
+    if (!config.maxAssetExposure) {
+      return { allowed: true, reason: null, currentAsset, maxAsset: 0 };
+    }
 
-    if (newTotal > config.maxBtcExposure) {
+    const newTotal = currentAsset + entryAsset;
+
+    if (newTotal > config.maxAssetExposure) {
       return {
         allowed: false,
-        reason: `btc_cap_exceeded:${roundBTC(newTotal)}>${config.maxBtcExposure}`,
-        currentBTC,
-        maxBTC: config.maxBtcExposure,
+        reason: `asset_cap_exceeded:${roundAsset(newTotal)}>${config.maxAssetExposure}`,
+        currentAsset,
+        maxAsset: config.maxAssetExposure,
       };
     }
 
     return {
       allowed: true,
       reason: null,
-      currentBTC,
-      maxBTC: config.maxBtcExposure,
+      currentAsset,
+      maxAsset: config.maxAssetExposure,
     };
   };
 
@@ -136,18 +143,18 @@ const createRiskManager = (exchange, config) => {
 
   /**
    * Update equity and check drawdown
-   * @param {number} totalBTC - Current BTC position
+   * @param {number} totalAsset - Current BTC position
    * @param {number} currentPrice - Current BTC price
    * @param {number} totalCostBasis - Total cost invested
    * @returns {{drawdownPercent: number, isPaused: boolean, peakEquity: number}}
    */
-  const updateDrawdown = (totalBTC, currentPrice, totalCostBasis) => {
+  const updateDrawdown = (totalAsset, currentPrice, totalCostBasis) => {
     // Calculate current equity as position market value (not P&L)
     // This ensures we track drawdown from the actual capital at risk
-    const currentEquity = totalBTC * currentPrice;
+    const currentEquity = totalAsset * currentPrice;
 
     // Skip drawdown tracking if no position
-    if (totalBTC <= 0 || currentEquity <= 0) {
+    if (totalAsset <= 0 || currentEquity <= 0) {
       return {
         drawdownPercent: 0,
         isPaused: isDrawdownPaused,
@@ -212,15 +219,15 @@ const createRiskManager = (exchange, config) => {
   /**
    * Check all caps and return combined result
    * @param {RegimePositionState} position - Current position state
-   * @param {number} entryBTC - BTC to add (optional)
+   * @param {number} entryAsset - BTC to add (optional)
    * @param {number} entryUsdc - USDC to add (optional)
    * @returns {{allowed: boolean, reasons: string[], shouldResetCycleBuys: boolean}}
    */
-  const checkAllCaps = (position, entryBTC = 0, entryUsdc = 0) => {
+  const checkAllCaps = (position, entryAsset = 0, entryUsdc = 0) => {
     const reasons = [];
     let shouldResetCycleBuys = false;
 
-    const btcCheck = checkBTCCap(position.totalBTC, entryBTC);
+    const btcCheck = checkAssetCap(position.totalAsset, entryAsset);
     if (!btcCheck.allowed) {
       reasons.push(btcCheck.reason);
     }
@@ -252,12 +259,12 @@ const createRiskManager = (exchange, config) => {
   /**
    * Check if entry is allowed (combined caps check)
    * @param {RegimePositionState} position - Current position
-   * @param {number} entryBTC - BTC to add
+   * @param {number} entryAsset - BTC to add
    * @param {number} entryUsdc - USDC to add
    * @returns {{allowed: boolean, reason: string|null, shouldResetCycleBuys: boolean}}
    */
-  const canPlaceEntry = (position, entryBTC, entryUsdc) => {
-    const result = checkAllCaps(position, entryBTC, entryUsdc);
+  const canPlaceEntry = (position, entryAsset, entryUsdc) => {
+    const result = checkAllCaps(position, entryAsset, entryUsdc);
 
     if (!result.allowed) {
       return {
@@ -274,15 +281,15 @@ const createRiskManager = (exchange, config) => {
    * Calculate remaining capacity
    * @param {RegimePositionState} position - Current position
    * @param {number} currentPrice - Current BTC price
-   * @returns {{remainingBTC: number, remainingUsdc: number, remainingSteps: number}}
+   * @returns {{remainingAsset: number, remainingUsdc: number, remainingSteps: number}}
    */
   const getRemainingCapacity = (position, currentPrice) => {
-    const remainingBTC = roundBTC(config.maxBtcExposure - position.totalBTC);
+    const remainingAsset = config.maxAssetExposure ? roundAsset(config.maxAssetExposure - position.totalAsset) : Infinity;
     const remainingUsdc = roundUSDC(config.maxUsdcDeployed - position.totalCostBasis);
     const remainingSteps = config.maxCycleBuys - position.cycleBuys;
 
     return {
-      remainingBTC: Math.max(0, remainingBTC),
+      remainingAsset: Math.max(0, remainingAsset),
       remainingUsdc: Math.max(0, remainingUsdc),
       remainingSteps: Math.max(0, remainingSteps),
     };
@@ -295,7 +302,7 @@ const createRiskManager = (exchange, config) => {
    */
   const getUtilization = (position) => {
     return {
-      btcUtilization: (position.totalBTC / config.maxBtcExposure) * 100,
+      btcUtilization: config.maxAssetExposure ? (position.totalAsset / config.maxAssetExposure) * 100 : 0,
       usdcUtilization: (position.totalCostBasis / config.maxUsdcDeployed) * 100,
       cycleBuysUtilization: (position.cycleBuys / config.maxCycleBuys) * 100,
     };
@@ -309,7 +316,9 @@ const createRiskManager = (exchange, config) => {
   const getSummary = (position) => {
     const util = getUtilization(position);
     const parts = [
-      `btc=${position.totalBTC.toFixed(4)}/${config.maxBtcExposure}(${util.btcUtilization.toFixed(0)}%)`,
+      config.maxAssetExposure
+        ? `${assetLabel}=${position.totalAsset.toFixed(4)}/${config.maxAssetExposure}(${util.btcUtilization.toFixed(0)}%)`
+        : `${assetLabel}=${position.totalAsset.toFixed(4)}`,
       `usdc=$${position.totalCostBasis.toFixed(0)}/${config.maxUsdcDeployed}(${util.usdcUtilization.toFixed(0)}%)`,
       `buys=${position.cycleBuys}/${config.maxCycleBuys}`,
     ];
@@ -373,7 +382,7 @@ const createRiskManager = (exchange, config) => {
   };
 
   return {
-    checkBTCCap,
+    checkAssetCap,
     checkUSDCCap,
     checkCycleBuysLimit,
     updateDrawdown,

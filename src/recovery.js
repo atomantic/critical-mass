@@ -11,7 +11,8 @@
  * Exchange fills/balances are ALWAYS the source of truth.
  */
 
-const { roundBTC, roundUSDC } = require('./volatility-utils');
+const { roundAsset, roundUSDC } = require('./volatility-utils');
+const { getBaseCurrency, getQuoteCurrency } = require('./dca-engine');
 
 /**
  * @typedef {import('./types').ExchangeAdapter} ExchangeAdapter
@@ -46,8 +47,8 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     console.log(`📋 [${exchange}] Found ${recentFills.length} recent fills`);
 
     // 3. Fetch current balances
-    const baseCurrency = productId.split('-')[0];
-    const quoteCurrency = productId.split('-')[1];
+    const baseCurrency = getBaseCurrency(productId);
+    const quoteCurrency = getQuoteCurrency(productId);
     const baseBalance = await adapter.getAccountBalance(baseCurrency);
     const quoteBalance = await adapter.getAccountBalance(quoteCurrency);
 
@@ -76,20 +77,18 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     console.log(`📋 [${exchange}] Exchange has ${openOrders.length} open orders (regime engine tracks its own orders separately)`);
 
     // 7. Compare position against base balance (informational only)
-    // NOTE: Account may have BTC from other sources - we only track what regime engine traded
-    const trackedBTC = position.totalBTC;
-    const accountBTC = baseBalance.available + baseBalance.hold;
+    // NOTE: Account may have asset from other sources - we only track what regime engine traded
+    const trackedAsset = position.totalAsset;
+    const accountAsset = baseBalance.available + baseBalance.hold;
 
-    if (accountBTC > trackedBTC + 0.00001) {
-      // Account has more BTC than we're tracking - this is expected if user has other holdings
-      console.log(`ℹ️ [${exchange}] Account has ${accountBTC.toFixed(8)} BTC, regime engine tracking ${trackedBTC.toFixed(8)} BTC (other holdings not tracked)`);
-    } else if (trackedBTC > accountBTC + 0.00001) {
-      // We're tracking more than exists - this is a real problem
-      discrepancies.push(`BTC tracking error: tracking ${trackedBTC.toFixed(8)} but only ${accountBTC.toFixed(8)} in account`);
+    if (accountAsset > trackedAsset + 0.00001) {
+      console.log(`ℹ️ [${exchange}] Account has ${accountAsset.toFixed(8)} ${baseCurrency}, regime engine tracking ${trackedAsset.toFixed(8)} ${baseCurrency} (other holdings not tracked)`);
+    } else if (trackedAsset > accountAsset + 0.00001) {
+      discrepancies.push(`${baseCurrency} tracking error: tracking ${trackedAsset.toFixed(8)} but only ${accountAsset.toFixed(8)} in account`);
       console.log(`⚠️ [${exchange}] ${discrepancies[discrepancies.length - 1]}`);
     }
 
-    console.log(`✅ [${exchange}] Recovery complete: ${position.totalBTC} ${baseCurrency} tracked position`);
+    console.log(`✅ [${exchange}] Recovery complete: ${position.totalAsset} ${baseCurrency} tracked position`);
 
     return {
       position,
@@ -129,16 +128,23 @@ const createRecoveryModule = (exchange, adapter, productId) => {
   const validateState = async (position) => {
     const discrepancies = [];
 
-    const baseCurrency = productId.split('-')[0];
+    const baseCurrency = productId.replace('_', '-').split('-')[0];
     const baseBalance = await adapter.getAccountBalance(baseCurrency);
 
-    const trackedBTC = position.totalBTC;
-    const accountBTC = baseBalance.available + baseBalance.hold;
+    const trackedAsset = position.totalAsset;
+    const accountAsset = baseBalance.available + baseBalance.hold;
+
+    // Skip validation if exchange returned 0 balance but we have tracked position
+    // (likely a flaky API response — don't nuke state based on it)
+    if (trackedAsset > 0 && accountAsset === 0) {
+      console.log(`⚠️ [${exchange}] Balance API returned 0 ${baseCurrency} but tracking ${trackedAsset.toFixed(8)} — skipping reconciliation (possible API issue)`);
+      return { valid: true, discrepancies: [] };
+    }
 
     // Only flag as discrepancy if we're tracking MORE than exists in account
-    // Account having extra BTC is fine (user's other holdings)
-    if (trackedBTC > accountBTC + 0.00001) {
-      discrepancies.push(`Tracking ${trackedBTC.toFixed(8)} BTC but only ${accountBTC.toFixed(8)} in account`);
+    // Account having extra asset is fine (user's other holdings)
+    if (trackedAsset > accountAsset + 0.00001) {
+      discrepancies.push(`Tracking ${trackedAsset.toFixed(8)} ${baseCurrency} but only ${accountAsset.toFixed(8)} in account`);
     }
 
     return {
@@ -193,7 +199,7 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     }
 
     return {
-      totalSize: roundBTC(totalSize),
+      totalSize: roundAsset(totalSize),
       totalValue: roundUSDC(totalValue),
       totalFees: roundUSDC(totalFees),
       avgPrice: totalSize > 0 ? roundUSDC(totalValue / totalSize) : 0,

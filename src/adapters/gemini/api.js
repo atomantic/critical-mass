@@ -6,12 +6,14 @@ const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
+const { incrementToDecimals } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
  * @typedef {import('../../types').ProductDetails} ProductDetails
  * @typedef {import('../../types').MarketBuyResult} MarketBuyResult
  * @typedef {import('../../types').LimitSellResult} LimitSellResult
+ * @typedef {import('../../types').LimitBuyResult} LimitBuyResult
  * @typedef {import('../../types').OrderDetails} OrderDetails
  * @typedef {import('../../types').OpenOrder} OpenOrder
  * @typedef {import('../../types').CancelResult} CancelResult
@@ -92,16 +94,27 @@ const createGeminiAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
-    const response = await axios.post(`${REST_BASE_URL}${endpoint}`, null, {
-      headers,
-      // Preserve big integers as strings using regex before JSON parse
-      transformResponse: [data => {
-        // Convert large numbers (order_id, tid) to strings before JSON.parse
-        const preserved = data.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
-        return JSON.parse(preserved);
-      }],
-    });
-    return response.data;
+    try {
+      const response = await axios.post(`${REST_BASE_URL}${endpoint}`, null, {
+        headers,
+        // Preserve big integers as strings using regex before JSON parse
+        transformResponse: [data => {
+          // Convert large numbers (order_id, tid) to strings before JSON.parse
+          const preserved = data.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
+          return JSON.parse(preserved);
+        }],
+      });
+      return response.data;
+    } catch (err) {
+      // Create clean error without bloated axios internals (config, request, socket objects)
+      const status = err.response?.status || 'unknown';
+      const detail = err.response?.data?.reason || err.response?.data?.message || '';
+      const cleanError = new Error(`Gemini API ${status}: ${err.message}${detail ? ` (${detail})` : ''}`);
+      cleanError.status = status;
+      cleanError.endpoint = `POST ${endpoint}`;
+      cleanError.responseData = err.response?.data;
+      throw cleanError;
+    }
   };
 
   /**
@@ -249,15 +262,65 @@ const createGeminiAdapter = (keysPath = null) => {
     const product = await adapter.getProductDetails(productId);
     const baseIncrement = parseFloat(product.baseIncrement);
     const quoteIncrement = parseFloat(product.quoteIncrement);
+    const baseDecimals = incrementToDecimals(product.baseIncrement);
+    const quoteDecimals = incrementToDecimals(product.quoteIncrement);
 
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
     const orderPayload = {
       symbol,
-      amount: roundedAmount.toFixed(8),
-      price: roundedPrice.toFixed(2),
+      amount: roundedAmount.toFixed(baseDecimals),
+      price: roundedPrice.toFixed(quoteDecimals),
       side: 'sell',
+      type: 'exchange limit',
+      client_order_id: clientOrderId,
+      options: postOnly ? ['maker-or-cancel'] : [],
+    };
+
+    const result = await makeRestRequest('/v1/order/new', orderPayload);
+
+    const success = !result.is_cancelled && result.order_id;
+
+    return {
+      orderId: result.order_id,
+      clientOrderId,
+      success,
+      errorMessage: result.reason || (result.is_cancelled ? 'Order was cancelled (maker-or-cancel rejected)' : null),
+      baseSize: roundedAmount,
+      limitPrice: roundedPrice,
+    };
+  };
+
+  /**
+   * Place a post-only limit buy order (maker-prefer)
+   * @param {string} productId - Product ID
+   * @param {number} baseAmount - Amount of base currency to buy
+   * @param {number} price - Limit price in quote currency
+   * @param {Object} [options] - Order options
+   * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
+   * @returns {Promise<LimitBuyResult>} Order result
+   */
+  adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
+    const symbol = toGeminiSymbol(productId);
+    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 32);
+    const postOnly = options.postOnly !== false; // Default to true
+
+    // Get product details for proper rounding
+    const product = await adapter.getProductDetails(productId);
+    const baseIncrement = parseFloat(product.baseIncrement);
+    const quoteIncrement = parseFloat(product.quoteIncrement);
+    const baseDecimals = incrementToDecimals(product.baseIncrement);
+    const quoteDecimals = incrementToDecimals(product.quoteIncrement);
+
+    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
+    const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
+
+    const orderPayload = {
+      symbol,
+      amount: roundedAmount.toFixed(baseDecimals),
+      price: roundedPrice.toFixed(quoteDecimals),
+      side: 'buy',
       type: 'exchange limit',
       client_order_id: clientOrderId,
       options: postOnly ? ['maker-or-cancel'] : [],
@@ -432,6 +495,38 @@ const createGeminiAdapter = (keysPath = null) => {
       close: parseFloat(c[4]),
       volume: parseFloat(c[5]),
     }));
+  };
+
+  /**
+   * Start sending periodic heartbeats to keep orders alive.
+   * Gemini API keys with "Requires Heartbeat" enabled will cancel
+   * all open orders if no heartbeat is received within ~5 minutes.
+   */
+  let heartbeatTimer = null;
+  adapter.startHeartbeat = () => {
+    if (heartbeatTimer) return;
+    const HEARTBEAT_MS = 60000; // Send every 60s (well within 5-min timeout)
+    const sendHeartbeat = () => {
+      makeRestRequest('/v1/heartbeat')
+        .then(res => {
+          if (res?.result !== 'ok') {
+            console.log(`⚠️ [gemini] Heartbeat response: ${JSON.stringify(res)}`);
+          }
+        })
+        .catch(err => {
+          console.log(`⚠️ [gemini] Heartbeat failed: ${err.message}`);
+        });
+    };
+    sendHeartbeat(); // Send immediately
+    heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
+    console.log(`💓 [gemini] Heartbeat started (every ${HEARTBEAT_MS / 1000}s)`);
+  };
+
+  adapter.stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
   };
 
   return adapter;

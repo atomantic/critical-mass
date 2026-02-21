@@ -317,7 +317,7 @@ const clamp = (value, min, max) => {
  * @param {number} amount - Amount to round
  * @returns {number} Rounded amount
  */
-const roundBTC = (amount) => {
+const roundAsset = (amount) => {
   return Math.round(amount * 1e8) / 1e8;
 };
 
@@ -353,7 +353,7 @@ module.exports = {
   calculateVWAPDistance,
   calculateEMA,
   clamp,
-  roundBTC,
+  roundAsset,
   roundUSDC,
   roundPrice,
 };

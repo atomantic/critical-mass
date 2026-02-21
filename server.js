@@ -1,11 +1,11 @@
 const express = require('express');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
+const { spawn } = require('child_process');
+
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
-const stateTracker = require('./src/state-tracker');
 const { log } = require('./src/logger');
 const { runMigrationIfNeeded } = require('./src/migration');
 const {
@@ -13,7 +13,6 @@ const {
   getEnabledExchanges,
   getConfiguredExchanges,
   getGlobalConfig,
-  getRegimeConfig,
   getBackupConfig,
 } = require('./src/config-utils');
 const {
@@ -25,11 +24,19 @@ const {
   getTimeUntilNext,
 } = require('./src/interval-utils');
 const { runIntervalCycle } = require('./src/dca-engine');
-const { createRegimeEngine } = require('./src/regime-engine');
-const { startMarketDataService, stopAllMarketDataServices, getMarketDataService } = require('./src/market-data-service');
-const { getChartDataBuffer, shutdownAllBuffers } = require('./src/chart-data-buffer');
 const { createNotifier } = require('./src/notifier');
 const { createBackup, pruneBackups } = require('./src/backup-service');
+const {
+  DATA_DIR,
+  readJSON,
+  writeJSON,
+  parseTSV,
+  calculateCostBasis,
+  getNextTradeInfo,
+} = require('./src/shared-utils');
+const { createIPCClient } = require('./src/ipc/ipc-client');
+const { createProxy } = require('./src/ipc/http-proxy');
+const { createUpDownService } = require('./src/updown/updown-service');
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -47,204 +54,6 @@ const io = new Server(server, {
   cors: { origin: CORS_ORIGINS }
 });
 
-// Active regime engines by exchange
-const regimeEngines = new Map();
-
-// ============ Shared Helpers ============
-
-const DATA_DIR = path.join(__dirname, 'data');
-
-// Helper to read JSON file
-const readJSON = (filepath, defaultValue = {}) => {
-  if (!fs.existsSync(filepath)) return defaultValue;
-  const content = fs.readFileSync(filepath, 'utf8');
-  if (!content || content.trim() === '') return defaultValue;
-  try {
-    return JSON.parse(content);
-  } catch (err) {
-    console.error(`Error parsing JSON from ${filepath}:`, err.message);
-    return defaultValue;
-  }
-};
-
-// Helper to write JSON file (atomic: write .tmp then rename to prevent corruption)
-const { atomicWriteSync } = stateTracker;
-const writeJSON = (filepath, data) => {
-  const dir = path.dirname(filepath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  atomicWriteSync(filepath, JSON.stringify(data, null, 2));
-};
-
-// Helper to parse TSV
-const parseTSV = (filepath) => {
-  if (!fs.existsSync(filepath)) return [];
-  const content = fs.readFileSync(filepath, 'utf8');
-  const lines = content.trim().split('\n');
-  if (lines.length <= 1) return [];
-
-  const headers = lines[0].split('\t');
-  return lines.slice(1).map(line => {
-    const values = line.split('\t');
-    const record = {};
-    headers.forEach((header, i) => {
-      const value = values[i] || '';
-      if (header === 'Date' || header === 'Timestamp') {
-        record[header] = value;
-      } else {
-        const num = parseFloat(value);
-        record[header] = isNaN(num) ? value : num;
-      }
-    });
-    return record;
-  });
-};
-
-// Calculate cost basis from orders
-const calculateCostBasis = (state, transactions) => {
-  const orders = state.orders || [];
-  const buys = transactions.filter(t => t.Type === 'BUY');
-
-  let totalCostBasis = 0;
-  let totalBTCFromOrders = 0;
-  let reservesCostBasis = 0;
-  let pendingCostBasis = 0;
-  let pendingBTC = 0;
-
-  orders.forEach(order => {
-    const costBasis = order.buyCostBasis || (order.buyUSDC || (order.buyQuantityBTC * order.buyPrice));
-    const btcAmount = order.buyQuantityBTC || 0;
-    const holdback = order.holdbackBTC || 0;
-    const sellQuantity = order.sellQuantityBTC || 0;
-    const costPerBTC = btcAmount > 0 ? costBasis / btcAmount : 0;
-
-    reservesCostBasis += holdback * costPerBTC;
-
-    if (order.status === 'pending') {
-      pendingCostBasis += sellQuantity * costPerBTC;
-      pendingBTC += sellQuantity;
-    }
-
-    totalCostBasis += costBasis;
-    totalBTCFromOrders += btcAmount;
-  });
-
-  if (orders.length === 0 && buys.length > 0) {
-    buys.forEach(buy => {
-      const cost = Math.abs(buy['USDC Amount'] || 0) + (buy['Net Fees'] || 0);
-      const btc = buy['BTC Amount'] || 0;
-      totalCostBasis += cost;
-      totalBTCFromOrders += btc;
-    });
-
-    const avgCost = totalBTCFromOrders > 0 ? totalCostBasis / totalBTCFromOrders : 0;
-    reservesCostBasis = (state.btcReserves || 0) * avgCost;
-    pendingCostBasis = (state.outstandingOrdersBTC || 0) * avgCost;
-    pendingBTC = state.outstandingOrdersBTC || 0;
-  }
-
-  const avgCostPerBTC = totalBTCFromOrders > 0 ? totalCostBasis / totalBTCFromOrders : 0;
-  const reservesAvgCost = (state.btcReserves || 0) > 0 ? reservesCostBasis / state.btcReserves : avgCostPerBTC;
-
-  return {
-    totalCostBasis,
-    totalBTCBought: totalBTCFromOrders,
-    avgCostPerBTC,
-    reservesBTC: state.btcReserves || 0,
-    reservesCostBasis,
-    reservesAvgCost,
-    pendingBTC,
-    pendingCostBasis,
-    pendingAvgCost: pendingBTC > 0 ? pendingCostBasis / pendingBTC : 0,
-    orderBreakdown: orders.map(order => {
-      const costBasis = order.buyCostBasis || (order.buyUSDC || (order.buyQuantityBTC * order.buyPrice));
-      const btcAmount = order.buyQuantityBTC || 0;
-      const costPerBTC = btcAmount > 0 ? costBasis / btcAmount : 0;
-      return {
-        date: order.createdAt ? order.createdAt.split('T')[0] : 'Unknown',
-        buyPrice: order.buyPrice,
-        btcBought: btcAmount,
-        costBasis,
-        costPerBTC,
-        fees: order.buyFees || 0,
-        rebates: order.buyRebates || 0,
-        netFees: order.buyNetFees || 0,
-        holdback: order.holdbackBTC || 0,
-        holdbackCost: (order.holdbackBTC || 0) * costPerBTC,
-        sellQuantity: order.sellQuantityBTC || 0,
-        sellPrice: order.sellPrice,
-        status: order.status,
-        realizedPnL: order.status === 'filled'
-          ? (order.netProceeds || order.actualFillValue || 0) - ((order.sellQuantityBTC || 0) * costPerBTC)
-          : null,
-      };
-    }),
-  };
-};
-
-// Calculate next trade info for an exchange
-const getNextTradeInfo = (config, state) => {
-  const normalized = normalizeConfig(config);
-  const { intervalType, intervalsToSpread, totalAllocation } = normalized;
-
-  const ranThisInterval = hasRunThisInterval(state.lastRunId, intervalType);
-  const nextExecutionTime = getNextExecutionTime(intervalType, state.lastRunTimestamp);
-  const timeUntilNext = getTimeUntilNext(intervalType);
-
-  const remaining = (totalAllocation || 0) - (state.totalAllocated || 0);
-  const intervalAmount = Math.min(
-    (totalAllocation || 0) / (intervalsToSpread || 1),
-    remaining
-  );
-
-  const fullyAllocated = remaining <= 0;
-
-  return {
-    nextTradeTime: new Date(nextExecutionTime).toISOString(),
-    nextTradeAmount: fullyAllocated ? 0 : intervalAmount,
-    timeUntilNext: timeUntilNext.formatted,
-    intervalType,
-    intervalLabel: formatInterval(intervalType),
-    ranThisInterval,
-    fullyAllocated,
-    remaining,
-    enabled: config.enabled !== false,
-    dryRun: config.dryRun === true,
-  };
-};
-
-// ============ Regime Engine Helpers ============
-
-const getRegimeRunningFlagPath = (exchange) => path.join(__dirname, 'data', exchange, 'regime-engine-running.json');
-
-const saveRegimeRunningFlag = (exchange, isRunning) => {
-  const flagPath = getRegimeRunningFlagPath(exchange);
-  const dir = path.dirname(flagPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  if (isRunning) {
-    fs.writeFileSync(flagPath, JSON.stringify({ running: true, startedAt: new Date().toISOString() }));
-  } else if (fs.existsSync(flagPath)) {
-    fs.unlinkSync(flagPath);
-  }
-};
-
-const shouldAutoResumeRegime = (exchange) => {
-  const flagPath = getRegimeRunningFlagPath(exchange);
-  return fs.existsSync(flagPath);
-};
-
-const wireMarketDataCallbacks = (exchange) => {
-  const service = getMarketDataService(exchange);
-  if (!service) return;
-  service.setOnStatusUpdate((status) => {
-    getChartDataBuffer(exchange).processStatus(status);
-    io.emit('regime:status', { exchange, status });
-  });
-};
-
 // Notification system
 const notifier = createNotifier();
 
@@ -253,18 +62,6 @@ const notifier = createNotifier();
 app.use(cors({ origin: CORS_ORIGINS }));
 app.use(express.json());
 
-// Rate limiting
-const readLimiter = rateLimit({ windowMs: 60_000, max: 100, standardHeaders: true, legacyHeaders: false });
-const writeLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
-const engineLimiter = rateLimit({ windowMs: 60_000, max: 5, standardHeaders: true, legacyHeaders: false });
-app.get('/api/*', readLimiter);
-app.post('/api/*', writeLimiter);
-app.put('/api/*', writeLimiter);
-app.patch('/api/*', writeLimiter);
-app.delete('/api/*', writeLimiter);
-// Stricter limits for engine start/stop
-app.post('/api/:exchange/regime/start', engineLimiter);
-app.post('/api/:exchange/regime/stop', engineLimiter);
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
@@ -318,18 +115,172 @@ const rescheduleBackupTimer = () => {
   log('INFO', `💾 Backup scheduler started: every ${hours}h, max ${backupConfig.maxBackups} backups`);
 };
 
+// ============ Kalshi+Hedge IPC + HTTP Proxy ============
+
+const KALSHI_HTTP_PORT = parseInt(process.env.KALSHI_HTTP_PORT) || 5572;
+const KALSHI_IPC_PORT = parseInt(process.env.KALSHI_IPC_PORT) || 5573;
+
+// IPC client: receives Socket.IO events from the Kalshi engine process
+const kalshiIPC = createIPCClient(`ws://127.0.0.1:${KALSHI_IPC_PORT}`, 'kalshi', {
+  onEvent: (msg) => {
+    // Forward IPC events to Socket.IO clients
+    if (msg.room) {
+      io.to(msg.room).emit(msg.channel, msg.payload);
+    } else {
+      io.emit(msg.channel, msg.payload);
+    }
+  },
+  onConnect: () => log('INFO', '🔗 Gateway connected to Kalshi engine IPC'),
+  onDisconnect: () => log('INFO', '🔗 Gateway disconnected from Kalshi engine IPC'),
+});
+kalshiIPC.connect();
+
+// HTTP reverse proxy: forwards /api/kalshi/* and /api/hedge/* to the Kalshi engine's Express server
+const kalshiProxy = createProxy('127.0.0.1', KALSHI_HTTP_PORT, 'Kalshi');
+app.use('/api/kalshi', kalshiProxy);
+app.use('/api/hedge', kalshiProxy);
+log('INFO', `📊 Kalshi+Hedge routes proxied to :${KALSHI_HTTP_PORT}`);
+
+// ============ Crypto Exchange Engine IPC ============
+
+const COINBASE_IPC_PORT = parseInt(process.env.COINBASE_IPC_PORT) || 5570;
+const GEMINI_IPC_PORT = parseInt(process.env.GEMINI_IPC_PORT) || 5571;
+const CRYPTOCOM_IPC_PORT = parseInt(process.env.CRYPTOCOM_IPC_PORT) || 5574;
+
+/** @type {Array<(name: string, msg: Object) => void>} */
+const ipcEventListeners = [];
+
+const createExchangeIPC = (port, name) => {
+  const client = createIPCClient(`ws://127.0.0.1:${port}`, name, {
+    onEvent: (msg) => {
+      if (msg.room) {
+        io.to(msg.room).emit(msg.channel, msg.payload);
+      } else {
+        io.emit(msg.channel, msg.payload);
+      }
+      for (const listener of ipcEventListeners) listener(name, msg);
+    },
+    onConnect: () => log('INFO', `🔗 Gateway connected to ${name} engine IPC`),
+    onDisconnect: () => log('INFO', `🔗 Gateway disconnected from ${name} engine IPC`),
+  });
+  client.connect();
+  return client;
+};
+
+const coinbaseIPC = createExchangeIPC(COINBASE_IPC_PORT, 'coinbase');
+const geminiIPC = createExchangeIPC(GEMINI_IPC_PORT, 'gemini');
+const cryptocomIPC = createExchangeIPC(CRYPTOCOM_IPC_PORT, 'cryptocom');
+
+const exchangeIPCMap = { coinbase: coinbaseIPC, gemini: geminiIPC, cryptocom: cryptocomIPC };
+
+// ============ UpDown Service ============
+
+const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR });
+
+// Forward coinbase price data to updown service for candle aggregation
+ipcEventListeners.push((name, msg) => {
+  if (name === 'coinbase' && msg.channel === 'regime:status') {
+    const market = msg.payload?.status?.market || msg.payload?.market;
+    if (market?.lastPrice) {
+      const price = parseFloat(market.lastPrice);
+      if (!Number.isFinite(price) || price <= 0) return;
+      updownService.handlePriceTick(
+        price,
+        Date.now(),
+        parseFloat(market.volume24h) || 0
+      );
+    }
+  }
+});
+
+updownService.start();
+
 // ============ Route Modules ============
 
-const sharedDeps = { regimeEngines, io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, wireMarketDataCallbacks, saveRegimeRunningFlag, rescheduleBackupTimer };
+const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
 
+require('./src/routes/ai-routes')(app, sharedDeps);
+require('./src/routes/settings-routes')(app, sharedDeps);
+require('./src/routes/updown-routes')(app, { ...sharedDeps, updownService });
 require('./src/routes/exchange-routes')(app, sharedDeps);
-const { createEngineCallbacks } = require('./src/routes/regime-routes')(app, sharedDeps);
+require('./src/routes/regime-routes')(app, sharedDeps);
 require('./src/routes/keys-routes')(app, sharedDeps);
 require('./src/routes/backtest-routes')(app, sharedDeps);
-require('./src/routes/settings-routes')(app, sharedDeps);
 require('./src/routes/legacy-routes')(app, sharedDeps);
 
+// ============ Health Aggregation ============
+
+app.get('/api/health', async (req, res) => {
+  const timeout = 3000;
+  const engines = {};
+  let overallStatus = 'ok';
+
+  // Fan out IPC health checks to all exchange engines
+  const exchangeChecks = Object.entries(exchangeIPCMap).map(async ([name, ipc]) => {
+    if (!ipc.isConnected()) {
+      engines[name] = { status: 'unreachable', connected: false };
+      overallStatus = 'degraded';
+      return;
+    }
+    const status = await ipc.request('regime:status', {}, name, timeout).catch(() => null);
+    engines[name] = {
+      status: status?.health?.mode?.toLowerCase() || (status ? 'ok' : 'timeout'),
+      connected: true,
+      isRunning: status?.isRunning ?? false,
+      mode: status?.health?.mode ?? null,
+      uptime: status?.uptime ?? null,
+    };
+    if (engines[name].status === 'timeout') overallStatus = 'degraded';
+  });
+
+  // Kalshi engine via IPC
+  const kalshiCheck = (async () => {
+    if (!kalshiIPC.isConnected()) {
+      engines.kalshi = { status: 'unreachable', connected: false };
+      overallStatus = 'degraded';
+      return;
+    }
+    const status = await kalshiIPC.request('kalshi:status', {}, 'kalshi', timeout).catch(() => null);
+    engines.kalshi = {
+      status: status ? 'ok' : 'timeout',
+      connected: true,
+      kalshiEnabled: status?.kalshiEnabled ?? false,
+      hedgeEnabled: status?.hedgeEnabled ?? false,
+      engineRunning: status?.engineRunning ?? null,
+      uptime: status?.uptime ?? null,
+    };
+    if (!status) overallStatus = 'degraded';
+  })();
+
+  await Promise.all([...exchangeChecks, kalshiCheck]);
+
+  // UpDown service (in-process, no IPC needed)
+  const updownStatus = updownService.getStatus();
+  engines.updown = {
+    status: updownStatus.running ? 'ok' : 'stopped',
+    running: updownStatus.running,
+    lastPrice: updownStatus.lastPrice || null,
+    latestSignal: updownStatus.latestSignal?.type || null,
+  };
+
+  // If any engine is unreachable and all are down, it's critical
+  const allDown = Object.values(engines).every(e => e.status === 'unreachable' || e.status === 'timeout' || e.status === 'stopped');
+  if (allDown) overallStatus = 'critical';
+
+  res.json({
+    status: overallStatus,
+    gateway: { uptime: process.uptime(), pid: process.pid },
+    engines,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // ============ Static Files ============
+
+// Catch-all for unhandled API routes — return JSON 404 instead of falling through to HTML
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 app.use(express.static(path.join(__dirname, 'admin', 'dist')));
 
@@ -342,6 +293,15 @@ app.get('*', (req, res) => {
   }
 });
 
+// ============ PM2 Log Streaming ============
+
+const activeLogStreams = new Map(); // socketId -> { process, processName }
+
+const ALLOWED_LOG_PROCESSES = new Set([
+  'critical-mass', 'critical-mass-coinbase', 'critical-mass-gemini',
+  'critical-mass-cryptocom', 'critical-mass-kalshi',
+]);
+
 // ============ WebSocket ============
 
 const { tradeEvents } = require('./src/trade-events');
@@ -353,7 +313,115 @@ tradeEvents.on('trade', (event) => {
 io.on('connection', (socket) => {
   log('INFO', `WebSocket client connected: ${socket.id}`);
   socket.on('disconnect', () => {
+    const entry = activeLogStreams.get(socket.id);
+    if (entry?.process) {
+      entry.process.kill();
+      activeLogStreams.delete(socket.id);
+      log('INFO', `📋 Log stream cleaned up for ${entry.processName} → ${socket.id}`);
+    }
     log('INFO', `WebSocket client disconnected: ${socket.id}`);
+  });
+
+  // Room subscriptions for Kalshi/Hedge events (forwarded from engine via IPC)
+  socket.on('kalshi:join', () => { socket.join('kalshi'); socket.join('kalshi:coinbase'); });
+  socket.on('kalshi:leave', () => { socket.leave('kalshi'); socket.leave('kalshi:coinbase'); });
+  socket.on('coinbase:subscribe', () => socket.join('coinbase'));
+  socket.on('coinbase:unsubscribe', () => socket.leave('coinbase'));
+  socket.on('gemini:subscribe', () => socket.join('gemini'));
+  socket.on('gemini:unsubscribe', () => socket.leave('gemini'));
+  socket.on('cryptocom:subscribe', () => socket.join('cryptocom'));
+  socket.on('cryptocom:unsubscribe', () => socket.leave('cryptocom'));
+  socket.on('composite:subscribe', () => socket.join('composite'));
+  socket.on('kraken:subscribe', () => socket.join('kraken'));
+  socket.on('kraken:unsubscribe', () => socket.leave('kraken'));
+  socket.on('updown:subscribe', () => socket.join('updown'));
+  socket.on('updown:unsubscribe', () => socket.leave('updown'));
+
+  // PM2 log streaming
+  socket.on('logs:subscribe', ({ processName, lines }) => {
+    if (!ALLOWED_LOG_PROCESSES.has(processName)) {
+      socket.emit('logs:error', { error: `Invalid process: ${processName}` });
+      return;
+    }
+    const tailLines = Math.min(Math.max(parseInt(lines) || 500, 1), 5000);
+
+    // Kill existing stream for this socket
+    const existing = activeLogStreams.get(socket.id);
+    if (existing?.process) {
+      existing.process.kill();
+    }
+
+    const logProcess = spawn('pm2', ['logs', processName, '--raw', '--lines', String(tailLines)], { shell: false });
+    activeLogStreams.set(socket.id, { process: logProcess, processName });
+
+    let stdoutBuf = '';
+    let stderrBuf = '';
+
+    logProcess.stdout.on('data', (chunk) => {
+      stdoutBuf += chunk.toString();
+      const lines = stdoutBuf.split('\n');
+      stdoutBuf = lines.pop();
+      for (const line of lines) {
+        if (line.trim()) {
+          socket.emit('logs:line', { processName, line, type: 'stdout', timestamp: Date.now() });
+        }
+      }
+    });
+
+    logProcess.stderr.on('data', (chunk) => {
+      stderrBuf += chunk.toString();
+      const lines = stderrBuf.split('\n');
+      stderrBuf = lines.pop();
+      for (const line of lines) {
+        if (line.trim()) {
+          socket.emit('logs:line', { processName, line, type: 'stderr', timestamp: Date.now() });
+        }
+      }
+    });
+
+    logProcess.on('error', (err) => {
+      log('ERROR', `📋 Log stream error for ${processName}: ${err.message}`);
+      socket.emit('logs:error', { error: err.message });
+    });
+
+    logProcess.on('close', () => {
+      const entry = activeLogStreams.get(socket.id);
+      if (entry?.process === logProcess) {
+        activeLogStreams.delete(socket.id);
+      }
+    });
+
+    socket.emit('logs:subscribed', { processName });
+    log('INFO', `📋 Log stream started for ${processName} (${tailLines} lines) → ${socket.id}`);
+  });
+
+  socket.on('logs:unsubscribe', () => {
+    const entry = activeLogStreams.get(socket.id);
+    if (entry?.process) {
+      entry.process.kill();
+      activeLogStreams.delete(socket.id);
+      socket.emit('logs:unsubscribed');
+      log('INFO', `📋 Log stream stopped for ${entry.processName} → ${socket.id}`);
+    }
+  });
+
+  socket.on('logs:flush', ({ processName }) => {
+    if (!ALLOWED_LOG_PROCESSES.has(processName)) {
+      socket.emit('logs:error', { error: `Invalid process: ${processName}` });
+      return;
+    }
+    const flushProc = spawn('pm2', ['flush', processName], { shell: false });
+    let output = '';
+    flushProc.stdout.on('data', (chunk) => { output += chunk.toString(); });
+    flushProc.stderr.on('data', (chunk) => { output += chunk.toString(); });
+    flushProc.on('close', (code) => {
+      socket.emit('logs:flushed', { processName, success: code === 0 });
+      log('INFO', `📋 Log flush ${code === 0 ? 'succeeded' : 'failed'} for ${processName}`);
+    });
+    flushProc.on('error', (err) => {
+      socket.emit('logs:flushed', { processName, success: false });
+      log('ERROR', `📋 Log flush error for ${processName}: ${err.message}`);
+    });
   });
 });
 
@@ -362,6 +430,8 @@ io.on('connection', (socket) => {
 const schedulerState = {};
 
 const checkAndRunIntervalTrade = () => {
+  if (!getGlobalConfig().simpleDcaEnabled) return;
+
   const enabledExchanges = getEnabledExchanges();
 
   for (const exchange of enabledExchanges) {
@@ -398,7 +468,7 @@ const checkAndRunIntervalTrade = () => {
 
 // ============ Start Server ============
 
-server.listen(PORT, async () => {
+server.listen(PORT, () => {
   const enabledExchanges = getEnabledExchanges();
 
   const { version } = require('./package.json');
@@ -414,48 +484,11 @@ server.listen(PORT, async () => {
     log('INFO', `[${exchange}] Interval: ${intervalLabel}, next trade in ${timeUntilNext.formatted}`);
   }
 
-  // Auto-resume regime engines that were running before restart
-  const configuredExchanges = getConfiguredExchanges();
-  for (const exchange of configuredExchanges) {
-    if (shouldAutoResumeRegime(exchange)) {
-      log('INFO', `🔄 [${exchange}] Auto-resuming regime engine from previous session...`);
-
-      const { getAdapter } = require('./src/adapters');
-      const exchangeConfig = getExchangeConfig(exchange);
-      const adapter = getAdapter(exchange);
-
-      if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-        const engine = createRegimeEngine(exchange, exchangeConfig, createEngineCallbacks(exchange));
-        regimeEngines.set(exchange, engine);
-
-        const startResult = await engine.start();
-        if (startResult.success) {
-          log('INFO', `✅ [${exchange}] Regime engine auto-resumed successfully`);
-        } else {
-          log('ERROR', `❌ [${exchange}] Failed to auto-resume regime engine: ${startResult.error}`);
-          regimeEngines.delete(exchange);
-          saveRegimeRunningFlag(exchange, false);
-        }
-      } else {
-        log('WARN', `⚠️ [${exchange}] Cannot auto-resume regime engine: API keys not configured`);
-        saveRegimeRunningFlag(exchange, false);
-      }
-    }
-  }
-
-  // Start market data services for exchanges with regime config (but not running engines)
-  for (const exchange of configuredExchanges) {
-    const regimeConfig = getRegimeConfig(exchange);
-    if (regimeConfig && Object.keys(regimeConfig).length > 0 && !regimeEngines.has(exchange)) {
-      log('INFO', `📊 [${exchange}] Starting market data service for live price streaming...`);
-      startMarketDataService(exchange).then(() => wireMarketDataCallbacks(exchange)).catch(err => {
-        log('WARN', `⚠️ [${exchange}] Failed to start market data service: ${err.message}`);
-      });
-    }
-  }
+  // Regime engine auto-resume is handled by engine processes (cm-coinbase, cm-kalshi)
+  // Market data services are handled by engine processes
 
   // Start notification system
-  notifier.start(() => regimeEngines);
+  notifier.start();
 
   // Start backup scheduler
   rescheduleBackupTimer();
@@ -473,17 +506,19 @@ server.listen(PORT, async () => {
 const gracefulShutdown = async (signal) => {
   log('INFO', `Received ${signal}, shutting down gracefully...`);
 
-  log('INFO', 'Stopping market data services...');
-  stopAllMarketDataServices();
+  // Engine processes handle their own shutdown via PM2
+  kalshiIPC.disconnect();
+  coinbaseIPC.disconnect();
+  geminiIPC.disconnect();
+  cryptocomIPC.disconnect();
 
-  const stopPromises = [];
-  for (const [exchange, engine] of regimeEngines) {
-    log('INFO', `Stopping regime engine for ${exchange}...`);
-    stopPromises.push(engine.stop());
+  updownService.stop();
+
+  // Kill all active log streams
+  for (const [socketId, entry] of activeLogStreams) {
+    entry.process?.kill();
   }
-
-  await Promise.all(stopPromises);
-  log('INFO', 'All regime engines stopped');
+  activeLogStreams.clear();
 
   notifier.stop();
 
@@ -491,8 +526,6 @@ const gracefulShutdown = async (signal) => {
     clearInterval(backupTimer);
     backupTimer = null;
   }
-
-  shutdownAllBuffers();
 
   server.close(() => {
     log('INFO', 'Server closed');

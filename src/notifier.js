@@ -8,7 +8,7 @@
 
 const axios = require('axios');
 const { tradeEvents } = require('./trade-events');
-const { getNotificationConfig, getConfiguredExchanges } = require('./config-utils');
+const { getNotificationConfig, getConfiguredExchanges, getRegimeConfig } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { log } = require('./logger');
 
@@ -250,13 +250,15 @@ const createNotifier = () => {
       const state = loadRegimeState(exchange);
       const regime = state.regime?.mode || 'N/A';
       const pos = state.position || {};
-      const btc = pos.totalBTC || 0;
+      const assetQty = pos.totalAsset || 0;
       const pnl = pos.realizedPnL || 0;
       const cycles = pos.cyclesCompleted || 0;
       const buys = pos.cycleBuys || 0;
+      const regimeConfig = getRegimeConfig(exchange);
+      const asset = (regimeConfig.productId || 'BTC-USDC').replace('_', '-').split('-')[0];
 
       lines.push(`*${exchange}* (${regime})`);
-      lines.push(`  Position: ${btc.toFixed(8)} BTC`);
+      lines.push(`  Position: ${assetQty.toFixed(8)} ${asset}`);
       lines.push(`  Realized P&L: $${pnl.toFixed(2)}`);
       lines.push(`  Cycles: ${cycles}, Current buys: ${buys}`);
       lines.push('');

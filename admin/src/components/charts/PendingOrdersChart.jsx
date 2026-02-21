@@ -3,7 +3,7 @@ import * as d3 from 'd3'
 import {
   formatCurrencyCompact,
   formatCurrency,
-  formatBTCCompact,
+  formatAssetCompact,
   formatDate,
   getAxisFontSize,
   colors,
@@ -53,7 +53,7 @@ export function PendingOrdersChart({
     // X scale (order index or BTC amount)
     const x = d3
       .scaleLinear()
-      .domain([0, d3.max(sortedOrders, (d) => d.sellQuantityBTC)])
+      .domain([0, d3.max(sortedOrders, (d) => d.sellQuantity)])
       .nice()
       .range([0, width * 0.7])
 
@@ -86,7 +86,7 @@ export function PendingOrdersChart({
       g.append('rect')
         .attr('x', 0)
         .attr('y', yPos - barHeight / 2)
-        .attr('width', x(order.sellQuantityBTC))
+        .attr('width', x(order.sellQuantity))
         .attr('height', barHeight)
         .attr('fill', order.sellPrice <= currentPrice ? colors.green : colorWithOpacity(colors.purple, 0.7))
         .attr('rx', 2)
@@ -95,16 +95,16 @@ export function PendingOrdersChart({
 
       // Buy price marker
       g.append('circle')
-        .attr('cx', x(order.sellQuantityBTC) + 15)
+        .attr('cx', x(order.sellQuantity) + 15)
         .attr('cy', y(order.buyPrice))
         .attr('r', 4)
         .attr('fill', colors.blue)
 
       // Line connecting buy price to sell price
       g.append('line')
-        .attr('x1', x(order.sellQuantityBTC) + 15)
+        .attr('x1', x(order.sellQuantity) + 15)
         .attr('y1', y(order.buyPrice))
-        .attr('x2', x(order.sellQuantityBTC) + 15)
+        .attr('x2', x(order.sellQuantity) + 15)
         .attr('y2', yPos)
         .attr('stroke', colors.gray)
         .attr('stroke-width', 1)
@@ -112,7 +112,7 @@ export function PendingOrdersChart({
 
       // Sell price label
       g.append('text')
-        .attr('x', x(order.sellQuantityBTC) + 25)
+        .attr('x', x(order.sellQuantity) + 25)
         .attr('y', yPos + 4)
         .attr('fill', order.sellPrice <= currentPrice ? colors.green : colors.lightGray)
         .style('font-size', axisFontSize)

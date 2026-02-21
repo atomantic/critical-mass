@@ -11,7 +11,7 @@
  * Replaces Fibonacci scaling with liquidity-aware sizing.
  */
 
-const { roundUSDC, roundBTC } = require('./volatility-utils');
+const { roundUSDC, roundAsset } = require('./volatility-utils');
 
 /**
  * @typedef {import('./types').RegimeMode} RegimeMode
@@ -37,13 +37,13 @@ const createPositionSizer = (exchange, config) => {
    * @returns {{sizeUsdc: number, sizeBTC: number, factors: Object}}
    */
   const calculateEntrySize = (params) => {
-    const { regime, cycleBuys, totalCostBasis, bidDepthUsdc, baselineDepth } = params;
+    const { regime, cycleBuys, totalCostBasis, bidDepthUsdc, baselineDepth, currentPrice, avgCostBasis } = params;
 
     // Get regime scale factor
     const regimeScale = getRegimeScale(regime);
 
     // Get liquidity factor
-    const liquidityFactor = calculateLiquidityFactor(cycleBuys, bidDepthUsdc, baselineDepth);
+    const liquidityFactor = calculateLiquidityFactor(cycleBuys, bidDepthUsdc, baselineDepth, currentPrice, avgCostBasis);
 
     // Calculate raw size
     let sizeUsdc = config.baseSizeUsdc * regimeScale * liquidityFactor;
@@ -65,6 +65,8 @@ const createPositionSizer = (exchange, config) => {
         remainingBudget,
         regime,
         cycleBuys,
+        currentPrice,
+        avgCostBasis,
       },
     };
   };
@@ -90,13 +92,15 @@ const createPositionSizer = (exchange, config) => {
   /**
    * Calculate liquidity factor
    * If L2 depth available: sqrt(depth / baseline)
-   * Fallback: geometric scaling based on cycle buy count
+   * Fallback: divergence-based scaling from average cost basis
    * @param {number} cycleBuys - Current cycle buy count
    * @param {number} [bidDepthUsdc] - Current bid depth
    * @param {number} [baselineDepth] - Baseline depth
+   * @param {number} [currentPrice] - Current market price
+   * @param {number} [avgCostBasis] - Average cost basis per unit
    * @returns {number} Liquidity factor
    */
-  const calculateLiquidityFactor = (cycleBuys, bidDepthUsdc, baselineDepth) => {
+  const calculateLiquidityFactor = (cycleBuys, bidDepthUsdc, baselineDepth, currentPrice, avgCostBasis) => {
     // If L2 depth is available, use sqrt scaling
     if (bidDepthUsdc !== undefined && baselineDepth !== undefined && baselineDepth > 0) {
       const depthRatio = bidDepthUsdc / baselineDepth;
@@ -104,10 +108,15 @@ const createPositionSizer = (exchange, config) => {
       return Math.min(factor, config.liquidityFactorCap);
     }
 
-    // Fallback: geometric scaling based on cycle buy count
-    // factor = 1 + (step * 0.1), capped
-    const stepFactor = 1 + (cycleBuys * 0.1);
-    return Math.min(stepFactor, config.liquidityFactorCap);
+    // Divergence-based scaling: scale up when price drops below avg cost
+    if (cycleBuys === 0 || !avgCostBasis || !currentPrice || avgCostBasis <= 0 || currentPrice <= 0) {
+      return 1.0;
+    }
+
+    const divergenceScalePct = config.divergenceScalePct || 5;
+    const divergencePct = Math.max(0, (avgCostBasis - currentPrice) / avgCostBasis) * 100;
+    const factor = 1 + (divergencePct / divergenceScalePct) * (config.liquidityFactorCap - 1);
+    return Math.min(Math.max(factor, 1.0), config.liquidityFactorCap);
   };
 
   /**
@@ -118,7 +127,7 @@ const createPositionSizer = (exchange, config) => {
    */
   const calculateBTCQuantity = (sizeUsdc, price) => {
     if (price <= 0) return 0;
-    return roundBTC(sizeUsdc / price);
+    return roundAsset(sizeUsdc / price);
   };
 
   /**
@@ -136,19 +145,19 @@ const createPositionSizer = (exchange, config) => {
    * Recovers full cost basis + (1-holdbackRatio) of profit as USDC
    * Keeps holdbackRatio of profit as BTC appreciation
    *
-   * @param {number} totalBTC - Total BTC position
+   * @param {number} totalAsset - Total BTC position
    * @param {number} avgCostBasis - Average cost per BTC
    * @param {number} sellPrice - Target sell price
    * @param {number} [tierHoldbackScale=1.0] - Tier-specific holdback multiplier (higher tiers hold more)
-   * @returns {{sellQty: number, holdbackQty: number, profitUsdc: number, profitBtcValue: number}}
+   * @returns {{sellQty: number, holdbackQty: number, profitUsdc: number, profitAssetValue: number}}
    */
-  const calculateTakeProfitSize = (totalBTC, avgCostBasis, sellPrice, tierHoldbackScale = 1.0) => {
+  const calculateTakeProfitSize = (totalAsset, avgCostBasis, sellPrice, tierHoldbackScale = 1.0) => {
     const baseHoldback = config.holdbackRatio ?? 0.5;
     const holdbackRatio = Math.min(baseHoldback * tierHoldbackScale, 0.95); // Cap at 95%
 
     // Calculate profit per BTC and total profit
-    const profitPerBTC = sellPrice - avgCostBasis;
-    const totalProfit = totalBTC * profitPerBTC;
+    const profitPerAsset = sellPrice - avgCostBasis;
+    const totalProfit = totalAsset * profitPerAsset;
 
     // Calculate how much profit to keep as BTC value
     const profitToHoldAsBtcValue = totalProfit * holdbackRatio;
@@ -158,18 +167,18 @@ const createPositionSizer = (exchange, config) => {
     // the TP price isn't high enough (caller should raise minTpPct)
     const MIN_HOLDBACK = 0.00000001; // 1 satoshi
     const rawHoldback = profitToHoldAsBtcValue / sellPrice;
-    const holdbackQty = Math.max(roundBTC(rawHoldback), MIN_HOLDBACK);
-    const sellQty = roundBTC(totalBTC - holdbackQty);
+    const holdbackQty = Math.max(roundAsset(rawHoldback), MIN_HOLDBACK);
+    const sellQty = roundAsset(totalAsset - holdbackQty);
 
     // Calculate actual profit split
-    const profitUsdc = sellQty * profitPerBTC;  // USDC profit from selling
-    const profitBtcValue = holdbackQty * profitPerBTC;  // BTC profit value kept
+    const profitUsdc = sellQty * profitPerAsset;  // USDC profit from selling
+    const profitAssetValue = holdbackQty * profitPerAsset;  // BTC profit value kept
 
     return {
       sellQty,
       holdbackQty,
       profitUsdc,
-      profitBtcValue,
+      profitAssetValue,
     };
   };
 
@@ -179,8 +188,11 @@ const createPositionSizer = (exchange, config) => {
    * @returns {string}
    */
   const getSizingSummary = (factors) => {
-    const { base, regimeScale, liquidityFactor, remainingBudget, regime, cycleBuys } = factors;
-    return `base=$${base} regime=${regime}(${regimeScale}) liq=${liquidityFactor.toFixed(2)} buys=${cycleBuys} budget=$${remainingBudget.toFixed(0)}`;
+    const { base, regimeScale, liquidityFactor, remainingBudget, regime, cycleBuys, currentPrice, avgCostBasis } = factors;
+    const divergencePct = (currentPrice && avgCostBasis && avgCostBasis > 0)
+      ? Math.max(0, (avgCostBasis - currentPrice) / avgCostBasis) * 100
+      : 0;
+    return `base=$${base} regime=${regime}(${regimeScale}) liq=${liquidityFactor.toFixed(2)} div=${divergencePct.toFixed(1)}% buys=${cycleBuys} budget=$${remainingBudget.toFixed(0)}`;
   };
 
   /**

@@ -51,6 +51,7 @@
 /**
  * @typedef {Object} GlobalConfig
  * @property {number} schedulerInterval - Scheduler interval in milliseconds
+ * @property {boolean} [simpleDcaEnabled] - Whether simple DCA strategies (fixed/fibonacci) are enabled (default: false)
  */
 
 /**
@@ -78,15 +79,15 @@
  * @property {string} orderId - Sell order ID
  * @property {string} buyOrderId - Original buy order ID
  * @property {number} buyPrice - Price paid for BTC
- * @property {number} buyQuantityBTC - Amount of BTC bought
+ * @property {number} buyQuantity - Amount of BTC bought
  * @property {number} buyUSDC - Amount of USDC spent
  * @property {number} buyFees - Fees paid on buy
  * @property {number} buyRebates - Rebates received on buy
  * @property {number} buyNetFees - Net fees on buy (fees - rebates)
  * @property {number} buyCostBasis - Total cost basis including fees
  * @property {number} sellPrice - Limit price for sell order
- * @property {number} sellQuantityBTC - Amount of BTC to sell
- * @property {number} holdbackBTC - Amount of BTC held in reserves
+ * @property {number} sellQuantity - Amount of BTC to sell
+ * @property {number} holdbackAsset - Amount of BTC held in reserves
  * @property {OrderStatus} status - Order status
  * @property {string} createdAt - ISO timestamp when order was created
  * @property {string} [filledAt] - ISO timestamp when order was filled
@@ -107,9 +108,9 @@
  * @property {number} totalAllocated - Total amount allocated so far
  * @property {number} totalIntervalsRun - Number of intervals completed
  * @property {number} usdcFundSize - Current fund size in quote currency
- * @property {number} btcReserves - BTC held in reserves
+ * @property {number} assetReserves - BTC held in reserves
  * @property {number} outstandingOrdersUSDC - Expected USDC from pending sells
- * @property {number} outstandingOrdersBTC - BTC in pending sell orders
+ * @property {number} outstandingOrdersAsset - BTC in pending sell orders
  * @property {number} totalFees - Cumulative fees paid
  * @property {number} totalRebates - Cumulative rebates received
  * @property {number} netFees - Cumulative net fees
@@ -121,7 +122,7 @@
  * @property {number} [fibPosition] - Current Fibonacci sequence position (0-indexed)
  * @property {number} [fibCycleStartTime] - Timestamp when Fibonacci cycle started
  * @property {number} [fibCumulativeCost] - Total cost basis for current Fibonacci cycle
- * @property {number} [fibCumulativeBTC] - Total BTC accumulated in current Fibonacci cycle
+ * @property {number} [fibCumulativeAsset] - Total BTC accumulated in current Fibonacci cycle
  * @property {string|null} [fibActiveSellOrderId] - Active consolidated sell order ID for Fibonacci cycle
  */
 
@@ -247,7 +248,7 @@
  * @typedef {Object} BuyResult
  * @property {string} orderId - Order ID
  * @property {number} price - Average fill price
- * @property {number} btcAmount - Amount of BTC purchased
+ * @property {number} assetAmount - Amount of BTC purchased
  * @property {number} usdcAmount - Amount of USDC spent
  * @property {number} fees - Fees paid
  * @property {number} rebates - Rebates received
@@ -306,7 +307,7 @@
  * @property {IntervalType} [intervalType] - Interval type
  * @property {BuyResult} [buyResult] - Buy result if successful
  * @property {SellOrder} [sellOrder] - Sell order if successful
- * @property {number} [holdbackBTC] - BTC held back
+ * @property {number} [holdbackAsset] - BTC held back
  * @property {Object} [state] - State summary
  * @property {number} [currentPrice] - Current price if price check
  * @property {number} [maxBuyPrice] - Max buy price if price too high
@@ -345,7 +346,7 @@
  * @typedef {Object} FibonacciCycleInfo
  * @property {number} position - Current Fibonacci sequence position
  * @property {number} cumulativeCost - Total cost basis
- * @property {number} cumulativeBTC - Total BTC accumulated
+ * @property {number} cumulativeAsset - Total BTC accumulated
  * @property {number} avgCostBasis - Weighted average cost basis per BTC
  * @property {string|null} activeSellOrderId - Active sell order ID
  * @property {number|null} cycleStartTime - When cycle started
@@ -406,7 +407,7 @@
 
 /**
  * @typedef {Object} RegimePositionState
- * @property {number} totalBTC - Total BTC in current cycle
+ * @property {number} totalAsset - Total BTC in current cycle
  * @property {number} totalCostBasis - Total cost including fees
  * @property {number} avgCostBasis - Average cost per BTC
  * @property {number} cycleBuys - Number of buy orders filled in current cycle
@@ -418,13 +419,13 @@
  * @property {number} cyclesCompleted - Number of completed inventory cycles
  * @property {number} unrealizedPnL - Current unrealized P&L
  * @property {number} realizedPnL - Cumulative realized P&L in USD
- * @property {number} realizedBtcPnL - Cumulative realized P&L in BTC (holdback reserves)
- * @property {number} btcOnOrder - BTC currently in open sell orders
+ * @property {number} realizedAssetPnL - Cumulative realized P&L in BTC (holdback reserves)
+ * @property {number} assetOnOrder - BTC currently in open sell orders
  * @property {number} maxDrawdownSeen - Maximum drawdown observed
  * @property {boolean} scalingDisabled - Whether scaling is temporarily disabled
  * @property {string|null} scalingDisabledReason - Reason scaling is disabled
  * @property {MacroRegimeState|null} [macroRegime] - Macro regime state for persistence
- * @property {Array<{orderId: string, price: number, btcQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
+ * @property {Array<{orderId: string, price: number, assetQty: number, sizeUsdc: number, placedAt: number}>} [pendingEntryOrders] - Pending entry orders persisted for recovery
  * @property {CelestialBody[]} [celestialBodies_legacy] - (removed, use celestialBodies)
  * @property {CelestialBody[]} [celestialBodies] - Active celestial bodies (replaces core+satellites)
  * @property {CelestialState} [celestialState] - Aggregate celestial tracking
@@ -503,12 +504,12 @@
  * @typedef {Object} CelestialBody
  * @property {string} id - Unique body ID (persists through promotions)
  * @property {string} tier - Tier name (satellite|moon|planet|sun|hypergiant|galaxy|black_hole)
- * @property {number} btcQty - Total BTC
+ * @property {number} assetQty - Total BTC
  * @property {number} costBasis - Total cost basis including fees ($)
- * @property {number} avgPrice - costBasis / btcQty
+ * @property {number} avgPrice - costBasis / assetQty
  * @property {string|null} tpOrderId - Exchange sell order ID
  * @property {number} tpPrice - Current TP price
- * @property {number} btcOnOrder - BTC in sell order (after holdback)
+ * @property {number} assetOnOrder - BTC in sell order (after holdback)
  * @property {number} createdAt - First creation timestamp
  * @property {number} lastMergedAt - Last merge/promotion timestamp
  * @property {string[]} sourceOrderIds - All constituent buy order IDs
@@ -519,7 +520,7 @@
  * @typedef {Object} CelestialState
  * @property {number} bodiesCompleted - Total body TP fills (all time)
  * @property {number} bodiesRealizedPnL - Cumulative USD P&L
- * @property {number} bodiesRealizedBtcPnL - Cumulative BTC holdback reserves
+ * @property {number} bodiesRealizedAssetPnL - Cumulative BTC holdback reserves
  * @property {number} stateVersion - Schema version
  */
 
@@ -552,6 +553,7 @@
  * @property {number} maxCycleBuys - Maximum buys per cycle (default: 10)
  * @property {number} cycleResetHours - Hours after which to auto-reset cycle buys at max (default: 72, 0 to disable)
  * @property {number} liquidityFactorCap - Maximum liquidity multiplier (default: 2.0)
+ * @property {number} divergenceScalePct - Price divergence % from avg cost at which liquidity factor reaches cap (default: 5)
  *
  * Take-Profit Parameters
  * @property {number} tpMult - TP distance multiplier (default: 1.0)
@@ -563,7 +565,7 @@
  * Celestial Body Parameters (legacy satellite aliases removed)
  *
  * Risk Cap Parameters
- * @property {number} maxBtcExposure - Maximum BTC position (default: 0.5)
+ * @property {number} maxAssetExposure - Maximum asset position, 0 = uncapped (default: 0)
  * @property {number} depositedCapital - Total user deposits, 0 = auto-derive from maxUsdcDeployed - realizedPnL (default: 0)
  * @property {number} maxUsdcDeployed - Maximum USDC cap for trading, grows with profits (default: 10000)
  * @property {number} maxDrawdownPercent - Pause threshold (default: 20)
@@ -686,7 +688,7 @@
 /**
  * @typedef {Object} TransactionDetails
  * @property {number} price - Transaction price
- * @property {number} btcAmount - BTC amount (negative for sells)
+ * @property {number} assetAmount - BTC amount (negative for sells)
  * @property {number} usdcAmount - USDC amount (negative for buys)
  * @property {number} [fees] - Transaction fees
  * @property {number} [rebates] - Transaction rebates
@@ -745,7 +747,7 @@
  * @property {boolean} success - Whether consolidation was successful
  * @property {string} [newOrderId] - New consolidated order ID
  * @property {number} [consolidatedPrice] - Weighted average sell price
- * @property {number} [consolidatedBTC] - Total BTC in consolidated order
+ * @property {number} [consolidatedAsset] - Total BTC in consolidated order
  * @property {number} [consolidatedCount] - Number of orders consolidated
  * @property {string[]} [skippedOrderIds] - Order IDs skipped due to partial fills
  * @property {string[]} [cancelledOrderIds] - Order IDs that were cancelled

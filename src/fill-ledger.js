@@ -10,7 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getExchangeDataDir } = require('./migration');
-const { roundBTC, roundUSDC } = require('./volatility-utils');
+const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { atomicWriteSync } = require('./state-tracker');
 
 /**
@@ -31,15 +31,23 @@ const getFillLedgerPath = (exchange) => {
 /**
  * Create fill ledger instance
  * @param {string} exchange - Exchange name
+ * @param {string} [productId] - Product ID (e.g. 'BTC-USDC') used to derive base currency for logs
  * @returns {Object} Fill ledger instance
  */
-const createFillLedger = (exchange) => {
+const createFillLedger = (exchange, productId) => {
   /** @type {Map<string, Fill>} */
   const fills = new Map();
   /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
   const cycleIndex = new Map();
   let currentCycleId = null;
   let nextCycleNumber = 1;
+  const baseCurrency = productId ? productId.replace('_', '-').split('-')[0] : 'BTC';
+  const fmtPrice = (p) => {
+    if (p == null || isNaN(p)) return '-';
+    if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
+    if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
+    return `$${p.toFixed(5)}`;
+  };
 
   /**
    * Load fill ledger from disk
@@ -62,30 +70,33 @@ const createFillLedger = (exchange) => {
 
     // Restore currentCycleId from loaded fills
     // Find the most recent cycle that's still active (core TP hasn't filled)
-    // Satellite TP sells are small fractions of the position; core TP sells ~99.75%
-    const cycleStats = new Map(); // cycleId -> { buysBtc, sellsBtc }
+    // Only count non-body/non-satellite sells — satellite/body sells happen continuously
+    // within an active cycle and don't indicate cycle completion
+    const cycleStats = new Map(); // cycleId -> { buysAsset, coreSellsAsset }
     for (const fill of fills.values()) {
       if (!fill.cycleId) continue;
       if (!cycleStats.has(fill.cycleId)) {
-        cycleStats.set(fill.cycleId, { buysBtc: 0, sellsBtc: 0 });
+        cycleStats.set(fill.cycleId, { buysAsset: 0, coreSellsAsset: 0 });
       }
       const stats = cycleStats.get(fill.cycleId);
-      if (fill.side === 'buy') stats.buysBtc += fill.size;
-      else if (fill.side === 'sell') stats.sellsBtc += fill.size;
+      if (fill.side === 'buy') stats.buysAsset += fill.size;
+      else if (fill.side === 'sell' && !fill.isBodyOwned && !fill.isSatellite && !fill.bodyId) {
+        stats.coreSellsAsset += fill.size;
+      }
     }
 
     // Find an active cycle - prefer most recent
-    // A cycle is "active" if less than 50% of BTC has been sold
-    // (core TP sells ~99.75%; body TP sells are individually tiny fractions)
+    // A cycle is "active" if less than 50% of core BTC has been sold
+    // (core TP sells ~99.75%; body/satellite sells are excluded from this check)
     const allFills = Array.from(fills.values()).sort((a, b) => b.timestamp - a.timestamp);
     for (const fill of allFills) {
       if (!fill.cycleId) continue;
       const stats = cycleStats.get(fill.cycleId);
-      if (!stats || stats.buysBtc === 0) continue;
-      const sellRatio = stats.sellsBtc / stats.buysBtc;
+      if (!stats || stats.buysAsset === 0) continue;
+      const sellRatio = stats.coreSellsAsset / stats.buysAsset;
       if (sellRatio < 0.5) {
         currentCycleId = fill.cycleId;
-        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sold, body TP sells only)`);
+        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% core sells)`);
         break;
       }
     }
@@ -169,7 +180,7 @@ const createFillLedger = (exchange) => {
     persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
-    console.log(`📝 [${exchange}] Fill ingested: ${fill.side} ${fill.size} BTC @ $${fill.price} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);
+    console.log(`📝 [${exchange}] Fill ingested: tradeId=${tradeId} orderId=${fill.orderId} ${fill.side} ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);
 
     return { ingested: true, fill };
   };
@@ -241,7 +252,7 @@ const createFillLedger = (exchange) => {
       targetFills = result;
     }
 
-    let totalBTC = 0;
+    let totalAsset = 0;
     let totalCostBasis = 0;
     let realizedPnL = 0;
     let lastEntryPrice = 0;
@@ -254,21 +265,21 @@ const createFillLedger = (exchange) => {
 
       if (fill.side === 'buy') {
         const costBasis = fill.quoteAmount + fill.netFee;
-        totalBTC = roundBTC(totalBTC + fill.size);
+        totalAsset = roundAsset(totalAsset + fill.size);
         totalCostBasis = roundUSDC(totalCostBasis + costBasis);
         uniqueBuyOrders.add(fill.orderId);
         lastEntryPrice = fill.price;
         lastEntryTime = fill.timestamp;
       } else if (fill.side === 'sell') {
         const proceeds = fill.quoteAmount - fill.netFee;
-        const avgCost = totalBTC > 0 ? totalCostBasis / totalBTC : 0;
+        const avgCost = totalAsset > 0 ? totalCostBasis / totalAsset : 0;
         const soldCostBasis = fill.size * avgCost;
         realizedPnL = roundUSDC(realizedPnL + (proceeds - soldCostBasis));
 
-        totalBTC = roundBTC(totalBTC - fill.size);
-        if (totalBTC < 0) {
-          console.log(`⚠️ [${exchange}] rebuildPositionFromFills: negative BTC ${totalBTC} after sell ${fill.tradeId}, clamping to 0`);
-          totalBTC = 0;
+        totalAsset = roundAsset(totalAsset - fill.size);
+        if (totalAsset < 0) {
+          console.log(`⚠️ [${exchange}] rebuildPositionFromFills: negative ${baseCurrency} ${totalAsset} after sell ${fill.tradeId}, clamping to 0`);
+          totalAsset = 0;
           totalCostBasis = 0;
         } else {
           totalCostBasis = roundUSDC(totalCostBasis - soldCostBasis);
@@ -276,10 +287,10 @@ const createFillLedger = (exchange) => {
       }
     }
 
-    const avgCostBasis = totalBTC > 0 ? totalCostBasis / totalBTC : 0;
+    const avgCostBasis = totalAsset > 0 ? totalCostBasis / totalAsset : 0;
 
     return {
-      totalBTC,
+      totalAsset,
       totalCostBasis,
       avgCostBasis,
       cycleBuys: uniqueBuyOrders.size,
@@ -352,8 +363,8 @@ const createFillLedger = (exchange) => {
 
     const totalBuyValue = buyFills.reduce((sum, f) => sum + f.quoteAmount, 0);
     const totalSellValue = sellFills.reduce((sum, f) => sum + f.quoteAmount, 0);
-    const totalBuyBTC = buyFills.reduce((sum, f) => sum + f.size, 0);
-    const totalSellBTC = sellFills.reduce((sum, f) => sum + f.size, 0);
+    const totalBuyAsset = buyFills.reduce((sum, f) => sum + f.size, 0);
+    const totalSellAsset = sellFills.reduce((sum, f) => sum + f.size, 0);
     const totalFees = allFills.reduce((sum, f) => sum + f.netFee, 0);
 
     return {
@@ -362,9 +373,9 @@ const createFillLedger = (exchange) => {
       sellFills: sellFills.length,
       totalBuyValue: roundUSDC(totalBuyValue),
       totalSellValue: roundUSDC(totalSellValue),
-      totalBuyBTC: roundBTC(totalBuyBTC),
-      totalSellBTC: roundBTC(totalSellBTC),
-      netBTC: roundBTC(totalBuyBTC - totalSellBTC),
+      totalBuyAsset: roundAsset(totalBuyAsset),
+      totalSellAsset: roundAsset(totalSellAsset),
+      netAsset: roundAsset(totalBuyAsset - totalSellAsset),
       totalFees: roundUSDC(totalFees),
       currentCycleId,
     };
@@ -448,10 +459,10 @@ const createFillLedger = (exchange) => {
     }
 
     return {
-      totalSize: roundBTC(totalSize),
+      totalSize: roundAsset(totalSize),
       totalValue: roundUSDC(totalValue),
       totalFees: roundUSDC(totalFees),
-      avgPrice: totalSize > 0 ? roundUSDC(totalValue / totalSize) : 0,
+      avgPrice: totalSize > 0 ? totalValue / totalSize : 0,
     };
   };
 
@@ -460,7 +471,7 @@ const createFillLedger = (exchange) => {
    * - Identifies completed cycles (cycles with sells)
    * - Assigns orphan fills (cycleId: null) to cycles based on timestamp
    * - Calculates BTC holdback per cycle and total reserves
-   * @returns {{cyclesCompleted: number, realizedPnL: number, realizedBtcPnL: number, cycleDetails: Array, orphansFixed: number}}
+   * @returns {{cyclesCompleted: number, realizedPnL: number, realizedAssetPnL: number, cycleDetails: Array, orphansFixed: number}}
    */
   const recalculateCycles = () => {
     const allFills = Array.from(fills.values()).sort((a, b) => a.timestamp - b.timestamp);
@@ -486,15 +497,21 @@ const createFillLedger = (exchange) => {
     const activeCycles = [];
 
     for (const [cycleId, cycleFills] of cycleMap) {
-      let buysBtc = 0;
-      let sellsBtc = 0;
+      let buysAsset = 0;
+      let coreSellsAsset = 0;
       for (const fill of cycleFills) {
-        if (fill.side === 'buy') buysBtc += fill.size;
-        else if (fill.side === 'sell') sellsBtc += fill.size;
+        if (fill.side === 'buy') buysAsset += fill.size;
+        else if (fill.side === 'sell') {
+          // Only count non-body/non-satellite sells for completion detection.
+          // Satellite/body sells happen continuously within an active cycle and
+          // don't indicate cycle completion — only a core TP sell does.
+          if (!fill.isBodyOwned && !fill.isSatellite && !fill.bodyId) {
+            coreSellsAsset += fill.size;
+          }
+        }
       }
       // A cycle is "completed" only when core TP has fired (selling most of position)
-      // Satellite sells are individually tiny; core TP sells ~99.75%
-      const sellRatio = buysBtc > 0 ? sellsBtc / buysBtc : 0;
+      const sellRatio = buysAsset > 0 ? coreSellsAsset / buysAsset : 0;
       if (sellRatio >= 0.5) {
         completedCycles.push({ cycleId, fills: cycleFills });
       } else {
@@ -505,35 +522,41 @@ const createFillLedger = (exchange) => {
     // Calculate P&L and holdback for each completed cycle
     const cycleDetails = [];
     let totalRealizedPnL = 0;
-    let totalRealizedBtcPnL = 0;
+    let totalRealizedAssetPnL = 0;
 
     // Global P&L pass: mirrors dashboard Filled Orders buy-linkage computation.
     // Step 1: Build pnlMap (running average for core, annotations for body)
     let globalRealizedPnL = 0;
-    let globalRealizedBtcPnL = 0;
-    let gRunBtc = 0, gRunCost = 0;
+    let globalRealizedAssetPnL = 0;
+    let gRunAsset = 0, gRunCost = 0;
     const sellPnlMap = new Map(); // orderId -> { pnl, holdback }
     for (const fill of allFills) {
       const isBody = fill.isBodyOwned ?? fill.isSatellite;
       if (fill.side === 'buy') {
-        if (!isBody) { gRunBtc += fill.size; gRunCost += fill.quoteAmount + fill.netFee; }
+        if (!isBody) { gRunAsset += fill.size; gRunCost += fill.quoteAmount + fill.netFee; }
       } else if (fill.side === 'sell') {
         if (isBody) {
           const bodyPnl = fill.bodyPnl ?? fill.satellitePnl;
           const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount - fill.netFee) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0);
-          const holdback = (fill.bodyHoldbackBtc ?? fill.satelliteHoldbackBtc) || 0;
+          const holdback = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0;
           const prev = sellPnlMap.get(fill.orderId);
-          if (prev) { prev.pnl += pnl; prev.holdback += holdback; prev.isBody = true; }
+          if (prev) {
+            // bodyPnl annotations are total body P&L, not per-fill — skip duplicates
+            if (bodyPnl == null) { prev.pnl += pnl; prev.holdback += holdback; }
+            prev.quoteAmount = (prev.quoteAmount || 0) + fill.quoteAmount;
+            prev.netFee = (prev.netFee || 0) + fill.netFee;
+            prev.isBody = true;
+          }
           else sellPnlMap.set(fill.orderId, { pnl, holdback, isBody: true, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: bodyPnl != null });
         } else {
-          const avgCost = gRunBtc > 0 ? gRunCost / gRunBtc : 0;
+          const avgCost = gRunAsset > 0 ? gRunCost / gRunAsset : 0;
           const proceeds = fill.quoteAmount - fill.netFee;
           const pnl = proceeds - avgCost * fill.size;
           const prev = sellPnlMap.get(fill.orderId);
           if (prev) { prev.pnl += pnl; prev.quoteAmount += fill.quoteAmount; prev.netFee += fill.netFee; }
           else sellPnlMap.set(fill.orderId, { pnl, holdback: 0, isBody: false, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: false });
-          const rem = gRunBtc - fill.size;
-          gRunBtc = rem > 0 ? rem : 0;
+          const rem = gRunAsset - fill.size;
+          gRunAsset = rem > 0 ? rem : 0;
           gRunCost = rem > 0 ? avgCost * rem : 0;
         }
       }
@@ -580,6 +603,8 @@ const createFillLedger = (exchange) => {
       if (!linkedBuys || linkedBuys.length === 0) continue;
       // Skip body sells with trusted bodyPnl annotations
       if (data.isBody && data.hasAnnotation) continue;
+      // Skip non-body sells — running average P&L is already correct
+      if (!data.isBody) continue;
       const buyCost = linkedBuys.reduce((s, b) => s + b.quoteAmount + b.netFee, 0);
       const sellProceeds = data.quoteAmount - data.netFee;
       data.pnl = sellProceeds - buyCost;
@@ -587,47 +612,47 @@ const createFillLedger = (exchange) => {
     // Sum all sell P&L
     for (const [, data] of sellPnlMap) {
       globalRealizedPnL += data.pnl;
-      globalRealizedBtcPnL += data.holdback;
+      globalRealizedAssetPnL += data.holdback;
     }
 
     for (const { cycleId, fills: cycleFills } of completedCycles) {
-      let totalBTC = 0;
+      let totalAsset = 0;
       let totalCost = 0;
       let sellProceeds = 0;
-      let btcSold = 0;
+      let assetSold = 0;
 
       for (const fill of cycleFills) {
         // Skip body-owned fills — they have independent P&L tracking
         if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
 
         if (fill.side === 'buy') {
-          totalBTC += fill.size;
+          totalAsset += fill.size;
           totalCost += fill.quoteAmount + fill.netFee;
         } else if (fill.side === 'sell') {
           sellProceeds += fill.quoteAmount - fill.netFee;
-          btcSold += fill.size;
+          assetSold += fill.size;
         }
       }
 
-      const avgCost = totalBTC > 0 ? totalCost / totalBTC : 0;
-      const costBasisSold = avgCost * btcSold;
+      const avgCost = totalAsset > 0 ? totalCost / totalAsset : 0;
+      const costBasisSold = avgCost * assetSold;
       const pnl = sellProceeds - costBasisSold;
-      const holdbackBtc = roundBTC(totalBTC - btcSold);
+      const holdbackAsset = roundAsset(totalAsset - assetSold);
 
       cycleDetails.push({
         cycleId,
         buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
         sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
-        totalBtcBought: roundBTC(totalBTC),
-        btcSold: roundBTC(btcSold),
-        holdbackBtc,
+        totalAssetBought: roundAsset(totalAsset),
+        assetSold: roundAsset(assetSold),
+        holdbackAsset,
         avgCost: roundUSDC(avgCost),
-        sellPrice: btcSold > 0 ? roundUSDC(sellProceeds / btcSold) : 0,
+        sellPrice: assetSold > 0 ? roundUSDC(sellProceeds / assetSold) : 0,
         pnl: roundUSDC(pnl),
       });
 
       totalRealizedPnL += pnl;
-      totalRealizedBtcPnL += holdbackBtc;
+      totalRealizedAssetPnL += holdbackAsset;
     }
 
     // Assign orphan fills to cycles based on buy-sell pattern
@@ -678,53 +703,53 @@ const createFillLedger = (exchange) => {
 
         // Check if this is a completed cycle using BTC balance ratio
         // (same heuristic as main cycle detection — core TP sells ~99.75%)
-        let orphanBuysBtc = 0;
-        let orphanSellsBtc = 0;
+        let orphanBuysAsset = 0;
+        let orphanSellsAsset = 0;
         for (const fill of cycleFills) {
-          if (fill.side === 'buy') orphanBuysBtc += fill.size;
-          else if (fill.side === 'sell') orphanSellsBtc += fill.size;
+          if (fill.side === 'buy') orphanBuysAsset += fill.size;
+          else if (fill.side === 'sell') orphanSellsAsset += fill.size;
         }
-        const orphanSellRatio = orphanBuysBtc > 0 ? orphanSellsBtc / orphanBuysBtc : 0;
+        const orphanSellRatio = orphanBuysAsset > 0 ? orphanSellsAsset / orphanBuysAsset : 0;
         const isCompleted = orphanSellRatio >= 0.5;
 
         if (isCompleted) {
-          let totalBTC = 0;
+          let totalAsset = 0;
           let totalCost = 0;
           let sellProceeds = 0;
-          let btcSold = 0;
+          let assetSold = 0;
 
           for (const fill of cycleFills) {
             // Skip body/satellite fills — they have independent P&L tracking
             if (fill.isSatellite || fill.bodyId) continue;
 
             if (fill.side === 'buy') {
-              totalBTC += fill.size;
+              totalAsset += fill.size;
               totalCost += fill.quoteAmount + fill.netFee;
             } else if (fill.side === 'sell') {
               sellProceeds += fill.quoteAmount - fill.netFee;
-              btcSold += fill.size;
+              assetSold += fill.size;
             }
           }
 
-          const avgCost = totalBTC > 0 ? totalCost / totalBTC : 0;
-          const costBasisSold = avgCost * btcSold;
+          const avgCost = totalAsset > 0 ? totalCost / totalAsset : 0;
+          const costBasisSold = avgCost * assetSold;
           const pnl = sellProceeds - costBasisSold;
-          const holdbackBtc = roundBTC(totalBTC - btcSold);
+          const holdbackAsset = roundAsset(totalAsset - assetSold);
 
           cycleDetails.push({
             cycleId,
             buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
             sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
-            totalBtcBought: roundBTC(totalBTC),
-            btcSold: roundBTC(btcSold),
-            holdbackBtc,
+            totalAssetBought: roundAsset(totalAsset),
+            assetSold: roundAsset(assetSold),
+            holdbackAsset,
             avgCost: roundUSDC(avgCost),
-            sellPrice: btcSold > 0 ? roundUSDC(sellProceeds / btcSold) : 0,
+            sellPrice: assetSold > 0 ? roundUSDC(sellProceeds / assetSold) : 0,
             pnl: roundUSDC(pnl),
           });
 
           totalRealizedPnL += pnl;
-          totalRealizedBtcPnL += holdbackBtc;
+          totalRealizedAssetPnL += holdbackAsset;
           completedCycles.push({ cycleId, fills: cycleFills });
         } else {
           // This is the current active cycle
@@ -790,16 +815,37 @@ const createFillLedger = (exchange) => {
     }
     nextCycleNumber = cycleNum;
 
-    if (orphansFixed > 0 || renumbered > 0) {
+    // Auto-link buys to sells within the same cycle (fixes orphaned buys display)
+    let linkedCount = 0;
+    const cycleSellIds = new Map(); // cycleId -> first sell orderId
+    for (const fill of fills.values()) {
+      if (fill.side === 'sell' && fill.cycleId && !cycleSellIds.has(fill.cycleId)) {
+        cycleSellIds.set(fill.cycleId, fill.orderId);
+      }
+    }
+    for (const fill of fills.values()) {
+      if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId) {
+        const sellId = cycleSellIds.get(fill.cycleId);
+        if (sellId) {
+          fill.sellOrderId = sellId;
+          linkedCount++;
+        }
+      }
+    }
+    if (linkedCount > 0) {
+      console.log(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`);
+    }
+
+    if (orphansFixed > 0 || renumbered > 0 || linkedCount > 0) {
       persist();
     }
 
     return {
       cyclesCompleted: cycleDetails.length,
       realizedPnL: roundUSDC(totalRealizedPnL),
-      realizedBtcPnL: roundBTC(totalRealizedBtcPnL),
+      realizedAssetPnL: roundAsset(totalRealizedAssetPnL),
       globalRealizedPnL: roundUSDC(globalRealizedPnL),
-      globalRealizedBtcPnL: roundBTC(totalRealizedBtcPnL + globalRealizedBtcPnL),
+      globalRealizedAssetPnL: roundAsset(totalRealizedAssetPnL + globalRealizedAssetPnL),
       cycleDetails,
       orphansFixed,
       activeCycleId: currentCycleId,
