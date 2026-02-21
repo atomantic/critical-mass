@@ -63,15 +63,24 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
   const isRegime = strategy === 'regime'
   const isFibonacci = !isRegime && config.dcaStrategy === 'fibonacci'
 
-  // Only sync with initialConfig when exchange or strategy changes (not on every refresh)
+  // Reset config when exchange or strategy changes
   useEffect(() => {
-    if (initialConfig && (prevExchangeRef.current !== exchange || prevStrategyRef.current !== strategy || !isDirty)) {
-      setConfig(initialConfig)
-      setIsDirty(false)
+    if (prevExchangeRef.current !== exchange || prevStrategyRef.current !== strategy) {
       prevExchangeRef.current = exchange
       prevStrategyRef.current = strategy
+      if (initialConfig) {
+        setConfig(initialConfig)
+        setIsDirty(false)
+      }
     }
-  }, [initialConfig, exchange, strategy, isDirty])
+  }, [exchange, strategy, initialConfig])
+
+  // Sync with initialConfig when not dirty (e.g., server-side refresh)
+  useEffect(() => {
+    if (initialConfig && !isDirty) {
+      setConfig(initialConfig)
+    }
+  }, [initialConfig]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch aggressiveness presets for regime mode
   useEffect(() => {

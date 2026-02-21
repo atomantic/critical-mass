@@ -14,13 +14,12 @@ const { spawn } = require('child_process')
 const { appendFile, mkdir, readFile, writeFile } = require('fs/promises')
 const { existsSync } = require('fs')
 const path = require('path')
+const { ts } = require('../../time-utils')
+const { DATA_DIR, KALSHI_DATA_DIR } = require('../../paths')
 
-const ts = () => new Date().toISOString().slice(11, 23)
-
-const DATA_DIR = path.join(__dirname, '..', '..', '..', 'data')
-const ANALYSES_DIR = path.join(DATA_DIR, 'kalshi', 'analyses')
+const ANALYSES_DIR = path.join(KALSHI_DATA_DIR, 'analyses')
 const STRATEGY_GUIDE_PATH = path.join(__dirname, '..', '..', '..', 'STRATEGY-GUIDE.md')
-const CONFIG_PATH = path.join(DATA_DIR, 'kalshi', 'config.json')
+const CONFIG_PATH = path.join(KALSHI_DATA_DIR, 'config.json')
 const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json')
 
 /** @type {import('socket.io').Server | null} */

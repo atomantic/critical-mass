@@ -1,7 +1,5 @@
 const { createKrakenWebSocket } = require('../../adapters/kraken/websocket')
-
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
 
 /**
  * @typedef {Object} CachedCryptoPrice

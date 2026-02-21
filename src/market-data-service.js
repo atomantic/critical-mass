@@ -36,6 +36,7 @@ const createMarketDataService = (exchange) => {
   let fillLedger = null;
   let isConnected = false;
   let metricsUpdateInterval = null;
+  let productId = null;
   let onStatusUpdateCallback = null;
   let lastStatusEmit = 0;
   const STATUS_EMIT_INTERVAL = 1000; // Throttle to ~1/sec to match chart buffer rate
@@ -98,7 +99,7 @@ const createMarketDataService = (exchange) => {
 
     const config = getRegimeConfig(exchange);
     const exchangeConfig = getExchangeConfig(exchange);
-    const productId = config.productId || exchangeConfig.productId || 'BTC-USDC';
+    productId = config.productId || exchangeConfig.productId || 'BTC-USDC';
 
     // Create regime detector for passive monitoring
     regimeDetector = createRegimeDetector(exchange, config);
@@ -144,6 +145,9 @@ const createMarketDataService = (exchange) => {
     wsFeed.connect();
 
     // Start periodic metrics update via REST (for ATR calculations)
+    if (metricsUpdateInterval) {
+      clearInterval(metricsUpdateInterval);
+    }
     metricsUpdateInterval = setInterval(() => updateMetrics(adapter, productId), 60000);
 
     // Initial metrics fetch
@@ -233,6 +237,7 @@ const createMarketDataService = (exchange) => {
    * Detects when tracked orders fill while engine isn't running
    */
   const handleOrderUpdate = async (data) => {
+    if (!productId) return;
     const { orderId, status, filledSize, averageFilledPrice, totalFees } = data;
 
     // Check if this is a tracked order

@@ -7,8 +7,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const { DATA_DIR } = require('./paths');
 
 // Maximum data retention (1 hour in milliseconds)
 const MAX_RETENTION_MS = 60 * 60 * 1000;
@@ -63,7 +62,7 @@ const createChartDataBuffer = (exchange) => {
     if (!dirty) return;
     const filePath = getFilePath(exchange);
     const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true });
     const data = {
       priceHistory: trimOldData(priceHistory),
       atrHistory: trimOldData(atrHistory),

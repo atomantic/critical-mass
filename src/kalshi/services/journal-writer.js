@@ -9,10 +9,10 @@
 const { appendFile, mkdir, readFile } = require('fs/promises')
 const { existsSync } = require('fs')
 const path = require('path')
+const { ts } = require('../../time-utils')
+const { KALSHI_DATA_DIR } = require('../../paths')
 
-const ts = () => new Date().toISOString().slice(11, 23)
-
-const JOURNAL_DIR = path.join(__dirname, '..', '..', '..', 'data', 'kalshi', 'journals')
+const JOURNAL_DIR = path.join(KALSHI_DATA_DIR, 'journals')
 
 /** @type {Map<string, number>} ticker:strategy -> last skip write timestamp */
 const skipThrottles = new Map()

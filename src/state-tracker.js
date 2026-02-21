@@ -26,8 +26,7 @@ const { getExchangeDataDir } = require('./migration');
 const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
 const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
 const { loadRawConfig } = require('./config-utils');
-
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const { DATA_DIR } = require('./paths');
 
 /**
  * Atomic write: write to .tmp then rename (POSIX-atomic).
@@ -182,11 +181,7 @@ const loadState = (config = null, exchange = 'coinbase') => {
 const saveState = (state, exchange = 'coinbase') => {
   const stateFile = getStateFile(exchange);
   const dir = path.dirname(stateFile);
-
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
+  fs.mkdirSync(dir, { recursive: true });
   atomicWriteSync(stateFile, JSON.stringify(state, null, 2));
 };
 
@@ -737,9 +732,7 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   const stateFile = getRegimeStateFile(exchange);
   const dir = path.dirname(stateFile);
 
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  fs.mkdirSync(dir, { recursive: true });
 
   // Optimistic version locking: detect external edits
   const myVersion = saveVersions.get(stateFile) || 0;

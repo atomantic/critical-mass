@@ -12,8 +12,13 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const { log } = require('../logger');
+const { KALSHI_DATA_DIR } = require('../paths');
+const { ts } = require('../time-utils');
+const { createAsyncHandler } = require('./async-handler');
+const { validateConfigUpdate, validateStrategies, validateMarkets, KALSHI_CONFIG_SCHEMA } = require('../config-validator');
 
-const DATA_DIR = path.join(__dirname, '..', '..', 'data', 'kalshi');
+const DATA_DIR = KALSHI_DATA_DIR;
+const asyncHandler = createAsyncHandler('kalshi', ts);
 
 // Lazy-loaded service references (initialized on first engine start)
 let kalshiAdapters = null;
@@ -42,9 +47,6 @@ let marketRefreshTimer = null;
 /** @type {NodeJS.Timeout | null} */
 let nextSettlementTimer = null;
 
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23);
-
 /**
  * Calculate ms until the next 15-min settlement boundary + offset.
  * @param {number} offsetMs
@@ -60,35 +62,6 @@ const msUntilNextSettlement = (offsetMs = 2000) => {
   if (nextBoundaryMin >= 60) next.setHours(next.getHours() + 1);
   return Math.max(0, next.getTime() + offsetMs - now);
 };
-
-/**
- * Extract error message from various error types
- * @param {unknown} err
- * @returns {string}
- */
-const getErrorMessage = (err) => {
-  if (typeof err === 'string') return err;
-  if (err instanceof Error) return err.message;
-  if (err && typeof err === 'object') {
-    if ('message' in err) return String(err.message);
-    if ('error' in err) return String(err.error);
-    return JSON.stringify(err);
-  }
-  return 'Unknown error';
-};
-
-/**
- * Async error wrapper
- * @param {Function} fn
- * @returns {Function}
- */
-const asyncHandler = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch((err) => {
-    const message = getErrorMessage(err);
-    const status = err?.status || 500;
-    log('ERROR', `[${ts()}] ❌ kalshi ${req.method} ${req.path} failed: ${message}`);
-    res.status(status).json({ error: message });
-  });
 
 /**
  * Read and parse JSON file from data/kalshi directory
@@ -119,9 +92,7 @@ const writeJson = (filename, data) => {
   const current = prev.then(async () => {
     const filepath = path.join(DATA_DIR, filename);
     const dir = path.dirname(filepath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    fs.mkdirSync(dir, { recursive: true });
     const tmp = `${filepath}.${process.pid}.${++writeSeq}.tmp`;
     await fsp.writeFile(tmp, JSON.stringify(data, null, 2));
     await fsp.rename(tmp, filepath);
@@ -339,18 +310,48 @@ module.exports = (app, sharedDeps) => {
   }));
 
   app.put('/api/kalshi/config', asyncHandler(async (req, res) => {
+    const { value: validated, errors } = validateConfigUpdate(KALSHI_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
     const config = await readJson('config.json');
-    const updated = { ...config, ...req.body };
+    const updated = { ...config, ...validated };
+
+    // strategies and markets are nested objects — validate per-entry
+    if (req.body?.strategies) {
+      const { value: strats, errors: stratErrors } = validateStrategies(req.body.strategies);
+      if (stratErrors.length > 0) return res.status(400).json({ error: stratErrors.join('; ') });
+      updated.strategies = strats;
+    }
+    if (req.body?.markets) {
+      const { value: mkts, errors: mktErrors } = validateMarkets(req.body.markets);
+      if (mktErrors.length > 0) return res.status(400).json({ error: mktErrors.join('; ') });
+      updated.markets = mkts;
+    }
+
     await writeJson('config.json', updated);
     log('INFO', `[${ts()}] ⚙️ Kalshi config updated`);
     res.json(updated);
   }));
 
   app.patch('/api/kalshi/config', asyncHandler(async (req, res) => {
+    const { value: validated, errors } = validateConfigUpdate(KALSHI_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
     const config = await readJson('config.json');
-    const updated = { ...config, ...req.body };
+    const updated = { ...config, ...validated };
+
+    // strategies and markets are nested objects — validate per-entry
+    if (req.body?.strategies) {
+      const { value: strats, errors: stratErrors } = validateStrategies(req.body.strategies);
+      if (stratErrors.length > 0) return res.status(400).json({ error: stratErrors.join('; ') });
+      updated.strategies = strats;
+    }
+    if (req.body?.markets) {
+      const { value: mkts, errors: mktErrors } = validateMarkets(req.body.markets);
+      if (mktErrors.length > 0) return res.status(400).json({ error: mktErrors.join('; ') });
+      updated.markets = mkts;
+    }
+
     await writeJson('config.json', updated);
-    log('INFO', `[${ts()}] ⚙️ Kalshi config patched: ${Object.keys(req.body).join(', ')}`);
+    log('INFO', `[${ts()}] ⚙️ Kalshi config patched: ${Object.keys(validated).join(', ')}`);
     res.json(updated);
   }));
 
@@ -1165,9 +1166,12 @@ module.exports = (app, sharedDeps) => {
     const { name } = req.params;
     if (!name) return res.status(400).json({ error: 'Strategy name is required' });
 
+    const { value: validated, errors } = validateConfigUpdate(STRATEGY_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
+
     const config = await readJson('config.json');
     config.strategies = config.strategies || {};
-    config.strategies[name] = { ...config.strategies[name], ...req.body };
+    config.strategies[name] = { ...config.strategies[name], ...validated };
     await writeJson('config.json', config);
 
     simulationEngine.updateStrategy(name, config.strategies[name]);

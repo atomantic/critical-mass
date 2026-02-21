@@ -3,7 +3,7 @@
  * Monitors strategy performance and automatically adjusts parameters
  */
 
-const ts = () => new Date().toISOString().split('T')[1].slice(0, 12)
+const { ts } = require('../../time-utils')
 
 /**
  * Tuning thresholds

@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const stateTracker = require('./state-tracker');
+const { DATA_DIR } = require('./paths');
 const {
   normalizeConfig,
   getNextExecutionTime,
@@ -16,8 +17,6 @@ const {
   formatInterval,
   getTimeUntilNext,
 } = require('./interval-utils');
-
-const DATA_DIR = path.join(__dirname, '..', 'data');
 
 // ============ JSON / TSV Helpers ============
 
@@ -47,9 +46,7 @@ const readJSON = (filepath, defaultValue = {}) => {
 const { atomicWriteSync } = stateTracker;
 const writeJSON = (filepath, data) => {
   const dir = path.dirname(filepath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  fs.mkdirSync(dir, { recursive: true });
   atomicWriteSync(filepath, JSON.stringify(data, null, 2));
 };
 
@@ -231,9 +228,7 @@ const getRegimeRunningFlagPath = (exchange) =>
 const saveRegimeRunningFlag = (exchange, isRunning) => {
   const flagPath = getRegimeRunningFlagPath(exchange);
   const dir = path.dirname(flagPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  fs.mkdirSync(dir, { recursive: true });
   if (isRunning) {
     fs.writeFileSync(
       flagPath,

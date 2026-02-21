@@ -8,11 +8,11 @@
 const { appendFile, mkdir } = require('fs/promises')
 const { existsSync } = require('fs')
 const path = require('path')
-
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
+const { KALSHI_DATA_DIR } = require('../../paths')
 
 /** Resolve snapshot directory relative to project root */
-const SNAPSHOT_DIR = path.join(__dirname, '..', '..', '..', 'data', 'kalshi', 'snapshots')
+const SNAPSHOT_DIR = path.join(KALSHI_DATA_DIR, 'snapshots')
 
 /** Track last write to avoid hammering disk on rapid eval cycles */
 let lastWriteTs = 0

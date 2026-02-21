@@ -4,7 +4,7 @@
  * Fire-and-forget — webhook failures never block trading logic.
  */
 
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
 
 /** @type {string} */
 let webhookUrl = ''

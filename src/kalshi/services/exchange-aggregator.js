@@ -1,5 +1,4 @@
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
+const { ts } = require('../../time-utils')
 
 /** Max age for data to be included in composite (ms) */
 const STALENESS_LIMIT = 10000

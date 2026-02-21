@@ -7,11 +7,10 @@
 const { getOrderbook } = require('../adapters/api')
 const { readFile } = require('fs/promises')
 const path = require('path')
+const { ts } = require('../../time-utils')
+const { KALSHI_DATA_DIR } = require('../../paths')
 
-/** Format timestamp for logs */
-const ts = () => new Date().toISOString().slice(11, 23)
-
-const DATA_DIR = path.join(__dirname, '..', '..', '..', 'data', 'kalshi')
+const DATA_DIR = KALSHI_DATA_DIR
 const MAX_LEVELS = 50
 const THROTTLE_MS = 250
 
