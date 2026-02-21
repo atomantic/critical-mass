@@ -1,7 +1,7 @@
 // @ts-check
 /**
  * Unified async route error wrapper for Express.
- * Catches rejected promises and forwards to Express error handling.
+ * Catches rejected promises, logs the error, and sends a JSON error response.
  *
  * @param {string} prefix - Log prefix for error messages (e.g. 'kalshi', 'hedge')
  * @param {() => string} tsFn - Timestamp function for log formatting
@@ -20,7 +20,7 @@ const createAsyncHandler = (prefix, tsFn) => {
         : err instanceof Error ? err.message
         : err?.message ? String(err.message)
         : err?.error ? String(err.error)
-        : typeof err === 'object' ? JSON.stringify(err)
+        : typeof err === 'object' ? (() => { try { return JSON.stringify(err); } catch { return 'Unknown error (unserializable)'; } })()
         : 'Unknown error';
       const status = err?.status || 500;
       log('ERROR', `[${tsFn()}] ❌ ${prefix} ${req.method} ${req.path} failed: ${message}`);

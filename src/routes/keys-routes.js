@@ -23,12 +23,23 @@ module.exports = (app, deps) => {
     res.json({ exchange, configured: exists });
   });
 
-  // Get keys configuration status for an exchange
+  // Get keys configuration status for an exchange (returns masked metadata)
   app.get('/api/:exchange/keys', (req, res) => {
     const { exchange } = req.params;
     const keysPath = getExchangeKeysPath(exchange);
     const configured = fs.existsSync(keysPath);
-    res.json({ configured });
+    if (!configured) return res.json({ configured, keys: null });
+
+    let keysData;
+    try { keysData = JSON.parse(fs.readFileSync(keysPath, 'utf8')); } catch { return res.json({ configured: false, keys: null }); }
+
+    // Return masked metadata so the UI can show which fields are set
+    const masked = {};
+    for (const [k, v] of Object.entries(keysData)) {
+      if (k === 'createdAt') { masked[k] = v; continue; }
+      masked[k] = typeof v === 'string' && v.length > 6 ? v.slice(0, 3) + '***' + v.slice(-3) : '***';
+    }
+    res.json({ configured, keys: masked });
   });
 
   // Save keys for an exchange (shared handler for POST and PUT)

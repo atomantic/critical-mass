@@ -113,12 +113,21 @@ const deleteBackup = (filename) => {
   }
 
   // Symlink protection: only operate on regular files
-  const stat = fs.lstatSync(filePath);
+  let stat;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch (err) {
+    return { success: false, error: err?.code === 'ENOENT' ? 'Backup not found' : 'Failed to access backup file' };
+  }
   if (!stat.isFile()) {
     return { success: false, error: 'Invalid backup file' };
   }
 
-  fs.unlinkSync(filePath);
+  try {
+    fs.unlinkSync(filePath);
+  } catch (err) {
+    return { success: false, error: err?.code === 'ENOENT' ? 'Backup not found' : 'Failed to delete backup file' };
+  }
   return { success: true };
 };
 
@@ -164,7 +173,12 @@ const restoreBackup = (filename) => {
   }
 
   // Symlink protection: only operate on regular files
-  const stat = fs.lstatSync(zipPath);
+  let stat;
+  try {
+    stat = fs.lstatSync(zipPath);
+  } catch (err) {
+    return { success: false, error: err?.code === 'ENOENT' ? 'Backup not found' : 'Failed to access backup file' };
+  }
   if (!stat.isFile()) {
     return { success: false, error: 'Invalid backup file' };
   }

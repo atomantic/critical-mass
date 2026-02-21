@@ -25,21 +25,27 @@ module.exports = (app, deps) => {
 
   app.put('/api/presets/aggressiveness', (req, res) => {
     const updates = req.body;
+    if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+      return res.status(400).json({ success: false, errors: ['Request body must be an object'] });
+    }
+
     const validLevels = Object.keys(DEFAULT_AGGRESSIVENESS_PRESETS);
     const errors = [];
+    const sanitized = {};
 
     for (const [level, params] of Object.entries(updates)) {
       if (!validLevels.includes(level)) { errors.push(`Unknown level: ${level}`); continue; }
       if (typeof params !== 'object' || params === null) { errors.push(`${level}: params must be an object`); continue; }
-      const { errors: paramErrors } = validateConfigUpdate(AGGRESSIVENESS_SCHEMA, params);
+      const { value: validParams, errors: paramErrors } = validateConfigUpdate(AGGRESSIVENESS_SCHEMA, params);
       for (const err of paramErrors) errors.push(`${level}.${err}`);
+      sanitized[level] = validParams;
     }
 
     if (errors.length > 0) {
       return res.status(400).json({ success: false, errors });
     }
 
-    updateAggressivenessPresets(updates);
+    updateAggressivenessPresets(sanitized);
     log('INFO', '🔧 Aggressiveness presets updated');
     const presets = getAggressivenessPresets();
     res.json({ success: true, presets });

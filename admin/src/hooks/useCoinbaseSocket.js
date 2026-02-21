@@ -1,5 +1,7 @@
 import { useSocketPrice } from './useSocketPrice'
 
+const DEFAULT_TICKERS = ['BTC-USD']
+
 /**
  * Custom hook for Coinbase Socket.IO connection.
  * Thin wrapper around useSocketPrice with Coinbase-specific events.
@@ -15,7 +17,7 @@ import { useSocketPrice } from './useSocketPrice'
  * }}
  */
 export const useCoinbaseSocket = (options = {}) => {
-  const { initialTickers = ['BTC-USD'], autoConnect = true } = options
+  const { initialTickers = DEFAULT_TICKERS, autoConnect = true } = options
   return useSocketPrice({
     subscribeEvent: 'coinbase:subscribe',
     unsubscribeEvent: 'coinbase:unsubscribe',

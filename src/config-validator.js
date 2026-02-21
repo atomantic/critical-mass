@@ -14,6 +14,10 @@ const validateConfigUpdate = (schema, update) => {
   const result = {};
   const errors = [];
 
+  if (typeof update !== 'object' || update === null || Array.isArray(update)) {
+    return { value: result, errors: ['update must be an object'] };
+  }
+
   for (const [key, value] of Object.entries(update)) {
     const rule = schema[key];
     if (!rule) continue; // silently drop unknown fields
@@ -24,6 +28,10 @@ const validateConfigUpdate = (schema, update) => {
     }
 
     if (rule.type === 'number') {
+      if (!Number.isFinite(value)) {
+        errors.push(`${key}: must be a finite number`);
+        continue;
+      }
       if (rule.min !== undefined && value < rule.min) {
         errors.push(`${key}: must be >= ${rule.min}`);
         continue;

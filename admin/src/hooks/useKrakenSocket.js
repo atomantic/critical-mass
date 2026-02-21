@@ -1,5 +1,7 @@
 import { useSocketPrice } from './useSocketPrice'
 
+const DEFAULT_TICKERS = ['BTC-USD']
+
 /**
  * Custom hook for Kraken Socket.IO connection.
  * Thin wrapper around useSocketPrice with Kraken-specific events.
@@ -15,7 +17,7 @@ import { useSocketPrice } from './useSocketPrice'
  * }}
  */
 export const useKrakenSocket = (options = {}) => {
-  const { initialTickers = ['BTC-USD'], autoConnect = true } = options
+  const { initialTickers = DEFAULT_TICKERS, autoConnect = true } = options
   return useSocketPrice({
     subscribeEvent: 'kraken:subscribe',
     unsubscribeEvent: 'kraken:unsubscribe',

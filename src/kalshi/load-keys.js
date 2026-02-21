@@ -18,8 +18,12 @@ const loadKalshiKeys = (keysPath) => {
   if (!fs.existsSync(filepath)) {
     return { keys: null, error: 'Kalshi API keys not configured (data/kalshi/keys.json)' };
   }
-  const keys = JSON.parse(fs.readFileSync(filepath, 'utf8'));
-  return { keys, error: null };
+  try {
+    const keys = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+    return { keys, error: null };
+  } catch {
+    return { keys: null, error: 'Failed to load Kalshi API keys: invalid or unreadable keys.json' };
+  }
 };
 
 module.exports = { loadKalshiKeys };
