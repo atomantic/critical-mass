@@ -95,7 +95,7 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
   const unrealizedPnLPercent = totalCostBasis > 0 ? ((currentValue / totalCostBasis) - 1) * 100 : 0
   const realizedPnL = position.realizedPnL || 0
   const assetReserves = position.realizedAssetPnL || 0
-  const btcReservesValue = assetReserves * currentPrice
+  const assetReservesUsd = assetReserves * currentPrice
 
   return (
     <div className="space-y-6">
@@ -154,7 +154,7 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Current Value:</span>
-              <span>{formatCurrency(btcReservesValue)}</span>
+              <span>{formatCurrency(assetReservesUsd)}</span>
             </div>
             <div className="flex justify-between text-sm text-gray-500 pt-2">
               <span>Accumulated from holdback on profitable cycles</span>
@@ -189,13 +189,13 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Combined Value:</span>
-              <span className="text-xl font-semibold">{formatCurrency(currentValue + btcReservesValue)}</span>
+              <span className="text-xl font-semibold">{formatCurrency(currentValue + assetReservesUsd)}</span>
             </div>
             <div className="flex justify-between border-t border-gray-700 pt-2 mt-2">
               <span className="text-gray-400">Total Return:</span>
-              <span className={`${(realizedPnL + unrealizedPnL + btcReservesValue) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {(realizedPnL + unrealizedPnL + btcReservesValue) >= 0 ? '+' : ''}
-                {formatCurrency(realizedPnL + unrealizedPnL + btcReservesValue)}
+              <span className={`${(realizedPnL + unrealizedPnL + assetReservesUsd) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {(realizedPnL + unrealizedPnL + assetReservesUsd) >= 0 ? '+' : ''}
+                {formatCurrency(realizedPnL + unrealizedPnL + assetReservesUsd)}
               </span>
             </div>
           </div>

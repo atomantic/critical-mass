@@ -50,10 +50,10 @@ const calculateApyMetrics = (positionState, config, marketState) => {
   const deployedCapital = deployedInPosition;
   const originalCapital = depositedCapital;
 
-  // BTC value in USD terms
-  const totalBtcReturn = positionState.realizedAssetPnL || 0;
-  const btcValueUsd = totalBtcReturn * currentPrice;
-  const totalLiquidValue = totalUsdcReturn + btcValueUsd;
+  // Asset (e.g. BTC, ETH) value in USD terms
+  const totalAssetReturn = positionState.realizedAssetPnL || 0;
+  const assetValueUsd = totalAssetReturn * currentPrice;
+  const totalLiquidValue = totalUsdcReturn + assetValueUsd;
 
   // Zero return template
   const zeroMetrics = {
@@ -63,14 +63,14 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     elapsedMs: startTime ? now - startTime : 0,
     elapsedDays: 0,
     totalUsdcReturn: 0, totalUsdcReturnPercent: 0, estimatedDailyUsdc: 0,
-    totalBtcReturn: 0, btcValueUsd: 0, estimatedDailyAsset: 0,
+    totalAssetReturn: 0, assetValueUsd: 0, estimatedDailyAsset: 0,
     totalLiquidValue: 0, totalLiquidValuePercent: 0,
     dailyReturnPercent: 0, estimatedAnnualReturn: 0, estimatedApy: 0,
     cyclesPerDay: 0, avgPnlPerCycle: 0,
     totalReturn: 0, totalReturnPercent: 0,
   };
 
-  if (!startTime || (totalUsdcReturn === 0 && totalBtcReturn === 0)) {
+  if (!startTime || (totalUsdcReturn === 0 && totalAssetReturn === 0)) {
     return zeroMetrics;
   }
 
@@ -105,7 +105,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     : 0;
 
   const estimatedDailyUsdc = hasEnoughData && elapsedDays > 0 ? totalUsdcReturn / elapsedDays : 0;
-  const estimatedDailyAsset = hasEnoughData && elapsedDays > 0 ? totalBtcReturn / elapsedDays : 0;
+  const estimatedDailyAsset = hasEnoughData && elapsedDays > 0 ? totalAssetReturn / elapsedDays : 0;
   const estimatedDailyLiquid = hasEnoughData && elapsedDays > 0 ? totalLiquidValue / elapsedDays : 0;
 
   return {
@@ -123,8 +123,8 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     totalUsdcReturn: roundUSDC(totalUsdcReturn),
     totalUsdcReturnPercent: roundUSDC(totalUsdcReturnPercent * 100) / 100,
     estimatedDailyUsdc: roundUSDC(estimatedDailyUsdc),
-    totalBtcReturn: roundAsset(totalBtcReturn),
-    btcValueUsd: roundUSDC(btcValueUsd),
+    totalAssetReturn: roundAsset(totalAssetReturn),
+    assetValueUsd: roundUSDC(assetValueUsd),
     estimatedDailyAsset: roundAsset(estimatedDailyAsset),
     totalLiquidValue: roundUSDC(totalLiquidValue),
     totalLiquidValuePercent: roundUSDC(totalLiquidValuePercent * 100) / 100,

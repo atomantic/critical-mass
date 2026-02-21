@@ -64,6 +64,7 @@ export default function UpDownDashboard() {
       gain.gain.value = 0.1
       osc.start()
       osc.stop(ctx.currentTime + 0.2)
+      osc.onended = () => ctx.close()
     }
   }, [signal?.type, audioEnabled])
 
