@@ -44,7 +44,7 @@ export const getMoonTexture = () => {
     ctx.fillRect(m.x - m.r, m.y - m.r, m.r * 2, m.r * 2)
   }
 
-  // Craters — darker fill with lighter rim highlight
+  // Craters — random count gives each moon a unique surface
   const craterCount = 20 + Math.floor(Math.random() * 10)
   for (let i = 0; i < craterCount; i++) {
     const cx = Math.random() * size

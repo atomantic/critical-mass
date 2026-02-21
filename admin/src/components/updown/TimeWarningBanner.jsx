@@ -19,9 +19,9 @@ function formatCountdown(ms) {
 }
 
 /**
- * Parse expiry to ms timestamp. Accepts number (ms) or ISO string.
- * @param {*} expiry
- * @returns {number}
+ * Parse expiry to ms timestamp.
+ * @param {number | string} expiry - Unix ms timestamp or ISO 8601 date string
+ * @returns {number} Epoch ms, or NaN if invalid/missing
  */
 const parseExpiry = (expiry) => {
   if (!expiry) return NaN

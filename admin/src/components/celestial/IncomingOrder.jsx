@@ -9,6 +9,7 @@ import SatelliteGeometry from './SatelliteGeometry'
 const IncomingOrder = memo(({ order, index, total }) => {
   const groupRef = useRef()
   const meshRef = useRef()
+  const materialsRef = useRef(null)
 
   const radius = ORBITAL_RADII.satellite + 1 // Slightly outside satellite orbit
   const speed = ORBITAL_SPEEDS.satellite * 0.7
@@ -28,16 +29,19 @@ const IncomingOrder = memo(({ order, index, total }) => {
 
     // Pulsing opacity + rotation on composite group
     if (meshRef.current) {
+      // Cache material refs on first frame to avoid per-frame traversal
+      if (!materialsRef.current) {
+        materialsRef.current = []
+        meshRef.current.traverse((child) => {
+          if (!child.material) return
+          const mats = Array.isArray(child.material) ? child.material : [child.material]
+          materialsRef.current.push(...mats.filter(Boolean))
+        })
+      }
       const opacity = 0.2 + Math.sin(time * 3 + index) * 0.1
-      meshRef.current.traverse((child) => {
-        if (!child.material) return;
-        const materials = Array.isArray(child.material) ? child.material : [child.material];
-        materials.forEach((mat) => {
-          if (mat) {
-            mat.opacity = opacity;
-            mat.transparent = opacity < 1;
-          }
-        });
+      materialsRef.current.forEach((mat) => {
+        mat.opacity = opacity
+        mat.transparent = opacity < 1
       })
       meshRef.current.rotation.y += 0.01
       meshRef.current.rotation.x += 0.005

@@ -15,12 +15,14 @@ const formatTimeLabel = (closeTime) => {
  * @param {string} closeTime - ISO timestamp
  * @returns {'settled' | 'active' | 'upcoming'}
  */
+const ACTIVE_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
+
 const getMarketStatus = (closeTime) => {
   const now = Date.now()
   const close = new Date(closeTime).getTime()
   const diff = close - now
   if (diff <= 0) return 'settled'
-  if (diff <= 15 * 60 * 1000) return 'active'
+  if (diff <= ACTIVE_WINDOW_MS) return 'active'
   return 'upcoming'
 }
 

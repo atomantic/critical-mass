@@ -58,8 +58,9 @@ const stringifyPayload = (payload) => {
 let lastNonce = 0;
 
 const getRestAuthHeaders = (apiKey, apiSecret, endpoint, requestPayload = {}) => {
+  // Monotonic nonce: always advances even under concurrent calls
   const now = Date.now();
-  lastNonce = now > lastNonce ? now : lastNonce + 1;
+  lastNonce = Math.max(now, lastNonce + 1);
   const nonce = lastNonce;
   const payload = {
     request: endpoint,
