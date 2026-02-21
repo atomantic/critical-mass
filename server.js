@@ -36,6 +36,7 @@ const {
 } = require('./src/shared-utils');
 const { createIPCClient } = require('./src/ipc/ipc-client');
 const { createProxy } = require('./src/ipc/http-proxy');
+const { createUpDownService } = require('./src/updown/updown-service');
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -146,6 +147,9 @@ const COINBASE_IPC_PORT = parseInt(process.env.COINBASE_IPC_PORT) || 5570;
 const GEMINI_IPC_PORT = parseInt(process.env.GEMINI_IPC_PORT) || 5571;
 const CRYPTOCOM_IPC_PORT = parseInt(process.env.CRYPTOCOM_IPC_PORT) || 5574;
 
+/** @type {Array<(name: string, msg: Object) => void>} */
+const ipcEventListeners = [];
+
 const createExchangeIPC = (port, name) => {
   const client = createIPCClient(`ws://127.0.0.1:${port}`, name, {
     onEvent: (msg) => {
@@ -154,6 +158,7 @@ const createExchangeIPC = (port, name) => {
       } else {
         io.emit(msg.channel, msg.payload);
       }
+      for (const listener of ipcEventListeners) listener(name, msg);
     },
     onConnect: () => log('INFO', `🔗 Gateway connected to ${name} engine IPC`),
     onDisconnect: () => log('INFO', `🔗 Gateway disconnected from ${name} engine IPC`),
@@ -168,12 +173,33 @@ const cryptocomIPC = createExchangeIPC(CRYPTOCOM_IPC_PORT, 'cryptocom');
 
 const exchangeIPCMap = { coinbase: coinbaseIPC, gemini: geminiIPC, cryptocom: cryptocomIPC };
 
+// ============ UpDown Service ============
+
+const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR });
+
+// Forward coinbase price data to updown service for candle aggregation
+ipcEventListeners.push((name, msg) => {
+  if (name === 'coinbase' && msg.channel === 'regime:status') {
+    const market = msg.payload?.status?.market || msg.payload?.market;
+    if (market?.lastPrice) {
+      updownService.handlePriceTick(
+        parseFloat(market.lastPrice),
+        Date.now(),
+        parseFloat(market.volume24h) || 0
+      );
+    }
+  }
+});
+
+updownService.start();
+
 // ============ Route Modules ============
 
 const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
 
 require('./src/routes/ai-routes')(app, sharedDeps);
 require('./src/routes/settings-routes')(app, sharedDeps);
+require('./src/routes/updown-routes')(app, { ...sharedDeps, updownService });
 require('./src/routes/exchange-routes')(app, sharedDeps);
 require('./src/routes/regime-routes')(app, sharedDeps);
 require('./src/routes/keys-routes')(app, sharedDeps);
@@ -297,6 +323,8 @@ io.on('connection', (socket) => {
   socket.on('composite:subscribe', () => socket.join('composite'));
   socket.on('kraken:subscribe', () => socket.join('kraken'));
   socket.on('kraken:unsubscribe', () => socket.leave('kraken'));
+  socket.on('updown:subscribe', () => socket.join('updown'));
+  socket.on('updown:unsubscribe', () => socket.leave('updown'));
 
   // PM2 log streaming
   socket.on('logs:subscribe', ({ processName, lines }) => {
@@ -472,6 +500,8 @@ const gracefulShutdown = async (signal) => {
   coinbaseIPC.disconnect();
   geminiIPC.disconnect();
   cryptocomIPC.disconnect();
+
+  updownService.stop();
 
   // Kill all active log streams
   for (const [socketId, entry] of activeLogStreams) {
