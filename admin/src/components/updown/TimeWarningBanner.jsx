@@ -21,20 +21,21 @@ function formatCountdown(ms) {
 /**
  * Parse expiry to ms timestamp. Accepts number (ms) or ISO string.
  * @param {*} expiry
- * @returns {number | null}
+ * @returns {number}
  */
 const parseExpiry = (expiry) => {
-  if (!expiry) return null
+  if (!expiry) return NaN
   if (typeof expiry === 'number') return expiry
   const ms = new Date(expiry).getTime()
-  return Number.isFinite(ms) ? ms : null
+  return Number.isFinite(ms) ? ms : NaN
 }
 
 export default function TimeWarningBanner({ timeRemaining, expiry }) {
   if (!timeRemaining && !expiry) return null
 
   const expiryMs = parseExpiry(expiry)
-  const msLeft = timeRemaining ?? (expiryMs ? expiryMs - Date.now() : 0)
+  const msLeft = timeRemaining ?? (Number.isFinite(expiryMs) ? expiryMs - Date.now() : NaN)
+  if (!Number.isFinite(msLeft)) return null
   if (msLeft <= 0) {
     return (
       <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 flex items-center gap-3">

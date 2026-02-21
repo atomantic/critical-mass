@@ -5,8 +5,8 @@ import { getBodySize } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
 
 const ARM_COUNT = 3
-const POINTS_PER_ARM = 600
-const CORE_POINTS = 400
+const POINTS_PER_ARM = 400
+const CORE_POINTS = 200
 const TOTAL = ARM_COUNT * POINTS_PER_ARM + CORE_POINTS
 
 /**

@@ -152,7 +152,7 @@ export default function IndicatorCharts({ indicators }) {
           <div>
             <div className="text-xs text-gray-500 mb-1">MACD ({selectedTf})</div>
             <ResponsiveContainer width="100%" height={120}>
-              <ComposedMacdChart data={macdHistory} />
+              <MacdLineChart data={macdHistory} />
             </ResponsiveContainer>
           </div>
         )}
@@ -169,7 +169,7 @@ export default function IndicatorCharts({ indicators }) {
 }
 
 // Separate MACD chart component to keep it clean
-function ComposedMacdChart({ data }) {
+function MacdLineChart({ data }) {
   return (
     <LineChart data={data} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
       <CartesianGrid strokeDasharray="3 3" stroke="#374151" />

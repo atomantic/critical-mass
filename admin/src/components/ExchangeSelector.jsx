@@ -41,15 +41,23 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
     setIsOpen(false)
   }
 
-  // Close dropdown when clicking outside
+  // Close dropdown when clicking outside or pressing Escape
   useEffect(() => {
+    if (!isOpen) return
     const handleClickOutside = (e) => {
-      if (isOpen && !e.target.closest('.exchange-selector')) {
+      if (!e.target.closest('.exchange-selector')) {
         setIsOpen(false)
       }
     }
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setIsOpen(false)
+    }
     document.addEventListener('click', handleClickOutside)
-    return () => document.removeEventListener('click', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('click', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
   }, [isOpen])
 
   const currentExchangeConfig = exchanges?.find(e => e.name === currentExchange)
