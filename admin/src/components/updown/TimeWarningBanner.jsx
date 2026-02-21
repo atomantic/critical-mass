@@ -1,8 +1,12 @@
 import { Clock } from 'lucide-react'
 
+// Warning zone thresholds (must match signal-engine.js)
+const WARNING_ZONE_H = 8
+const NO_TRADE_ZONE_H = 6
+
 function getTimeColor(hoursLeft) {
-  if (hoursLeft > 8) return { bg: 'bg-green-500', border: 'border-green-500/30', text: 'text-green-400', label: 'Safe' }
-  if (hoursLeft >= 6) return { bg: 'bg-yellow-500', border: 'border-yellow-500/30', text: 'text-yellow-400', label: 'Caution' }
+  if (hoursLeft > WARNING_ZONE_H) return { bg: 'bg-green-500', border: 'border-green-500/30', text: 'text-green-400', label: 'Safe' }
+  if (hoursLeft >= NO_TRADE_ZONE_H) return { bg: 'bg-yellow-500', border: 'border-yellow-500/30', text: 'text-yellow-400', label: 'Caution' }
   return { bg: 'bg-red-500', border: 'border-red-500/30', text: 'text-red-400', label: 'Critical', pulse: true }
 }
 
@@ -14,10 +18,23 @@ function formatCountdown(ms) {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
+/**
+ * Parse expiry to ms timestamp. Accepts number (ms) or ISO string.
+ * @param {*} expiry
+ * @returns {number | null}
+ */
+const parseExpiry = (expiry) => {
+  if (!expiry) return null
+  if (typeof expiry === 'number') return expiry
+  const ms = new Date(expiry).getTime()
+  return Number.isFinite(ms) ? ms : null
+}
+
 export default function TimeWarningBanner({ timeRemaining, expiry }) {
   if (!timeRemaining && !expiry) return null
 
-  const msLeft = timeRemaining ?? (expiry ? new Date(expiry).getTime() - Date.now() : 0)
+  const expiryMs = parseExpiry(expiry)
+  const msLeft = timeRemaining ?? (expiryMs ? expiryMs - Date.now() : 0)
   if (msLeft <= 0) {
     return (
       <div className="rounded-lg border border-gray-700 bg-gray-800/50 p-3 flex items-center gap-3">
@@ -28,8 +45,9 @@ export default function TimeWarningBanner({ timeRemaining, expiry }) {
   }
 
   const hoursLeft = msLeft / 3600000
-  const totalMs = expiry ? new Date(expiry).getTime() - (Date.now() - msLeft) : msLeft * 2
-  const progressPct = Math.max(0, Math.min(100, ((totalMs - msLeft) / totalMs) * 100))
+  // Progress bar: show time remaining relative to the 8h warning zone reference
+  const MAX_DISPLAY_MS = WARNING_ZONE_H * 3600000
+  const progressPct = Math.max(0, Math.min(100, (msLeft / MAX_DISPLAY_MS) * 100))
   const colors = getTimeColor(hoursLeft)
 
   return (

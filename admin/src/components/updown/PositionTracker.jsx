@@ -18,8 +18,9 @@ export default function PositionTracker({ initialPosition, tick }) {
     if (!initialPosition) return
     if (initialPosition.entryPrice) {
       setEntryPrice(initialPosition.entryPrice.toString())
-      setAmount(initialPosition.amount?.toString() || '')
-      setDirection(initialPosition.direction || 'Up')
+      setAmount(initialPosition.contracts?.toString() || '')
+      const dir = initialPosition.direction || 'up'
+      setDirection(dir.charAt(0).toUpperCase() + dir.slice(1))
       setHasPosition(true)
     }
   }, [initialPosition])
@@ -31,8 +32,8 @@ export default function PositionTracker({ initialPosition, tick }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         entryPrice: parseFloat(entryPrice),
-        amount: parseFloat(amount),
-        direction,
+        contracts: parseFloat(amount),
+        direction: direction.toLowerCase(),
       }),
     })
     if (res.ok) setHasPosition(true)
@@ -55,18 +56,19 @@ export default function PositionTracker({ initialPosition, tick }) {
   const currentPrice = tick?.price
   const entry = parseFloat(entryPrice)
   const amt = parseFloat(amount)
-  const pnl = (currentPrice && entry && amt)
+  const validCalc = currentPrice > 0 && Number.isFinite(entry) && entry > 0 && Number.isFinite(amt) && amt > 0
+  const pnl = validCalc
     ? direction === 'Up'
       ? (currentPrice - entry) * amt
       : (entry - currentPrice) * amt
     : null
-  const pnlPct = (currentPrice && entry)
+  const pnlPct = validCalc
     ? direction === 'Up'
       ? ((currentPrice - entry) / entry) * 100
       : ((entry - currentPrice) / entry) * 100
     : null
 
-  const contractPnl = tick?.contractPnl
+  const contractPnl = tick?.pnl?.pnl ?? null
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">

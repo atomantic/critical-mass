@@ -1,21 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Signal, TrendingUp, TrendingDown, Minus } from 'lucide-react'
-
-const signalColors = {
-  'STRONG BUY': 'bg-green-500/20 border-green-500/40 text-green-400',
-  'BUY': 'bg-green-500/10 border-green-500/20 text-green-400',
-  'NEUTRAL': 'bg-gray-500/10 border-gray-500/20 text-gray-400',
-  'SELL': 'bg-red-500/10 border-red-500/20 text-red-400',
-  'STRONG SELL': 'bg-red-500/20 border-red-500/40 text-red-400',
-}
-
-const signalIcons = {
-  'STRONG BUY': TrendingUp,
-  'BUY': TrendingUp,
-  'NEUTRAL': Minus,
-  'SELL': TrendingDown,
-  'STRONG SELL': TrendingDown,
-}
+import { Signal } from 'lucide-react'
+import { signalBadgeColors, getSignalIcon } from '../../constants/signals'
 
 function ConfidenceBar({ value }) {
   const pct = Math.max(0, Math.min(100, (value ?? 0) * 100))
@@ -26,24 +11,6 @@ function ConfidenceBar({ value }) {
         <div className={`${color} h-2 rounded-full transition-all`} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-xs text-gray-400 w-10 text-right">{pct.toFixed(0)}%</span>
-    </div>
-  )
-}
-
-function BreakdownItem({ name, value, signal: sig }) {
-  const color = sig === 'BUY' || sig === 'STRONG BUY'
-    ? 'text-green-400'
-    : sig === 'SELL' || sig === 'STRONG SELL'
-      ? 'text-red-400'
-      : 'text-gray-400'
-
-  return (
-    <div className="flex items-center justify-between py-1 border-b border-gray-700/50 last:border-0">
-      <span className="text-xs text-gray-400">{name}</span>
-      <div className="flex items-center gap-2">
-        {value != null && <span className="text-xs font-mono">{typeof value === 'number' ? value.toFixed(2) : value}</span>}
-        <span className={`text-xs font-medium ${color}`}>{sig || '---'}</span>
-      </div>
     </div>
   )
 }
@@ -71,8 +38,8 @@ export default function SignalPanel({ signal }) {
   }, [])
 
   const type = signal?.type || 'NEUTRAL'
-  const colors = signalColors[type] || signalColors.NEUTRAL
-  const Icon = signalIcons[type] || Minus
+  const colors = signalBadgeColors[type] || signalBadgeColors.NEUTRAL
+  const Icon = getSignalIcon(type)
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -86,7 +53,7 @@ export default function SignalPanel({ signal }) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Icon size={18} />
-            <span className="text-lg font-bold">{type}</span>
+            <span className="text-lg font-bold">{type.replace(/_/g, ' ')}</span>
           </div>
           {signal?.confidence != null && (
             <span className="text-sm font-mono">{(signal.confidence * 100).toFixed(0)}%</span>
@@ -99,18 +66,10 @@ export default function SignalPanel({ signal }) {
         )}
       </div>
 
-      {/* Breakdown */}
-      {signal?.breakdown && (
-        <div className="mb-4">
-          <div className="text-xs text-gray-500 mb-1 font-medium">Indicator Breakdown</div>
-          {Object.entries(signal.breakdown).map(([name, item]) => (
-            <BreakdownItem
-              key={name}
-              name={name}
-              value={item?.value}
-              signal={item?.signal}
-            />
-          ))}
+      {/* Score */}
+      {signal?.score != null && (
+        <div className="mb-4 text-xs text-gray-400">
+          Composite score: <span className="font-mono text-white">{signal.score.toFixed(1)}</span>
         </div>
       )}
 
@@ -120,13 +79,14 @@ export default function SignalPanel({ signal }) {
           <div className="text-xs text-gray-500 mb-1 font-medium">History</div>
           <div className="max-h-48 overflow-y-auto space-y-1">
             {history.map((h, i) => {
-              const hColors = signalColors[h.type] || signalColors.NEUTRAL
+              const hType = h.type || 'NEUTRAL'
+              const hColors = signalBadgeColors[hType] || signalBadgeColors.NEUTRAL
               return (
                 <div key={h.timestamp || i} className="flex items-center justify-between py-1 text-xs">
                   <span className="text-gray-500">
                     {h.timestamp ? new Date(h.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '---'}
                   </span>
-                  <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{h.type}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{hType.replace(/_/g, ' ')}</span>
                   {h.confidence != null && (
                     <span className="text-gray-400 font-mono">{(h.confidence * 100).toFixed(0)}%</span>
                   )}

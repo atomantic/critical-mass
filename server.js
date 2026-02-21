@@ -182,8 +182,10 @@ ipcEventListeners.push((name, msg) => {
   if (name === 'coinbase' && msg.channel === 'regime:status') {
     const market = msg.payload?.status?.market || msg.payload?.market;
     if (market?.lastPrice) {
+      const price = parseFloat(market.lastPrice);
+      if (!Number.isFinite(price) || price <= 0) return;
       updownService.handlePriceTick(
-        parseFloat(market.lastPrice),
+        price,
         Date.now(),
         parseFloat(market.volume24h) || 0
       );
@@ -252,8 +254,17 @@ app.get('/api/health', async (req, res) => {
 
   await Promise.all([...exchangeChecks, kalshiCheck]);
 
+  // UpDown service (in-process, no IPC needed)
+  const updownStatus = updownService.getStatus();
+  engines.updown = {
+    status: updownStatus.running ? 'ok' : 'stopped',
+    running: updownStatus.running,
+    lastPrice: updownStatus.lastPrice || null,
+    latestSignal: updownStatus.latestSignal?.type || null,
+  };
+
   // If any engine is unreachable and all are down, it's critical
-  const allDown = Object.values(engines).every(e => e.status === 'unreachable' || e.status === 'timeout');
+  const allDown = Object.values(engines).every(e => e.status === 'unreachable' || e.status === 'timeout' || e.status === 'stopped');
   if (allDown) overallStatus = 'critical';
 
   res.json({

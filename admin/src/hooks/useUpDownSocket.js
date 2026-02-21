@@ -15,6 +15,7 @@ export const useUpDownSocket = (options = {}) => {
   const [tick, setTick] = useState(null)
   const [indicators, setIndicators] = useState(null)
   const [signal, setSignal] = useState(null)
+  const [error, setError] = useState(null)
 
   const tickRef = useRef(null)
   const indicatorsRef = useRef(null)
@@ -32,10 +33,16 @@ export const useUpDownSocket = (options = {}) => {
 
     socket.on('connect', () => {
       setConnected(true)
+      setError(null)
       socket.emit('updown:subscribe')
     })
 
     socket.on('disconnect', () => {
+      setConnected(false)
+    })
+
+    socket.on('connect_error', (err) => {
+      setError(err?.message || 'Connection error')
       setConnected(false)
     })
 
@@ -73,7 +80,7 @@ export const useUpDownSocket = (options = {}) => {
     }
   }, [autoConnect])
 
-  return { connected, tick, indicators, signal }
+  return { connected, tick, indicators, signal, error }
 }
 
 export default useUpDownSocket

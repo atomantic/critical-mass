@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Play, Square, RefreshCw, Volume2, VolumeX, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { Play, Square, RefreshCw, Volume2, VolumeX } from 'lucide-react'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
+import { signalBadgeColors, getSignalIcon } from '../../constants/signals'
 import PriceChart from './PriceChart'
 import ContractSetup from './ContractSetup'
 import PositionTracker from './PositionTracker'
@@ -11,22 +12,6 @@ import TimeWarningBanner from './TimeWarningBanner'
 function formatCurrency(value) {
   if (value == null) return '---'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
-}
-
-const signalBadgeColors = {
-  'STRONG BUY': 'bg-green-500/20 border-green-500/40 text-green-400',
-  'BUY': 'bg-green-500/10 border-green-500/20 text-green-400',
-  'NEUTRAL': 'bg-gray-500/10 border-gray-500/20 text-gray-400',
-  'SELL': 'bg-red-500/10 border-red-500/20 text-red-400',
-  'STRONG SELL': 'bg-red-500/20 border-red-500/40 text-red-400',
-}
-
-const signalIcons = {
-  'STRONG BUY': TrendingUp,
-  'BUY': TrendingUp,
-  'NEUTRAL': Minus,
-  'SELL': TrendingDown,
-  'STRONG SELL': TrendingDown,
 }
 
 export default function UpDownDashboard() {
@@ -69,13 +54,13 @@ export default function UpDownDashboard() {
     if (signal.type === prevSignalRef.current) return
     prevSignalRef.current = signal.type
 
-    if (signal.type === 'STRONG BUY' || signal.type === 'STRONG SELL') {
+    if (signal.type === 'STRONG_BUY' || signal.type === 'STRONG_SELL') {
       const ctx = new (window.AudioContext || window.webkitAudioContext)()
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
       osc.connect(gain)
       gain.connect(ctx.destination)
-      osc.frequency.value = signal.type === 'STRONG BUY' ? 880 : 440
+      osc.frequency.value = signal.type === 'STRONG_BUY' ? 880 : 440
       gain.gain.value = 0.1
       osc.start()
       osc.stop(ctx.currentTime + 0.2)
@@ -102,13 +87,13 @@ export default function UpDownDashboard() {
   }
 
   const isRunning = status?.running || false
-  const signalType = signal?.type || status?.signal?.type || 'NEUTRAL'
-  const SignalIcon = signalIcons[signalType] || Minus
+  const signalType = signal?.type || status?.latestSignal?.type || 'NEUTRAL'
+  const SignalIcon = getSignalIcon(signalType)
   const badgeColors = signalBadgeColors[signalType] || signalBadgeColors.NEUTRAL
 
   // Merge tick data with status for current price
-  const currentPrice = tick?.price || status?.price
-  const timeRemaining = tick?.timeRemaining || status?.timeRemaining
+  const currentPrice = tick?.price || status?.lastPrice
+  const timeRemaining = tick?.timeRemaining
 
   if (loading) {
     return (
@@ -151,7 +136,7 @@ export default function UpDownDashboard() {
             {/* Signal Badge */}
             <span className={`px-2 py-1 rounded border text-xs font-medium flex items-center gap-1 ${badgeColors}`}>
               <SignalIcon size={12} />
-              {signalType}
+              {signalType.replace(/_/g, ' ')}
             </span>
 
             {/* Live indicator */}
@@ -229,7 +214,7 @@ export default function UpDownDashboard() {
           <IndicatorCharts indicators={indicators} />
         </div>
         <div>
-          <SignalPanel signal={signal || status?.signal} />
+          <SignalPanel signal={signal || status?.latestSignal} />
         </div>
       </div>
     </div>

@@ -55,6 +55,7 @@ export default function PriceChart({ tick, indicators, contract }) {
     const all = [...prices, ...uppers, ...lowers]
     if (contract?.target) all.push(contract.target)
     if (contract?.stop) all.push(contract.stop)
+    if (all.length === 0) return ['auto', 'auto']
     const min = Math.min(...all)
     const max = Math.max(...all)
     const padding = (max - min) * 0.05 || 50

@@ -15,6 +15,7 @@
 - [x] **Entry Metadata Fix** (2026-02-20) — Added sigma/marketProb/ttl to CFV, gamma-scalper, momentum-rider, swing-flipper, settlement-sniper signal metadata for journal calibration
 - [x] **Auto-Tuner Wiring** (2026-02-20) — Connected autoTuner.check() to window-summary callback in engine loop; persists adjusted params to config.json and hot-reloads strategies
 - [x] **Health Aggregation Endpoint** (2026-02-20) — `GET /api/health` fans out to all engine IPC clients, returns per-engine status/uptime/memory. Extended kalshi:status IPC handler with engineRunning state
+- [x] **UpDown Dashboard Code Review** (2026-02-20) — Fixed 21 issues: signal type field mismatch, expiry ISO/ms conversion, position field naming, null safety in 6 scoring functions, race condition in service start, file upload validation, AI response sanitization, health endpoint coverage, socket error handling, DRY signal constants
 
 ## Next Actions
 

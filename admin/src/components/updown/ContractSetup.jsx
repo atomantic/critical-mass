@@ -26,7 +26,13 @@ export default function ContractSetup({ initialContract }) {
 
   useEffect(() => {
     if (!initialContract) return
-    setExpiry(initialContract.expiry || '')
+    // Expiry is stored as ms timestamp; display as ISO string for the user
+    const expiryVal = initialContract.expiry
+    if (typeof expiryVal === 'number' && expiryVal > 0) {
+      setExpiry(new Date(expiryVal).toISOString())
+    } else {
+      setExpiry(expiryVal || '')
+    }
     setTarget(initialContract.target?.toString() || '')
     setStop(initialContract.stop?.toString() || '')
     setRange(initialContract.range?.toString() || '500')
@@ -164,7 +170,7 @@ export default function ContractSetup({ initialContract }) {
     if (d.expiryISO) setExpiry(d.expiryISO)
     setPreview(null)
 
-    // Auto-save after applying
+    // Auto-save after applying — route parses expiry (ISO string or ms) to ms timestamp
     setSaving(true)
     setSaved(false)
     const res = await fetch('/api/updown/contract', {
@@ -181,6 +187,8 @@ export default function ContractSetup({ initialContract }) {
     if (res.ok) {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+    } else {
+      setScreenshotError('Failed to save contract')
     }
     setSaving(false)
   }
