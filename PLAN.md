@@ -213,6 +213,14 @@ New files: `src/updown/divergence.js`, `src/updown/pivot-points.js`
 Modified: `src/updown/signal-engine.js`, `src/volatility-utils.js`, `src/updown/indicators.js`, `src/updown/scorecard.js`, `src/updown/updown-service.js`
 Frontend: `SignalBanner.jsx` (trend/vol/horizon pills), `TimeframeGrid.jsx` (volume/divergence/acceleration badges), `ScorecardPanel.jsx` (adaptive weights section)
 
+## Scorecard Analysis System (2026-02-22)
+
+- [x] **Weight history logging** — Throttled `type: "weights"` records appended to JSONL every 5 min from `getMetrics()`
+- [x] **Analysis API** — `GET /api/updown/scorecard-analysis` reads JSONL files for date range, returns accuracy trends, heatmap, indicator trends, weight evolution, failure patterns
+- [x] **ScorecardAnalysis page** — `/updown/analysis` with date range selector, summary cards, accuracy AreaChart, indicator×timeframe heatmap, per-indicator LineChart, weight evolution chart, failure pattern table
+- [x] **Route + nav** — Lazy-loaded route in App.jsx, BarChart3 link in UpDown Dashboard header
+- [x] **PriceChart interval fix** — Custom `setInterval` in useCandleData shadowed `window.setInterval`, breaking chart interval buttons
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22

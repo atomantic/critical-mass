@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Play, Square, RotateCcw, Volume2, VolumeX } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3 } from 'lucide-react'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
 import PriceChart from './PriceChart'
 import ContractSetup from './ContractSetup'
@@ -144,6 +145,14 @@ export default function UpDownDashboard() {
                 Signal-assisted binary options trading
               </div>
             </div>
+            <Link
+              to="/updown/analysis"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300 hover:text-white transition-colors"
+              title="Scorecard Analysis"
+            >
+              <BarChart3 size={14} />
+              <span className="hidden sm:inline">Analysis</span>
+            </Link>
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">

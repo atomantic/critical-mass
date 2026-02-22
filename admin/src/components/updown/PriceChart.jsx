@@ -36,8 +36,8 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
       showIntervalSelector
       defaultInterval="5m"
       defaultRange="6h"
-      overlays={['atomoku', 'bollinger', 'vwap']}
-      subCharts={['rsi', 'stochastic', 'macd']}
+      overlays={['bollinger', 'vwap']}
+      subCharts={[]}
       referenceLines={referenceLines}
       signalAnnotations={signalAnnotations}
     />

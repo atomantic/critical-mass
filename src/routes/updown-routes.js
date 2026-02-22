@@ -9,7 +9,9 @@
 const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
+const { readFileSync, readdirSync } = fs;
 const { log } = require('../logger');
+const { UPDOWN_DATA_DIR } = require('../paths');
 
 const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
@@ -238,6 +240,227 @@ module.exports = (app, deps) => {
 
     log('INFO', `📸 UpDown screenshot extracted: screenType=${extracted.screenType} direction=${extracted.direction} target=${extracted.target} stop=${extracted.stop} range=${extracted.range}`);
     res.json({ success: true, extracted });
+  });
+
+  // --- Scorecard Analysis (historical) ---
+  const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard');
+  const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum'];
+  const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d'];
+
+  const readJSONLFiles = (from, to) => {
+    if (!fs.existsSync(SCORECARD_DIR)) return [];
+    const files = readdirSync(SCORECARD_DIR).filter(f => f.endsWith('.jsonl')).sort();
+    const fromStr = from.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+    const records = [];
+    for (const file of files) {
+      const dateStr = file.replace('.jsonl', '');
+      if (dateStr < fromStr || dateStr > toStr) continue;
+      const content = readFileSync(path.join(SCORECARD_DIR, file), 'utf-8');
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        const rec = JSON.parse(line);
+        records.push(rec);
+      }
+    }
+    return records;
+  };
+
+  app.get('/api/updown/scorecard-analysis', (req, res) => {
+    const now = new Date();
+    const fromParam = req.query.from;
+    const toParam = req.query.to;
+    const to = toParam ? new Date(toParam + 'T23:59:59Z') : now;
+    const from = fromParam ? new Date(fromParam + 'T00:00:00Z') : new Date(now.getTime() - 7 * 86400000);
+
+    const records = readJSONLFiles(from, to);
+    const predictions = records.filter(r => r.type === 'prediction');
+    const outcomes = records.filter(r => r.type === 'outcome');
+    const weights = records.filter(r => r.type === 'weights');
+
+    // --- accuracyOverTime: hourly accuracy buckets ---
+    const hourlyBuckets = {};
+    for (const o of outcomes) {
+      if (o.compositeCorrect == null) continue;
+      const hour = o.ts?.slice(0, 13); // YYYY-MM-DDTHH
+      if (!hour) continue;
+      if (!hourlyBuckets[hour]) hourlyBuckets[hour] = { correct: 0, total: 0 };
+      hourlyBuckets[hour].total++;
+      if (o.compositeCorrect) hourlyBuckets[hour].correct++;
+    }
+    const accuracyOverTime = Object.entries(hourlyBuckets)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([hour, data]) => ({
+        hour,
+        accuracy: Math.round(data.correct / data.total * 10000) / 100,
+        correct: data.correct,
+        total: data.total,
+      }));
+
+    // --- heatmap: indicator × timeframe accuracy ---
+    const heatmap = {};
+    for (const ind of INDICATORS) {
+      heatmap[ind] = {};
+      for (const tf of ALL_TFS) {
+        heatmap[ind][tf] = { correct: 0, total: 0, accuracy: null };
+      }
+    }
+    for (const o of outcomes) {
+      for (const ind of INDICATORS) {
+        for (const tf of ALL_TFS) {
+          const tfResult = o.tfResults?.[tf];
+          if (!tfResult || tfResult.correct == null) continue;
+          const indResult = o.indicatorResults?.[ind];
+          if (!indResult || indResult.predictions === 0) continue;
+          // Check if this indicator had a non-neutral prediction in this timeframe
+          // We use the prediction's per-tf per-indicator scores via the outcome's indicator data
+          heatmap[ind][tf].total++;
+          if (tfResult.correct) heatmap[ind][tf].correct++;
+        }
+      }
+    }
+    for (const ind of INDICATORS) {
+      for (const tf of ALL_TFS) {
+        const cell = heatmap[ind][tf];
+        cell.accuracy = cell.total > 0 ? Math.round(cell.correct / cell.total * 10000) / 100 : null;
+      }
+    }
+
+    // --- indicatorAccuracyOverTime: per-indicator hourly trends ---
+    const indHourly = {};
+    for (const ind of INDICATORS) indHourly[ind] = {};
+    for (const o of outcomes) {
+      const hour = o.ts?.slice(0, 13);
+      if (!hour) continue;
+      for (const ind of INDICATORS) {
+        const indResult = o.indicatorResults?.[ind];
+        if (!indResult || indResult.predictions === 0) continue;
+        if (!indHourly[ind][hour]) indHourly[ind][hour] = { correct: 0, total: 0 };
+        indHourly[ind][hour].total += indResult.predictions;
+        indHourly[ind][hour].correct += indResult.correct;
+      }
+    }
+    // Collect all unique hours across all indicators
+    const allHours = [...new Set(Object.values(indHourly).flatMap(h => Object.keys(h)))].sort();
+    const indicatorAccuracyOverTime = allHours.map(hour => {
+      const point = { hour };
+      for (const ind of INDICATORS) {
+        const data = indHourly[ind][hour];
+        point[ind] = data && data.total > 0 ? Math.round(data.correct / data.total * 10000) / 100 : null;
+      }
+      return point;
+    });
+
+    // --- weightEvolution: weight snapshots over time ---
+    const weightEvolution = weights.map(w => ({
+      ts: w.ts,
+      ...w.weights,
+    }));
+
+    // --- failurePatterns: indicator combos that predict wrong together ---
+    const comboFailures = {};
+    for (const o of outcomes) {
+      if (o.compositeCorrect !== false) continue;
+      const failedInds = [];
+      for (const ind of INDICATORS) {
+        const indResult = o.indicatorResults?.[ind];
+        if (indResult && indResult.predictions > 0 && indResult.correct === 0) {
+          failedInds.push(ind);
+        }
+      }
+      if (failedInds.length < 2) continue;
+      const key = failedInds.sort().join('+');
+      if (!comboFailures[key]) comboFailures[key] = { indicators: failedInds, count: 0, total: 0 };
+      comboFailures[key].count++;
+    }
+    // Also count total occurrences where these indicators appeared together
+    for (const o of outcomes) {
+      for (const key of Object.keys(comboFailures)) {
+        const inds = comboFailures[key].indicators;
+        const allPresent = inds.every(ind => {
+          const indResult = o.indicatorResults?.[ind];
+          return indResult && indResult.predictions > 0;
+        });
+        if (allPresent) comboFailures[key].total++;
+      }
+    }
+    const failurePatterns = Object.values(comboFailures)
+      .filter(p => p.total >= 3)
+      .map(p => ({
+        indicators: p.indicators,
+        failures: p.count,
+        total: p.total,
+        failureRate: Math.round(p.count / p.total * 10000) / 100,
+      }))
+      .sort((a, b) => b.failureRate - a.failureRate)
+      .slice(0, 20);
+
+    // --- summary ---
+    const totalOutcomes = outcomes.filter(o => o.compositeCorrect != null).length;
+    const totalCorrect = outcomes.filter(o => o.compositeCorrect === true).length;
+    const overallAccuracy = totalOutcomes > 0 ? Math.round(totalCorrect / totalOutcomes * 10000) / 100 : null;
+
+    // Best/worst indicator
+    const indStats = {};
+    for (const ind of INDICATORS) {
+      let total = 0, correct = 0;
+      for (const o of outcomes) {
+        const r = o.indicatorResults?.[ind];
+        if (!r || r.predictions === 0) continue;
+        total += r.predictions;
+        correct += r.correct;
+      }
+      indStats[ind] = { accuracy: total > 0 ? Math.round(correct / total * 10000) / 100 : null, total };
+    }
+    const sortedInds = Object.entries(indStats).filter(([, v]) => v.accuracy != null).sort(([, a], [, b]) => b.accuracy - a.accuracy);
+    const bestIndicator = sortedInds[0]?.[0] ?? null;
+    const worstIndicator = sortedInds[sortedInds.length - 1]?.[0] ?? null;
+
+    // Best/worst timeframe
+    const tfStats = {};
+    for (const tf of ALL_TFS) {
+      let total = 0, correct = 0;
+      for (const o of outcomes) {
+        const r = o.tfResults?.[tf];
+        if (r?.correct == null) continue;
+        total++;
+        if (r.correct) correct++;
+      }
+      tfStats[tf] = { accuracy: total > 0 ? Math.round(correct / total * 10000) / 100 : null, total };
+    }
+    const sortedTfs = Object.entries(tfStats).filter(([, v]) => v.accuracy != null).sort(([, a], [, b]) => b.accuracy - a.accuracy);
+    const bestTimeframe = sortedTfs[0]?.[0] ?? null;
+
+    // Best window
+    const windowStats = {};
+    for (const o of outcomes) {
+      if (o.compositeCorrect == null || !o.window) continue;
+      if (!windowStats[o.window]) windowStats[o.window] = { correct: 0, total: 0 };
+      windowStats[o.window].total++;
+      if (o.compositeCorrect) windowStats[o.window].correct++;
+    }
+    const sortedWindows = Object.entries(windowStats)
+      .map(([w, d]) => ({ window: w, accuracy: Math.round(d.correct / d.total * 10000) / 100 }))
+      .sort((a, b) => b.accuracy - a.accuracy);
+    const bestWindow = sortedWindows[0]?.window ?? null;
+
+    res.json({
+      success: true,
+      accuracyOverTime,
+      heatmap,
+      indicatorAccuracyOverTime,
+      weightEvolution,
+      failurePatterns,
+      summary: {
+        accuracy: overallAccuracy,
+        predictions: predictions.length,
+        outcomes: totalOutcomes,
+        bestIndicator,
+        worstIndicator,
+        bestTimeframe,
+        bestWindow,
+      },
+    });
   });
 
   app.get('/api/updown/status', (req, res) => {
