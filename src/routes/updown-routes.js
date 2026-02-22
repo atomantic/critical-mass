@@ -244,6 +244,10 @@ module.exports = (app, deps) => {
     res.json({ success: true, ...updownService.getStatus() });
   });
 
+  app.get('/api/updown/scorecard', (req, res) => {
+    res.json({ success: true, ...updownService.getScorecard() });
+  });
+
   app.put('/api/updown/contract', (req, res) => {
     const { expiry, target, stop, range, direction } = req.body;
     if (direction && direction !== 'up' && direction !== 'down') {

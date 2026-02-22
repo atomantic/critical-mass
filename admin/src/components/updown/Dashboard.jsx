@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Play, Square, RotateCcw, Volume2, VolumeX, Clock } from 'lucide-react'
+import { Play, Square, RotateCcw, Volume2, VolumeX } from 'lucide-react'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
-import { signalBadgeColors, getSignalIcon } from '../../constants/signals'
 import PriceChart from './PriceChart'
 import ContractSetup from './ContractSetup'
 import PositionTracker from './PositionTracker'
 import SignalPanel from './SignalPanel'
+import SignalBanner from './SignalBanner'
+import TimeframeGrid from './TimeframeGrid'
 import TradeHistory from './TradeHistory'
-import { getTimeColor, parseExpiry, formatCountdown } from './TimeWarningBanner'
+import ScorecardPanel from './ScorecardPanel'
+import { parseExpiry } from './TimeWarningBanner'
 
 function formatCurrency(value) {
   if (value == null) return '---'
@@ -15,7 +17,7 @@ function formatCurrency(value) {
 }
 
 export default function UpDownDashboard() {
-  const { connected, tick, indicators: rawIndicators, signal } = useUpDownSocket()
+  const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
   // Flatten indicators.timeframes[tf].indicators into indicators[tf] for child components
   const indicators = useMemo(() => {
     if (!rawIndicators?.timeframes) return null
@@ -33,6 +35,7 @@ export default function UpDownDashboard() {
   const [audioEnabled, setAudioEnabled] = useState(false)
   const [error, setError] = useState(null)
   const prevSignalRef = useRef(null)
+  const [signalAnnotations, setSignalAnnotations] = useState([])
 
   const fetchStatus = useCallback(async () => {
     const res = await fetch('/api/updown/status').catch(() => null)
@@ -49,13 +52,21 @@ export default function UpDownDashboard() {
     return () => clearInterval(interval)
   }, [fetchStatus])
 
-  // Audio alerts for strong signals
+  // Track signal changes for chart annotations + audio alerts
   useEffect(() => {
-    if (!audioEnabled || !signal?.type) return
+    if (!signal?.type) return
     if (signal.type === prevSignalRef.current) return
     prevSignalRef.current = signal.type
 
-    if (signal.type === 'STRONG_BUY' || signal.type === 'STRONG_SELL') {
+    // Record annotation for chart
+    setSignalAnnotations(prev => {
+      const entry = { timestamp: signal.timestamp || Date.now(), type: signal.type, score: signal.score ?? 0 }
+      const next = [...prev, entry].slice(-20)
+      return next
+    })
+
+    // Audio alert for strong signals
+    if (audioEnabled && (signal.type === 'STRONG_BUY' || signal.type === 'STRONG_SELL')) {
       const ctx = new (window.AudioContext || window.webkitAudioContext)()
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
@@ -89,21 +100,14 @@ export default function UpDownDashboard() {
   }
 
   const isRunning = status?.running || false
-  const signalType = signal?.type || status?.latestSignal?.type || 'NEUTRAL'
-  const SignalIcon = getSignalIcon(signalType)
-  const badgeColors = signalBadgeColors[signalType] || signalBadgeColors.NEUTRAL
 
   // Merge tick data with status for current price
   const currentPrice = tick?.price || status?.lastPrice
   const timeRemaining = tick?.timeRemaining
 
-  // Time remaining (compact header display)
+  // Time remaining for signal banner
   const expiryMs = parseExpiry(status?.contract?.expiry)
   const msLeft = timeRemaining ?? (Number.isFinite(expiryMs) ? expiryMs - Date.now() : NaN)
-  const hasTime = Number.isFinite(msLeft)
-  const timeExpired = hasTime && msLeft <= 0
-  const hoursLeft = hasTime ? msLeft / 3600000 : 0
-  const timeColors = hasTime && !timeExpired ? getTimeColor(hoursLeft) : null
 
   if (loading) {
     return (
@@ -123,6 +127,13 @@ export default function UpDownDashboard() {
         </div>
       )}
 
+      {/* Signal Banner */}
+      <SignalBanner
+        signal={signal || status?.latestSignal}
+        indicators={rawIndicators}
+        timeRemaining={msLeft}
+      />
+
       {/* Top Bar */}
       <div className="bg-gray-800 rounded-lg p-4">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -141,30 +152,6 @@ export default function UpDownDashboard() {
               <span className="text-sm font-mono font-medium text-white">
                 BTC {formatCurrency(currentPrice)}
               </span>
-            )}
-
-            {/* Signal Badge */}
-            <span className={`px-2 py-1 rounded border text-xs font-medium flex items-center gap-1 ${badgeColors}`}>
-              <SignalIcon size={12} />
-              {signalType.replace(/_/g, ' ')}
-            </span>
-
-            {/* Time Remaining (compact) */}
-            {hasTime && (
-              timeExpired ? (
-                <div className="flex items-center gap-1 text-xs text-gray-500">
-                  <Clock size={12} />
-                  <span>Expired</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-1.5">
-                  <Clock size={12} className={timeColors.text} />
-                  <span className={`text-xs font-mono font-semibold ${timeColors.text} ${timeColors.pulse ? 'animate-pulse' : ''}`}>
-                    {formatCountdown(msLeft)}
-                  </span>
-                  <span className={`px-1 py-0.5 text-[10px] rounded ${timeColors.text} bg-gray-700`}>{timeColors.label}</span>
-                </div>
-              )
             )}
 
             {/* Live indicator */}
@@ -222,12 +209,18 @@ export default function UpDownDashboard() {
         </div>
       </div>
 
-      {/* Price Chart */}
-      <PriceChart
-        tick={tick}
-        indicators={indicators}
-        contract={status?.contract}
-      />
+      {/* TimeframeGrid + Price Chart */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
+        <div className="lg:col-span-3">
+          <PriceChart
+            tick={tick}
+            indicators={indicators}
+            contract={status?.contract}
+            signalAnnotations={signalAnnotations}
+          />
+        </div>
+      </div>
 
       {/* Contract Setup + Position Tracker side by side */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -235,13 +228,16 @@ export default function UpDownDashboard() {
         <PositionTracker initialPosition={status?.position} tick={tick} />
       </div>
 
-      {/* Trade History + Signal Panel */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Trade History + Signal Panel + Scorecard */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <div className="lg:col-span-2">
           <TradeHistory />
         </div>
         <div>
           <SignalPanel signal={signal || status?.latestSignal} />
+        </div>
+        <div>
+          <ScorecardPanel scorecard={socketScorecard || status?.scorecard} />
         </div>
       </div>
     </div>

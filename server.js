@@ -197,9 +197,9 @@ candleCache.seedAll();
 
 const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR, candleCache });
 
-// Forward cryptocom price data to updown service for Socket.IO emission + P&L
+// Forward coinbase BTC price data to updown service for Socket.IO emission + P&L
 ipcEventListeners.push((name, msg) => {
-  if (name === 'cryptocom' && msg.channel === 'regime:status') {
+  if (name === 'coinbase' && msg.channel === 'regime:status') {
     const market = msg.payload?.status?.market || msg.payload?.market;
     if (market?.lastPrice) {
       const price = parseFloat(market.lastPrice);
@@ -349,8 +349,6 @@ io.on('connection', (socket) => {
   socket.on('cryptocom:subscribe', () => socket.join('cryptocom'));
   socket.on('cryptocom:unsubscribe', () => socket.leave('cryptocom'));
   socket.on('composite:subscribe', () => socket.join('composite'));
-  socket.on('kraken:subscribe', () => socket.join('kraken'));
-  socket.on('kraken:unsubscribe', () => socket.leave('kraken'));
   socket.on('updown:subscribe', () => socket.join('updown'));
   socket.on('updown:unsubscribe', () => socket.leave('updown'));
 

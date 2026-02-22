@@ -1277,31 +1277,49 @@ module.exports = (app, sharedDeps) => {
   });
   priceBridge.start();
 
-  // Kraken public WebSocket for a second price source
-  const { createKrakenWebSocket } = require('../adapters/kraken/websocket');
-  const krakenWs = createKrakenWebSocket();
-  krakenWs.on('ticker', (data) => {
-    const ticker = data.productId; // e.g. 'BTC-USD'
-    const update = {
-      ticker,
-      price: data.price,
-      bid: data.bid,
-      ask: data.ask,
-      volume24h: data.volume24h,
-      previousPrice: data.price,
-      priceChange: 0,
-      updatedAt: Date.now(),
-    };
-    // Feed into exchange aggregator (source, ticker, price, data)
-    onExchangeUpdate('kraken', ticker, data.price, update);
-    // Emit kraken:price for the useKrakenSocket hook
-    io.to('kraken').emit('kraken:price', update);
-    // Also emit as coinbase:price — Kraken serves as fallback when
-    // coinbase market data service isn't available (regime engine runs its own WS)
-    io.to('coinbase').emit('coinbase:price', update);
+  // Gemini public WebSocket for a second price source
+  const { createGeminiWebSocketFeed } = require('../adapters/gemini/websocket');
+  const geminiWs = createGeminiWebSocketFeed('kalshi-gemini', {
+    productId: 'BTC-USD',
+    onTicker: (data) => {
+      const ticker = 'BTC-USD';
+      const update = {
+        ticker,
+        price: data.price,
+        bid: data.bid,
+        ask: data.ask,
+        volume24h: data.volume24h || 0,
+        previousPrice: data.price,
+        priceChange: 0,
+        updatedAt: Date.now(),
+      };
+      onExchangeUpdate('gemini', ticker, data.price, update);
+      io.to('gemini').emit('gemini:price', update);
+    },
   });
-  krakenWs.connect();
-  krakenWs.subscribe('BTC-USD');
+  geminiWs.connect();
+
+  // Crypto.com public WebSocket for a third price source
+  const { createCryptocomWebSocketFeed } = require('../adapters/cryptocom/websocket');
+  const cryptocomWs = createCryptocomWebSocketFeed('kalshi-cryptocom', {
+    productId: 'BTC-USD',
+    onTicker: (data) => {
+      const ticker = 'BTC-USD';
+      const update = {
+        ticker,
+        price: data.price,
+        bid: data.bid,
+        ask: data.ask,
+        volume24h: data.volume24h || 0,
+        previousPrice: data.price,
+        priceChange: 0,
+        updatedAt: Date.now(),
+      };
+      onExchangeUpdate('cryptocom', ticker, data.price, update);
+      io.to('cryptocom').emit('cryptocom:price', update);
+    },
+  });
+  cryptocomWs.connect();
 
   // ====== SOCKET.IO KALSHI EVENTS ======
 
@@ -1324,9 +1342,11 @@ module.exports = (app, sharedDeps) => {
     // useCompositeSocket hook emits this on connect
     socket.on('composite:subscribe', () => socket.join('composite'));
 
-    // useKrakenSocket hook emits this on connect
-    socket.on('kraken:subscribe', () => socket.join('kraken'));
-    socket.on('kraken:unsubscribe', () => socket.leave('kraken'));
+    // Gemini + Crypto.com socket rooms
+    socket.on('gemini:subscribe', () => socket.join('gemini'));
+    socket.on('gemini:unsubscribe', () => socket.leave('gemini'));
+    socket.on('cryptocom:subscribe', () => socket.join('cryptocom'));
+    socket.on('cryptocom:unsubscribe', () => socket.leave('cryptocom'));
   });
 
   // Return autoStartEngine for server.js to call on boot

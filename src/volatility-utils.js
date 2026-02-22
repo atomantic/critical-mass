@@ -302,6 +302,49 @@ const calculateEMA = (candles, period) => {
 };
 
 /**
+ * Calculate momentum acceleration using dual ROC (Rate of Change)
+ * Compares short-term and long-term ROC to detect acceleration/fading
+ * @param {Candle[]} candles - Array of candles (oldest first)
+ * @param {number} [shortPeriod=3] - Short ROC lookback
+ * @param {number} [longPeriod=10] - Long ROC lookback
+ * @returns {{roc3: number, roc10: number, acceleration: 'accelerating'|'fading'|'neutral', magnitude: number, direction: 'up'|'down'|'neutral'}}
+ */
+const calculateMomentumAcceleration = (candles, shortPeriod = 3, longPeriod = 10) => {
+  if (!candles || candles.length < longPeriod + 1) {
+    return { roc3: 0, roc10: 0, acceleration: 'neutral', magnitude: 0, direction: 'neutral' };
+  }
+
+  const current = candles[candles.length - 1].close;
+  const shortAgo = candles[candles.length - 1 - shortPeriod]?.close;
+  const longAgo = candles[candles.length - 1 - longPeriod]?.close;
+
+  if (!shortAgo || !longAgo) {
+    return { roc3: 0, roc10: 0, acceleration: 'neutral', magnitude: 0, direction: 'neutral' };
+  }
+
+  const roc3 = (current - shortAgo) / shortAgo * 100;
+  const roc10 = (current - longAgo) / longAgo * 100;
+
+  let acceleration = 'neutral';
+  let direction = 'neutral';
+
+  const bothPositive = roc3 > 0 && roc10 > 0;
+  const bothNegative = roc3 < 0 && roc10 < 0;
+
+  if (bothPositive) {
+    direction = 'up';
+    acceleration = roc3 > roc10 ? 'accelerating' : 'fading';
+  } else if (bothNegative) {
+    direction = 'down';
+    acceleration = Math.abs(roc3) > Math.abs(roc10) ? 'accelerating' : 'fading';
+  }
+
+  const magnitude = Math.abs(roc3);
+
+  return { roc3, roc10, acceleration, magnitude, direction };
+};
+
+/**
  * Clamp a value between min and max
  * @param {number} value - Value to clamp
  * @param {number} min - Minimum value
@@ -348,6 +391,7 @@ module.exports = {
   calculateSwingRange,
   updateEMABaseline,
   calculateMomentum,
+  calculateMomentumAcceleration,
   calculateAllMetrics,
   calculateVolExpansion,
   calculateVWAPDistance,

@@ -20,6 +20,7 @@ const SEED_TIMEFRAMES = [
   { tf: '5m',  hours: 15,  coinbaseGranularity: 300,  cryptocomTf: '5m'  },
   { tf: '15m', hours: 45,  coinbaseGranularity: 900,  cryptocomTf: '15m' },
   { tf: '1h',  hours: 200, coinbaseGranularity: 3600, cryptocomTf: '1h'  },
+  { tf: '1d',  hours: 1440, coinbaseGranularity: 86400, cryptocomTf: '1D' },
 ];
 
 const COINBASE_EXCHANGE_URL = 'https://api.exchange.coinbase.com';
@@ -79,6 +80,55 @@ const fetchCryptocomCandles = async (tf, hours, cryptocomTf) => {
 };
 
 /**
+ * Aggregate source candles into larger timeframe buckets by floor-aligning timestamps.
+ * @param {Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>} sourceCandles
+ * @param {number} targetIntervalMs
+ * @returns {Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>}
+ */
+const aggregateCandles = (sourceCandles, targetIntervalMs) => {
+  if (!sourceCandles?.length) return [];
+  const buckets = new Map();
+  for (const c of sourceCandles) {
+    const key = Math.floor(c.timestamp / targetIntervalMs) * targetIntervalMs;
+    const existing = buckets.get(key);
+    if (existing) {
+      if (c.high > existing.high) existing.high = c.high;
+      if (c.low < existing.low) existing.low = c.low;
+      existing.close = c.close;
+      existing.volume += c.volume;
+    } else {
+      buckets.set(key, { open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, timestamp: key });
+    }
+  }
+  return [...buckets.values()].sort((a, b) => a.timestamp - b.timestamp);
+};
+
+/**
+ * Derive intermediate timeframes from seeded candle data.
+ * @param {ReturnType<typeof createCandleAggregator>} agg
+ * @returns {number} total derived candles
+ */
+const seedDerivedTimeframes = (agg) => {
+  const derivations = [
+    { source: '1m',  target: '10m', intervalMs: 600_000 },
+    { source: '5m',  target: '30m', intervalMs: 1_800_000 },
+    { source: '1h',  target: '2h',  intervalMs: 7_200_000 },
+    { source: '1h',  target: '4h',  intervalMs: 14_400_000 },
+  ];
+  let derived = 0;
+  for (const { source, target, intervalMs } of derivations) {
+    const sourceCandles = agg.getCandles(source);
+    const targetCandles = aggregateCandles(sourceCandles, intervalMs);
+    if (targetCandles.length) {
+      agg.seedCandles(target, targetCandles);
+      derived += targetCandles.length;
+      log('INFO', `🕯️ candle-cache: derived ${targetCandles.length} ${target} candles from ${source}`);
+    }
+  }
+  return derived;
+};
+
+/**
  * Create the shared candle cache
  * @returns {{
  *   seedFromPublicAPI: (exchange: string) => Promise<number>,
@@ -133,6 +183,9 @@ const createCandleCache = () => {
       }
     }
 
+    // Derive intermediate timeframes (10m, 30m, 2h, 4h) from seeded data
+    totalSeeded += seedDerivedTimeframes(agg);
+
     return totalSeeded;
   };
 
@@ -183,16 +236,19 @@ const createCandleCache = () => {
   };
 
   /**
-   * Get all candles for all 4 standard timeframes
+   * Get all candles for all 10 timeframes
    * @param {string} exchange
    * @returns {Record<string, Array>}
    */
-  const getAllCandles = (exchange) => ({
-    '1m': getCandles(exchange, '1m'),
-    '5m': getCandles(exchange, '5m'),
-    '15m': getCandles(exchange, '15m'),
-    '1h': getCandles(exchange, '1h'),
-  });
+  const getAllCandles = (exchange) => {
+    const agg = aggregators.get(exchange);
+    if (!agg) return {};
+    const result = {};
+    for (const tf of ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']) {
+      result[tf] = agg.getCandles(tf);
+    }
+    return result;
+  };
 
   /**
    * Get the raw aggregator for an exchange (for signal engine direct access)

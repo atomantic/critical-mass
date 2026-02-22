@@ -41,7 +41,8 @@ export const parseStrikeFromTitle = (title) => {
 
 const EXCHANGE_LINES = [
   { dataKey: 'coinbase', stroke: '#60a5fa', label: 'Coinbase' },
-  { dataKey: 'kraken', stroke: '#a78bfa', label: 'Kraken' },
+  { dataKey: 'gemini', stroke: '#a78bfa', label: 'Gemini' },
+  { dataKey: 'cryptocom', stroke: '#34d399', label: 'Crypto.com' },
 ]
 
 /**
@@ -146,7 +147,8 @@ export default function LiveBTCChart({
   const currentPrice = btcPrice?.price || 0
   const strike = activeMarket?.strike
   const coinbasePrice = compositePrice?.byExchange?.coinbase?.price ?? null
-  const krakenPrice = compositePrice?.byExchange?.kraken?.price ?? null
+  const geminiPrice = compositePrice?.byExchange?.gemini?.price ?? null
+  const cryptocomPrice = compositePrice?.byExchange?.cryptocom?.price ?? null
 
   const marketPrice = activeMarket?.ticker ? kalshiPrices?.get(activeMarket.ticker) : null
   const yesAsk = marketPrice?.yesAsk ?? null
@@ -192,8 +194,9 @@ export default function LiveBTCChart({
   // Exchange tick data for per-exchange lines on chart
   const exchangeTickData = useMemo(() => ({
     coinbase: coinbasePrice,
-    kraken: krakenPrice,
-  }), [coinbasePrice, krakenPrice])
+    gemini: geminiPrice,
+    cryptocom: cryptocomPrice,
+  }), [coinbasePrice, geminiPrice, cryptocomPrice])
 
   // Chart-only mode: just the shared chart
   if (chartOnly) {
@@ -222,7 +225,11 @@ export default function LiveBTCChart({
           </span>
           <span className="flex items-center gap-1">
             <span className="inline-block w-3 h-0.5 rounded bg-purple-400" />
-            Kraken
+            Gemini
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-3 h-0.5 rounded bg-emerald-400" />
+            Crypto.com
           </span>
           {strike && (
             <span className="flex items-center gap-1">
