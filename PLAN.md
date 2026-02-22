@@ -198,6 +198,21 @@ Architecture tracked only: **20 findings** (Phase G, no code changes)
 - [x] **UpDown service cleanup** — Removed internal aggregator, delegates to shared candle-cache
 - [x] **Compact time remaining** — Moved from standalone banner into UpDown header bar
 
+## UpDown Signal Engine Improvements (2026-02-22)
+
+- [x] **Feature 1: Trend Filter** — EMA(50)/EMA(200) on 1h candles dampens counter-trend signals by 50%
+- [x] **Feature 2: Volatility-Scaled Thresholds** — ATR ratio widens/tightens signal zones dynamically
+- [x] **Feature 3: Volume Surge Multiplier** — Amplifies/dampens per-TF scores based on volume vs 20-bar average
+- [x] **Feature 4: Momentum Acceleration** — Dual ROC(3)/ROC(10) replaces simple momentum, with acceleration/fading detection
+- [x] **Feature 5: Divergence Detection** — Price/RSI swing divergence dampens conflicting signals
+- [x] **Feature 6: Pivot Points** — Classic S1/S2/R1/R2 dampening when price approaches key levels
+- [x] **Feature 7: Adaptive Indicator Weights** — Scorecard accuracy feedback loop adjusts indicator weights with exponential smoothing
+- [x] **Feature 8: Multi-Candle Horizon Prediction** — Identifies best evaluation window from scorecard accuracy data
+
+New files: `src/updown/divergence.js`, `src/updown/pivot-points.js`
+Modified: `src/updown/signal-engine.js`, `src/volatility-utils.js`, `src/updown/indicators.js`, `src/updown/scorecard.js`, `src/updown/updown-service.js`
+Frontend: `SignalBanner.jsx` (trend/vol/horizon pills), `TimeframeGrid.jsx` (volume/divergence/acceleration badges), `ScorecardPanel.jsx` (adaptive weights section)
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22

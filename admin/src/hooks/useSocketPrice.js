@@ -3,7 +3,7 @@ import { io } from 'socket.io-client'
 
 /**
  * Generic socket-based price subscription hook.
- * Eliminates duplicated logic across useCoinbaseSocket, useKrakenSocket, etc.
+ * Eliminates duplicated logic across useCoinbaseSocket, useGeminiSocket, etc.
  *
  * @param {Object} config - Hook configuration
  * @param {string} config.subscribeEvent - Socket event name for subscribing (e.g. 'coinbase:subscribe')

@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import BTCPriceChart from '../charts/BTCPriceChart'
 import { formatBTCPrice } from '../charts/chartUtils'
 
-export default function PriceChart({ tick, indicators, contract }) {
+export default function PriceChart({ tick, indicators, contract, signalAnnotations }) {
   const referenceLines = useMemo(() => {
     const lines = []
     if (contract?.target) {
@@ -28,13 +28,18 @@ export default function PriceChart({ tick, indicators, contract }) {
 
   return (
     <BTCPriceChart
-      exchange="cryptocom"
+      exchange="coinbase"
       tickPrice={tick?.price}
       tickTimestamp={tick?.timestamp}
       indicators={indicators}
+      chartType="heikinAshi"
+      showIntervalSelector
+      defaultInterval="5m"
+      defaultRange="6h"
       overlays={['atomoku', 'bollinger', 'vwap']}
       subCharts={['rsi', 'stochastic', 'macd']}
       referenceLines={referenceLines}
+      signalAnnotations={signalAnnotations}
     />
   )
 }

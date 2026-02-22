@@ -6,6 +6,8 @@ import {
 import { BarChart3 } from 'lucide-react'
 import useCandleData, { DEFAULT_VIEWS } from '../../hooks/useCandleData'
 import { BTC_TOOLTIP_STYLE, formatBTCPrice } from './chartUtils'
+import HeikinAshiRenderer from './HeikinAshiRenderer'
+import SignalAnnotationRenderer from './SignalAnnotationRenderer'
 
 // Stable empty arrays to avoid re-render loops from default prop values
 const EMPTY_ARRAY = []
@@ -95,12 +97,17 @@ const AtomokuCloudRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
  * @param {string} [props.defaultView] - default view key ('1d')
  * @param {boolean} [props.showViewSelector] - show view selector buttons (true)
  *
+ * @param {string} [props.chartType] - 'line' | 'heikinAshi' (default: 'line')
+ * @param {boolean} [props.showIntervalSelector] - show interval/range toolbar
+ * @param {string} [props.defaultInterval] - initial bar interval (e.g. '5m')
+ * @param {string} [props.defaultRange] - initial time range (e.g. '6h')
+ *
  * @param {Array<string>} [props.overlays] - ['bollinger', 'vwap', 'atomoku']
  * @param {Object} [props.indicators] - indicator data from socket (keyed by timeframe)
  * @param {Array<{y: number, stroke: string, strokeDasharray?: string, label?: string, labelFill?: string}>} [props.referenceLines]
  *
  * @param {Array<{dataKey: string, stroke: string, label: string}>} [props.exchangeLines]
- * @param {Object} [props.exchangeTickData] - {coinbase: price, kraken: price}
+ * @param {Object} [props.exchangeTickData] - {coinbase: price, gemini: price, cryptocom: price}
  *
  * @param {Array<string>} [props.subCharts] - ['rsi', 'stochastic', 'macd']
  *
@@ -116,6 +123,11 @@ export default function BTCPriceChart({
   defaultView = '1d',
   showViewSelector = true,
 
+  chartType = 'line',
+  showIntervalSelector = false,
+  defaultInterval,
+  defaultRange,
+
   overlays = EMPTY_ARRAY,
   indicators,
   referenceLines = EMPTY_ARRAY,
@@ -125,17 +137,29 @@ export default function BTCPriceChart({
 
   subCharts = EMPTY_ARRAY,
 
+  signalAnnotations,
+
   height = 260,
   className,
 }) {
-  const views = customViews || DEFAULT_VIEWS
+  const isHA = chartType === 'heikinAshi'
+
+  // Build hook options — interval/range mode when showIntervalSelector is on
+  const hookOptions = useMemo(() => {
+    if (showIntervalSelector && defaultInterval) {
+      return { defaultInterval, defaultRange, signalAnnotations }
+    }
+    return { views: customViews || DEFAULT_VIEWS, defaultView, signalAnnotations }
+  }, [showIntervalSelector, defaultInterval, defaultRange, customViews, defaultView, signalAnnotations])
+
+  const {
+    chartData, view, setView, isLoading, viewConfig, views,
+    interval, setInterval, timeRange, setTimeRange, availableRanges,
+  } = useCandleData(exchange, tickPrice, tickTimestamp, hookOptions)
+
   const viewKeys = useMemo(() => Object.keys(views), [views])
-
-  const { chartData, view, setView, isLoading, viewConfig } = useCandleData(
-    exchange, tickPrice, tickTimestamp, { views, defaultView }
-  )
-
   const { bucketMs, indicatorTf } = viewConfig
+  const isIntervalMode = showIntervalSelector && defaultInterval
 
   // Merge exchange tick data into the most recent chart data point
   const enrichedData = useMemo(() => {
@@ -172,36 +196,67 @@ export default function BTCPriceChart({
   // Current indicator values (for display badges below chart)
   const currentInd = indicators?.[indicatorTf]
 
-  // Y-axis domain — only include positive numeric values
+  // Y-axis domain — in HA mode, focus on candle range first and clamp overlay extension
   const priceDomain = useMemo(() => {
     if (!displayData.length) return ['auto', 'auto']
-    const vals = []
+
+    // Core price values (candles define the primary range)
+    const coreVals = []
+    // Overlay values (only extend axis within a clamped range)
+    const overlayVals = []
+
     for (const d of displayData) {
-      if (d.price > 0) vals.push(d.price)
-      if (d.high > 0) vals.push(d.high)
-      if (d.low > 0) vals.push(d.low)
-      if (d.bollingerUpper > 0) vals.push(d.bollingerUpper)
-      if (d.bollingerLower > 0) vals.push(d.bollingerLower)
+      if (d.price > 0) coreVals.push(d.price)
+      if (d.high > 0) coreVals.push(d.high)
+      if (d.low > 0) coreVals.push(d.low)
+      if (isHA) {
+        if (d.haHigh > 0) coreVals.push(d.haHigh)
+        if (d.haLow > 0) coreVals.push(d.haLow)
+      }
+      if (d.bollingerUpper > 0) overlayVals.push(d.bollingerUpper)
+      if (d.bollingerLower > 0) overlayVals.push(d.bollingerLower)
       if (showAtomoku) {
-        if (d.atomokuConv > 0) vals.push(d.atomokuConv)
-        if (d.atomokuBase > 0) vals.push(d.atomokuBase)
-        if (d.atomokuLead1 > 0) vals.push(d.atomokuLead1)
-        if (d.atomokuLead2 > 0) vals.push(d.atomokuLead2)
-        if (d.atomokuLagging > 0) vals.push(d.atomokuLagging)
+        if (d.atomokuConv > 0) overlayVals.push(d.atomokuConv)
+        if (d.atomokuBase > 0) overlayVals.push(d.atomokuBase)
+        if (d.atomokuLead1 > 0) overlayVals.push(d.atomokuLead1)
+        if (d.atomokuLead2 > 0) overlayVals.push(d.atomokuLead2)
+        if (d.atomokuLagging > 0) overlayVals.push(d.atomokuLagging)
       }
       for (const line of exchangeLines) {
-        if (d[line.dataKey] > 0) vals.push(d[line.dataKey])
+        if (d[line.dataKey] > 0) overlayVals.push(d[line.dataKey])
       }
     }
     for (const ref of referenceLines) {
-      if (ref.y > 0) vals.push(ref.y)
+      if (ref.y > 0) coreVals.push(ref.y)
     }
-    if (!vals.length) return ['auto', 'auto']
-    const min = Math.min(...vals)
-    const max = Math.max(...vals)
+    if (!coreVals.length) return ['auto', 'auto']
+
+    const coreMin = Math.min(...coreVals)
+    const coreMax = Math.max(...coreVals)
+    const coreRange = coreMax - coreMin || 100
+
+    // In HA mode, clamp overlay extension to 1.5x the candle range from center
+    // so long-lookback indicators don't flatten the candles
+    if (isHA && overlayVals.length) {
+      const center = (coreMin + coreMax) / 2
+      const maxExtent = coreRange * 1.5
+      const clampedOverlays = overlayVals.filter(
+        v => v >= center - maxExtent && v <= center + maxExtent
+      )
+      const allVals = [...coreVals, ...clampedOverlays]
+      const min = Math.min(...allVals)
+      const max = Math.max(...allVals)
+      const pad = (max - min) * 0.05 || 50
+      return [min - pad, max + pad]
+    }
+
+    // Line mode: include all overlay values as before
+    const allVals = [...coreVals, ...overlayVals]
+    const min = Math.min(...allVals)
+    const max = Math.max(...allVals)
     const pad = (max - min) * 0.05 || 50
     return [min - pad, max + pad]
-  }, [displayData, referenceLines, exchangeLines, showAtomoku])
+  }, [displayData, referenceLines, exchangeLines, showAtomoku, isHA])
 
   const hasRsi = subCharts.includes('rsi') && displayData.some(d => d.rsi != null)
   const hasStoch = subCharts.includes('stochastic') && displayData.some(d => d.stochK != null)
@@ -209,14 +264,48 @@ export default function BTCPriceChart({
 
   return (
     <div className={`bg-gray-800 rounded-lg p-4 border border-gray-700 ${className || ''}`}>
-      {/* Header with view selector */}
+      {/* Header with view selector / interval selector */}
       <div className="flex items-center gap-2 mb-3">
         <BarChart3 size={16} className="text-blue-400" />
         <h3 className="text-sm font-semibold">Price Chart</h3>
         {tickPrice && (
           <span className="text-sm font-mono text-white">{formatBTCPrice(tickPrice)}</span>
         )}
-        {showViewSelector && (
+
+        {/* Interval/range selector (new decoupled mode) */}
+        {isIntervalMode && (
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+            {['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1D'].map(k => {
+              const tfKey = k === '1D' ? '1d' : k
+              return (
+                <button
+                  key={tfKey}
+                  onClick={() => setInterval(tfKey)}
+                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                    interval === tfKey ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {k}
+                </button>
+              )
+            })}
+            <span className="text-gray-600 text-xs px-1">/</span>
+            {availableRanges.map(r => (
+              <button
+                key={r.key}
+                onClick={() => setTimeRange(r.key)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  timeRange === r.key ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Legacy view selector */}
+        {!isIntervalMode && showViewSelector && (
           <div className="ml-auto flex gap-1">
             {viewKeys.map(k => (
               <button
@@ -236,7 +325,7 @@ export default function BTCPriceChart({
       {isLoading || displayData.length < 2 ? (
         <div className="text-gray-500 text-sm text-center py-12">
           {isLoading ? 'Loading chart data...' : 'Waiting for price data...'}
-          {!isLoading && (
+          {!isLoading && !isIntervalMode && (
             <div className="text-xs text-gray-600 mt-1">
               {view === '7d' ? 'First data point every hour' :
                view === '1d' ? 'First data point every 15 min' :
@@ -264,6 +353,7 @@ export default function BTCPriceChart({
                     atomokuConv: 'Conversion', atomokuBase: 'Base Line',
                     atomokuLead1: 'Lead 1', atomokuLead2: 'Lead 2',
                     atomokuLagging: 'Lagging Span',
+                    haOpen: 'HA Open', haHigh: 'HA High', haLow: 'HA Low', haClose: 'HA Close',
                   }
                   for (const line of exchangeLines) {
                     labels[line.dataKey] = line.label
@@ -271,6 +361,11 @@ export default function BTCPriceChart({
                   return [formatBTCPrice(value), labels[name] || name]
                 }}
               />
+
+              {/* Heikin Ashi candlestick renderer */}
+              {isHA && (
+                <Customized component={HeikinAshiRenderer} />
+              )}
 
               {/* Atomoku cloud fills (rendered behind everything via Customized SVG) */}
               {showAtomoku && (
@@ -302,7 +397,7 @@ export default function BTCPriceChart({
                 <Line type="monotone" dataKey="vwap" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} connectNulls />
               )}
 
-              {/* Exchange-specific lines (e.g., Coinbase, Kraken for Kalshi) */}
+              {/* Exchange-specific lines (e.g., Coinbase, Gemini, Crypto.com for Kalshi) */}
               {exchangeLines.map(line => (
                 <Line
                   key={line.dataKey}
@@ -316,8 +411,14 @@ export default function BTCPriceChart({
                 />
               ))}
 
-              {/* Main price line */}
-              <Line type="monotone" dataKey="price" stroke="#3b82f6" strokeWidth={2} dot={false} />
+              {/* Main price line — transparent in HA mode so Customized renderers still get coordinate data */}
+              <Line
+                type="monotone"
+                dataKey="price"
+                stroke={isHA ? 'transparent' : '#3b82f6'}
+                strokeWidth={isHA ? 1 : 2}
+                dot={false}
+              />
 
               {/* Reference lines (target, stop, strike, entry, etc.) */}
               {referenceLines.map((ref, i) => (
@@ -334,6 +435,11 @@ export default function BTCPriceChart({
                   } : undefined}
                 />
               ))}
+
+              {/* Signal change annotations */}
+              {signalAnnotations?.length > 0 && (
+                <Customized component={SignalAnnotationRenderer} />
+              )}
             </ComposedChart>
           </ResponsiveContainer>
 
