@@ -6,6 +6,17 @@ function fmt(v) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v)
 }
 
+function evalSum(str) {
+  if (!str) return NaN
+  const parts = str.replace(/\s/g, '').split('+').map(s => parseFloat(s))
+  if (parts.some(isNaN)) return NaN
+  return parts.reduce((a, b) => a + b, 0)
+}
+
+function isExpression(str) {
+  return typeof str === 'string' && str.includes('+')
+}
+
 export default function TradeHistory() {
   const [trades, setTrades] = useState([])
   const [summary, setSummary] = useState(null)
@@ -33,10 +44,13 @@ export default function TradeHistory() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    const cost = evalSum(form.cost)
+    const returnAmount = evalSum(form.returnAmount)
+    if (isNaN(cost) || isNaN(returnAmount)) return
     const payload = {
       date: form.date,
-      cost: parseFloat(form.cost),
-      returnAmount: parseFloat(form.returnAmount),
+      cost,
+      returnAmount,
       note: form.note,
     }
 
@@ -139,26 +153,32 @@ export default function TradeHistory() {
             <div>
               <label className="text-[10px] text-gray-500 block mb-0.5">Cost (Open)</label>
               <input
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={form.cost}
                 onChange={e => setForm({ ...form, cost: e.target.value })}
-                placeholder="500.00"
+                placeholder="500 or 200+300"
                 required
                 className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
               />
+              {isExpression(form.cost) && !isNaN(evalSum(form.cost)) && (
+                <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(evalSum(form.cost))}</div>
+              )}
             </div>
             <div>
               <label className="text-[10px] text-gray-500 block mb-0.5">Return (Close)</label>
               <input
-                type="number"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={form.returnAmount}
                 onChange={e => setForm({ ...form, returnAmount: e.target.value })}
-                placeholder="650.00"
+                placeholder="650 or 300+350"
                 required
                 className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
               />
+              {isExpression(form.returnAmount) && !isNaN(evalSum(form.returnAmount)) && (
+                <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(evalSum(form.returnAmount))}</div>
+              )}
             </div>
           </div>
           <div>
@@ -171,11 +191,11 @@ export default function TradeHistory() {
               className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
             />
           </div>
-          {form.cost && form.returnAmount && (
+          {form.cost && form.returnAmount && !isNaN(evalSum(form.cost)) && !isNaN(evalSum(form.returnAmount)) && (
             <div className="text-xs">
               <span className="text-gray-500">P&L: </span>
-              <span className={pnlColor(parseFloat(form.returnAmount) - parseFloat(form.cost))}>
-                {fmt(parseFloat(form.returnAmount) - parseFloat(form.cost))}
+              <span className={pnlColor(evalSum(form.returnAmount) - evalSum(form.cost))}>
+                {fmt(evalSum(form.returnAmount) - evalSum(form.cost))}
               </span>
             </div>
           )}

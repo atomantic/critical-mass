@@ -209,10 +209,10 @@ export default function UpDownDashboard() {
         </div>
       </div>
 
-      {/* TimeframeGrid + Price Chart */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+      {/* TimeframeGrid/Signal + Price Chart + Scorecard */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 lg:grid-rows-2 gap-4">
         <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
-        <div className="lg:col-span-3">
+        <div className="lg:col-span-2 lg:row-span-2">
           <PriceChart
             tick={tick}
             indicators={indicators}
@@ -220,6 +220,10 @@ export default function UpDownDashboard() {
             signalAnnotations={signalAnnotations}
           />
         </div>
+        <div className="lg:row-span-2">
+          <ScorecardPanel scorecard={socketScorecard || status?.scorecard} />
+        </div>
+        <SignalPanel signal={signal || status?.latestSignal} />
       </div>
 
       {/* Contract Setup + Position Tracker side by side */}
@@ -228,18 +232,8 @@ export default function UpDownDashboard() {
         <PositionTracker initialPosition={status?.position} tick={tick} />
       </div>
 
-      {/* Trade History + Signal Panel + Scorecard */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <div className="lg:col-span-2">
-          <TradeHistory />
-        </div>
-        <div>
-          <SignalPanel signal={signal || status?.latestSignal} />
-        </div>
-        <div>
-          <ScorecardPanel scorecard={socketScorecard || status?.scorecard} />
-        </div>
-      </div>
+      {/* Trade History */}
+      <TradeHistory />
     </div>
   )
 }
