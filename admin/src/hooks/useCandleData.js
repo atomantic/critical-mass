@@ -442,9 +442,10 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   }, [tickPrice, tickTimestamp, bucketMs, maxBuckets, syncChart, legacyMode])
 
   // Periodic sync (renders chart at most every 5s)
+  // NOTE: must use window.setInterval to avoid the custom setInterval (line ~187) shadowing
   useEffect(() => {
-    const t = setInterval(syncChart, SYNC_INTERVAL_MS)
-    return () => clearInterval(t)
+    const t = window.setInterval(syncChart, SYNC_INTERVAL_MS)
+    return () => window.clearInterval(t)
   }, [syncChart])
 
   return {

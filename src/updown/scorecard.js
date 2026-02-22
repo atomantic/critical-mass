@@ -21,6 +21,7 @@ const DIRECTION_THRESHOLD = 15
 const BUFFER_SIZE = 500
 const EMIT_THROTTLE_MS = 5_000
 const DEDUP_WINDOW_MS = 55_000
+const WEIGHT_LOG_THROTTLE_MS = 300_000
 const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum']
 const BASE_WEIGHTS = { rsi: 0.25, stochastic: 0.20, macd: 0.20, bollinger: 0.15, vwap: 0.10, momentum: 0.10 }
 const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']
@@ -117,6 +118,7 @@ const createScorecard = ({ io, lastPriceFn }) => {
 
   let lastSampleTs = 0
   let lastEmitTs = 0
+  let lastWeightLogTs = 0
   let totalPredictions = 0
   let totalSkipped = 0
   let adaptiveWeights = { ...BASE_WEIGHTS }
@@ -372,6 +374,18 @@ const createScorecard = ({ io, lastPriceFn }) => {
 
     // Recompute adaptive weights
     adaptiveWeights = computeAdaptiveWeights(byIndicator, BASE_WEIGHTS, adaptiveWeights)
+
+    // Throttled weight logging to JSONL
+    const weightNow = Date.now()
+    if (weightNow - lastWeightLogTs >= WEIGHT_LOG_THROTTLE_MS) {
+      lastWeightLogTs = weightNow
+      appendRecord({
+        type: 'weights',
+        ts: new Date().toISOString(),
+        weights: { ...adaptiveWeights },
+        byIndicator: { ...byIndicator },
+      }).catch(() => {})
+    }
 
     // Last prediction info
     const lastPred = outcomeBuffer.length > 0 ? outcomeBuffer[outcomeBuffer.length - 1] : null

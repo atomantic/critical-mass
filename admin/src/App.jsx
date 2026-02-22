@@ -29,6 +29,7 @@ const AIProviders = lazy(() => import('./components/ai/Providers'))
 const LogViewer = lazy(() => import('./components/LogViewer'))
 const HedgeDashboard = lazy(() => import('./components/hedge/Dashboard'))
 const UpDownDashboard = lazy(() => import('./components/updown/Dashboard'))
+const ScorecardAnalysis = lazy(() => import('./components/updown/ScorecardAnalysis'))
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
@@ -770,6 +771,7 @@ function AppContent() {
               <Route path="/hedge/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass-kalshi" /></Suspense>} />
 
               {/* UpDown BTC Options dashboard */}
+              <Route path="/updown/analysis" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><ScorecardAnalysis /></Suspense>} />
               <Route path="/updown" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><UpDownDashboard /></Suspense>} />
 
               {/* Gateway logs */}
