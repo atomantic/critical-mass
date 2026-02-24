@@ -218,16 +218,17 @@ export default function UpDownDashboard() {
         </div>
       </div>
 
-      {/* TimeframeGrid/Signal + Price Chart + Scorecard */}
+      {/* TimeframeGrid/Signal + Price Chart/Trade History + Scorecard */}
       <div className="grid grid-cols-1 lg:grid-cols-4 lg:grid-rows-2 gap-4">
         <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
-        <div className="lg:col-span-2 lg:row-span-2">
+        <div className="lg:col-span-2 lg:row-span-2 flex flex-col gap-4">
           <PriceChart
             tick={tick}
             indicators={indicators}
             contract={status?.contract}
             signalAnnotations={signalAnnotations}
           />
+          <TradeHistory />
         </div>
         <div className="lg:row-span-2">
           <ScorecardPanel scorecard={socketScorecard || status?.scorecard} />
@@ -240,9 +241,6 @@ export default function UpDownDashboard() {
         <ContractSetup initialContract={status?.contract} onPositionSet={fetchStatus} />
         <PositionTracker initialPosition={status?.position} tick={tick} />
       </div>
-
-      {/* Trade History */}
-      <TradeHistory />
     </div>
   )
 }

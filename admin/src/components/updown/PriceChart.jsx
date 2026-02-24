@@ -2,6 +2,14 @@ import { useMemo } from 'react'
 import BTCPriceChart from '../charts/BTCPriceChart'
 import { formatBTCPrice } from '../charts/chartUtils'
 
+const TIMEFRAMES = [
+  { interval: '1m', range: '1h' },
+  { interval: '3m', range: '3h' },
+  { interval: '5m', range: '6h' },
+  { interval: '15m', range: '12h' },
+  { interval: '1h', range: '2d' },
+]
+
 export default function PriceChart({ tick, indicators, contract, signalAnnotations }) {
   const referenceLines = useMemo(() => {
     const lines = []
@@ -27,19 +35,25 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
   }, [contract?.target, contract?.stop])
 
   return (
-    <BTCPriceChart
-      exchange="coinbase"
-      tickPrice={tick?.price}
-      tickTimestamp={tick?.timestamp}
-      indicators={indicators}
-      chartType="heikinAshi"
-      showIntervalSelector
-      defaultInterval="5m"
-      defaultRange="6h"
-      overlays={['bollinger', 'vwap']}
-      subCharts={[]}
-      referenceLines={referenceLines}
-      signalAnnotations={signalAnnotations}
-    />
+    <div className="space-y-2">
+      {TIMEFRAMES.map(tf => (
+        <BTCPriceChart
+          key={tf.interval}
+          exchange="coinbase"
+          tickPrice={tick?.price}
+          tickTimestamp={tick?.timestamp}
+          indicators={indicators}
+          chartType="heikinAshi"
+          showIntervalSelector={false}
+          defaultInterval={tf.interval}
+          defaultRange={tf.range}
+          overlays={['bollinger', 'vwap']}
+          subCharts={[]}
+          referenceLines={tf.interval === '5m' ? referenceLines : []}
+          signalAnnotations={tf.interval === '5m' ? signalAnnotations : undefined}
+          height={160}
+        />
+      ))}
+    </div>
   )
 }

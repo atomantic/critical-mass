@@ -144,13 +144,14 @@ export default function BTCPriceChart({
 }) {
   const isHA = chartType === 'heikinAshi'
 
-  // Build hook options — interval/range mode when showIntervalSelector is on
+  // Build hook options — interval/range mode when defaultInterval is provided
+  const isIntervalMode = !!defaultInterval
   const hookOptions = useMemo(() => {
-    if (showIntervalSelector && defaultInterval) {
+    if (defaultInterval) {
       return { defaultInterval, defaultRange, signalAnnotations }
     }
     return { views: customViews || DEFAULT_VIEWS, defaultView, signalAnnotations }
-  }, [showIntervalSelector, defaultInterval, defaultRange, customViews, defaultView, signalAnnotations])
+  }, [defaultInterval, defaultRange, customViews, defaultView, signalAnnotations])
 
   const {
     chartData, view, setView, isLoading, viewConfig, views,
@@ -159,7 +160,6 @@ export default function BTCPriceChart({
 
   const viewKeys = useMemo(() => Object.keys(views), [views])
   const { bucketMs, indicatorTf } = viewConfig
-  const isIntervalMode = showIntervalSelector && defaultInterval
 
   // Merge exchange tick data into the most recent chart data point
   const enrichedData = useMemo(() => {
@@ -272,8 +272,13 @@ export default function BTCPriceChart({
           <span className="text-sm font-mono text-white">{formatBTCPrice(tickPrice)}</span>
         )}
 
+        {/* Compact interval label when selector is hidden */}
+        {isIntervalMode && !showIntervalSelector && (
+          <span className="ml-auto text-xs font-mono text-gray-400 bg-gray-700 px-2 py-0.5 rounded">{defaultInterval}</span>
+        )}
+
         {/* Interval/range selector (new decoupled mode) */}
-        {isIntervalMode && (
+        {isIntervalMode && showIntervalSelector && (
           <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
             {['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1D'].map(k => {
               const tfKey = k === '1D' ? '1d' : k
