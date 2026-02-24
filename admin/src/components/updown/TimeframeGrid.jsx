@@ -72,20 +72,20 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
       : 'border-gray-700'
 
   return (
-    <div className={`bg-gray-800 rounded-lg border p-3 ${alignmentTint} lg:col-span-1`}>
+    <div className={`bg-gray-800 rounded-lg border p-2 ${alignmentTint} lg:col-span-1`}>
       <h3
-        className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wider cursor-help"
+        className="text-[10px] font-semibold text-gray-400 mb-1 uppercase tracking-wider cursor-help"
         title="Shows weighted indicator scores across 10 timeframes. When most timeframes agree on direction, signals are stronger. The 5 core timeframes (1m, 3m, 5m, 15m, 1h) contribute to the composite score."
       >Timeframe Alignment</h3>
 
-      <div className="space-y-1">
+      <div className="space-y-0">
         {rows.map(row => {
           const cfg = DIRECTION_CONFIG[row.direction]
           const barWidth = Math.min(100, Math.abs(row.score) * 1.2)
           const lowCandles = row.candleCount > 0 && row.candleCount < MACD_MIN_CANDLES
 
           return (
-            <div key={row.key} className={`flex items-center gap-1.5 px-1.5 py-0.5 rounded ${cfg.bgTint}`} title={TF_TOOLTIPS[row.key]}>
+            <div key={row.key} className={`flex items-center gap-1.5 px-1.5 rounded ${cfg.bgTint}`} title={TF_TOOLTIPS[row.key]}>
               <span className="text-[10px] font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">{row.key}</span>
               <cfg.Icon size={12} className={cfg.color} />
               <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden" title={`Signal strength: ${Math.abs(row.score).toFixed(0)}% — bar shows relative magnitude`}>
@@ -126,7 +126,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
 
         {/* Tick momentum row */}
         <div
-          className={`flex items-center gap-1.5 px-1.5 py-0.5 rounded border-t border-gray-700 mt-1 pt-1 ${tickCfg.bgTint}`}
+          className={`flex items-center gap-1.5 px-1.5 rounded border-t border-gray-700 mt-1 pt-1 ${tickCfg.bgTint}`}
           title="Real-time tick momentum from raw price updates (not candle-based). Shows basis points moved and price velocity in $/sec."
         >
           <span className="text-[10px] font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">Tick</span>
@@ -140,7 +140,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
       </div>
 
       {/* Alignment summary */}
-      <div className="mt-2 flex items-center gap-2 text-[10px] font-mono cursor-help" title="Count of timeframes pointing up/down/neutral (includes tick). Strong alignment (3+ majority) tints the panel border green or red.">
+      <div className="mt-1 flex items-center gap-2 text-[10px] font-mono cursor-help" title="Count of timeframes pointing up/down/neutral (includes tick). Strong alignment (3+ majority) tints the panel border green or red.">
         <span className="text-green-400">{alignment.up}&#8593;</span>
         <span className="text-red-400">{alignment.down}&#8595;</span>
         <span className="text-gray-500">{alignment.neutral}&mdash;</span>

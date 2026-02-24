@@ -188,8 +188,8 @@ const computeTrendFilter = (candles1h) => {
 
   const spread = (ema50 - ema200) / ema200;
 
-  if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.5 };
-  if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.5 };
+  if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.75 };
+  if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.75 };
   return { trendBias: 'neutral', ema50, ema200, multiplier: 1 };
 };
 
@@ -236,19 +236,19 @@ const computeVolatilityContext = (candles5m) => {
  * @returns {'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL'}
  */
 const scoreToSignalDynamic = (score, atrRatio) => {
-  let neutralThreshold = 40;
-  let strongThreshold = 60;
+  let neutralThreshold = 25;
+  let strongThreshold = 45;
 
   if (atrRatio < 0.7) {
     // Low vol: widen zones via linear interpolation
     const t = Math.max(0, (0.7 - atrRatio) / 0.7);
-    neutralThreshold = 40 + t * 15; // up to 55
-    strongThreshold = 60 + t * 15;  // up to 75
+    neutralThreshold = 25 + t * 10; // up to 35
+    strongThreshold = 45 + t * 10;  // up to 55
   } else if (atrRatio > 1.5) {
     // High vol: tighten zones via linear interpolation
     const t = Math.min(1, (atrRatio - 1.5) / 1.5);
-    neutralThreshold = 40 - t * 10; // down to 30
-    strongThreshold = 60 - t * 10;  // down to 50
+    neutralThreshold = 25 - t * 5; // down to 20
+    strongThreshold = 45 - t * 5;  // down to 40
   }
 
   if (score > strongThreshold) return 'STRONG_BUY';
@@ -264,10 +264,10 @@ const scoreToSignalDynamic = (score, atrRatio) => {
  * @returns {'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL'}
  */
 const scoreToSignal = (score) => {
-  if (score > 60) return 'STRONG_BUY';
-  if (score > 40) return 'BUY';
-  if (score < -60) return 'STRONG_SELL';
-  if (score < -40) return 'SELL';
+  if (score > 45) return 'STRONG_BUY';
+  if (score > 25) return 'BUY';
+  if (score < -45) return 'STRONG_SELL';
+  if (score < -25) return 'SELL';
   return 'NEUTRAL';
 };
 
@@ -471,11 +471,11 @@ const createSignalEngine = (candleAggregator) => {
         if ((tfScore > 0 ? 1 : -1) === compositeDir) agreeing++;
       }
     }
-    const confluenceQuality = agreeing >= 7 ? 'overcrowded' : agreeing >= 6 ? 'moderate' : 'selective';
+    const confluenceQuality = agreeing >= 8 ? 'overcrowded' : agreeing >= 7 ? 'moderate' : 'selective';
     if (confluenceQuality === 'overcrowded') {
-      compositeScore *= 0.5;
+      compositeScore *= 0.75;
     } else if (confluenceQuality === 'moderate') {
-      compositeScore *= 0.8;
+      compositeScore *= 0.9;
     }
     const confluence = { agreeing, totalDirectional, quality: confluenceQuality };
 
@@ -516,9 +516,14 @@ const createSignalEngine = (candleAggregator) => {
       }
     }
 
-    // Feature 10: Score cap — scores above |35| hit the low-accuracy zone
-    if (compositeScore > 35) compositeScore = 35;
-    else if (compositeScore < -35) compositeScore = -35;
+    // Feature 10: Score cap — soft ceiling instead of hard cap
+    // Previous hard cap at ±35 made BUY (threshold 40) mathematically impossible.
+    // Now: linear compression above ±35 — scores can reach ±70 but with diminishing returns.
+    if (Math.abs(compositeScore) > 35) {
+      const sign = compositeScore > 0 ? 1 : -1;
+      const excess = Math.abs(compositeScore) - 35;
+      compositeScore = sign * (35 + excess * 0.5); // 50% compression above 35
+    }
 
     // Feature 11: Time-of-day weighting from backtest accuracy by UTC hour
     const utcHour = new Date(now).getUTCHours();

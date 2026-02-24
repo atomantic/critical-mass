@@ -141,6 +141,7 @@ export default function BTCPriceChart({
 
   height = 260,
   className,
+  headerLabel,
 }) {
   const isHA = chartType === 'heikinAshi'
 
@@ -266,10 +267,16 @@ export default function BTCPriceChart({
     <div className={`bg-gray-800 rounded-lg p-4 border border-gray-700 ${className || ''}`}>
       {/* Header with view selector / interval selector */}
       <div className="flex items-center gap-2 mb-3">
-        <BarChart3 size={16} className="text-blue-400" />
-        <h3 className="text-sm font-semibold">Price Chart</h3>
-        {tickPrice && (
-          <span className="text-sm font-mono text-white">{formatBTCPrice(tickPrice)}</span>
+        {headerLabel ? (
+          <h3 className="text-sm font-semibold">{headerLabel}</h3>
+        ) : (
+          <>
+            <BarChart3 size={16} className="text-blue-400" />
+            <h3 className="text-sm font-semibold">Price Chart</h3>
+            {tickPrice && (
+              <span className="text-sm font-mono text-white">{formatBTCPrice(tickPrice)}</span>
+            )}
+          </>
         )}
 
         {/* Compact interval label when selector is hidden */}

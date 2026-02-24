@@ -110,6 +110,7 @@ const aggregateCandles = (sourceCandles, targetIntervalMs) => {
  */
 const seedDerivedTimeframes = (agg) => {
   const derivations = [
+    { source: '1m',  target: '3m',  intervalMs: 180_000 },
     { source: '1m',  target: '10m', intervalMs: 600_000 },
     { source: '5m',  target: '30m', intervalMs: 1_800_000 },
     { source: '1h',  target: '2h',  intervalMs: 7_200_000 },

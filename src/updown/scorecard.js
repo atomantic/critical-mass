@@ -7,7 +7,7 @@
  * accuracy metrics for real-time monitoring.
  */
 
-const { appendFile, mkdir } = require('fs/promises')
+const { appendFile, mkdir, readFile, readdir } = require('fs/promises')
 const { existsSync } = require('fs')
 const path = require('path')
 const { log } = require('../logger')
@@ -417,11 +417,60 @@ const createScorecard = ({ io, lastPriceFn }) => {
   }
 
   /**
+   * Load recent outcomes from JSONL files into the outcome buffer
+   * Loads from the most recent files (up to 3 days) to hydrate metrics on restart
+   */
+  const loadHistory = async () => {
+    if (!existsSync(SCORECARD_DIR)) return
+
+    const files = await readdir(SCORECARD_DIR)
+    const jsonlFiles = files.filter(f => f.endsWith('.jsonl')).sort()
+    // Load last 3 days of data
+    const recentFiles = jsonlFiles.slice(-3)
+
+    let loaded = 0
+    let predCount = 0
+    let skipCount = 0
+    for (const file of recentFiles) {
+      const content = await readFile(path.join(SCORECARD_DIR, file), 'utf8').catch(() => '')
+      const lines = content.split('\n').filter(Boolean)
+      for (const line of lines) {
+        let record
+        try { record = JSON.parse(line) } catch { continue }
+        if (!record) continue
+        if (record.type === 'outcome' && record.compositeCorrect != null) {
+          outcomeBuffer.push(record)
+          loaded++
+        } else if (record.type === 'prediction') {
+          predCount++
+          if (record.compositeDirection === 'neutral') skipCount++
+        }
+      }
+    }
+
+    // Trim to buffer size
+    if (outcomeBuffer.length > BUFFER_SIZE) {
+      outcomeBuffer.splice(0, outcomeBuffer.length - BUFFER_SIZE)
+    }
+
+    totalPredictions = predCount
+    totalSkipped = skipCount
+    log('INFO', `📊 Scorecard loaded history outcomes=${loaded} predictions=${predCount} skipped=${skipCount} files=${recentFiles.length}`)
+  }
+
+  /**
    * Start auto-sampling predictions at the configured interval
    * @param {Function} computeSignals - Function that returns signal engine output
    */
-  const start = (computeSignals) => {
+  const start = async (computeSignals) => {
     computeSignalsFn = computeSignals
+
+    // Hydrate from disk and emit initial metrics
+    await loadHistory().catch(err => log('WARN', `📊 Scorecard history load failed err=${err.message}`))
+    if (outcomeBuffer.length > 0) {
+      io.to('updown').emit('updown:scorecard', getMetrics())
+    }
+
     sampleInterval = setInterval(() => {
       if (!computeSignalsFn) return
       const now = Date.now()

@@ -357,7 +357,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     lastBucketKeyRef.current = finalKeys.length ? finalKeys[finalKeys.length - 1] : null
   }, [bucketMs, maxBuckets, applyHeikinAshi])
 
-  // Fetch historical candles on mount
+  // Fetch historical candles on mount — only stores data, re-populate effect handles rendering
   useEffect(() => {
     let cancelled = false
     setIsLoading(true)
@@ -366,15 +366,13 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       .then(data => {
         if (cancelled || !data?.candles) return
         historicalCandlesRef.current = data.candles
-        populateFromCandles(data.candles[candleTf])
-        syncChart()
         setIsLoading(false)
       })
       .catch(() => { if (!cancelled) setIsLoading(false) })
     return () => { cancelled = true }
-  }, [exchange]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [exchange])
 
-  // Re-populate from cached candles when view/interval/range changes
+  // Re-populate from cached candles when view/interval/range changes or data arrives (isLoading → false)
   useEffect(() => {
     bucketsRef.current = new Map()
     lastBucketKeyRef.current = null
@@ -386,7 +384,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     } else {
       setChartData([])
     }
-  }, [view, interval, timeRange, candleTf, populateFromCandles, syncChart])
+  }, [view, interval, timeRange, candleTf, populateFromCandles, syncChart, isLoading])
 
   // Process live ticks into buckets (ref mutation only — no re-render per tick)
   useEffect(() => {
