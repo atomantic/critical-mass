@@ -7,7 +7,7 @@ const { createStrategies, STRATEGY_INFO } = require('../strategies/index.js')
 const { computeBracketAnalytics } = require('../services/cross-market-analytics.js')
 const { trackPriceUpdate, settleExpiredTrackedMarkets, recordSettlement } = require('../services/conviction-tracker.js')
 const { writeSnapshot } = require('../services/snapshot-writer.js')
-const { writeEntry, writeExit, writeSettlement, writeSkips, writeReject, writeSessionSummary, writeShadowEntry, writeShadowExit, writeShadowSettlement, writeWindowSummary } = require('../services/journal-writer.js')
+const { writeEntry, writeExit, writeSettlement, writeReject, writeSessionSummary, writeShadowEntry, writeShadowExit, writeShadowSettlement, writeWindowSummary } = require('../services/journal-writer.js')
 const { calculateKalshiFee, calculateFairProbability, calculateRollingVolatility, getSigma } = require('../services/volatility-service.js')
 const { getBracketInfo, parseStrikePrice } = require('../adapters/markets.js')
 const { sendAlert } = require('../services/alert-service.js')
@@ -40,8 +40,6 @@ class SimulationEngine {
     this.coinbasePrices = new Map()
     /** @type {Map<string, Array<{price: number, timestamp: number}>>} Coinbase price history for momentum */
     this.coinbasePriceHistory = new Map()
-    /** @type {Map<string, number>} Kraken spot prices by ticker */
-    this.krakenPrices = new Map()
     /** @type {Map<string, Object>} Composite prices from exchange aggregator */
     this.compositePrices = new Map()
     /** @type {Map<string, Array<{price: number, timestamp: number}>>} Composite price history */
@@ -50,6 +48,8 @@ class SimulationEngine {
     this.orderBookMetrics = new Map()
     /** @type {Object | null} Latest Polymarket BTC sentiment */
     this.polymarketSentiment = null
+    /** @type {Map<string, Object>} Trade flow imbalance metrics by ticker */
+    this.tradeFlowMetrics = new Map()
     /** @type {Map<string, Object>} Kalshi orderbook metrics by ticker */
     this.kalshiBookMetrics = new Map()
     /** @type {Object | null} Live execution service reference */
@@ -365,7 +365,8 @@ class SimulationEngine {
         close_time: market.close_time,
         event_ticker: market.event_ticker,
         type: market.type,
-        asset: market.asset
+        asset: market.asset,
+        timeframe: market.timeframe
       })
     }
   }
@@ -394,16 +395,6 @@ class SimulationEngine {
     if (history.length > 900) {
       history.shift()
     }
-  }
-
-  /**
-   * Process a Kraken price update
-   * @param {string} ticker - Kraken ticker (e.g., 'BTC-USD')
-   * @param {number} price - Current spot price
-   * @param {Object} data - Full price data
-   */
-  onKrakenPriceUpdate(ticker, price, data) {
-    this.krakenPrices.set(ticker, price)
   }
 
   /**
@@ -455,6 +446,15 @@ class SimulationEngine {
   }
 
   /**
+   * Process trade flow imbalance update from price bridge
+   * @param {string} ticker - Product ticker (e.g., 'BTC-USD')
+   * @param {Object} tradeFlow - { imbalance60s, imbalance300s, buyVolume60s, sellVolume60s, tradeCount60s, updatedAt }
+   */
+  onTradeFlowUpdate(ticker, tradeFlow) {
+    this.tradeFlowMetrics.set(ticker, tradeFlow)
+  }
+
+  /**
    * Determine the winning side for a settled market based on BTC spot
    * @param {string} ticker - Market ticker
    * @param {number} btcSpot - BTC spot price at/near settlement
@@ -499,7 +499,6 @@ class SimulationEngine {
     // Get BTC spot price for settlement determination
     const btcSpot = this.compositePrices.get('BTC-USD')?.price
       || this.coinbasePrices.get('BTC-USD')
-      || this.krakenPrices.get('BTC-USD')
 
     if (!btcSpot) {
       console.log(`[${ts()}] Cannot settle ${toSettle.length} expired position(s): no BTC spot price`)
@@ -619,7 +618,6 @@ class SimulationEngine {
     // Compute BTC spot once — used by conviction tracking, window summaries, and strategy eval
     const btcSpot = this.compositePrices.get('BTC-USD')?.price
       || this.coinbasePrices.get('BTC-USD')
-      || this.krakenPrices.get('BTC-USD')
 
     // Update unrealized P&L for circuit breaker early-warning
     if (this.liveExecution?.updateUnrealizedPnl && this.state.positions?.length > 0) {
@@ -672,16 +670,17 @@ class SimulationEngine {
       priceHistory: this.priceHistory,
       coinbasePrices: this.coinbasePrices,
       coinbasePriceHistory: this.coinbasePriceHistory,
-      krakenPrices: this.krakenPrices,
       compositePrices: this.compositePrices,
       compositePriceHistory: this.compositePriceHistory,
       orderBookMetrics: this.orderBookMetrics,
       kalshiBookMetrics: this.kalshiBookMetrics,
       polymarketSentiment: this.polymarketSentiment,
+      tradeFlowMetrics: this.tradeFlowMetrics,
       bracketAnalytics,
       positions: this.state.positions || [],
       balance: this.state.balance,
-      config: this.config
+      config: this.config,
+      marketInfo: this.marketInfo
     }
 
     // Log price history summary for debugging
@@ -728,9 +727,6 @@ class SimulationEngine {
         this.log('error', `Strategy ${strategy.name} error: ${err.message}`, { strategy: strategy.name, stack: err.stack?.split('\n')[1]?.trim() })
         continue
       }
-
-      // Journal: record skipped opportunities from diagnostics
-      writeSkips(strategy.diagnostics, strategy.name, btcSpot)
 
       // Track peak edges per ticker for window summaries
       for (const d of strategy.diagnostics) {
@@ -1058,8 +1054,7 @@ class SimulationEngine {
               // Determine actual outcome instead of assuming loss
               const reconBtcSpot = this.compositePrices.get('BTC-USD')?.price
                 || this.coinbasePrices.get('BTC-USD')
-                || this.krakenPrices.get('BTC-USD')
-              const outcome = reconBtcSpot ? this.determineBracketOutcome(d.ticker, reconBtcSpot) : null
+                        const outcome = reconBtcSpot ? this.determineBracketOutcome(d.ticker, reconBtcSpot) : null
               const won = outcome !== null ? (pos.side === outcome) : false
               const proceeds = won ? pos.contracts : 0
               const pnl = proceeds - costBasis

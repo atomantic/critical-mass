@@ -177,8 +177,45 @@ const calculateBollingerBands = (closes, period = 20, mult = 2) => {
   return { upper, middle, lower, percentB, bandwidth };
 };
 
+/**
+ * Calculate RSI series (full array) using Wilder's smoothing method
+ * Same algorithm as calculateRSI but returns the full series
+ * @param {number[]} closes - Array of closing prices (oldest first)
+ * @param {number} [period=14] - RSI period
+ * @returns {number[]} Array of RSI values (first `period` values are 0)
+ */
+const calculateRSISeries = (closes, period = 14) => {
+  const result = new Array(closes?.length ?? 0).fill(0);
+  if (!closes || closes.length < period + 1) return result;
+
+  let avgGain = 0;
+  let avgLoss = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) avgGain += change;
+    else avgLoss += Math.abs(change);
+  }
+  avgGain /= period;
+  avgLoss /= period;
+
+  result[period] = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? Math.abs(change) : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    result[i] = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+  }
+
+  return result;
+};
+
 module.exports = {
   calculateRSI,
+  calculateRSISeries,
   calculateStochastic,
   calculateMACD,
   calculateBollingerBands,

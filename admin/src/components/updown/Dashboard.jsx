@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Play, Square, RefreshCw, Volume2, VolumeX } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3 } from 'lucide-react'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
-import { signalBadgeColors, getSignalIcon } from '../../constants/signals'
 import PriceChart from './PriceChart'
 import ContractSetup from './ContractSetup'
 import PositionTracker from './PositionTracker'
-import IndicatorCharts from './IndicatorCharts'
 import SignalPanel from './SignalPanel'
-import TimeWarningBanner from './TimeWarningBanner'
+import SignalBanner from './SignalBanner'
+import TimeframeGrid from './TimeframeGrid'
+import TradeHistory from './TradeHistory'
+import ScorecardPanel from './ScorecardPanel'
+import { parseExpiry } from './TimeWarningBanner'
 
 function formatCurrency(value) {
   if (value == null) return '---'
@@ -15,7 +18,7 @@ function formatCurrency(value) {
 }
 
 export default function UpDownDashboard() {
-  const { connected, tick, indicators: rawIndicators, signal } = useUpDownSocket()
+  const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
   // Flatten indicators.timeframes[tf].indicators into indicators[tf] for child components
   const indicators = useMemo(() => {
     if (!rawIndicators?.timeframes) return null
@@ -29,9 +32,11 @@ export default function UpDownDashboard() {
   const [loading, setLoading] = useState(true)
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
+  const [restarting, setRestarting] = useState(false)
   const [audioEnabled, setAudioEnabled] = useState(false)
   const [error, setError] = useState(null)
   const prevSignalRef = useRef(null)
+  const [signalAnnotations, setSignalAnnotations] = useState([])
 
   const fetchStatus = useCallback(async () => {
     const res = await fetch('/api/updown/status').catch(() => null)
@@ -48,13 +53,21 @@ export default function UpDownDashboard() {
     return () => clearInterval(interval)
   }, [fetchStatus])
 
-  // Audio alerts for strong signals
+  // Track signal changes for chart annotations + audio alerts
   useEffect(() => {
-    if (!audioEnabled || !signal?.type) return
+    if (!signal?.type) return
     if (signal.type === prevSignalRef.current) return
     prevSignalRef.current = signal.type
 
-    if (signal.type === 'STRONG_BUY' || signal.type === 'STRONG_SELL') {
+    // Record annotation for chart
+    setSignalAnnotations(prev => {
+      const entry = { timestamp: signal.timestamp || Date.now(), type: signal.type, score: signal.score ?? 0 }
+      const next = [...prev, entry].slice(-20)
+      return next
+    })
+
+    // Audio alert for strong signals
+    if (audioEnabled && (signal.type === 'STRONG_BUY' || signal.type === 'STRONG_SELL')) {
       const ctx = new (window.AudioContext || window.webkitAudioContext)()
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
@@ -88,13 +101,14 @@ export default function UpDownDashboard() {
   }
 
   const isRunning = status?.running || false
-  const signalType = signal?.type || status?.latestSignal?.type || 'NEUTRAL'
-  const SignalIcon = getSignalIcon(signalType)
-  const badgeColors = signalBadgeColors[signalType] || signalBadgeColors.NEUTRAL
 
   // Merge tick data with status for current price
   const currentPrice = tick?.price || status?.lastPrice
   const timeRemaining = tick?.timeRemaining
+
+  // Time remaining for signal banner
+  const expiryMs = parseExpiry(status?.contract?.expiry)
+  const msLeft = timeRemaining ?? (Number.isFinite(expiryMs) ? expiryMs - Date.now() : NaN)
 
   if (loading) {
     return (
@@ -124,6 +138,14 @@ export default function UpDownDashboard() {
                 Signal-assisted binary options trading
               </div>
             </div>
+            <Link
+              to="/updown/analysis"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300 hover:text-white transition-colors"
+              title="Scorecard Analysis"
+            >
+              <BarChart3 size={14} />
+              <span className="hidden sm:inline">Analysis</span>
+            </Link>
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
@@ -133,12 +155,6 @@ export default function UpDownDashboard() {
                 BTC {formatCurrency(currentPrice)}
               </span>
             )}
-
-            {/* Signal Badge */}
-            <span className={`px-2 py-1 rounded border text-xs font-medium flex items-center gap-1 ${badgeColors}`}>
-              <SignalIcon size={12} />
-              {signalType.replace(/_/g, ' ')}
-            </span>
 
             {/* Live indicator */}
             <div className="flex items-center gap-1.5 text-xs">
@@ -157,13 +173,18 @@ export default function UpDownDashboard() {
               {audioEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
             </button>
 
-            {/* Refresh */}
+            {/* Restart server */}
             <button
-              onClick={fetchStatus}
-              className="p-1.5 rounded bg-gray-700 hover:bg-gray-600 transition-colors"
-              title="Refresh"
+              onClick={async () => {
+                setRestarting(true)
+                await fetch('/api/updown/restart', { method: 'POST' }).catch(() => {})
+                setTimeout(() => setRestarting(false), 5000)
+              }}
+              disabled={restarting}
+              className={`p-1.5 rounded transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
+              title="Restart server (pm2)"
             >
-              <RefreshCw size={14} />
+              <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
             </button>
 
             {/* Start/Stop */}
@@ -190,34 +211,33 @@ export default function UpDownDashboard() {
         </div>
       </div>
 
-      {/* Time Warning Banner */}
-      <TimeWarningBanner
-        timeRemaining={timeRemaining}
-        expiry={status?.contract?.expiry}
-      />
-
-      {/* Price Chart */}
-      <PriceChart
-        tick={tick}
-        indicators={indicators}
-        contract={status?.contract}
-      />
-
-      {/* Contract Setup + Position Tracker side by side */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ContractSetup initialContract={status?.contract} />
-        <PositionTracker initialPosition={status?.position} tick={tick} />
-      </div>
-
-      {/* Indicator Charts + Signal Panel */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <div className="xl:col-span-2">
-          <IndicatorCharts indicators={indicators} />
+      {/* TimeframeGrid/Signal + Price Chart/Trade History + Scorecard/Position */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <div className="flex flex-col gap-4">
+          <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
+          <SignalPanel signal={signal || status?.latestSignal} indicators={rawIndicators} />
+          <TradeHistory />
         </div>
-        <div>
-          <SignalPanel signal={signal || status?.latestSignal} />
+        <div className="lg:col-span-2 flex flex-col gap-4">
+          <PriceChart
+            tick={tick}
+            indicators={indicators}
+            contract={status?.contract}
+            signalAnnotations={signalAnnotations}
+          />
+        </div>
+        <div className="flex flex-col gap-4">
+          <SignalBanner
+            signal={signal || status?.latestSignal}
+            indicators={rawIndicators}
+            timeRemaining={msLeft}
+          />
+          <ScorecardPanel scorecard={socketScorecard || status?.scorecard} />
+          <ContractSetup initialContract={status?.contract} onPositionSet={fetchStatus} />
+          <PositionTracker initialPosition={status?.position} tick={tick} />
         </div>
       </div>
+
     </div>
   )
 }

@@ -46,6 +46,10 @@ const createMarketDataService = (exchange) => {
   let cachedRegimeStateTime = 0;
   const REGIME_STATE_CACHE_MS = 10_000; // Reload from disk at most every 10s
 
+  // Trade flow tracking — rolling window of recent trades for imbalance calculation
+  const tradeFlowWindow = [] // { price, size, side, timestamp }
+  const TRADE_FLOW_MAX_AGE_MS = 300_000 // 5 minutes
+
   // Market state (same structure as regime engine)
   const marketState = {
     lastPrice: 0,
@@ -226,10 +230,23 @@ const createMarketDataService = (exchange) => {
   };
 
   /**
-   * Handle trade updates
+   * Handle trade updates — accumulate into rolling window for buy/sell imbalance
    */
   const handleTrade = (data) => {
-    // Could be used for volume tracking
+    if (!data?.price || !data?.size || !data?.side) return
+
+    const now = Date.now()
+    tradeFlowWindow.push({
+      price: data.price,
+      size: parseFloat(data.size),
+      side: data.side, // 'buy' or 'sell' (taker side)
+      timestamp: now,
+    })
+
+    // Prune entries older than 5 minutes
+    while (tradeFlowWindow.length > 0 && tradeFlowWindow[0].timestamp < now - TRADE_FLOW_MAX_AGE_MS) {
+      tradeFlowWindow.shift()
+    }
   };
 
   /**
@@ -344,12 +361,49 @@ const createMarketDataService = (exchange) => {
   };
 
   /**
+   * Compute trade flow imbalance for a given time window
+   * @param {number} windowMs - Window size in milliseconds
+   * @returns {{ buyVolume: number, sellVolume: number, imbalance: number, tradeCount: number }}
+   */
+  const computeTradeFlow = (windowMs) => {
+    const cutoff = Date.now() - windowMs
+    let buyVolume = 0
+    let sellVolume = 0
+    let tradeCount = 0
+
+    for (let i = tradeFlowWindow.length - 1; i >= 0; i--) {
+      const t = tradeFlowWindow[i]
+      if (t.timestamp < cutoff) break
+      if (t.side === 'buy') buyVolume += t.size
+      else sellVolume += t.size
+      tradeCount++
+    }
+
+    const total = buyVolume + sellVolume
+    const imbalance = total > 0 ? (buyVolume - sellVolume) / total : 0
+    return { buyVolume, sellVolume, imbalance, tradeCount }
+  }
+
+  /**
    * Get current market state
    */
-  const getMarketState = () => ({
-    ...marketState,
-    connected: isConnected,
-  });
+  const getMarketState = () => {
+    const flow60 = computeTradeFlow(60_000)
+    const flow300 = computeTradeFlow(300_000)
+
+    return {
+      ...marketState,
+      connected: isConnected,
+      tradeFlow: {
+        imbalance60s: flow60.imbalance,
+        imbalance300s: flow300.imbalance,
+        buyVolume60s: flow60.buyVolume,
+        sellVolume60s: flow60.sellVolume,
+        tradeCount60s: flow60.tradeCount,
+        updatedAt: Date.now(),
+      },
+    }
+  };
 
   /**
    * Get current regime state

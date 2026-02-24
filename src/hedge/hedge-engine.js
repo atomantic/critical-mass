@@ -66,6 +66,7 @@ const createHedgeEngine = (deps) => {
   let running = false
   let lastBtcPrice = null
   let lastEvalTime = 0
+  let noPriceLogCount = 0
   let marketsCache = null
   let marketsCacheTime = 0
   const MARKETS_CACHE_TTL = 60000 // refresh markets list every 60s
@@ -112,7 +113,11 @@ const createHedgeEngine = (deps) => {
     if (!config.enabled) return
 
     const btcPrice = getPriceBridgePrice()
-    if (!btcPrice || btcPrice <= 0) return
+    if (!btcPrice || btcPrice <= 0) {
+      if (noPriceLogCount++ < 5) log('WARN', `[${ts()}] ⚠️ hedge eval skipped: no BTC price from bridge (attempt ${noPriceLogCount})`)
+      return
+    }
+    noPriceLogCount = 0
     lastBtcPrice = btcPrice
 
     const activePair = getActivePair(state)
@@ -146,6 +151,7 @@ const createHedgeEngine = (deps) => {
 
     if (!entryCheck.canEnter) {
       recordSkip(state)
+      if (state.dailyStats.skipped % 60 === 1) log('INFO', `[${ts()}] 📊 hedge skip: ${entryCheck.reason}`)
       return
     }
 

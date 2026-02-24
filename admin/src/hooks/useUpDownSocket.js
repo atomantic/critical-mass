@@ -15,6 +15,7 @@ export const useUpDownSocket = (options = {}) => {
   const [tick, setTick] = useState(null)
   const [indicators, setIndicators] = useState(null)
   const [signal, setSignal] = useState(null)
+  const [scorecard, setScorecard] = useState(null)
   const [error, setError] = useState(null)
 
   const tickRef = useRef(null)
@@ -73,6 +74,11 @@ export const useUpDownSocket = (options = {}) => {
       setSignal(data)
     })
 
+    // Scorecard updates - infrequent (max 1 per 5s), no throttle needed
+    socket.on('updown:scorecard', (data) => {
+      setScorecard(data)
+    })
+
     return () => {
       if (tickThrottleRef.current) clearTimeout(tickThrottleRef.current)
       if (indicatorsThrottleRef.current) clearTimeout(indicatorsThrottleRef.current)
@@ -80,7 +86,7 @@ export const useUpDownSocket = (options = {}) => {
     }
   }, [autoConnect])
 
-  return { connected, tick, indicators, signal, error }
+  return { connected, tick, indicators, signal, scorecard, error }
 }
 
 export default useUpDownSocket

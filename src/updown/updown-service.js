@@ -3,13 +3,13 @@
  * UpDown Service
  *
  * Top-level coordinator for the UpDown BTC Options Signal Dashboard.
- * Manages candle aggregation, signal computation, state persistence,
- * and Socket.IO emission to subscribed clients.
+ * Manages signal computation, state persistence, and Socket.IO emission.
+ * Candle aggregation is delegated to the shared candle-cache.
  */
 
 const path = require('path');
-const { createCandleAggregator } = require('./candle-aggregator');
 const { createSignalEngine } = require('./signal-engine');
+const { createScorecard } = require('./scorecard');
 const { log } = require('../logger');
 
 const STATE_FILE = 'updown-state.json';
@@ -25,14 +25,22 @@ const MAX_SIGNAL_HISTORY = 100;
  * @param {Function} deps.readJSON - Read JSON file
  * @param {Function} deps.writeJSON - Write JSON file
  * @param {string} deps.DATA_DIR - Data directory path
+ * @param {Object} deps.candleCache - Shared candle cache instance
  * @returns {Object}
  */
 const createUpDownService = (io, deps) => {
-  const { exchangeIPCMap, readJSON, writeJSON, DATA_DIR } = deps;
+  const { readJSON, writeJSON, DATA_DIR, candleCache } = deps;
   const stateFilePath = path.join(DATA_DIR, STATE_FILE);
 
-  const aggregator = createCandleAggregator();
-  const signalEngine = createSignalEngine(aggregator);
+  // Signal engine uses a thin adapter over the shared candle cache (coinbase BTC data)
+  const candleAdapter = {
+    getCandles: (tf) => candleCache.getCandles('coinbase', tf),
+  };
+  const signalEngine = createSignalEngine(candleAdapter);
+  const scorecard = createScorecard({ io, lastPriceFn: () => lastPrice });
+
+  const TICK_BUFFER_SIZE = 60;
+  const tickBuffer = []; // { price, timestamp }
 
   /** @type {NodeJS.Timeout | null} */
   let signalInterval = null;
@@ -84,16 +92,51 @@ const createUpDownService = (io, deps) => {
   };
 
   /**
-   * Handle a price tick from the coinbase IPC stream
+   * Compute tick-level momentum from the raw tick ring buffer
+   * @returns {{direction: string, magnitude: number, velocity: number}}
+   */
+  const computeTickMomentum = () => {
+    if (tickBuffer.length < 3) return { direction: 'neutral', magnitude: 0, velocity: 0 };
+
+    const shortWindow = tickBuffer.slice(-10);
+    const longWindow = tickBuffer.slice(-30);
+
+    const shortDir = shortWindow.length >= 2
+      ? shortWindow[shortWindow.length - 1].price - shortWindow[0].price
+      : 0;
+    const longDir = longWindow.length >= 2
+      ? longWindow[longWindow.length - 1].price - longWindow[0].price
+      : 0;
+
+    const magnitude = Math.abs(shortDir) / (shortWindow[0]?.price || 1) * 10000; // basis points
+    const timeDelta = (shortWindow[shortWindow.length - 1]?.timestamp - shortWindow[0]?.timestamp) / 1000;
+    const velocity = timeDelta > 0 ? shortDir / timeDelta : 0;
+
+    let direction = 'neutral';
+    if (shortDir > 0 && longDir > 0) direction = 'up';
+    else if (shortDir < 0 && longDir < 0) direction = 'down';
+
+    return {
+      direction,
+      magnitude: Math.round(magnitude * 100) / 100,
+      velocity: Math.round(velocity * 100) / 100,
+    };
+  };
+
+  /**
+   * Handle a price tick from the exchange IPC stream
    * @param {number} price - Current BTC price
    * @param {number} timestamp - Tick timestamp (ms)
-   * @param {number} [volume=0] - Tick volume
    */
-  const handlePriceTick = (price, timestamp, volume = 0) => {
+  const handlePriceTick = (price, timestamp) => {
     if (!running) return;
     lastPrice = price;
 
-    aggregator.processTick(price, timestamp, volume);
+    // Buffer all raw ticks for momentum computation
+    tickBuffer.push({ price, timestamp });
+    if (tickBuffer.length > TICK_BUFFER_SIZE) {
+      tickBuffer.splice(0, tickBuffer.length - TICK_BUFFER_SIZE);
+    }
 
     // Throttled tick emission to updown room (max 1/sec)
     const now = Date.now();
@@ -101,12 +144,14 @@ const createUpDownService = (io, deps) => {
       lastTickEmit = now;
       const timeRemaining = contract.expiry ? Math.max(0, contract.expiry - now) : null;
       const pnl = computePnL();
+      const tickMomentum = computeTickMomentum();
       io.to('updown').emit('updown:tick', {
         price,
         timestamp: now,
         timeRemaining,
         pnl,
         contract: contract.expiry ? contract : null,
+        tickMomentum,
       });
     }
   };
@@ -115,15 +160,32 @@ const createUpDownService = (io, deps) => {
    * Run signal computation and emit results
    */
   const runSignalCycle = () => {
-    const result = signalEngine.computeSignals(contract.expiry);
+    // Get scorecard metrics for adaptive weights + horizon prediction
+    const metrics = scorecard.getMetrics();
 
-    // Emit full indicator data every cycle
+    // Feature 7: Feed adaptive weights back to signal engine
+    if (metrics.adaptiveWeights) {
+      signalEngine.setIndicatorWeights(metrics.adaptiveWeights);
+    }
+
+    // Feature 8: Pass scorecard metrics for horizon prediction
+    const result = signalEngine.computeSignals(contract.expiry, metrics);
+
+    // Emit full indicator data every cycle (with new fields)
+    const tickMomentum = computeTickMomentum();
     io.to('updown').emit('updown:indicators', {
       timeframes: result.timeframes,
+      type: result.type,
       score: result.score,
+      confidence: result.confidence,
       noTradeZone: result.noTradeZone,
       warningZone: result.warningZone,
       timestamp: result.timestamp,
+      tickMomentum,
+      trendFilter: result.trendFilter,
+      volatility: result.volatility,
+      pivotPoints: result.pivotPoints,
+      confluence: result.confluence,
     });
 
     // Emit signal change event only when signal changes
@@ -139,6 +201,9 @@ const createUpDownService = (io, deps) => {
         signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
       }
 
+      // Record signal change for scorecard tracking
+      scorecard.recordPrediction(result, 'signal_change');
+
       io.to('updown').emit('updown:signal', {
         type: result.type,
         score: result.score,
@@ -147,27 +212,11 @@ const createUpDownService = (io, deps) => {
         warningZone: result.warningZone,
         timeframes: result.timeframes,
         timestamp: result.timestamp,
+        trendFilter: result.trendFilter,
+        volatility: result.volatility,
+        pivotPoints: result.pivotPoints,
+        horizonPrediction: result.horizonPrediction,
       });
-    }
-  };
-
-  /**
-   * Seed candles from coinbase exchange via IPC request
-   */
-  const seedFromExchange = async () => {
-    const coinbaseIPC = exchangeIPCMap?.coinbase;
-    if (!coinbaseIPC?.isConnected()) {
-      log('WARN', '📊 UpDown: coinbase IPC not connected, skipping seed');
-      return;
-    }
-
-    // Request candles from coinbase engine for each timeframe we can get
-    for (const tf of ['1m', '5m', '15m', '1h']) {
-      const candles = await coinbaseIPC.request('getCandles', { product: 'BTC-USD', timeframe: tf }, 'coinbase', 10_000).catch(() => null);
-      if (candles?.length) {
-        aggregator.seedCandles(tf, candles);
-        log('INFO', `📊 UpDown: seeded ${candles.length} ${tf} candles from coinbase`);
-      }
     }
   };
 
@@ -178,10 +227,18 @@ const createUpDownService = (io, deps) => {
     if (running) return;
     loadState();
 
-    await seedFromExchange();
-
     running = true;
     signalInterval = setInterval(runSignalCycle, SIGNAL_INTERVAL_MS);
+
+    // Set lastPrice from most recent candle if available
+    const candles1m = candleCache.getCandles('coinbase', '1m');
+    if (candles1m.length > 0) {
+      lastPrice = candles1m[candles1m.length - 1].close;
+    }
+
+    // Start scorecard auto-sampling (every 60s) — awaits JSONL history hydration
+    await scorecard.start(() => signalEngine.computeSignals(contract.expiry, scorecard.getMetrics()));
+
     log('INFO', '📊 UpDown service started interval=5s');
   };
 
@@ -194,6 +251,7 @@ const createUpDownService = (io, deps) => {
       clearInterval(signalInterval);
       signalInterval = null;
     }
+    scorecard.stop();
     persistState();
     log('INFO', '📊 UpDown service stopped');
   };
@@ -212,12 +270,18 @@ const createUpDownService = (io, deps) => {
       pnl: computePnL(),
       latestSignal,
       signalHistory: signalHistory.slice(-20),
+      scorecard: scorecard.getMetrics(),
       candleCounts: {
-        '1m': aggregator.getCandles('1m').length,
-        '3m': aggregator.getCandles('3m').length,
-        '5m': aggregator.getCandles('5m').length,
-        '15m': aggregator.getCandles('15m').length,
-        '1h': aggregator.getCandles('1h').length,
+        '1m': candleCache.getCandles('coinbase', '1m').length,
+        '3m': candleCache.getCandles('coinbase', '3m').length,
+        '5m': candleCache.getCandles('coinbase', '5m').length,
+        '10m': candleCache.getCandles('coinbase', '10m').length,
+        '15m': candleCache.getCandles('coinbase', '15m').length,
+        '30m': candleCache.getCandles('coinbase', '30m').length,
+        '1h': candleCache.getCandles('coinbase', '1h').length,
+        '2h': candleCache.getCandles('coinbase', '2h').length,
+        '4h': candleCache.getCandles('coinbase', '4h').length,
+        '1d': candleCache.getCandles('coinbase', '1d').length,
       },
     };
   };
@@ -265,6 +329,7 @@ const createUpDownService = (io, deps) => {
     stop,
     handlePriceTick,
     getStatus,
+    getScorecard: () => scorecard.getMetrics(),
     setContract,
     setPosition,
     clearPosition,

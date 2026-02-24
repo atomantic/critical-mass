@@ -7,11 +7,16 @@
  */
 
 const TIMEFRAMES = {
-  '1m': { intervalMs: 60_000, maxCandles: 120 },
-  '3m': { intervalMs: 180_000, maxCandles: 80 },
-  '5m': { intervalMs: 300_000, maxCandles: 72 },
-  '15m': { intervalMs: 900_000, maxCandles: 96 },
-  '1h': { intervalMs: 3_600_000, maxCandles: 48 },
+  '1m': { intervalMs: 60_000, maxCandles: 180 },
+  '3m': { intervalMs: 180_000, maxCandles: 160 },
+  '5m': { intervalMs: 300_000, maxCandles: 180 },
+  '15m': { intervalMs: 900_000, maxCandles: 180 },
+  '1h':  { intervalMs: 3_600_000,   maxCandles: 200 },
+  '10m': { intervalMs: 600_000,      maxCandles: 180 },
+  '30m': { intervalMs: 1_800_000,    maxCandles: 120 },
+  '2h':  { intervalMs: 7_200_000,    maxCandles: 100 },
+  '4h':  { intervalMs: 14_400_000,   maxCandles: 60  },
+  '1d':  { intervalMs: 86_400_000,   maxCandles: 60  },
 };
 
 const TIMEFRAME_KEYS = Object.keys(TIMEFRAMES);
