@@ -195,3 +195,26 @@ When analyzing performance:
 8. **DO check that CFV `forceExitSeconds` is set** — if 0 or absent, CFV will ride to binary settlement (historically 0% win rate on settlement rides).
 9. **DO review sigma calibration** in window summaries. If ratio (predicted/realized) is consistently >2 or <0.5, the vol model is miscalibrated. Check `sigmaCalibration` in journal window-summary entries.
 10. **DO review entry metadata** on settlements. Journal settlement records now include `entryEdge`, `entrySigma`, `entryFairProb`, `entryMarketProb`, and `entryBtcSpot` for post-trade calibration analysis.
+
+## Aggressive Sizing Overhaul (2026-02-22)
+
+### Context
+-$31 P&L across 10 trades in 6 days on a $1,107 account. Three of five strategies had zero effective live fills. Position sizing at 3% ($33/trade) was too small to produce meaningful returns. The full account is declared risk capital.
+
+### Disabled Strategies
+- **Gamma Scalper**: Disabled — 10% dry-run WR, 100% of live signals blocked by slippage guard. OTM brackets have no resting liquidity. Keep in shadow mode.
+- **Momentum Rider**: Disabled — 20.4% dry-run WR with -$83 P&L at minTrendTicks=5. Not producing meaningful edge. Keep in shadow mode.
+- **Coinbase Fair Value**: Already disabled — no change.
+
+### Sizing Increases (from conservative to aggressive)
+- **Swing Flipper**: `maxBetPct` 0.01 → 0.12 (12%, ~$130/trade), `maxContracts` 15 → 100, `maxPositions` 1 → 3
+- **Settlement Sniper**: `kellyFraction` 0.15 → 0.25, `maxBetPct` 0.04 → 0.12, `maxContracts` 100 → 200
+- **Risk cap**: `maxExposurePerWindow` 75 → 200 (old cap would block every trade at new sizing)
+
+### Daily Market Support
+- Added `"daily"` to `timeframes` in config — engine now fetches and tracks KXBTCD (daily BTC) markets.
+- **Swing Flipper**: Added `TIME_SCALES` map with timeframe-aware time windows and lookback scaling. Daily markets use wider windows (minTTL 1800s, maxTTL 28800s, oscLookback 60, collapseLookback 30). Config params set a floor; timeframe scaling widens.
+- **Settlement Sniper**: Skips daily markets entirely (`continue` when `timeframe === 'daily'`). Black-Scholes with sigma=0.4 and T=14400s pushes all probabilities toward 0.50 — the sniper's edge model is not calibrated for daily horizons.
+
+### Journal Fix
+- Removed `writeSkips()` call from simulation engine evaluation loop. This was writing ~1.5M skip diagnostic entries per day to journal files — pure noise. Peak edge tracking still works from in-memory diagnostics. Expected journal size: ~1-2K lines/day (entries, exits, settlements, window summaries only).

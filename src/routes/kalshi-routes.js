@@ -1277,6 +1277,9 @@ module.exports = (app, sharedDeps) => {
   });
   priceBridge.start();
 
+  // Expose price bridge to sharedDeps so hedge-routes can use it
+  sharedDeps.priceBridge = priceBridge;
+
   // Gemini public WebSocket for a second price source
   const { createGeminiWebSocketFeed } = require('../adapters/gemini/websocket');
   const geminiWs = createGeminiWebSocketFeed('kalshi-gemini', {

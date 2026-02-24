@@ -17,6 +17,12 @@ const BaseStrategy = require('../base-strategy.js')
 const { parseStrikePrice, getCoinbaseTickerForKalshi, getBracketInfo } = require('../../adapters/markets.js')
 const { checkLiquidity } = require('../../services/volatility-service.js')
 
+const TIME_SCALES = {
+  '15min':  { minTTL: 90,   maxTTL: 540,   oscLookback: 15, collapseLookback: 8 },
+  'hourly': { minTTL: 300,  maxTTL: 2400,  oscLookback: 30, collapseLookback: 15 },
+  'daily':  { minTTL: 1800, maxTTL: 28800, oscLookback: 60, collapseLookback: 30 },
+}
+
 class SwingFlipperStrategy extends BaseStrategy {
   constructor(config) {
     super('swing-flipper', config)
@@ -159,15 +165,23 @@ class SwingFlipperStrategy extends BaseStrategy {
 
       const secondsToSettlement = Math.max(0, (closeTime - now) / 1000)
 
+      // Timeframe-aware scaling: widen time windows and lookbacks for hourly/daily markets
+      const tickerTimeframe = context.marketInfo?.get(ticker)?.timeframe || '15min'
+      const scale = TIME_SCALES[tickerTimeframe] || TIME_SCALES['15min']
+      const minTTL = Math.max(params.minSecondsToSettlement, scale.minTTL)
+      const maxTTL = Math.max(params.maxSecondsToSettlement, scale.maxTTL)
+      const oscLookback = Math.max(params.oscillationLookback, scale.oscLookback)
+      const collLookback = Math.max(params.collapseLookback, scale.collapseLookback)
+
       const diag = { ticker, ttl: Math.round(secondsToSettlement), status: '' }
 
       // Time filter
-      if (secondsToSettlement < params.minSecondsToSettlement) {
+      if (secondsToSettlement < minTTL) {
         diag.status = 'too close to settlement'
         this.diagnostics.push(diag)
         continue
       }
-      if (secondsToSettlement > params.maxSecondsToSettlement) {
+      if (secondsToSettlement > maxTTL) {
         diag.status = 'too far from settlement'
         this.diagnostics.push(diag)
         continue
@@ -184,7 +198,7 @@ class SwingFlipperStrategy extends BaseStrategy {
       // Check existing positions for exit
       const existingPosition = context.positions.find(p => p.ticker === ticker && p.metadata?.strategy === this.name)
       if (existingPosition) {
-        const exitSignal = this.checkExit(ticker, existingPosition, liquidity, secondsToSettlement, history, params)
+        const exitSignal = this.checkExit(ticker, existingPosition, liquidity, secondsToSettlement, history, { ...params, collapseLookback: collLookback, minSecondsToSettlement: minTTL })
         if (exitSignal) signals.push(exitSignal)
         diag.status = exitSignal ? `EXIT: ${exitSignal.reason}` : 'holding'
         this.diagnostics.push(diag)
@@ -216,7 +230,7 @@ class SwingFlipperStrategy extends BaseStrategy {
       const currentPrice = side === 'yes' ? yesPrice : noPrice
 
       // Oscillation detection: contract must have proven range > threshold
-      const oscillation = this.measureOscillation(history, params.oscillationLookback)
+      const oscillation = this.measureOscillation(history, oscLookback)
       if (oscillation.range < params.minOscillationRange) {
         diag.status = `low oscillation (${oscillation.range}¢ < ${params.minOscillationRange}¢)`
         this.diagnostics.push(diag)
