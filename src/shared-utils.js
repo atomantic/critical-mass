@@ -256,6 +256,9 @@ const shouldAutoResumeRegime = (exchange) => {
  */
 const incrementToDecimals = (increment) => {
   const s = String(increment);
+  // Handle scientific notation (e.g. 1e-8 → 8 decimals)
+  const sci = s.match(/^[\d.]+e[+-]?(\d+)$/i);
+  if (sci) return parseInt(sci[1], 10);
   const dot = s.indexOf('.');
   return dot === -1 ? 0 : s.length - dot - 1;
 };

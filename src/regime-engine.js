@@ -560,7 +560,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           const summary = fillLedger.aggregateFills(fillsForBody);
 
           const proceeds = summary.totalValue - summary.totalFees;
-          const pnl = proceeds - body.costBasis;
+          // Prorate cost basis when sell doesn't cover full body (stale TP / partial fill)
+          const soldRatio = body.assetQty > 0 ? Math.min(summary.totalSize / body.assetQty, 1) : 1;
+          const proratedCostBasis = roundUSDC(body.costBasis * soldRatio);
+          const pnl = proceeds - proratedCostBasis;
           const holdbackAsset = roundAsset(body.assetQty - summary.totalSize);
 
           const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
@@ -1763,6 +1766,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
             const t = setTimeout(() => { completedMergeTpOrders.delete(mergeTarget.tpOrderId); ttlTimers.delete(t); }, 300000);
             ttlTimers.add(t);
           }
+          // Clear body TP fields so placeBodyTp can re-place after merge
+          // (cancelBodyTpOrder only removes executor tracking, not body state)
+          mergeTarget.tpOrderId = null;
+          mergeTarget.tpPrice = 0;
+          mergeTarget.assetOnOrder = 0;
         }
       }
 
@@ -1784,6 +1792,25 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         // Place body TP for merged body
         await placeBodyTp(merged);
+
+        // Defense-in-depth: verify TP covers updated body size after merge
+        if (merged.tpOrderId && merged.assetOnOrder > 0 && merged.tpPrice > 0) {
+          const tierCfgCheck = celestialHierarchy.getTierConfig(merged.tier);
+          const { sellQty } = positionSizer.calculateTakeProfitSize(
+            merged.assetQty, merged.avgPrice, merged.tpPrice, tierCfgCheck.holdbackScale
+          );
+          if (Math.abs(sellQty - merged.assetOnOrder) > 0.00000001) {
+            console.log(`⚠️ [${exchange}] Stale TP detected for body ${merged.id.slice(-8)}: onOrder=${merged.assetOnOrder}, expected=${sellQty} — cancelling for re-place`);
+            const cancelResult = await orderExecutor.cancelBodyTpOrder(merged.id);
+            if (cancelResult.cancelled) {
+              orderExecutor.removeBodyTracking(merged.tpOrderId);
+              merged.tpOrderId = null;
+              merged.tpPrice = 0;
+              merged.assetOnOrder = 0;
+              await placeBodyTp(merged);
+            }
+          }
+        }
 
         const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
         console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy merged into ${merged.tier}: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${merged.id.slice(-8)} (${merged.assetQty.toFixed(6)} ${baseCurrency}, avg=${fmtPrice(merged.avgPrice)})`);
@@ -1870,7 +1897,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         const tierCfg = celestialHierarchy.getTierConfig(mergeSnapshot.tier);
         const proceeds = summary.totalValue - summary.totalFees;
-        const pnl = proceeds - mergeSnapshot.costBasis;
+        // Prorate cost basis when sell doesn't cover full body (stale TP / partial fill)
+        const soldRatio = mergeSnapshot.assetQty > 0 ? Math.min(summary.totalSize / mergeSnapshot.assetQty, 1) : 1;
+        const proratedCostBasis = roundUSDC(mergeSnapshot.costBasis * soldRatio);
+        const pnl = proceeds - proratedCostBasis;
         const holdbackAsset = roundAsset(mergeSnapshot.assetQty - summary.totalSize);
 
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
@@ -1930,7 +1960,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const body = bodies[bodyIdx];
         const tierCfg = celestialHierarchy.getTierConfig(body.tier);
         const proceeds = summary.totalValue - summary.totalFees;
-        const pnl = proceeds - body.costBasis;
+        // Prorate cost basis when sell doesn't cover full body (stale TP / partial fill)
+        const soldRatio = body.assetQty > 0 ? Math.min(summary.totalSize / body.assetQty, 1) : 1;
+        const proratedCostBasis = roundUSDC(body.costBasis * soldRatio);
+        const pnl = proceeds - proratedCostBasis;
         const holdbackAsset = roundAsset(body.assetQty - summary.totalSize);
 
         // Update celestial state
@@ -2365,6 +2398,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
                 body.assetOnOrder = 0;
                 saveLiveState();
                 await placeBodyTp(body);
+              } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING') {
+                // Check if TP covers adequate portion of body (stale-size detection)
+                const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+                const { sellQty } = positionSizer.calculateTakeProfitSize(
+                  body.assetQty, body.avgPrice, body.tpPrice, tierCfg.holdbackScale
+                );
+                if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
+                  console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
+                  const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id);
+                  if (cancelResult.cancelled) {
+                    orderExecutor.removeBodyTracking(body.tpOrderId);
+                    body.tpOrderId = null;
+                    body.tpPrice = 0;
+                    body.assetOnOrder = 0;
+                    saveLiveState();
+                    await placeBodyTp(body);
+                  }
+                }
               }
             })
             .catch(async (err) => {
@@ -3051,6 +3102,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         if (!cancelResult.cancelled) {
           console.log(`⚠️ [${exchange}] [DRY-RUN] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
           mergeTarget = null;
+        } else {
+          // Clear body TP fields so placeBodyTp can re-place after merge
+          mergeTarget.tpOrderId = null;
+          mergeTarget.tpPrice = 0;
+          mergeTarget.assetOnOrder = 0;
         }
       }
 
@@ -3541,12 +3597,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       console.log(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP ${reason}, aborting roll-up`);
       return { success: false, message: `Source TP ${reason}` };
     }
+    // Clear source body TP fields after successful cancel
+    source.tpOrderId = null;
+    source.tpPrice = 0;
+    source.assetOnOrder = 0;
 
     // Cancel target TP
     const tgtCancel = await orderExecutor.cancelBodyTpOrder(target.id);
     if (!tgtCancel.cancelled) {
       // Clean up snapshots
-      if (source.tpOrderId) pendingMergeTpOrders.delete(source.tpOrderId);
+      if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
       if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
       // Restore source TP to avoid leaving it dangling
       console.log(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP cancel failed, restoring source TP`);
@@ -3554,6 +3614,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       saveLiveState();
       return { success: false, message: 'Target TP cancel failed, source restored' };
     }
+    // Clear target body TP fields after successful cancel
+    target.tpOrderId = null;
+    target.tpPrice = 0;
+    target.assetOnOrder = 0;
 
     // Merge bodies (pure data)
     const merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed);
@@ -3562,16 +3626,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
 
     // Move snapshots from pending → completed (5min TTL for late-arriving fills)
-    if (source.tpOrderId) {
-      pendingMergeTpOrders.delete(source.tpOrderId);
-      completedMergeTpOrders.set(source.tpOrderId, sourceSnapshot);
-      const t3 = setTimeout(() => { completedMergeTpOrders.delete(source.tpOrderId); ttlTimers.delete(t3); }, 300000);
+    if (sourceSnapshot.tpOrderId) {
+      pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
+      completedMergeTpOrders.set(sourceSnapshot.tpOrderId, sourceSnapshot);
+      const t3 = setTimeout(() => { completedMergeTpOrders.delete(sourceSnapshot.tpOrderId); ttlTimers.delete(t3); }, 300000);
       ttlTimers.add(t3);
     }
-    if (target.tpOrderId) {
-      pendingMergeTpOrders.delete(target.tpOrderId);
-      completedMergeTpOrders.set(target.tpOrderId, targetSnapshot);
-      const t4 = setTimeout(() => { completedMergeTpOrders.delete(target.tpOrderId); ttlTimers.delete(t4); }, 300000);
+    if (targetSnapshot.tpOrderId) {
+      pendingMergeTpOrders.delete(targetSnapshot.tpOrderId);
+      completedMergeTpOrders.set(targetSnapshot.tpOrderId, targetSnapshot);
+      const t4 = setTimeout(() => { completedMergeTpOrders.delete(targetSnapshot.tpOrderId); ttlTimers.delete(t4); }, 300000);
       ttlTimers.add(t4);
     }
 
