@@ -18,7 +18,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const { roundBTC, roundUSDC } = require('../src/volatility-utils');
+const { roundAsset: roundBTC, roundUSDC } = require('../src/volatility-utils');
 
 const API_URL = 'https://api.coinbase.com';
 const PRODUCT_ID = 'BTC-USDC';
