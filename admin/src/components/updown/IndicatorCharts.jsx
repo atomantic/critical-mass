@@ -77,7 +77,7 @@ export default function IndicatorCharts({ indicators }) {
 
       {/* Current values summary */}
       {currentTf && (
-        <div className="grid grid-cols-3 gap-3 mb-4 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 text-xs">
           <div className="bg-gray-900 rounded p-2">
             <div className="text-gray-500 mb-0.5">RSI</div>
             <div className={`font-mono font-medium ${
