@@ -79,6 +79,7 @@ const createPriceBridge = (io, options = {}) => {
       previousPrice,
       priceChange,
       updatedAt: Date.now(),
+      tradeFlow: marketState.tradeFlow || null,
     };
 
     priceCache.set(ticker, updated);

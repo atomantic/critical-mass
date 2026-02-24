@@ -48,6 +48,8 @@ class SimulationEngine {
     this.orderBookMetrics = new Map()
     /** @type {Object | null} Latest Polymarket BTC sentiment */
     this.polymarketSentiment = null
+    /** @type {Map<string, Object>} Trade flow imbalance metrics by ticker */
+    this.tradeFlowMetrics = new Map()
     /** @type {Map<string, Object>} Kalshi orderbook metrics by ticker */
     this.kalshiBookMetrics = new Map()
     /** @type {Object | null} Live execution service reference */
@@ -444,6 +446,15 @@ class SimulationEngine {
   }
 
   /**
+   * Process trade flow imbalance update from price bridge
+   * @param {string} ticker - Product ticker (e.g., 'BTC-USD')
+   * @param {Object} tradeFlow - { imbalance60s, imbalance300s, buyVolume60s, sellVolume60s, tradeCount60s, updatedAt }
+   */
+  onTradeFlowUpdate(ticker, tradeFlow) {
+    this.tradeFlowMetrics.set(ticker, tradeFlow)
+  }
+
+  /**
    * Determine the winning side for a settled market based on BTC spot
    * @param {string} ticker - Market ticker
    * @param {number} btcSpot - BTC spot price at/near settlement
@@ -664,6 +675,7 @@ class SimulationEngine {
       orderBookMetrics: this.orderBookMetrics,
       kalshiBookMetrics: this.kalshiBookMetrics,
       polymarketSentiment: this.polymarketSentiment,
+      tradeFlowMetrics: this.tradeFlowMetrics,
       bracketAnalytics,
       positions: this.state.positions || [],
       balance: this.state.balance,

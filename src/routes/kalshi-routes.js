@@ -877,6 +877,11 @@ module.exports = (app, sharedDeps) => {
 
     simulationEngine.start(5000);
 
+    // Wire Polymarket sentiment to the simulation engine
+    await polymarketPriceService.initPolymarketPriceService(io, (sentiment) => {
+      simulationEngine?.onPolymarketSentiment?.(sentiment);
+    });
+
     // Wire exchange aggregator composite prices to the simulation engine
     setCompositeCallback((ticker, composite) => {
       simulationEngine?.onCompositeUpdate?.(ticker, composite);
@@ -1273,6 +1278,12 @@ module.exports = (app, sharedDeps) => {
       onExchangeUpdate('coinbase', ticker, price, data);
       // Emit coinbase:price for the useCoinbaseSocket hook
       io.to('coinbase').emit('coinbase:price', { ticker, ...data });
+      // Wire Coinbase spot price directly to simulation engine (fills coinbasePrices + coinbasePriceHistory)
+      simulationEngine?.onCoinbasePriceUpdate?.(ticker, price, data);
+      // Forward trade flow imbalance data when available
+      if (data.tradeFlow) {
+        simulationEngine?.onTradeFlowUpdate?.(ticker, data.tradeFlow);
+      }
     },
   });
   priceBridge.start();
@@ -1350,6 +1361,10 @@ module.exports = (app, sharedDeps) => {
     socket.on('gemini:unsubscribe', () => socket.leave('gemini'));
     socket.on('cryptocom:subscribe', () => socket.join('cryptocom'));
     socket.on('cryptocom:unsubscribe', () => socket.leave('cryptocom'));
+
+    // Polymarket sentiment socket room
+    socket.on('polymarket:subscribe', () => socket.join('polymarket'));
+    socket.on('polymarket:unsubscribe', () => socket.leave('polymarket'));
   });
 
   // Return autoStartEngine for server.js to call on boot
