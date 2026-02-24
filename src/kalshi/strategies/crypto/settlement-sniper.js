@@ -150,6 +150,12 @@ class SettlementSniperStrategy extends BaseStrategy {
     this.diagnostics = []
 
     for (const [ticker, priceData] of context.prices) {
+      // Skip daily markets — Black-Scholes model with sigma=0.4 and T=14400s
+      // pushes all probabilities toward 0.50; sniper edge model is not calibrated
+      // for daily horizons. Swing-flipper handles daily markets instead.
+      const tickerTimeframe = context.marketInfo?.get(ticker)?.timeframe
+      if (tickerTimeframe === 'daily') continue
+
       const coinbaseTicker = getCoinbaseTickerForKalshi(ticker)
       if (!coinbaseTicker) continue
 

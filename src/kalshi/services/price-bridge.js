@@ -16,6 +16,10 @@ const { log } = require('../../logger');
 /** @type {Map<string, { price: number, bid: number, ask: number, volume24h: number, previousPrice: number, priceChange: number, updatedAt: number }>} */
 const priceCache = new Map();
 
+/** @type {Array<{price: number, timestamp: number}>} */
+const priceHistory = [];
+const PRICE_HISTORY_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+
 /** @type {((ticker: string, price: number, data: Object) => void) | null} */
 let priceCallback = null;
 
@@ -79,6 +83,15 @@ const createPriceBridge = (io, options = {}) => {
 
     priceCache.set(ticker, updated);
 
+    // Record price history for volatility calculations
+    const now = Date.now()
+    priceHistory.push({ price: marketState.lastPrice, timestamp: now })
+    // Prune entries older than 30 minutes
+    const cutoff = now - PRICE_HISTORY_MAX_AGE_MS
+    while (priceHistory.length > 0 && priceHistory[0].timestamp < cutoff) {
+      priceHistory.shift()
+    }
+
     // Forward to simulation engine callback
     if (priceCallback) {
       priceCallback(ticker, marketState.lastPrice, updated);
@@ -113,6 +126,7 @@ const createPriceBridge = (io, options = {}) => {
     }
     isRunning = false;
     priceCache.clear();
+    priceHistory.length = 0;
     log('INFO', `[${ts()}] 🌉 Kalshi price bridge stopped`);
   };
 
@@ -127,11 +141,14 @@ const createPriceBridge = (io, options = {}) => {
     subscriptions: Array.from(priceCache.keys()),
   });
 
+  const getPriceHistory = () => [...priceHistory];
+
   return {
     start,
     stop,
     getCachedPrice,
     getAllCachedPrices,
+    getPriceHistory,
     getStatus,
   };
 };

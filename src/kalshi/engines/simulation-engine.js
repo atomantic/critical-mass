@@ -7,7 +7,7 @@ const { createStrategies, STRATEGY_INFO } = require('../strategies/index.js')
 const { computeBracketAnalytics } = require('../services/cross-market-analytics.js')
 const { trackPriceUpdate, settleExpiredTrackedMarkets, recordSettlement } = require('../services/conviction-tracker.js')
 const { writeSnapshot } = require('../services/snapshot-writer.js')
-const { writeEntry, writeExit, writeSettlement, writeSkips, writeReject, writeSessionSummary, writeShadowEntry, writeShadowExit, writeShadowSettlement, writeWindowSummary } = require('../services/journal-writer.js')
+const { writeEntry, writeExit, writeSettlement, writeReject, writeSessionSummary, writeShadowEntry, writeShadowExit, writeShadowSettlement, writeWindowSummary } = require('../services/journal-writer.js')
 const { calculateKalshiFee, calculateFairProbability, calculateRollingVolatility, getSigma } = require('../services/volatility-service.js')
 const { getBracketInfo, parseStrikePrice } = require('../adapters/markets.js')
 const { sendAlert } = require('../services/alert-service.js')
@@ -363,7 +363,8 @@ class SimulationEngine {
         close_time: market.close_time,
         event_ticker: market.event_ticker,
         type: market.type,
-        asset: market.asset
+        asset: market.asset,
+        timeframe: market.timeframe
       })
     }
   }
@@ -666,7 +667,8 @@ class SimulationEngine {
       bracketAnalytics,
       positions: this.state.positions || [],
       balance: this.state.balance,
-      config: this.config
+      config: this.config,
+      marketInfo: this.marketInfo
     }
 
     // Log price history summary for debugging
@@ -713,9 +715,6 @@ class SimulationEngine {
         this.log('error', `Strategy ${strategy.name} error: ${err.message}`, { strategy: strategy.name, stack: err.stack?.split('\n')[1]?.trim() })
         continue
       }
-
-      // Journal: record skipped opportunities from diagnostics
-      writeSkips(strategy.diagnostics, strategy.name, btcSpot)
 
       // Track peak edges per ticker for window summaries
       for (const d of strategy.diagnostics) {

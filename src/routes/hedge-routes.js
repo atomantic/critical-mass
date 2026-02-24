@@ -103,19 +103,13 @@ module.exports = (app, sharedDeps) => {
       kalshiApi,
       kalshiKeys,
       getPriceBridgePrice: () => {
-        // Try price bridge first, then fall back to adapter
         if (priceBridge) {
           const cached = priceBridge.getCachedPrice?.('BTC-USD')
-          if (cached) return cached
+          if (cached?.price) return cached.price
         }
-        // Fallback: return null, engine will skip eval
         return null
       },
-      getPriceHistory: () => {
-        // Get price history from price bridge or empty array
-        if (priceBridge?.getPriceHistory) return priceBridge.getPriceHistory()
-        return []
-      },
+      getPriceHistory: () => priceBridge?.getPriceHistory?.() ?? [],
       canFillCheck: orderbookService
         ? (ticker, side, action, count, slippage) => orderbookService.canFill(ticker, side, action, count, slippage)
         : null,
@@ -215,8 +209,8 @@ module.exports = (app, sharedDeps) => {
           exchangeAdapter,
           kalshiApi,
           kalshiKeys,
-          getPriceBridgePrice: () => priceBridge?.getCachedPrice?.('BTC-USD') || null,
-          getPriceHistory: () => priceBridge?.getPriceHistory?.() || [],
+          getPriceBridgePrice: () => priceBridge?.getCachedPrice?.('BTC-USD')?.price ?? null,
+          getPriceHistory: () => priceBridge?.getPriceHistory?.() ?? [],
           canFillCheck: orderbookService
             ? (ticker, side, action, count, slippage) => orderbookService.canFill(ticker, side, action, count, slippage)
             : null,
