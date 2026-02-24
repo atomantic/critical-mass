@@ -246,6 +246,16 @@ Modified: `signal-engine.js` (features 9-11), `BTCPriceChart.jsx` (decoupled int
 
 Modified: `signal-engine.js`, `scorecard.js`, `updown-service.js`, `useCandleData.js`, `candle-cache.js`, `BTCPriceChart.jsx`, `Dashboard.jsx`, `PriceChart.jsx`, `SignalBanner.jsx`, `SignalPanel.jsx`, `TimeframeGrid.jsx`
 
+## Wire Unused Signals Into Kalshi Strategies (2026-02-24)
+
+- [x] **Polymarket sentiment wiring** — `initPolymarketPriceService()` now called with engine callback in `startEngine()`; `context.polymarketSentiment` no longer null
+- [x] **Trade flow imbalance tracking** — Replaced empty `handleTrade()` stub with rolling window accumulator (60s/300s buy/sell ratio); exposed via `getMarketState().tradeFlow`
+- [x] **Coinbase price bridge fix** — `onCoinbasePriceUpdate()` now called from price bridge callback; `coinbasePrices`/`coinbasePriceHistory` Maps populated
+- [x] **Settlement Sniper signals** — Polymarket sentiment (±0.08/0.10) and trade flow imbalance (±0.08) confidence adjustments with diagnostics
+- [x] **Swing Flipper signals** — Polymarket sentiment veto (blocks when crowd + spot both disagree), trade flow confidence boost (+0.1)
+
+Modified: `market-data-service.js`, `price-bridge.js`, `simulation-engine.js`, `kalshi-routes.js`, `settlement-sniper.js`, `swing-flipper.js`
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22

@@ -259,14 +259,43 @@ class SwingFlipperStrategy extends BaseStrategy {
       const spotHistory = compositeHistory?.length > 5
         ? compositeHistory
         : context.coinbasePriceHistory?.get(coinbaseTicker)
-      if (!this.isSpotMovingTowardBracket(spotHistory, strikePrice, spotPrice)) {
+      const spotMovingToward = this.isSpotMovingTowardBracket(spotHistory, strikePrice, spotPrice)
+      if (!spotMovingToward) {
         diag.status = 'spot moving away from bracket'
         this.diagnostics.push(diag)
         continue
       }
 
+      // Polymarket sentiment veto: block entry when crowd AND spot disagree with our direction
+      const sentiment = context.polymarketSentiment
+      if (sentiment && Date.now() - sentiment.updatedAt < 120_000) {
+        const upPrice = sentiment.upPrice ?? 0
+        const downPrice = sentiment.downPrice ?? 0
+        // side='yes' means we expect price to stay in/move into bracket (price up near lower edge)
+        // side='no' would be the reverse — but swing-flipper always buys YES on pullbacks
+        const crowdOpposes = (side === 'yes' && downPrice > 0.65)
+          || (side === 'no' && upPrice > 0.65)
+        if (crowdOpposes) {
+          diag.status = `sentiment veto (up=${(upPrice * 100).toFixed(0)}% down=${(downPrice * 100).toFixed(0)}%)`
+          this.diagnostics.push(diag)
+          continue
+        }
+      }
+
       // Position sizing (conservative)
-      const confidence = Math.min(1, 0.5 + (oscillation.range / 40))
+      let confidence = Math.min(1, 0.5 + (oscillation.range / 40))
+
+      // Trade flow imbalance confidence boost
+      const tradeFlow = context.tradeFlowMetrics?.get('BTC-USD')
+      let tradeFlowImbalance = null
+      if (tradeFlow && tradeFlow.tradeCount60s > 0) {
+        const imb = tradeFlow.imbalance60s
+        tradeFlowImbalance = imb
+        // Positive imbalance = more buying = bullish; confirms YES-side pullback entries
+        if ((side === 'yes' && imb > 0.3) || (side === 'no' && imb < -0.3)) {
+          confidence = Math.min(1, confidence + 0.1)
+        }
+      }
       const count = this.calculatePositionSize(confidence, context.balance, context.config?.risk, currentPrice)
       const limitedCount = Math.min(count, params.maxContracts)
 
@@ -298,7 +327,8 @@ class SwingFlipperStrategy extends BaseStrategy {
           oscillationRange: oscillation.range,
           recentPeak: oscillation.recentPeak,
           pullback,
-          btcSpot: spotPrice
+          btcSpot: spotPrice,
+          tradeFlowImbalance
         }
       })
       this.diagnostics.push(diag)

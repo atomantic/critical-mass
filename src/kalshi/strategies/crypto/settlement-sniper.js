@@ -412,14 +412,52 @@ class SettlementSniperStrategy extends BaseStrategy {
         diag.mispricingAdj = mispricingConfirms ? 'confirm' : mispricingConflicts ? 'conflict' : 'neutral'
       }
 
-      // 5. Cross-exchange divergence signal
+      // 5. Polymarket sentiment confirmation
+      let sentimentNote = ''
+      const sentiment = context.polymarketSentiment
+      if (sentiment && Date.now() - sentiment.updatedAt < 120_000) {
+        const upPrice = sentiment.upPrice ?? 0
+        const downPrice = sentiment.downPrice ?? 0
+        if (side === 'yes' && upPrice > 0.60) {
+          bookConfidenceAdj += 0.08
+          sentimentNote = `crowd YES ${(upPrice * 100).toFixed(0)}% confirms`
+        } else if (side === 'no' && downPrice > 0.60) {
+          bookConfidenceAdj += 0.08
+          sentimentNote = `crowd NO ${(downPrice * 100).toFixed(0)}% confirms`
+        } else if (side === 'yes' && downPrice > 0.65) {
+          bookConfidenceAdj -= 0.10
+          sentimentNote = `crowd opposes YES (down=${(downPrice * 100).toFixed(0)}%)`
+        } else if (side === 'no' && upPrice > 0.65) {
+          bookConfidenceAdj -= 0.10
+          sentimentNote = `crowd opposes NO (up=${(upPrice * 100).toFixed(0)}%)`
+        }
+        diag.sentimentNote = sentimentNote || 'neutral'
+      }
+
+      // 6. Trade flow imbalance confirmation
+      let tradeFlowNote = ''
+      const tradeFlow = context.tradeFlowMetrics?.get('BTC-USD')
+      if (tradeFlow && tradeFlow.tradeCount60s > 0) {
+        const imb = tradeFlow.imbalance60s
+        if ((side === 'yes' && imb > 0.3) || (side === 'no' && imb < -0.3)) {
+          bookConfidenceAdj += 0.08
+          tradeFlowNote = `flow ${(imb * 100).toFixed(0)}% confirms`
+        } else if ((side === 'yes' && imb < -0.3) || (side === 'no' && imb > 0.3)) {
+          bookConfidenceAdj -= 0.08
+          tradeFlowNote = `flow ${(imb * 100).toFixed(0)}% opposes`
+        }
+        diag.tradeFlowNote = tradeFlowNote || 'neutral'
+        diag.tradeFlowImbalance60s = imb
+      }
+
+      // 7. Cross-exchange divergence signal
       const composite = context.compositePrices?.get(coinbaseTicker)
       if (composite?.maxDivergence > 0.001) {
         diag.exchangeDivergence = composite.maxDivergence
         diag.exchangeCount = composite.exchangeCount
       }
 
-      // 5. Price in range (YES: buy at ask+1, NO: buy at 100-bid with conservative pricing)
+      // 8. Price in range (YES: buy at ask+1, NO: buy at 100-bid with conservative pricing)
       const entryPrice = side === 'yes'
         ? liquidity.yesAsk + 1
         : 100 - liquidity.yesBid - 1
