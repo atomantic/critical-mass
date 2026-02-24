@@ -256,6 +256,16 @@ Modified: `signal-engine.js`, `scorecard.js`, `updown-service.js`, `useCandleDat
 
 Modified: `market-data-service.js`, `price-bridge.js`, `simulation-engine.js`, `kalshi-routes.js`, `settlement-sniper.js`, `swing-flipper.js`
 
+## Fix: Orphaned Buy from TP Race Condition (2026-02-24)
+
+- [x] **Repair script** — `scripts/repair-orphan-buy-mm0nf5pn.js`: unlinks buy 3 from stale sell, fixes sell annotations to buys 1+2 only, corrects realizedPnL/realizedAssetPnL/maxUsdcDeployed, creates new satellite body for buy 3
+- [x] **Root cause fix** — After `cancelBodyTpOrder` succeeds in merge flow, clear body's `tpOrderId`/`tpPrice`/`assetOnOrder` so `placeBodyTp` can re-place (applied to all 4 merge paths: live, dry-run, manual roll-up source+target)
+- [x] **Defense-in-depth** — Post-merge stale TP detection: after `placeBodyTp(merged)`, verify `assetOnOrder` matches `calculateTakeProfitSize`; cancel and re-place if stale
+- [x] **Reconcile stale-TP check** — Reconciliation loop checks OPEN/PENDING TPs for size staleness vs current body, cancels and re-places if mismatched
+- [x] **Prorated PnL** — All 3 sell-fill paths (offline, merge-snapshot, live) now prorate `costBasis` by `soldRatio` when sell doesn't cover full body
+
+Modified: `src/regime-engine.js` (5 fixes), `scripts/repair-orphan-buy-mm0nf5pn.js` (new)
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22
