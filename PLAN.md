@@ -221,6 +221,18 @@ Frontend: `SignalBanner.jsx` (trend/vol/horizon pills), `TimeframeGrid.jsx` (vol
 - [x] **Route + nav** — Lazy-loaded route in App.jsx, BarChart3 link in UpDown Dashboard header
 - [x] **PriceChart interval fix** — Custom `setInterval` in useCandleData shadowed `window.setInterval`, breaking chart interval buttons
 
+## Signal Engine v2: Backtest-Driven Filters (2026-02-23)
+
+- [x] **Feature 9: Confluence Filter** — Counts agreeing TFs; dampens overcrowded (7+: ×0.5) and moderate (6: ×0.8) signals; selective (≤5) pass through
+- [x] **Feature 10: Score Cap** — Clamps |score| to 35 (backtest: 35-45 zone = 43% accuracy)
+- [x] **Feature 11: Time-of-Day Weighting** — UTC hour multipliers from backtest accuracy (±15%)
+- [x] **Confluence pill** — Green/yellow/red pill in SignalBanner showing TF agreement count
+- [x] **Multi-timeframe charts** — 5 stacked HA charts (1m/3m/5m/15m/1h) replace single chart
+- [x] **Trade History relocation** — Moved under price charts in center column
+- [x] **Signal history dates** — Added month/day to signal panel timestamps
+
+Modified: `signal-engine.js` (features 9-11), `BTCPriceChart.jsx` (decoupled interval mode from selector UI), `PriceChart.jsx` (multi-TF), `Dashboard.jsx` (layout), `SignalBanner.jsx` (confluence pill), `SignalPanel.jsx` (date format)
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22

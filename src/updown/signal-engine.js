@@ -460,6 +460,25 @@ const createSignalEngine = (candleAggregator) => {
       }
     }
 
+    // Feature 9: Confluence filter — overcrowded signals perform worse than random
+    const compositeDir = compositeScore > 0 ? 1 : compositeScore < 0 ? -1 : 0;
+    let agreeing = 0;
+    let totalDirectional = 0;
+    for (const tf of ALL_SIGNAL_TFS) {
+      const tfScore = timeframes[tf]?.score ?? 0;
+      if (Math.abs(tfScore) > 15) {
+        totalDirectional++;
+        if ((tfScore > 0 ? 1 : -1) === compositeDir) agreeing++;
+      }
+    }
+    const confluenceQuality = agreeing >= 7 ? 'overcrowded' : agreeing >= 6 ? 'moderate' : 'selective';
+    if (confluenceQuality === 'overcrowded') {
+      compositeScore *= 0.5;
+    } else if (confluenceQuality === 'moderate') {
+      compositeScore *= 0.8;
+    }
+    const confluence = { agreeing, totalDirectional, quality: confluenceQuality };
+
     // Feature 1: Trend filter — dampen counter-trend signals
     const candles1h = candleAggregator.getCandles('1h');
     const trendFilter = computeTrendFilter(candles1h);
@@ -497,6 +516,19 @@ const createSignalEngine = (candleAggregator) => {
       }
     }
 
+    // Feature 10: Score cap — scores above |35| hit the low-accuracy zone
+    if (compositeScore > 35) compositeScore = 35;
+    else if (compositeScore < -35) compositeScore = -35;
+
+    // Feature 11: Time-of-day weighting from backtest accuracy by UTC hour
+    const utcHour = new Date(now).getUTCHours();
+    const HIGH_ACCURACY_HOURS = new Set([2, 9, 10, 14, 21]);
+    const LOW_ACCURACY_HOURS = new Set([0, 6, 15, 19]);
+    const todMultiplier = HIGH_ACCURACY_HOURS.has(utcHour) ? 1.15
+      : LOW_ACCURACY_HOURS.has(utcHour) ? 0.85
+      : 1.0;
+    compositeScore *= todMultiplier;
+
     // Feature 2: Volatility-scaled signal thresholds
     const candles5m = candleAggregator.getCandles('5m');
     const volatility = computeVolatilityContext(candles5m);
@@ -519,6 +551,8 @@ const createSignalEngine = (candleAggregator) => {
       trendFilter,
       volatility,
       pivotPoints,
+      confluence,
+      todMultiplier,
       horizonPrediction,
     };
   };

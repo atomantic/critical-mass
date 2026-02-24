@@ -59,6 +59,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining }) {
 
   const trendFilter = indicators?.trendFilter
   const volatility = indicators?.volatility
+  const confluence = indicators?.confluence
   const horizonPrediction = signal?.horizonPrediction
 
   const horizons = useMemo(() => {
@@ -118,6 +119,17 @@ export default function SignalBanner({ signal, indicators, timeRemaining }) {
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {/* Confluence pill */}
+        {confluence && (
+          <div className={`px-2 py-1 rounded text-xs font-bold ${
+            confluence.quality === 'selective' ? 'bg-green-900/40 text-green-400'
+            : confluence.quality === 'moderate' ? 'bg-yellow-900/40 text-yellow-400'
+            : 'bg-red-900/40 text-red-400'
+          }`}>
+            {confluence.agreeing <= 5 ? `${confluence.agreeing} TF` : confluence.agreeing === 6 ? '6 TF' : '7+ TF'}
           </div>
         )}
 
