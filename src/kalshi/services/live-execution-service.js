@@ -309,9 +309,41 @@ const handleLimitFillTimeout = async (orderId, signal, limitPrice, maxSlippage, 
   pendingOrders.delete(orderId)
   console.log(`[${ts()}] ⏰ Limit fill timeout for ${orderId} @ ${limitPrice}¢, cancelling and retrying at ${limitPrice + 1}¢`)
 
-  await cancelOrder(keys, orderId).catch(err =>
+  let cancelFailed404 = false
+  await cancelOrder(keys, orderId).catch(err => {
     console.log(`[${ts()}] ⚠️ Cancel failed for ${orderId}: ${err.message}`)
-  )
+    if (err.message?.includes('not_found') || err.message?.includes('404') || err.message?.includes('not found')) {
+      cancelFailed404 = true
+    }
+  })
+
+  // 404 on cancel means the order was already filled — verify via fills API before retrying
+  if (cancelFailed404 && keys) {
+    console.log(`[${ts()}] 🔍 Cancel 404 — checking if order ${orderId} was filled before retry`)
+    const fillsData = await getFills(keys, { order_id: orderId }).catch(() => null)
+    const fills = fillsData?.fills || []
+    if (fills.length > 0) {
+      const totalCount = fills.reduce((sum, f) => sum + (f.count || 0), 0)
+      const avgPrice = fills.reduce((sum, f) => sum + (f.yes_price || f.no_price || 0) * (f.count || 0), 0) / (totalCount || 1)
+      console.log(`[${ts()}] ✅ Order ${orderId} was already filled: ${totalCount}x @ ${Math.round(avgPrice)}¢ — skipping retry`)
+
+      if (callbacks.onFill) {
+        callbacks.onFill({
+          orderId,
+          ticker: signal.ticker,
+          side: signal.side,
+          action: signal.action,
+          count: totalCount,
+          price: Math.round(avgPrice),
+          expectedPrice: signal.price || 0,
+          slippage: signal.price ? Math.round(avgPrice) - signal.price : 0,
+          strategyName,
+          timestamp: fills[0]?.created_time || new Date().toISOString()
+        })
+      }
+      return // Do NOT retry — the original order was filled
+    }
+  }
 
   // Retry once at price + 1 (if still within slippage budget)
   const retryPrice = limitPrice + 1
