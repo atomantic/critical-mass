@@ -128,13 +128,6 @@ export default function UpDownDashboard() {
         </div>
       )}
 
-      {/* Signal Banner */}
-      <SignalBanner
-        signal={signal || status?.latestSignal}
-        indicators={rawIndicators}
-        timeRemaining={msLeft}
-      />
-
       {/* Top Bar */}
       <div className="bg-gray-800 rounded-lg p-4">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -218,29 +211,33 @@ export default function UpDownDashboard() {
         </div>
       </div>
 
-      {/* TimeframeGrid/Signal + Price Chart/Trade History + Scorecard */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 lg:grid-rows-2 gap-4">
-        <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
-        <div className="lg:col-span-2 lg:row-span-2 flex flex-col gap-4">
+      {/* TimeframeGrid/Signal + Price Chart/Trade History + Scorecard/Position */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <div className="flex flex-col gap-4">
+          <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
+          <SignalPanel signal={signal || status?.latestSignal} indicators={rawIndicators} />
+          <TradeHistory />
+        </div>
+        <div className="lg:col-span-2 flex flex-col gap-4">
           <PriceChart
             tick={tick}
             indicators={indicators}
             contract={status?.contract}
             signalAnnotations={signalAnnotations}
           />
-          <TradeHistory />
         </div>
-        <div className="lg:row-span-2">
+        <div className="flex flex-col gap-4">
+          <SignalBanner
+            signal={signal || status?.latestSignal}
+            indicators={rawIndicators}
+            timeRemaining={msLeft}
+          />
           <ScorecardPanel scorecard={socketScorecard || status?.scorecard} />
+          <ContractSetup initialContract={status?.contract} onPositionSet={fetchStatus} />
+          <PositionTracker initialPosition={status?.position} tick={tick} />
         </div>
-        <SignalPanel signal={signal || status?.latestSignal} />
       </div>
 
-      {/* Contract Setup + Position Tracker side by side */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ContractSetup initialContract={status?.contract} onPositionSet={fetchStatus} />
-        <PositionTracker initialPosition={status?.position} tick={tick} />
-      </div>
     </div>
   )
 }

@@ -175,7 +175,9 @@ const createUpDownService = (io, deps) => {
     const tickMomentum = computeTickMomentum();
     io.to('updown').emit('updown:indicators', {
       timeframes: result.timeframes,
+      type: result.type,
       score: result.score,
+      confidence: result.confidence,
       noTradeZone: result.noTradeZone,
       warningZone: result.warningZone,
       timestamp: result.timestamp,
@@ -183,6 +185,7 @@ const createUpDownService = (io, deps) => {
       trendFilter: result.trendFilter,
       volatility: result.volatility,
       pivotPoints: result.pivotPoints,
+      confluence: result.confluence,
     });
 
     // Emit signal change event only when signal changes
@@ -233,8 +236,8 @@ const createUpDownService = (io, deps) => {
       lastPrice = candles1m[candles1m.length - 1].close;
     }
 
-    // Start scorecard auto-sampling (every 60s)
-    scorecard.start(() => signalEngine.computeSignals(contract.expiry, scorecard.getMetrics()));
+    // Start scorecard auto-sampling (every 60s) — awaits JSONL history hydration
+    await scorecard.start(() => signalEngine.computeSignals(contract.expiry, scorecard.getMetrics()));
 
     log('INFO', '📊 UpDown service started interval=5s');
   };

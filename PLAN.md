@@ -233,6 +233,19 @@ Frontend: `SignalBanner.jsx` (trend/vol/horizon pills), `TimeframeGrid.jsx` (vol
 
 Modified: `signal-engine.js` (features 9-11), `BTCPriceChart.jsx` (decoupled interval mode from selector UI), `PriceChart.jsx` (multi-TF), `Dashboard.jsx` (layout), `SignalBanner.jsx` (confluence pill), `SignalPanel.jsx` (date format)
 
+## UpDown Dashboard Overhaul + Signal Recalibration (2026-02-24)
+
+- [x] **Fixed stale chart data** — useCandleData fetch effect had stale closure (suppressed eslint deps), all charts showed same candles
+- [x] **Added 3m candle derivation** — candle-cache.js was missing 3m in seedDerivedTimeframes
+- [x] **Dashboard layout restructure** — Flex columns instead of grid rows; PositionTracker under Scorecard; SignalPanel floats under TimeframeGrid
+- [x] **Fixed stale signal display** — Added type/confidence/confluence to `updown:indicators` emission; banner/panel prefer live values
+- [x] **10-chart multi-TF layout** — 2 columns: 1m/3m/5m/10m/15m left, 30m/1h/2h/4h/1d right with per-TF signal labels
+- [x] **Signal engine recalibration for day trading** — Hard cap at ±35 made BUY (threshold 40) mathematically impossible; replaced with soft compression, lowered thresholds (25/45), softened confluence/trend dampeners
+- [x] **Scorecard history hydration** — Loads last 3 days of JSONL outcomes on startup so metrics survive restarts
+- [x] **Signal banner tooltips** — All pills (confidence, horizons, confluence, trend, volatility, best horizon, time) have hover tooltips
+
+Modified: `signal-engine.js`, `scorecard.js`, `updown-service.js`, `useCandleData.js`, `candle-cache.js`, `BTCPriceChart.jsx`, `Dashboard.jsx`, `PriceChart.jsx`, `SignalBanner.jsx`, `SignalPanel.jsx`, `TimeframeGrid.jsx`
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22
