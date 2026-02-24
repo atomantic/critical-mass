@@ -135,6 +135,9 @@ This document serves as the authoritative reference for strategy configuration, 
 ### 12. Settlement sniper at edgeThreshold=0.18 (Feb 18-19)
 **Result**: In 34 dry-run trades, edges consistently fell in the 12-15% range — just below the 18% threshold. Best edges found per window were typically 10-15%, meaning the threshold blocked signals that the model identified as profitable. Reduced to 0.15 on 2026-02-19 to align with data. Note: Golden Rule #4 still applies — risk is managed via position sizing (maxBetPct 0.03), not threshold tuning.
 
+### 13. Limit order retry without fill check (Feb 24)
+**Result**: `handleLimitFillTimeout` cancelled the initial 3s-timeout order, got 404 (already filled), but didn't verify via fills API like `handleFillTimeout` does. Instead it retried at price+1, double-buying 200 contracts. On KXBTCD-26FEB2411-T63749.99: bought 100 YES @ 34¢ (filled, untracked), retried 100 YES @ 33¢ (also filled, tracked). Then oscillation collapse triggered 3 sell orders in 10 seconds (no pending-sell guard), selling 300 YES at 28-32¢ each — creating a net 100 NO position at 68¢. Total extra cost: ~$12 in realized losses + unintended short position. **Fix**: Added fill-check on 404 in retry path, added sell-duplicate guard via `pendingReservations`.
+
 ## Strategy Evaluation Order (as of 2026-02-19)
 
 Strategies are evaluated in this order. Within each settlement window, only one position is allowed — so evaluation order determines which strategy gets priority.
@@ -161,7 +164,7 @@ Strategies are evaluated in this order. Within each settlement window, only one 
 | Cross-position conflict | Code | Only 1 position per settlement window |
 | Liquidity-aware sizing | Code | Orders capped to available orderbook depth |
 
-## Known Failure Modes (Updated 2026-02-18)
+## Known Failure Modes (Updated 2026-02-24)
 
 ### 1. Cross-bracket double-entry (-$96 loss)
 Two strategies entered the same settlement window on adjacent brackets with opposing views — both lost. The engine's window conflict check existed but relied on in-memory `pendingReservations` which are lost on restart. **Fix**: The conflict check now also scans `state.trades` for recent buy trades in the same settlement window, surviving restarts.
@@ -180,6 +183,9 @@ CFV had no forced pre-settlement exit — it relied on edge-reversal or take-pro
 
 ### 6. Reconciled positions are a persistent P&L leak (-$106 over 2 trades)
 Positions from 15min markets (KXBTC15M) appeared as API-only during reconciliation. These likely originated from previous engine runs or manual orders. Both settled at $0. The engine has no control over these positions since it didn't create them. Monitor reconciliation logs for recurring `api_only` discrepancies.
+
+### 7. Limit order retry caused double-buy + triple-sell cascade (2026-02-24)
+When a limit buy order timed out after 3s, `handleLimitFillTimeout` attempted to cancel the order, got a 404 (order already filled), but then retried at price+1 anyway — buying 200 contracts instead of 100. The retry path didn't have the 404→fill-check logic that `handleFillTimeout` had. Additionally, after the fill was confirmed, the oscillation range had collapsed (4¢ < 6¢ threshold), causing the strategy to generate a new sell signal every 5s evaluation cycle. Three sell orders were placed for 100 contracts each (300 total) against only 200 held, creating an unintended 100 NO short position. **Fix (2026-02-24)**: (a) `handleLimitFillTimeout` now checks the fills API on cancel-404 before retrying, same as `handleFillTimeout`. (b) Sell signals are now blocked when a sell reservation is already pending for the same ticker via `pendingReservations`.
 
 ## Health Checks
 
