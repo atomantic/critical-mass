@@ -74,7 +74,7 @@ class SimulationEngine {
     this.marketInfo = new Map()
     /** @type {Map<string, number>} Trade cooldown - ticker -> timestamp when can trade again */
     this.tradeCooldowns = new Map()
-    /** @type {Map<string, { ticker: string, side: string, strategy: string, close_time: string, placedAt: number }>} Pending order reservations to prevent cross-strategy conflicts before fill */
+    /** @type {Map<string, { ticker: string, side: string, action: string, strategy: string, close_time: string, placedAt: number }>} Pending order reservations to prevent cross-strategy conflicts and duplicate sells before fill */
     this.pendingReservations = new Map()
     /** @type {number} Global max positions across all strategies */
     this.globalMaxPositions = 10
@@ -897,6 +897,14 @@ class SimulationEngine {
           }
         }
 
+        // Block duplicate sell orders: if a sell is already pending fill for this ticker, skip
+        if (signal.action === 'sell') {
+          const pendingRes = this.pendingReservations.get(signal.ticker)
+          if (pendingRes && pendingRes.action === 'sell') {
+            continue
+          }
+        }
+
         const result = await this.executeSignal(signal, strategy.name)
         if (result?.success) {
           signalsExecuted++
@@ -1241,6 +1249,7 @@ class SimulationEngine {
       this.pendingReservations.set(signal.ticker, {
         ticker: signal.ticker,
         side: signal.side,
+        action: signal.action,
         strategy: strategyName,
         close_time: this.marketInfo.get(signal.ticker)?.close_time,
         placedAt: Date.now()
