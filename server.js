@@ -37,6 +37,7 @@ const {
 const { createIPCClient } = require('./src/ipc/ipc-client');
 const { createProxy } = require('./src/ipc/http-proxy');
 const { createUpDownService } = require('./src/updown/updown-service');
+const { createCandleCache } = require('./src/candle-cache');
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -173,22 +174,37 @@ const cryptocomIPC = createExchangeIPC(CRYPTOCOM_IPC_PORT, 'cryptocom');
 
 const exchangeIPCMap = { coinbase: coinbaseIPC, gemini: geminiIPC, cryptocom: cryptocomIPC };
 
+// ============ Shared Candle Cache ============
+
+const candleCache = createCandleCache();
+
+// Feed ALL exchange IPC ticks into the shared candle cache
+ipcEventListeners.push((name, msg) => {
+  if (msg.channel === 'regime:status') {
+    const market = msg.payload?.status?.market || msg.payload?.market;
+    if (market?.lastPrice) {
+      const price = parseFloat(market.lastPrice);
+      if (!Number.isFinite(price) || price <= 0) return;
+      candleCache.processTick(name, price, Date.now(), parseFloat(market.volume24h) || 0);
+    }
+  }
+});
+
+// Seed candle cache from public APIs (non-blocking)
+candleCache.seedAll();
+
 // ============ UpDown Service ============
 
-const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR });
+const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR, candleCache });
 
-// Forward coinbase price data to updown service for candle aggregation
+// Forward coinbase BTC price data to updown service for Socket.IO emission + P&L
 ipcEventListeners.push((name, msg) => {
   if (name === 'coinbase' && msg.channel === 'regime:status') {
     const market = msg.payload?.status?.market || msg.payload?.market;
     if (market?.lastPrice) {
       const price = parseFloat(market.lastPrice);
       if (!Number.isFinite(price) || price <= 0) return;
-      updownService.handlePriceTick(
-        price,
-        Date.now(),
-        parseFloat(market.volume24h) || 0
-      );
+      updownService.handlePriceTick(price, Date.now());
     }
   }
 });
@@ -201,7 +217,8 @@ const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSO
 
 require('./src/routes/ai-routes')(app, sharedDeps);
 require('./src/routes/settings-routes')(app, sharedDeps);
-require('./src/routes/updown-routes')(app, { ...sharedDeps, updownService });
+require('./src/routes/candle-routes')(app, { candleCache });
+require('./src/routes/updown-routes')(app, { ...sharedDeps, updownService, candleCache });
 require('./src/routes/exchange-routes')(app, sharedDeps);
 require('./src/routes/regime-routes')(app, sharedDeps);
 require('./src/routes/keys-routes')(app, sharedDeps);
@@ -332,8 +349,6 @@ io.on('connection', (socket) => {
   socket.on('cryptocom:subscribe', () => socket.join('cryptocom'));
   socket.on('cryptocom:unsubscribe', () => socket.leave('cryptocom'));
   socket.on('composite:subscribe', () => socket.join('composite'));
-  socket.on('kraken:subscribe', () => socket.join('kraken'));
-  socket.on('kraken:unsubscribe', () => socket.leave('kraken'));
   socket.on('updown:subscribe', () => socket.join('updown'));
   socket.on('updown:unsubscribe', () => socket.leave('updown'));
 

@@ -8,30 +8,72 @@
 
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
+const { readFileSync, readdirSync } = fs;
 const { log } = require('../logger');
+const { UPDOWN_DATA_DIR } = require('../paths');
 
 const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
 const ALLOWED_EXTRACTED_KEYS = new Set([
-  'currentPrice', 'direction', 'range', 'target', 'stop',
+  'screenType', 'currentPrice', 'direction', 'range', 'target', 'stop',
   'expiresIn', 'upPrice', 'downPrice', 'maxProfit', 'maxLoss',
+  'contractPrice', 'contracts', 'maxProfitAmount', 'maxLossAmount',
+  'youPay', 'priceToClose', 'unrealizedPnl', 'entryPrice', 'expiresOn',
 ]);
 
-const VISION_PROMPT = `You are analyzing a screenshot from the Crypto.com UpDown Bitcoin options trading screen.
+const VISION_PROMPT = `You are analyzing a screenshot from the Crypto.com UpDown Bitcoin options trading interface.
 
-Extract the following data from the screenshot and return ONLY valid JSON (no markdown, no explanation):
+First, identify which screen this is:
+- "select" = Select UpDown Option screen (shows Up/Down buttons, Contract Range 500/2000, Target, Stop, Max Profit/Loss as strings like "+$419.50")
+- "order" = Place Order / Order Confirmation screen (shows Contract Price, number of Contracts, Max Profit/Loss amounts, You Pay total, and a "Place Order" or confirmation button)
+- "position" = Position Details screen (shows an open position with Entry Price, Price to Close, Unrealized P&L)
 
+Extract fields relevant to the detected screen type and return ONLY valid JSON (no markdown, no explanation):
+
+For "select" screen:
 {
+  "screenType": "select",
   "currentPrice": <number - current BTC price shown at top>,
   "direction": "<string - 'Up' or 'Down' - whichever button is highlighted/selected>",
   "range": <number - 500 or 2000 - whichever Contract Range option is selected>,
-  "target": <number - the Target price shown in the contract details>,
-  "stop": <number - the Stop price shown in the contract details>,
-  "expiresIn": "<string - the 'Expires in' value, e.g. '6h 20m'>",
+  "target": <number - the Target price>,
+  "stop": <number - the Stop price>,
+  "expiresIn": "<string - the 'Expires in' value, e.g. '6h 20m' or '6d 18h 52m'>",
   "upPrice": <number - the price shown under the Up button>,
   "downPrice": <number - the price shown under the Down button>,
   "maxProfit": "<string - e.g. '+$419.50'>",
   "maxLoss": "<string - e.g. '-$580.50'>"
+}
+
+For "order" screen:
+{
+  "screenType": "order",
+  "direction": "<string - 'Up' or 'Down'>",
+  "contractPrice": <number - the contract/entry price>,
+  "contracts": <number - number of contracts>,
+  "maxProfitAmount": <number - max profit as a number>,
+  "maxLossAmount": <number - max loss as a number>,
+  "youPay": <number - total cost>,
+  "expiresIn": "<string - expiry value if shown, e.g. '6d 18h 52m'>",
+  "target": <number - target price if shown>,
+  "stop": <number - stop price if shown>,
+  "range": <number - 500 or 2000 if shown>
+}
+
+For "position" screen:
+{
+  "screenType": "position",
+  "direction": "<string - 'Up' or 'Down' - from the Up/Down badge or Position sign (+1=Up, -1=Down)>",
+  "entryPrice": <number - the Average Entry Price>,
+  "currentPrice": <number - Bitcoin price if shown>,
+  "priceToClose": <number - Price to Close value>,
+  "unrealizedPnl": <number - Unrealised PnL, negative if loss>,
+  "contracts": <number - absolute number from Position field, e.g. +1 or -1 means 1>,
+  "expiresIn": "<string - relative time remaining if shown, e.g. '6d 18h 42m'>",
+  "expiresOn": "<string - absolute expiry date if shown, e.g. 'Feb 28, 2026 at 1:00:00 AM'>",
+  "target": <number - target price if visible on chart or labels>,
+  "range": <number - 500 or 2000, inferred from the price range in subtitle like '$67,000 - $69,000' = 2000>
 }
 
 If you cannot read a value, use null. Return ONLY the JSON object.`;
@@ -57,7 +99,7 @@ const parseExpiryToMs = (value) => {
  * @param {{updownService: Object, readJSON: Function, DATA_DIR: string}} deps
  */
 module.exports = (app, deps) => {
-  const { updownService, readJSON, DATA_DIR } = deps;
+  const { updownService, candleCache, readJSON, DATA_DIR } = deps;
   const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json');
   const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 
@@ -175,23 +217,258 @@ module.exports = (app, deps) => {
       return res.status(422).json({ success: false, error: 'AI returned unparseable response', raw: aiResponse.slice(0, 500) });
     }
 
-    // Convert "Expires in Xh Ym" to absolute ms timestamp
+    // Convert expiry to absolute ms timestamp
+    // "Expires in Xd Xh Ym" → relative offset from now
     if (extracted.expiresIn) {
-      const match = extracted.expiresIn.match(/(?:(\d+)h)?\s*(?:(\d+)m)?/);
-      if (match && (match[1] || match[2])) {
-        const hours = parseInt(match[1] || '0', 10);
-        const minutes = parseInt(match[2] || '0', 10);
-        extracted.expiryMs = Date.now() + hours * 3600000 + minutes * 60000;
+      const match = extracted.expiresIn.match(/(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?/);
+      if (match && (match[1] || match[2] || match[3])) {
+        const days = parseInt(match[1] || '0', 10);
+        const hours = parseInt(match[2] || '0', 10);
+        const minutes = parseInt(match[3] || '0', 10);
+        extracted.expiryMs = Date.now() + days * 86400000 + hours * 3600000 + minutes * 60000;
         extracted.expiryISO = new Date(extracted.expiryMs).toISOString();
       }
     }
+    // "Expires on Feb 28, 2026 at 1:00:00 AM" → parse absolute date
+    if (!extracted.expiryMs && extracted.expiresOn) {
+      const ms = new Date(extracted.expiresOn.replace(' at ', ' ')).getTime();
+      if (Number.isFinite(ms)) {
+        extracted.expiryMs = ms;
+        extracted.expiryISO = new Date(ms).toISOString();
+      }
+    }
 
-    log('INFO', `📸 UpDown screenshot extracted: direction=${extracted.direction} target=${extracted.target} stop=${extracted.stop} range=${extracted.range}`);
+    log('INFO', `📸 UpDown screenshot extracted: screenType=${extracted.screenType} direction=${extracted.direction} target=${extracted.target} stop=${extracted.stop} range=${extracted.range}`);
     res.json({ success: true, extracted });
+  });
+
+  // --- Scorecard Analysis (historical) ---
+  const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard');
+  const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum'];
+  const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d'];
+
+  const readJSONLFiles = (from, to) => {
+    if (!fs.existsSync(SCORECARD_DIR)) return [];
+    const files = readdirSync(SCORECARD_DIR).filter(f => f.endsWith('.jsonl')).sort();
+    const fromStr = from.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+    const records = [];
+    for (const file of files) {
+      const dateStr = file.replace('.jsonl', '');
+      if (dateStr < fromStr || dateStr > toStr) continue;
+      const content = readFileSync(path.join(SCORECARD_DIR, file), 'utf-8');
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        const rec = JSON.parse(line);
+        records.push(rec);
+      }
+    }
+    return records;
+  };
+
+  app.get('/api/updown/scorecard-analysis', (req, res) => {
+    const now = new Date();
+    const fromParam = req.query.from;
+    const toParam = req.query.to;
+    const to = toParam ? new Date(toParam + 'T23:59:59Z') : now;
+    const from = fromParam ? new Date(fromParam + 'T00:00:00Z') : new Date(now.getTime() - 7 * 86400000);
+
+    const records = readJSONLFiles(from, to);
+    const predictions = records.filter(r => r.type === 'prediction');
+    const outcomes = records.filter(r => r.type === 'outcome');
+    const weights = records.filter(r => r.type === 'weights');
+
+    // --- accuracyOverTime: hourly accuracy buckets ---
+    const hourlyBuckets = {};
+    for (const o of outcomes) {
+      if (o.compositeCorrect == null) continue;
+      const hour = o.ts?.slice(0, 13); // YYYY-MM-DDTHH
+      if (!hour) continue;
+      if (!hourlyBuckets[hour]) hourlyBuckets[hour] = { correct: 0, total: 0 };
+      hourlyBuckets[hour].total++;
+      if (o.compositeCorrect) hourlyBuckets[hour].correct++;
+    }
+    const accuracyOverTime = Object.entries(hourlyBuckets)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([hour, data]) => ({
+        hour,
+        accuracy: Math.round(data.correct / data.total * 10000) / 100,
+        correct: data.correct,
+        total: data.total,
+      }));
+
+    // --- heatmap: indicator × timeframe accuracy ---
+    const heatmap = {};
+    for (const ind of INDICATORS) {
+      heatmap[ind] = {};
+      for (const tf of ALL_TFS) {
+        heatmap[ind][tf] = { correct: 0, total: 0, accuracy: null };
+      }
+    }
+    for (const o of outcomes) {
+      for (const ind of INDICATORS) {
+        for (const tf of ALL_TFS) {
+          const tfResult = o.tfResults?.[tf];
+          if (!tfResult || tfResult.correct == null) continue;
+          const indResult = o.indicatorResults?.[ind];
+          if (!indResult || indResult.predictions === 0) continue;
+          // Check if this indicator had a non-neutral prediction in this timeframe
+          // We use the prediction's per-tf per-indicator scores via the outcome's indicator data
+          heatmap[ind][tf].total++;
+          if (tfResult.correct) heatmap[ind][tf].correct++;
+        }
+      }
+    }
+    for (const ind of INDICATORS) {
+      for (const tf of ALL_TFS) {
+        const cell = heatmap[ind][tf];
+        cell.accuracy = cell.total > 0 ? Math.round(cell.correct / cell.total * 10000) / 100 : null;
+      }
+    }
+
+    // --- indicatorAccuracyOverTime: per-indicator hourly trends ---
+    const indHourly = {};
+    for (const ind of INDICATORS) indHourly[ind] = {};
+    for (const o of outcomes) {
+      const hour = o.ts?.slice(0, 13);
+      if (!hour) continue;
+      for (const ind of INDICATORS) {
+        const indResult = o.indicatorResults?.[ind];
+        if (!indResult || indResult.predictions === 0) continue;
+        if (!indHourly[ind][hour]) indHourly[ind][hour] = { correct: 0, total: 0 };
+        indHourly[ind][hour].total += indResult.predictions;
+        indHourly[ind][hour].correct += indResult.correct;
+      }
+    }
+    // Collect all unique hours across all indicators
+    const allHours = [...new Set(Object.values(indHourly).flatMap(h => Object.keys(h)))].sort();
+    const indicatorAccuracyOverTime = allHours.map(hour => {
+      const point = { hour };
+      for (const ind of INDICATORS) {
+        const data = indHourly[ind][hour];
+        point[ind] = data && data.total > 0 ? Math.round(data.correct / data.total * 10000) / 100 : null;
+      }
+      return point;
+    });
+
+    // --- weightEvolution: weight snapshots over time ---
+    const weightEvolution = weights.map(w => ({
+      ts: w.ts,
+      ...w.weights,
+    }));
+
+    // --- failurePatterns: indicator combos that predict wrong together ---
+    const comboFailures = {};
+    for (const o of outcomes) {
+      if (o.compositeCorrect !== false) continue;
+      const failedInds = [];
+      for (const ind of INDICATORS) {
+        const indResult = o.indicatorResults?.[ind];
+        if (indResult && indResult.predictions > 0 && indResult.correct === 0) {
+          failedInds.push(ind);
+        }
+      }
+      if (failedInds.length < 2) continue;
+      const key = failedInds.sort().join('+');
+      if (!comboFailures[key]) comboFailures[key] = { indicators: failedInds, count: 0, total: 0 };
+      comboFailures[key].count++;
+    }
+    // Also count total occurrences where these indicators appeared together
+    for (const o of outcomes) {
+      for (const key of Object.keys(comboFailures)) {
+        const inds = comboFailures[key].indicators;
+        const allPresent = inds.every(ind => {
+          const indResult = o.indicatorResults?.[ind];
+          return indResult && indResult.predictions > 0;
+        });
+        if (allPresent) comboFailures[key].total++;
+      }
+    }
+    const failurePatterns = Object.values(comboFailures)
+      .filter(p => p.total >= 3)
+      .map(p => ({
+        indicators: p.indicators,
+        failures: p.count,
+        total: p.total,
+        failureRate: Math.round(p.count / p.total * 10000) / 100,
+      }))
+      .sort((a, b) => b.failureRate - a.failureRate)
+      .slice(0, 20);
+
+    // --- summary ---
+    const totalOutcomes = outcomes.filter(o => o.compositeCorrect != null).length;
+    const totalCorrect = outcomes.filter(o => o.compositeCorrect === true).length;
+    const overallAccuracy = totalOutcomes > 0 ? Math.round(totalCorrect / totalOutcomes * 10000) / 100 : null;
+
+    // Best/worst indicator
+    const indStats = {};
+    for (const ind of INDICATORS) {
+      let total = 0, correct = 0;
+      for (const o of outcomes) {
+        const r = o.indicatorResults?.[ind];
+        if (!r || r.predictions === 0) continue;
+        total += r.predictions;
+        correct += r.correct;
+      }
+      indStats[ind] = { accuracy: total > 0 ? Math.round(correct / total * 10000) / 100 : null, total };
+    }
+    const sortedInds = Object.entries(indStats).filter(([, v]) => v.accuracy != null).sort(([, a], [, b]) => b.accuracy - a.accuracy);
+    const bestIndicator = sortedInds[0]?.[0] ?? null;
+    const worstIndicator = sortedInds[sortedInds.length - 1]?.[0] ?? null;
+
+    // Best/worst timeframe
+    const tfStats = {};
+    for (const tf of ALL_TFS) {
+      let total = 0, correct = 0;
+      for (const o of outcomes) {
+        const r = o.tfResults?.[tf];
+        if (r?.correct == null) continue;
+        total++;
+        if (r.correct) correct++;
+      }
+      tfStats[tf] = { accuracy: total > 0 ? Math.round(correct / total * 10000) / 100 : null, total };
+    }
+    const sortedTfs = Object.entries(tfStats).filter(([, v]) => v.accuracy != null).sort(([, a], [, b]) => b.accuracy - a.accuracy);
+    const bestTimeframe = sortedTfs[0]?.[0] ?? null;
+
+    // Best window
+    const windowStats = {};
+    for (const o of outcomes) {
+      if (o.compositeCorrect == null || !o.window) continue;
+      if (!windowStats[o.window]) windowStats[o.window] = { correct: 0, total: 0 };
+      windowStats[o.window].total++;
+      if (o.compositeCorrect) windowStats[o.window].correct++;
+    }
+    const sortedWindows = Object.entries(windowStats)
+      .map(([w, d]) => ({ window: w, accuracy: Math.round(d.correct / d.total * 10000) / 100 }))
+      .sort((a, b) => b.accuracy - a.accuracy);
+    const bestWindow = sortedWindows[0]?.window ?? null;
+
+    res.json({
+      success: true,
+      accuracyOverTime,
+      heatmap,
+      indicatorAccuracyOverTime,
+      weightEvolution,
+      failurePatterns,
+      summary: {
+        accuracy: overallAccuracy,
+        predictions: predictions.length,
+        outcomes: totalOutcomes,
+        bestIndicator,
+        worstIndicator,
+        bestTimeframe,
+        bestWindow,
+      },
+    });
   });
 
   app.get('/api/updown/status', (req, res) => {
     res.json({ success: true, ...updownService.getStatus() });
+  });
+
+  app.get('/api/updown/scorecard', (req, res) => {
+    res.json({ success: true, ...updownService.getScorecard() });
   });
 
   app.put('/api/updown/contract', (req, res) => {
@@ -233,8 +510,89 @@ module.exports = (app, deps) => {
     res.json({ success: true });
   });
 
+  app.post('/api/updown/restart', (req, res) => {
+    log('INFO', '🔄 PM2 restart requested via API');
+    res.json({ success: true, message: 'Restarting...' });
+    setTimeout(() => exec('pm2 restart critical-mass'), 500);
+  });
+
+  app.get('/api/updown/candles', (req, res) => {
+    res.json({
+      success: true,
+      candles: candleCache.getAllCandles('cryptocom'),
+    });
+  });
+
   app.get('/api/updown/signals', (req, res) => {
     const status = updownService.getStatus();
     res.json({ success: true, signals: status.signalHistory });
+  });
+
+  // --- Trade History ---
+  const TRADES_PATH = path.join(DATA_DIR, 'updown-trades.json');
+
+  const readTrades = () => readJSON(TRADES_PATH, { trades: [], nextId: 1 });
+  const writeTrades = (data) => fs.writeFileSync(TRADES_PATH, JSON.stringify(data, null, 2));
+
+  app.get('/api/updown/trades', (req, res) => {
+    const data = readTrades();
+    const trades = data.trades || [];
+    const totalCost = trades.reduce((s, t) => s + (t.cost || 0), 0);
+    const totalReturn = trades.reduce((s, t) => s + (t.returnAmount || 0), 0);
+    const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+    const wins = trades.filter(t => t.pnl > 0).length;
+    const losses = trades.filter(t => t.pnl <= 0).length;
+    res.json({
+      success: true,
+      trades,
+      summary: { totalCost, totalReturn, totalPnl, wins, losses, count: trades.length },
+    });
+  });
+
+  app.post('/api/updown/trades', (req, res) => {
+    const { date, cost, returnAmount, note } = req.body;
+    if (cost == null || returnAmount == null) {
+      return res.status(400).json({ success: false, error: 'cost and returnAmount are required' });
+    }
+    const data = readTrades();
+    const trade = {
+      id: data.nextId || (data.trades.length + 1),
+      date: date || new Date().toISOString().slice(0, 10),
+      cost: parseFloat(cost),
+      returnAmount: parseFloat(returnAmount),
+      pnl: parseFloat(returnAmount) - parseFloat(cost),
+      note: note || '',
+    };
+    data.trades.push(trade);
+    data.nextId = trade.id + 1;
+    writeTrades(data);
+    log('INFO', `📊 UpDown trade added: id=${trade.id} cost=${trade.cost} return=${trade.returnAmount} pnl=${trade.pnl}`);
+    res.json({ success: true, trade });
+  });
+
+  app.put('/api/updown/trades/:id', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const data = readTrades();
+    const trade = data.trades.find(t => t.id === id);
+    if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
+
+    if (req.body.date != null) trade.date = req.body.date;
+    if (req.body.cost != null) trade.cost = parseFloat(req.body.cost);
+    if (req.body.returnAmount != null) trade.returnAmount = parseFloat(req.body.returnAmount);
+    if (req.body.note != null) trade.note = req.body.note;
+    trade.pnl = trade.returnAmount - trade.cost;
+    writeTrades(data);
+    res.json({ success: true, trade });
+  });
+
+  app.delete('/api/updown/trades/:id', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const data = readTrades();
+    const idx = data.trades.findIndex(t => t.id === id);
+    if (idx === -1) return res.status(404).json({ success: false, error: 'Trade not found' });
+    data.trades.splice(idx, 1);
+    writeTrades(data);
+    log('INFO', `📊 UpDown trade deleted: id=${id}`);
+    res.json({ success: true });
   });
 };

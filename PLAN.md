@@ -187,6 +187,75 @@ These are SOLID/architecture findings documented for future refactoring. They're
 Remediating: CRITICAL (15) + HIGH (16) + MEDIUM (19) = **50 findings**
 Architecture tracked only: **20 findings** (Phase G, no code changes)
 
+## Shared BTC Price Chart & Candle Service (2026-02-21)
+
+- [x] **Server candle cache** — `src/candle-cache.js`: per-exchange CandleAggregator, Crypto.com + Coinbase public API seeding, `GET /api/candles/:exchange`
+- [x] **Shared chart component** — `admin/src/components/charts/BTCPriceChart.jsx`: composable chart with overlays, sub-charts, reference lines, multi-exchange lines
+- [x] **Shared candle hook** — `admin/src/hooks/useCandleData.js`: bucket accumulation, view switching, 5s sync
+- [x] **UpDown migration** — PriceChart.jsx now thin wrapper around BTCPriceChart (Crypto.com primary)
+- [x] **Kalshi migration** — LiveBTCChart.jsx uses BTCPriceChart for chart section (Coinbase + exchange lines)
+- [x] **Hedge chart** — BTCPriceChart added to hedge Dashboard with entry/SL/TP reference lines
+- [x] **UpDown service cleanup** — Removed internal aggregator, delegates to shared candle-cache
+- [x] **Compact time remaining** — Moved from standalone banner into UpDown header bar
+
+## UpDown Signal Engine Improvements (2026-02-22)
+
+- [x] **Feature 1: Trend Filter** — EMA(50)/EMA(200) on 1h candles dampens counter-trend signals by 50%
+- [x] **Feature 2: Volatility-Scaled Thresholds** — ATR ratio widens/tightens signal zones dynamically
+- [x] **Feature 3: Volume Surge Multiplier** — Amplifies/dampens per-TF scores based on volume vs 20-bar average
+- [x] **Feature 4: Momentum Acceleration** — Dual ROC(3)/ROC(10) replaces simple momentum, with acceleration/fading detection
+- [x] **Feature 5: Divergence Detection** — Price/RSI swing divergence dampens conflicting signals
+- [x] **Feature 6: Pivot Points** — Classic S1/S2/R1/R2 dampening when price approaches key levels
+- [x] **Feature 7: Adaptive Indicator Weights** — Scorecard accuracy feedback loop adjusts indicator weights with exponential smoothing
+- [x] **Feature 8: Multi-Candle Horizon Prediction** — Identifies best evaluation window from scorecard accuracy data
+
+New files: `src/updown/divergence.js`, `src/updown/pivot-points.js`
+Modified: `src/updown/signal-engine.js`, `src/volatility-utils.js`, `src/updown/indicators.js`, `src/updown/scorecard.js`, `src/updown/updown-service.js`
+Frontend: `SignalBanner.jsx` (trend/vol/horizon pills), `TimeframeGrid.jsx` (volume/divergence/acceleration badges), `ScorecardPanel.jsx` (adaptive weights section)
+
+## Scorecard Analysis System (2026-02-22)
+
+- [x] **Weight history logging** — Throttled `type: "weights"` records appended to JSONL every 5 min from `getMetrics()`
+- [x] **Analysis API** — `GET /api/updown/scorecard-analysis` reads JSONL files for date range, returns accuracy trends, heatmap, indicator trends, weight evolution, failure patterns
+- [x] **ScorecardAnalysis page** — `/updown/analysis` with date range selector, summary cards, accuracy AreaChart, indicator×timeframe heatmap, per-indicator LineChart, weight evolution chart, failure pattern table
+- [x] **Route + nav** — Lazy-loaded route in App.jsx, BarChart3 link in UpDown Dashboard header
+- [x] **PriceChart interval fix** — Custom `setInterval` in useCandleData shadowed `window.setInterval`, breaking chart interval buttons
+
+## Signal Engine v2: Backtest-Driven Filters (2026-02-23)
+
+- [x] **Feature 9: Confluence Filter** — Counts agreeing TFs; dampens overcrowded (7+: ×0.5) and moderate (6: ×0.8) signals; selective (≤5) pass through
+- [x] **Feature 10: Score Cap** — Clamps |score| to 35 (backtest: 35-45 zone = 43% accuracy)
+- [x] **Feature 11: Time-of-Day Weighting** — UTC hour multipliers from backtest accuracy (±15%)
+- [x] **Confluence pill** — Green/yellow/red pill in SignalBanner showing TF agreement count
+- [x] **Multi-timeframe charts** — 5 stacked HA charts (1m/3m/5m/15m/1h) replace single chart
+- [x] **Trade History relocation** — Moved under price charts in center column
+- [x] **Signal history dates** — Added month/day to signal panel timestamps
+
+Modified: `signal-engine.js` (features 9-11), `BTCPriceChart.jsx` (decoupled interval mode from selector UI), `PriceChart.jsx` (multi-TF), `Dashboard.jsx` (layout), `SignalBanner.jsx` (confluence pill), `SignalPanel.jsx` (date format)
+
+## UpDown Dashboard Overhaul + Signal Recalibration (2026-02-24)
+
+- [x] **Fixed stale chart data** — useCandleData fetch effect had stale closure (suppressed eslint deps), all charts showed same candles
+- [x] **Added 3m candle derivation** — candle-cache.js was missing 3m in seedDerivedTimeframes
+- [x] **Dashboard layout restructure** — Flex columns instead of grid rows; PositionTracker under Scorecard; SignalPanel floats under TimeframeGrid
+- [x] **Fixed stale signal display** — Added type/confidence/confluence to `updown:indicators` emission; banner/panel prefer live values
+- [x] **10-chart multi-TF layout** — 2 columns: 1m/3m/5m/10m/15m left, 30m/1h/2h/4h/1d right with per-TF signal labels
+- [x] **Signal engine recalibration for day trading** — Hard cap at ±35 made BUY (threshold 40) mathematically impossible; replaced with soft compression, lowered thresholds (25/45), softened confluence/trend dampeners
+- [x] **Scorecard history hydration** — Loads last 3 days of JSONL outcomes on startup so metrics survive restarts
+- [x] **Signal banner tooltips** — All pills (confidence, horizons, confluence, trend, volatility, best horizon, time) have hover tooltips
+
+Modified: `signal-engine.js`, `scorecard.js`, `updown-service.js`, `useCandleData.js`, `candle-cache.js`, `BTCPriceChart.jsx`, `Dashboard.jsx`, `PriceChart.jsx`, `SignalBanner.jsx`, `SignalPanel.jsx`, `TimeframeGrid.jsx`
+
+## Wire Unused Signals Into Kalshi Strategies (2026-02-24)
+
+- [x] **Polymarket sentiment wiring** — `initPolymarketPriceService()` now called with engine callback in `startEngine()`; `context.polymarketSentiment` no longer null
+- [x] **Trade flow imbalance tracking** — Replaced empty `handleTrade()` stub with rolling window accumulator (60s/300s buy/sell ratio); exposed via `getMarketState().tradeFlow`
+- [x] **Coinbase price bridge fix** — `onCoinbasePriceUpdate()` now called from price bridge callback; `coinbasePrices`/`coinbasePriceHistory` Maps populated
+- [x] **Settlement Sniper signals** — Polymarket sentiment (±0.08/0.10) and trade flow imbalance (±0.08) confidence adjustments with diagnostics
+- [x] **Swing Flipper signals** — Polymarket sentiment veto (blocks when crowd + spot both disagree), trade flow confidence boost (+0.1)
+
+Modified: `market-data-service.js`, `price-bridge.js`, `simulation-engine.js`, `kalshi-routes.js`, `settlement-sniper.js`, `swing-flipper.js`
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22

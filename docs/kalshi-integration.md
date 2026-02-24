@@ -12,7 +12,8 @@ Kalshi prediction market trading engine integrated into critical-mass (2026-02-1
 - `src/kalshi/engines/simulation-engine.js` — Full CJS simulation engine
 - `src/kalshi/strategies/` — 7 files (base, index, 5 crypto strategies)
 - `src/kalshi/types/` — 4 files (JS + .d.ts type definitions)
-- `src/adapters/kraken/websocket.js` — Shared Kraken adapter
+- `src/adapters/gemini/websocket.js` — Gemini WebSocket adapter (shared with trading engine)
+- `src/adapters/cryptocom/websocket.js` — Crypto.com WebSocket adapter (shared with trading engine)
 
 **Routes:** `src/routes/kalshi-routes.js` — 34+ endpoints under `/api/kalshi/`
 

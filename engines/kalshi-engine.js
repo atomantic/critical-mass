@@ -8,7 +8,7 @@
  * - Own Express server (:5572) for Kalshi & Hedge REST routes
  * - IPC WebSocket server (:5573) for Socket.IO event forwarding to gateway
  * - Own Coinbase public WebSocket for BTC price bridge (no dependency on gateway's market data)
- * - Own Kraken public WebSocket for composite price aggregation
+ * - Gemini + Crypto.com public WebSockets for composite price aggregation
  *
  * The gateway (server.js) reverse-proxies /api/kalshi/* and /api/hedge/* to :5572
  * and connects as an IPC client to :5573 for Socket.IO events.

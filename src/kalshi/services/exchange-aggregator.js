@@ -118,7 +118,7 @@ const recompute = (ticker) => {
 
 /**
  * Called by each price service when it gets an update
- * @param {string} source - Exchange name ('coinbase', 'kraken')
+ * @param {string} source - Exchange name ('coinbase', 'gemini', 'cryptocom')
  * @param {string} ticker - Normalized ticker ('BTC-USD')
  * @param {number} price
  * @param {Object} data - Full price data with bid, ask, volume24h

@@ -15,7 +15,7 @@ function ConfidenceBar({ value }) {
   )
 }
 
-export default function SignalPanel({ signal }) {
+export default function SignalPanel({ signal, indicators }) {
   const [history, setHistory] = useState([])
 
   useEffect(() => {
@@ -37,7 +37,10 @@ export default function SignalPanel({ signal }) {
       .catch(() => {})
   }, [])
 
-  const type = signal?.type || 'NEUTRAL'
+  // Prefer live values from indicators (updated every 5s) over stale signal (only on type change)
+  const type = indicators?.type || signal?.type || 'NEUTRAL'
+  const liveScore = indicators?.score ?? signal?.score
+  const liveConfidence = indicators?.confidence ?? signal?.confidence
   const colors = signalBadgeColors[type] || signalBadgeColors.NEUTRAL
   const Icon = getSignalIcon(type)
 
@@ -55,21 +58,21 @@ export default function SignalPanel({ signal }) {
             <Icon size={18} />
             <span className="text-lg font-bold">{type.replace(/_/g, ' ')}</span>
           </div>
-          {signal?.confidence != null && (
-            <span className="text-sm font-mono">{(signal.confidence * 100).toFixed(0)}%</span>
+          {liveConfidence != null && (
+            <span className="text-sm font-mono">{(liveConfidence * 100).toFixed(0)}%</span>
           )}
         </div>
-        {signal?.confidence != null && (
+        {liveConfidence != null && (
           <div className="mt-2">
-            <ConfidenceBar value={signal.confidence} />
+            <ConfidenceBar value={liveConfidence} />
           </div>
         )}
       </div>
 
       {/* Score */}
-      {signal?.score != null && (
+      {liveScore != null && (
         <div className="mb-4 text-xs text-gray-400">
-          Composite score: <span className="font-mono text-white">{signal.score.toFixed(1)}</span>
+          Composite score: <span className="font-mono text-white">{liveScore.toFixed(1)}</span>
         </div>
       )}
 
@@ -84,7 +87,7 @@ export default function SignalPanel({ signal }) {
               return (
                 <div key={h.timestamp || i} className="flex items-center justify-between py-1 text-xs">
                   <span className="text-gray-500">
-                    {h.timestamp ? new Date(h.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '---'}
+                    {h.timestamp ? new Date(h.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '---'}
                   </span>
                   <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{hType.replace(/_/g, ' ')}</span>
                   {h.confidence != null && (

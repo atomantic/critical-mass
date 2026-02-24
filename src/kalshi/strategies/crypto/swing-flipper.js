@@ -17,6 +17,12 @@ const BaseStrategy = require('../base-strategy.js')
 const { parseStrikePrice, getCoinbaseTickerForKalshi, getBracketInfo } = require('../../adapters/markets.js')
 const { checkLiquidity } = require('../../services/volatility-service.js')
 
+const TIME_SCALES = {
+  '15min':  { minTTL: 90,   maxTTL: 540,   oscLookback: 15, collapseLookback: 8 },
+  'hourly': { minTTL: 300,  maxTTL: 2400,  oscLookback: 30, collapseLookback: 15 },
+  'daily':  { minTTL: 1800, maxTTL: 28800, oscLookback: 60, collapseLookback: 30 },
+}
+
 class SwingFlipperStrategy extends BaseStrategy {
   constructor(config) {
     super('swing-flipper', config)
@@ -159,15 +165,23 @@ class SwingFlipperStrategy extends BaseStrategy {
 
       const secondsToSettlement = Math.max(0, (closeTime - now) / 1000)
 
+      // Timeframe-aware scaling: widen time windows and lookbacks for hourly/daily markets
+      const tickerTimeframe = context.marketInfo?.get(ticker)?.timeframe || '15min'
+      const scale = TIME_SCALES[tickerTimeframe] || TIME_SCALES['15min']
+      const minTTL = Math.max(params.minSecondsToSettlement, scale.minTTL)
+      const maxTTL = Math.max(params.maxSecondsToSettlement, scale.maxTTL)
+      const oscLookback = Math.max(params.oscillationLookback, scale.oscLookback)
+      const collLookback = Math.max(params.collapseLookback, scale.collapseLookback)
+
       const diag = { ticker, ttl: Math.round(secondsToSettlement), status: '' }
 
       // Time filter
-      if (secondsToSettlement < params.minSecondsToSettlement) {
+      if (secondsToSettlement < minTTL) {
         diag.status = 'too close to settlement'
         this.diagnostics.push(diag)
         continue
       }
-      if (secondsToSettlement > params.maxSecondsToSettlement) {
+      if (secondsToSettlement > maxTTL) {
         diag.status = 'too far from settlement'
         this.diagnostics.push(diag)
         continue
@@ -184,7 +198,7 @@ class SwingFlipperStrategy extends BaseStrategy {
       // Check existing positions for exit
       const existingPosition = context.positions.find(p => p.ticker === ticker && p.metadata?.strategy === this.name)
       if (existingPosition) {
-        const exitSignal = this.checkExit(ticker, existingPosition, liquidity, secondsToSettlement, history, params)
+        const exitSignal = this.checkExit(ticker, existingPosition, liquidity, secondsToSettlement, history, { ...params, collapseLookback: collLookback, minSecondsToSettlement: minTTL })
         if (exitSignal) signals.push(exitSignal)
         diag.status = exitSignal ? `EXIT: ${exitSignal.reason}` : 'holding'
         this.diagnostics.push(diag)
@@ -216,7 +230,7 @@ class SwingFlipperStrategy extends BaseStrategy {
       const currentPrice = side === 'yes' ? yesPrice : noPrice
 
       // Oscillation detection: contract must have proven range > threshold
-      const oscillation = this.measureOscillation(history, params.oscillationLookback)
+      const oscillation = this.measureOscillation(history, oscLookback)
       if (oscillation.range < params.minOscillationRange) {
         diag.status = `low oscillation (${oscillation.range}¢ < ${params.minOscillationRange}¢)`
         this.diagnostics.push(diag)
@@ -245,14 +259,43 @@ class SwingFlipperStrategy extends BaseStrategy {
       const spotHistory = compositeHistory?.length > 5
         ? compositeHistory
         : context.coinbasePriceHistory?.get(coinbaseTicker)
-      if (!this.isSpotMovingTowardBracket(spotHistory, strikePrice, spotPrice)) {
+      const spotMovingToward = this.isSpotMovingTowardBracket(spotHistory, strikePrice, spotPrice)
+      if (!spotMovingToward) {
         diag.status = 'spot moving away from bracket'
         this.diagnostics.push(diag)
         continue
       }
 
+      // Polymarket sentiment veto: block entry when crowd AND spot disagree with our direction
+      const sentiment = context.polymarketSentiment
+      if (sentiment && Date.now() - sentiment.updatedAt < 120_000) {
+        const upPrice = sentiment.upPrice ?? 0
+        const downPrice = sentiment.downPrice ?? 0
+        // side='yes' means we expect price to stay in/move into bracket (price up near lower edge)
+        // side='no' would be the reverse — but swing-flipper always buys YES on pullbacks
+        const crowdOpposes = (side === 'yes' && downPrice > 0.65)
+          || (side === 'no' && upPrice > 0.65)
+        if (crowdOpposes) {
+          diag.status = `sentiment veto (up=${(upPrice * 100).toFixed(0)}% down=${(downPrice * 100).toFixed(0)}%)`
+          this.diagnostics.push(diag)
+          continue
+        }
+      }
+
       // Position sizing (conservative)
-      const confidence = Math.min(1, 0.5 + (oscillation.range / 40))
+      let confidence = Math.min(1, 0.5 + (oscillation.range / 40))
+
+      // Trade flow imbalance confidence boost
+      const tradeFlow = context.tradeFlowMetrics?.get('BTC-USD')
+      let tradeFlowImbalance = null
+      if (tradeFlow && tradeFlow.tradeCount60s > 0) {
+        const imb = tradeFlow.imbalance60s
+        tradeFlowImbalance = imb
+        // Positive imbalance = more buying = bullish; confirms YES-side pullback entries
+        if ((side === 'yes' && imb > 0.3) || (side === 'no' && imb < -0.3)) {
+          confidence = Math.min(1, confidence + 0.1)
+        }
+      }
       const count = this.calculatePositionSize(confidence, context.balance, context.config?.risk, currentPrice)
       const limitedCount = Math.min(count, params.maxContracts)
 
@@ -284,7 +327,8 @@ class SwingFlipperStrategy extends BaseStrategy {
           oscillationRange: oscillation.range,
           recentPeak: oscillation.recentPeak,
           pullback,
-          btcSpot: spotPrice
+          btcSpot: spotPrice,
+          tradeFlowImbalance
         }
       })
       this.diagnostics.push(diag)
