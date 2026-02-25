@@ -281,6 +281,16 @@ Modified: `src/regime-engine.js` (5 fixes), `scripts/repair-orphan-buy-mm0nf5pn.
 
 Modified: `signal-engine.js`, `scorecard.js`, `updown-service.js`, `updown-routes.js`, `TradeHistory.jsx`, `ScorecardPanel.jsx`, `backfill-scorecard.js`
 
+## Trend-Aware Signal Scoring (2026-02-25)
+
+- [x] **Trend-aware indicator scoring** — All 6 scoring functions (RSI, Stochastic, MACD, Bollinger, VWAP, Momentum) accept `trendBias` parameter; overbought/oversold readings treated as trend confirmation (not reversal) during bullish/bearish trends
+- [x] **Stronger counter-trend dampening** — Multiplier 0.75 → 0.40 so counter-trend composite scores are more aggressively reduced
+- [x] **MACD histogram growth bonus** — Floor score at ±50 when histogram is positive+growing in aligned trend
+- [x] **Trend filter hoisted** — `computeTrendFilter()` moved before timeframe loop so `trendBias` is available to all indicator scoring
+- [x] **Neutral-market safety** — All functions default to `trendBias='neutral'`, preserving original mean-reversion behavior in ranging markets
+
+Modified: `src/updown/signal-engine.js`
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22
