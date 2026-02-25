@@ -38,7 +38,7 @@
         "holdbackRatio": 0.5,
         "maxBtcExposure": 100,
         "depositedCapital": 100000,
-        "maxUsdcDeployed": 100024.33,
+        "maxUsdcDeployed": 100120.38,
         "maxDrawdownPercent": 50,
         "entryOffsetBps": 12,
         "cancelRateLimitMs": 1000,
@@ -169,20 +169,23 @@
     "exchange": "coinbase",
     "productId": "BTC-USDC",
     "kalshi": {
-      "allowedSeries": ["KXBTC15M", "KXBTC"],
+      "allowedSeries": [
+        "KXBTC15M",
+        "KXBTC"
+      ],
       "maxPremiumCents": 50,
       "maxContracts": 100,
       "maxSlippageCents": 3,
-      "hedgeRatio": 1.0
+      "hedgeRatio": 1
     },
     "position": {
       "btcAmount": 0.05,
       "minBtcAmount": 0.01,
-      "maxBtcAmount": 1.0
+      "maxBtcAmount": 1
     },
     "exitMode": "hybrid",
     "stopLoss": {
-      "percentFromEntry": 1.0,
+      "percentFromEntry": 1,
       "slippageBps": 10
     },
     "takeProfit": {
