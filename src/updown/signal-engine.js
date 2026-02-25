@@ -48,8 +48,23 @@ const WARNING_ZONE_MS = 8 * 60 * 60 * 1000;
  * @param {number} rsi
  * @returns {number}
  */
-const scoreRSI = (rsi) => {
+const scoreRSI = (rsi, trendBias = 'neutral') => {
   if (rsi == null) return 0;
+  if (trendBias === 'bullish') {
+    if (rsi > 70) return 30;   // overbought in uptrend = trend confirmation, not reversal
+    if (rsi > 65) return 0;
+    if (rsi < 30) return 80;
+    if (rsi < 35) return 50;
+    return 0;
+  }
+  if (trendBias === 'bearish') {
+    if (rsi < 30) return -30;  // oversold in downtrend = trend confirmation, not reversal
+    if (rsi < 35) return 0;
+    if (rsi > 70) return -80;
+    if (rsi > 65) return -50;
+    return 0;
+  }
+  // neutral: original mean-reversion logic
   if (rsi < 30) return 80;
   if (rsi < 35) return 50;
   if (rsi > 70) return -80;
@@ -63,12 +78,29 @@ const scoreRSI = (rsi) => {
  * @param {{k: number, d: number} | null} prevStoch
  * @returns {number}
  */
-const scoreStochastic = (stoch, prevStoch) => {
+const scoreStochastic = (stoch, prevStoch, trendBias = 'neutral') => {
   if (!stoch || (stoch.k === 0 && stoch.d === 0)) return 0;
 
   const bullishCross = prevStoch && prevStoch.k <= prevStoch.d && stoch.k > stoch.d;
   const bearishCross = prevStoch && prevStoch.k >= prevStoch.d && stoch.k < stoch.d;
 
+  if (trendBias === 'bullish') {
+    // Overbought in uptrend is normal — only penalize confirmed bearish cross
+    if (stoch.k > 80 && bearishCross) return -40;
+    if (stoch.k > 80) return 0;
+    if (stoch.k < 20 && bullishCross) return 90;
+    if (stoch.k < 20) return 60;
+    return 0;
+  }
+  if (trendBias === 'bearish') {
+    // Oversold in downtrend is normal — only reward confirmed bullish cross
+    if (stoch.k < 20 && bullishCross) return 40;
+    if (stoch.k < 20) return 0;
+    if (stoch.k > 80 && bearishCross) return -90;
+    if (stoch.k > 80) return -60;
+    return 0;
+  }
+  // neutral: original mean-reversion logic
   if (stoch.k < 20 && bullishCross) return 90;
   if (stoch.k < 20) return 60;
   if (stoch.k > 80 && bearishCross) return -90;
@@ -82,7 +114,7 @@ const scoreStochastic = (stoch, prevStoch) => {
  * @param {{macd: number, signal: number, histogram: number} | null} prevMacd
  * @returns {number}
  */
-const scoreMACD = (macd, prevMacd) => {
+const scoreMACD = (macd, prevMacd, trendBias = 'neutral') => {
   if (!macd || (macd.macd === 0 && macd.signal === 0)) return 0;
 
   const bullishCross = prevMacd && prevMacd.macd <= prevMacd.signal && macd.macd > macd.signal;
@@ -103,6 +135,13 @@ const scoreMACD = (macd, prevMacd) => {
     else if (prevMacd.histogram > 0 && macd.histogram < 0) score = Math.min(score, -20);
   }
 
+  // Trend-continuation bonus: histogram positive+growing in bullish trend → floor at +50
+  if (prevMacd && trendBias === 'bullish' && macd.histogram > 0 && macd.histogram > prevMacd.histogram) {
+    score = Math.max(score, 50);
+  } else if (prevMacd && trendBias === 'bearish' && macd.histogram < 0 && macd.histogram < prevMacd.histogram) {
+    score = Math.min(score, -50);
+  }
+
   return Math.max(-100, Math.min(100, Math.round(score)));
 };
 
@@ -111,8 +150,25 @@ const scoreMACD = (macd, prevMacd) => {
  * @param {number} percentB
  * @returns {number}
  */
-const scoreBollinger = (percentB) => {
+const scoreBollinger = (percentB, trendBias = 'neutral') => {
   if (percentB == null) return 0;
+  if (trendBias === 'bullish') {
+    // Band-walking above upper band is normal in uptrends
+    if (percentB > 1) return 0;
+    if (percentB > 0.8) return 0;
+    if (percentB < 0) return 80;
+    if (percentB < 0.2) return 50;
+    return 0;
+  }
+  if (trendBias === 'bearish') {
+    // Band-walking below lower band is normal in downtrends
+    if (percentB < 0) return 0;
+    if (percentB < 0.2) return 0;
+    if (percentB > 1) return -80;
+    if (percentB > 0.8) return -50;
+    return 0;
+  }
+  // neutral: original mean-reversion logic
   if (percentB < 0) return 80;
   if (percentB < 0.2) return 50;
   if (percentB > 1) return -80;
@@ -127,12 +183,24 @@ const scoreBollinger = (percentB) => {
  * @param {number} atr - ATR value
  * @returns {number}
  */
-const scoreVWAP = (price, vwap, atr) => {
+const scoreVWAP = (price, vwap, atr, trendBias = 'neutral') => {
   if (!atr || atr < 0.001 || !vwap || vwap <= 0) return 0;
   const distance = (price - vwap) / atr;
+  if (trendBias === 'bullish') {
+    // Price above VWAP is normal in uptrends — reduce penalty slope and cap
+    if (distance > 2) return -20;
+    if (distance < -2) return 70;
+    return Math.round(-10 * distance);
+  }
+  if (trendBias === 'bearish') {
+    // Price below VWAP is normal in downtrends — reduce reward slope and cap
+    if (distance < -2) return 20;
+    if (distance > 2) return -70;
+    return Math.round(-10 * distance);
+  }
+  // neutral: original mean-reversion logic
   if (distance < -2) return 70;
   if (distance > 2) return -70;
-  // Linear interpolation between -2 and 2
   return Math.round(-35 * distance);
 };
 
@@ -158,7 +226,7 @@ const scoreMomentum = (momentum, rsi) => {
  * @param {number} rsi - RSI value for context
  * @returns {number}
  */
-const scoreMomentumAcceleration = (momentum, rsi) => {
+const scoreMomentumAcceleration = (momentum, rsi, trendBias = 'neutral') => {
   if (!momentum || momentum.direction === 'neutral') return 0;
 
   let base = momentum.direction === 'up' ? 30 : -30;
@@ -167,9 +235,20 @@ const scoreMomentumAcceleration = (momentum, rsi) => {
   if (momentum.acceleration === 'accelerating') base *= 1.5;
   else if (momentum.acceleration === 'fading') base *= 0.5;
 
-  // RSI context bonus: oversold+up or overbought+down
-  if ((rsi < 35 && momentum.direction === 'up') || (rsi > 65 && momentum.direction === 'down')) {
-    base *= 1.5;
+  if (trendBias === 'neutral') {
+    // Original RSI context bonus: oversold+up or overbought+down (contrarian)
+    if ((rsi < 35 && momentum.direction === 'up') || (rsi > 65 && momentum.direction === 'down')) {
+      base *= 1.5;
+    }
+  } else {
+    // Trend-aware: boost trend-aligned accelerating momentum, halve counter-trend
+    const trendAligned = (trendBias === 'bullish' && momentum.direction === 'up') ||
+                         (trendBias === 'bearish' && momentum.direction === 'down');
+    if (trendAligned && momentum.acceleration === 'accelerating') {
+      base *= 1.5;
+    } else if (!trendAligned) {
+      base *= 0.5;
+    }
   }
 
   return Math.max(-100, Math.min(100, Math.round(base)));
@@ -196,8 +275,8 @@ const computeTrendFilter = (candles1h) => {
 
   const spread = (ema50 - ema200) / ema200;
 
-  if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.75 };
-  if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.75 };
+  if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.40 };
+  if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.40 };
   return { trendBias: 'neutral', ema50, ema200, multiplier: 1 };
 };
 
@@ -350,7 +429,7 @@ const computeHorizonPrediction = (byWindow, compositeScore) => {
  * @param {Record<string, number>} weights - Indicator weights to use
  * @returns {{scores: Record<string, number>, indicators: Record<string, any>, weightedScore: number}}
  */
-const computeTimeframeSignals = (candles, prevIndicators, weights) => {
+const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = 'neutral') => {
   if (!candles || candles.length < 2) {
     return { scores: {}, indicators: {}, weightedScore: 0 };
   }
@@ -372,12 +451,12 @@ const computeTimeframeSignals = (candles, prevIndicators, weights) => {
   const prevMacd = prevIndicators?.macd ?? null;
 
   const scores = {
-    rsi: scoreRSI(rsi),
-    stochastic: scoreStochastic(stoch, prevStoch),
-    macd: scoreMACD(macd, prevMacd),
-    bollinger: scoreBollinger(bb.percentB),
-    vwap: scoreVWAP(currentPrice, vwap, atr),
-    momentum: scoreMomentumAcceleration(momentum, rsi),
+    rsi: scoreRSI(rsi, trendBias),
+    stochastic: scoreStochastic(stoch, prevStoch, trendBias),
+    macd: scoreMACD(macd, prevMacd, trendBias),
+    bollinger: scoreBollinger(bb.percentB, trendBias),
+    vwap: scoreVWAP(currentPrice, vwap, atr, trendBias),
+    momentum: scoreMomentumAcceleration(momentum, rsi, trendBias),
   };
 
   let weightedScore = 0;
@@ -442,12 +521,16 @@ const createSignalEngine = (candleAggregator) => {
     const noTradeZone = timeToExpiry <= NO_TRADE_ZONE_MS;
     const warningZone = timeToExpiry <= WARNING_ZONE_MS;
 
+    // Feature 1: Compute trend filter BEFORE timeframe loop so trendBias is available to indicator scoring
+    const candles1h = candleAggregator.getCandles('1h');
+    const trendFilter = computeTrendFilter(candles1h);
+
     const timeframes = {};
     let compositeScore = 0;
 
     for (const tf of ALL_SIGNAL_TFS) {
       const candles = candleAggregator.getCandles(tf);
-      const result = computeTimeframeSignals(candles, prevIndicators[tf], currentIndicatorWeights);
+      const result = computeTimeframeSignals(candles, prevIndicators[tf], currentIndicatorWeights, trendFilter.trendBias);
 
       // Store indicators for next round's crossover detection
       if (result.indicators && Object.keys(result.indicators).length > 0) {
@@ -487,9 +570,7 @@ const createSignalEngine = (candleAggregator) => {
     }
     const confluence = { agreeing, totalDirectional, quality: confluenceQuality };
 
-    // Feature 1: Trend filter — dampen counter-trend signals
-    const candles1h = candleAggregator.getCandles('1h');
-    const trendFilter = computeTrendFilter(candles1h);
+    // Feature 1: Trend filter — dampen counter-trend signals (trendFilter computed above)
     if (trendFilter.trendBias === 'bullish' && compositeScore < 0) {
       compositeScore *= trendFilter.multiplier;
     } else if (trendFilter.trendBias === 'bearish' && compositeScore > 0) {
