@@ -466,8 +466,10 @@ class SimulationEngine {
 
     if (bracketSeg.startsWith('B')) {
       const midpoint = parseInt(bracketSeg.slice(1))
-      const lowerBound = midpoint - 125
-      const upperBound = midpoint + 125
+      const { bracketWidth } = getBracketInfo(ticker)
+      const halfWidth = (bracketWidth || 250) / 2
+      const lowerBound = midpoint - halfWidth
+      const upperBound = midpoint + halfWidth
       return (btcSpot >= lowerBound && btcSpot < upperBound) ? 'yes' : 'no'
     } else if (bracketSeg.startsWith('T')) {
       const threshold = parseFloat(bracketSeg.slice(1))
@@ -1104,7 +1106,13 @@ class SimulationEngine {
           // Auto-adopt api_only positions (filled orders the engine lost track of)
           // This prevents the re-ordering loop: fill timeout -> cancel 404 -> engine forgets -> re-orders
           const apiOnly = result.discrepancies.filter(d => d.type === 'api_only' && d.api > 0)
+          const maxAdoptContracts = this.config?.risk?.maxPositionContracts || 200
           for (const d of apiOnly) {
+            if (d.api > maxAdoptContracts) {
+              console.log(`[${ts()}] SKIP adoption: ${d.api}x ${d.side} ${d.ticker} exceeds max ${maxAdoptContracts} contracts — likely from previous engine bug`)
+              sendAlert('error', 'Oversized position skipped', { ticker: d.ticker, side: d.side, contracts: d.api, max: maxAdoptContracts })
+              continue
+            }
             // Estimate avg cost from exposure if available, otherwise use 50c as fallback
             const estimatedAvgCost = d.market_exposure && d.api ? Math.round(d.market_exposure / d.api) : 50
             this.state.positions.push({
