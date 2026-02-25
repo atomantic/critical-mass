@@ -1,6 +1,6 @@
 {
   "name": "critical-mass",
-  "version": "2.16.2",
+  "version": "2.16.3",
   "description": "Multi-exchange BTC accumulation engine with celestial position management",
   "main": "index.js",
   "scripts": {

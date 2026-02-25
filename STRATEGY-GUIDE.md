@@ -12,51 +12,41 @@ This document serves as the authoritative reference for strategy configuration, 
 
 4. **Binary bracket markets are all-or-nothing.** Positions settle at $0 or $1. Risk control comes from POSITION SIZING (small bets), not from entry threshold tuning. A 25% edge threshold with $50 bets is riskier than a 15% threshold with $10 bets.
 
-## Current Strategy Configuration (as of 2026-02-18)
+5. **Exit logic must always be reachable.** Any code path that blocks evaluation (time filters, liquidity checks) must run AFTER exit checks for held positions. A position that can't be exited is a position that rides to settlement.
+
+## Current Strategy Configuration (as of 2026-02-25)
 
 ### Settlement Sniper (LIVE)
 - **What it does**: Uses Black-Scholes-style probability model to find mispriced brackets 2-5 min before settlement
-- **Edge threshold**: 0.15 (15%) — reduced from 0.18 on 2026-02-19 (see "Why 0.15 for Sniper" below)
-- **Momentum requirement**: 0.40 (40%) — lowered from 0.60 which blocked all signals on illiquid OTM markets
-- **Settlement ride**: DISABLED (threshold 1.0) — rides to settlement caused 100% losses when model was wrong
-- **Position sizing**: kellyFraction 0.12, maxBetPct 0.03, maxContracts 100
+- **Edge threshold**: 0.15 (15%)
+- **Momentum requirement**: 0.40 (40%)
+- **Settlement ride**: DISABLED (threshold 1.0)
+- **minSigma**: 0.20 (lowered from 0.40 on 2026-02-25 — see "Why minSigma 0.20" below)
+- **Position sizing**: kellyFraction 0.25, maxBetPct 0.12, maxContracts 200
+- **Skips daily markets**: Black-Scholes not calibrated for daily horizons
 
-### Coinbase Fair Value (LIVE — minEntryPrice lowered 2026-02-18)
-- **What it does**: Compares Coinbase spot price to Kalshi bracket strike, trades when divergence exceeds threshold
-- **Min entry price**: 8c (lowered from 15c on 2026-02-18 — see "Why minEntryPrice 8 not 15" below)
-- **Edge threshold**: 0.15 (15%) — see "Why 0.15, not 0.25" below
-- **Max seconds to settlement**: 300 (5 min) — see "Why 300s, not 180s" below
-- **Time scaling**: Capped at 1.3x (effective max threshold: 19.5% at 300s TTL)
-- **Force exit**: 60s before settlement (avoids binary risk; see failure mode #5)
+### Coinbase Fair Value (DISABLED)
+- **Status**: Disabled — no live trades since Feb 18. 0% settlement-ride win rate (3/4 rides to $0). Needs re-evaluation with calibrated sigma.
+- **Force exit**: 60s before settlement (avoids binary risk)
 - **Position sizing**: kellyFraction 0.15, maxBetPct 0.03, maxContracts 100
 
-### Gamma Scalper (SHADOW — disabled 2026-02-19)
-- **What it does**: Buys cheap OTM brackets (5-15c) with asymmetric 12:1 payoff when spot trends toward strike
-- **Edge threshold**: 0.08 (8%)
+### Gamma Scalper (DISABLED — shadow only)
+- **Status**: Disabled — 10% dry-run WR, 100% of live signals blocked by slippage guard. OTM brackets have no resting liquidity.
 - **Position sizing**: maxBetPct 0.02, maxContracts 50, maxPositions 3
-- **Status**: Disabled — 10% dry-run win rate, and 100% of live signals blocked by slippage guard (95¢ fills on 5-9¢ limits). OTM brackets have no resting liquidity. Re-enable when Kalshi OTM liquidity improves.
-- **Note**: Still evaluates first in shadow mode. Lowest risk per trade (~$4).
 
-### Swing Flipper (LIVE — promoted 2026-02-19, widened 2026-02-18)
-- **What it does**: Rides intra-window oscillation on ATM brackets (25-65¢). Buys pullbacks (8¢ below recent peak) and sells recoveries for 8¢ flips. Never holds to settlement.
-- **Key insight**: ATM contracts MUST oscillate as BTC spot moves around the bracket boundary. We don't predict settlement — we scalp the swings.
-- **ATM range**: 25-65c (widened from 30-60c on 2026-02-18 to catch brackets transitioning into/out of ATM range)
-- **Oscillation requirement**: Contract must show 10¢+ range in last 15 snapshots (reduced from 12¢ on 2026-02-18 — 10¢ range is still meaningful, and the wider range lets thinner patterns through)
-- **Spot confirmation**: Coinbase spot must be (a) near the bracket boundary and (b) moving toward it
-- **Exit conditions**: Take profit at +8¢, stop loss at -6¢, time exit at 90s to settlement, oscillation collapse at <6¢ range
-- **Position sizing**: maxBetPct 0.01, maxContracts 15, maxPositions 1 (conservative initial live sizing)
-- **Status**: Live with reduced sizing — promoted from shadow after observing profitable ATM oscillation trades (+$1.90 on B66625 flip)
+### Swing Flipper (LIVE)
+- **What it does**: Rides intra-window oscillation on ATM brackets (30-60¢). Buys pullbacks (8¢ below recent peak) and sells recoveries for 8¢ flips.
+- **ATM range**: 30-60c
+- **Oscillation requirement**: 12¢+ range in last 15 snapshots
+- **Spot confirmation**: Composite/Coinbase spot must be (a) near the bracket boundary and (b) moving toward it
+- **Exit conditions**: Take profit at +8¢, stop loss at -6¢, time exit at minTTL, oscillation collapse at <6¢ range
+- **Position sizing**: maxBetPct 0.02, maxContracts 30, maxPositions 2
+- **Daily market support**: TIME_SCALES widens windows (minTTL 1800s, maxTTL 28800s, oscLookback 60, collapseLookback 30)
+- **Critical fix (2026-02-25)**: Exit logic moved before time filter — previously exits were unreachable on daily brackets once TTL < minTTL, causing 100% settlement losses. See failure mode #14.
 - **Do NOT change**: `takeProfitCents` to >10 (greed kills), `stopLossCents` to >8 (must cut fast), `minOscillationRange` to <8 (need proven swings)
 
-### Momentum Rider (LIVE — ATM tuned 2026-02-18)
-- **What it does**: Rides Kalshi price momentum with Coinbase spot confirmation
-- **Entry range**: 45-70c (lowered from 65-80c on 2026-02-18 — see "Why entryThreshold 45 not 65" below)
-- **Stop loss**: 10c (added 2026-02-18 — ride-to-settlement at ATM prices is too risky without a stop)
-- **Profit target**: 10c (reduced from 15c — 10c on a 50c entry = 20% return)
-- **minTrendTicks**: 5 (increased from 3 on 2026-02-19 — 3 ticks produced too much noise, 20.4% dry-run WR with -$83 P&L)
-- **Status**: Live — promoted based on 2/2 wins (+$46 shadow, +$3.49 live)
-- **Safety exit**: 45s before settlement (code-level, always active)
-- **Result so far**: 2 trades, 2 wins, +$49.49 total
+### Momentum Rider (DISABLED — shadow only)
+- **Status**: Disabled — 20.4% dry-run WR with -$83 P&L at minTrendTicks=5. Not producing meaningful edge.
 
 ## Why These Settings (Do NOT Revert Without Reading This)
 
@@ -75,23 +65,14 @@ This document serves as the authoritative reference for strategy configuration, 
 - **Why it's legitimate**: BTC was at $68,074, solidly in the [$68,000, $68,250) bracket with 40s to settlement. Market was still priced at ~34c (stale). Fair value was ~95%. Edge = 61%. Not a bug.
 - **Why not 1.0**: Edges above 85% usually indicate a data error or stale WebSocket feed. Keep some guard rail.
 
+### Why minSigma 0.20 not 0.40
+- **Problem at 0.40**: The sigma calibration fix (2026-02-20) measured realized BTC vol at 0.16-0.20 across 170 data points. A minSigma of 0.40 forces 2x actual volatility, pushing Black-Scholes probabilities toward 0.50 and suppressing edge detection. The code default was lowered to 0.18 but the config override of 0.40 defeated the calibration.
+- **Why 0.20**: Slight buffer above realized vol (0.16-0.20) to handle regime changes. Not so high that it corrupts probability estimates.
+- **If overcorrecting** (sigma ratio < 0.8 in window summaries): bump to 0.22.
+
 ### Momentum Rider entryThreshold: 45 not 65
-- **Problem at 65**: ATM brackets price at 40-55c — the YES-side where real liquidity exists. The 65c threshold blocked every ATM entry, forcing the strategy to only target 65-80c brackets that are already directionally committed.
-- **Why 45**: Conviction tracker data (281 settled brackets) shows 85% accuracy at the 65c threshold. ATM prices (40-55c) have real YES-side orderbook depth (unlike NO-side OTM brackets). At 50c, the fee is only 2c per contract (breakeven at 51% accuracy). Adding a 10c stop loss manages risk at these symmetric payoff prices — room for normal oscillation while cutting real reversals.
-- **Existing safeguards**: 5 consecutive tick trend requirement, Coinbase spot momentum confirmation (0.05% in 60s), fair value premium guard (15c max), 45s safety exit before settlement, maxBetPct 0.02, maxContracts 50.
-
-### CFV minEntryPrice: 8 not 15
-- **Problem at 15**: B66875 YES had a 90% edge at 9c — blocked by the 15c floor. The bracket was the eventual winner.
-- **Why 8**: YES-side asks at 8-9c are real market maker orders (bid=4, ask=8). This is different from the gamma scalper's NO-side problem where OTM brackets have zero resting liquidity. The code default was 10; the config was even more conservative at 15.
-- **Why not lower**: Below 8c, spread width (bid-ask gap) makes fills unreliable and slippage guard will likely block.
-
-### Swing Flipper range: 25-65c not 30-60c
-- **Problem at 30-60**: Tonight swing-flipper rejected all brackets (0/3 shadow record). Brackets transitioning into or out of ATM range at 25-30c and 60-65c were excluded.
-- **Why 25-65**: Catches brackets in their full ATM lifecycle. Combined with reducing minOscillationRange from 12c to 10c, lets thinner but still meaningful oscillation patterns qualify.
-
-### Sniper Momentum: 0.40 not 0.60
-- **Problem at 0.60**: OTM bracket markets are illiquid with choppy price movement. Momentum rarely exceeds 40-50%, blocking every sniper signal.
-- **Why 0.40**: Allows signals through while still requiring SOME directional confirmation.
+- **Problem at 65**: ATM brackets price at 40-55c — the YES-side where real liquidity exists. The 65c threshold blocked every ATM entry.
+- **Why 45**: ATM prices have real YES-side orderbook depth. At 50c, the fee is only 2c per contract (breakeven at 51% accuracy).
 
 ### Settlement Ride: Disabled (1.0)
 - **What it was**: At `settlementRideThreshold: 0.40`, the sniper could skip its 60s exit window if edge > 40% and ride to settlement.
@@ -121,22 +102,31 @@ This document serves as the authoritative reference for strategy configuration, 
 **Result**: Allowed 2 losing trades (moderate edge, entered too early). But the problem was position SIZING ($52/trade), not the threshold. After fixing sizing (maxBetPct 0.03, maxContracts 100), the same settings would risk ~$10/trade max.
 
 ### 8. CFV without forced pre-settlement exit (Feb 16-18)
-**Result**: 3 of 4 CFV settlement-rides went to $0 (-$148 total). The edge model identified opportunities correctly (1 of 4 won +$241), but a 25% win rate on settlement rides means negative EV at typical position sizes. Fixed by adding `forceExitSeconds: 60` that converts binary settlement risk into known P&L at 60s before close.
+**Result**: 3 of 4 CFV settlement-rides went to $0 (-$148 total). Fixed by adding `forceExitSeconds: 60`.
 
 ### 9. Evaluating high-risk strategies before low-risk ones (Feb 16-18)
-**Result**: Settlement-sniper and CFV evaluated first, claiming settlement windows via the one-position-per-window rule. Gamma-scalper (shadow: +$46 on $4 bet) and momentum-rider (live: +$3.49) never got window access. Fixed by reordering eval: gamma-scalper first, momentum-rider second.
+**Result**: Sniper and CFV claimed settlement windows before gamma-scalper or momentum-rider could evaluate. Fixed by reordering eval priority.
 
 ### 10. Gamma scalper live: 100% slippage-blocked (Feb 18-19)
-**Result**: Gamma scalper generated signals every 5 seconds targeting OTM NO contracts at 5-9¢, but every single one was blocked by the slippage guard (estimated fill 95¢ vs limit 7¢ + 3¢ max slippage). OTM brackets on Kalshi have no resting limit orders at the NO side — the only available liquidity is the YES ask at 95-96¢. Dry-run: 10% WR, -$15.37 P&L. Disabled on 2026-02-19, demoted to shadow mode.
+**Result**: Every signal blocked by slippage guard (estimated fill 95¢ vs limit 7¢ + 3¢ max slippage). OTM brackets have no resting NO-side liquidity. Disabled.
 
 ### 11. Momentum rider noise at minTrendTicks=3 (Feb 18-19)
-**Result**: 98 dry-run trades (highest volume by far) but only 20.4% WR, -$83.35 P&L. With only 3 consecutive tick confirmation required, normal market noise frequently triggers false signals. Increased to 5 on 2026-02-19 to reduce noise.
+**Result**: 98 dry-run trades but only 20.4% WR, -$83.35 P&L. Increased to 5.
 
 ### 12. Settlement sniper at edgeThreshold=0.18 (Feb 18-19)
-**Result**: In 34 dry-run trades, edges consistently fell in the 12-15% range — just below the 18% threshold. Best edges found per window were typically 10-15%, meaning the threshold blocked signals that the model identified as profitable. Reduced to 0.15 on 2026-02-19 to align with data. Note: Golden Rule #4 still applies — risk is managed via position sizing (maxBetPct 0.03), not threshold tuning.
+**Result**: Edges consistently 12-15%, just below 18% threshold. Reduced to 0.15.
 
 ### 13. Limit order retry without fill check (Feb 24)
-**Result**: `handleLimitFillTimeout` cancelled the initial 3s-timeout order, got 404 (already filled), but didn't verify via fills API like `handleFillTimeout` does. Instead it retried at price+1, double-buying 200 contracts. On KXBTCD-26FEB2411-T63749.99: bought 100 YES @ 34¢ (filled, untracked), retried 100 YES @ 33¢ (also filled, tracked). Then oscillation collapse triggered 3 sell orders in 10 seconds (no pending-sell guard), selling 300 YES at 28-32¢ each — creating a net 100 NO position at 68¢. Total extra cost: ~$12 in realized losses + unintended short position. **Fix**: Added fill-check on 404 in retry path, added sell-duplicate guard via `pendingReservations`.
+**Result**: `handleLimitFillTimeout` cancelled the initial 3s-timeout order, got 404 (already filled), but didn't verify via fills API. Retried at price+1, double-buying 200 contracts. Then oscillation collapse triggered 3 sell orders (300 total vs 200 held), creating unintended 100 NO short position. **Fix**: Added fill-check on 404 in retry path, added sell-duplicate guard via `pendingReservations`.
+
+### 14. Swing-flipper exits unreachable on daily brackets (Feb 22-25)
+**Result**: The `checkExit()` call was nested AFTER the time filter in `evaluate()`. For daily brackets (minTTL=1800s), once TTL dropped below 30 minutes, the `continue` at the time filter fired before `checkExit` was reached. Take-profit, stop-loss, time-exit, and oscillation-collapse exits NEVER fired. Every daily bracket position rode to settlement. 13 trades, 46% WR, -$212 — average win $7.57 vs average loss $36.82 (4.9:1 loss/win ratio). **Fix (2026-02-25)**: Exit evaluation moved before time filter. Time filter now only blocks new entries, not exits.
+
+### 15. Aggressive sizing overhaul caused outsized losses (Feb 22-24)
+**Result**: Swing-flipper sizing increased from maxBetPct 0.01/maxContracts 15 to 0.12/100. Combined with the exit bug (#14), this meant 100-contract positions riding to settlement instead of 15-contract positions. The sizing was reverted to conservative (maxBetPct 0.02, maxContracts 30) after observing the loss pattern. **Lesson**: Never increase sizing and change market scope (adding daily) simultaneously — isolate variables.
+
+### 16. minSigma 0.40 after calibration fix (Feb 20-25)
+**Result**: The sigma calibration fix lowered the code default from 0.40 to 0.18, but the config file still overrode it to 0.40. Realized vol was 0.16-0.20 — the 0.40 floor meant the Black-Scholes model always assumed 2x actual volatility, pushing all probabilities toward 0.50 and suppressing edge detection for the settlement sniper. **Fix (2026-02-25)**: Config `minSigma` lowered to 0.20.
 
 ## Strategy Evaluation Order (as of 2026-02-19)
 
@@ -148,7 +138,7 @@ Strategies are evaluated in this order. Within each settlement window, only one 
 4. **Coinbase Fair Value** — forced exit at 60s before settlement
 5. **Settlement Sniper** — settlement-riding (highest risk, disabled ride = exits at 60s)
 
-**Rationale**: Pre-settlement-exit strategies should evaluate first because they have demonstrated positive returns (momentum-rider: +$49.49, gamma-scalper shadow: +$46) while settlement-riding strategies have a 0% win rate on 4 live settlement rides.
+**Rationale**: Pre-settlement-exit strategies evaluate first. Settlement-riding strategies have a 0% win rate on 4 live settlement rides.
 
 ## Risk Controls (Do NOT Weaken)
 
@@ -156,71 +146,73 @@ Strategies are evaluated in this order. Within each settlement window, only one 
 |---------|---------|---------|
 | `maxEdgeSanity` | 0.85 | Block signals with edges > 85% (likely data errors) |
 | `maxDailyLoss` | $500 | Circuit breaker halts all trading |
-| `maxExposurePerWindow` | $75 | Cap total risk per settlement event |
-| `maxBetPct` | 0.03 | Max 3% of bankroll per trade |
-| `maxContracts` | 100 | Hard cap on contract count |
+| `maxExposurePerWindow` | $200 | Cap total risk per settlement event |
+| `maxBetPct` | strategy-specific | Per-strategy bankroll % cap |
+| `maxContracts` | strategy-specific | Per-strategy hard cap on contract count |
 | `maxTradesPerHour` | 10 | Rate limit to prevent runaway trading |
 | `maxOpenPositions` | 20 | Limit concurrent exposure |
+| `maxPositionContracts` | 500 | Global per-ticker contract cap |
 | Cross-position conflict | Code | Only 1 position per settlement window |
 | Liquidity-aware sizing | Code | Orders capped to available orderbook depth |
+| Reconciliation adoption cap | Code | api_only positions exceeding maxPositionContracts are not auto-adopted |
 
-## Known Failure Modes (Updated 2026-02-24)
+## Known Failure Modes (Updated 2026-02-25)
 
 ### 1. Cross-bracket double-entry (-$96 loss)
-Two strategies entered the same settlement window on adjacent brackets with opposing views — both lost. The engine's window conflict check existed but relied on in-memory `pendingReservations` which are lost on restart. **Fix**: The conflict check now also scans `state.trades` for recent buy trades in the same settlement window, surviving restarts.
+Two strategies entered the same settlement window on adjacent brackets with opposing views — both lost. **Fix**: Conflict check now scans `state.trades` for recent buy trades in the same settlement window.
 
 ### 2. Reconciliation always assumed loss (-$106 loss)
-When the engine found positions it lost track of (`engine_only` discrepancies), it hardcoded `price: 0` (full loss) regardless of actual outcome. Positions that actually won were still recorded as losses. **Fix**: Reconciliation now uses `determineBracketOutcome()` with current BTC spot to determine the correct win/loss outcome before recording.
+`engine_only` discrepancies were hardcoded as `price: 0` (full loss) regardless of actual outcome. **Fix**: Reconciliation now uses `determineBracketOutcome()` with current BTC spot.
 
-### 3. Momentum-rider pre-settlement exits are the only consistently profitable pattern
-The momentum-rider strategy (2 trades, 2 wins: +$46 shadow, +$3.49 live) exits before settlement via profit target, avoiding binary all-or-nothing risk. Settlement-riding strategies (sniper, CFV) have a 0% win rate on 4 live settlement-rides. **Fix (2026-02-18)**: Added 45s safety exit to momentum-rider and 60s forced pre-settlement exit to CFV.
+### 3. Settlement-riding strategies have 0% live win rate
+Settlement-riding (sniper, CFV) went 0/4 on live rides. **Fix**: Added pre-settlement forced exits: 45s for momentum-rider, 60s for CFV, settlement ride disabled for sniper.
 
 ### 4. Strategy evaluation order let high-risk strategies crowd out low-risk ones
-Strategies evaluated in config order: sniper first, CFV second. Both claimed settlement windows before gamma-scalper or momentum-rider could evaluate. Gamma-scalper (shadow: 1 trade, 1 win, +$46 on a $4 bet) never got a chance at live windows. **Fix (2026-02-18)**: Strategy evaluation reordered: gamma-scalper → momentum-rider → swing-flipper → CFV → sniper. Lower-risk pre-settlement-exit strategies now evaluate first.
+**Fix**: Evaluation reordered: gamma-scalper → momentum-rider → swing-flipper → CFV → sniper.
 
 ### 5. CFV held positions to binary settlement (-$148 over 3 trades)
-CFV had no forced pre-settlement exit — it relied on edge-reversal or take-profit exits, which often didn't trigger before settlement. Result: 3 of 4 CFV trades rode to $0 at settlement. **Fix (2026-02-18)**: Added `forceExitSeconds` param (default 60s) that forces exit before settlement window closes, converting binary risk into a known P&L.
+**Fix**: Added `forceExitSeconds: 60` that forces exit before settlement.
 
-### 6. Reconciled positions are a persistent P&L leak (-$106 over 2 trades)
-Positions from 15min markets (KXBTC15M) appeared as API-only during reconciliation. These likely originated from previous engine runs or manual orders. Both settled at $0. The engine has no control over these positions since it didn't create them. Monitor reconciliation logs for recurring `api_only` discrepancies.
+### 6. Reconciled positions from early engine loop bug (-$1,039 over 36 trades)
+An early engine bug placed oversized positions (200-300 contracts) that were then adopted via reconciliation. These dominated P&L losses. **Fix (2026-02-25)**: Reconciliation now caps adoption at `maxPositionContracts` (default 200). Oversized api_only positions are logged and skipped, not blindly adopted.
 
 ### 7. Limit order retry caused double-buy + triple-sell cascade (2026-02-24)
-When a limit buy order timed out after 3s, `handleLimitFillTimeout` attempted to cancel the order, got a 404 (order already filled), but then retried at price+1 anyway — buying 200 contracts instead of 100. The retry path didn't have the 404→fill-check logic that `handleFillTimeout` had. Additionally, after the fill was confirmed, the oscillation range had collapsed (4¢ < 6¢ threshold), causing the strategy to generate a new sell signal every 5s evaluation cycle. Three sell orders were placed for 100 contracts each (300 total) against only 200 held, creating an unintended 100 NO short position. **Fix (2026-02-24)**: (a) `handleLimitFillTimeout` now checks the fills API on cancel-404 before retrying, same as `handleFillTimeout`. (b) Sell signals are now blocked when a sell reservation is already pending for the same ticker via `pendingReservations`.
+**Fix**: Fill-check on cancel-404 in retry path + sell-duplicate guard via `pendingReservations`.
+
+### 8. Swing-flipper exit logic unreachable on daily brackets (-$212 over 13 trades, 2026-02-22 to 2026-02-25)
+The `checkExit()` call was nested after the time filter in `evaluate()`. For daily brackets with `minTTL=1800s`, the `continue` fired before exit evaluation once TTL < 30 min. All 4 exit conditions (TP, SL, time, oscillation collapse) were dead code for held daily positions. **Fix (2026-02-25)**: Exit evaluation moved before time filter. Time filter now only blocks new entries.
+
+### 9. determineBracketOutcome hardcoded bracket width
+Bracket width was hardcoded at 250 (midpoint +/- 125). If bracket widths change per series, settlement outcomes could be wrong. **Fix (2026-02-25)**: Now uses `getBracketInfo()` for dynamic bracket widths.
 
 ## Health Checks
 
 When analyzing performance:
 
-1. **Do NOT revert `edgeThreshold` to 0.25** — this causes zero trading activity. If trades are losing, reduce `maxBetPct` or `maxContracts` instead.
-2. **Do NOT revert `maxSecondsToSettlement` to 180** — 300s gives the strategy time to evaluate. The evaluation window doesn't cause losses; position sizing does.
-3. **Do NOT lower `maxEdgeSanity` below 0.85** — large edges near settlement are legitimate, not bugs.
-4. **Do NOT lower sniper momentum below 0.40** — already at the floor for illiquid OTM markets.
+1. **Do NOT revert `edgeThreshold` to 0.25** — causes zero trading activity.
+2. **Do NOT revert `maxSecondsToSettlement` to 180** — 300s is needed for evaluation.
+3. **Do NOT lower `maxEdgeSanity` below 0.85** — large edges near settlement are legitimate.
+4. **Do NOT lower sniper momentum below 0.40** — floor for illiquid OTM markets.
 5. **DO reduce position sizing** (`maxBetPct`, `maxContracts`) if losses are too high per trade.
-6. **DO check if gamma-scalper is being crowded out** by higher-risk strategies claiming windows first. (Fixed in eval order 2026-02-18.)
+6. **DO verify exit logic is reachable** for all timeframes. Exit checks must run BEFORE time filters.
 7. **DO verify balance and position reconciliation** is running (every ~60s in logs).
-8. **DO check that CFV `forceExitSeconds` is set** — if 0 or absent, CFV will ride to binary settlement (historically 0% win rate on settlement rides).
-9. **DO review sigma calibration** in window summaries. If ratio (predicted/realized) is consistently >2 or <0.5, the vol model is miscalibrated. Check `sigmaCalibration` in journal window-summary entries.
-10. **DO review entry metadata** on settlements. Journal settlement records now include `entryEdge`, `entrySigma`, `entryFairProb`, `entryMarketProb`, and `entryBtcSpot` for post-trade calibration analysis.
+8. **DO check that CFV `forceExitSeconds` is set** — if 0 or absent, CFV rides to binary settlement.
+9. **DO review sigma calibration ratio** in window summaries. Ratio should be ~1.0-1.2x. If >2x, minSigma is too high. If <0.8x, minSigma is too low.
+10. **DO review entry metadata** on settlements. Journal records include `entryEdge`, `entrySigma`, `entryFairProb`, `entryMarketProb`, `entryBtcSpot`.
+11. **DO check reconciliation adoption logs** for oversized positions being skipped.
 
-## Aggressive Sizing Overhaul (2026-02-22)
+## Price Feed Architecture
 
-### Context
--$31 P&L across 10 trades in 6 days on a $1,107 account. Three of five strategies had zero effective live fills. Position sizing at 3% ($33/trade) was too small to produce meaningful returns. The full account is declared risk capital.
+The system uses three exchange feeds for composite BTC pricing:
+- **Coinbase** — primary feed, used as fallback when composite unavailable
+- **Gemini** — secondary feed
+- **Crypto.com** — secondary feed
 
-### Disabled Strategies
-- **Gamma Scalper**: Disabled — 10% dry-run WR, 100% of live signals blocked by slippage guard. OTM brackets have no resting liquidity. Keep in shadow mode.
-- **Momentum Rider**: Disabled — 20.4% dry-run WR with -$83 P&L at minTrendTicks=5. Not producing meaningful edge. Keep in shadow mode.
-- **Coinbase Fair Value**: Already disabled — no change.
+Composite price is a volume-weighted average computed by `exchange-aggregator.js` with a 10s staleness filter. Strategies prefer composite prices with Coinbase fallback. No Kraken dependency exists in production code.
 
-### Sizing Increases (from conservative to aggressive)
-- **Swing Flipper**: `maxBetPct` 0.01 → 0.12 (12%, ~$130/trade), `maxContracts` 15 → 100, `maxPositions` 1 → 3
-- **Settlement Sniper**: `kellyFraction` 0.15 → 0.25, `maxBetPct` 0.04 → 0.12, `maxContracts` 100 → 200
-- **Risk cap**: `maxExposurePerWindow` 75 → 200 (old cap would block every trade at new sizing)
+## Daily Market Support (added 2026-02-22)
 
-### Daily Market Support
-- Added `"daily"` to `timeframes` in config — engine now fetches and tracks KXBTCD (daily BTC) markets.
-- **Swing Flipper**: Added `TIME_SCALES` map with timeframe-aware time windows and lookback scaling. Daily markets use wider windows (minTTL 1800s, maxTTL 28800s, oscLookback 60, collapseLookback 30). Config params set a floor; timeframe scaling widens.
-- **Settlement Sniper**: Skips daily markets entirely (`continue` when `timeframe === 'daily'`). Black-Scholes with sigma=0.4 and T=14400s pushes all probabilities toward 0.50 — the sniper's edge model is not calibrated for daily horizons.
-
-### Journal Fix
-- Removed `writeSkips()` call from simulation engine evaluation loop. This was writing ~1.5M skip diagnostic entries per day to journal files — pure noise. Peak edge tracking still works from in-memory diagnostics. Expected journal size: ~1-2K lines/day (entries, exits, settlements, window summaries only).
+- Engine fetches KXBTCD (daily BTC) markets when `"daily"` is in config timeframes
+- **Swing Flipper**: `TIME_SCALES` map widens time windows and lookback for daily markets (minTTL 1800s, maxTTL 28800s, oscLookback 60, collapseLookback 30)
+- **Settlement Sniper**: Skips daily markets entirely — Black-Scholes with sigma=0.20 and T=14400s still pushes probabilities toward 0.50
+- **Other strategies**: Not timeframe-aware; daily markets fall outside their TTL windows naturally

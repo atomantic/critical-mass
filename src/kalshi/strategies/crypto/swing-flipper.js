@@ -175,7 +175,27 @@ class SwingFlipperStrategy extends BaseStrategy {
 
       const diag = { ticker, ttl: Math.round(secondsToSettlement), status: '' }
 
-      // Time filter
+      // Liquidity check (needed for both exit pricing and entry evaluation)
+      const liquidity = checkLiquidity(priceData)
+
+      // EXIT CHECK FIRST: always evaluate exits for held positions regardless of TTL
+      // Without this, positions on daily brackets (minTTL=1800s) become unreachable
+      // once TTL drops below minTTL, riding to settlement with full cost basis loss.
+      const existingPosition = context.positions.find(p => p.ticker === ticker && p.metadata?.strategy === this.name)
+      if (existingPosition) {
+        if (!liquidity.valid) {
+          diag.status = `holding (no liquidity for exit: ${liquidity.reason})`
+          this.diagnostics.push(diag)
+          continue
+        }
+        const exitSignal = this.checkExit(ticker, existingPosition, liquidity, secondsToSettlement, history, { ...params, collapseLookback: collLookback, minSecondsToSettlement: minTTL })
+        if (exitSignal) signals.push(exitSignal)
+        diag.status = exitSignal ? `EXIT: ${exitSignal.reason}` : 'holding'
+        this.diagnostics.push(diag)
+        continue
+      }
+
+      // Time filter (only blocks NEW entries, not exits)
       if (secondsToSettlement < minTTL) {
         diag.status = 'too close to settlement'
         this.diagnostics.push(diag)
@@ -187,20 +207,8 @@ class SwingFlipperStrategy extends BaseStrategy {
         continue
       }
 
-      // Liquidity check
-      const liquidity = checkLiquidity(priceData)
       if (!liquidity.valid) {
         diag.status = `no liquidity: ${liquidity.reason}`
-        this.diagnostics.push(diag)
-        continue
-      }
-
-      // Check existing positions for exit
-      const existingPosition = context.positions.find(p => p.ticker === ticker && p.metadata?.strategy === this.name)
-      if (existingPosition) {
-        const exitSignal = this.checkExit(ticker, existingPosition, liquidity, secondsToSettlement, history, { ...params, collapseLookback: collLookback, minSecondsToSettlement: minTTL })
-        if (exitSignal) signals.push(exitSignal)
-        diag.status = exitSignal ? `EXIT: ${exitSignal.reason}` : 'holding'
         this.diagnostics.push(diag)
         continue
       }
