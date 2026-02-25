@@ -251,6 +251,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   let reconcileInterval = null;
   let stateSaveInterval = null;
   let entryInProgress = false; // Lock to prevent concurrent entry evaluations
+  let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
   const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
   const recentlyProcessedSellFills = new Set(); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
   const tpPlacementInFlight = new Set(); // Dedup guard: prevents concurrent placeBodyTp calls for the same body
@@ -2509,6 +2510,10 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    */
   const evaluateReactiveEntry = async () => {
     const now = Date.now();
+
+    // Skip if in insufficient funds cooldown (prevents rapid retry spam on 406 errors)
+    if (now < insufficientFundsCooldownUntil) return;
+
     const timeSinceLastEntry = now - positionState.lastEntryTime;
 
     // Minimum interval guard
@@ -2545,6 +2550,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * Evaluate ladder entry - pre-position liquidity ladder
    */
   const evaluateLadderEntry = async () => {
+    // Skip if in insufficient funds cooldown
+    if (Date.now() < insufficientFundsCooldownUntil) return;
+
     // Skip if ladder already active with pending orders
     if (positionState.ladderActive && positionState.pendingLadderOrders.length > 0) {
       return;
@@ -2730,7 +2738,19 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     effectiveOffsetBps = Math.round(effectiveOffsetBps * macroMult.offsetMult);
 
     // Place entry with dynamic offset
-    const result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps);
+    let result;
+    try {
+      result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps);
+    } catch (err) {
+      // Catch InsufficientFunds (Gemini 406) and similar balance errors — set cooldown to prevent rapid retry spam
+      if (err.message?.includes('InsufficientFunds') || err.status === 406) {
+        const cooldownMs = config.insufficientFundsCooldownMs || 60000;
+        insufficientFundsCooldownUntil = Date.now() + cooldownMs;
+        console.log(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
+        return;
+      }
+      throw err; // Re-throw other errors
+    }
 
     if (result.success) {
       positionState.lastEntryTime = Date.now();
