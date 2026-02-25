@@ -37,7 +37,7 @@ const createUpDownService = (io, deps) => {
     getCandles: (tf) => candleCache.getCandles('coinbase', tf),
   };
   const signalEngine = createSignalEngine(candleAdapter);
-  const scorecard = createScorecard({ io, lastPriceFn: () => lastPrice });
+  const scorecard = createScorecard({ io, lastPriceFn: () => lastPrice, contractFn: () => contract });
 
   const TICK_BUFFER_SIZE = 60;
   const tickBuffer = []; // { price, timestamp }
@@ -47,6 +47,7 @@ const createUpDownService = (io, deps) => {
   let lastTickEmit = 0;
   let lastPrice = 0;
   let lastSignal = null;
+  let lastSignalResult = null;
   let running = false;
 
   // State
@@ -170,6 +171,7 @@ const createUpDownService = (io, deps) => {
 
     // Feature 8: Pass scorecard metrics for horizon prediction
     const result = signalEngine.computeSignals(contract.expiry, metrics);
+    lastSignalResult = result;
 
     // Emit full indicator data every cycle (with new fields)
     const tickMomentum = computeTickMomentum();
@@ -316,6 +318,24 @@ const createUpDownService = (io, deps) => {
   };
 
   /**
+   * Get current trade context for enriching trade records
+   * @returns {{contract: Object, position: Object|null, lastPrice: number, latestSignal: Object|null, trendFilter: Object|null, volatility: Object|null}}
+   */
+  const getTradeContext = () => ({
+    contract: { ...contract },
+    position: position ? { ...position } : null,
+    lastPrice,
+    latestSignal: lastSignalResult ? {
+      type: lastSignalResult.type,
+      score: lastSignalResult.score,
+      confidence: lastSignalResult.confidence,
+      timestamp: lastSignalResult.timestamp,
+    } : null,
+    trendFilter: lastSignalResult?.trendFilter ?? null,
+    volatility: lastSignalResult?.volatility ?? null,
+  });
+
+  /**
    * Clear current position
    */
   const clearPosition = () => {
@@ -333,6 +353,7 @@ const createUpDownService = (io, deps) => {
     setContract,
     setPosition,
     clearPosition,
+    getTradeContext,
   };
 };
 

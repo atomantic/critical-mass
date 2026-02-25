@@ -59,7 +59,7 @@ export default function ScorecardPanel({ scorecard }) {
     )
   }
 
-  const { overall, byWindow, byTimeframe, byIndicator, adaptiveWeights, totalPredictions, totalEvaluated, totalSkipped } = scorecard
+  const { overall, byWindow, byTimeframe, byIndicator, adaptiveWeights, totalPredictions, totalEvaluated, totalSkipped, contractAware } = scorecard
 
   const StreakIcon = overall?.streak > 0 ? TrendingUp : overall?.streak < 0 ? TrendingDown : Minus
   const streakColor = overall?.streak > 0 ? 'text-green-400' : overall?.streak < 0 ? 'text-red-400' : 'text-gray-400'
@@ -104,6 +104,25 @@ export default function ScorecardPanel({ scorecard }) {
           </div>
         )}
       </div>
+
+      {/* Contract Accuracy */}
+      {contractAware && (
+        <div className="mb-4 bg-gray-900 rounded-lg p-2.5">
+          <div className="text-xs text-gray-500 mb-1 font-medium">Contract Accuracy</div>
+          <div className="flex items-center justify-between">
+            <span className={`text-lg font-bold font-mono ${accuracyColor(contractAware.accuracy)}`}>
+              {contractAware.accuracy.toFixed(1)}%
+            </span>
+            <span className="text-xs text-gray-500">
+              <span className="text-green-500">{contractAware.wins}W</span>
+              {' / '}
+              <span className="text-red-500">{contractAware.losses}L</span>
+              {' / '}
+              {contractAware.total} total
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Window Accuracy */}
       {totalEvaluated > 0 && (

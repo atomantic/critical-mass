@@ -23,7 +23,7 @@ const DATA_DIR = path.join(__dirname, '..', 'data')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const SCORECARD_DIR = path.join(DATA_DIR, 'updown', 'scorecard')
 
-const DIRECTION_THRESHOLD = 15
+const DIRECTION_THRESHOLD = 10
 const EVAL_WINDOWS = [
   { label: '1m', candles5m: 1 },   // ~5m forward
   { label: '5m', candles5m: 1 },   // same (5m resolution)

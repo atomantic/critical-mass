@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { History, Plus, Trash2, Edit3, Check, X } from 'lucide-react'
+import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from 'lucide-react'
 
 function fmt(v) {
   if (v == null) return '---'
@@ -22,7 +22,7 @@ export default function TradeHistory() {
   const [summary, setSummary] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState(null)
-  const [form, setForm] = useState({ date: '', cost: '', returnAmount: '', note: '' })
+  const [form, setForm] = useState({ date: '', cost: '', returnAmount: '', note: '', direction: '' })
 
   const fetchTrades = useCallback(async () => {
     const res = await fetch('/api/updown/trades').catch(() => null)
@@ -37,7 +37,7 @@ export default function TradeHistory() {
   useEffect(() => { fetchTrades() }, [fetchTrades])
 
   const resetForm = () => {
-    setForm({ date: new Date().toISOString().slice(0, 10), cost: '', returnAmount: '', note: '' })
+    setForm({ date: new Date().toISOString().slice(0, 10), cost: '', returnAmount: '', note: '', direction: '' })
     setShowForm(false)
     setEditId(null)
   }
@@ -52,6 +52,7 @@ export default function TradeHistory() {
       cost,
       returnAmount,
       note: form.note,
+      direction: form.direction || undefined,
     }
 
     if (editId != null) {
@@ -77,6 +78,7 @@ export default function TradeHistory() {
       cost: trade.cost?.toString() || '',
       returnAmount: trade.returnAmount?.toString() || '',
       note: trade.note || '',
+      direction: trade.direction || '',
     })
     setEditId(trade.id)
     setShowForm(true)
@@ -109,7 +111,7 @@ export default function TradeHistory() {
       </div>
 
       {/* P&L Summary */}
-      {summary && (
+      {summary && (<>
         <div className="grid grid-cols-4 gap-2 mb-3 text-xs">
           <div className="bg-gray-900 rounded px-2 py-1.5">
             <div className="text-gray-500">Total P&L</div>
@@ -132,7 +134,27 @@ export default function TradeHistory() {
             </div>
           </div>
         </div>
-      )}
+        {(summary.upCount > 0 || summary.downCount > 0) && (
+          <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+            <div className="bg-gray-900 rounded px-2 py-1.5 flex items-center gap-1.5">
+              <ArrowUp size={12} className="text-green-400" />
+              <div>
+                <span className="text-gray-500">Up: </span>
+                <span className="font-mono text-white">{summary.upWinRate != null ? `${summary.upWinRate}%` : '---'}</span>
+                <span className="text-gray-600 ml-1">({summary.upCount})</span>
+              </div>
+            </div>
+            <div className="bg-gray-900 rounded px-2 py-1.5 flex items-center gap-1.5">
+              <ArrowDown size={12} className="text-red-400" />
+              <div>
+                <span className="text-gray-500">Down: </span>
+                <span className="font-mono text-white">{summary.downWinRate != null ? `${summary.downWinRate}%` : '---'}</span>
+                <span className="text-gray-600 ml-1">({summary.downCount})</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </>)}
 
       {/* Add/Edit Form */}
       {showForm && (
@@ -182,6 +204,25 @@ export default function TradeHistory() {
             </div>
           </div>
           <div>
+            <label className="text-[10px] text-gray-500 block mb-0.5">Direction</label>
+            <div className="flex gap-1">
+              {['', 'up', 'down'].map(d => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setForm({ ...form, direction: d })}
+                  className={`flex-1 py-1 text-xs rounded transition-colors ${
+                    form.direction === d
+                      ? d === 'up' ? 'bg-green-600 text-white' : d === 'down' ? 'bg-red-600 text-white' : 'bg-gray-600 text-white'
+                      : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                  }`}
+                >
+                  {d === '' ? 'Auto' : d === 'up' ? 'Up' : 'Down'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="text-[10px] text-gray-500 block mb-0.5">Note (optional)</label>
             <input
               type="text"
@@ -224,6 +265,7 @@ export default function TradeHistory() {
             <thead>
               <tr className="text-gray-500 border-b border-gray-700">
                 <th className="text-left py-1.5 pr-2">Date</th>
+                <th className="text-center py-1.5 px-1 w-10">Dir</th>
                 <th className="text-right py-1.5 px-2">Cost</th>
                 <th className="text-right py-1.5 px-2">Return</th>
                 <th className="text-right py-1.5 px-2">P&L</th>
@@ -235,6 +277,17 @@ export default function TradeHistory() {
               {[...trades].reverse().map(t => (
                 <tr key={t.id} className="border-b border-gray-700/50 hover:bg-gray-700/20">
                   <td className="py-1.5 pr-2 text-gray-300">{t.date}</td>
+                  <td className="py-1.5 px-1 text-center" title={t.signal?.type ? `Signal: ${t.signal.type} (${t.signal.score})` : undefined}>
+                    {t.direction === 'up' ? (
+                      <span className="inline-flex items-center gap-0.5 text-green-400">
+                        <ArrowUp size={10} />{t.manualOverride ? '!' : ''}
+                      </span>
+                    ) : t.direction === 'down' ? (
+                      <span className="inline-flex items-center gap-0.5 text-red-400">
+                        <ArrowDown size={10} />{t.manualOverride ? '!' : ''}
+                      </span>
+                    ) : <span className="text-gray-600">---</span>}
+                  </td>
                   <td className="py-1.5 px-2 text-right font-mono text-gray-300">{fmt(t.cost)}</td>
                   <td className="py-1.5 px-2 text-right font-mono text-gray-300">{fmt(t.returnAmount)}</td>
                   <td className={`py-1.5 px-2 text-right font-mono font-medium ${pnlColor(t.pnl)}`}>

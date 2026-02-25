@@ -88,14 +88,22 @@ const scoreMACD = (macd, prevMacd) => {
   const bullishCross = prevMacd && prevMacd.macd <= prevMacd.signal && macd.macd > macd.signal;
   const bearishCross = prevMacd && prevMacd.macd >= prevMacd.signal && macd.macd < macd.signal;
 
+  // Crossover takes precedence
   if (bullishCross) return 90;
   if (bearishCross) return -90;
 
-  // Histogram turning positive/negative
-  if (prevMacd && prevMacd.histogram < 0 && macd.histogram > 0) return 40;
-  if (prevMacd && prevMacd.histogram > 0 && macd.histogram < 0) return -40;
+  // Continuous score from histogram magnitude (normalized by signal line)
+  const denominator = Math.max(Math.abs(macd.signal), Math.abs(macd.macd) * 0.1, 1e-8);
+  const histRatio = macd.histogram / denominator;
+  let score = Math.max(-60, Math.min(60, histRatio * 60));
 
-  return 0;
+  // Histogram inflection bonus: sign flip without full crossover
+  if (prevMacd) {
+    if (prevMacd.histogram < 0 && macd.histogram > 0) score = Math.max(score, 20);
+    else if (prevMacd.histogram > 0 && macd.histogram < 0) score = Math.min(score, -20);
+  }
+
+  return Math.max(-100, Math.min(100, Math.round(score)));
 };
 
 /**
@@ -525,13 +533,14 @@ const createSignalEngine = (candleAggregator) => {
       compositeScore = sign * (35 + excess * 0.5); // 50% compression above 35
     }
 
-    // Feature 11: Time-of-day weighting from backtest accuracy by UTC hour
+    // Feature 11: Data-driven time-of-day weighting from scorecard per-hour accuracy
     const utcHour = new Date(now).getUTCHours();
-    const HIGH_ACCURACY_HOURS = new Set([2, 9, 10, 14, 21]);
-    const LOW_ACCURACY_HOURS = new Set([0, 6, 15, 19]);
-    const todMultiplier = HIGH_ACCURACY_HOURS.has(utcHour) ? 1.15
-      : LOW_ACCURACY_HOURS.has(utcHour) ? 0.85
-      : 1.0;
+    let todMultiplier = 1.0;
+    const hourData = scorecardMetrics?.byHour?.[utcHour];
+    if (hourData?.accuracy != null && hourData.total >= 10) {
+      // Multiplier = 1.0 + (accuracy - 50) / 100, clamped to [0.80, 1.20]
+      todMultiplier = Math.max(0.80, Math.min(1.20, 1.0 + (hourData.accuracy - 50) / 100));
+    }
     compositeScore *= todMultiplier;
 
     // Feature 2: Volatility-scaled signal thresholds
