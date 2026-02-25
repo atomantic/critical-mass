@@ -17,8 +17,8 @@ const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SAMPLE_INTERVAL_MS = 60_000
 const EVAL_WINDOWS = [60_000, 300_000, 900_000, 3_600_000]
 const WINDOW_LABELS = { 60000: '1m', 300000: '5m', 900000: '15m', 3600000: '1h' }
-const DIRECTION_THRESHOLD = 15
-const BUFFER_SIZE = 500
+const DIRECTION_THRESHOLD = 10
+const BUFFER_SIZE = 2000
 const EMIT_THROTTLE_MS = 5_000
 const DEDUP_WINDOW_MS = 55_000
 const WEIGHT_LOG_THROTTLE_MS = 300_000
@@ -35,22 +35,44 @@ const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']
  * @returns {Record<string, number>} Normalized adaptive weights summing to 1.0
  */
 const computeAdaptiveWeights = (byIndicator, baseWeights, prevWeights, alpha = 0.15) => {
+  // Find max prediction count across all indicators for activity ratio
+  let maxPredictions = 0
+  for (const ind of INDICATORS) {
+    const count = byIndicator[ind]?.predictions ?? 0
+    if (count > maxPredictions) maxPredictions = count
+  }
+
   const rawWeights = {}
   for (const ind of INDICATORS) {
     const base = baseWeights[ind] ?? 0.1
     const prev = prevWeights[ind] ?? base
     const data = byIndicator[ind]
     let rawWeight = base
+
+    // Accuracy-based adjustment
     if (data?.accuracy != null && data.predictions >= 10) {
       if (data.accuracy > 55) rawWeight = base * 1.3
       else if (data.accuracy < 45) rawWeight = base * 0.7
     }
+
+    // Activity ratio penalty: penalize indicators that rarely produce non-neutral scores
+    if (maxPredictions > 0) {
+      const activityRatio = (data?.predictions ?? 0) / maxPredictions
+      if (activityRatio < 0.05) {
+        rawWeight *= 0.2 // nearly dead → 20% of base
+      } else if (activityRatio < 0.20) {
+        // Linear ramp from 0.2 to 0.7 between 5% and 20% activity
+        const t = (activityRatio - 0.05) / 0.15
+        rawWeight *= 0.2 + t * 0.5
+      }
+    }
+
     rawWeights[ind] = alpha * rawWeight + (1 - alpha) * prev
   }
 
-  // Floor at 0.05
+  // Floor at 0.03
   for (const ind of INDICATORS) {
-    if (rawWeights[ind] < 0.05) rawWeights[ind] = 0.05
+    if (rawWeights[ind] < 0.03) rawWeights[ind] = 0.03
   }
 
   // Normalize to sum to 1.0
@@ -97,13 +119,32 @@ const appendRecord = async (record) => {
 }
 
 /**
+ * Evaluate whether a contract's target or stop was hit
+ * @param {{target: number, stop: number, direction: string}} contractSnapshot
+ * @param {number} exitPrice
+ * @returns {'win' | 'loss' | null}
+ */
+const evaluateContractOutcome = (contractSnapshot, exitPrice) => {
+  if (!contractSnapshot?.target || !contractSnapshot?.stop || !exitPrice) return null
+  if (contractSnapshot.direction === 'up') {
+    if (exitPrice >= contractSnapshot.target) return 'win'
+    if (exitPrice <= contractSnapshot.stop) return 'loss'
+  } else if (contractSnapshot.direction === 'down') {
+    if (exitPrice <= contractSnapshot.target) return 'win'
+    if (exitPrice >= contractSnapshot.stop) return 'loss'
+  }
+  return null
+}
+
+/**
  * Create a scorecard instance
  * @param {Object} opts
  * @param {Object} opts.io - Socket.IO server instance
  * @param {Function} opts.lastPriceFn - Returns current BTC price
+ * @param {Function} [opts.contractFn] - Returns current contract config
  * @returns {{recordPrediction: Function, getMetrics: Function, start: Function, stop: Function}}
  */
-const createScorecard = ({ io, lastPriceFn }) => {
+const createScorecard = ({ io, lastPriceFn, contractFn }) => {
   /** @type {Array<Object>} Ring buffer of evaluated outcomes */
   const outcomeBuffer = []
 
@@ -146,6 +187,23 @@ const createScorecard = ({ io, lastPriceFn }) => {
       }
     }
 
+    // Regime context from signal engine result
+    const regime = {
+      trendBias: result.trendFilter?.trendBias ?? null,
+      volatilityRatio: result.volatility?.ratio ?? null,
+      volumeSurge: result.timeframes?.['5m']?.indicators?.volumeSurge?.surgeRatio ?? null,
+    }
+
+    // Contract snapshot
+    const contractSnapshot = contractFn?.() ?? null
+    const contract = contractSnapshot ? {
+      target: contractSnapshot.target ?? null,
+      stop: contractSnapshot.stop ?? null,
+      range: contractSnapshot.range ?? null,
+      direction: contractSnapshot.direction ?? null,
+      expiry: contractSnapshot.expiry ?? null,
+    } : null
+
     return {
       type: 'prediction',
       id,
@@ -157,6 +215,8 @@ const createScorecard = ({ io, lastPriceFn }) => {
       confidence: result.confidence,
       trigger,
       timeframes,
+      regime,
+      contract,
     }
   }
 
@@ -208,6 +268,11 @@ const createScorecard = ({ io, lastPriceFn }) => {
       }
     }
 
+    // Contract outcome evaluation
+    const contractOutcome = prediction.contract
+      ? evaluateContractOutcome(prediction.contract, exitPrice)
+      : null
+
     const outcome = {
       type: 'outcome',
       predictionId: prediction.id,
@@ -220,6 +285,7 @@ const createScorecard = ({ io, lastPriceFn }) => {
       compositeCorrect,
       tfResults,
       indicatorResults,
+      contractOutcome,
     }
 
     // Persist to JSONL
@@ -372,6 +438,31 @@ const createScorecard = ({ io, lastPriceFn }) => {
       }
     }
 
+    // By UTC hour accuracy (minimum 5 samples)
+    const byHour = {}
+    for (const o of outcomeBuffer) {
+      if (o.compositeCorrect == null || !o.ts) continue
+      const hour = new Date(o.ts).getUTCHours()
+      if (!byHour[hour]) byHour[hour] = { correct: 0, total: 0 }
+      byHour[hour].total++
+      if (o.compositeCorrect) byHour[hour].correct++
+    }
+    for (const h of Object.keys(byHour)) {
+      const d = byHour[h]
+      byHour[h].accuracy = d.total >= 5 ? Math.round(d.correct / d.total * 10000) / 100 : null
+    }
+
+    // Contract-aware accuracy
+    const contractOutcomes = outcomeBuffer.filter(o => o.contractOutcome != null)
+    const contractWins = contractOutcomes.filter(o => o.contractOutcome === 'win').length
+    const contractLosses = contractOutcomes.filter(o => o.contractOutcome === 'loss').length
+    const contractAware = contractOutcomes.length > 0 ? {
+      accuracy: Math.round(contractWins / contractOutcomes.length * 10000) / 100,
+      wins: contractWins,
+      losses: contractLosses,
+      total: contractOutcomes.length,
+    } : null
+
     // Recompute adaptive weights
     adaptiveWeights = computeAdaptiveWeights(byIndicator, BASE_WEIGHTS, adaptiveWeights)
 
@@ -405,6 +496,8 @@ const createScorecard = ({ io, lastPriceFn }) => {
       byWindow,
       byTimeframe,
       byIndicator,
+      byHour,
+      contractAware,
       adaptiveWeights,
       lastPrediction: lastPred ? {
         ts: lastPred.ts,
@@ -425,8 +518,8 @@ const createScorecard = ({ io, lastPriceFn }) => {
 
     const files = await readdir(SCORECARD_DIR)
     const jsonlFiles = files.filter(f => f.endsWith('.jsonl')).sort()
-    // Load last 3 days of data
-    const recentFiles = jsonlFiles.slice(-3)
+    // Load last 7 days of data (matches BUFFER_SIZE of ~2000 outcomes)
+    const recentFiles = jsonlFiles.slice(-7)
 
     let loaded = 0
     let predCount = 0
@@ -502,4 +595,4 @@ const createScorecard = ({ io, lastPriceFn }) => {
   return { recordPrediction, getMetrics, start, stop }
 }
 
-module.exports = { createScorecard, computeAdaptiveWeights }
+module.exports = { createScorecard, computeAdaptiveWeights, evaluateContractOutcome }

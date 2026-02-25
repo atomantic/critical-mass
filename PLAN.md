@@ -266,6 +266,21 @@ Modified: `market-data-service.js`, `price-bridge.js`, `simulation-engine.js`, `
 
 Modified: `src/regime-engine.js` (5 fixes), `scripts/repair-orphan-buy-mm0nf5pn.js` (new)
 
+## UpDown Prediction System Overhaul (2026-02-24)
+
+- [x] **MACD continuous scoring** — Replaced event-only scoreMACD (100% dead) with histogram-ratio continuous scoring + crossover bonus + inflection bonus
+- [x] **Activity ratio penalty** — computeAdaptiveWeights penalizes indicators with < 5% activity (MACD was getting full weight despite zero output)
+- [x] **Direction threshold lowered** — 15 → 10 to capture ~11% more predictions; neutral rate should drop from ~85% toward ~40-50%
+- [x] **Buffer size increased** — 500 → 2000 outcomes (~7 days), history load window 3 → 7 days for more stable metrics
+- [x] **Data-driven ToD** — Replaced hardcoded HIGH/LOW_ACCURACY_HOURS with per-UTC-hour accuracy from scorecard byHour metrics
+- [x] **Regime tagging** — Each prediction JSONL record includes trendBias, volatilityRatio, volumeSurge for post-hoc analysis
+- [x] **Contract snapshot + evaluation** — Predictions capture contract target/stop/range/direction; outcomes evaluate win/loss against contract
+- [x] **Trade context enrichment** — POST trades auto-captures direction, BTC price, contract snapshot, signal snapshot, manual override flag
+- [x] **UI direction column** — Dir column with up/down badges + manual override indicator, direction toggle in form, directional win rates
+- [x] **Contract accuracy display** — ScorecardPanel shows contract-aware win/loss stats; analysis endpoint adds contractAnalysis by range
+
+Modified: `signal-engine.js`, `scorecard.js`, `updown-service.js`, `updown-routes.js`, `TradeHistory.jsx`, `ScorecardPanel.jsx`, `backfill-scorecard.js`
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22

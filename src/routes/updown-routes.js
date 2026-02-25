@@ -444,6 +444,27 @@ module.exports = (app, deps) => {
       .sort((a, b) => b.accuracy - a.accuracy);
     const bestWindow = sortedWindows[0]?.window ?? null;
 
+    // Contract-aware analysis: aggregate contract outcomes by range
+    const contractOutcomes = outcomes.filter(o => o.contractOutcome != null);
+    const contractByRange = {};
+    for (const o of contractOutcomes) {
+      // Find matching prediction for range info
+      const pred = predictions.find(p => p.id === o.predictionId);
+      const range = pred?.contract?.range ?? 'unknown';
+      if (!contractByRange[range]) contractByRange[range] = { wins: 0, losses: 0, total: 0 };
+      contractByRange[range].total++;
+      if (o.contractOutcome === 'win') contractByRange[range].wins++;
+      else if (o.contractOutcome === 'loss') contractByRange[range].losses++;
+    }
+    for (const key of Object.keys(contractByRange)) {
+      const d = contractByRange[key];
+      d.accuracy = d.total > 0 ? Math.round(d.wins / d.total * 10000) / 100 : null;
+    }
+    const contractAnalysis = contractOutcomes.length > 0 ? {
+      total: contractOutcomes.length,
+      byRange: contractByRange,
+    } : null;
+
     res.json({
       success: true,
       accuracyOverTime,
@@ -451,6 +472,7 @@ module.exports = (app, deps) => {
       indicatorAccuracyOverTime,
       weightEvolution,
       failurePatterns,
+      contractAnalysis,
       summary: {
         accuracy: overallAccuracy,
         predictions: predictions.length,
@@ -542,19 +564,41 @@ module.exports = (app, deps) => {
     const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
     const wins = trades.filter(t => t.pnl > 0).length;
     const losses = trades.filter(t => t.pnl <= 0).length;
+
+    // Directional win rates
+    const upTrades = trades.filter(t => t.direction === 'up');
+    const downTrades = trades.filter(t => t.direction === 'down');
+    const upWins = upTrades.filter(t => t.pnl > 0).length;
+    const downWins = downTrades.filter(t => t.pnl > 0).length;
+
     res.json({
       success: true,
       trades,
-      summary: { totalCost, totalReturn, totalPnl, wins, losses, count: trades.length },
+      summary: {
+        totalCost, totalReturn, totalPnl, wins, losses, count: trades.length,
+        upWinRate: upTrades.length > 0 ? Math.round(upWins / upTrades.length * 10000) / 100 : null,
+        downWinRate: downTrades.length > 0 ? Math.round(downWins / downTrades.length * 10000) / 100 : null,
+        upCount: upTrades.length,
+        downCount: downTrades.length,
+      },
     });
   });
 
   app.post('/api/updown/trades', (req, res) => {
-    const { date, cost, returnAmount, note } = req.body;
+    const { date, cost, returnAmount, note, direction: bodyDirection } = req.body;
     if (cost == null || returnAmount == null) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount are required' });
     }
     const data = readTrades();
+
+    // Auto-capture trade context from service
+    const ctx = updownService.getTradeContext?.() ?? {};
+    const signalDirection = ctx.latestSignal?.type?.includes('BUY') ? 'up'
+      : ctx.latestSignal?.type?.includes('SELL') ? 'down'
+      : null;
+    const inferredDirection = bodyDirection || ctx.position?.direction || ctx.contract?.direction || signalDirection;
+    const manualOverride = bodyDirection && signalDirection ? bodyDirection !== signalDirection : false;
+
     const trade = {
       id: data.nextId || (data.trades.length + 1),
       date: date || new Date().toISOString().slice(0, 10),
@@ -562,11 +606,29 @@ module.exports = (app, deps) => {
       returnAmount: parseFloat(returnAmount),
       pnl: parseFloat(returnAmount) - parseFloat(cost),
       note: note || '',
+      direction: inferredDirection || null,
+      entryTime: new Date().toISOString(),
+      exitTime: null,
+      btcPriceAtEntry: ctx.lastPrice || null,
+      btcPriceAtExit: null,
+      contract: ctx.contract?.target ? {
+        target: ctx.contract.target,
+        stop: ctx.contract.stop,
+        range: ctx.contract.range,
+        direction: ctx.contract.direction,
+        expiry: ctx.contract.expiry,
+      } : null,
+      signal: ctx.latestSignal ? {
+        type: ctx.latestSignal.type,
+        score: ctx.latestSignal.score,
+        confidence: ctx.latestSignal.confidence,
+      } : null,
+      manualOverride,
     };
     data.trades.push(trade);
     data.nextId = trade.id + 1;
     writeTrades(data);
-    log('INFO', `📊 UpDown trade added: id=${trade.id} cost=${trade.cost} return=${trade.returnAmount} pnl=${trade.pnl}`);
+    log('INFO', `📊 UpDown trade added: id=${trade.id} cost=${trade.cost} return=${trade.returnAmount} pnl=${trade.pnl} dir=${trade.direction}`);
     res.json({ success: true, trade });
   });
 
@@ -580,6 +642,9 @@ module.exports = (app, deps) => {
     if (req.body.cost != null) trade.cost = parseFloat(req.body.cost);
     if (req.body.returnAmount != null) trade.returnAmount = parseFloat(req.body.returnAmount);
     if (req.body.note != null) trade.note = req.body.note;
+    if (req.body.direction != null) trade.direction = req.body.direction;
+    if (req.body.exitTime != null) trade.exitTime = req.body.exitTime;
+    if (req.body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFloat(req.body.btcPriceAtExit);
     trade.pnl = trade.returnAmount - trade.cost;
     writeTrades(data);
     res.json({ success: true, trade });
