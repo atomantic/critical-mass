@@ -2742,8 +2742,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     try {
       result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps);
     } catch (err) {
-      // Catch InsufficientFunds (Gemini 406) and similar balance errors — set cooldown to prevent rapid retry spam
-      if (err.message?.includes('InsufficientFunds') || err.status === 406) {
+      // Catch InsufficientFunds (Gemini 406), INSUFFICIENT_AVAILABLE_BALANCE (Crypto.com 500), and similar balance errors
+      if (err.message?.includes('InsufficientFunds') || err.message?.includes('INSUFFICIENT_AVAILABLE_BALANCE') || err.status === 406) {
         const cooldownMs = config.insufficientFundsCooldownMs || 60000;
         insufficientFundsCooldownUntil = Date.now() + cooldownMs;
         console.log(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
