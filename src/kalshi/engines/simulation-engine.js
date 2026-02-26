@@ -13,6 +13,7 @@ const { getBracketInfo, parseStrikePrice } = require('../adapters/markets.js')
 const { sendAlert } = require('../services/alert-service.js')
 const { analyzeTrade } = require('../services/trade-analyst.js')
 
+const { configure: configureUpdown, getCachedSignal, startPolling: startUpdownPolling, stopPolling: stopUpdownPolling } = require('../services/updown-signal-fetcher.js')
 const { ts } = require('../../time-utils')
 
 /**
@@ -268,6 +269,13 @@ class SimulationEngine {
     console.log(`[${ts()}] Simulation engine started (eval every ${intervalMs}ms)`)
     this.log('info', `Engine started (evaluating every ${intervalMs / 1000}s)`)
 
+    // Start UpDown signal polling if configured
+    const updownConfig = this.config?.updown
+    if (updownConfig?.enabled) {
+      configureUpdown({ gatewayUrl: updownConfig.gatewayUrl, pollIntervalMs: updownConfig.pollIntervalMs })
+      startUpdownPolling()
+    }
+
     // Run first evaluation immediately
     this.runEvaluation().catch(err =>
       console.log(`[${ts()}] Eval cycle error: ${err.message}`)
@@ -297,6 +305,7 @@ class SimulationEngine {
       this.state.shadowState = this.shadowState
     }
 
+    stopUpdownPolling()
     this.pendingReservations.clear()
     writeSessionSummary(this.state)
 
@@ -682,7 +691,8 @@ class SimulationEngine {
       positions: this.state.positions || [],
       balance: this.state.balance,
       config: this.config,
-      marketInfo: this.marketInfo
+      marketInfo: this.marketInfo,
+      updownSignal: getCachedSignal()
     }
 
     // Log price history summary for debugging

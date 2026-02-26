@@ -14,6 +14,35 @@ This document serves as the authoritative reference for strategy configuration, 
 
 5. **Exit logic must always be reachable.** Any code path that blocks evaluation (time filters, liquidity checks) must run AFTER exit checks for held positions. A position that can't be exited is a position that rides to settlement.
 
+## Bullish-Only Thesis with UpDown Integration (2026-02-25)
+
+### Rationale
+BTC is ~50% off ATH. We believe it will recover over time and don't want to bet against it. The previous direction-agnostic approach (Black-Scholes edge model) bet both YES and NO purely on edge — this produced NO-side bets that contradicted the macro thesis and NO-side losses when BTC moved up.
+
+### How It Works
+1. **UpDown signal is the directional gatekeeper.** Only BUY or STRONG_BUY signals allow new entries. SELL, NEUTRAL, or stale signals block all new trades (safe default).
+2. **NO-side bets are eliminated.** Even if the model finds a NO-side edge, the sniper skips it.
+3. **Bearish brackets are filtered.** For bracket markets, only brackets where the midpoint >= spot price are traded. Brackets below spot require BTC to fall = bearish bet = skip.
+4. **Confidence-scaled sizing.** UpDown conviction scales position size:
+   - STRONG_BUY + confidence >= 0.7 → maxBetPct x 2.5 (up to 30%)
+   - STRONG_BUY + confidence >= 0.5 → maxBetPct x 2.0 (up to 24%)
+   - BUY + confidence >= 0.5 → maxBetPct x 1.0 (12% baseline)
+   - BUY + confidence >= 0.3 → maxBetPct x 0.7 (8.4%)
+   - All capped at `maxBetPctCeiling: 0.30`
+5. **Exit logic is untouched.** UpDown gating only blocks new entries; existing positions always exit normally.
+6. **Swing-flipper disabled.** Direction-agnostic scalping contradicts the bullish-only thesis. Remains as shadow strategy for comparison data.
+
+### Gateway Dependency
+The Kalshi engine polls `http://127.0.0.1:5563/api/updown/signal` every 5s. If the UpDown gateway is down → NEUTRAL fallback → no new trades (safe). The UpDown engine must be running for the Kalshi engine to trade.
+
+### Existing Safety Controls (unchanged)
+- Circuit breaker (maxDailyLoss: $500)
+- Edge threshold (15% minimum)
+- Edge sanity cap (0.85)
+- Rate limiting (10 trades/hour)
+- Momentum confirmation (40%)
+- UpDown gating is additive filtering — it can only prevent trades, never override safety controls.
+
 ## Current Strategy Configuration (as of 2026-02-25)
 
 ### Settlement Sniper (LIVE)
@@ -34,8 +63,9 @@ This document serves as the authoritative reference for strategy configuration, 
 - **Status**: Disabled — 10% dry-run WR, 100% of live signals blocked by slippage guard. OTM brackets have no resting liquidity.
 - **Position sizing**: maxBetPct 0.02, maxContracts 50, maxPositions 3
 
-### Swing Flipper (LIVE)
+### Swing Flipper (DISABLED — bullish-only pivot)
 - **What it does**: Rides intra-window oscillation on ATM brackets (30-60¢). Buys pullbacks (8¢ below recent peak) and sells recoveries for 8¢ flips.
+- **Status**: Disabled (2026-02-25) — direction-agnostic scalping contradicts bullish-only thesis. Running as shadow strategy for comparison data.
 - **ATM range**: 30-60c
 - **Oscillation requirement**: 12¢+ range in last 15 snapshots
 - **Spot confirmation**: Composite/Coinbase spot must be (a) near the bracket boundary and (b) moving toward it

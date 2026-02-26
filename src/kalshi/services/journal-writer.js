@@ -72,7 +72,11 @@ const writeEntry = (trade, signal) => {
     momentum: meta.momentum ?? null,
     confidence: signal.confidence ?? null,
     bookImbalance: meta.bookImbalance ?? null,
-    mispricing: meta.mispricing ?? null
+    mispricing: meta.mispricing ?? null,
+    updownType: meta.updownType ?? null,
+    updownScore: meta.updownScore ?? null,
+    updownConfidence: meta.updownConfidence ?? null,
+    updownTrendBias: meta.updownTrendBias ?? null
   }).catch(() => {})
 }
 
