@@ -19,6 +19,7 @@ const {
   checkLiquidity,
   calculateNetEdge
 } = require('../../services/volatility-service.js')
+const { isBullish } = require('../../services/updown-signal-fetcher.js')
 
 /**
  * Determine time window based on seconds to settlement
@@ -60,7 +61,10 @@ class SettlementSniperStrategy extends BaseStrategy {
       stopLossEdge: 0.08,
       settlementRideThreshold: 0.40,
       settlementRideMaxSeconds: 180,
-      minSigma: 0.18
+      minSigma: 0.18,
+      bullishOnly: true,
+      updownGating: true,
+      maxBetPctCeiling: 0.30
     }
   }
 
@@ -319,6 +323,18 @@ class SettlementSniperStrategy extends BaseStrategy {
         continue
       }
 
+      // UpDown signal gating — require bullish signal for new entries
+      const updownSignal = context.updownSignal
+      if (params.updownGating) {
+        if (!updownSignal || updownSignal.stale || !isBullish(updownSignal)) {
+          const reason = !updownSignal ? 'no signal' : updownSignal.stale ? 'stale signal' : `signal=${updownSignal.type}`
+          diag.status = `updown gate: ${reason}`
+          diag.updownType = updownSignal?.type ?? null
+          this.diagnostics.push(diag)
+          continue
+        }
+      }
+
       // Calculate fair probability
       const fairProb = calculateFairProbability(spotPrice, strikePrice, secondsToSettlement, vol.sigma, bracketWidth)
       const marketProb = liquidity.yesAsk / 100
@@ -346,6 +362,24 @@ class SettlementSniperStrategy extends BaseStrategy {
       }
 
       const side = edge > 0 ? 'yes' : 'no'
+
+      // Bullish-only: never bet NO (betting against BTC)
+      if (params.bullishOnly && side === 'no') {
+        diag.status = 'bullish-only: skip NO side'
+        this.diagnostics.push(diag)
+        continue
+      }
+
+      // Bullish bracket filter: only trade brackets where midpoint >= spot
+      // Brackets below spot require BTC to fall to settle in-range = bearish bet
+      if (params.bullishOnly && isBracket && bracketWidth > 0) {
+        const bracketMidpoint = strikePrice + bracketWidth / 2
+        if (bracketMidpoint < spotPrice) {
+          diag.status = `bullish filter: bracket mid $${bracketMidpoint.toFixed(0)} < spot $${spotPrice.toFixed(0)}`
+          this.diagnostics.push(diag)
+          continue
+        }
+      }
 
       // 2. Momentum confirmation
       const momentumConfirm = this.checkMomentumConfirmation(cbHistory, side)
@@ -469,9 +503,21 @@ class SettlementSniperStrategy extends BaseStrategy {
         continue
       }
 
-      // Position sizing via fractional Kelly
+      // Position sizing via fractional Kelly with UpDown confidence scaling
       const absEdge = Math.abs(edge)
-      const count = this.kellySize(absEdge, context.balance?.available || 0, entryPrice, params)
+      let sizingParams = params
+      if (params.updownGating && updownSignal && !updownSignal.stale) {
+        const udConf = updownSignal.confidence ?? 0
+        let multiplier = 1.0
+        if (updownSignal.type === 'STRONG_BUY' && udConf >= 0.7) multiplier = 2.5
+        else if (updownSignal.type === 'STRONG_BUY' && udConf >= 0.5) multiplier = 2.0
+        else if (updownSignal.type === 'BUY' && udConf >= 0.5) multiplier = 1.0
+        else if (updownSignal.type === 'BUY' && udConf >= 0.3) multiplier = 0.7
+
+        const scaledMaxBetPct = Math.min(params.maxBetPct * multiplier, params.maxBetPctCeiling || 0.30)
+        sizingParams = { ...params, maxBetPct: scaledMaxBetPct }
+      }
+      const count = this.kellySize(absEdge, context.balance?.available || 0, entryPrice, sizingParams)
 
       // Net-edge gating: reject if fees + slippage eat the edge
       const { netEdge, feePerContract } = calculateNetEdge(absEdge, count, entryPrice)
@@ -513,7 +559,11 @@ class SettlementSniperStrategy extends BaseStrategy {
           secondsToSettlement,
           bookImbalance: bookMetrics?.imbalance ?? null,
           compositePrice: composite?.price ?? null,
-          exchangeCount: composite?.exchangeCount ?? null
+          exchangeCount: composite?.exchangeCount ?? null,
+          updownType: updownSignal?.type ?? null,
+          updownScore: updownSignal?.score ?? null,
+          updownConfidence: updownSignal?.confidence ?? null,
+          updownTrendBias: updownSignal?.trendBias ?? null
         }
       })
       this.diagnostics.push(diag)

@@ -39,6 +39,7 @@
  * @property {Array<Object>} positions - Current positions
  * @property {{ available: number, inPositions: number }} balance
  * @property {Object} config - Strategy config
+ * @property {{ type: string|null, score: number, confidence: number, trendBias: string|null, stale: boolean, running: boolean, lastPrice: number|null, fetchedAt: number }} [updownSignal] - UpDown directional signal
  */
 
 /**

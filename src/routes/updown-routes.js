@@ -493,6 +493,19 @@ module.exports = (app, deps) => {
     res.json({ success: true, ...updownService.getScorecard() });
   });
 
+  app.get('/api/updown/signal', (req, res) => {
+    const status = updownService.getStatus();
+    const ctx = updownService.getTradeContext?.() ?? {};
+    res.json({
+      success: true,
+      signal: ctx.latestSignal ?? null,
+      trendFilter: ctx.trendFilter ?? null,
+      volatility: ctx.volatility ?? null,
+      lastPrice: ctx.lastPrice ?? null,
+      running: status.running ?? false,
+    });
+  });
+
   app.put('/api/updown/contract', (req, res) => {
     const { expiry, target, stop, range, direction } = req.body;
     if (direction && direction !== 'up' && direction !== 'down') {
