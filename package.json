@@ -1,6 +1,6 @@
 {
   "name": "critical-mass",
-  "version": "2.19.1",
+  "version": "2.19.2",
   "description": "Multi-exchange BTC accumulation engine with celestial position management",
   "main": "index.js",
   "scripts": {
@@ -14,6 +14,8 @@
     "pm2:restart": "pm2 restart ecosystem.config.cjs",
     "pm2:logs": "pm2 logs critical-mass",
     "pm2:status": "pm2 status",
+    "pm2:save": "pm2 save",
+    "pm2:startup": "pm2 startup",
     "cli": "node index.js",
     "cli:status": "node index.js status",
     "cli:debug": "node index.js debug",
