@@ -374,12 +374,13 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       fetch(`/api/candles/${exchange}`)
         .then(r => r.ok ? r.json() : null)
         .then(data => {
-          if (cancelled || !data?.candles) return
+          if (cancelled || !data?.candles) { if (!cancelled) setIsLoading(false); return }
           historicalCandlesRef.current = data.candles
-          setIsLoading(false)
-          // If the requested TF is empty and we haven't retried, try again after 5s
-          // (derived TFs like 3m, 10m, 30m, 2h, 4h, 1w may not be seeded yet)
-          if (!data.candles[candleTf]?.length && !retryRef.current) {
+          // If the requested TF has data or we already retried, done loading
+          if (data.candles[candleTf]?.length || retryRef.current) {
+            setIsLoading(false)
+          } else {
+            // Derived TF not seeded yet — retry once after 5s (keep isLoading=true)
             retryRef.current = true
             setTimeout(() => { if (!cancelled) doFetch() }, 5000)
           }
