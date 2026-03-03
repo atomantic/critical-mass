@@ -287,8 +287,8 @@ export default function BTCPriceChart({
         {/* Interval/range selector (new decoupled mode) */}
         {isIntervalMode && showIntervalSelector && (
           <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
-            {['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1D'].map(k => {
-              const tfKey = k === '1D' ? '1d' : k
+            {['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1D', '1W'].map(k => {
+              const tfKey = k === '1D' ? '1d' : k === '1W' ? '1w' : k
               return (
                 <button
                   key={tfKey}

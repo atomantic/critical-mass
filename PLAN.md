@@ -291,6 +291,18 @@ Modified: `signal-engine.js`, `scorecard.js`, `updown-service.js`, `updown-route
 
 Modified: `src/updown/signal-engine.js`
 
+## Weekly Timeframe + OBV/ADX Indicators (2026-03-02)
+
+- [x] **Weekly candle infrastructure** — Added 1w to candle-aggregator (604.8s interval, 12 max), candle-cache (derived from 1d), candle-routes (valid TF), frontend hooks (BAR_INTERVALS + time ranges)
+- [x] **OBV indicator** — Cumulative on-balance volume with linear regression slope normalization; direction classification (up/down/neutral); scoreOBV confirms/contradicts price trend
+- [x] **ADX indicator** — Wilder's ADX with +DI/-DI smoothing; trending (>25) / ranging (<20) / neutral classification
+- [x] **Signal engine integration** — Weight redistribution (OBV 13%), weekly macro trend filter (EMA4/EMA8, 0.005 spread), ADX regime modulation (+15%/-20%), ADX dynamic weight shift (15% reallocation between trend-following and mean-reversion indicators)
+- [x] **Scorecard integration** — obv added to INDICATORS, 1w to ALL_TFS, BASE_WEIGHTS updated to match signal engine
+- [x] **Service + socket updates** — weeklyTrend and adxRegime emitted on updown:indicators and updown:signal, 1w in candle counts
+- [x] **Frontend** — Weekly macro chart banner above 2-column grid on PriceChart, 1W interval selector in BTCPriceChart, 1w bar interval + 4w/8w/12w time ranges
+
+Modified: `candle-aggregator.js`, `candle-cache.js`, `candle-routes.js`, `indicators.js`, `signal-engine.js`, `scorecard.js`, `updown-service.js`, `useCandleData.js`, `PriceChart.jsx`, `BTCPriceChart.jsx`
+
 ## Next Actions
 
 1. **Monitor sigma calibration ratio** — Watch window summaries after deploy; ratio should drop from 2.5x toward ~1.0-1.2x. If it overcorrects (ratio < 0.8), bump minSigma to 0.22

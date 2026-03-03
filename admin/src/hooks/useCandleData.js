@@ -34,6 +34,7 @@ export const BAR_INTERVALS = {
   '2h':  { intervalMs: 7_200_000,   candleTf: '2h',  label: '2h' },
   '4h':  { intervalMs: 14_400_000,  candleTf: '4h',  label: '4h' },
   '1d':  { intervalMs: 86_400_000,  candleTf: '1d',  label: '1D' },
+  '1w':  { intervalMs: 604_800_000, candleTf: '1w',  label: '1W' },
 }
 
 /**
@@ -90,6 +91,11 @@ export const TIME_RANGES_BY_INTERVAL = {
     { key: '7d',  rangeMs: 10080 * 60_000, maxBuckets: 7,   label: '7D' },
     { key: '30d', rangeMs: 43200 * 60_000, maxBuckets: 30,  label: '30D' },
     { key: '60d', rangeMs: 86400 * 60_000, maxBuckets: 60,  label: '60D' },
+  ],
+  '1w': [
+    { key: '4w',  rangeMs: 4 * 604_800_000,  maxBuckets: 4,   label: '4W' },
+    { key: '8w',  rangeMs: 8 * 604_800_000,  maxBuckets: 8,   label: '8W' },
+    { key: '12w', rangeMs: 12 * 604_800_000, maxBuckets: 12,  label: '12W' },
   ],
 }
 

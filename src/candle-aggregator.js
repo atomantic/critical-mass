@@ -17,6 +17,7 @@ const TIMEFRAMES = {
   '2h':  { intervalMs: 7_200_000,    maxCandles: 100 },
   '4h':  { intervalMs: 14_400_000,   maxCandles: 60  },
   '1d':  { intervalMs: 86_400_000,   maxCandles: 60  },
+  '1w':  { intervalMs: 604_800_000,  maxCandles: 12  },
 };
 
 const TIMEFRAME_KEYS = Object.keys(TIMEFRAMES);

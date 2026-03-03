@@ -185,6 +185,8 @@ const createUpDownService = (io, deps) => {
       timestamp: result.timestamp,
       tickMomentum,
       trendFilter: result.trendFilter,
+      weeklyTrend: result.weeklyTrend,
+      adxRegime: result.adxRegime,
       volatility: result.volatility,
       pivotPoints: result.pivotPoints,
       confluence: result.confluence,
@@ -215,6 +217,8 @@ const createUpDownService = (io, deps) => {
         timeframes: result.timeframes,
         timestamp: result.timestamp,
         trendFilter: result.trendFilter,
+        weeklyTrend: result.weeklyTrend,
+        adxRegime: result.adxRegime,
         volatility: result.volatility,
         pivotPoints: result.pivotPoints,
         horizonPrediction: result.horizonPrediction,
@@ -284,6 +288,7 @@ const createUpDownService = (io, deps) => {
         '2h': candleCache.getCandles('coinbase', '2h').length,
         '4h': candleCache.getCandles('coinbase', '4h').length,
         '1d': candleCache.getCandles('coinbase', '1d').length,
+        '1w': candleCache.getCandles('coinbase', '1w').length,
       },
     };
   };

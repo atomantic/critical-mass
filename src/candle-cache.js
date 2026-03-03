@@ -115,6 +115,7 @@ const seedDerivedTimeframes = (agg) => {
     { source: '5m',  target: '30m', intervalMs: 1_800_000 },
     { source: '1h',  target: '2h',  intervalMs: 7_200_000 },
     { source: '1h',  target: '4h',  intervalMs: 14_400_000 },
+    { source: '1d',  target: '1w',  intervalMs: 604_800_000 },
   ];
   let derived = 0;
   for (const { source, target, intervalMs } of derivations) {
@@ -245,7 +246,7 @@ const createCandleCache = () => {
     const agg = aggregators.get(exchange);
     if (!agg) return {};
     const result = {};
-    for (const tf of ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']) {
+    for (const tf of ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']) {
       result[tf] = agg.getCandles(tf);
     }
     return result;
