@@ -1,10 +1,11 @@
 import { useMemo } from 'react'
 import { TrendingUp, TrendingDown, Minus, AlertTriangle, ChevronsUp, ChevronsDown } from 'lucide-react'
 
-const TF_ORDER = ['1d', '4h', '2h', '1h', '30m', '15m', '10m', '5m', '3m', '1m']
+const TF_ORDER = ['1w', '1d', '4h', '2h', '1h', '30m', '15m', '10m', '5m', '3m', '1m']
 const MACD_MIN_CANDLES = 35
 
 const TF_TOOLTIPS = {
+  '1w': 'Weekly — macro trend context (EMA4/EMA8)',
   '1d': 'Daily — longest-term trend direction',
   '4h': '4-hour — macro trend bias',
   '2h': '2-hour — intermediate trend',
