@@ -24,3 +24,5 @@
 - Crypto.com cash balance showing $0 in UI — exchange status endpoint now extracts quote currency from productId instead of hardcoding USDC
 
 ## Removed
+
+- Direction (Dir) column from UpDown trade history table — directional stats still shown in Up/Down win rate summary
