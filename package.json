@@ -4,7 +4,7 @@
   "description": "Multi-exchange BTC accumulation engine with celestial position management",
   "main": "index.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "pm2 delete ecosystem.config.cjs; pm2 start ecosystem.config.cjs && pm2 save",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:ui\"",
     "dev:server": "VITE_API_PORT=5563 nodemon server.js",
     "dev:ui": "cd admin && VITE_PORT=5564 VITE_API_PORT=5563 npm run dev",
