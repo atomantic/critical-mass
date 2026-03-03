@@ -265,7 +265,6 @@ export default function TradeHistory() {
             <thead>
               <tr className="text-gray-500 border-b border-gray-700">
                 <th className="text-left py-1.5 pr-2">Date</th>
-                <th className="text-center py-1.5 px-1 w-10">Dir</th>
                 <th className="text-right py-1.5 px-2">Cost</th>
                 <th className="text-right py-1.5 px-2">Return</th>
                 <th className="text-right py-1.5 px-2">P&L</th>
@@ -277,17 +276,6 @@ export default function TradeHistory() {
               {[...trades].reverse().map(t => (
                 <tr key={t.id} className="border-b border-gray-700/50 hover:bg-gray-700/20">
                   <td className="py-1.5 pr-2 text-gray-300">{t.date}</td>
-                  <td className="py-1.5 px-1 text-center" title={t.signal?.type ? `Signal: ${t.signal.type} (${t.signal.score})` : undefined}>
-                    {t.direction === 'up' ? (
-                      <span className="inline-flex items-center gap-0.5 text-green-400">
-                        <ArrowUp size={10} />{t.manualOverride ? '!' : ''}
-                      </span>
-                    ) : t.direction === 'down' ? (
-                      <span className="inline-flex items-center gap-0.5 text-red-400">
-                        <ArrowDown size={10} />{t.manualOverride ? '!' : ''}
-                      </span>
-                    ) : <span className="text-gray-600">---</span>}
-                  </td>
                   <td className="py-1.5 px-2 text-right font-mono text-gray-300">{fmt(t.cost)}</td>
                   <td className="py-1.5 px-2 text-right font-mono text-gray-300">{fmt(t.returnAmount)}</td>
                   <td className={`py-1.5 px-2 text-right font-mono font-medium ${pnlColor(t.pnl)}`}>
