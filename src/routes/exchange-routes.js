@@ -120,7 +120,9 @@ module.exports = (app, deps) => {
     let assetBalance = { available: 0, hold: 0 };
     let keysConfigured = false;
     let apiError = null;
-    const quoteCurrency = exchange === 'gemini' ? 'USD' : 'USDC';
+    // Extract quote currency from productId (e.g., CRO_USD -> USD, BTC-USDC -> USDC)
+    const productParts = (config.productId || '').replace('_', '-').split('-');
+    const quoteCurrency = exchange === 'gemini' ? 'USD' : (productParts[1] || 'USDC');
 
     const adapter = getAdapter(exchange);
 

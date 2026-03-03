@@ -2680,7 +2680,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const remainingBudget = roundUSDC(Math.max(0, config.maxUsdcDeployed - positionState.totalCostBasis));
     if (sizing.sizeUsdc > 0) {
       // If remaining budget can't fit 2 orders at minimum, use it all in one last order
-      if (remainingBudget > 0 && remainingBudget < minSize * 2) {
+      // But only if remaining budget is at least the minimum order size
+      if (remainingBudget >= minSize && remainingBudget < minSize * 2) {
         sizing.sizeUsdc = remainingBudget;
       } else if (sizing.sizeUsdc < minSize) {
         sizing.sizeUsdc = minSize;
