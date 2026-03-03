@@ -7,9 +7,14 @@
 - ADX (Average Directional Index) indicator — Wilder's method with +DI/-DI, trend/range regime classification
 - Weekly macro trend filter — EMA(4)/EMA(8) on 1w candles with 60% counter-weekly dampening
 - ADX regime modulation — +15% composite boost in trending markets, -20% in ranging markets
-- ADX dynamic weight shift — reallocates 15% weight between trend-following (MACD/Momentum) and mean-reversion (RSI/Bollinger) indicators based on regime
+- Tick momentum confirmation — aligned tick momentum boosts composite score up to +25%, contradicting reduces up to -15%
 
 ## Changed
+
+- Indicator weights rebalanced for trend-following dominance (61%): MACD 0.24, OBV 0.20, Momentum 0.17; mean-reversion reduced: RSI 0.12, Stochastic 0.10, Bollinger 0.08
+- Signal thresholds lowered — neutral 25→15, strong 45→30, with proportional vol-scaling adjustments
+- Soft ceiling raised from 35 to 50 — full linear scoring range before compression
+- All dampening multipliers softened — trend filter 0.40→0.65, weekly 0.40→0.70, confluence 0.75→0.85, ADX ranging 0.80→0.90, pivots R2/S2 0.50→0.70, R1/S1 0.70→0.85, ToD bounds narrowed to [0.90,1.10]
 
 - `npm start` now deletes and restarts all PM2 processes then saves, replacing the old direct `node server.js` invocation
 - `npm start` now kills stale processes on app ports (LISTEN only) before starting PM2, preventing EADDRINUSE errors
@@ -22,7 +27,10 @@
 - Crypto.com INVALID_ORDERQTY spam — validate order quantity meets exchange minimum before sending to API
 - Crypto.com sub-minimum $0.05 orders — remaining budget "last order" logic now requires budget >= minOrderSize
 - Crypto.com cash balance showing $0 in UI — exchange status endpoint now extracts quote currency from productId instead of hardcoding USDC
+- Expired contract no longer triggers permanent NO_TRADE_ZONE — past-expiry contracts treated as no-contract
+- ADX weight drift bug — removed mutating weight shift block that decayed MACD/momentum weights exponentially over cycles
 
 ## Removed
 
 - Direction (Dir) column from UpDown trade history table — directional stats still shown in Up/Down win rate summary
+- ADX dynamic weight shift — replaced by static trend-following-dominant weights (was compounding bug)
