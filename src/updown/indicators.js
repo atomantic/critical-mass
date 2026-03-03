@@ -213,11 +213,155 @@ const calculateRSISeries = (closes, period = 14) => {
   return result;
 };
 
+/**
+ * Calculate On-Balance Volume (OBV)
+ * @param {Array<{close: number, volume: number}>} candles - Candle data (oldest first)
+ * @param {number} [lookback=14] - Lookback period for slope normalization
+ * @returns {{obv: number, slope: number, direction: 'up'|'down'|'neutral'}}
+ */
+const calculateOBV = (candles, lookback = 14) => {
+  if (!candles || candles.length < 2) return { obv: 0, slope: 0, direction: 'neutral' };
+
+  // Compute cumulative OBV
+  const obvSeries = [0];
+  for (let i = 1; i < candles.length; i++) {
+    const prev = obvSeries[i - 1];
+    if (candles[i].close > candles[i - 1].close) {
+      obvSeries.push(prev + (candles[i].volume || 0));
+    } else if (candles[i].close < candles[i - 1].close) {
+      obvSeries.push(prev - (candles[i].volume || 0));
+    } else {
+      obvSeries.push(prev);
+    }
+  }
+
+  const obv = obvSeries[obvSeries.length - 1];
+
+  // Compute normalized slope over lookback period using linear regression
+  const slice = obvSeries.slice(-lookback);
+  if (slice.length < 3) return { obv, slope: 0, direction: 'neutral' };
+
+  const n = slice.length;
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += slice[i];
+    sumXY += i * slice[i];
+    sumX2 += i * i;
+  }
+  const rawSlope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+
+  // Normalize slope by average absolute OBV to get a -1 to +1 range
+  const avgAbsOBV = slice.reduce((s, v) => s + Math.abs(v), 0) / n;
+  const slope = avgAbsOBV > 0 ? Math.max(-1, Math.min(1, rawSlope / avgAbsOBV * n)) : 0;
+
+  let direction = 'neutral';
+  if (slope > 0.1) direction = 'up';
+  else if (slope < -0.1) direction = 'down';
+
+  return { obv, slope, direction };
+};
+
+/**
+ * Calculate Average Directional Index (ADX) using Wilder's method
+ * @param {Array<{high: number, low: number, close: number}>} candles - Candle data (oldest first)
+ * @param {number} [period=14] - ADX smoothing period
+ * @returns {{adx: number, plusDI: number, minusDI: number, trending: boolean}}
+ */
+const calculateADX = (candles, period = 14) => {
+  if (!candles || candles.length < period * 2 + 1) {
+    return { adx: 0, plusDI: 0, minusDI: 0, trending: false };
+  }
+
+  // Compute True Range, +DM, -DM
+  const trList = [];
+  const plusDM = [];
+  const minusDM = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const high = candles[i].high;
+    const low = candles[i].low;
+    const prevClose = candles[i - 1].close;
+
+    // True Range
+    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    trList.push(tr);
+
+    // Directional Movement
+    const upMove = high - candles[i - 1].high;
+    const downMove = candles[i - 1].low - low;
+
+    if (upMove > downMove && upMove > 0) {
+      plusDM.push(upMove);
+    } else {
+      plusDM.push(0);
+    }
+
+    if (downMove > upMove && downMove > 0) {
+      minusDM.push(downMove);
+    } else {
+      minusDM.push(0);
+    }
+  }
+
+  // Wilder's smoothing for TR, +DM, -DM (first value = sum of first `period`)
+  let smoothTR = 0, smoothPlusDM = 0, smoothMinusDM = 0;
+  for (let i = 0; i < period; i++) {
+    smoothTR += trList[i];
+    smoothPlusDM += plusDM[i];
+    smoothMinusDM += minusDM[i];
+  }
+
+  // Compute DI values and DX for Wilder's smoothing of ADX
+  const dxValues = [];
+
+  for (let i = period; i < trList.length; i++) {
+    if (i > period) {
+      smoothTR = smoothTR - smoothTR / period + trList[i];
+      smoothPlusDM = smoothPlusDM - smoothPlusDM / period + plusDM[i];
+      smoothMinusDM = smoothMinusDM - smoothMinusDM / period + minusDM[i];
+    }
+
+    const pDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
+    const mDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
+    const diSum = pDI + mDI;
+    const dx = diSum > 0 ? (Math.abs(pDI - mDI) / diSum) * 100 : 0;
+    dxValues.push({ dx, pDI, mDI });
+  }
+
+  if (dxValues.length < period) {
+    return { adx: 0, plusDI: 0, minusDI: 0, trending: false };
+  }
+
+  // First ADX = average of first `period` DX values
+  let adx = 0;
+  for (let i = 0; i < period; i++) {
+    adx += dxValues[i].dx;
+  }
+  adx /= period;
+
+  // Wilder's smoothing for ADX
+  for (let i = period; i < dxValues.length; i++) {
+    adx = (adx * (period - 1) + dxValues[i].dx) / period;
+  }
+
+  const last = dxValues[dxValues.length - 1];
+
+  return {
+    adx: Math.round(adx * 100) / 100,
+    plusDI: Math.round(last.pDI * 100) / 100,
+    minusDI: Math.round(last.mDI * 100) / 100,
+    trending: adx > 25,
+  };
+};
+
 module.exports = {
   calculateRSI,
   calculateRSISeries,
   calculateStochastic,
   calculateMACD,
   calculateBollingerBands,
+  calculateOBV,
+  calculateADX,
   emaFromValues,
 };

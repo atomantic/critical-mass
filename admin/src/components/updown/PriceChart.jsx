@@ -34,6 +34,12 @@ const tfScoreToSignal = (score) => {
   return 'NEUTRAL'
 }
 
+const WEEKLY_SIGNAL_COLORS = {
+  bullish: 'text-green-400',
+  bearish: 'text-red-400',
+  neutral: 'text-gray-400',
+}
+
 export default function PriceChart({ tick, indicators, contract, signalAnnotations }) {
   const referenceLines = useMemo(() => {
     const lines = []
@@ -86,13 +92,34 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
     )
   }
 
+  const weeklyBias = indicators?.weeklyTrend?.weeklyBias || 'neutral'
+  const weeklyColor = WEEKLY_SIGNAL_COLORS[weeklyBias] || WEEKLY_SIGNAL_COLORS.neutral
+  const weeklyLabel = weeklyBias.toUpperCase()
+
   return (
-    <div className="grid grid-cols-2 gap-2">
-      <div className="space-y-2">
-        {LEFT_TFS.map(renderChart)}
-      </div>
-      <div className="space-y-2">
-        {RIGHT_TFS.map(renderChart)}
+    <div className="space-y-2">
+      {/* Weekly macro chart banner */}
+      <BTCPriceChart
+        exchange="coinbase"
+        tickPrice={tick?.price}
+        tickTimestamp={tick?.timestamp}
+        indicators={indicators}
+        chartType="heikinAshi"
+        showIntervalSelector={false}
+        defaultInterval="1w"
+        defaultRange="8w"
+        overlays={['bollinger']}
+        subCharts={[]}
+        height={180}
+        headerLabel={<><span className="text-white font-bold">1W:</span> <span className={weeklyColor}>{weeklyLabel}</span></>}
+      />
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-2">
+          {LEFT_TFS.map(renderChart)}
+        </div>
+        <div className="space-y-2">
+          {RIGHT_TFS.map(renderChart)}
+        </div>
       </div>
     </div>
   )

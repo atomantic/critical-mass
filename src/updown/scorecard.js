@@ -22,9 +22,9 @@ const BUFFER_SIZE = 2000
 const EMIT_THROTTLE_MS = 5_000
 const DEDUP_WINDOW_MS = 55_000
 const WEIGHT_LOG_THROTTLE_MS = 300_000
-const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum']
-const BASE_WEIGHTS = { rsi: 0.25, stochastic: 0.20, macd: 0.20, bollinger: 0.15, vwap: 0.10, momentum: 0.10 }
-const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']
+const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum', 'obv']
+const BASE_WEIGHTS = { rsi: 0.22, stochastic: 0.17, macd: 0.17, bollinger: 0.13, vwap: 0.09, momentum: 0.09, obv: 0.13 }
+const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
 
 /**
  * Compute adaptive indicator weights based on recent accuracy

@@ -16,18 +16,19 @@
  * 8. Multi-Candle Horizon Prediction
  */
 
-const { calculateRSI, calculateRSISeries, calculateStochastic, calculateMACD, calculateBollingerBands } = require('./indicators');
+const { calculateRSI, calculateRSISeries, calculateStochastic, calculateMACD, calculateBollingerBands, calculateOBV, calculateADX } = require('./indicators');
 const { calculateATR, calculateVWAP, calculateEMA, calculateMomentumAcceleration } = require('../volatility-utils');
 const { detectDivergence } = require('./divergence');
 const { calculatePivotPoints, computePivotDampening } = require('./pivot-points');
 
 const INDICATOR_WEIGHTS = {
-  rsi: 0.25,
-  stochastic: 0.20,
-  macd: 0.20,
-  bollinger: 0.15,
-  vwap: 0.10,
-  momentum: 0.10,
+  rsi: 0.22,
+  stochastic: 0.17,
+  macd: 0.17,
+  bollinger: 0.13,
+  vwap: 0.09,
+  momentum: 0.09,
+  obv: 0.13,
 };
 
 const TIMEFRAME_WEIGHTS = {
@@ -38,7 +39,7 @@ const TIMEFRAME_WEIGHTS = {
   '1h': 0.15,
 };
 
-const ALL_SIGNAL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d'];
+const ALL_SIGNAL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w'];
 
 const NO_TRADE_ZONE_MS = 6 * 60 * 60 * 1000;
 const WARNING_ZONE_MS = 8 * 60 * 60 * 1000;
@@ -254,6 +255,39 @@ const scoreMomentumAcceleration = (momentum, rsi, trendBias = 'neutral') => {
   return Math.max(-100, Math.min(100, Math.round(base)));
 };
 
+/**
+ * Score OBV indicator (-100 to +100)
+ * Confirms or contradicts price trend via volume direction
+ * @param {{obv: number, slope: number, direction: string}} obv
+ * @param {string} priceDirection - 'up' | 'down' | 'neutral' from price movement
+ * @param {string} trendBias - 'bullish' | 'bearish' | 'neutral'
+ * @returns {number}
+ */
+const scoreOBV = (obv, priceDirection, trendBias = 'neutral') => {
+  if (!obv || obv.direction === 'neutral') return 0;
+
+  // Volume confirms price direction
+  const confirms = obv.direction === priceDirection;
+  const slopeStrength = Math.abs(obv.slope);
+
+  let score = 0;
+  if (confirms) {
+    // Confirmation: OBV and price agree
+    score = obv.direction === 'up' ? 50 : -50;
+    score *= Math.min(1, slopeStrength * 2); // scale by slope strength
+  } else {
+    // Divergence: OBV and price disagree — warning signal
+    score = obv.direction === 'up' ? 30 : -30;
+    score *= Math.min(1, slopeStrength * 2);
+  }
+
+  // Trend alignment bonus
+  if (trendBias === 'bullish' && obv.direction === 'up') score *= 1.3;
+  else if (trendBias === 'bearish' && obv.direction === 'down') score *= 1.3;
+
+  return Math.max(-100, Math.min(100, Math.round(score)));
+};
+
 // --- Feature 1: Trend Filter ---
 
 /**
@@ -278,6 +312,49 @@ const computeTrendFilter = (candles1h) => {
   if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.40 };
   if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.40 };
   return { trendBias: 'neutral', ema50, ema200, multiplier: 1 };
+};
+
+/**
+ * Compute weekly macro trend filter from 1w candles using EMA(4)/EMA(8)
+ * @param {Array<{close: number}>} candles1w
+ * @returns {{weeklyBias: 'bullish'|'bearish'|'neutral', ema4: number, ema8: number, multiplier: number}}
+ */
+const computeWeeklyTrendFilter = (candles1w) => {
+  if (!candles1w || candles1w.length < 8) {
+    return { weeklyBias: 'neutral', ema4: 0, ema8: 0, multiplier: 1 };
+  }
+
+  const ema4 = calculateEMA(candles1w, 4);
+  const ema8 = calculateEMA(candles1w, 8);
+
+  if (!ema4 || !ema8 || ema8 === 0) {
+    return { weeklyBias: 'neutral', ema4, ema8, multiplier: 1 };
+  }
+
+  const spread = (ema4 - ema8) / ema8;
+
+  if (spread > 0.005) return { weeklyBias: 'bullish', ema4, ema8, multiplier: 0.40 };
+  if (spread < -0.005) return { weeklyBias: 'bearish', ema4, ema8, multiplier: 0.40 };
+  return { weeklyBias: 'neutral', ema4, ema8, multiplier: 1 };
+};
+
+/**
+ * Compute ADX regime classification for composite modulation
+ * @param {{adx: number, plusDI: number, minusDI: number, trending: boolean}} adxData
+ * @returns {{regime: 'trending'|'ranging'|'neutral', adx: number, multiplier: number}}
+ */
+const computeADXRegime = (adxData) => {
+  if (!adxData || adxData.adx === 0) {
+    return { regime: 'neutral', adx: 0, multiplier: 1 };
+  }
+
+  if (adxData.adx > 25) {
+    return { regime: 'trending', adx: adxData.adx, multiplier: 1.15 };
+  }
+  if (adxData.adx < 20) {
+    return { regime: 'ranging', adx: adxData.adx, multiplier: 0.80 };
+  }
+  return { regime: 'neutral', adx: adxData.adx, multiplier: 1 };
 };
 
 // --- Feature 2: Volatility-Scaled Signal Thresholds ---
@@ -450,6 +527,15 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
   const prevStoch = prevIndicators?.stochastic ?? null;
   const prevMacd = prevIndicators?.macd ?? null;
 
+  // OBV and ADX per timeframe
+  const obv = calculateOBV(candles);
+  const adx = calculateADX(candles);
+
+  // Determine price direction from recent closes for OBV scoring
+  const priceDir = closes.length >= 3
+    ? (closes[closes.length - 1] > closes[closes.length - 3] ? 'up' : closes[closes.length - 1] < closes[closes.length - 3] ? 'down' : 'neutral')
+    : 'neutral';
+
   const scores = {
     rsi: scoreRSI(rsi, trendBias),
     stochastic: scoreStochastic(stoch, prevStoch, trendBias),
@@ -457,6 +543,7 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
     bollinger: scoreBollinger(bb.percentB, trendBias),
     vwap: scoreVWAP(currentPrice, vwap, atr, trendBias),
     momentum: scoreMomentumAcceleration(momentum, rsi, trendBias),
+    obv: scoreOBV(obv, priceDir, trendBias),
   };
 
   let weightedScore = 0;
@@ -479,7 +566,7 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
 
   const indicators = {
     rsi, stochastic: stoch, macd, bollingerBands: bb, atr, vwap, momentum,
-    volumeSurge, divergence,
+    volumeSurge, divergence, obv, adx,
   };
 
   return { scores, indicators, weightedScore };
@@ -524,6 +611,10 @@ const createSignalEngine = (candleAggregator) => {
     // Feature 1: Compute trend filter BEFORE timeframe loop so trendBias is available to indicator scoring
     const candles1h = candleAggregator.getCandles('1h');
     const trendFilter = computeTrendFilter(candles1h);
+
+    // Weekly macro trend filter from 1w candles
+    const candles1w = candleAggregator.getCandles('1w');
+    const weeklyTrend = computeWeeklyTrendFilter(candles1w);
 
     const timeframes = {};
     let compositeScore = 0;
@@ -577,6 +668,13 @@ const createSignalEngine = (candleAggregator) => {
       compositeScore *= trendFilter.multiplier;
     }
 
+    // Weekly macro dampening — 60% reduction on counter-weekly signals
+    if (weeklyTrend.weeklyBias === 'bullish' && compositeScore < 0) {
+      compositeScore *= weeklyTrend.multiplier;
+    } else if (weeklyTrend.weeklyBias === 'bearish' && compositeScore > 0) {
+      compositeScore *= weeklyTrend.multiplier;
+    }
+
     // Feature 6: Pivot point dampening
     const candles1d = candleAggregator.getCandles('1d');
     let pivotPoints = null;
@@ -603,6 +701,36 @@ const createSignalEngine = (candleAggregator) => {
           }
         }
       }
+    }
+
+    // ADX regime modulation — boost trending, dampen ranging
+    const adx1h = timeframes['1h']?.indicators?.adx;
+    const adxRegime = computeADXRegime(adx1h);
+    compositeScore *= adxRegime.multiplier;
+
+    // ADX dynamic weight shift — adjust indicator weights based on regime
+    // In trending markets: boost MACD+Momentum, reduce RSI+Bollinger
+    // In ranging markets: boost RSI+Bollinger, reduce MACD+Momentum
+    if (adxRegime.regime === 'trending') {
+      const shift = 0.15;
+      const adjusted = { ...currentIndicatorWeights };
+      const rsiShare = (adjusted.rsi || 0) * shift / 2;
+      const bbShare = (adjusted.bollinger || 0) * shift / 2;
+      adjusted.rsi = (adjusted.rsi || 0) - rsiShare;
+      adjusted.bollinger = (adjusted.bollinger || 0) - bbShare;
+      adjusted.macd = (adjusted.macd || 0) + rsiShare;
+      adjusted.momentum = (adjusted.momentum || 0) + bbShare;
+      setIndicatorWeights(adjusted);
+    } else if (adxRegime.regime === 'ranging') {
+      const shift = 0.15;
+      const adjusted = { ...currentIndicatorWeights };
+      const macdShare = (adjusted.macd || 0) * shift / 2;
+      const momShare = (adjusted.momentum || 0) * shift / 2;
+      adjusted.macd = (adjusted.macd || 0) - macdShare;
+      adjusted.momentum = (adjusted.momentum || 0) - momShare;
+      adjusted.rsi = (adjusted.rsi || 0) + macdShare;
+      adjusted.bollinger = (adjusted.bollinger || 0) + momShare;
+      setIndicatorWeights(adjusted);
     }
 
     // Feature 10: Score cap — soft ceiling instead of hard cap
@@ -644,6 +772,8 @@ const createSignalEngine = (candleAggregator) => {
       warningZone,
       timestamp: now,
       trendFilter,
+      weeklyTrend,
+      adxRegime,
       volatility,
       pivotPoints,
       confluence,
@@ -666,7 +796,10 @@ module.exports = {
   scoreVWAP,
   scoreMomentum,
   scoreMomentumAcceleration,
+  scoreOBV,
   computeTrendFilter,
+  computeWeeklyTrendFilter,
+  computeADXRegime,
   computeVolatilityContext,
   computeVolumeSurge,
   computeHorizonPrediction,
