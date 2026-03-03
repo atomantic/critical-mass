@@ -22,13 +22,13 @@ const { detectDivergence } = require('./divergence');
 const { calculatePivotPoints, computePivotDampening } = require('./pivot-points');
 
 const INDICATOR_WEIGHTS = {
-  rsi: 0.22,
-  stochastic: 0.17,
-  macd: 0.17,
-  bollinger: 0.13,
+  rsi: 0.12,
+  stochastic: 0.10,
+  macd: 0.24,
+  bollinger: 0.08,
   vwap: 0.09,
-  momentum: 0.09,
-  obv: 0.13,
+  momentum: 0.17,
+  obv: 0.20,
 };
 
 const TIMEFRAME_WEIGHTS = {
@@ -309,8 +309,8 @@ const computeTrendFilter = (candles1h) => {
 
   const spread = (ema50 - ema200) / ema200;
 
-  if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.40 };
-  if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.40 };
+  if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.65 };
+  if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.65 };
   return { trendBias: 'neutral', ema50, ema200, multiplier: 1 };
 };
 
@@ -333,8 +333,8 @@ const computeWeeklyTrendFilter = (candles1w) => {
 
   const spread = (ema4 - ema8) / ema8;
 
-  if (spread > 0.005) return { weeklyBias: 'bullish', ema4, ema8, multiplier: 0.40 };
-  if (spread < -0.005) return { weeklyBias: 'bearish', ema4, ema8, multiplier: 0.40 };
+  if (spread > 0.005) return { weeklyBias: 'bullish', ema4, ema8, multiplier: 0.70 };
+  if (spread < -0.005) return { weeklyBias: 'bearish', ema4, ema8, multiplier: 0.70 };
   return { weeklyBias: 'neutral', ema4, ema8, multiplier: 1 };
 };
 
@@ -352,7 +352,7 @@ const computeADXRegime = (adxData) => {
     return { regime: 'trending', adx: adxData.adx, multiplier: 1.15 };
   }
   if (adxData.adx < 20) {
-    return { regime: 'ranging', adx: adxData.adx, multiplier: 0.80 };
+    return { regime: 'ranging', adx: adxData.adx, multiplier: 0.90 };
   }
   return { regime: 'neutral', adx: adxData.adx, multiplier: 1 };
 };
@@ -400,19 +400,19 @@ const computeVolatilityContext = (candles5m) => {
  * @returns {'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL'}
  */
 const scoreToSignalDynamic = (score, atrRatio) => {
-  let neutralThreshold = 25;
-  let strongThreshold = 45;
+  let neutralThreshold = 15;
+  let strongThreshold = 30;
 
   if (atrRatio < 0.7) {
     // Low vol: widen zones via linear interpolation
     const t = Math.max(0, (0.7 - atrRatio) / 0.7);
-    neutralThreshold = 25 + t * 10; // up to 35
-    strongThreshold = 45 + t * 10;  // up to 55
+    neutralThreshold = 15 + t * 7; // up to 22
+    strongThreshold = 30 + t * 8;  // up to 38
   } else if (atrRatio > 1.5) {
     // High vol: tighten zones via linear interpolation
     const t = Math.min(1, (atrRatio - 1.5) / 1.5);
-    neutralThreshold = 25 - t * 5; // down to 20
-    strongThreshold = 45 - t * 5;  // down to 40
+    neutralThreshold = 15 - t * 3; // down to 12
+    strongThreshold = 30 - t * 5;  // down to 25
   }
 
   if (score > strongThreshold) return 'STRONG_BUY';
@@ -428,10 +428,10 @@ const scoreToSignalDynamic = (score, atrRatio) => {
  * @returns {'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL'}
  */
 const scoreToSignal = (score) => {
-  if (score > 45) return 'STRONG_BUY';
-  if (score > 25) return 'BUY';
-  if (score < -45) return 'STRONG_SELL';
-  if (score < -25) return 'SELL';
+  if (score > 30) return 'STRONG_BUY';
+  if (score > 15) return 'BUY';
+  if (score < -30) return 'STRONG_SELL';
+  if (score < -15) return 'SELL';
   return 'NEUTRAL';
 };
 
@@ -604,7 +604,7 @@ const createSignalEngine = (candleAggregator) => {
    */
   const computeSignals = (contractExpiry = null, scorecardMetrics = null) => {
     const now = Date.now();
-    const timeToExpiry = contractExpiry ? contractExpiry - now : Infinity;
+    const timeToExpiry = (contractExpiry && contractExpiry > now) ? contractExpiry - now : Infinity;
     const noTradeZone = timeToExpiry <= NO_TRADE_ZONE_MS;
     const warningZone = timeToExpiry <= WARNING_ZONE_MS;
 
@@ -655,9 +655,9 @@ const createSignalEngine = (candleAggregator) => {
     }
     const confluenceQuality = agreeing >= 8 ? 'overcrowded' : agreeing >= 7 ? 'moderate' : 'selective';
     if (confluenceQuality === 'overcrowded') {
-      compositeScore *= 0.75;
+      compositeScore *= 0.85;
     } else if (confluenceQuality === 'moderate') {
-      compositeScore *= 0.9;
+      compositeScore *= 0.95;
     }
     const confluence = { agreeing, totalDirectional, quality: confluenceQuality };
 
@@ -708,38 +708,13 @@ const createSignalEngine = (candleAggregator) => {
     const adxRegime = computeADXRegime(adx1h);
     compositeScore *= adxRegime.multiplier;
 
-    // ADX dynamic weight shift — adjust indicator weights based on regime
-    // In trending markets: boost MACD+Momentum, reduce RSI+Bollinger
-    // In ranging markets: boost RSI+Bollinger, reduce MACD+Momentum
-    if (adxRegime.regime === 'trending') {
-      const shift = 0.15;
-      const adjusted = { ...currentIndicatorWeights };
-      const rsiShare = (adjusted.rsi || 0) * shift / 2;
-      const bbShare = (adjusted.bollinger || 0) * shift / 2;
-      adjusted.rsi = (adjusted.rsi || 0) - rsiShare;
-      adjusted.bollinger = (adjusted.bollinger || 0) - bbShare;
-      adjusted.macd = (adjusted.macd || 0) + rsiShare;
-      adjusted.momentum = (adjusted.momentum || 0) + bbShare;
-      setIndicatorWeights(adjusted);
-    } else if (adxRegime.regime === 'ranging') {
-      const shift = 0.15;
-      const adjusted = { ...currentIndicatorWeights };
-      const macdShare = (adjusted.macd || 0) * shift / 2;
-      const momShare = (adjusted.momentum || 0) * shift / 2;
-      adjusted.macd = (adjusted.macd || 0) - macdShare;
-      adjusted.momentum = (adjusted.momentum || 0) - momShare;
-      adjusted.rsi = (adjusted.rsi || 0) + macdShare;
-      adjusted.bollinger = (adjusted.bollinger || 0) + momShare;
-      setIndicatorWeights(adjusted);
-    }
-
     // Feature 10: Score cap — soft ceiling instead of hard cap
     // Previous hard cap at ±35 made BUY (threshold 40) mathematically impossible.
     // Now: linear compression above ±35 — scores can reach ±70 but with diminishing returns.
-    if (Math.abs(compositeScore) > 35) {
+    if (Math.abs(compositeScore) > 50) {
       const sign = compositeScore > 0 ? 1 : -1;
-      const excess = Math.abs(compositeScore) - 35;
-      compositeScore = sign * (35 + excess * 0.5); // 50% compression above 35
+      const excess = Math.abs(compositeScore) - 50;
+      compositeScore = sign * (50 + excess * 0.5); // 50% compression above 50
     }
 
     // Feature 11: Data-driven time-of-day weighting from scorecard per-hour accuracy
@@ -748,7 +723,7 @@ const createSignalEngine = (candleAggregator) => {
     const hourData = scorecardMetrics?.byHour?.[utcHour];
     if (hourData?.accuracy != null && hourData.total >= 10) {
       // Multiplier = 1.0 + (accuracy - 50) / 100, clamped to [0.80, 1.20]
-      todMultiplier = Math.max(0.80, Math.min(1.20, 1.0 + (hourData.accuracy - 50) / 100));
+      todMultiplier = Math.max(0.90, Math.min(1.10, 1.0 + (hourData.accuracy - 50) / 100));
     }
     compositeScore *= todMultiplier;
 

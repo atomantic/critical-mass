@@ -8,7 +8,7 @@
  */
 
 const path = require('path');
-const { createSignalEngine } = require('./signal-engine');
+const { createSignalEngine, scoreToSignalDynamic } = require('./signal-engine');
 const { createScorecard } = require('./scorecard');
 const { log } = require('../logger');
 
@@ -171,10 +171,28 @@ const createUpDownService = (io, deps) => {
 
     // Feature 8: Pass scorecard metrics for horizon prediction
     const result = signalEngine.computeSignals(contract.expiry, metrics);
+
+    // Tick momentum confirmation — adjust composite score post-computation
+    const tickMomentum = computeTickMomentum();
+    if (Math.abs(result.score) >= 5 && tickMomentum.magnitude > 0) {
+      const scoreDir = result.score > 0 ? 'up' : 'down';
+      if (tickMomentum.direction === scoreDir) {
+        // Aligned: boost up to +25% scaled by magnitude (caps at 20 bps)
+        const boostFactor = 1 + 0.25 * Math.min(1, tickMomentum.magnitude / 20);
+        result.score = Math.round(result.score * boostFactor * 100) / 100;
+      } else if (tickMomentum.direction !== 'neutral') {
+        // Contradicting: reduce up to -15% scaled by magnitude
+        const dampFactor = 1 - 0.15 * Math.min(1, tickMomentum.magnitude / 20);
+        result.score = Math.round(result.score * dampFactor * 100) / 100;
+      }
+      // Recompute type and confidence after adjustment
+      result.type = result.noTradeZone ? 'NO_TRADE_ZONE' : scoreToSignalDynamic(result.score, result.volatility?.ratio ?? 1);
+      result.confidence = Math.round(Math.min(1, Math.abs(result.score) / 60) * 100) / 100;
+    }
+
     lastSignalResult = result;
 
     // Emit full indicator data every cycle (with new fields)
-    const tickMomentum = computeTickMomentum();
     io.to('updown').emit('updown:indicators', {
       timeframes: result.timeframes,
       type: result.type,

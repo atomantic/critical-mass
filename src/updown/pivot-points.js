@@ -40,12 +40,12 @@ const computePivotDampening = (price, pivots, proximityPct = 0.001) => {
   const isNear = (level) => Math.abs(price - level) / price < proximityPct;
 
   // Check resistance levels (dampen positive scores)
-  if (isNear(pivots.R2)) return { nearLevel: 'R2', dampMultiplier: 0.5, pivots };
-  if (isNear(pivots.R1)) return { nearLevel: 'R1', dampMultiplier: 0.7, pivots };
+  if (isNear(pivots.R2)) return { nearLevel: 'R2', dampMultiplier: 0.70, pivots };
+  if (isNear(pivots.R1)) return { nearLevel: 'R1', dampMultiplier: 0.85, pivots };
 
   // Check support levels (dampen negative scores)
-  if (isNear(pivots.S2)) return { nearLevel: 'S2', dampMultiplier: 0.5, pivots };
-  if (isNear(pivots.S1)) return { nearLevel: 'S1', dampMultiplier: 0.7, pivots };
+  if (isNear(pivots.S2)) return { nearLevel: 'S2', dampMultiplier: 0.70, pivots };
+  if (isNear(pivots.S1)) return { nearLevel: 'S1', dampMultiplier: 0.85, pivots };
 
   return { nearLevel: null, dampMultiplier: 1, pivots };
 };
