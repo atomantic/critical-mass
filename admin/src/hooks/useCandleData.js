@@ -93,9 +93,9 @@ export const TIME_RANGES_BY_INTERVAL = {
     { key: '60d', rangeMs: 86400 * 60_000, maxBuckets: 60,  label: '60D' },
   ],
   '1w': [
-    { key: '4w',  rangeMs: 4 * 604_800_000,  maxBuckets: 4,   label: '4W' },
-    { key: '8w',  rangeMs: 8 * 604_800_000,  maxBuckets: 8,   label: '8W' },
     { key: '12w', rangeMs: 12 * 604_800_000, maxBuckets: 12,  label: '12W' },
+    { key: '26w', rangeMs: 26 * 604_800_000, maxBuckets: 26,  label: '26W' },
+    { key: '52w', rangeMs: 52 * 604_800_000, maxBuckets: 52,  label: '1Y' },
   ],
 }
 

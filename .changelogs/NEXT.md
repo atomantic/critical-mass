@@ -12,6 +12,10 @@
 ## Changed
 
 - `npm start` now deletes and restarts all PM2 processes then saves, replacing the old direct `node server.js` invocation
+- `npm start` now kills stale processes on app ports (LISTEN only) before starting PM2, preventing EADDRINUSE errors
+- 1W chart default range expanded from 8W to 1Y (52 weeks) with range options 12W / 26W / 1Y
+- 1d candle history expanded from 60 days to 365 days; Coinbase API fetch now paginates to handle 300-candle limit
+- 1d ring buffer increased to 365 candles, 1w ring buffer increased to 52 candles
 
 ## Fixed
 
