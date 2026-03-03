@@ -364,19 +364,31 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   }, [bucketMs, maxBuckets, applyHeikinAshi])
 
   // Fetch historical candles on mount — only stores data, re-populate effect handles rendering
+  // Retries once after 5s if the requested candleTf is missing (derived TFs may not be ready yet)
+  const retryRef = useRef(false)
   useEffect(() => {
     let cancelled = false
+    retryRef.current = false
     setIsLoading(true)
-    fetch(`/api/candles/${exchange}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (cancelled || !data?.candles) return
-        historicalCandlesRef.current = data.candles
-        setIsLoading(false)
-      })
-      .catch(() => { if (!cancelled) setIsLoading(false) })
+    const doFetch = () => {
+      fetch(`/api/candles/${exchange}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (cancelled || !data?.candles) return
+          historicalCandlesRef.current = data.candles
+          setIsLoading(false)
+          // If the requested TF is empty and we haven't retried, try again after 5s
+          // (derived TFs like 3m, 10m, 30m, 2h, 4h, 1w may not be seeded yet)
+          if (!data.candles[candleTf]?.length && !retryRef.current) {
+            retryRef.current = true
+            setTimeout(() => { if (!cancelled) doFetch() }, 5000)
+          }
+        })
+        .catch(() => { if (!cancelled) setIsLoading(false) })
+    }
+    doFetch()
     return () => { cancelled = true }
-  }, [exchange])
+  }, [exchange, candleTf])
 
   // Re-populate from cached candles when view/interval/range changes or data arrives (isLoading → false)
   useEffect(() => {
