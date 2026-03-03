@@ -401,6 +401,20 @@ const createCryptocomAdapter = (keysPath = null) => {
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / priceTickSize) * priceTickSize;
 
+    // Validate quantity is non-zero and meets minimum
+    const minQty = parseFloat(details.baseMinSize) || baseIncrement;
+    if (roundedAmount < minQty) {
+      console.log(`⚠️ Crypto.com order qty ${roundedAmount} (from ${baseAmount}) below minimum ${minQty} (tick_size=${baseIncrement})`);
+      return {
+        orderId: '',
+        clientOrderId: '',
+        success: false,
+        errorMessage: `Order quantity ${baseAmount} rounds to ${roundedAmount}, below minimum ${minQty}`,
+        baseSize: roundedAmount,
+        limitPrice: roundedPrice,
+      };
+    }
+
     const orderParams = {
       instrument_name: instrument,
       side: 'BUY',

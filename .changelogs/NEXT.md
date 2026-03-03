@@ -15,4 +15,8 @@
 
 ## Fixed
 
+- Crypto.com INVALID_ORDERQTY spam — validate order quantity meets exchange minimum before sending to API
+- Crypto.com sub-minimum $0.05 orders — remaining budget "last order" logic now requires budget >= minOrderSize
+- Crypto.com cash balance showing $0 in UI — exchange status endpoint now extracts quote currency from productId instead of hardcoding USDC
+
 ## Removed
