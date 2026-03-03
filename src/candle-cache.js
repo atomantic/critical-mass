@@ -20,7 +20,7 @@ const SEED_TIMEFRAMES = [
   { tf: '5m',  hours: 15,  coinbaseGranularity: 300,  cryptocomTf: '5m'  },
   { tf: '15m', hours: 45,  coinbaseGranularity: 900,  cryptocomTf: '15m' },
   { tf: '1h',  hours: 200, coinbaseGranularity: 3600, cryptocomTf: '1h'  },
-  { tf: '1d',  hours: 1440, coinbaseGranularity: 86400, cryptocomTf: '1D' },
+  { tf: '1d',  hours: 8760, coinbaseGranularity: 86400, cryptocomTf: '1D' },
 ];
 
 const COINBASE_EXCHANGE_URL = 'https://api.exchange.coinbase.com';
@@ -35,20 +35,38 @@ const CRYPTOCOM_API_URL = 'https://api.crypto.com/exchange/v1/public';
  * @returns {Promise<Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>>}
  */
 const fetchCoinbaseCandles = async (tf, hours, granularity) => {
-  const end = new Date().toISOString();
-  const start = new Date(Date.now() - hours * 3_600_000).toISOString();
-  const url = `${COINBASE_EXCHANGE_URL}/products/BTC-USD/candles?granularity=${granularity}&start=${start}&end=${end}`;
-  const res = await fetch(url).catch(() => null);
-  if (!res?.ok) {
-    log('WARN', `🕯️ candle-cache: coinbase ${tf} fetch failed status=${res?.status}`);
-    return [];
-  }
-  const raw = await res.json().catch(() => null);
-  if (!Array.isArray(raw) || !raw.length) return [];
+  const totalCandles = Math.ceil((hours * 3600) / granularity);
+  const COINBASE_MAX = 300;
 
-  // Coinbase: [timestamp, low, high, open, close, volume] newest-first
-  return raw
-    .map(c => ({ timestamp: c[0] * 1000, open: c[3], high: c[2], low: c[1], close: c[4], volume: c[5] }))
+  // Paginate if request exceeds Coinbase's 300-candle limit
+  const pages = Math.ceil(totalCandles / COINBASE_MAX);
+  const allCandles = [];
+
+  for (let page = 0; page < pages; page++) {
+    const pageEndMs = Date.now() - page * COINBASE_MAX * granularity * 1000;
+    const pageStartMs = Math.max(
+      pageEndMs - COINBASE_MAX * granularity * 1000,
+      Date.now() - hours * 3_600_000,
+    );
+    const url = `${COINBASE_EXCHANGE_URL}/products/BTC-USD/candles?granularity=${granularity}&start=${new Date(pageStartMs).toISOString()}&end=${new Date(pageEndMs).toISOString()}`;
+    const res = await fetch(url).catch(() => null);
+    if (!res?.ok) {
+      log('WARN', `🕯️ candle-cache: coinbase ${tf} fetch failed status=${res?.status}`);
+      continue;
+    }
+    const raw = await res.json().catch(() => null);
+    if (!Array.isArray(raw) || !raw.length) continue;
+
+    // Coinbase: [timestamp, low, high, open, close, volume] newest-first
+    for (const c of raw) {
+      allCandles.push({ timestamp: c[0] * 1000, open: c[3], high: c[2], low: c[1], close: c[4], volume: c[5] });
+    }
+  }
+
+  // Deduplicate by timestamp and sort oldest-first
+  const seen = new Set();
+  return allCandles
+    .filter(c => { if (seen.has(c.timestamp)) return false; seen.add(c.timestamp); return true; })
     .sort((a, b) => a.timestamp - b.timestamp);
 };
 

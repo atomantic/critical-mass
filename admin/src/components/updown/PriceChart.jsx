@@ -107,7 +107,7 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
         chartType="heikinAshi"
         showIntervalSelector={false}
         defaultInterval="1w"
-        defaultRange="8w"
+        defaultRange="52w"
         overlays={['bollinger']}
         subCharts={[]}
         height={180}

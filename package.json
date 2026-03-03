@@ -4,7 +4,7 @@
   "description": "Multi-exchange BTC accumulation engine with celestial position management",
   "main": "index.js",
   "scripts": {
-    "start": "pm2 delete ecosystem.config.cjs; pm2 start ecosystem.config.cjs && pm2 save",
+    "start": "pm2 delete ecosystem.config.cjs 2>/dev/null; for p in 5563 5564 5570 5571 5572 5573 5574; do lsof -i :$p -sTCP:LISTEN -t 2>/dev/null | xargs kill -9 2>/dev/null; done; sleep 1; pm2 start ecosystem.config.cjs && pm2 save",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:ui\"",
     "dev:server": "VITE_API_PORT=5563 nodemon server.js",
     "dev:ui": "cd admin && VITE_PORT=5564 VITE_API_PORT=5563 npm run dev",
