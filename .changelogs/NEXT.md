@@ -26,6 +26,7 @@
 
 ## Fixed
 
+- Overview cards: CRO_USD stats (APY, Daily/Annual, Deposited/Max/Avail) now display when engine is running even without saved engineStartTime
 - Crypto.com INVALID_ORDERQTY spam — validate order quantity meets exchange minimum before sending to API
 - Crypto.com sub-minimum $0.05 orders — remaining budget "last order" logic now requires budget >= minOrderSize
 - Crypto.com cash balance showing $0 in UI — exchange status endpoint now extracts quote currency from productId instead of hardcoding USDC
@@ -34,5 +35,6 @@
 
 ## Removed
 
+- "Live" WebSocket connection indicator from overview page
 - Direction (Dir) column from UpDown trade history table — directional stats still shown in Up/Down win rate summary
 - ADX dynamic weight shift — replaced by static trend-following-dominant weights (was compounding bug)

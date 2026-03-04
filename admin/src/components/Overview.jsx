@@ -223,14 +223,6 @@ function Overview() {
         </div>
       </div>
 
-      {/* WS connection indicator */}
-      <div className="flex items-center gap-1.5 mb-4 text-xs">
-        <span className={`w-2 h-2 rounded-full ${connected ? 'bg-blue-500' : 'bg-red-500'}`} />
-        <span className={connected ? 'text-blue-400' : 'text-red-400'}>
-          {connected ? 'Live' : 'Offline'}
-        </span>
-      </div>
-
       {/* Card grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {cards.map(card => {
@@ -342,7 +334,7 @@ function Overview() {
               </div>
 
               {/* APY & Returns (matching RegimeDashboard) */}
-              {card.engineStartTime && (
+              {(card.engineStartTime || card.isRunning) && (
                 <div className="mb-3 pt-2 border-t border-gray-700 text-xs">
                   <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-500 mb-2">
                     <span>Deposited: {formatCurrency(card.depositedCapital)}</span>
