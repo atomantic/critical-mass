@@ -2,6 +2,7 @@
 
 ## Added
 
+- UpDown signal backtest script (`scripts/backtest-updown.js`) — replays 1m BTC candles through signal engine to evaluate BUY/SELL accuracy for Up options day trading; outputs trade log, summary stats, equity curve, and score distribution diagnostics
 - Weekly (1w) candle timeframe — derived from 1d candles, served via API, rendered as full-width macro chart banner on UpDown dashboard
 - OBV (On-Balance Volume) indicator — volume-confirmed trend direction scoring at 13% weight
 - ADX (Average Directional Index) indicator — Wilder's method with +DI/-DI, trend/range regime classification
@@ -14,7 +15,8 @@
 - Indicator weights rebalanced for trend-following dominance (61%): MACD 0.24, OBV 0.20, Momentum 0.17; mean-reversion reduced: RSI 0.12, Stochastic 0.10, Bollinger 0.08
 - Signal thresholds lowered — neutral 25→15, strong 45→30, with proportional vol-scaling adjustments
 - Soft ceiling raised from 35 to 50 — full linear scoring range before compression
-- All dampening multipliers softened — trend filter 0.40→0.65, weekly 0.40→0.70, confluence 0.75→0.85, ADX ranging 0.80→0.90, pivots R2/S2 0.50→0.70, R1/S1 0.70→0.85, ToD bounds narrowed to [0.90,1.10]
+- All dampening multipliers softened — trend filter 0.40→0.65→0.80, weekly 0.40→0.70→0.85, confluence 0.75→0.85, ADX ranging 0.80→0.90→1.0 (neutral), pivots R2/S2 0.50→0.70, R1/S1 0.70→0.85, ToD bounds narrowed to [0.90,1.10]
+- Trend + weekly dampeners no longer stack multiplicatively — applies only the stronger dampener when both are counter-signal, preventing 0.455x crush that made BUY signals unreachable in bearish trends
 
 - `npm start` now deletes and restarts all PM2 processes then saves, replacing the old direct `node server.js` invocation
 - `npm start` now kills stale processes on app ports (LISTEN only) before starting PM2, preventing EADDRINUSE errors
