@@ -153,6 +153,12 @@ const emptyBucket = (time, price) => ({
 /**
  * Merge signal change annotations into bucket map by matching timestamps to nearest bucket key.
  */
+const SIGNAL_PRIORITY = {
+  STRONG_BUY: 5, STRONG_SELL: 5,
+  BUY: 4, SELL: 4,
+  NO_TRADE_ZONE: 3,
+}
+
 const applySignalAnnotations = (map, annotations, bucketMs) => {
   if (!annotations?.length) return
   const keys = [...map.keys()].sort((a, b) => a - b)
@@ -163,7 +169,13 @@ const applySignalAnnotations = (map, annotations, bucketMs) => {
     const bKey = Math.floor(ann.timestamp / bucketMs) * bucketMs
     const bucket = map.get(bKey)
     if (bucket) {
-      bucket.signalChange = { type: ann.type, score: ann.score }
+      // Keep the highest-priority signal when multiple annotations land in the same bucket
+      const existing = bucket.signalChange
+      const newPri = SIGNAL_PRIORITY[ann.type] || 0
+      const oldPri = existing ? (SIGNAL_PRIORITY[existing.type] || 0) : -1
+      if (newPri >= oldPri) {
+        bucket.signalChange = { type: ann.type, score: ann.score }
+      }
     }
   }
 }
