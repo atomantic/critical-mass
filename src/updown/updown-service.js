@@ -66,10 +66,24 @@ const createUpDownService = (io, deps) => {
     if (saved.position) position = saved.position;
     if (saved.signalHistory) {
       signalHistory.length = 0;
-      signalHistory.push(...saved.signalHistory.slice(-MAX_SIGNAL_HISTORY));
+      // Filter out NEUTRAL and deduplicate consecutive same-type signals
+      let lastType = null;
+      for (const s of saved.signalHistory) {
+        if (s.type !== 'NEUTRAL' && s.type !== lastType) {
+          signalHistory.push(s);
+          lastType = s.type;
+        }
+      }
+      // Trim to max size
+      if (signalHistory.length > MAX_SIGNAL_HISTORY) {
+        signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
+      }
     }
     log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position}`);
   };
+
+  // Eagerly load persisted state so signal history is available even before start()
+  loadState();
 
   /**
    * Persist current state to disk
@@ -213,14 +227,19 @@ const createUpDownService = (io, deps) => {
     // Emit signal change event only when signal changes
     if (result.type !== lastSignal) {
       lastSignal = result.type;
-      signalHistory.push({
-        type: result.type,
-        score: result.score,
-        confidence: result.confidence,
-        timestamp: result.timestamp,
-      });
-      if (signalHistory.length > MAX_SIGNAL_HISTORY) {
-        signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
+      // Only record directional changes (BUY→SELL, SELL→BUY, etc.) — skip NEUTRAL
+      // and deduplicate consecutive same-type signals
+      const lastRecorded = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1].type : null;
+      if (result.type !== 'NEUTRAL' && result.type !== lastRecorded) {
+        signalHistory.push({
+          type: result.type,
+          score: result.score,
+          confidence: result.confidence,
+          timestamp: result.timestamp,
+        });
+        if (signalHistory.length > MAX_SIGNAL_HISTORY) {
+          signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
+        }
       }
 
       // Record signal change for scorecard tracking
@@ -293,7 +312,7 @@ const createUpDownService = (io, deps) => {
       lastPrice,
       pnl: computePnL(),
       latestSignal,
-      signalHistory: signalHistory.slice(-20),
+      signalHistory: signalHistory.slice(-100),
       scorecard: scorecard.getMetrics(),
       candleCounts: {
         '1m': candleCache.getCandles('coinbase', '1m').length,

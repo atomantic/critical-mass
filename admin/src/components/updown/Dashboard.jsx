@@ -38,11 +38,21 @@ export default function UpDownDashboard() {
   const prevSignalRef = useRef(null)
   const [signalAnnotations, setSignalAnnotations] = useState([])
 
+  const seededRef = useRef(false)
   const fetchStatus = useCallback(async () => {
     const res = await fetch('/api/updown/status').catch(() => null)
     if (res?.ok) {
       const data = await res.json()
       setStatus(data)
+      // Seed signal annotations from backend history on first load
+      if (!seededRef.current && data.signalHistory?.length) {
+        seededRef.current = true
+        setSignalAnnotations(data.signalHistory.map(s => ({
+          timestamp: s.timestamp,
+          type: s.type,
+          score: s.score ?? 0,
+        })))
+      }
     }
     setLoading(false)
   }, [])
@@ -59,12 +69,15 @@ export default function UpDownDashboard() {
     if (signal.type === prevSignalRef.current) return
     prevSignalRef.current = signal.type
 
-    // Record annotation for chart
-    setSignalAnnotations(prev => {
-      const entry = { timestamp: signal.timestamp || Date.now(), type: signal.type, score: signal.score ?? 0 }
-      const next = [...prev, entry].slice(-20)
-      return next
-    })
+    // Record directional changes only (skip NEUTRAL, deduplicate consecutive same-type)
+    if (signal.type !== 'NEUTRAL') {
+      setSignalAnnotations(prev => {
+        const lastType = prev.length > 0 ? prev[prev.length - 1].type : null
+        if (signal.type === lastType) return prev
+        const entry = { timestamp: signal.timestamp || Date.now(), type: signal.type, score: signal.score ?? 0 }
+        return [...prev, entry].slice(-100)
+      })
+    }
 
     // Audio alert for strong signals
     if (audioEnabled && (signal.type === 'STRONG_BUY' || signal.type === 'STRONG_SELL')) {

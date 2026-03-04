@@ -85,7 +85,7 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
         overlays={['bollinger', 'vwap']}
         subCharts={[]}
         referenceLines={tf.interval === '5m' ? referenceLines : []}
-        signalAnnotations={tf.interval === '5m' ? signalAnnotations : undefined}
+        signalAnnotations={signalAnnotations}
         height={220}
         headerLabel={<><span className="text-white font-bold">{label}:</span> <span className={signalColor}>{signalLabel}</span></>}
       />
