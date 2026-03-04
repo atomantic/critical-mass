@@ -309,8 +309,8 @@ const computeTrendFilter = (candles1h) => {
 
   const spread = (ema50 - ema200) / ema200;
 
-  if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.65 };
-  if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.65 };
+  if (spread > 0.001) return { trendBias: 'bullish', ema50, ema200, multiplier: 0.80 };
+  if (spread < -0.001) return { trendBias: 'bearish', ema50, ema200, multiplier: 0.80 };
   return { trendBias: 'neutral', ema50, ema200, multiplier: 1 };
 };
 
@@ -333,8 +333,8 @@ const computeWeeklyTrendFilter = (candles1w) => {
 
   const spread = (ema4 - ema8) / ema8;
 
-  if (spread > 0.005) return { weeklyBias: 'bullish', ema4, ema8, multiplier: 0.70 };
-  if (spread < -0.005) return { weeklyBias: 'bearish', ema4, ema8, multiplier: 0.70 };
+  if (spread > 0.005) return { weeklyBias: 'bullish', ema4, ema8, multiplier: 0.85 };
+  if (spread < -0.005) return { weeklyBias: 'bearish', ema4, ema8, multiplier: 0.85 };
   return { weeklyBias: 'neutral', ema4, ema8, multiplier: 1 };
 };
 
@@ -352,7 +352,7 @@ const computeADXRegime = (adxData) => {
     return { regime: 'trending', adx: adxData.adx, multiplier: 1.15 };
   }
   if (adxData.adx < 20) {
-    return { regime: 'ranging', adx: adxData.adx, multiplier: 0.90 };
+    return { regime: 'ranging', adx: adxData.adx, multiplier: 1.0 };
   }
   return { regime: 'neutral', adx: adxData.adx, multiplier: 1 };
 };
@@ -661,17 +661,20 @@ const createSignalEngine = (candleAggregator) => {
     }
     const confluence = { agreeing, totalDirectional, quality: confluenceQuality };
 
-    // Feature 1: Trend filter — dampen counter-trend signals (trendFilter computed above)
-    if (trendFilter.trendBias === 'bullish' && compositeScore < 0) {
-      compositeScore *= trendFilter.multiplier;
-    } else if (trendFilter.trendBias === 'bearish' && compositeScore > 0) {
-      compositeScore *= trendFilter.multiplier;
-    }
+    // Feature 1: Trend filter + weekly macro — apply only the stronger dampener, not both
+    // Stacking both multiplicatively (0.80 × 0.85 = 0.68x) crushes signals during
+    // prolonged bearish trends, making BUY signals nearly unreachable.
+    const trendCounterSignal = (trendFilter.trendBias === 'bullish' && compositeScore < 0) ||
+                               (trendFilter.trendBias === 'bearish' && compositeScore > 0);
+    const weeklyCounterSignal = (weeklyTrend.weeklyBias === 'bullish' && compositeScore < 0) ||
+                                (weeklyTrend.weeklyBias === 'bearish' && compositeScore > 0);
 
-    // Weekly macro dampening — 60% reduction on counter-weekly signals
-    if (weeklyTrend.weeklyBias === 'bullish' && compositeScore < 0) {
-      compositeScore *= weeklyTrend.multiplier;
-    } else if (weeklyTrend.weeklyBias === 'bearish' && compositeScore > 0) {
+    if (trendCounterSignal && weeklyCounterSignal) {
+      // Both disagree — apply the stronger (lower) multiplier only
+      compositeScore *= Math.min(trendFilter.multiplier, weeklyTrend.multiplier);
+    } else if (trendCounterSignal) {
+      compositeScore *= trendFilter.multiplier;
+    } else if (weeklyCounterSignal) {
       compositeScore *= weeklyTrend.multiplier;
     }
 
