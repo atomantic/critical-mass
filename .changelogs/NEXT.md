@@ -30,6 +30,9 @@
 
 ## Fixed
 
+- NEUTRAL and NTZ (NO_TRADE_ZONE) annotations no longer render on price charts — only BUY/SELL markers shown
+- NTZ entries filtered from signal history recording (backend + frontend seed + live tracking)
+- Weekly macro chart now receives signal annotations (was the only chart missing them)
 - Overview cards: CRO_USD stats (APY, Daily/Annual, Deposited/Max/Avail) now display when engine is running even without saved engineStartTime
 - Crypto.com INVALID_ORDERQTY spam — validate order quantity meets exchange minimum before sending to API
 - Crypto.com sub-minimum $0.05 orders — remaining budget "last order" logic now requires budget >= minOrderSize

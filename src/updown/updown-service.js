@@ -230,7 +230,7 @@ const createUpDownService = (io, deps) => {
       // Only record directional changes (BUY→SELL, SELL→BUY, etc.) — skip NEUTRAL
       // and deduplicate consecutive same-type signals
       const lastRecorded = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1].type : null;
-      if (result.type !== 'NEUTRAL' && result.type !== lastRecorded) {
+      if (result.type !== 'NEUTRAL' && result.type !== 'NO_TRADE_ZONE' && result.type !== lastRecorded) {
         signalHistory.push({
           type: result.type,
           score: result.score,

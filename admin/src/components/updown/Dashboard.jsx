@@ -47,11 +47,13 @@ export default function UpDownDashboard() {
       // Seed signal annotations from backend history on first load
       if (!seededRef.current && data.signalHistory?.length) {
         seededRef.current = true
-        setSignalAnnotations(data.signalHistory.map(s => ({
-          timestamp: s.timestamp,
-          type: s.type,
-          score: s.score ?? 0,
-        })))
+        setSignalAnnotations(data.signalHistory
+          .filter(s => s.type !== 'NEUTRAL' && s.type !== 'NO_TRADE_ZONE')
+          .map(s => ({
+            timestamp: s.timestamp,
+            type: s.type,
+            score: s.score ?? 0,
+          })))
       }
     }
     setLoading(false)
@@ -70,7 +72,7 @@ export default function UpDownDashboard() {
     prevSignalRef.current = signal.type
 
     // Record directional changes only (skip NEUTRAL, deduplicate consecutive same-type)
-    if (signal.type !== 'NEUTRAL') {
+    if (signal.type !== 'NEUTRAL' && signal.type !== 'NO_TRADE_ZONE') {
       setSignalAnnotations(prev => {
         const lastType = prev.length > 0 ? prev[prev.length - 1].type : null
         if (signal.type === lastType) return prev

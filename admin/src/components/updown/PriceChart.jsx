@@ -110,6 +110,7 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
         defaultRange="52w"
         overlays={['bollinger']}
         subCharts={[]}
+        signalAnnotations={signalAnnotations}
         height={180}
         headerLabel={<><span className="text-white font-bold">1W:</span> <span className={weeklyColor}>{weeklyLabel}</span></>}
       />

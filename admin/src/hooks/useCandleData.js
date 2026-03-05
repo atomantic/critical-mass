@@ -156,7 +156,6 @@ const emptyBucket = (time, price) => ({
 const SIGNAL_PRIORITY = {
   STRONG_BUY: 5, STRONG_SELL: 5,
   BUY: 4, SELL: 4,
-  NO_TRADE_ZONE: 3,
 }
 
 const applySignalAnnotations = (map, annotations, bucketMs) => {
