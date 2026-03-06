@@ -139,6 +139,8 @@ export default function BTCPriceChart({
 
   signalAnnotations,
 
+  maxBucketsOverride,
+
   height = 260,
   className,
   headerLabel,
@@ -149,10 +151,10 @@ export default function BTCPriceChart({
   const isIntervalMode = !!defaultInterval
   const hookOptions = useMemo(() => {
     if (defaultInterval) {
-      return { defaultInterval, defaultRange, signalAnnotations }
+      return { defaultInterval, defaultRange, signalAnnotations, maxBucketsOverride }
     }
-    return { views: customViews || DEFAULT_VIEWS, defaultView, signalAnnotations }
-  }, [defaultInterval, defaultRange, customViews, defaultView, signalAnnotations])
+    return { views: customViews || DEFAULT_VIEWS, defaultView, signalAnnotations, maxBucketsOverride }
+  }, [defaultInterval, defaultRange, customViews, defaultView, signalAnnotations, maxBucketsOverride])
 
   const {
     chartData, view, setView, isLoading, viewConfig, views,

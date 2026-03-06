@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import BTCPriceChart from '../charts/BTCPriceChart'
 import { formatBTCPrice } from '../charts/chartUtils'
 
@@ -40,7 +40,15 @@ const WEEKLY_SIGNAL_COLORS = {
   neutral: 'text-gray-400',
 }
 
+const CANDLE_COUNT_OPTIONS = [
+  { label: 'Auto', value: null },
+  { label: '50', value: 50 },
+  { label: '100', value: 100 },
+  { label: '300', value: 300 },
+]
+
 export default function PriceChart({ tick, indicators, contract, signalAnnotations }) {
+  const [candleCount, setCandleCount] = useState(null)
   const referenceLines = useMemo(() => {
     const lines = []
     if (contract?.target) {
@@ -86,6 +94,7 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
         subCharts={[]}
         referenceLines={tf.interval === '5m' ? referenceLines : []}
         signalAnnotations={signalAnnotations}
+        maxBucketsOverride={candleCount}
         height={220}
         headerLabel={<><span className="text-white font-bold">{label}:</span> <span className={signalColor}>{signalLabel}</span></>}
       />
@@ -98,6 +107,21 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
 
   return (
     <div className="space-y-2">
+      {/* Candle count selector */}
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-gray-500">Candles:</span>
+        {CANDLE_COUNT_OPTIONS.map(opt => (
+          <button
+            key={opt.label}
+            onClick={() => setCandleCount(opt.value)}
+            className={`px-2 py-0.5 text-xs rounded transition-colors ${
+              candleCount === opt.value ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
       {/* Weekly macro chart banner */}
       <BTCPriceChart
         exchange="coinbase"
@@ -111,6 +135,7 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
         overlays={['bollinger']}
         subCharts={[]}
         signalAnnotations={signalAnnotations}
+        maxBucketsOverride={candleCount}
         height={180}
         headerLabel={<><span className="text-white font-bold">1W:</span> <span className={weeklyColor}>{weeklyLabel}</span></>}
       />
