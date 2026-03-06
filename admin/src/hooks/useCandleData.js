@@ -149,6 +149,7 @@ const emptyBucket = (time, price) => ({
  * @param {string} [options.defaultView] - initial view key (defaults to '1d')
  * @param {string} [options.defaultInterval] - initial bar interval for interval/range mode
  * @param {string} [options.defaultRange] - initial time range for interval/range mode
+ * @param {number} [options.maxBucketsOverride] - override maxBuckets (candle count) for display
  */
 /**
  * Merge signal change annotations into bucket map by matching timestamps to nearest bucket key.
@@ -218,6 +219,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const { bucketMs, maxBuckets, candleTf, indicatorTf } = useMemo(() => {
     if (legacyMode) {
       const vc = views[view] || views[viewKeys[0]]
+      if (options.maxBucketsOverride) return { ...vc, maxBuckets: options.maxBucketsOverride }
       return vc
     }
     const barCfg = BAR_INTERVALS[interval] || BAR_INTERVALS['5m']
@@ -225,11 +227,11 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     const rangeCfg = ranges.find(r => r.key === timeRange) || ranges[0]
     return {
       bucketMs: barCfg.intervalMs,
-      maxBuckets: rangeCfg?.maxBuckets || 60,
+      maxBuckets: options.maxBucketsOverride || rangeCfg?.maxBuckets || 60,
       candleTf: barCfg.candleTf,
       indicatorTf: barCfg.candleTf,
     }
-  }, [legacyMode, views, view, viewKeys, interval, timeRange])
+  }, [legacyMode, views, view, viewKeys, interval, timeRange, options.maxBucketsOverride])
 
   const [chartData, setChartData] = useState([])
   const [isLoading, setIsLoading] = useState(true)
