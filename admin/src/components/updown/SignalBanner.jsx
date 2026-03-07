@@ -54,11 +54,12 @@ const getHorizonArrow = (score) => {
 }
 
 export default function SignalBanner({ signal, indicators, timeRemaining }) {
-  // Prefer live values from indicators (updated every 5s) over stale signal (only on type change)
-  const type = indicators?.type || signal?.type || 'NEUTRAL'
+  // Show loading state until live indicators arrive to avoid displaying stale signals
+  const liveReady = !!indicators?.type || !!indicators?.timeframes
+  const type = liveReady ? (indicators?.type || signal?.type || 'NEUTRAL') : null
   const score = indicators?.score ?? signal?.score ?? 0
   const confidence = indicators?.confidence ?? signal?.confidence ?? 0
-  const Icon = SIGNAL_ICONS[type] || Minus
+  const Icon = type ? (SIGNAL_ICONS[type] || Minus) : Clock
 
   const trendFilter = indicators?.trendFilter
   const volatility = indicators?.volatility
@@ -78,11 +79,11 @@ export default function SignalBanner({ signal, indicators, timeRemaining }) {
     ]
   }, [indicators?.timeframes])
 
-  const actionLabel = getActionLabel(score, type)
+  const actionLabel = type ? getActionLabel(score, type) : 'CALCULATING...'
   const confPct = Math.max(0, Math.min(100, confidence * 100))
-  const bannerColor = BANNER_COLORS[type] || BANNER_COLORS.NEUTRAL
-  const labelColor = LABEL_COLORS[type] || LABEL_COLORS.NEUTRAL
-  const barColor = CONFIDENCE_BAR_COLORS[type] || CONFIDENCE_BAR_COLORS.NEUTRAL
+  const bannerColor = type ? (BANNER_COLORS[type] || BANNER_COLORS.NEUTRAL) : 'bg-gray-800 border-gray-600/40'
+  const labelColor = type ? (LABEL_COLORS[type] || LABEL_COLORS.NEUTRAL) : 'text-gray-500'
+  const barColor = type ? (CONFIDENCE_BAR_COLORS[type] || CONFIDENCE_BAR_COLORS.NEUTRAL) : 'bg-gray-600'
 
   const hasTime = Number.isFinite(timeRemaining) && timeRemaining > 0
 
