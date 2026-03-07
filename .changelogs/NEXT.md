@@ -30,6 +30,8 @@
 
 ## Fixed
 
+- Signal history now sorted newest-first — API results were displayed in arbitrary order
+- Signal panel and banner show "CALCULATING..." loading state until live indicators arrive, preventing false BUY/SELL display from stale cached signals on page load
 - NEUTRAL and NTZ (NO_TRADE_ZONE) annotations no longer render on price charts — only BUY/SELL markers shown
 - NTZ entries filtered from signal history recording (backend + frontend seed + live tracking)
 - Weekly macro chart now receives signal annotations (was the only chart missing them)

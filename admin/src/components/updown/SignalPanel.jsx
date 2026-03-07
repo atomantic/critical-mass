@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Signal } from 'lucide-react'
+import { Signal, Minus } from 'lucide-react'
 import { signalBadgeColors, getSignalIcon } from '../../constants/signals'
 
 function ConfidenceBar({ value }) {
@@ -32,17 +32,18 @@ export default function SignalPanel({ signal, indicators }) {
     fetch('/api/updown/signals')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (data?.signals) setHistory(data.signals.slice(0, 50))
+        if (data?.signals) setHistory(data.signals.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 50))
       })
       .catch(() => {})
   }, [])
 
-  // Prefer live values from indicators (updated every 5s) over stale signal (only on type change)
-  const type = indicators?.type || signal?.type || 'NEUTRAL'
+  // Show loading state until live indicators arrive to avoid displaying stale signals
+  const liveReady = !!indicators?.type || !!indicators?.timeframes
+  const type = liveReady ? (indicators?.type || signal?.type || 'NEUTRAL') : null
   const liveScore = indicators?.score ?? signal?.score
   const liveConfidence = indicators?.confidence ?? signal?.confidence
-  const colors = signalBadgeColors[type] || signalBadgeColors.NEUTRAL
-  const Icon = getSignalIcon(type)
+  const colors = type ? (signalBadgeColors[type] || signalBadgeColors.NEUTRAL) : 'bg-gray-500/10 border-gray-500/20 text-gray-500'
+  const Icon = type ? getSignalIcon(type) : Minus
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -56,13 +57,13 @@ export default function SignalPanel({ signal, indicators }) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Icon size={18} />
-            <span className="text-lg font-bold">{type.replace(/_/g, ' ')}</span>
+            <span className="text-lg font-bold">{type ? type.replace(/_/g, ' ') : 'CALCULATING...'}</span>
           </div>
-          {liveConfidence != null && (
+          {type && liveConfidence != null && (
             <span className="text-sm font-mono">{(liveConfidence * 100).toFixed(0)}%</span>
           )}
         </div>
-        {liveConfidence != null && (
+        {type && liveConfidence != null && (
           <div className="mt-2">
             <ConfidenceBar value={liveConfidence} />
           </div>
