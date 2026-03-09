@@ -41,6 +41,7 @@
 - Crypto.com cash balance showing $0 in UI — exchange status endpoint now extracts quote currency from productId instead of hardcoding USDC
 - Expired contract no longer triggers permanent NO_TRADE_ZONE — past-expiry contracts treated as no-contract
 - ADX weight drift bug — removed mutating weight shift block that decayed MACD/momentum weights exponentially over cycles
+- UpDown SignalBanner crash (`Cannot read properties of null`) when live indicators haven't loaded yet — null-guarded `type.replace()` call
 
 ## Removed
 

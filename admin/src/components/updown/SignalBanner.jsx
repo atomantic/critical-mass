@@ -91,7 +91,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining }) {
     <div className={`rounded-lg border p-3 transition-colors duration-500 ${bannerColor}`}>
       <div className="flex items-center gap-4 flex-wrap">
         {/* Left: Signal + action label + confidence */}
-        <div className="flex items-center gap-3 min-w-0" title={`Composite score: ${score.toFixed(1)} — Signal: ${type.replace(/_/g, ' ')}`}>
+        <div className="flex items-center gap-3 min-w-0" title={`Composite score: ${score.toFixed(1)} — Signal: ${(type || 'LOADING').replace(/_/g, ' ')}`}>
           <Icon size={22} className={labelColor} />
           <span className={`text-lg font-bold whitespace-nowrap ${labelColor}`}>
             {actionLabel}
