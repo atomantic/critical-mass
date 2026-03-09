@@ -3,7 +3,6 @@ import BTCPriceChart from '../charts/BTCPriceChart'
 import { formatBTCPrice } from '../charts/chartUtils'
 
 const LEFT_TFS = [
-  { interval: '1m', range: '1h' },
   { interval: '3m', range: '3h' },
   { interval: '5m', range: '6h' },
   { interval: '10m', range: '12h' },
@@ -42,7 +41,6 @@ const WEEKLY_SIGNAL_COLORS = {
 
 const CANDLE_COUNT_OPTIONS = [
   { label: 'Auto', value: null },
-  { label: '50', value: 50 },
   { label: '100', value: 100 },
   { label: '300', value: 300 },
 ]
@@ -122,7 +120,17 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
           </button>
         ))}
       </div>
-      {/* Weekly macro chart banner */}
+      {/* 1-minute chart — full width */}
+      {renderChart({ interval: '1m', range: '1h' })}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-2">
+          {LEFT_TFS.map(renderChart)}
+        </div>
+        <div className="space-y-2">
+          {RIGHT_TFS.map(renderChart)}
+        </div>
+      </div>
+      {/* Weekly macro chart — full width at bottom */}
       <BTCPriceChart
         exchange="coinbase"
         tickPrice={tick?.price}
@@ -135,18 +143,9 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
         overlays={['bollinger']}
         subCharts={[]}
         signalAnnotations={signalAnnotations}
-        maxBucketsOverride={candleCount}
         height={180}
         headerLabel={<><span className="text-white font-bold">1W:</span> <span className={weeklyColor}>{weeklyLabel}</span></>}
       />
-      <div className="grid grid-cols-2 gap-2">
-        <div className="space-y-2">
-          {LEFT_TFS.map(renderChart)}
-        </div>
-        <div className="space-y-2">
-          {RIGHT_TFS.map(renderChart)}
-        </div>
-      </div>
     </div>
   )
 }
