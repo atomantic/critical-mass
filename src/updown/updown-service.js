@@ -66,12 +66,10 @@ const createUpDownService = (io, deps) => {
     if (saved.position) position = saved.position;
     if (saved.signalHistory) {
       signalHistory.length = 0;
-      // Filter out NEUTRAL and deduplicate consecutive same-type signals
-      let lastType = null;
+      // Filter out NEUTRAL and NO_TRADE_ZONE — keep all directional signals
       for (const s of saved.signalHistory) {
-        if (s.type !== 'NEUTRAL' && s.type !== lastType) {
+        if (s.type !== 'NEUTRAL' && s.type !== 'NO_TRADE_ZONE') {
           signalHistory.push(s);
-          lastType = s.type;
         }
       }
       // Trim to max size
@@ -227,10 +225,9 @@ const createUpDownService = (io, deps) => {
     // Emit signal change event only when signal changes
     if (result.type !== lastSignal) {
       lastSignal = result.type;
-      // Only record directional changes (BUY→SELL, SELL→BUY, etc.) — skip NEUTRAL
-      // and deduplicate consecutive same-type signals
-      const lastRecorded = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1].type : null;
-      if (result.type !== 'NEUTRAL' && result.type !== 'NO_TRADE_ZONE' && result.type !== lastRecorded) {
+      // Record all directional signal changes — skip NEUTRAL and NO_TRADE_ZONE only
+      // (consecutive same-type is valid when NEUTRAL/NTZ gaps occur between them)
+      if (result.type !== 'NEUTRAL' && result.type !== 'NO_TRADE_ZONE') {
         signalHistory.push({
           type: result.type,
           score: result.score,

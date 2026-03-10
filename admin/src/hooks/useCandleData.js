@@ -165,9 +165,23 @@ const applySignalAnnotations = (map, annotations, bucketMs) => {
   if (!keys.length) return
 
   for (const ann of annotations) {
-    // Snap to the nearest bucket key
+    // Snap to the nearest bucket key (epoch-aligned first, then nearest match)
     const bKey = Math.floor(ann.timestamp / bucketMs) * bucketMs
-    const bucket = map.get(bKey)
+    let bucket = map.get(bKey)
+
+    // Fall back to nearest bucket key within one bucket width
+    // (handles 1d/1w charts where exchange boundaries differ from epoch multiples)
+    if (!bucket) {
+      let best = null, bestDist = Infinity
+      for (const k of keys) {
+        const dist = Math.abs(k - ann.timestamp)
+        if (dist < bestDist) { bestDist = dist; best = k }
+      }
+      if (best != null && bestDist <= bucketMs) {
+        bucket = map.get(best)
+      }
+    }
+
     if (bucket) {
       // Keep the highest-priority signal when multiple annotations land in the same bucket
       const existing = bucket.signalChange
