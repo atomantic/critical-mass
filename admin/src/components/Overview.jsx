@@ -97,13 +97,10 @@ function Overview() {
     const isRunning = status?.isRunning ?? false
     const isDryRun = status?.isDryRun ?? false
 
-    const coreAssetQty = position?.totalAssetQty ?? 0
-    const coreCostBasis = position?.totalCostBasis ?? 0
-    // Include celestial bodies in totals for display
-    const bodiesCostBasis = (celestial?.bodies || []).reduce((sum, b) => sum + (b.costBasis || 0), 0)
-    const bodiesAssetQty = (celestial?.bodies || []).reduce((sum, b) => sum + (b.assetQty || 0), 0)
-    const totalAssetQty = coreAssetQty + bodiesAssetQty
-    const totalCostBasis = coreCostBasis + bodiesCostBasis
+    // Server's syncPositionState already aggregates body values into totalAsset/totalCostBasis,
+    // so use them directly to avoid double-counting body costs
+    const totalAssetQty = position?.totalAsset ?? 0
+    const totalCostBasis = position?.totalCostBasis ?? 0
     const lastPrice = market?.lastPrice ?? 0
     // Use server-computed unrealizedPnL (accounts for celestial bodies with assets on order)
     const unrealizedPnL = position?.unrealizedPnL ?? 0
