@@ -3,7 +3,19 @@ import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from 'luci
 
 function fmt(v) {
   if (v == null) return '---'
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v)
+  const abs = Math.abs(v)
+  // Compact format: $1.6K instead of $1,573.31 to fit narrow panels
+  if (abs >= 1000) {
+    return (v < 0 ? '-' : '') + '$' + (abs / 1000).toFixed(1).replace(/\.0$/, '') + 'K'
+  }
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v)
+}
+
+function fmtDate(d) {
+  if (!d) return '---'
+  // "Mar 9" instead of "2026-03-09"
+  const dt = new Date(d + 'T00:00:00')
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 function evalSum(str) {
@@ -112,26 +124,26 @@ export default function TradeHistory() {
 
       {/* P&L Summary */}
       {summary && (<>
-        <div className="grid grid-cols-4 gap-2 mb-3 text-xs">
-          <div className="bg-gray-900 rounded px-2 py-1.5">
-            <div className="text-gray-500">Total P&L</div>
+        <div className="grid grid-cols-2 gap-1.5 mb-2 text-xs">
+          <div className="bg-gray-900 rounded px-2 py-1">
+            <div className="text-gray-500 text-[10px]">P&L</div>
             <div className={`font-mono font-semibold ${pnlColor(summary.totalPnl)}`}>
               {summary.totalPnl >= 0 ? '+' : ''}{fmt(summary.totalPnl)}
             </div>
           </div>
-          <div className="bg-gray-900 rounded px-2 py-1.5">
-            <div className="text-gray-500">Total Cost</div>
+          <div className="bg-gray-900 rounded px-2 py-1">
+            <div className="text-gray-500 text-[10px]">Win Rate</div>
+            <div className="font-mono font-medium text-white">
+              {winRate}% <span className="text-gray-600 text-[10px]">{summary.wins}W/{summary.losses}L</span>
+            </div>
+          </div>
+          <div className="bg-gray-900 rounded px-2 py-1">
+            <div className="text-gray-500 text-[10px]">Cost</div>
             <div className="font-mono font-medium text-white">{fmt(summary.totalCost)}</div>
           </div>
-          <div className="bg-gray-900 rounded px-2 py-1.5">
-            <div className="text-gray-500">Total Return</div>
+          <div className="bg-gray-900 rounded px-2 py-1">
+            <div className="text-gray-500 text-[10px]">Return</div>
             <div className="font-mono font-medium text-white">{fmt(summary.totalReturn)}</div>
-          </div>
-          <div className="bg-gray-900 rounded px-2 py-1.5">
-            <div className="text-gray-500">Win Rate</div>
-            <div className="font-mono font-medium text-white">
-              {winRate}% <span className="text-gray-500">({summary.wins}W / {summary.losses}L)</span>
-            </div>
           </div>
         </div>
         {(summary.upCount > 0 || summary.downCount > 0) && (
@@ -264,31 +276,29 @@ export default function TradeHistory() {
           <table className="w-full text-xs">
             <thead>
               <tr className="text-gray-500 border-b border-gray-700">
-                <th className="text-left py-1.5 pr-2">Date</th>
-                <th className="text-right py-1.5 px-2">Cost</th>
-                <th className="text-right py-1.5 px-2">Return</th>
-                <th className="text-right py-1.5 px-2">P&L</th>
-                <th className="text-left py-1.5 px-2">Note</th>
-                <th className="py-1.5 pl-2 w-14"></th>
+                <th className="text-left py-1 pr-1">Date</th>
+                <th className="text-right py-1 px-1">Cost</th>
+                <th className="text-right py-1 px-1">Ret</th>
+                <th className="text-right py-1 px-1">P&L</th>
+                <th className="py-1 pl-1 w-10"></th>
               </tr>
             </thead>
             <tbody>
               {[...trades].reverse().map(t => (
-                <tr key={t.id} className="border-b border-gray-700/50 hover:bg-gray-700/20">
-                  <td className="py-1.5 pr-2 text-gray-300">{t.date}</td>
-                  <td className="py-1.5 px-2 text-right font-mono text-gray-300">{fmt(t.cost)}</td>
-                  <td className="py-1.5 px-2 text-right font-mono text-gray-300">{fmt(t.returnAmount)}</td>
-                  <td className={`py-1.5 px-2 text-right font-mono font-medium ${pnlColor(t.pnl)}`}>
+                <tr key={t.id} className="border-b border-gray-700/50 hover:bg-gray-700/20" title={t.note || undefined}>
+                  <td className="py-1 pr-1 text-gray-300 whitespace-nowrap">{fmtDate(t.date)}</td>
+                  <td className="py-1 px-1 text-right font-mono text-gray-300">{fmt(t.cost)}</td>
+                  <td className="py-1 px-1 text-right font-mono text-gray-300">{fmt(t.returnAmount)}</td>
+                  <td className={`py-1 px-1 text-right font-mono font-medium whitespace-nowrap ${pnlColor(t.pnl)}`}>
                     {t.pnl >= 0 ? '+' : ''}{fmt(t.pnl)}
                   </td>
-                  <td className="py-1.5 px-2 text-gray-500 max-w-[120px] truncate" title={t.note}>{t.note}</td>
-                  <td className="py-1.5 pl-2">
-                    <div className="flex gap-1">
+                  <td className="py-1 pl-1">
+                    <div className="flex gap-0.5">
                       <button onClick={() => handleEdit(t)} className="text-gray-500 hover:text-blue-400 transition-colors" title="Edit">
-                        <Edit3 size={12} />
+                        <Edit3 size={11} />
                       </button>
                       <button onClick={() => handleDelete(t.id)} className="text-gray-500 hover:text-red-400 transition-colors" title="Delete">
-                        <Trash2 size={12} />
+                        <Trash2 size={11} />
                       </button>
                     </div>
                   </td>
