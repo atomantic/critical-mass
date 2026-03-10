@@ -71,11 +71,9 @@ export default function UpDownDashboard() {
     if (signal.type === prevSignalRef.current) return
     prevSignalRef.current = signal.type
 
-    // Record directional changes only (skip NEUTRAL, deduplicate consecutive same-type)
+    // Record all directional changes (skip NEUTRAL and NO_TRADE_ZONE only)
     if (signal.type !== 'NEUTRAL' && signal.type !== 'NO_TRADE_ZONE') {
       setSignalAnnotations(prev => {
-        const lastType = prev.length > 0 ? prev[prev.length - 1].type : null
-        if (signal.type === lastType) return prev
         const entry = { timestamp: signal.timestamp || Date.now(), type: signal.type, score: signal.score ?? 0 }
         return [...prev, entry].slice(-100)
       })
@@ -237,6 +235,7 @@ export default function UpDownDashboard() {
           <PriceChart
             tick={tick}
             indicators={indicators}
+            weeklyTrend={rawIndicators?.weeklyTrend}
             contract={status?.contract}
             signalAnnotations={signalAnnotations}
           />
