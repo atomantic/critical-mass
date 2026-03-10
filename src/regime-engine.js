@@ -1595,14 +1595,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }
     }
 
-    // Update unrealized P&L (core position + active celestial bodies)
+    // Update unrealized P&L — syncPositionState already aggregates body values
+    // into totalAsset/totalCostBasis, so use them directly (no body loop needed)
     {
-      let totalHeldBtc = positionState.totalAsset || 0;
-      let totalHeldCost = positionState.totalCostBasis || 0;
-      for (const body of (positionState.celestialBodies || [])) {
-        totalHeldBtc += body.assetQty || 0;
-        totalHeldCost += body.costBasis || 0;
-      }
+      const totalHeldBtc = positionState.totalAsset || 0;
+      const totalHeldCost = positionState.totalCostBasis || 0;
       positionState.unrealizedPnL = totalHeldBtc > 0 ? (totalHeldBtc * data.price) - totalHeldCost : 0;
     }
 
