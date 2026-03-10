@@ -45,7 +45,7 @@ const CANDLE_COUNT_OPTIONS = [
   { label: '300', value: 300 },
 ]
 
-export default function PriceChart({ tick, indicators, contract, signalAnnotations }) {
+export default function PriceChart({ tick, indicators, weeklyTrend, contract, signalAnnotations }) {
   const [candleCount, setCandleCount] = useState(null)
   const referenceLines = useMemo(() => {
     const lines = []
@@ -99,7 +99,7 @@ export default function PriceChart({ tick, indicators, contract, signalAnnotatio
     )
   }
 
-  const weeklyBias = indicators?.weeklyTrend?.weeklyBias || 'neutral'
+  const weeklyBias = weeklyTrend?.weeklyBias || 'neutral'
   const weeklyColor = WEEKLY_SIGNAL_COLORS[weeklyBias] || WEEKLY_SIGNAL_COLORS.neutral
   const weeklyLabel = weeklyBias.toUpperCase()
 
