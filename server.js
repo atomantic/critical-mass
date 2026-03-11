@@ -295,13 +295,13 @@ app.get('/api/health', async (req, res) => {
 // ============ Static Files ============
 
 // Catch-all for unhandled API routes — return JSON 404 instead of falling through to HTML
-app.all('/api/*', (req, res) => {
+app.all('/api/*splat', (req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
 app.use(express.static(path.join(__dirname, 'admin', 'dist')));
 
-app.get('*', (req, res) => {
+app.get('*splat', (req, res) => {
   const indexPath = path.join(__dirname, 'admin', 'dist', 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
