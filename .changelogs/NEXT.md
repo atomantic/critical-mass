@@ -2,6 +2,9 @@
 
 ## Added
 
+- Inline capital adjustment UI — click "Available" in APY panel to edit deposited & max capital directly from dashboard
+- Express wildcard routes updated to named `*splat` syntax for Express v5 compatibility
+
 - Signal annotations (BUY/SELL/NTZ markers) now display on all UpDown timeframe charts, not just the 5m chart
 - Signal history seeded from backend on page load — annotations survive refresh
 - Signal deduplication — history only records directional transitions (BUY→SELL, SELL→NTZ, etc.), not repeated same-type signals or NEUTRAL noise

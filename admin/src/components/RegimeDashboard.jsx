@@ -426,6 +426,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [ladderEdits, setLadderEdits] = useState(null)
   const [placingLadder, setPlacingLadder] = useState(false)
   const [cancellingLadder, setCancellingLadder] = useState(false)
+  const [capitalAdjustMode, setCapitalAdjustMode] = useState(false)
+  const [capitalAdjustValue, setCapitalAdjustValue] = useState('')
+  const [capitalAdjusting, setCapitalAdjusting] = useState(false)
   const prevPriceRef = useRef(null)
   const { addToast } = useToast()
 
@@ -749,6 +752,45 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const apy = status?.apy || {}
   const tpOptimizer = status?.tpOptimizer || {}
   const sizeOptimizer = status?.sizeOptimizer || {}
+
+  const handleCapitalAdjust = async () => {
+    const newAvailable = parseFloat(capitalAdjustValue)
+    if (isNaN(newAvailable) || newAvailable < 0) {
+      addToast({ type: 'error', title: 'Invalid Amount', message: 'Enter a valid positive number' })
+      return
+    }
+    const currentAvailable = apy.availableCapital || 0
+    const delta = newAvailable - currentAvailable
+    if (Math.abs(delta) < 0.01) {
+      setCapitalAdjustMode(false)
+      return
+    }
+    const currentDeposited = apy.depositedCapital || apy.originalCapital || apy.initialCapital || 0
+    const currentMax = apy.maxUsdcDeployed || apy.currentCapital || 0
+    const updates = {
+      depositedCapital: Math.max(0, currentDeposited + delta),
+      maxUsdcDeployed: Math.max(0, currentMax + delta),
+    }
+    setCapitalAdjusting(true)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      })
+      const data = await res.json()
+      if (data.success) {
+        addToast({ type: 'success', title: 'Capital Adjusted', message: `${delta >= 0 ? '+' : ''}$${delta.toLocaleString()} applied to deposited & max` })
+        await Promise.all([fetchConfig(), fetchStatus()])
+      } else {
+        addToast({ type: 'error', title: 'Adjust Failed', message: data.errors?.join(', ') || 'Unknown error' })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Adjust Failed', message: err.message })
+    }
+    setCapitalAdjusting(false)
+    setCapitalAdjustMode(false)
+  }
 
   return (
     <div className="space-y-6">
@@ -1525,7 +1567,49 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-gray-500 mb-2">
                     <span>Deposited: ${(apy.depositedCapital || apy.originalCapital || apy.initialCapital)?.toLocaleString()}</span>
                     <span className="text-green-400">Max: ${(apy.maxUsdcDeployed || apy.currentCapital)?.toLocaleString()}</span>
-                    <span className="text-cyan-400">Available: ${apy.availableCapital?.toLocaleString()}</span>
+                    {capitalAdjustMode ? (
+                      <span className="inline-flex items-center gap-1">
+                        <span className="text-cyan-400">Available: $</span>
+                        <input
+                          type="number"
+                          className="w-24 bg-gray-700 border border-cyan-500 rounded px-1 py-0.5 text-cyan-400 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                          value={capitalAdjustValue}
+                          onChange={(e) => setCapitalAdjustValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleCapitalAdjust()
+                            if (e.key === 'Escape') setCapitalAdjustMode(false)
+                          }}
+                          autoFocus
+                          disabled={capitalAdjusting}
+                        />
+                        <button
+                          onClick={handleCapitalAdjust}
+                          disabled={capitalAdjusting}
+                          className="text-green-400 hover:text-green-300 disabled:opacity-50"
+                          title="Apply"
+                        >
+                          {capitalAdjusting ? '...' : '\u2713'}
+                        </button>
+                        <button
+                          onClick={() => setCapitalAdjustMode(false)}
+                          className="text-gray-500 hover:text-gray-300"
+                          title="Cancel"
+                        >
+                          \u2717
+                        </button>
+                      </span>
+                    ) : (
+                      <span
+                        className="text-cyan-400 cursor-pointer hover:underline"
+                        onClick={() => {
+                          setCapitalAdjustValue(String(Math.round(apy.availableCapital || 0)))
+                          setCapitalAdjustMode(true)
+                        }}
+                        title="Click to adjust available capital (updates deposited & max)"
+                      >
+                        Available: ${apy.availableCapital?.toLocaleString()}
+                      </span>
+                    )}
                     <span>Running: {apy.elapsedDays?.toFixed(1)}d</span>
                     <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
                   </div>
