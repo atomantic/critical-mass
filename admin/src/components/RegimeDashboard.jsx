@@ -1409,7 +1409,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
             )}
 
             {/* Position */}
-            <div className="bg-gray-800 rounded-lg p-4">
+            <div className="bg-gray-800 rounded-lg p-4 overflow-hidden">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-medium text-gray-400">Position</h3>
                 <div className="flex items-center gap-2">
@@ -1418,47 +1418,47 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-                <div>
+                <div className="min-w-0">
                   <div className="text-gray-500">{asset} Held</div>
-                  <div className="text-orange-400 font-mono">{position.totalAsset?.toFixed(8) || '0'}</div>
+                  <div className="text-orange-400 font-mono truncate">{position.totalAsset?.toFixed(8) || '0'}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-gray-500">On Order</div>
-                  <div className="text-yellow-400 font-mono">{(isDryRun && dryRunState?.pnl?.assetOnOrder ? dryRunState.pnl.assetOnOrder : position.assetOnOrder || 0).toFixed(8)}</div>
+                  <div className="text-yellow-400 font-mono truncate">{(isDryRun && dryRunState?.pnl?.assetOnOrder ? dryRunState.pnl.assetOnOrder : position.assetOnOrder || 0).toFixed(8)}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-gray-500">Reserves</div>
-                  <div className="text-cyan-400 font-mono">{(position.realizedAssetPnL || 0).toFixed(8)}</div>
+                  <div className="text-cyan-400 font-mono truncate">{(position.realizedAssetPnL || 0).toFixed(8)}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-gray-500">Cost Basis</div>
-                  <div className="text-white font-mono">${position.totalCostBasis?.toFixed(2) || '0'}</div>
+                  <div className="text-white font-mono truncate">${position.totalCostBasis?.toFixed(2) || '0'}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-gray-500">Avg Cost</div>
-                  <div className="text-white font-mono">${formatPrice(position.avgCostBasis)}</div>
+                  <div className="text-white font-mono truncate">${formatPrice(position.avgCostBasis)}</div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-gray-500">Cycles</div>
                   <div className="text-white font-mono">{position.cyclesCompleted || 0}</div>
                 </div>
               </div>
               <div className="mt-2 pt-2 border-t border-gray-700 grid grid-cols-2 gap-2 text-xs">
-                <div className="bg-gray-900/50 rounded p-2">
+                <div className="bg-gray-900/50 rounded p-2 min-w-0">
                   <div className="text-gray-500">Unrealized P&L</div>
                   <div className={`font-mono text-base ${position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     ${position.unrealizedPnL?.toFixed(2) || '0'}
                   </div>
                 </div>
-                <div className="bg-gray-900/50 rounded p-2">
-                  <div className="text-gray-500">Realized P&L {apy.totalLiquidValuePercent ? `(${apy.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
+                <div className="bg-gray-900/50 rounded p-2 min-w-0">
+                  <div className="text-gray-500 truncate">Realized P&L {apy.totalLiquidValuePercent ? `(${apy.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
                   <div className={`font-mono text-base ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     ${position.realizedPnL?.toFixed(2) || '0'}
-                    {(position.realizedAssetPnL || 0) > 0 && <span className="text-orange-400 text-xs ml-1">+{position.realizedAssetPnL?.toFixed(8)} {asset}</span>}
-                    {apy.totalLiquidValue !== undefined && (
-                      <span className="text-white text-xs ml-1">= <span className="text-cyan-400">${apy.totalLiquidValue?.toFixed(2)}</span></span>
-                    )}
                   </div>
+                  {(position.realizedAssetPnL || 0) > 0 && <div className="text-orange-400 text-xs font-mono truncate">+{position.realizedAssetPnL?.toFixed(8)} {asset}</div>}
+                  {apy.totalLiquidValue !== undefined && (
+                    <div className="text-xs font-mono"><span className="text-cyan-400">{asset}</span> <span className="text-white">= ${apy.totalLiquidValue?.toFixed(2)}</span></div>
+                  )}
                 </div>
               </div>
 
@@ -1564,7 +1564,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               {/* APY & Returns Section */}
               {apy.engineStartTime && (
                 <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-gray-500 mb-2">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-500 mb-2">
                     <span>Deposited: ${(apy.depositedCapital || apy.originalCapital || apy.initialCapital)?.toLocaleString()}</span>
                     <span className="text-green-400">Max: ${(apy.maxUsdcDeployed || apy.currentCapital)?.toLocaleString()}</span>
                     {capitalAdjustMode ? (
@@ -1614,18 +1614,18 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     <span>{apy.cyclesPerDay?.toFixed(1)} cycles/day</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5">
+                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5 min-w-0">
                       <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
-                      <div className="flex flex-col font-mono text-xs">
-                        <span className="text-green-400">${(apy.estimatedDailyUsdc || 0).toFixed(2)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
+                      <div className="flex flex-col font-mono text-xs min-w-0">
+                        <span className="text-green-400 truncate">${(apy.estimatedDailyUsdc || 0).toFixed(2)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
                         <span className="text-green-400">= ${((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)).toFixed(2)}</span>
                       </div>
                     </div>
-                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5">
+                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5 min-w-0">
                       <div className="text-cyan-400/70 text-[10px]">Annual ({(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}% APY)</div>
-                      <div className="flex flex-col font-mono text-xs">
-                        <span className="text-green-400">${((apy.estimatedDailyUsdc || 0) * 365).toFixed(2)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
-                        <span className="text-cyan-400">= ${(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365).toFixed(2)}</span>
+                      <div className="flex flex-col font-mono text-xs min-w-0">
+                        <span className="text-green-400 truncate">${((apy.estimatedDailyUsdc || 0) * 365).toFixed(2)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
+                        <span className="text-cyan-400 truncate">= ${(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365).toFixed(2)}</span>
                       </div>
                     </div>
                   </div>
@@ -1636,10 +1636,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 <div className="mt-3 pt-3 border-t border-gray-700 text-xs">
                   <div className="text-purple-400 mb-1">Dry-Run Stats</div>
                   <div className="grid grid-cols-2 gap-2 text-gray-400">
-                    <div>Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(8) || 0} {asset}</div>
-                    <div>Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(8) || 0} {asset}</div>
-                    <div>{asset} on Order: <span className="text-yellow-400">{dryRunState.pnl.assetOnOrder?.toFixed(8) || 0}</span></div>
-                    <div>{asset} Reserves: <span className="text-cyan-400">{position.realizedAssetPnL?.toFixed(8) || 0}</span></div>
+                    <div className="min-w-0 truncate">Simulated Buys: {dryRunState.pnl.totalBought?.toFixed(8) || 0} {asset}</div>
+                    <div className="min-w-0 truncate">Simulated Sells: {dryRunState.pnl.totalSold?.toFixed(8) || 0} {asset}</div>
+                    <div className="min-w-0 truncate">{asset} on Order: <span className="text-yellow-400">{dryRunState.pnl.assetOnOrder?.toFixed(8) || 0}</span></div>
+                    <div className="min-w-0 truncate">{asset} Reserves: <span className="text-cyan-400">{position.realizedAssetPnL?.toFixed(8) || 0}</span></div>
                     <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
                     <div>Avg Entry: ${formatPrice(dryRunState.pnl.avgEntryPrice)}</div>
                   </div>
