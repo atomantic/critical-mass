@@ -913,6 +913,66 @@ const updateBackupConfig = (updates) => {
 };
 
 /**
+ * Default sentinel configuration
+ */
+const SENTINEL_DEFAULTS = {
+  enabled: false,
+  pollIntervalMs: 300000,
+  maxAlerts: 200,
+  aiClassification: { enabled: true, maxPerHour: 10 },
+  feeds: [
+    { name: 'Federal Reserve', url: 'https://www.federalreserve.gov/feeds/press_all.xml', enabled: true },
+    { name: 'CNBC Economy', url: 'https://www.cnbc.com/id/20910258/device/rss/rss.html', enabled: true },
+  ],
+  keywords: {
+    critical: ['rate cut', 'rate hike', 'emergency', 'FOMC decision', 'quantitative easing', 'quantitative tightening', 'war declared', 'nuclear'],
+    warning: ['FOMC', 'inflation', 'CPI', 'unemployment', 'tariff', 'sanctions', 'Iran', 'geopolitical', 'fed funds'],
+    info: ['fed speech', 'treasury', 'GDP', 'economic data'],
+  },
+};
+
+/**
+ * Get sentinel configuration with defaults
+ * @returns {Object} Sentinel config
+ */
+const getSentinelConfig = () => {
+  const config = loadConfig();
+  const sentinel = config.global?.sentinel || {};
+  return {
+    ...SENTINEL_DEFAULTS,
+    ...sentinel,
+    aiClassification: { ...SENTINEL_DEFAULTS.aiClassification, ...sentinel.aiClassification },
+    keywords: { ...SENTINEL_DEFAULTS.keywords, ...sentinel.keywords },
+    feeds: sentinel.feeds || SENTINEL_DEFAULTS.feeds,
+  };
+};
+
+/**
+ * Update sentinel configuration
+ * @param {Object} updates - Sentinel config updates
+ * @returns {Object} Updated full configuration
+ */
+const updateSentinelConfig = (updates) => {
+  const config = loadConfig();
+  const current = config.global?.sentinel || {};
+
+  config.global = config.global || {};
+  config.global.sentinel = {
+    ...current,
+    ...updates,
+    aiClassification: updates.aiClassification
+      ? { ...current.aiClassification, ...updates.aiClassification }
+      : current.aiClassification,
+    keywords: updates.keywords
+      ? { ...current.keywords, ...updates.keywords }
+      : current.keywords,
+  };
+
+  saveConfig(config);
+  return config;
+};
+
+/**
  * Get Kalshi configuration
  * Reads the top-level kalshi section from config.json
  * @returns {{ enabled: boolean }}
@@ -1049,6 +1109,10 @@ module.exports = {
   getHedgeConfig,
   updateHedgeConfig,
   HEDGE_DEFAULTS,
+  // Sentinel
+  getSentinelConfig,
+  updateSentinelConfig,
+  SENTINEL_DEFAULTS,
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,

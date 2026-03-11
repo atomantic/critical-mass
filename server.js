@@ -38,6 +38,8 @@ const { createIPCClient } = require('./src/ipc/ipc-client');
 const { createProxy } = require('./src/ipc/http-proxy');
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
+const { createSentinelService } = require('./src/sentinel/sentinel-service');
+const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -211,10 +213,16 @@ ipcEventListeners.push((name, msg) => {
 
 updownService.start();
 
+// ============ Sentinel Service ============
+
+const sentinelService = createSentinelService(io, { readJSON, writeJSON, DATA_DIR, getSentinelConfig });
+sentinelService.start();
+
 // ============ Route Modules ============
 
 const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSON, writeJSON, DATA_DIR, notifier, exchangeIPCMap, rescheduleBackupTimer };
 
+require('./src/routes/sentinel-routes')(app, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(app, sharedDeps);
 require('./src/routes/settings-routes')(app, sharedDeps);
 require('./src/routes/candle-routes')(app, { candleCache });
@@ -278,6 +286,15 @@ app.get('/api/health', async (req, res) => {
     running: updownStatus.running,
     lastPrice: updownStatus.lastPrice || null,
     latestSignal: updownStatus.latestSignal?.type || null,
+  };
+
+  // Sentinel service (in-process)
+  const sentinelStatus = sentinelService.getStatus();
+  engines.sentinel = {
+    status: sentinelStatus.running ? 'ok' : 'stopped',
+    running: sentinelStatus.running,
+    activeAlerts: sentinelStatus.activeAlerts || 0,
+    lastPollAt: sentinelStatus.lastPollAt || null,
   };
 
   // If any engine is unreachable and all are down, it's critical
@@ -351,6 +368,8 @@ io.on('connection', (socket) => {
   socket.on('composite:subscribe', () => socket.join('composite'));
   socket.on('updown:subscribe', () => socket.join('updown'));
   socket.on('updown:unsubscribe', () => socket.leave('updown'));
+  socket.on('sentinel:subscribe', () => socket.join('sentinel'));
+  socket.on('sentinel:unsubscribe', () => socket.leave('sentinel'));
 
   // PM2 log streaming
   socket.on('logs:subscribe', ({ processName, lines }) => {
@@ -528,6 +547,7 @@ const gracefulShutdown = async (signal) => {
   cryptocomIPC.disconnect();
 
   updownService.stop();
+  sentinelService.stop();
 
   // Kill all active log streams
   for (const [socketId, entry] of activeLogStreams) {
