@@ -235,17 +235,17 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
   const formatAsset = (n) => `${parseFloat((n || 0).toFixed(8))} ${baseCurrency}`
 
   return (
-    <div className="flex gap-6">
+    <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
       {/* Main Content Column */}
       <div className="flex-1 space-y-4 min-w-0">
         {/* Live Price Banner + Controls */}
         <div className="bg-gray-800 rounded-lg p-4">
-          <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
             <div className="flex items-center gap-4">
               <span className="text-gray-400">{config?.productId || 'BTC-' + quoteCurrency}</span>
-              <span className="text-3xl font-bold">{formatPrice(currentPrice)}</span>
+              <span className="text-2xl sm:text-3xl font-bold">{formatPrice(currentPrice)}</span>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-3 sm:gap-4">
               <ToggleSwitch
                 label="Automation"
                 checked={config.enabled}
@@ -278,7 +278,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
           {/* Fund Assets */}
           <div className="bg-gray-800 rounded-lg p-4">
             <h3 className="text-xs text-gray-400 mb-2">Fund Assets</h3>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <div className="text-lg font-bold text-green-400">{formatCurrency(state.usdcFundSize)}</div>
                 <div className="text-xs text-gray-500">{quoteCurrency}</div>
@@ -294,24 +294,24 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
             </div>
             {/* Asset Holdings Breakdown */}
             <div className="mt-3 pt-3 border-t border-gray-700">
-              <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
                 <div className="text-center">
                   <div className="text-gray-400 mb-1">Pending Sale</div>
-                  <div className="text-yellow-400 font-semibold">{formatAsset(state.outstandingOrdersAsset || 0)}</div>
+                  <div className="text-yellow-400 font-semibold truncate">{formatAsset(state.outstandingOrdersAsset || 0)}</div>
                   <div className="text-gray-500">Cost: {formatCurrency(costBasis?.pendingCostBasis || 0)}</div>
                   <div className="text-green-400">Exp: {formatCurrency(state.outstandingOrdersUSDC || 0)}</div>
                 </div>
                 <div className="text-center">
                   <div className="text-gray-400 mb-1">Reserves</div>
-                  <div className="text-orange-400 font-semibold">{formatAsset(state.assetReserves || 0)}</div>
+                  <div className="text-orange-400 font-semibold truncate">{formatAsset(state.assetReserves || 0)}</div>
                   <div className="text-gray-500">Cost: {formatCurrency(costBasis?.reservesCostBasis || 0)}</div>
                   <div className="text-gray-500">Val: {formatCurrency(assetValue)}</div>
                 </div>
                 <div className="text-center">
                   <div className="text-gray-400 mb-1">Total {baseCurrency}</div>
-                  <div className="text-purple-400 font-semibold">{formatAsset(totalAssetHeld)}</div>
+                  <div className="text-purple-400 font-semibold truncate">{formatAsset(totalAssetHeld)}</div>
                   <div className="text-gray-500">Cost: {formatCurrency(totalAssetCostBasis)}</div>
-                  <div className="text-gray-500">Avg: {formatPrice(totalAssetHeld > 0 ? totalAssetCostBasis / totalAssetHeld : 0)}/{baseCurrency}</div>
+                  <div className="text-gray-500 truncate">Avg: {formatPrice(totalAssetHeld > 0 ? totalAssetCostBasis / totalAssetHeld : 0)}/{baseCurrency}</div>
                 </div>
               </div>
             </div>
@@ -319,12 +319,12 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
 
           {/* Stats Grid - 3 rows of 3 */}
           <div className="space-y-2">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-3 gap-2">
               <StatCard label="Total Buys" value={stats.totalBuys} color="blue" />
               <StatCard label="Total Sells" value={stats.totalSells} color="green" />
               <StatCard label="Pending" value={stats.pendingOrders} color="yellow" />
             </div>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {(() => {
                 // Current market value of all asset holdings
                 const totalAssetMarketValue = totalAssetHeld * currentPrice
@@ -355,7 +355,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 )
               })()}
             </div>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-3 gap-2">
               <StatCard label="Fees" value={formatCurrency(stats.totalFees)} color="red" />
               <StatCard label="Rebates" value={formatCurrency(stats.totalRebates)} color="green" />
               <StatCard label="Net Fees" value={formatCurrency(stats.netFees)} color="purple" />
@@ -422,9 +422,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
         {/* Pending Orders */}
         {(state.orders || []).filter(o => o.status === 'pending').length > 0 && (
           <div className="bg-gray-800 rounded-lg p-4">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
               <h3 className="text-sm font-semibold">Pending Sell Orders ({stats.pendingOrders})</h3>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={handleSync}
                   disabled={syncing}

@@ -62,12 +62,12 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
   return (
     <div className="space-y-4">
       {/* Filters */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2 items-center">
         {['all', 'BUY', 'SELL_ORDER', 'SELL_FILLED'].map(f => (
           <button
             key={f}
             onClick={() => setFilter(f)}
-            className={`px-3 py-1 rounded text-sm ${
+            className={`px-3 py-1.5 rounded text-sm min-h-[36px] ${
               filter === f
                 ? 'bg-blue-600 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
@@ -91,7 +91,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
                   <th
                     key={col}
                     onClick={() => handleSort(col)}
-                    className="px-4 py-3 cursor-pointer hover:bg-gray-600"
+                    className="px-4 py-3 cursor-pointer hover:bg-gray-600 whitespace-nowrap"
                   >
                     <div className="flex items-center gap-1">
                       {getDisplayName(col)}
@@ -113,7 +113,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
               ) : (
                 sortedTx.map((tx, i) => (
                   <tr key={i} className="border-t border-gray-700 hover:bg-gray-700/50">
-                    <td className="px-4 py-3">{formatDateTime(tx)}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">{formatDateTime(tx)}</td>
                     <td className={`px-4 py-3 font-medium ${typeColors[tx.Type] || ''}`}>
                       {tx.Type}
                     </td>
@@ -144,7 +144,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
       {sortedTx.length > 0 && (
         <div className="bg-gray-800 rounded-lg p-4">
           <h3 className="text-sm font-medium text-gray-400 mb-3">Summary</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
               <span className="text-gray-500">Total {quoteCurrency} Spent:</span>
               <span className="ml-2 text-white">

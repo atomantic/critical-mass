@@ -63,14 +63,14 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
   return (
     <div className="space-y-6">
       {/* Current Price Banner */}
-      <div className="bg-gray-800 rounded-lg p-4 flex items-center justify-between">
+      <div className="bg-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
           <span className="text-gray-400">Current {baseCurrency} Price:</span>
-          <span className="text-3xl font-bold ml-4">{formatPrice(currentPrice)}</span>
+          <span className="text-2xl sm:text-3xl font-bold ml-2 sm:ml-4">{formatPrice(currentPrice)}</span>
         </div>
         <div>
           <span className="text-gray-400">Avg Cost Basis:</span>
-          <span className="text-2xl font-semibold ml-4">{formatPrice(costBasis.avgCostPerAsset)}</span>
+          <span className="text-xl sm:text-2xl font-semibold ml-2 sm:ml-4">{formatPrice(costBasis.avgCostPerAsset)}</span>
         </div>
       </div>
 
@@ -184,16 +184,16 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-gray-400 text-left border-b border-gray-700">
-                <th className="pb-2">Date</th>
-                <th className="pb-2">Buy Price</th>
-                <th className="pb-2">{baseCurrency} Bought</th>
-                <th className="pb-2">Cost Basis</th>
-                <th className="pb-2">Net Fees</th>
-                <th className="pb-2">Cost/{baseCurrency}</th>
-                <th className="pb-2">Holdback</th>
-                <th className="pb-2">Sell Order</th>
-                <th className="pb-2">Status</th>
-                <th className="pb-2">P&L</th>
+                <th className="pb-2 whitespace-nowrap">Date</th>
+                <th className="pb-2 whitespace-nowrap">Buy Price</th>
+                <th className="pb-2 whitespace-nowrap">{baseCurrency} Bought</th>
+                <th className="pb-2 whitespace-nowrap">Cost Basis</th>
+                <th className="pb-2 whitespace-nowrap">Net Fees</th>
+                <th className="pb-2 whitespace-nowrap">Cost/{baseCurrency}</th>
+                <th className="pb-2 whitespace-nowrap">Holdback</th>
+                <th className="pb-2 whitespace-nowrap">Sell Order</th>
+                <th className="pb-2 whitespace-nowrap">Status</th>
+                <th className="pb-2 whitespace-nowrap">P&L</th>
               </tr>
             </thead>
             <tbody>
@@ -213,14 +213,14 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
 
                   return (
                     <tr key={i} className="border-t border-gray-700">
-                      <td className="py-2">{order.date}</td>
-                      <td className="py-2">{formatPrice(order.buyPrice)}</td>
-                      <td className="py-2 font-mono">{formatAsset(order.btcBought)}</td>
-                      <td className="py-2">{formatCurrency(order.costBasis)}</td>
-                      <td className="py-2 text-red-400">{formatCurrency(order.netFees)}</td>
-                      <td className="py-2">{formatPrice(order.costPerAsset)}</td>
-                      <td className="py-2 font-mono text-yellow-400">{formatAsset(order.holdback)}</td>
-                      <td className="py-2">
+                      <td className="py-2 whitespace-nowrap">{order.date}</td>
+                      <td className="py-2 whitespace-nowrap">{formatPrice(order.buyPrice)}</td>
+                      <td className="py-2 font-mono whitespace-nowrap">{formatAsset(order.btcBought)}</td>
+                      <td className="py-2 whitespace-nowrap">{formatCurrency(order.costBasis)}</td>
+                      <td className="py-2 text-red-400 whitespace-nowrap">{formatCurrency(order.netFees)}</td>
+                      <td className="py-2 whitespace-nowrap">{formatPrice(order.costPerAsset)}</td>
+                      <td className="py-2 font-mono text-yellow-400 whitespace-nowrap">{formatAsset(order.holdback)}</td>
+                      <td className="py-2 whitespace-nowrap">
                         {formatAsset(order.sellQuantity)} @ {formatPrice(order.sellPrice)}
                       </td>
                       <td className="py-2">
