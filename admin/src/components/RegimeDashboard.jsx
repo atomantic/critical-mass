@@ -767,9 +767,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }
     const currentDeposited = apy.depositedCapital || apy.originalCapital || apy.initialCapital || 0
     const currentMax = apy.maxUsdcDeployed || apy.currentCapital || 0
+    // Clamp to valid ranges: depositedCapital must be 0 or 100-100000, maxUsdcDeployed must be >= 1000
+    const rawDeposited = currentDeposited + delta
+    const rawMax = currentMax + delta
     const updates = {
-      depositedCapital: Math.max(0, currentDeposited + delta),
-      maxUsdcDeployed: Math.max(0, currentMax + delta),
+      depositedCapital: rawDeposited < 100 ? 0 : Math.min(rawDeposited, 100000),
+      maxUsdcDeployed: Math.max(1000, Math.min(rawMax, 100000)),
     }
     setCapitalAdjusting(true)
     try {
