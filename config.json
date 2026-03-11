@@ -258,6 +258,21 @@
         "trendScale": 0.5,
         "maxCycleBuys": 500
       }
+    },
+    "sentinel": {
+      "enabled": false,
+      "pollIntervalMs": 300000,
+      "maxAlerts": 200,
+      "aiClassification": { "enabled": true, "maxPerHour": 10 },
+      "feeds": [
+        { "name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml", "enabled": true },
+        { "name": "CNBC Economy", "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html", "enabled": true }
+      ],
+      "keywords": {
+        "critical": ["rate cut", "rate hike", "emergency", "FOMC decision", "quantitative easing", "quantitative tightening", "war declared", "nuclear"],
+        "warning": ["FOMC", "inflation", "CPI", "unemployment", "tariff", "sanctions", "Iran", "geopolitical", "fed funds"],
+        "info": ["fed speech", "treasury", "GDP", "economic data"]
+      }
     }
   }
 }

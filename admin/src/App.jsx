@@ -30,6 +30,8 @@ const LogViewer = lazy(() => import('./components/LogViewer'))
 const HedgeDashboard = lazy(() => import('./components/hedge/Dashboard'))
 const UpDownDashboard = lazy(() => import('./components/updown/Dashboard'))
 const ScorecardAnalysis = lazy(() => import('./components/updown/ScorecardAnalysis'))
+const SentinelDashboard = lazy(() => import('./components/sentinel/Dashboard'))
+import AlertBanner from './components/sentinel/AlertBanner'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
 
@@ -168,7 +170,7 @@ function AppContent() {
         setCurrentExchange(targetExchange)
         setCurrentStrategy(targetStrategy)
         // Don't redirect away from non-exchange pages (overview, kalshi, notifications, etc.)
-        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/updown', '/gateway', '/notifications', '/backups', '/systems', '/ai']
+        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
         const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
         if (!isNonExchangePage) {
           navigate(`/${targetExchange}/${targetPair}`, { replace: true })
@@ -332,6 +334,9 @@ function AppContent() {
   // Check if on UpDown pages
   const isUpDown = location.pathname.startsWith('/updown')
 
+  // Check if on Sentinel pages
+  const isSentinel = location.pathname.startsWith('/sentinel')
+
   // Check if on Gateway logs page
   const isGateway = location.pathname.startsWith('/gateway')
 
@@ -440,6 +445,12 @@ function AppContent() {
                   UpDown
                 </Link>
                 <Link
+                  to="/sentinel"
+                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                >
+                  Sentinel
+                </Link>
+                <Link
                   to="/ai"
                   className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
@@ -507,6 +518,13 @@ function AppContent() {
                   UpDown
                 </Link>
                 <Link
+                  to="/sentinel"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                >
+                  Sentinel
+                </Link>
+                <Link
                   to="/ai"
                   onClick={() => setMobileMenuOpen(false)}
                   className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
@@ -526,7 +544,7 @@ function AppContent() {
         </header>
 
         {/* Exchange sub-nav (hidden on overview, Kalshi, and AI pages) */}
-        {!isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isGateway && (
+        {!isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isSentinel && !isGateway && (
           <nav className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
@@ -687,6 +705,9 @@ function AppContent() {
           </nav>
         )}
 
+        {/* Global Alert Banner */}
+        <AlertBanner />
+
         {/* Main Content */}
         <main className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6">
           {error && (
@@ -695,7 +716,7 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isGateway ? (
+          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isSentinel && !isGateway ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
             </div>
@@ -773,6 +794,9 @@ function AppContent() {
               {/* UpDown BTC Options dashboard */}
               <Route path="/updown/analysis" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><ScorecardAnalysis /></Suspense>} />
               <Route path="/updown" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><UpDownDashboard /></Suspense>} />
+
+              {/* Sentinel news monitor */}
+              <Route path="/sentinel" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><SentinelDashboard /></Suspense>} />
 
               {/* Gateway logs */}
               <Route path="/gateway/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass" /></Suspense>} />

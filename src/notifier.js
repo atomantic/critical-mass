@@ -48,13 +48,16 @@ const EVENT_EMOJI = {
   checking_orders: 'ℹ️',
   price_check: 'ℹ️',
   balance_check: 'ℹ️',
+  sentinel_critical: '🚨',
+  sentinel_warning: '⚠️',
+  sentinel_info: 'ℹ️',
 };
 
 /**
  * Critical events that bypass quiet hours
  */
 const CRITICAL_EVENTS = new Set([
-  'safe_mode', 'error', 'flash_move', 'cap_reached',
+  'safe_mode', 'error', 'flash_move', 'cap_reached', 'sentinel_critical',
 ]);
 
 /**
