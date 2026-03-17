@@ -2436,16 +2436,24 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       recoveryModule.reconcile(positionState, fillLedger)
         .then(result => {
           if (result.updated) {
-            // Preserve celestial body state (rebuildPositionFromFills only returns core fields)
+            // Preserve fields that rebuildPositionFromFills doesn't return
             const savedBodies = positionState.celestialBodies;
             const savedCelestialState = positionState.celestialState;
             const savedRealizedPnL = positionState.realizedPnL;
             const savedRealizedAssetPnL = positionState.realizedAssetPnL;
+            const savedEngineStartTime = positionState.engineStartTime;
+            const savedInitialCapital = positionState.initialCapital;
+            const savedOriginalCapital = positionState.originalCapital;
+            const savedDepositedCapital = positionState.depositedCapital;
             positionState = result.position;
             if (savedBodies) positionState.celestialBodies = savedBodies;
             if (savedCelestialState) positionState.celestialState = savedCelestialState;
             if (savedRealizedPnL) positionState.realizedPnL = savedRealizedPnL;
             if (savedRealizedAssetPnL) positionState.realizedAssetPnL = savedRealizedAssetPnL;
+            if (savedEngineStartTime) positionState.engineStartTime = savedEngineStartTime;
+            if (savedInitialCapital) positionState.initialCapital = savedInitialCapital;
+            if (savedOriginalCapital) positionState.originalCapital = savedOriginalCapital;
+            if (savedDepositedCapital) positionState.depositedCapital = savedDepositedCapital;
             // Re-sync totals from bodies
             const bodies = positionState.celestialBodies || [];
             if (bodies.length > 0) {
@@ -3455,7 +3463,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       else saveDryRunState();
     }
     // Track manual capital additions (user deposits, not profits)
-    if (updates.maxUsdcDeployed !== undefined && updates.maxUsdcDeployed !== config.maxUsdcDeployed) {
+    // Skip auto-adjust when depositedCapital was explicitly provided (already handled above)
+    if (updates.maxUsdcDeployed !== undefined && updates.maxUsdcDeployed !== config.maxUsdcDeployed && updates.depositedCapital === undefined) {
       const capitalChange = updates.maxUsdcDeployed - config.maxUsdcDeployed;
       if (capitalChange > 0) {
         // User added capital - update depositedCapital

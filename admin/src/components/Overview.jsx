@@ -97,15 +97,28 @@ function Overview() {
     const isRunning = status?.isRunning ?? false
     const isDryRun = status?.isDryRun ?? false
 
-    // Server's syncPositionState already aggregates body values into totalAsset/totalCostBasis,
-    // so use them directly to avoid double-counting body costs
-    const totalAssetQty = position?.totalAsset ?? 0
-    const totalCostBasis = position?.totalCostBasis ?? 0
     const lastPrice = market?.lastPrice ?? 0
-    // Use server-computed unrealizedPnL (accounts for celestial bodies with assets on order)
-    const unrealizedPnL = position?.unrealizedPnL ?? 0
-    const unrealizedPct = totalCostBasis > 0 ? (unrealizedPnL / totalCostBasis) * 100 : 0
-    const realizedPnL = position?.realizedPnL ?? celestial?.bodiesRealizedPnL ?? 0
+
+    // Position includes cycle buys + all celestial bodies
+    const cycleAsset = position?.totalAsset ?? 0
+    const cycleCost = position?.totalCostBasis ?? 0
+    const bodyAsset = (celestial?.bodies || []).reduce((sum, b) => sum + (b.assetQty || 0), 0)
+    const bodyCost = (celestial?.bodies || []).reduce((sum, b) => sum + (b.costBasis || 0), 0)
+    const totalAssetQty = cycleAsset + bodyAsset
+    // Cost basis of held assets (cycle + bodies, excludes pending cash orders)
+    const totalAssetCostBasis = cycleCost + bodyCost
+    // Total capital deployed including pending orders (for Capital widget)
+    const totalCostBasis = apy?.deployedInPosition ?? totalAssetCostBasis
+    // Calculate unrealized from full asset position
+    const unrealizedPnL = totalAssetQty > 0 && lastPrice > 0
+      ? (totalAssetQty * lastPrice) - totalAssetCostBasis
+      : 0
+    const unrealizedPct = totalAssetCostBasis > 0 ? (unrealizedPnL / totalAssetCostBasis) * 100 : 0
+
+    // Realized P&L includes USD profits + asset holdback valued at current price
+    const realizedUsdcPnL = position?.realizedPnL ?? celestial?.bodiesRealizedPnL ?? 0
+    const realizedAssetPnL = position?.realizedAssetPnL ?? 0
+    const realizedPnL = realizedUsdcPnL + (realizedAssetPnL * lastPrice)
     const availableCapital = apy?.availableCapital ?? 0
     const estimatedApy = apy?.estimatedApy ?? 0
     const depositedCapital = apy?.depositedCapital ?? apy?.originalCapital ?? apy?.initialCapital ?? 0
@@ -116,7 +129,6 @@ function Overview() {
     const estimatedDailyAsset = apy?.estimatedDailyAsset ?? 0
     const totalLiquidValue = apy?.totalLiquidValue
     const totalLiquidValuePercent = apy?.totalLiquidValuePercent
-    const realizedAssetPnL = position?.realizedAssetPnL ?? 0
     const engineStartTime = apy?.engineStartTime
     const cycleBuys = position?.cycleBuys ?? position?.ladderStep ?? 0
     const maxCycleBuys = status?.config?.maxCycleBuys ?? 10
@@ -142,6 +154,7 @@ function Overview() {
       unrealizedPnL,
       unrealizedPct,
       realizedPnL,
+      realizedUsdcPnL,
       estimatedApy,
       depositedCapital,
       elapsedDays,
@@ -159,6 +172,7 @@ function Overview() {
       bodiesActive,
       tierSummary,
       celestial,
+      totalAssetCostBasis,
       maxUsdcDeployed: status?.config?.maxUsdcDeployed ?? apy?.maxUsdcDeployed ?? 0,
     }
   })
@@ -291,8 +305,8 @@ function Overview() {
                   <div className="text-gray-200 font-mono">
                     {card.totalAssetQty > 0 ? `${card.totalAssetQty.toFixed(6)} ${card.baseCurrency}` : '-'}
                   </div>
-                  {card.totalCostBasis > 0 && (
-                    <div className="text-xs text-gray-500">{formatCurrency(card.totalCostBasis)} cost</div>
+                  {card.totalAssetCostBasis > 0 && (
+                    <div className="text-xs text-gray-500">{formatCurrency(card.totalAssetCostBasis)} cost</div>
                   )}
                 </div>
                 <div>
@@ -310,16 +324,16 @@ function Overview() {
                 </div>
                 <div>
                   <div className="text-xs text-gray-400">Realized P&L {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
-                  <div className={`font-mono ${card.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {card.realizedPnL !== 0
-                      ? `${card.realizedPnL >= 0 ? '+' : ''}${formatCurrency(card.realizedPnL)}`
+                  <div className={`font-mono ${card.realizedUsdcPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {card.realizedUsdcPnL !== 0
+                      ? `${card.realizedUsdcPnL >= 0 ? '+' : ''}${formatCurrency(card.realizedUsdcPnL)}`
                       : '-'}
                   </div>
                   {card.realizedAssetPnL > 0 && (
                     <div className="text-xs text-orange-400">+{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
                   )}
-                  {card.totalLiquidValue !== undefined && card.totalLiquidValue > 0 && (
-                    <div className="text-xs text-cyan-400">= {formatCurrency(card.totalLiquidValue)}</div>
+                  {card.realizedPnL > 0 && (
+                    <div className="text-xs text-cyan-400">= {formatCurrency(card.realizedPnL)}</div>
                   )}
                 </div>
                 <div>

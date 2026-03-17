@@ -41,6 +41,10 @@ const TIMEFRAME_WEIGHTS = {
 
 const ALL_SIGNAL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w'];
 
+// Short timeframes use neutral scoring so they can detect short-term reversals
+// even when the higher-timeframe trend is bullish/bearish
+const SHORT_TFS = new Set(['1m', '3m', '5m']);
+
 const NO_TRADE_ZONE_MS = 6 * 60 * 60 * 1000;
 const WARNING_ZONE_MS = 8 * 60 * 60 * 1000;
 
@@ -621,7 +625,8 @@ const createSignalEngine = (candleAggregator) => {
 
     for (const tf of ALL_SIGNAL_TFS) {
       const candles = candleAggregator.getCandles(tf);
-      const result = computeTimeframeSignals(candles, prevIndicators[tf], currentIndicatorWeights, trendFilter.trendBias);
+      const tfTrendBias = SHORT_TFS.has(tf) ? 'neutral' : trendFilter.trendBias;
+      const result = computeTimeframeSignals(candles, prevIndicators[tf], currentIndicatorWeights, tfTrendBias);
 
       // Store indicators for next round's crossover detection
       if (result.indicators && Object.keys(result.indicators).length > 0) {

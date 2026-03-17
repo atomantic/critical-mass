@@ -17,6 +17,7 @@
 - Weekly macro trend filter — EMA(4)/EMA(8) on 1w candles with 60% counter-weekly dampening
 - ADX regime modulation — +15% composite boost in trending markets, -20% in ranging markets
 - Tick momentum confirmation — aligned tick momentum boosts composite score up to +25%, contradicting reduces up to -15%
+- UpDown signal history now includes NEUTRAL entries — shows actual BUY→NEUTRAL→BUY pattern instead of hiding the gaps
 
 ## Changed
 
@@ -31,6 +32,8 @@
 - 1W chart default range expanded from 8W to 1Y (52 weeks) with range options 12W / 26W / 1Y
 - 1d candle history expanded from 60 days to 365 days; Coinbase API fetch now paginates to handle 300-candle limit
 - 1d ring buffer increased to 365 candles, 1w ring buffer increased to 52 candles
+- Short timeframes (1m, 3m, 5m) now use neutral trend bias for indicator scoring — enables SELL signal generation during short-term reversals even when higher-timeframe trend is bullish
+- Signal history debounced — 5-minute minimum between consecutive same-type entries to prevent threshold oscillation flooding
 
 ## Fixed
 
@@ -47,6 +50,12 @@
 - Expired contract no longer triggers permanent NO_TRADE_ZONE — past-expiry contracts treated as no-contract
 - ADX weight drift bug — removed mutating weight shift block that decayed MACD/momentum weights exponentially over cycles
 - UpDown SignalBanner crash (`Cannot read properties of null`) when live indicators haven't loaded yet — null-guarded `type.replace()` call
+- TP sell POST_ONLY_REJ — retries as taker order when take-profit price is already below current bid
+- Capital adjustment no longer capped at $100K — removed upper bound on depositedCapital and maxUsdcDeployed
+- Overview P&L calculations — unrealized P&L now includes celestial body positions; realized P&L separates USDC and asset components
+- Regime engine reconciliation now preserves engineStartTime, initialCapital, originalCapital, and depositedCapital across position rebuilds
+- Capital auto-adjust skipped when depositedCapital is explicitly provided in the same update
+- RegimeDashboard P&L total now uses pnlMap (matches server globalRealizedPnL) instead of sell-group sum
 
 ## Removed
 

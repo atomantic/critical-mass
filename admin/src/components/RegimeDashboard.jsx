@@ -767,12 +767,12 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }
     const currentDeposited = apy.depositedCapital || apy.originalCapital || apy.initialCapital || 0
     const currentMax = apy.maxUsdcDeployed || apy.currentCapital || 0
-    // Clamp to valid ranges: depositedCapital must be 0 or 100-100000, maxUsdcDeployed must be >= 1000
+    // Clamp to valid minimums: depositedCapital must be 0 or >= 100, maxUsdcDeployed must be >= 1000
     const rawDeposited = currentDeposited + delta
     const rawMax = currentMax + delta
     const updates = {
-      depositedCapital: rawDeposited < 100 ? 0 : Math.min(rawDeposited, 100000),
-      maxUsdcDeployed: Math.max(1000, Math.min(rawMax, 100000)),
+      depositedCapital: rawDeposited < 100 ? 0 : rawDeposited,
+      maxUsdcDeployed: Math.max(1000, rawMax),
     }
     setCapitalAdjusting(true)
     try {
@@ -2353,6 +2353,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   // Build sell groups: each = { sell, buys[], key }
                   let sellGroups = []
                   let orphanedBuys = []
+                  let pnlMapTotal = null // set in live mode for authoritative P&L total
 
                   if (isDryRun) {
                     // Walk chronologically: buys accumulate until a core sell consumes them
@@ -2415,6 +2416,10 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                         runCost = rem > 0 ? avgCost * rem : 0
                       }
                     })
+
+                    // Compute authoritative total from pnlMap (matches server globalRealizedPnL)
+                    pnlMapTotal = 0
+                    for (const [, data] of pnlMap) pnlMapTotal += data.pnl || 0
 
                     // Aggregate fills by orderId
                     const aggBuysAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy'))
@@ -2527,8 +2532,11 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                     return <div className="text-gray-500 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
                   }
 
-                  // Totals (holdback computed from cycleMap after sell-group aggregation)
-                  const totalPnl = sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)
+                  // Use pnlMap total for grand total in live mode (matches server-side
+                  // globalRealizedPnL and Position card's realizedPnL). Dry-run uses sell group sum.
+                  const totalPnl = pnlMapTotal != null
+                    ? pnlMapTotal
+                    : sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)
                   let totalHoldback = 0
 
                   // Shared sell + buy row renderer

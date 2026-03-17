@@ -775,11 +775,11 @@ const validateRegimeConfig = (config) => {
   if (config.maxAssetExposure !== undefined && config.maxAssetExposure !== 0 && (config.maxAssetExposure < 0.01 || config.maxAssetExposure > 10.0)) {
     errors.push('maxAssetExposure must be 0 (uncapped) or between 0.01 and 10.0');
   }
-  if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && (config.depositedCapital < 100 || config.depositedCapital > 100000)) {
-    errors.push('depositedCapital must be 0 (auto-derive) or between 100 and 100000');
+  if (config.depositedCapital !== undefined && config.depositedCapital !== 0 && config.depositedCapital < 100) {
+    errors.push('depositedCapital must be 0 (auto-derive) or at least 100');
   }
-  if (config.maxUsdcDeployed !== undefined && (config.maxUsdcDeployed < 1000 || config.maxUsdcDeployed > 100000)) {
-    errors.push('maxUsdcDeployed must be between 1000 and 100000');
+  if (config.maxUsdcDeployed !== undefined && config.maxUsdcDeployed < 1000) {
+    errors.push('maxUsdcDeployed must be at least 1000');
   }
   if (config.maxDrawdownPercent !== undefined && (config.maxDrawdownPercent < 10 || config.maxDrawdownPercent > 30)) {
     errors.push('maxDrawdownPercent must be between 10 and 30');

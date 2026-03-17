@@ -16,6 +16,7 @@ const STATE_FILE = 'updown-state.json';
 const SIGNAL_INTERVAL_MS = 5_000;
 const TICK_THROTTLE_MS = 1_000;
 const MAX_SIGNAL_HISTORY = 100;
+const SIGNAL_DEBOUNCE_MS = 5 * 60 * 1000; // 5 min minimum between same-type history entries
 
 /**
  * Create the UpDown service
@@ -66,9 +67,9 @@ const createUpDownService = (io, deps) => {
     if (saved.position) position = saved.position;
     if (saved.signalHistory) {
       signalHistory.length = 0;
-      // Filter out NEUTRAL and NO_TRADE_ZONE — keep all directional signals
+      // Filter out only NO_TRADE_ZONE — keep NEUTRAL and all directional signals
       for (const s of saved.signalHistory) {
-        if (s.type !== 'NEUTRAL' && s.type !== 'NO_TRADE_ZONE') {
+        if (s.type !== 'NO_TRADE_ZONE') {
           signalHistory.push(s);
         }
       }
@@ -225,17 +226,24 @@ const createUpDownService = (io, deps) => {
     // Emit signal change event only when signal changes
     if (result.type !== lastSignal) {
       lastSignal = result.type;
-      // Record all directional signal changes — skip NEUTRAL and NO_TRADE_ZONE only
-      // (consecutive same-type is valid when NEUTRAL/NTZ gaps occur between them)
-      if (result.type !== 'NEUTRAL' && result.type !== 'NO_TRADE_ZONE') {
-        signalHistory.push({
-          type: result.type,
-          score: result.score,
-          confidence: result.confidence,
-          timestamp: result.timestamp,
-        });
-        if (signalHistory.length > MAX_SIGNAL_HISTORY) {
-          signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
+      // Record all signal changes including NEUTRAL (skip only NO_TRADE_ZONE)
+      // Debounce: skip only consecutive same-type entries within SIGNAL_DEBOUNCE_MS
+      // (BUY→NEUTRAL→BUY is NOT debounced — the intervening signal makes it meaningful)
+      if (result.type !== 'NO_TRADE_ZONE') {
+        const lastEntry = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1] : null;
+        const isConsecutiveDuplicate = lastEntry &&
+          lastEntry.type === result.type &&
+          (result.timestamp - lastEntry.timestamp) < SIGNAL_DEBOUNCE_MS;
+        if (!isConsecutiveDuplicate) {
+          signalHistory.push({
+            type: result.type,
+            score: result.score,
+            confidence: result.confidence,
+            timestamp: result.timestamp,
+          });
+          if (signalHistory.length > MAX_SIGNAL_HISTORY) {
+            signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
+          }
         }
       }
 
