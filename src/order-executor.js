@@ -56,6 +56,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   /** @type {Map<string, {tpOrderId: string, assetQty: number, tpPrice: number}>} */
   const bodyTpOrders = new Map(); // bodyId -> body TP tracking
 
+  /** @type {Map<string, number>} orderId -> last known partial filled size (high-water mark) */
+  const partialFillTracker = new Map();
+
   /** @type {Map<string, string>} tpOrderId -> buyOrderId/bodyId for O(1) reverse lookups */
   const tpOrderToKey = new Map();
 
@@ -491,13 +494,27 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         console.log(`✅ [${exchange}] Fill check detected filled ${order.type} order ${orderId}`);
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
+        partialFillTracker.delete(orderId);
         if (callbacks.onFillDetected) {
           callbacks.onFillDetected(orderId, { ...status, placedAt });
         }
         filled++;
+      } else if (normalizedStatus === 'PARTIALLY_FILLED' && status.filledSize > 0) {
+        // Partial fill detected — notify handler with partial flag so body state can be updated
+        // Keep order in pendingOrders since it's still open on the exchange
+        const lastPartialSize = partialFillTracker.get(orderId) || 0;
+        if (status.filledSize > lastPartialSize) {
+          const placedAt = order.placedAt;
+          console.log(`📦 [${exchange}] Fill check detected partial fill on ${order.type} order ${orderId}: ${status.filledSize} filled (was ${lastPartialSize})`);
+          partialFillTracker.set(orderId, status.filledSize);
+          if (callbacks.onFillDetected) {
+            callbacks.onFillDetected(orderId, { ...status, placedAt, isPartialFill: true });
+          }
+        }
       } else if (normalizedStatus === 'CANCELLED') {
         console.log(`⏰ [${exchange}] Fill check found cancelled ${order.type} order ${orderId}`);
         pendingOrders.delete(orderId);
+        partialFillTracker.delete(orderId);
         if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
         cancelled++;
       }
@@ -744,6 +761,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    */
   const clearPendingOrders = () => {
     pendingOrders.clear();
+    partialFillTracker.clear();
     activeTpOrderId = null;
     lastTpPrice = 0;
     lastTpSize = 0;

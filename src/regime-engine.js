@@ -849,6 +849,28 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         }
       }
 
+      // Cancel stale orders flagged for cleanup (e.g. partially-filled TPs from prior crashes)
+      if (positionState._cancelOnStartup?.length > 0) {
+        for (const staleOrderId of [...positionState._cancelOnStartup]) {
+          const cancelResult = await adapter.cancelOrder(staleOrderId).catch(() => ({ success: false }));
+          if (cancelResult.success) {
+            console.log(`🗑️ [${exchange}] Cancelled stale order from _cancelOnStartup: ${staleOrderId}`);
+          } else {
+            const status = await adapter.getOrder(staleOrderId).catch(() => null);
+            if (status && (status.status === 'FILLED' || status.status === 'CANCELLED')) {
+              console.log(`ℹ️ [${exchange}] Stale order ${staleOrderId} already ${status.status}`);
+            } else {
+              console.log(`⚠️ [${exchange}] Failed to cancel stale order ${staleOrderId}`);
+              continue; // Keep failed IDs for next startup
+            }
+          }
+          positionState._cancelOnStartup = positionState._cancelOnStartup.filter(id => id !== staleOrderId);
+        }
+        if (positionState._cancelOnStartup.length === 0) {
+          delete positionState._cancelOnStartup;
+        }
+      }
+
       // Restore celestial body TP order tracking from saved state
       const savedBodies = positionState.celestialBodies || [];
       if (savedBodies.length > 0) {
@@ -1874,12 +1896,16 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     } else if (fillData.side.toLowerCase() === 'sell') {
       // Sell-fill dedup: skip if already processed (prevents double-processing across WS/reconcile/polling)
-      if (recentlyProcessedSellFills.has(fillData.orderId)) {
-        console.log(`⏭️ [${exchange}] Sell fill already processed, skipping: ${fillData.orderId}`);
+      // For partial fills, use a composite key with filled size to allow incremental processing
+      const dedupKey = fillData.isPartialFill
+        ? `${fillData.orderId}:${(fillData.filledSize || 0).toFixed(8)}`
+        : fillData.orderId;
+      if (recentlyProcessedSellFills.has(dedupKey)) {
+        console.log(`⏭️ [${exchange}] Sell fill already processed, skipping: ${dedupKey}`);
         return;
       }
-      recentlyProcessedSellFills.add(fillData.orderId);
-      const t1 = setTimeout(() => { recentlyProcessedSellFills.delete(fillData.orderId); ttlTimers.delete(t1); }, 5 * 60 * 1000);
+      recentlyProcessedSellFills.add(dedupKey);
+      const t1 = setTimeout(() => { recentlyProcessedSellFills.delete(dedupKey); ttlTimers.delete(t1); }, 5 * 60 * 1000);
       ttlTimers.add(t1);
 
       // UNIFIED BODY TP FILL — find matching celestial body by TP order ID
@@ -1954,7 +1980,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       const legacySatellite = null;
 
       if (bodyIdx !== -1) {
-        // CELESTIAL BODY TP FILL
+        // CELESTIAL BODY TP FILL (full or partial)
         const body = bodies[bodyIdx];
         const tierCfg = celestialHierarchy.getTierConfig(body.tier);
         const proceeds = summary.totalValue - summary.totalFees;
@@ -1964,56 +1990,111 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const pnl = proceeds - proratedCostBasis;
         const holdbackAsset = roundAsset(body.assetQty - summary.totalSize);
 
+        // Detect partial fill: order is still open on the exchange
+        const isPartial = fillData.isPartialFill || soldRatio < 0.95;
+
         // Update celestial state
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
-        cs.bodiesCompleted += 1;
+        if (!isPartial) cs.bodiesCompleted += 1;
         cs.bodiesRealizedPnL += pnl;
-        cs.bodiesRealizedAssetPnL += holdbackAsset;
+        cs.bodiesRealizedAssetPnL += (isPartial ? summary.totalSize : holdbackAsset);
         positionState.celestialState = cs;
 
         // Update shared realized P&L
         positionState.realizedPnL += pnl;
-        positionState.realizedAssetPnL += holdbackAsset;
+        positionState.realizedAssetPnL += (isPartial ? summary.totalSize : holdbackAsset);
 
         // Grow capital
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
         updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
 
-        // Remove body from array
-        positionState.celestialBodies.splice(bodyIdx, 1);
+        if (isPartial) {
+          // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
+          const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
+          const remainingCostBasis = roundUSDC(body.costBasis * (1 - soldRatio));
+          body.assetQty = remainingAsset;
+          body.costBasis = remainingCostBasis;
+          // avgPrice stays the same (weighted average of buys doesn't change)
 
-        // Remove executor tracking
-        orderExecutor.removeBodyTracking(fillData.orderId);
+          // Remove old TP tracking — engine will re-place for correct remaining size
+          orderExecutor.removeBodyTracking(fillData.orderId);
+          body.tpOrderId = null;
+          body.tpPrice = 0;
+          body.assetOnOrder = 0;
 
-        // Sync aggregate fields
-        celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+          // Sync aggregate fields
+          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        const remaining = positionState.celestialBodies.length;
-        console.log(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
+          console.log(`${tierCfg.emoji} [${exchange}] Body TP PARTIAL fill (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, remaining=${remainingAsset} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
-        tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
-          assetAmount: summary.totalSize,
-          price: summary.avgPrice,
-          pnl,
-          holdbackAsset,
-          bodyId: body.id,
-          bodyTier: body.tier,
-          bodiesRemaining: remaining,
-          capitalGrowth: pnl,
-          newMaxUsdcDeployed: config.maxUsdcDeployed,
-        });
+          tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)} [PARTIAL]`, {
+            assetAmount: summary.totalSize,
+            price: summary.avgPrice,
+            pnl,
+            holdbackAsset: remainingAsset,
+            bodyId: body.id,
+            bodyTier: body.tier,
+            isPartialFill: true,
+            remainingAsset,
+          });
+
+          // Re-place TP for remaining body size
+          await placeBodyTp(body);
+        } else {
+          // FULL FILL: remove body entirely
+          // Remove body from array
+          positionState.celestialBodies.splice(bodyIdx, 1);
+
+          // Remove executor tracking
+          orderExecutor.removeBodyTracking(fillData.orderId);
+
+          // Sync aggregate fields
+          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+          const remaining = positionState.celestialBodies.length;
+          console.log(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
+
+          tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
+            assetAmount: summary.totalSize,
+            price: summary.avgPrice,
+            pnl,
+            holdbackAsset,
+            bodyId: body.id,
+            bodyTier: body.tier,
+            bodiesRemaining: remaining,
+            capitalGrowth: pnl,
+            newMaxUsdcDeployed: config.maxUsdcDeployed,
+          });
+
+          // If no bodies remain, do a full cycle reset
+          if (positionState.celestialBodies.length === 0) {
+            positionState.cyclesCompleted += 1;
+
+            const actualTpPct = body.avgPrice > 0
+              ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
+              : 0;
+            recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
+            recordCycleForSizeOptimizer({
+              stepsUsed: positionState.cycleBuys,
+              capitalDeployed: body.costBasis,
+            }, config.maxUsdcDeployed);
+
+            await resetCycle();
+          }
+        }
 
         // Annotate fills with body metadata
         fillLedger.annotateFillsByOrderId(fillData.orderId, {
           isBodyOwned: true,
           bodyId: body.id,
           bodyTier: body.tier,
-          bodyCostBasis: body.costBasis,
+          bodyCostBasis: proratedCostBasis,
           bodyAvgPrice: body.avgPrice,
-          bodyBtcQty: body.assetQty,
-          bodyHoldbackAsset: holdbackAsset,
+          bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
+          bodyHoldbackAsset: isPartial ? roundAsset(body.assetQty) : holdbackAsset,
           bodyPnl: pnl,
+          ...(isPartial && { partialFill: true }),
         });
 
         // Link source buy fills to this sell order for buy→sell display linkage
@@ -2026,22 +2107,6 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
           if (buyOrder.orderId !== 'core-migration' && !annotatedSrcIds.has(buyOrder.orderId)) {
             fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: fillData.orderId });
           }
-        }
-
-        // If no bodies remain, do a full cycle reset
-        if (positionState.celestialBodies.length === 0) {
-          positionState.cyclesCompleted += 1;
-
-          const actualTpPct = body.avgPrice > 0
-            ? ((summary.avgPrice - body.avgPrice) / body.avgPrice) * 100
-            : 0;
-          recordCycleForOptimizer({ optimalTpPct: actualTpPct, actualTpPct });
-          recordCycleForSizeOptimizer({
-            stepsUsed: positionState.cycleBuys,
-            capitalDeployed: body.costBasis,
-          }, config.maxUsdcDeployed);
-
-          await resetCycle();
         }
 
         saveLiveState();
