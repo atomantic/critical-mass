@@ -276,7 +276,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
 
-    const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
+    let result;
+    try {
+      result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
+    } catch (err) {
+      // POST_ONLY_REJ means TP price is below current bid — price already passed TP level.
+      // Retry without POST_ONLY so the order fills immediately as a taker.
+      if (err.message && err.message.includes('POST_ONLY_REJ')) {
+        console.log(`⚡ [${exchange}] TP price ${fmtPrice(roundedPrice)} below bid — retrying as taker order`);
+        result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
+      } else {
+        throw err;
+      }
+    }
 
     if (result.success) {
       console.log(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);

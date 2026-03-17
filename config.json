@@ -37,8 +37,8 @@
         "tpUpdateThresholdPct": 0.5,
         "holdbackRatio": 0.5,
         "maxBtcExposure": 100,
-        "depositedCapital": 100000,
-        "maxUsdcDeployed": 100120.38,
+        "depositedCapital": 202936.44,
+        "maxUsdcDeployed": 206758.30,
         "maxDrawdownPercent": 50,
         "entryOffsetBps": 12,
         "cancelRateLimitMs": 1000,
@@ -157,7 +157,12 @@
       "consolidateInterval": "never",
       "schedulerInterval": 30000,
       "dcaStrategy": "fixed",
-      "fibBaseAmount": 10
+      "fibBaseAmount": 10,
+      "regime": {
+        "enabled": true,
+        "maxUsdcDeployed": 33964.03,
+        "depositedCapital": 33039.19
+      }
     }
   },
   "kalshi": {
