@@ -37,6 +37,8 @@
 
 ## Fixed
 
+- Crypto.com partial TP fill handling — body TP orders that partially fill are now detected, body state reduced proportionally, and a new TP placed for the remaining position; previously partial fills were silently ignored because the polling only checked for 100% filled orders
+- Crypto.com `getOpenOrders` now returns `size`, `originalSize`, and `price` fields, and correctly reports `PARTIALLY_FILLED` status — fixes orphan detection for partially-filled sell orders
 - Capital adjustment UI now allows reducing available cash — clamps depositedCapital and maxUsdcDeployed to valid server ranges instead of sending out-of-range values
 - Signal history now sorted newest-first — API results were displayed in arbitrary order
 - Signal panel and banner show "CALCULATING..." loading state until live indicators arrive, preventing false BUY/SELL display from stale cached signals on page load

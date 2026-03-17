@@ -507,16 +507,23 @@ const createCryptocomAdapter = (keysPath = null) => {
 
     const orders = result.data || [];
 
-    return orders.map(order => ({
-      orderId: order.order_id?.toString(),
-      productId: order.instrument_name,
-      side: (order.side || '').toUpperCase(),
-      status: 'OPEN',
-      filledSize: parseFloat(order.cumulative_quantity || order.filled_quantity || 0),
-      createdTime: order.create_time
-        ? new Date(order.create_time).toISOString()
-        : new Date().toISOString(),
-    }));
+    return orders.map(order => {
+      const quantity = parseFloat(order.quantity || order.order_value || 0);
+      const filledQty = parseFloat(order.cumulative_quantity || order.filled_quantity || 0);
+      return {
+        orderId: order.order_id?.toString(),
+        productId: order.instrument_name,
+        side: (order.side || '').toUpperCase(),
+        status: filledQty > 0 ? 'PARTIALLY_FILLED' : 'OPEN',
+        size: quantity - filledQty, // Remaining unfilled size
+        originalSize: quantity,
+        filledSize: filledQty,
+        price: parseFloat(order.price || order.limit_price || 0),
+        createdTime: order.create_time
+          ? new Date(order.create_time).toISOString()
+          : new Date().toISOString(),
+      };
+    });
   };
 
   /**
