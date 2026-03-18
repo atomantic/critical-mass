@@ -53,42 +53,6 @@ const validateConfigUpdate = (schema, update) => {
   return { value: result, errors };
 };
 
-// ── Kalshi config schema ─────────────────────────────────────────
-const KALSHI_CONFIG_SCHEMA = {
-  enabled: { type: 'boolean' },
-  dryRun: { type: 'boolean' },
-  apiEnvironment: { type: 'string', enum: ['demo', 'prod'] },
-  tradeSizeDollars: { type: 'number', min: 1, max: 25000 },
-  maxActiveTrades: { type: 'number', min: 1, max: 100 },
-  maxDailyLoss: { type: 'number', min: 0, max: 100000 },
-  maxDailyTrades: { type: 'number', min: 1, max: 1000 },
-  evaluationIntervalMs: { type: 'number', min: 1000, max: 600000 },
-  marketRefreshIntervalMs: { type: 'number', min: 5000, max: 3600000 },
-  enablePreSettlementExit: { type: 'boolean' },
-  preSettlementExitMs: { type: 'number', min: 0, max: 900000 },
-  minProfitCents: { type: 'number', min: 0, max: 100 },
-  maxLossCents: { type: 'number', min: 0, max: 100 },
-  enableAutoTuner: { type: 'boolean' },
-  // strategies and markets are nested objects — validated via pass-through in route handler
-};
-
-// ── Strategy config schema (common fields across all strategies) ─
-const STRATEGY_CONFIG_SCHEMA = {
-  enabled: { type: 'boolean' },
-  mode: { type: 'string', enum: ['shadow', 'live'] },
-  sizing: { type: 'number', min: 1, max: 25000 },
-  minEdge: { type: 'number', min: 0, max: 1 },
-  maxExposure: { type: 'number', min: 0, max: 100000 },
-  maxActiveTrades: { type: 'number', min: 0, max: 100 },
-  minProbability: { type: 'number', min: 0, max: 1 },
-  maxProbability: { type: 'number', min: 0, max: 1 },
-  minTTL: { type: 'number', min: 0, max: 86400000 },
-  maxTTL: { type: 'number', min: 0, max: 86400000 },
-  takeProfitCents: { type: 'number', min: 0, max: 100 },
-  stopLossCents: { type: 'number', min: 0, max: 100 },
-  cooldownMs: { type: 'number', min: 0, max: 3600000 },
-};
-
 // ── Exchange config schema ───────────────────────────────────────
 const EXCHANGE_CONFIG_SCHEMA = {
   enabled: { type: 'boolean' },
@@ -121,58 +85,8 @@ const AGGRESSIVENESS_SCHEMA = {
   maxCycleBuys: { type: 'number', min: 1, max: 100 },
 };
 
-/**
- * Validate a nested strategies object — each key maps to a strategy config.
- * Returns sanitized strategies with only allowed fields per entry.
- * @param {Object} strategies - e.g. { momentum: { enabled: true, sizing: 100 }, ... }
- * @returns {{ value: Object, errors: string[] }}
- */
-const validateStrategies = (strategies) => {
-  if (typeof strategies !== 'object' || strategies === null || Array.isArray(strategies)) {
-    return { value: {}, errors: ['strategies must be an object'] };
-  }
-  const result = {};
-  const errors = [];
-  for (const [name, config] of Object.entries(strategies)) {
-    if (typeof config !== 'object' || config === null || Array.isArray(config)) {
-      errors.push(`strategies.${name}: must be an object`);
-      continue;
-    }
-    const { value, errors: fieldErrors } = validateConfigUpdate(STRATEGY_CONFIG_SCHEMA, config);
-    fieldErrors.forEach(e => errors.push(`strategies.${name}.${e}`));
-    result[name] = value;
-  }
-  return { value: result, errors };
-};
-
-/**
- * Validate a nested markets object — each key maps to a market config.
- * Only allows plain objects as values (no arrays, no primitives).
- * @param {Object} markets
- * @returns {{ value: Object, errors: string[] }}
- */
-const validateMarkets = (markets) => {
-  if (typeof markets !== 'object' || markets === null || Array.isArray(markets)) {
-    return { value: {}, errors: ['markets must be an object'] };
-  }
-  const result = {};
-  const errors = [];
-  for (const [key, value] of Object.entries(markets)) {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      errors.push(`markets.${key}: must be an object`);
-      continue;
-    }
-    result[key] = value;
-  }
-  return { value: result, errors };
-};
-
 module.exports = {
   validateConfigUpdate,
-  validateStrategies,
-  validateMarkets,
-  KALSHI_CONFIG_SCHEMA,
-  STRATEGY_CONFIG_SCHEMA,
   EXCHANGE_CONFIG_SCHEMA,
   AGGRESSIVENESS_SCHEMA,
 };

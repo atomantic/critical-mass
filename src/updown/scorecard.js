@@ -153,6 +153,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
 
   /** @type {NodeJS.Timeout | null} */
   let sampleInterval = null
+  let pruneTimer = null
 
   /** @type {Function | null} */
   let computeSignalsFn = null
@@ -555,8 +556,32 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
    * Start auto-sampling predictions at the configured interval
    * @param {Function} computeSignals - Function that returns signal engine output
    */
+  /**
+   * Prune scorecard JSONL files older than retentionDays
+   * @param {number} [retentionDays=30] - Number of days to keep
+   */
+  const pruneHistory = async (retentionDays = 30) => {
+    if (!existsSync(SCORECARD_DIR)) return
+    const files = await readdir(SCORECARD_DIR)
+    const jsonlFiles = files.filter(f => f.endsWith('.jsonl')).sort()
+    if (jsonlFiles.length <= retentionDays) return
+
+    const toDelete = jsonlFiles.slice(0, jsonlFiles.length - retentionDays)
+    let deleted = 0
+    for (const file of toDelete) {
+      await require('fs/promises').unlink(path.join(SCORECARD_DIR, file)).catch(() => {})
+      deleted++
+    }
+    if (deleted > 0) {
+      log('INFO', `📊 Scorecard pruned ${deleted} files older than ${retentionDays} days`)
+    }
+  }
+
   const start = async (computeSignals) => {
     computeSignalsFn = computeSignals
+
+    // Prune old scorecard data on startup (keep 30 days)
+    await pruneHistory(30).catch(err => log('WARN', `📊 Scorecard prune failed err=${err.message}`))
 
     // Hydrate from disk and emit initial metrics
     await loadHistory().catch(err => log('WARN', `📊 Scorecard history load failed err=${err.message}`))
@@ -573,6 +598,10 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       const result = computeSignalsFn()
       recordPrediction(result, 'interval')
     }, SAMPLE_INTERVAL_MS)
+
+    // Daily prune of old scorecard files (every 24h)
+    pruneTimer = setInterval(() => pruneHistory(30).catch(() => {}), 24 * 60 * 60 * 1000)
+
     log('INFO', '📊 Scorecard started interval=60s windows=[1m,5m,15m,1h]')
   }
 
@@ -583,6 +612,10 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     if (sampleInterval) {
       clearInterval(sampleInterval)
       sampleInterval = null
+    }
+    if (pruneTimer) {
+      clearInterval(pruneTimer)
+      pruneTimer = null
     }
     for (const t of pendingTimeouts) {
       clearTimeout(t)

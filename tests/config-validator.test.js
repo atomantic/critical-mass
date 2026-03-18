@@ -4,10 +4,6 @@ const assert = require('node:assert/strict');
 
 const {
   validateConfigUpdate,
-  validateStrategies,
-  validateMarkets,
-  KALSHI_CONFIG_SCHEMA,
-  STRATEGY_CONFIG_SCHEMA,
   EXCHANGE_CONFIG_SCHEMA,
   AGGRESSIVENESS_SCHEMA,
 } = require('../src/config-validator');
@@ -116,102 +112,5 @@ describe('validateConfigUpdate', () => {
     assert.equal(value.kFactor, 0.5);
     assert.equal(value.entryOffsetBps, 50);
     assert.equal(value.maxCycleBuys, 10);
-  });
-
-  it('KALSHI_CONFIG_SCHEMA validates top-level fields', () => {
-    const { value, errors } = validateConfigUpdate(KALSHI_CONFIG_SCHEMA, {
-      enabled: true,
-      dryRun: false,
-      tradeSizeDollars: 100,
-      enableAutoTuner: true,
-    });
-    assert.deepStrictEqual(errors, []);
-    assert.equal(value.enabled, true);
-    assert.equal(value.tradeSizeDollars, 100);
-  });
-
-  it('STRATEGY_CONFIG_SCHEMA validates strategy fields', () => {
-    const { value, errors } = validateConfigUpdate(STRATEGY_CONFIG_SCHEMA, {
-      enabled: true,
-      mode: 'live',
-      sizing: 500,
-      minEdge: 0.05,
-    });
-    assert.deepStrictEqual(errors, []);
-    assert.equal(value.mode, 'live');
-    assert.equal(value.sizing, 500);
-  });
-});
-
-describe('validateStrategies', () => {
-  it('rejects non-object input', () => {
-    for (const bad of [null, 'str', 42, [1]]) {
-      const { value, errors } = validateStrategies(bad);
-      assert.deepStrictEqual(value, {});
-      assert.equal(errors.length, 1);
-    }
-  });
-
-  it('validates each strategy entry against STRATEGY_CONFIG_SCHEMA', () => {
-    const { value, errors } = validateStrategies({
-      momentum: { enabled: true, sizing: 100, minEdge: 0.05 },
-      mean_reversion: { enabled: false, mode: 'shadow' },
-    });
-    assert.deepStrictEqual(errors, []);
-    assert.equal(value.momentum.enabled, true);
-    assert.equal(value.momentum.sizing, 100);
-    assert.equal(value.mean_reversion.mode, 'shadow');
-  });
-
-  it('drops unknown fields within strategy entries', () => {
-    const { value, errors } = validateStrategies({
-      test: { enabled: true, hackField: 'evil' },
-    });
-    assert.deepStrictEqual(errors, []);
-    assert.deepStrictEqual(value.test, { enabled: true });
-  });
-
-  it('returns errors for invalid strategy field types', () => {
-    const { errors } = validateStrategies({
-      bad: { enabled: 'yes', sizing: 'big' },
-    });
-    assert.equal(errors.length, 2);
-    assert.match(errors[0], /strategies\.bad\.enabled/);
-    assert.match(errors[1], /strategies\.bad\.sizing/);
-  });
-
-  it('rejects non-object strategy entries', () => {
-    const { errors } = validateStrategies({
-      bad: 'not-an-object',
-      also_bad: [1, 2],
-    });
-    assert.equal(errors.length, 2);
-  });
-});
-
-describe('validateMarkets', () => {
-  it('rejects non-object input', () => {
-    const { value, errors } = validateMarkets('bad');
-    assert.deepStrictEqual(value, {});
-    assert.equal(errors.length, 1);
-  });
-
-  it('passes through valid market objects', () => {
-    const { value, errors } = validateMarkets({
-      'KXBTC-26FEB21': { enabled: true, category: 'crypto' },
-    });
-    assert.deepStrictEqual(errors, []);
-    assert.ok(value['KXBTC-26FEB21']);
-  });
-
-  it('rejects non-object market entries', () => {
-    const { errors } = validateMarkets({
-      good: { enabled: true },
-      bad: 'string',
-      worse: [1],
-    });
-    assert.equal(errors.length, 2);
-    assert.match(errors[0], /markets\.bad/);
-    assert.match(errors[1], /markets\.worse/);
   });
 });

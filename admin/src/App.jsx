@@ -17,17 +17,8 @@ import NotificationsConfig from './components/NotificationsConfig'
 import BackupRestore from './components/BackupRestore'
 import RegimeDashboard from './components/RegimeDashboard'
 const Systems = lazy(() => import('./components/Systems'))
-const KalshiDashboard = lazy(() => import('./components/kalshi/Dashboard'))
-const KalshiConfig = lazy(() => import('./components/kalshi/Config'))
-const KalshiGeneralConfig = lazy(() => import('./components/kalshi/GeneralConfig'))
-const KalshiKeysConfig = lazy(() => import('./components/kalshi/KeysConfig'))
-const KalshiRiskConfig = lazy(() => import('./components/kalshi/RiskConfig'))
-const KalshiStrategiesConfig = lazy(() => import('./components/kalshi/StrategiesConfig'))
-const KalshiMarketDetail = lazy(() => import('./components/kalshi/MarketDetail'))
-const KalshiPositions = lazy(() => import('./components/kalshi/Positions'))
 const AIProviders = lazy(() => import('./components/ai/Providers'))
 const LogViewer = lazy(() => import('./components/LogViewer'))
-const HedgeDashboard = lazy(() => import('./components/hedge/Dashboard'))
 const UpDownDashboard = lazy(() => import('./components/updown/Dashboard'))
 const ScorecardAnalysis = lazy(() => import('./components/updown/ScorecardAnalysis'))
 const SentinelDashboard = lazy(() => import('./components/sentinel/Dashboard'))
@@ -169,8 +160,8 @@ function AppContent() {
         const targetPair = exchangeConfig?.productId || 'BTC-USDC'
         setCurrentExchange(targetExchange)
         setCurrentStrategy(targetStrategy)
-        // Don't redirect away from non-exchange pages (overview, kalshi, notifications, etc.)
-        const nonExchangePaths = ['/', '/kalshi', '/hedge', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
+        // Don't redirect away from non-exchange pages (overview, notifications, etc.)
+        const nonExchangePaths = ['/', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
         const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
         if (!isNonExchangePage) {
           navigate(`/${targetExchange}/${targetPair}`, { replace: true })
@@ -322,14 +313,8 @@ function AppContent() {
   // Check if on overview page
   const isOverview = location.pathname === '/'
 
-  // Check if on Kalshi pages (independent of exchange-based routing)
-  const isKalshi = location.pathname.startsWith('/kalshi')
-
   // Check if on AI pages
   const isAI = location.pathname.startsWith('/ai')
-
-  // Check if on Hedge pages
-  const isHedge = location.pathname.startsWith('/hedge')
 
   // Check if on UpDown pages
   const isUpDown = location.pathname.startsWith('/updown')
@@ -427,18 +412,6 @@ function AppContent() {
                   Systems
                 </Link>
                 <Link
-                  to="/kalshi"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Kalshi
-                </Link>
-                <Link
-                  to="/hedge"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
-                >
-                  Hedge
-                </Link>
-                <Link
                   to="/updown"
                   className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
@@ -497,20 +470,6 @@ function AppContent() {
                   Systems
                 </Link>
                 <Link
-                  to="/kalshi"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-                >
-                  Kalshi
-                </Link>
-                <Link
-                  to="/hedge"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-                >
-                  Hedge
-                </Link>
-                <Link
                   to="/updown"
                   onClick={() => setMobileMenuOpen(false)}
                   className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
@@ -543,8 +502,8 @@ function AppContent() {
           </div>
         </header>
 
-        {/* Exchange sub-nav (hidden on overview, Kalshi, and AI pages) */}
-        {!isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isSentinel && !isGateway && (
+        {/* Exchange sub-nav (hidden on overview and AI pages) */}
+        {!isOverview && !isAI && !isUpDown && !isSentinel && !isGateway && (
           <nav className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
@@ -625,86 +584,6 @@ function AppContent() {
           </nav>
         )}
 
-        {/* Kalshi sub-nav (shown on /kalshi/* pages) */}
-        {isKalshi && (
-          <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
-            <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
-              <div className="flex gap-1 min-w-max">
-                <Link
-                  to="/kalshi"
-                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                    location.pathname === '/kalshi'
-                      ? 'text-white border-b-2 border-blue-500'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  Dashboard
-                </Link>
-                <Link
-                  to="/kalshi/positions"
-                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                    location.pathname.startsWith('/kalshi/positions')
-                      ? 'text-white border-b-2 border-blue-500'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  Positions
-                </Link>
-                <Link
-                  to="/kalshi/config"
-                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                    location.pathname.startsWith('/kalshi/config')
-                      ? 'text-white border-b-2 border-blue-500'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  Config
-                </Link>
-                <Link
-                  to="/kalshi/logs"
-                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                    location.pathname === '/kalshi/logs'
-                      ? 'text-white border-b-2 border-blue-500'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  Logs
-                </Link>
-              </div>
-            </div>
-          </nav>
-        )}
-
-        {/* Hedge sub-nav (shown on /hedge/* pages) */}
-        {isHedge && (
-          <nav className="bg-gray-800 border-b border-gray-700 overflow-x-auto">
-            <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
-              <div className="flex gap-1 min-w-max">
-                <Link
-                  to="/hedge"
-                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                    location.pathname === '/hedge'
-                      ? 'text-white border-b-2 border-blue-500'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  Dashboard
-                </Link>
-                <Link
-                  to="/hedge/logs"
-                  className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-                    location.pathname === '/hedge/logs'
-                      ? 'text-white border-b-2 border-blue-500'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  Logs
-                </Link>
-              </div>
-            </div>
-          </nav>
-        )}
-
         {/* Global Alert Banner */}
         <AlertBanner />
 
@@ -716,7 +595,7 @@ function AppContent() {
             </div>
           )}
 
-          {loading && !summary && !isOverview && !isKalshi && !isAI && !isHedge && !isUpDown && !isSentinel && !isGateway ? (
+          {loading && !summary && !isOverview && !isAI && !isUpDown && !isSentinel && !isGateway ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-gray-400">Loading...</div>
             </div>
@@ -769,27 +648,8 @@ function AppContent() {
               {/* Systems - debug showcase of all celestial body types */}
               <Route path="/systems" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><Systems /></Suspense>} />
 
-              {/* Kalshi prediction market routes */}
-              <Route path="/kalshi" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiDashboard /></Suspense>} />
-              <Route path="/kalshi/markets/:ticker" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiMarketDetail /></Suspense>} />
-              <Route path="/kalshi/positions" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiPositions /></Suspense>} />
-              <Route path="/kalshi/config" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiConfig /></Suspense>}>
-                <Route index element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiGeneralConfig /></Suspense>} />
-                <Route path="general" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiGeneralConfig /></Suspense>} />
-                <Route path="keys" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiKeysConfig /></Suspense>} />
-                <Route path="risk" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiRiskConfig /></Suspense>} />
-                <Route path="strategies" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><KalshiStrategiesConfig /></Suspense>} />
-              </Route>
-
-              {/* Kalshi logs */}
-              <Route path="/kalshi/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass-kalshi" /></Suspense>} />
-
               {/* AI Provider management */}
               <Route path="/ai" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><AIProviders /></Suspense>} />
-
-              {/* Hedge engine dashboard + logs */}
-              <Route path="/hedge" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><HedgeDashboard /></Suspense>} />
-              <Route path="/hedge/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass-kalshi" /></Suspense>} />
 
               {/* UpDown BTC Options dashboard */}
               <Route path="/updown/analysis" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><ScorecardAnalysis /></Suspense>} />
