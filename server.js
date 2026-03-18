@@ -35,7 +35,6 @@ const {
   getNextTradeInfo,
 } = require('./src/shared-utils');
 const { createIPCClient } = require('./src/ipc/ipc-client');
-const { createProxy } = require('./src/ipc/http-proxy');
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
@@ -117,32 +116,6 @@ const rescheduleBackupTimer = () => {
   const hours = (backupConfig.intervalMs / 3600000).toFixed(1);
   log('INFO', `💾 Backup scheduler started: every ${hours}h, max ${backupConfig.maxBackups} backups`);
 };
-
-// ============ Kalshi+Hedge IPC + HTTP Proxy ============
-
-const KALSHI_HTTP_PORT = parseInt(process.env.KALSHI_HTTP_PORT) || 5572;
-const KALSHI_IPC_PORT = parseInt(process.env.KALSHI_IPC_PORT) || 5573;
-
-// IPC client: receives Socket.IO events from the Kalshi engine process
-const kalshiIPC = createIPCClient(`ws://127.0.0.1:${KALSHI_IPC_PORT}`, 'kalshi', {
-  onEvent: (msg) => {
-    // Forward IPC events to Socket.IO clients
-    if (msg.room) {
-      io.to(msg.room).emit(msg.channel, msg.payload);
-    } else {
-      io.emit(msg.channel, msg.payload);
-    }
-  },
-  onConnect: () => log('INFO', '🔗 Gateway connected to Kalshi engine IPC'),
-  onDisconnect: () => log('INFO', '🔗 Gateway disconnected from Kalshi engine IPC'),
-});
-kalshiIPC.connect();
-
-// HTTP reverse proxy: forwards /api/kalshi/* and /api/hedge/* to the Kalshi engine's Express server
-const kalshiProxy = createProxy('127.0.0.1', KALSHI_HTTP_PORT, 'Kalshi');
-app.use('/api/kalshi', kalshiProxy);
-app.use('/api/hedge', kalshiProxy);
-log('INFO', `📊 Kalshi+Hedge routes proxied to :${KALSHI_HTTP_PORT}`);
 
 // ============ Crypto Exchange Engine IPC ============
 
@@ -258,26 +231,7 @@ app.get('/api/health', async (req, res) => {
     if (engines[name].status === 'timeout') overallStatus = 'degraded';
   });
 
-  // Kalshi engine via IPC
-  const kalshiCheck = (async () => {
-    if (!kalshiIPC.isConnected()) {
-      engines.kalshi = { status: 'unreachable', connected: false };
-      overallStatus = 'degraded';
-      return;
-    }
-    const status = await kalshiIPC.request('kalshi:status', {}, 'kalshi', timeout).catch(() => null);
-    engines.kalshi = {
-      status: status ? 'ok' : 'timeout',
-      connected: true,
-      kalshiEnabled: status?.kalshiEnabled ?? false,
-      hedgeEnabled: status?.hedgeEnabled ?? false,
-      engineRunning: status?.engineRunning ?? null,
-      uptime: status?.uptime ?? null,
-    };
-    if (!status) overallStatus = 'degraded';
-  })();
-
-  await Promise.allSettled([...exchangeChecks, kalshiCheck]);
+  await Promise.allSettled([...exchangeChecks]);
 
   // UpDown service (in-process, no IPC needed)
   const updownStatus = updownService.getStatus();
@@ -333,7 +287,7 @@ const activeLogStreams = new Map(); // socketId -> { process, processName }
 
 const ALLOWED_LOG_PROCESSES = new Set([
   'critical-mass', 'critical-mass-coinbase', 'critical-mass-gemini',
-  'critical-mass-cryptocom', 'critical-mass-kalshi',
+  'critical-mass-cryptocom',
 ]);
 
 // ============ WebSocket ============
@@ -356,9 +310,7 @@ io.on('connection', (socket) => {
     log('INFO', `WebSocket client disconnected: ${socket.id}`);
   });
 
-  // Room subscriptions for Kalshi/Hedge events (forwarded from engine via IPC)
-  socket.on('kalshi:join', () => { socket.join('kalshi'); socket.join('kalshi:coinbase'); });
-  socket.on('kalshi:leave', () => { socket.leave('kalshi'); socket.leave('kalshi:coinbase'); });
+  // Room subscriptions for exchange events (forwarded from engine via IPC)
   socket.on('coinbase:subscribe', () => socket.join('coinbase'));
   socket.on('coinbase:unsubscribe', () => socket.leave('coinbase'));
   socket.on('gemini:subscribe', () => socket.join('gemini'));
@@ -518,7 +470,7 @@ server.listen(PORT, () => {
     log('INFO', `[${exchange}] Interval: ${intervalLabel}, next trade in ${timeUntilNext.formatted}`);
   }
 
-  // Regime engine auto-resume is handled by engine processes (cm-coinbase, cm-kalshi)
+  // Regime engine auto-resume is handled by engine processes (e.g. cm-coinbase)
   // Market data services are handled by engine processes
 
   // Start notification system
@@ -541,7 +493,6 @@ const gracefulShutdown = async (signal) => {
   log('INFO', `Received ${signal}, shutting down gracefully...`);
 
   // Engine processes handle their own shutdown via PM2
-  kalshiIPC.disconnect();
   coinbaseIPC.disconnect();
   geminiIPC.disconnect();
   cryptocomIPC.disconnect();
