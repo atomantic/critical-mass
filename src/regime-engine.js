@@ -420,6 +420,32 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   };
 
   /**
+   * Cap realizedAssetPnL at actual exchange reserves after body sells.
+   * Prevents cumulative holdback inflation when bodies consolidate and re-sell.
+   * Only reduces the value (never inflates), so it's safe even when the exchange
+   * holds non-bot assets — the cap will just be higher than the stored value.
+   */
+  const reconcileAssetReserves = async () => {
+    if (isDryRun) return;
+    try {
+      const bal = await adapter.getAccountBalance(baseCurrency);
+      if (!bal) return;
+      const totalExchangeAsset = (parseFloat(bal.available) || 0) + (parseFloat(bal.hold) || 0);
+      // Use body sum directly (positionState.totalAsset may not be synced yet at startup)
+      const bodyAssetSum = (positionState.celestialBodies || []).reduce((s, b) => s + (b.assetQty || 0), 0);
+      const positionAsset = bodyAssetSum > 0 ? bodyAssetSum : (positionState.totalAsset || 0);
+      const maxReserves = roundAsset(Math.max(0, totalExchangeAsset - positionAsset));
+      if (positionState.realizedAssetPnL > maxReserves) {
+        console.log(`📊 [${exchange}] Asset reserves capped: ${positionState.realizedAssetPnL.toFixed(2)} → ${maxReserves.toFixed(2)} ${baseCurrency} (exchange=${totalExchangeAsset.toFixed(2)}, bodies=${positionAsset.toFixed(2)})`);
+        positionState.realizedAssetPnL = maxReserves;
+        if (positionState.celestialState) {
+          positionState.celestialState.bodiesRealizedAssetPnL = maxReserves;
+        }
+      }
+    } catch (err) { /* non-critical — next sell will retry */ }
+  };
+
+  /**
    * Save live state to disk (for faster recovery on restarts)
    */
   const saveLiveState = () => {
@@ -429,6 +455,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (macroRegime) {
       positionState.macroRegime = macroRegime.getState();
     }
+
+    // Cap asset reserves at actual exchange balance before saving
+    reconcileAssetReserves().catch(() => {});
 
     const regimeState = regimeDetector.getState();
     const tpOptimizerState = tpOptimizer.exportState();
@@ -1187,7 +1216,14 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, ${baseCurrency} reserves=${totalAssetPnL.toFixed(6)}`);
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         positionState.realizedPnL = totalPnL;
-        positionState.realizedAssetPnL = totalAssetPnL;
+        // Only update realizedAssetPnL if it would increase — the saved value may have
+        // been corrected via reconcileAssetReserves and the fill-ledger holdback sum
+        // can be inflated by body consolidation cycles
+        if (totalAssetPnL <= positionState.realizedAssetPnL) {
+          // Recalc gives a lower or equal value — safe to use
+          positionState.realizedAssetPnL = totalAssetPnL;
+        }
+        // Otherwise keep the saved (lower) value — it was corrected by reconciliation
         // Keep celestial body P&L counter in sync
         const bodyOnlyPnL = totalPnL - recalcResult.realizedPnL;
         const bodyOnlyBtcPnL = totalAssetPnL - recalcResult.realizedAssetPnL;
@@ -1430,6 +1466,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     // Start reconciliation and state saving
     if (!isDryRun) {
       startReconciliation();
+      // Cap inflated asset reserves on startup
+      reconcileAssetReserves().catch(() => {});
       // Start periodic state saving for live mode (every 5 minutes)
       stateSaveInterval = setInterval(saveLiveState, 300000);
     } else {

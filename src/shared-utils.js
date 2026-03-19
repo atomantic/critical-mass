@@ -91,81 +91,82 @@ const calculateCostBasis = (state, transactions) => {
   const buys = transactions.filter((t) => t.Type === 'BUY');
 
   let totalCostBasis = 0;
-  let totalBTCFromOrders = 0;
+  let totalAssetFromOrders = 0;
   let reservesCostBasis = 0;
   let pendingCostBasis = 0;
-  let pendingBTC = 0;
+  let pendingAsset = 0;
 
   orders.forEach((order) => {
     const costBasis =
-      order.buyCostBasis || order.buyUSDC || order.buyQuantityBTC * order.buyPrice;
-    const btcAmount = order.buyQuantityBTC || 0;
-    const holdback = order.holdbackBTC || 0;
-    const sellQuantity = order.sellQuantityBTC || 0;
-    const costPerBTC = btcAmount > 0 ? costBasis / btcAmount : 0;
+      order.buyCostBasis || order.buyUSDC || (order.buyQuantity || order.buyQuantityBTC || 0) * order.buyPrice;
+    const assetAmount = order.buyQuantity || order.buyQuantityBTC || 0;
+    const holdback = order.holdbackAsset || order.holdbackBTC || 0;
+    const sellQuantity = order.sellQuantity || order.sellQuantityBTC || 0;
+    const costPerAsset = assetAmount > 0 ? costBasis / assetAmount : 0;
 
-    reservesCostBasis += holdback * costPerBTC;
+    reservesCostBasis += holdback * costPerAsset;
 
     if (order.status === 'pending') {
-      pendingCostBasis += sellQuantity * costPerBTC;
-      pendingBTC += sellQuantity;
+      pendingCostBasis += sellQuantity * costPerAsset;
+      pendingAsset += sellQuantity;
     }
 
     totalCostBasis += costBasis;
-    totalBTCFromOrders += btcAmount;
+    totalAssetFromOrders += assetAmount;
   });
 
   if (orders.length === 0 && buys.length > 0) {
     buys.forEach((buy) => {
       const cost = Math.abs(buy['USDC Amount'] || 0) + (buy['Net Fees'] || 0);
-      const btc = buy['BTC Amount'] || 0;
+      const asset = buy['BTC Amount'] || 0;
       totalCostBasis += cost;
-      totalBTCFromOrders += btc;
+      totalAssetFromOrders += asset;
     });
 
-    const avgCost = totalBTCFromOrders > 0 ? totalCostBasis / totalBTCFromOrders : 0;
-    reservesCostBasis = (state.btcReserves || 0) * avgCost;
-    pendingCostBasis = (state.outstandingOrdersBTC || 0) * avgCost;
-    pendingBTC = state.outstandingOrdersBTC || 0;
+    const avgCost = totalAssetFromOrders > 0 ? totalCostBasis / totalAssetFromOrders : 0;
+    reservesCostBasis = (state.assetReserves || state.btcReserves || 0) * avgCost;
+    pendingCostBasis = (state.outstandingOrdersAsset || state.outstandingOrdersBTC || 0) * avgCost;
+    pendingAsset = state.outstandingOrdersAsset || state.outstandingOrdersBTC || 0;
   }
 
-  const avgCostPerBTC = totalBTCFromOrders > 0 ? totalCostBasis / totalBTCFromOrders : 0;
+  const avgCostPerAsset = totalAssetFromOrders > 0 ? totalCostBasis / totalAssetFromOrders : 0;
+  const assetReserves = state.assetReserves || state.btcReserves || 0;
   const reservesAvgCost =
-    (state.btcReserves || 0) > 0 ? reservesCostBasis / state.btcReserves : avgCostPerBTC;
+    assetReserves > 0 ? reservesCostBasis / assetReserves : avgCostPerAsset;
 
   return {
     totalCostBasis,
-    totalBTCBought: totalBTCFromOrders,
-    avgCostPerBTC,
-    reservesBTC: state.btcReserves || 0,
+    totalAssetBought: totalAssetFromOrders,
+    avgCostPerAsset,
+    reservesAsset: assetReserves,
     reservesCostBasis,
     reservesAvgCost,
-    pendingBTC,
+    pendingAsset,
     pendingCostBasis,
-    pendingAvgCost: pendingBTC > 0 ? pendingCostBasis / pendingBTC : 0,
+    pendingAvgCost: pendingAsset > 0 ? pendingCostBasis / pendingAsset : 0,
     orderBreakdown: orders.map((order) => {
       const costBasis =
-        order.buyCostBasis || order.buyUSDC || order.buyQuantityBTC * order.buyPrice;
-      const btcAmount = order.buyQuantityBTC || 0;
-      const costPerBTC = btcAmount > 0 ? costBasis / btcAmount : 0;
+        order.buyCostBasis || order.buyUSDC || (order.buyQuantity || order.buyQuantityBTC || 0) * order.buyPrice;
+      const assetAmount = order.buyQuantity || order.buyQuantityBTC || 0;
+      const costPerAsset = assetAmount > 0 ? costBasis / assetAmount : 0;
       return {
         date: order.createdAt ? order.createdAt.split('T')[0] : 'Unknown',
         buyPrice: order.buyPrice,
-        btcBought: btcAmount,
+        assetBought: assetAmount,
         costBasis,
-        costPerBTC,
+        costPerAsset,
         fees: order.buyFees || 0,
         rebates: order.buyRebates || 0,
         netFees: order.buyNetFees || 0,
-        holdback: order.holdbackBTC || 0,
-        holdbackCost: (order.holdbackBTC || 0) * costPerBTC,
-        sellQuantity: order.sellQuantityBTC || 0,
+        holdback: order.holdbackAsset || order.holdbackBTC || 0,
+        holdbackCost: (order.holdbackAsset || order.holdbackBTC || 0) * costPerAsset,
+        sellQuantity: order.sellQuantity || order.sellQuantityBTC || 0,
         sellPrice: order.sellPrice,
         status: order.status,
         realizedPnL:
           order.status === 'filled'
             ? (order.netProceeds || order.actualFillValue || 0) -
-              (order.sellQuantityBTC || 0) * costPerBTC
+              (order.sellQuantity || order.sellQuantityBTC || 0) * costPerAsset
             : null,
       };
     }),
