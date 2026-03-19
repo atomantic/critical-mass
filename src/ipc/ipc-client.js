@@ -15,7 +15,7 @@ const { log } = require('../logger');
 /**
  * Create an IPC client for the gateway
  * @param {string} url - WebSocket URL (e.g. 'ws://127.0.0.1:5573')
- * @param {string} name - Human-readable name for logs (e.g. 'kalshi')
+ * @param {string} name - Human-readable name for logs (e.g. 'coinbase')
  * @param {Object} [options]
  * @param {((msg: Object) => void)} [options.onEvent] - Callback for incoming events
  * @param {(() => void)} [options.onConnect] - Callback when connected

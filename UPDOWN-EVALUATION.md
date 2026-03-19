@@ -1,7 +1,7 @@
 # UpDown Strategy Evaluation
 
 **Date**: 2026-03-06
-**Scope**: Signal engine, indicators, scoring, modulation, and integration with Kalshi
+**Scope**: Signal engine, indicators, scoring, modulation
 
 ## Executive Summary
 
@@ -19,7 +19,7 @@ The UpDown signal engine is a well-engineered trend-following momentum system wi
 
 ### 1. Missing: Multi-Exchange Order Book Imbalance Signal
 
-**Gap**: The system uses Coinbase tick data for price/volume but ignores order book depth data despite having both `kalshi-orderbook-service.js` and `coinbase-orderbook-service.js` available.
+**Gap**: The system uses Coinbase tick data for price/volume but ignores order book depth data despite having orderbook data available.
 
 **Why it matters**: Order book imbalance (bid volume vs ask volume at top levels) is one of the strongest short-term directional predictors for BTC. A 3:1 bid/ask ratio at the top 5 levels is a strong bullish signal that precedes price moves by seconds to minutes — exactly the timeframe the UpDown engine operates on.
 
@@ -146,5 +146,5 @@ This is a low-effort change — just pass different parameters to `calculateStoc
 
 - All recommendations preserve existing architecture patterns (modular indicators, weighted scoring, modulation multipliers)
 - P1 items can be implemented independently and validated via the existing backtest infrastructure
-- No changes to the Kalshi integration layer are needed — improvements flow through the existing composite score
+- Improvements flow through the existing composite score
 - The scorecard will automatically track accuracy of new indicators/changes via the adaptive weight system

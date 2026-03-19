@@ -22,7 +22,7 @@ const DEFAULT_TIMEOUT = 10_000; // 10s for request/response
 /**
  * Create an IPC message
  * @param {string} type - Message type from MSG_TYPE
- * @param {string} channel - Event channel (e.g. 'regime:status', 'kalshi:trade')
+ * @param {string} channel - Event channel (e.g. 'regime:status', 'coinbase:trade')
  * @param {*} payload - Message data
  * @param {Object} [options]
  * @param {string} [options.id] - Message ID (auto-generated if omitted)
