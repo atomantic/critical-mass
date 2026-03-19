@@ -99,14 +99,9 @@ function Overview() {
 
     const lastPrice = market?.lastPrice ?? 0
 
-    // Position includes cycle buys + all celestial bodies
-    const cycleAsset = position?.totalAsset ?? 0
-    const cycleCost = position?.totalCostBasis ?? 0
-    const bodyAsset = (celestial?.bodies || []).reduce((sum, b) => sum + (b.assetQty || 0), 0)
-    const bodyCost = (celestial?.bodies || []).reduce((sum, b) => sum + (b.costBasis || 0), 0)
-    const totalAssetQty = cycleAsset + bodyAsset
-    // Cost basis of held assets (cycle + bodies, excludes pending cash orders)
-    const totalAssetCostBasis = cycleCost + bodyCost
+    // Position asset qty (syncPositionState already sums body assets into totalAsset)
+    const totalAssetQty = position?.totalAsset ?? 0
+    const totalAssetCostBasis = position?.totalCostBasis ?? 0
     // Total capital deployed including pending orders (for Capital widget)
     const totalCostBasis = apy?.deployedInPosition ?? totalAssetCostBasis
     // Calculate unrealized from full asset position

@@ -37,6 +37,9 @@
 
 ## Fixed
 
+- `calculateCostBasis` now reads asset-generic field names (`buyQuantity`, `holdbackAsset`, `sellQuantity`) instead of BTC-specific ones — fixes cost basis display for CRO and other non-BTC DCA funds
+- Overview position double-counting — `totalAssetQty` was summing body assets twice (`position.totalAsset` already equals body sum from `syncPositionState`)
+- CRO `realizedAssetPnL` inflation — cumulative holdback counter inflated to 168K CRO when actual reserves were ~28K; added `reconcileAssetReserves` cap that queries exchange balance on startup, every 5min save, and after sells; auto-recalc no longer overwrites corrected values with inflated fill-ledger totals
 - Crypto.com partial TP fill handling — body TP orders that partially fill are now detected, body state reduced proportionally, and a new TP placed for the remaining position; previously partial fills were silently ignored because the polling only checked for 100% filled orders
 - Crypto.com `getOpenOrders` now returns `size`, `originalSize`, and `price` fields, and correctly reports `PARTIALLY_FILLED` status — fixes orphan detection for partially-filled sell orders
 - Capital adjustment UI now allows reducing available cash — clamps depositedCapital and maxUsdcDeployed to valid server ranges instead of sending out-of-range values

@@ -205,7 +205,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
                 </tr>
               ) : (
                 costBasis.orderBreakdown.map((order, i) => {
-                  const currentOrderValue = order.btcBought * currentPrice
+                  const currentOrderValue = (order.assetBought || order.btcBought || 0) * currentPrice
                   const unrealized = currentOrderValue - order.costBasis
                   const unrealizedPercent = order.costBasis > 0
                     ? ((currentOrderValue / order.costBasis) - 1) * 100
@@ -215,7 +215,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
                     <tr key={i} className="border-t border-gray-700">
                       <td className="py-2 whitespace-nowrap">{order.date}</td>
                       <td className="py-2 whitespace-nowrap">{formatPrice(order.buyPrice)}</td>
-                      <td className="py-2 font-mono whitespace-nowrap">{formatAsset(order.btcBought)}</td>
+                      <td className="py-2 font-mono whitespace-nowrap">{formatAsset(order.assetBought || order.btcBought)}</td>
                       <td className="py-2 whitespace-nowrap">{formatCurrency(order.costBasis)}</td>
                       <td className="py-2 text-red-400 whitespace-nowrap">{formatCurrency(order.netFees)}</td>
                       <td className="py-2 whitespace-nowrap">{formatPrice(order.costPerAsset)}</td>
