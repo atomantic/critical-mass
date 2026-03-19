@@ -411,7 +411,7 @@ export default function BTCPriceChart({
                 <Line type="monotone" dataKey="vwap" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} connectNulls />
               )}
 
-              {/* Exchange-specific lines (e.g., Coinbase, Gemini, Crypto.com for Kalshi) */}
+              {/* Exchange-specific lines (e.g., Coinbase, Gemini, Crypto.com) */}
               {exchangeLines.map(line => (
                 <Line
                   key={line.dataKey}

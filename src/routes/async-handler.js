@@ -3,7 +3,7 @@
  * Unified async route error wrapper for Express.
  * Catches rejected promises, logs the error, and sends a JSON error response.
  *
- * @param {string} prefix - Log prefix for error messages (e.g. 'kalshi', 'hedge')
+ * @param {string} prefix - Log prefix for error messages (e.g. 'coinbase', 'gemini')
  * @param {() => string} tsFn - Timestamp function for log formatting
  * @returns {(fn: Function) => Function}
  */

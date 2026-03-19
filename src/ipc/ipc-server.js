@@ -14,7 +14,7 @@ const { log } = require('../logger');
 /**
  * Create an IPC server for an engine process
  * @param {number} port - Port to listen on (localhost only)
- * @param {string} name - Human-readable name for logs (e.g. 'kalshi-engine')
+ * @param {string} name - Human-readable name for logs (e.g. 'coinbase-engine')
  * @returns {Object}
  */
 const createIPCServer = (port, name) => {

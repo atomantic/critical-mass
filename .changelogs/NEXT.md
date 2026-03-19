@@ -64,6 +64,9 @@
 
 ## Removed
 
+- Kalshi/hedge references from PLAN.md, docs, IPC modules, and shared utilities (post-removal cleanup)
+- STRATEGY-GUIDE.md (Kalshi-specific, no longer applicable)
+- Kalshi strategy config warning from CLAUDE.md
 - "Live" WebSocket connection indicator from overview page
 - Direction (Dir) column from UpDown trade history table — directional stats still shown in Up/Down win rate summary
 - ADX dynamic weight shift — replaced by static trend-following-dominant weights (was compounding bug)
