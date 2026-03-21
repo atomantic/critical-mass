@@ -186,6 +186,20 @@ export const getHierarchicalSpeed = (depth) => {
   return HIERARCHICAL_SPEEDS[Math.min(depth, HIERARCHICAL_SPEEDS.length - 1)]
 }
 
+// Tiers that get their own standalone body component (particle-based or complex geometry)
+// Everything else routes through CelestialBody
+export const STANDALONE_TIERS = new Set(['black_hole', 'galaxy', 'nebula'])
+
+// Shared memo comparator for body components
+export const bodyPropsEqual = (prev, next) =>
+  prev.body.id === next.body.id &&
+  prev.body.costBasis === next.body.costBasis &&
+  prev.body.tpPrice === next.body.tpPrice &&
+  prev.body.mergeCount === next.body.mergeCount &&
+  prev.showTooltip === next.showTooltip &&
+  prev.maxUsdcDeployed === next.maxUsdcDeployed &&
+  prev.baseCurrency === next.baseCurrency
+
 // Tier descriptions for the showcase page
 export const TIER_DESCRIPTIONS = {
   satellite:  'Smallest positions. Man-made objects orbiting at the edge of the system.',
