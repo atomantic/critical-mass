@@ -490,7 +490,7 @@
 
 /**
  * @typedef {Object} CelestialTier
- * @property {string} name - Tier name (satellite, moon, planet, sun, hypergiant, galaxy, black_hole)
+ * @property {string} name - Tier name (satellite, asteroid, moon, planet, sun, hypergiant, nebula, galaxy, black_hole)
  * @property {string} emoji - Display emoji
  * @property {number} minMass - Minimum mass multiplier (× baseSizeUsdc)
  * @property {number} maxMass - Maximum mass multiplier
@@ -503,7 +503,7 @@
 /**
  * @typedef {Object} CelestialBody
  * @property {string} id - Unique body ID (persists through promotions)
- * @property {string} tier - Tier name (satellite|moon|planet|sun|hypergiant|galaxy|black_hole)
+ * @property {string} tier - Tier name (satellite|asteroid|moon|planet|sun|hypergiant|nebula|galaxy|black_hole)
  * @property {number} assetQty - Total BTC
  * @property {number} costBasis - Total cost basis including fees ($)
  * @property {number} avgPrice - costBasis / assetQty

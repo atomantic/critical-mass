@@ -10,7 +10,7 @@ import { TIER_RANK } from './celestialConstants'
  * Bodies are sorted largest-first; the largest sits at center and each
  * subsequent body orbits the next-larger one in a nested chain.
  */
-const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurrency = 'BTC' }) => {
+const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurrency = 'BTC', controlsRef }) => {
   // Sort bodies: tier rank ascending (higher tier = closer to center), then costBasis desc
   const sortedBodies = useMemo(() =>
     [...bodies].sort((a, b) => {
@@ -20,7 +20,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
     }),
   [bodies])
 
-  const hasHighTier = bodies.some(b => ['sun', 'hypergiant', 'galaxy', 'black_hole'].includes(b.tier))
+  const hasHighTier = bodies.some(b => ['sun', 'hypergiant', 'nebula', 'galaxy', 'black_hole'].includes(b.tier))
   const hasBlackHole = bodies.some(b => b.tier === 'black_hole')
 
   // Pinned tooltip: stays on last-hovered body until a different one is hovered
@@ -29,19 +29,21 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
 
   return (
     <>
-      {/* Camera controls */}
+      {/* Camera controls — pan enabled for better navigation */}
       <OrbitControls
+        ref={controlsRef}
         autoRotate
         autoRotateSpeed={0.3}
-        enablePan={false}
+        enablePan
+        panSpeed={0.8}
         minDistance={4}
-        maxDistance={25}
+        maxDistance={40}
         maxPolarAngle={Math.PI * 0.85}
         minPolarAngle={Math.PI * 0.15}
       />
 
-      {/* Fog for depth */}
-      <fog attach="fog" args={['#0f0f14', 20, 60]} />
+      {/* Fog for depth — pushed further out for wider views */}
+      <fog attach="fog" args={['#0f0f14', 30, 80]} />
 
       {/* Ambient light */}
       <ambientLight intensity={hasHighTier ? 0.12 : 0.25} />
@@ -51,19 +53,19 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
         position={[0, 0, 0]}
         color={hasBlackHole ? '#EF4444' : '#F59E0B'}
         intensity={hasHighTier ? 3.0 : 1.0}
-        distance={30}
+        distance={40}
         decay={2}
       />
 
       {/* Secondary fill light from above */}
-      <pointLight position={[0, 8, 0]} color="#ffffff" intensity={0.15} distance={20} decay={2} />
+      <pointLight position={[0, 8, 0]} color="#ffffff" intensity={0.15} distance={25} decay={2} />
 
       {/* Rim fill light */}
       <directionalLight position={[5, 3, 5]} intensity={0.15} color="#ffffff" />
 
       {/* Dual starfield background */}
-      <Stars radius={50} depth={40} count={1200} factor={3} saturation={0.1} fade speed={0.3} />
-      <Stars radius={80} depth={60} count={800} factor={2} saturation={0.2} fade speed={0.1} />
+      <Stars radius={60} depth={50} count={1500} factor={3} saturation={0.1} fade speed={0.3} />
+      <Stars radius={100} depth={80} count={1000} factor={2} saturation={0.2} fade speed={0.1} />
 
       {/* Hierarchical celestial bodies - largest at center, each smaller orbits the next-larger */}
       <HierarchicalOrbit

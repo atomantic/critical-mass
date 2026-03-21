@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import CelestialBody from './CelestialBody'
 import BlackHole from './BlackHole'
 import GalaxyBody from './GalaxyBody'
+import NebulaBody from './NebulaBody'
 import {
   getDynamicOrbitRadius, getHierarchicalRadius, getHierarchicalSpeed,
   TIER_COLORS, RING_OPACITY,
@@ -99,6 +100,8 @@ const HierarchicalOrbit = ({ bodies, depth = 0, activeBodyId, onBodyHover, paren
     <BlackHole {...bodyProps} />
   ) : current.tier === 'galaxy' ? (
     <GalaxyBody {...bodyProps} />
+  ) : current.tier === 'nebula' ? (
+    <NebulaBody {...bodyProps} />
   ) : (
     <CelestialBody {...bodyProps} />
   )
