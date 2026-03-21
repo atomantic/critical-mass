@@ -6,7 +6,7 @@
  * Every buy starts as the smallest tier (satellite). Bodies consolidate
  * within tiers when price-close, and promote to higher tiers as mass grows.
  *
- * Tiers: satellite < moon < planet < sun < hypergiant < galaxy < black_hole
+ * Tiers: satellite < asteroid < moon < planet < sun < hypergiant < nebula < galaxy < black_hole
  *
  * Pure logic, no I/O.
  */
@@ -51,11 +51,13 @@ const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /** @type {CelestialTier[]} */
 const TIERS = [
-  { name: 'satellite',  emoji: '🛰️', minPct: 0,   maxPct: 2,        tpMult: 1.0, tpMaxScale: 1.0,  proximity: 0.5, holdbackScale: 1.00 },
+  { name: 'satellite',  emoji: '🛰️', minPct: 0,   maxPct: 1,        tpMult: 1.0, tpMaxScale: 1.0,  proximity: 0.5, holdbackScale: 1.00 },
+  { name: 'asteroid',   emoji: '🪨',  minPct: 1,   maxPct: 2,        tpMult: 1.1, tpMaxScale: 1.2,  proximity: 0.6, holdbackScale: 1.02 },
   { name: 'moon',       emoji: '🌙',  minPct: 2,   maxPct: 5,        tpMult: 1.2, tpMaxScale: 1.5,  proximity: 0.8, holdbackScale: 1.05 },
   { name: 'planet',     emoji: '🪐',  minPct: 5,   maxPct: 15,       tpMult: 1.5, tpMaxScale: 2.0,  proximity: 1.5, holdbackScale: 1.10 },
   { name: 'sun',        emoji: '☀️',  minPct: 15,  maxPct: 30,       tpMult: 2.0, tpMaxScale: 3.0,  proximity: 2.0, holdbackScale: 1.15 },
-  { name: 'hypergiant', emoji: '💫',  minPct: 30,  maxPct: 50,       tpMult: 3.0, tpMaxScale: 5.0,  proximity: 3.0, holdbackScale: 1.20 },
+  { name: 'hypergiant', emoji: '💫',  minPct: 30,  maxPct: 40,       tpMult: 3.0, tpMaxScale: 5.0,  proximity: 3.0, holdbackScale: 1.20 },
+  { name: 'nebula',     emoji: '✨',  minPct: 40,  maxPct: 50,       tpMult: 3.5, tpMaxScale: 6.0,  proximity: 3.2, holdbackScale: 1.21 },
   { name: 'galaxy',     emoji: '🌌',  minPct: 50,  maxPct: 75,       tpMult: 4.0, tpMaxScale: 8.0,  proximity: 3.5, holdbackScale: 1.22 },
   { name: 'black_hole', emoji: '🕳️', minPct: 75,  maxPct: Infinity,  tpMult: 5.0, tpMaxScale: 10.0, proximity: 4.0, holdbackScale: 1.25 },
 ];
@@ -395,7 +397,7 @@ const createInitialCelestialState = () => ({
  * @param {CelestialBody[]} bodies - All bodies
  * @returns {string} e.g. "S:3 M:1 P:1"
  */
-const TIER_ABBREV = { satellite: 'Sat', moon: 'M', planet: 'P', sun: 'Sun', hypergiant: 'HG', galaxy: 'G', black_hole: 'BH' };
+const TIER_ABBREV = { satellite: 'Sat', asteroid: 'Ast', moon: 'M', planet: 'P', sun: 'Sun', hypergiant: 'HG', nebula: 'Neb', galaxy: 'G', black_hole: 'BH' };
 
 const getTierSummary = (bodies) => {
   const counts = {};
@@ -409,10 +411,12 @@ const getTierSummary = (bodies) => {
 /** Tier colors for dashboard display */
 const TIER_COLORS = {
   satellite: '#6B7280',   // gray
+  asteroid: '#92400E',    // amber-brown
   moon: '#9CA3AF',        // light gray
   planet: '#3B82F6',      // blue
   sun: '#F59E0B',         // amber
   hypergiant: '#8B5CF6',  // purple
+  nebula: '#06B6D4',      // cyan
   galaxy: '#EC4899',      // pink
   black_hole: '#EF4444',  // red
 };

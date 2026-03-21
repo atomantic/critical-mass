@@ -54,14 +54,14 @@ const makeNewBuy = (overrides = {}) => ({
 // TIERS constant
 // ============================================================================
 describe('TIERS constant', () => {
-  it('has exactly 7 tiers', () => {
-    assert.equal(TIERS.length, 7);
+  it('has exactly 9 tiers', () => {
+    assert.equal(TIERS.length, 9);
   });
 
   it('tiers are ordered from satellite to black_hole', () => {
     const names = TIERS.map(t => t.name);
     assert.deepStrictEqual(names, [
-      'satellite', 'moon', 'planet', 'sun', 'hypergiant', 'galaxy', 'black_hole',
+      'satellite', 'asteroid', 'moon', 'planet', 'sun', 'hypergiant', 'nebula', 'galaxy', 'black_hole',
     ]);
   });
 
@@ -97,8 +97,20 @@ describe('getTierConfig', () => {
     }
   });
 
-  it('falls back to satellite for unknown tier name', () => {
+  it('returns asteroid config for asteroid tier', () => {
+    const config = getTierConfig('asteroid');
+    assert.equal(config.name, 'asteroid');
+    assert.equal(config.emoji, '🪨');
+  });
+
+  it('returns nebula config for nebula tier', () => {
     const config = getTierConfig('nebula');
+    assert.equal(config.name, 'nebula');
+    assert.equal(config.emoji, '✨');
+  });
+
+  it('falls back to satellite for unknown tier name', () => {
+    const config = getTierConfig('quasar');
     assert.equal(config.name, 'satellite');
   });
 
@@ -118,8 +130,16 @@ describe('classifyTier', () => {
     assert.equal(classifyTier(0, maxCapital).name, 'satellite');
   });
 
-  it('classifies 1% (below moon boundary) as satellite', () => {
-    assert.equal(classifyTier(100, maxCapital).name, 'satellite');
+  it('classifies 0.5% as satellite', () => {
+    assert.equal(classifyTier(50, maxCapital).name, 'satellite');
+  });
+
+  it('classifies exactly 1% as asteroid', () => {
+    assert.equal(classifyTier(100, maxCapital).name, 'asteroid');
+  });
+
+  it('classifies 1.5% as asteroid', () => {
+    assert.equal(classifyTier(150, maxCapital).name, 'asteroid');
   });
 
   it('classifies exactly 2% as moon', () => {
@@ -136,6 +156,10 @@ describe('classifyTier', () => {
 
   it('classifies exactly 30% as hypergiant', () => {
     assert.equal(classifyTier(3000, maxCapital).name, 'hypergiant');
+  });
+
+  it('classifies exactly 40% as nebula', () => {
+    assert.equal(classifyTier(4000, maxCapital).name, 'nebula');
   });
 
   it('classifies exactly 50% as galaxy', () => {
@@ -159,8 +183,13 @@ describe('classifyTier', () => {
   });
 
   it('handles boundary just below moon threshold', () => {
-    // 1.99% of 10000 = 199
-    assert.equal(classifyTier(199, maxCapital).name, 'satellite');
+    // 1.99% of 10000 = 199 → asteroid (1-2%)
+    assert.equal(classifyTier(199, maxCapital).name, 'asteroid');
+  });
+
+  it('handles boundary just below asteroid threshold', () => {
+    // 0.99% of 10000 = 99 → satellite (0-1%)
+    assert.equal(classifyTier(99, maxCapital).name, 'satellite');
   });
 });
 
@@ -349,7 +378,7 @@ describe('mergeIntoBody', () => {
   });
 
   it('promotes tier when cost basis crosses threshold', () => {
-    // satellite maxPct is 2%, moon starts at 2%
+    // satellite maxPct is 1%, asteroid is 1-2%, moon starts at 2%
     // With maxCapital=10000, costBasis >= 200 => moon
     const body = makeBody({ assetQty: 0.001, costBasis: 150, tier: 'satellite' });
     const newBuy = makeNewBuy({ totalSize: 0.001, totalValue: 100, totalFees: 0 });
@@ -447,6 +476,12 @@ describe('calculateBodyTpPercent', () => {
     assert.equal(result.effectiveMax, 5.0);
   });
 
+  it('applies asteroid 1.1x multiplier', () => {
+    const result = calculateBodyTpPercent(1.0, 'asteroid', 5.0);
+    assert.ok(Math.abs(result.tpPercent - 1.1) < 0.001);
+    assert.ok(Math.abs(result.effectiveMax - 6.0) < 0.001); // 5.0 * 1.2
+  });
+
   it('applies moon 1.2x multiplier', () => {
     const result = calculateBodyTpPercent(1.0, 'moon', 5.0);
     assert.ok(Math.abs(result.tpPercent - 1.2) < 0.001);
@@ -457,6 +492,12 @@ describe('calculateBodyTpPercent', () => {
     const result = calculateBodyTpPercent(2.0, 'sun', 5.0);
     assert.ok(Math.abs(result.tpPercent - 4.0) < 0.001);
     assert.ok(Math.abs(result.effectiveMax - 15.0) < 0.001); // 5.0 * 3.0
+  });
+
+  it('applies nebula 3.5x multiplier', () => {
+    const result = calculateBodyTpPercent(1.0, 'nebula', 5.0);
+    assert.ok(Math.abs(result.tpPercent - 3.5) < 0.001);
+    assert.ok(Math.abs(result.effectiveMax - 30.0) < 0.001); // 5.0 * 6.0
   });
 
   it('caps tpPercent at effectiveMax', () => {
@@ -490,14 +531,20 @@ describe('checkPromotions', () => {
 
   it('demotes a body if cost basis no longer qualifies (reclassify)', () => {
     const bodies = [makeBody({ tier: 'planet', costBasis: 100 })];
-    checkPromotions(bodies, 10000); // 1% => satellite
-    assert.equal(bodies[0].tier, 'satellite');
+    checkPromotions(bodies, 10000); // 1% => asteroid
+    assert.equal(bodies[0].tier, 'asteroid');
   });
 
   it('leaves body unchanged if tier is already correct', () => {
     const bodies = [makeBody({ tier: 'moon', costBasis: 300 })];
     checkPromotions(bodies, 10000); // 3% => moon (correct)
     assert.equal(bodies[0].tier, 'moon');
+  });
+
+  it('promotes to nebula when cost basis qualifies', () => {
+    const bodies = [makeBody({ tier: 'hypergiant', costBasis: 4500 })];
+    checkPromotions(bodies, 10000); // 45% => nebula
+    assert.equal(bodies[0].tier, 'nebula');
   });
 
   it('handles empty bodies array', () => {
@@ -561,6 +608,18 @@ describe('getTierSummary', () => {
     assert.equal(summary, 'Sat:1');
   });
 
+  it('abbreviates asteroid as "Ast"', () => {
+    const bodies = [makeBody({ tier: 'asteroid' })];
+    const summary = getTierSummary(bodies);
+    assert.equal(summary, 'Ast:1');
+  });
+
+  it('abbreviates nebula as "Neb"', () => {
+    const bodies = [makeBody({ tier: 'nebula' })];
+    const summary = getTierSummary(bodies);
+    assert.equal(summary, 'Neb:1');
+  });
+
   it('abbreviates sun as "Sun" (not "S") — no collision with satellite', () => {
     const bodies = [
       makeBody({ tier: 'satellite' }),
@@ -584,10 +643,12 @@ describe('getTierSummary', () => {
     const bodies = TIERS.map(t => makeBody({ tier: t.name }));
     const summary = getTierSummary(bodies);
     assert.ok(summary.includes('Sat:1'));
+    assert.ok(summary.includes('Ast:1'));
     assert.ok(summary.includes('M:1'));
     assert.ok(summary.includes('P:1'));
     assert.ok(summary.includes('Sun:1'));
     assert.ok(summary.includes('HG:1'));
+    assert.ok(summary.includes('Neb:1'));
     assert.ok(summary.includes('G:1'));
     assert.ok(summary.includes('BH:1'));
   });

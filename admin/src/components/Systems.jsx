@@ -1,16 +1,20 @@
-import { Suspense } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { Suspense, useRef, useState, useCallback, useMemo } from 'react'
+import { Canvas, useThree } from '@react-three/fiber'
+import { OrbitControls, Stars } from '@react-three/drei'
+import { EffectComposer, Bloom } from '@react-three/postprocessing'
 import CelestialScene from './celestial/CelestialScene'
-import { TIER_COLORS, TIER_EMOJIS } from './celestial/celestialConstants'
+import CelestialBody from './celestial/CelestialBody'
+import BlackHole from './celestial/BlackHole'
+import GalaxyBody from './celestial/GalaxyBody'
+import NebulaBody from './celestial/NebulaBody'
+import { TIER_COLORS, TIER_EMOJIS, TIER_DESCRIPTIONS, TIER_ORDER } from './celestial/celestialConstants'
 
 /**
  * Debug/showcase page: renders a full hierarchical system with one of every
- * body type orbiting at proper scale, exactly like the real trading view.
- * Hover any body to see its tooltip.
+ * body type orbiting at proper scale, plus individual tier showcase cards.
  */
 
 // Realistic mock bodies — cost basis descending so hierarchy sorts correctly.
-// Each tier gets proportional capital to show relative sizing.
 const SHOWCASE_BODIES = [
   {
     id: 'showcase-black_hole',
@@ -27,54 +31,76 @@ const SHOWCASE_BODIES = [
     id: 'showcase-galaxy',
     tier: 'galaxy',
     symbol: 'BTC',
-    costBasis: 12000,
+    costBasis: 16000,
     tpPrice: 72000,
     mergeCount: 6,
-    assetQty: 0.22,
-    avgPrice: 54545,
+    assetQty: 0.28,
+    avgPrice: 57142,
+    currentPrice: 65000,
+  },
+  {
+    id: 'showcase-nebula',
+    tier: 'nebula',
+    symbol: 'BTC',
+    costBasis: 12000,
+    tpPrice: 70000,
+    mergeCount: 5,
+    assetQty: 0.2,
+    avgPrice: 60000,
     currentPrice: 65000,
   },
   {
     id: 'showcase-hypergiant',
     tier: 'hypergiant',
     symbol: 'BTC',
-    costBasis: 6000,
+    costBasis: 8500,
     tpPrice: 68000,
     mergeCount: 4,
-    assetQty: 0.1,
-    avgPrice: 60000,
+    assetQty: 0.14,
+    avgPrice: 60714,
     currentPrice: 65000,
   },
   {
     id: 'showcase-sun',
     tier: 'sun',
     symbol: 'BTC',
-    costBasis: 3000,
+    costBasis: 5000,
     tpPrice: 66000,
     mergeCount: 2,
-    assetQty: 0.05,
-    avgPrice: 60000,
+    assetQty: 0.08,
+    avgPrice: 62500,
     currentPrice: 65000,
   },
   {
     id: 'showcase-planet',
     tier: 'planet',
     symbol: 'BTC',
-    costBasis: 1500,
+    costBasis: 2500,
     tpPrice: 67000,
-    mergeCount: 3, // triggers Saturn rings
-    assetQty: 0.025,
-    avgPrice: 60000,
+    mergeCount: 3,
+    assetQty: 0.04,
+    avgPrice: 62500,
     currentPrice: 65000,
   },
   {
     id: 'showcase-moon',
     tier: 'moon',
     symbol: 'BTC',
-    costBasis: 500,
+    costBasis: 800,
     tpPrice: 66500,
     mergeCount: 1,
-    assetQty: 0.008,
+    assetQty: 0.013,
+    avgPrice: 61538,
+    currentPrice: 65000,
+  },
+  {
+    id: 'showcase-asteroid',
+    tier: 'asteroid',
+    symbol: 'BTC',
+    costBasis: 350,
+    tpPrice: 66200,
+    mergeCount: 1,
+    assetQty: 0.0056,
     avgPrice: 62500,
     currentPrice: 65000,
   },
@@ -82,10 +108,10 @@ const SHOWCASE_BODIES = [
     id: 'showcase-satellite',
     tier: 'satellite',
     symbol: 'BTC',
-    costBasis: 150,
+    costBasis: 200,
     tpPrice: 66000,
     mergeCount: 0,
-    assetQty: 0.0024,
+    assetQty: 0.0032,
     avgPrice: 62500,
     currentPrice: 65000,
   },
@@ -109,42 +135,236 @@ const MOCK_BUY_ORDERS = [
 
 const MAX_USDC = 25000
 
-const TIER_ORDER = ['black_hole', 'galaxy', 'hypergiant', 'sun', 'planet', 'moon', 'satellite']
+// Tier percentage ranges for display
+const TIER_RANGES = {
+  satellite:  '0-1%',
+  asteroid:   '1-2%',
+  moon:       '2-5%',
+  planet:     '5-15%',
+  sun:        '15-30%',
+  hypergiant: '30-40%',
+  nebula:     '40-50%',
+  galaxy:     '50-75%',
+  black_hole: '75%+',
+}
 
-const Systems = () => (
-  <div>
-    <h2 className="text-xl font-bold text-white mb-4">Systems — Celestial Body Showcase</h2>
-    <p className="text-gray-400 text-sm mb-4">
-      Full hierarchical system with every body type at scale. Hover any body for details. Drag to orbit, scroll to zoom.
-    </p>
-    <div className="rounded-lg overflow-hidden border border-gray-700" style={{ aspectRatio: '16/10' }}>
-      <Canvas
-        dpr={[1, 1.5]}
-        camera={{ position: [0, 8, 12], fov: 45, near: 0.1, far: 100 }}
-        gl={{ antialias: true, alpha: false }}
-        onCreated={({ gl }) => gl.setClearColor('#0f0f14')}
-      >
-        <Suspense fallback={null}>
-          <CelestialScene
-            bodies={SHOWCASE_BODIES}
-            buyOrders={MOCK_BUY_ORDERS}
-            maxUsdcDeployed={MAX_USDC}
-          />
-        </Suspense>
-      </Canvas>
-    </div>
-    <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
-      {TIER_ORDER.map((tier) => (
-        <div key={tier} className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded">
-          <span
-            className="w-3 h-3 rounded-full"
-            style={{ backgroundColor: TIER_COLORS[tier] }}
-          />
-          <span className="text-gray-300">{TIER_EMOJIS[tier]} {tier.replace('_', ' ')}</span>
+// Camera view presets
+const CAMERA_VIEWS = {
+  perspective: { position: [0, 12, 18], name: 'Perspective' },
+  top:         { position: [0, 25, 0.1], name: 'Top Down' },
+  side:        { position: [25, 2, 0], name: 'Side' },
+  close:       { position: [0, 6, 8], name: 'Close' },
+}
+
+/**
+ * Camera controller that responds to external view changes.
+ */
+const CameraController = ({ targetView, controlsRef }) => {
+  const { camera } = useThree()
+  const prevView = useRef(null)
+
+  if (targetView && targetView !== prevView.current) {
+    prevView.current = targetView
+    const view = CAMERA_VIEWS[targetView]
+    if (view) {
+      camera.position.set(...view.position)
+      camera.lookAt(0, 0, 0)
+      if (controlsRef.current) {
+        controlsRef.current.target.set(0, 0, 0)
+        controlsRef.current.update()
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Single-body showcase scene for tier cards
+ */
+const SingleBodyScene = ({ body }) => {
+  const onHover = useCallback(() => {}, [])
+
+  const bodyProps = { body, showTooltip: false, onHover, maxUsdcDeployed: MAX_USDC, baseCurrency: 'BTC' }
+
+  const isParticle = body.tier === 'galaxy' || body.tier === 'nebula' || body.tier === 'black_hole'
+
+  return (
+    <>
+      <ambientLight intensity={0.3} />
+      <pointLight position={[0, 3, 3]} intensity={1.5} distance={15} decay={2} />
+      <pointLight position={[0, 0, 0]} color={TIER_COLORS[body.tier]} intensity={0.8} distance={10} decay={2} />
+
+      <OrbitControls
+        enablePan={false}
+        enableZoom={false}
+        autoRotate
+        autoRotateSpeed={1.5}
+        minPolarAngle={Math.PI * 0.3}
+        maxPolarAngle={Math.PI * 0.7}
+      />
+
+      {body.tier === 'black_hole' ? (
+        <BlackHole {...bodyProps} />
+      ) : body.tier === 'galaxy' ? (
+        <GalaxyBody {...bodyProps} />
+      ) : body.tier === 'nebula' ? (
+        <NebulaBody {...bodyProps} />
+      ) : (
+        <CelestialBody {...bodyProps} />
+      )}
+
+      <EffectComposer>
+        <Bloom
+          luminanceThreshold={0.3}
+          luminanceSmoothing={0.8}
+          intensity={isParticle ? 1.0 : 0.6}
+          radius={0.5}
+          mipmapBlur
+        />
+      </EffectComposer>
+    </>
+  )
+}
+
+const Systems = () => {
+  const [activeView, setActiveView] = useState('perspective')
+  const controlsRef = useRef()
+  const [viewKey, setViewKey] = useState(0)
+
+  const handleViewChange = useCallback((view) => {
+    setActiveView(view)
+    setViewKey(k => k + 1)
+  }, [])
+
+  // Create individual showcase bodies for each tier
+  const tierShowcaseBodies = useMemo(() => {
+    const bodies = {}
+    for (const body of SHOWCASE_BODIES) {
+      if (!bodies[body.tier]) {
+        bodies[body.tier] = body
+      }
+    }
+    return bodies
+  }, [])
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <h2 className="text-xl font-bold text-white mb-1">Celestial Body Showcase</h2>
+        <p className="text-gray-400 text-sm">
+          Full hierarchical system with every body type at scale. Drag to orbit, scroll to zoom, right-click to pan.
+        </p>
+      </div>
+
+      {/* Camera view buttons */}
+      <div className="flex items-center gap-2">
+        <span className="text-gray-500 text-xs uppercase tracking-wider mr-1">View:</span>
+        {Object.entries(CAMERA_VIEWS).map(([key, view]) => (
+          <button
+            key={key}
+            onClick={() => handleViewChange(key)}
+            className={`px-3 py-1.5 text-xs rounded transition-colors ${
+              activeView === key
+                ? 'bg-cyan-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            {view.name}
+          </button>
+        ))}
+      </div>
+
+      {/* Main 3D scene */}
+      <div className="rounded-lg overflow-hidden border border-gray-700" style={{ aspectRatio: '16/9' }}>
+        <Canvas
+          dpr={[1, 1.5]}
+          camera={{ position: [0, 12, 18], fov: 50, near: 0.1, far: 150 }}
+          gl={{ antialias: true, alpha: false }}
+          onCreated={({ gl }) => gl.setClearColor('#0f0f14')}
+        >
+          <Suspense fallback={null}>
+            <CameraController
+              key={viewKey}
+              targetView={activeView}
+              controlsRef={controlsRef}
+            />
+            <CelestialScene
+              bodies={SHOWCASE_BODIES}
+              buyOrders={MOCK_BUY_ORDERS}
+              maxUsdcDeployed={MAX_USDC}
+              controlsRef={controlsRef}
+            />
+          </Suspense>
+        </Canvas>
+      </div>
+
+      {/* Tier legend */}
+      <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2 text-sm">
+        {TIER_ORDER.map((tier) => (
+          <div key={tier} className="flex items-center gap-2 px-3 py-2 bg-gray-800 rounded">
+            <span
+              className="w-3 h-3 rounded-full flex-shrink-0"
+              style={{ backgroundColor: TIER_COLORS[tier] }}
+            />
+            <span className="text-gray-300 truncate">{TIER_EMOJIS[tier]} {tier.replace('_', ' ')}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Individual tier showcase cards */}
+      <div>
+        <h3 className="text-lg font-semibold text-white mb-3">Body Types</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {TIER_ORDER.map((tier) => {
+            const body = tierShowcaseBodies[tier]
+            if (!body) return null
+
+            return (
+              <div
+                key={tier}
+                className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden"
+              >
+                {/* 3D preview */}
+                <div className="h-40 relative" style={{ background: '#0f0f14' }}>
+                  <Canvas
+                    dpr={[1, 1.5]}
+                    camera={{ position: [0, 2, 4], fov: 40, near: 0.01, far: 50 }}
+                    gl={{ antialias: true, alpha: false }}
+                    onCreated={({ gl }) => gl.setClearColor('#0f0f14')}
+                  >
+                    <Suspense fallback={null}>
+                      <SingleBodyScene body={body} />
+                    </Suspense>
+                  </Canvas>
+                </div>
+
+                {/* Info */}
+                <div className="p-3 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="w-3 h-3 rounded-full"
+                        style={{ backgroundColor: TIER_COLORS[tier] }}
+                      />
+                      <span className="text-white font-medium capitalize">
+                        {TIER_EMOJIS[tier]} {tier.replace('_', ' ')}
+                      </span>
+                    </div>
+                    <span className="text-gray-500 text-xs font-mono">{TIER_RANGES[tier]}</span>
+                  </div>
+                  <p className="text-gray-400 text-xs leading-relaxed">
+                    {TIER_DESCRIPTIONS[tier]}
+                  </p>
+                </div>
+              </div>
+            )
+          })}
         </div>
-      ))}
+      </div>
     </div>
-  </div>
-)
+  )
+}
 
 export default Systems

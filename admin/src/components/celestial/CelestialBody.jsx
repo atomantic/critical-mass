@@ -9,15 +9,18 @@ import CelestialTooltip from './CelestialTooltip'
 import MoonGeometry from './MoonGeometry'
 import SatelliteGeometry from './SatelliteGeometry'
 import HypergiantGeometry from './HypergiantGeometry'
+import AsteroidGeometry from './AsteroidGeometry'
+import SunGeometry from './SunGeometry'
+import PlanetGeometry from './PlanetGeometry'
 
 /**
  * Individual celestial body (visual only — parent handles orbital positioning).
  *
- * Rocky bodies (satellite, moon, planet):
+ * Rocky bodies (satellite, asteroid, moon, planet):
  *   MeshStandardMaterial with emissive tint + thin BackSide glow halo
  *
- * Stellar bodies (sun, hypergiant, galaxy):
- *   Bright MeshBasicMaterial (unlit, full brightness → bloom does the glow)
+ * Stellar bodies (sun, hypergiant):
+ *   Bright MeshBasicMaterial (unlit, full brightness -> bloom does the glow)
  *   + one thin BackSide halo for color tint. Bloom handles the rest.
  */
 const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
@@ -52,8 +55,12 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
 
   const isMoon = body.tier === 'moon'
   const isSatellite = body.tier === 'satellite'
+  const isAsteroid = body.tier === 'asteroid'
   const isHypergiant = body.tier === 'hypergiant'
-  const useGroupGeometry = isMoon || isSatellite || isHypergiant
+  const isSun = body.tier === 'sun'
+  const isPlanet = body.tier === 'planet'
+  const useGroupGeometry = isMoon || isSatellite || isAsteroid || isHypergiant || isSun || isPlanet
+  const skipGlow = isMoon || isSatellite || isAsteroid
 
   return (
     <group>
@@ -65,7 +72,10 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
         >
           {isMoon && <MoonGeometry size={size} color={color} emissiveInt={emissiveInt} />}
           {isSatellite && <SatelliteGeometry size={size} color={color} emissiveInt={emissiveInt} />}
+          {isAsteroid && <AsteroidGeometry size={size} color={color} emissiveInt={emissiveInt} />}
           {isHypergiant && <HypergiantGeometry size={size} />}
+          {isSun && <SunGeometry size={size} />}
+          {isPlanet && <PlanetGeometry size={size} color={color} emissiveInt={emissiveInt} mergeCount={body.mergeCount} />}
         </group>
       ) : (
         <mesh
@@ -87,8 +97,8 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
         </mesh>
       )}
 
-      {/* Glow halo — skip for moon (no atmosphere) and satellite (mechanical) */}
-      {!isMoon && !isSatellite && (
+      {/* Glow halo — skip for moon (no atmosphere), satellite (mechanical), asteroid (dead rock) */}
+      {!skipGlow && (
         <mesh ref={glowRef} scale={isStellar ? 1.3 : 1.4}>
           <sphereGeometry args={[size, 16, 16]} />
           <meshBasicMaterial
@@ -96,19 +106,6 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
             transparent
             opacity={0.12}
             side={THREE.BackSide}
-          />
-        </mesh>
-      )}
-
-      {/* Saturn-like ring for merged planets (mergeCount > 2) */}
-      {body.tier === 'planet' && body.mergeCount > 2 && (
-        <mesh rotation={[Math.PI / 3, 0, 0]}>
-          <ringGeometry args={[size * 1.4, size * 2.0, 32]} />
-          <meshBasicMaterial
-            color={color}
-            transparent
-            opacity={0.25}
-            side={THREE.DoubleSide}
           />
         </mesh>
       )}

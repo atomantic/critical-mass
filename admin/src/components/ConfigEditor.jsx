@@ -638,7 +638,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
                     Each buy creates a celestial body. Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
-                    Tiers: 🛰️ satellite → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → 🌌 galaxy → 🕳️ black hole.
+                    Tiers: 🛰️ satellite → 🪨 asteroid → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → ✨ nebula → 🌌 galaxy → 🕳️ black hole.
                     Higher tiers have wider TP targets and hold more {baseCurrency}.
                   </div>
                   <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-1 text-xs text-center">
