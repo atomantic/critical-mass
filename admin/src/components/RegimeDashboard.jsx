@@ -1455,13 +1455,17 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
                 <div className="bg-gray-900/50 rounded p-2 min-w-0">
                   <div className="text-gray-500 truncate">Realized P&L {apy.totalLiquidValuePercent ? `(${apy.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
-                  <div className={`font-mono text-base ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    ${position.realizedPnL?.toFixed(2) || '0'}
-                  </div>
-                  {(position.realizedAssetPnL || 0) > 0 && <div className="text-orange-400 text-xs font-mono truncate">+{position.realizedAssetPnL?.toFixed(8)} {asset}</div>}
-                  {apy.totalLiquidValue !== undefined && (
-                    <div className="text-xs font-mono"><span className="text-cyan-400">{asset}</span> <span className="text-white">= ${apy.totalLiquidValue?.toFixed(2)}</span></div>
+                  {apy.totalLiquidValue !== undefined ? (
+                    <div className={`font-mono text-base ${apy.totalLiquidValue >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      ${apy.totalLiquidValue?.toFixed(2)}
+                    </div>
+                  ) : (
+                    <div className={`font-mono text-base ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      ${position.realizedPnL?.toFixed(2) || '0'}
+                    </div>
                   )}
+                  <div className="text-white text-xs font-mono truncate">${position.realizedPnL?.toFixed(2) || '0'} USD</div>
+                  {(position.realizedAssetPnL || 0) > 0 && <div className="text-orange-400 text-xs font-mono truncate">+{position.realizedAssetPnL?.toFixed(8)} {asset}</div>}
                 </div>
               </div>
 
@@ -2128,15 +2132,17 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 <td className="py-2 pr-2">
                                   {(() => {
                                     const bodyInfo = (order.type === 'body_tp' || order.type === 'satellite_tp' || order.type === 'take_profit') ? bodyLookup.get(order.orderId) : null;
-                                    const tier = bodyInfo?.tier || (order.type === 'satellite_tp' ? 'satellite' : null);
+                                    const tier = bodyInfo?.tier || order.bodyTier || (order.type === 'satellite_tp' ? 'satellite' : null);
                                     const tierStyles = {
                                       satellite:  { bg: 'bg-gray-700/60',    text: 'text-gray-300',    tooltip: 'Satellite — individual order, 1–3× base' },
-                                      moon:       { bg: 'bg-slate-600/50',   text: 'text-slate-300',   tooltip: 'Moon — small cluster, 3–10× base' },
+                                      asteroid:   { bg: 'bg-amber-900/40',   text: 'text-amber-600',   tooltip: 'Asteroid — small cluster, 2–3× base' },
+                                      moon:       { bg: 'bg-slate-600/50',   text: 'text-slate-300',   tooltip: 'Moon — cluster, 3–10× base' },
                                       planet:     { bg: 'bg-blue-900/50',    text: 'text-blue-400',    tooltip: 'Planet — substantial mass, 10–100× base' },
                                       sun:        { bg: 'bg-amber-900/50',   text: 'text-amber-400',   tooltip: 'Sun — large mass, 100–500× base' },
                                       hypergiant: { bg: 'bg-purple-900/50',  text: 'text-purple-400',  tooltip: 'Hypergiant — massive mass, 500–1000× base' },
-                                      galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400',    tooltip: 'Galaxy — galactic mass, 1000–5000× base' },
-                                      black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 5000×+ base' },
+                                      nebula:     { bg: 'bg-cyan-900/50',    text: 'text-cyan-400',    tooltip: 'Nebula — vast mass, 1000–5000× base' },
+                                      galaxy:     { bg: 'bg-pink-900/50',    text: 'text-pink-400',    tooltip: 'Galaxy — galactic mass, 5000–10000× base' },
+                                      black_hole: { bg: 'bg-red-900/50',     text: 'text-red-400',     tooltip: 'Black Hole — critical mass, 10000×+ base' },
                                     };
                                     if (tier && tierStyles[tier]) {
                                       const s = tierStyles[tier];
@@ -2151,6 +2157,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-white">
                                   {order.size?.toFixed(8)}
+                                  {order.filledSize > 0 && (
+                                    <span className="ml-1 px-1 py-0.5 rounded text-[10px] bg-yellow-900/50 text-yellow-400" title={`Partially filled: ${order.filledSize.toFixed(8)} filled`}>PF</span>
+                                  )}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-white">
                                   ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}

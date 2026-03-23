@@ -860,15 +860,26 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         const tpOrderExists = tpOrderStatus && tpOrderStatus.status !== 'CANCELLED' && tpOrderStatus.status !== 'FAILED';
 
         if (tpOrderExists && orderExecutor.restorePendingOrder) {
-          orderExecutor.restorePendingOrder(positionState.activeTpOrderId, {
-            type: 'take_profit',
-            price: positionState.lastTpPrice,
-            size: positionState.assetOnOrder || positionState.totalAsset,
-            sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.assetOnOrder || positionState.totalAsset),
-            placedAt: tpOrderStatus.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
-            status: 'open',
-          });
-          console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
+          // Check if a celestial body owns this TP — restore as body_tp if so
+          const bodyOwner = (positionState.celestialBodies || []).find(b => b.tpOrderId === positionState.activeTpOrderId);
+          if (bodyOwner && orderExecutor.restoreBodyTpOrder) {
+            const placedAt = tpOrderStatus.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now());
+            orderExecutor.restoreBodyTpOrder(bodyOwner.id, positionState.activeTpOrderId, bodyOwner.assetQty, positionState.lastTpPrice, placedAt);
+            console.log(`📋 [${exchange}] Restored legacy TP as body_tp: ${positionState.activeTpOrderId.slice(0, 8)} → body ${bodyOwner.id.slice(-8)}`);
+            positionState.activeTpOrderId = null;
+            positionState.lastTpPrice = 0;
+            positionState.assetOnOrder = 0;
+          } else {
+            orderExecutor.restorePendingOrder(positionState.activeTpOrderId, {
+              type: 'take_profit',
+              price: positionState.lastTpPrice,
+              size: positionState.assetOnOrder || positionState.totalAsset,
+              sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.assetOnOrder || positionState.totalAsset),
+              placedAt: tpOrderStatus.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
+              status: 'open',
+            });
+            console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
+          }
         } else {
           // TP order no longer exists on exchange - clear tracking so a new one gets placed
           console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
@@ -3395,12 +3406,29 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     orders: orderExecutor.getPendingCounts(),
     pendingOrders: !isDryRun && orderExecutor.getPendingOrdersList
       ? orderExecutor.getPendingOrdersList().map(order => {
-        // Add TP% for take_profit orders
-        if (order.type === 'take_profit' && positionState.avgCostBasis > 0) {
-          return {
-            ...order,
-            tpPercent: ((order.price - positionState.avgCostBasis) / positionState.avgCostBasis * 100).toFixed(2),
-          };
+        // Normalize take_profit → body_tp if a celestial body owns this order
+        if (order.type === 'take_profit') {
+          const matchingBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === order.orderId);
+          if (matchingBody) {
+            const tierCfg = celestialHierarchy.getTierConfig(matchingBody.tier);
+            return {
+              ...order,
+              type: 'body_tp',
+              tpPercent: matchingBody.avgPrice > 0 ? ((order.price - matchingBody.avgPrice) / matchingBody.avgPrice * 100).toFixed(2) : null,
+              bodyId: matchingBody.id,
+              bodyTier: matchingBody.tier,
+              tierEmoji: tierCfg ? tierCfg.emoji : '🛰️',
+              bodyAvgCost: matchingBody.avgPrice,
+              bodyBtcQty: matchingBody.assetQty,
+              bodyCostBasis: matchingBody.costBasis,
+            };
+          }
+          if (positionState.avgCostBasis > 0) {
+            return {
+              ...order,
+              tpPercent: ((order.price - positionState.avgCostBasis) / positionState.avgCostBasis * 100).toFixed(2),
+            };
+          }
         }
         // Add cost basis + TP% for body_tp orders from their independent position
         if (order.type === 'body_tp' || order.type === 'satellite_tp') {
