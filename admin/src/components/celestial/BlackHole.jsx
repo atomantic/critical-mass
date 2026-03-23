@@ -1,7 +1,7 @@
 import { useRef, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import { getBodySize } from './celestialConstants'
+import { getBodySize, bodyPropsEqual } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
 
 /**
@@ -112,19 +112,10 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurre
         />
       </mesh>
 
-      {/* Pinned tooltip */}
       {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}
     </group>
   )
-}, (prev, next) =>
-  prev.body.id === next.body.id &&
-  prev.body.costBasis === next.body.costBasis &&
-  prev.body.tpPrice === next.body.tpPrice &&
-  prev.body.mergeCount === next.body.mergeCount &&
-  prev.showTooltip === next.showTooltip &&
-  prev.maxUsdcDeployed === next.maxUsdcDeployed &&
-  prev.baseCurrency === next.baseCurrency
-)
+}, bodyPropsEqual)
 
 BlackHole.displayName = 'BlackHole'
 
