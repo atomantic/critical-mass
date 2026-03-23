@@ -180,6 +180,15 @@ function Overview() {
     realized: acc.realized + c.realizedPnL,
   }), { deployed: 0, available: 0, unrealized: 0, realized: 0 })
 
+  // Aggregate realized USD + per-asset breakdown
+  const totalRealizedUsdc = cards.reduce((sum, c) => sum + c.realizedUsdcPnL, 0)
+  const assetBreakdown = cards.reduce((acc, c) => {
+    if (c.realizedAssetPnL > 0) {
+      acc[c.baseCurrency] = (acc[c.baseCurrency] || 0) + c.realizedAssetPnL
+    }
+    return acc
+  }, {})
+
   // Weighted APY (by cost basis)
   const totalCostBasisAll = cards.reduce((sum, c) => sum + c.totalCostBasis, 0)
   const weightedApy = totalCostBasisAll > 0
@@ -220,6 +229,10 @@ function Overview() {
           <div className={`text-lg font-bold ${totals.realized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {totals.realized >= 0 ? '+' : ''}{formatCurrency(totals.realized)}
           </div>
+          <div className="text-xs text-white font-mono">{formatCurrency(totalRealizedUsdc)} USD</div>
+          {Object.entries(assetBreakdown).map(([asset, qty]) => (
+            <div key={asset} className="text-xs text-orange-400 font-mono">+{qty.toFixed(8)} {asset}</div>
+          ))}
         </div>
         <div className="bg-gray-800 rounded-lg p-4">
           <div className="text-xs text-gray-400 mb-1">Estimated APY</div>
