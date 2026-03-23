@@ -1,7 +1,7 @@
 import { useRef, useMemo, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import { getBodySize } from './celestialConstants'
+import { getBodySize, bodyPropsEqual } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
 
 const ARM_COUNT = 3
@@ -159,15 +159,7 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
       {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}
     </group>
   )
-}, (prev, next) =>
-  prev.body.id === next.body.id &&
-  prev.body.costBasis === next.body.costBasis &&
-  prev.body.tpPrice === next.body.tpPrice &&
-  prev.body.mergeCount === next.body.mergeCount &&
-  prev.showTooltip === next.showTooltip &&
-  prev.maxUsdcDeployed === next.maxUsdcDeployed &&
-  prev.baseCurrency === next.baseCurrency
-)
+}, bodyPropsEqual)
 
 GalaxyBody.displayName = 'GalaxyBody'
 
