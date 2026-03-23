@@ -319,16 +319,16 @@ function Overview() {
                 </div>
                 <div>
                   <div className="text-xs text-gray-400">Realized P&L {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
-                  <div className={`font-mono ${card.realizedUsdcPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {card.realizedUsdcPnL !== 0
-                      ? `${card.realizedUsdcPnL >= 0 ? '+' : ''}${formatCurrency(card.realizedUsdcPnL)}`
-                      : '-'}
+                  <div className={`font-mono ${(card.totalLiquidValue ?? card.realizedUsdcPnL) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {card.totalLiquidValue !== undefined
+                      ? `${card.totalLiquidValue >= 0 ? '+' : ''}${formatCurrency(card.totalLiquidValue)}`
+                      : card.realizedUsdcPnL !== 0
+                        ? `${card.realizedUsdcPnL >= 0 ? '+' : ''}${formatCurrency(card.realizedUsdcPnL)}`
+                        : '-'}
                   </div>
+                  <div className="text-xs text-white font-mono">{formatCurrency(card.realizedUsdcPnL)} USD</div>
                   {card.realizedAssetPnL > 0 && (
                     <div className="text-xs text-orange-400">+{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
-                  )}
-                  {card.realizedPnL > 0 && (
-                    <div className="text-xs text-cyan-400">= {formatCurrency(card.realizedPnL)}</div>
                   )}
                 </div>
                 <div>
