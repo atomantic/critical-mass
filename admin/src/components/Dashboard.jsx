@@ -332,6 +332,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 const floatPnL = totalAssetMarketValue - totalAssetCostBasis
                 const floatPnLPct = totalAssetCostBasis > 0 ? (floatPnL / totalAssetCostBasis) * 100 : 0
                 const realizedPnL = stats.realizedProfit || 0
+                const assetReserves = state.assetReserves || 0
+                const reservesValue = assetReserves * currentPrice
+                const totalRealizedLiquid = realizedPnL + reservesValue
                 return (
                   <>
                     <StatCard
@@ -348,8 +351,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                     />
                     <StatCard
                       label="Realized"
-                      value={`${realizedPnL >= 0 ? '+' : ''}${formatCurrency(realizedPnL)}`}
-                      color={realizedPnL >= 0 ? 'green' : 'red'}
+                      value={`${totalRealizedLiquid >= 0 ? '+' : ''}${formatCurrency(totalRealizedLiquid)}`}
+                      subtext={assetReserves > 0 ? <><span className="text-white">{formatCurrency(realizedPnL)} USD</span> <span className="text-orange-400">+{assetReserves.toFixed(8)} {baseCurrency}</span></> : null}
+                      color={totalRealizedLiquid >= 0 ? 'green' : 'red'}
                     />
                   </>
                 )
