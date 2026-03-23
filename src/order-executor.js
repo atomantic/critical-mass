@@ -718,6 +718,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       sizeUsdc: order.sizeUsdc,
       placedAt: order.placedAt,
       status: 'open',
+      filledSize: partialFillTracker.get(orderId) || 0,
     }));
   };
 
