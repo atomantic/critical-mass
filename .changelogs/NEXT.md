@@ -2,6 +2,7 @@
 
 ## Added
 
+- Expected annual yield on Overview Estimated APY header — total liquid $/yr, USD breakdown, and per-asset quantity with USD equivalent
 - News Sentinel — RSS feed monitor for market-moving events (Fed decisions, geopolitical, tariffs, etc.) with keyword pre-filter, optional AI classification, Telegram alerts, Socket.IO real-time updates, and full dashboard UI at `/sentinel`
 - Inline capital adjustment UI — click "Available" in APY panel to edit deposited & max capital directly from dashboard
 - Express wildcard routes updated to named `*splat` syntax for Express v5 compatibility
