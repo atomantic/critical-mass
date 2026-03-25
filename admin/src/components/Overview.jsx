@@ -195,6 +195,20 @@ function Overview() {
     ? cards.reduce((sum, c) => sum + c.estimatedApy * c.totalCostBasis, 0) / totalCostBasisAll
     : 0
 
+  // Aggregate annual yield projections
+  const totalAnnualUsdc = cards.reduce((sum, c) => sum + (c.estimatedDailyUsdc * 365), 0)
+  const annualAssetBreakdown = cards.reduce((acc, c) => {
+    if (c.estimatedDailyAsset > 0) {
+      const key = c.baseCurrency
+      if (!acc[key]) acc[key] = { qty: 0, usd: 0 }
+      acc[key].qty += c.estimatedDailyAsset * 365
+      acc[key].usd += c.estimatedDailyAsset * 365 * c.lastPrice
+    }
+    return acc
+  }, {})
+  const totalAnnualAssetUsd = Object.values(annualAssetBreakdown).reduce((sum, a) => sum + a.usd, 0)
+  const totalAnnualLiquid = totalAnnualUsdc + totalAnnualAssetUsd
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -239,6 +253,19 @@ function Overview() {
           <div className={`text-lg font-bold ${weightedApy >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {weightedApy.toFixed(1)}%
           </div>
+          {totalAnnualLiquid > 0 && (
+            <div className="mt-1">
+              <div className={`text-sm font-mono font-semibold ${totalAnnualLiquid >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
+                {formatCurrency(totalAnnualLiquid)}/yr
+              </div>
+              <div className="text-xs text-white font-mono">{formatCurrency(totalAnnualUsdc)} USD</div>
+              {Object.entries(annualAssetBreakdown).map(([asset, { qty, usd }]) => (
+                <div key={asset} className="text-xs text-orange-400 font-mono">
+                  +{qty.toFixed(6)} {asset} ({formatCurrency(usd)})
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
