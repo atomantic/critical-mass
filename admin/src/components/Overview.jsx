@@ -221,46 +221,42 @@ function Overview() {
     <div>
       {/* Aggregate summary bar */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <div className="bg-gray-800 rounded-lg p-4">
+        <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Capital</div>
-          <div className="flex items-baseline gap-2">
-            <div className="text-lg font-bold text-white">{formatCurrency(totals.deployed)}</div>
-            <div className="text-xs text-gray-500">deployed</div>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <div className="text-sm text-cyan-400">{formatCurrency(totals.available)}</div>
-            <div className="text-xs text-gray-500">available</div>
-          </div>
+          <div className="text-base sm:text-lg font-bold text-white truncate">{formatCurrency(totals.deployed)}</div>
+          <div className="text-xs text-gray-500">deployed</div>
+          <div className="text-sm text-cyan-400 truncate">{formatCurrency(totals.available)}</div>
+          <div className="text-xs text-gray-500">available</div>
         </div>
-        <div className="bg-gray-800 rounded-lg p-4">
+        <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Unrealized P&L</div>
-          <div className={`text-lg font-bold ${totals.unrealized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <div className={`text-base sm:text-lg font-bold truncate ${totals.unrealized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {totals.unrealized >= 0 ? '+' : ''}{formatCurrency(totals.unrealized)}
           </div>
         </div>
-        <div className="bg-gray-800 rounded-lg p-4">
+        <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Realized P&L</div>
-          <div className={`text-lg font-bold ${totals.realized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <div className={`text-base sm:text-lg font-bold truncate ${totals.realized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {totals.realized >= 0 ? '+' : ''}{formatCurrency(totals.realized)}
           </div>
-          <div className="text-xs text-white font-mono">{formatCurrency(totalRealizedUsdc)} USD</div>
+          <div className="text-xs text-white font-mono truncate">{formatCurrency(totalRealizedUsdc)} USD</div>
           {Object.entries(assetBreakdown).map(([asset, qty]) => (
-            <div key={asset} className="text-xs text-orange-400 font-mono">+{qty.toFixed(8)} {asset}</div>
+            <div key={asset} className="text-xs text-orange-400 font-mono truncate">+{qty.toFixed(8)} {asset}</div>
           ))}
         </div>
-        <div className="bg-gray-800 rounded-lg p-4">
+        <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Estimated APY</div>
-          <div className={`text-lg font-bold ${weightedApy >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          <div className={`text-base sm:text-lg font-bold ${weightedApy >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {weightedApy.toFixed(1)}%
           </div>
           {totalAnnualLiquid > 0 && (
             <div className="mt-1">
-              <div className={`text-sm font-mono font-semibold ${totalAnnualLiquid >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
+              <div className={`text-xs sm:text-sm font-mono font-semibold truncate ${totalAnnualLiquid >= 0 ? 'text-cyan-400' : 'text-red-400'}`}>
                 {formatCurrency(totalAnnualLiquid)}/yr
               </div>
-              <div className="text-xs text-white font-mono">{formatCurrency(totalAnnualUsdc)} USD</div>
+              <div className="text-xs text-white font-mono truncate">{formatCurrency(totalAnnualUsdc)} USD</div>
               {Object.entries(annualAssetBreakdown).map(([asset, { qty, usd }]) => (
-                <div key={asset} className="text-xs text-orange-400 font-mono">
+                <div key={asset} className="text-xs text-orange-400 font-mono truncate">
                   +{qty.toFixed(6)} {asset} ({formatCurrency(usd)})
                 </div>
               ))}
@@ -334,19 +330,19 @@ function Overview() {
               </div>
 
               {/* Position info */}
-              <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-3">
-                <div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm mb-3 min-w-0">
+                <div className="min-w-0">
                   <div className="text-xs text-gray-400">Position</div>
-                  <div className="text-gray-200 font-mono">
+                  <div className="text-gray-200 font-mono truncate">
                     {card.totalAssetQty > 0 ? `${card.totalAssetQty.toFixed(6)} ${card.baseCurrency}` : '-'}
                   </div>
                   {card.totalAssetCostBasis > 0 && (
-                    <div className="text-xs text-gray-500">{formatCurrency(card.totalAssetCostBasis)} cost</div>
+                    <div className="text-xs text-gray-500 truncate">{formatCurrency(card.totalAssetCostBasis)} cost</div>
                   )}
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-xs text-gray-400">Unrealized P&L</div>
-                  <div className={`font-mono ${card.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  <div className={`font-mono truncate ${card.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {card.totalCostBasis > 0
                       ? `${card.unrealizedPnL >= 0 ? '+' : ''}${formatCurrency(card.unrealizedPnL)}`
                       : '-'}
@@ -357,21 +353,21 @@ function Overview() {
                     </div>
                   )}
                 </div>
-                <div>
-                  <div className="text-xs text-gray-400">Realized P&L {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
-                  <div className={`font-mono ${(card.totalLiquidValue ?? card.realizedUsdcPnL) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                <div className="min-w-0">
+                  <div className="text-xs text-gray-400 truncate">Realized P&L {card.totalLiquidValuePercent ? `(${card.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
+                  <div className={`font-mono truncate ${(card.totalLiquidValue ?? card.realizedUsdcPnL) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {card.totalLiquidValue !== undefined
                       ? `${card.totalLiquidValue >= 0 ? '+' : ''}${formatCurrency(card.totalLiquidValue)}`
                       : card.realizedUsdcPnL !== 0
                         ? `${card.realizedUsdcPnL >= 0 ? '+' : ''}${formatCurrency(card.realizedUsdcPnL)}`
                         : '-'}
                   </div>
-                  <div className="text-xs text-white font-mono">{formatCurrency(card.realizedUsdcPnL)} USD</div>
+                  <div className="text-xs text-white font-mono truncate">{formatCurrency(card.realizedUsdcPnL)} USD</div>
                   {card.realizedAssetPnL > 0 && (
-                    <div className="text-xs text-orange-400">+{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
+                    <div className="text-xs text-orange-400 truncate">+{card.realizedAssetPnL.toFixed(8)} {card.baseCurrency}</div>
                   )}
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-xs text-gray-400">Est. APY</div>
                   <div className={`font-mono ${card.estimatedApy >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {card.estimatedApy !== 0 ? `${card.estimatedApy.toFixed(1)}%` : '-'}
@@ -393,16 +389,16 @@ function Overview() {
                     <span>Buys {card.cycleBuys}/{card.maxCycleBuys}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5">
+                    <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5 min-w-0 overflow-hidden">
                       <div className="text-green-400/70 text-[10px]">Daily ({card.dailyReturnPercent.toFixed(2)}%)</div>
-                      <div className="font-mono text-xs text-green-400">
+                      <div className="font-mono text-xs text-green-400 truncate">
                         ${card.estimatedDailyUsdc.toFixed(2)}
                         {card.estimatedDailyAsset > 0 && <span className="text-orange-400"> +{card.estimatedDailyAsset.toFixed(8)}</span>}
                       </div>
                     </div>
-                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5">
-                      <div className="text-cyan-400/70 text-[10px]">Annual ({card.estimatedApy > 9999 ? '>9999' : card.estimatedApy.toFixed(0)}% APY)</div>
-                      <div className="font-mono text-xs text-cyan-400">
+                    <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5 min-w-0 overflow-hidden">
+                      <div className="text-cyan-400/70 text-[10px] truncate">Annual ({card.estimatedApy > 9999 ? '>9999' : card.estimatedApy.toFixed(0)}% APY)</div>
+                      <div className="font-mono text-xs text-cyan-400 truncate">
                         ${(card.estimatedDailyUsdc * 365).toFixed(2)}
                         {card.estimatedDailyAsset > 0 && <span className="text-orange-400"> +{(card.estimatedDailyAsset * 365).toFixed(6)}</span>}
                       </div>
