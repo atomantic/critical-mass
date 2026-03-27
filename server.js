@@ -1,5 +1,4 @@
 const express = require('express');
-const cors = require('cors');
 const { spawn } = require('child_process');
 
 const path = require('path');
@@ -61,7 +60,16 @@ const notifier = createNotifier();
 
 // ============ Middleware ============
 
-app.use(cors({ origin: CORS_ORIGINS }));
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (CORS_ORIGINS.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+  }
+  next();
+});
 app.use(express.json());
 
 

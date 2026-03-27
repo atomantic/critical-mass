@@ -74,6 +74,8 @@
 
 ## Removed
 
+- `cors`, `uuid`, `json-bigint` npm dependencies — replaced with built-in Node.js APIs (`crypto.randomUUID()`, inline CORS middleware) or removed as unused
+
 - Kalshi/hedge references from PLAN.md, docs, IPC modules, and shared utilities (post-removal cleanup)
 - STRATEGY-GUIDE.md (Kalshi-specific, no longer applicable)
 - Kalshi strategy config warning from CLAUDE.md

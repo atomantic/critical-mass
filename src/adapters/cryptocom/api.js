@@ -2,7 +2,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
 const { incrementToDecimals } = require('../../shared-utils');
@@ -291,7 +291,7 @@ const createCryptocomAdapter = (keysPath = null) => {
    */
   adapter.placeMarketBuy = async (productId, quoteAmount) => {
     const instrument = toCryptocomSymbol(productId);
-    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 36);
+    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
 
     // Get product details for quantity precision
     const details = await adapter.getProductDetails(productId);
@@ -335,7 +335,7 @@ const createCryptocomAdapter = (keysPath = null) => {
    */
   adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
     const instrument = toCryptocomSymbol(productId);
-    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 36);
+    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
     const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
@@ -388,7 +388,7 @@ const createCryptocomAdapter = (keysPath = null) => {
    */
   adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
     const instrument = toCryptocomSymbol(productId);
-    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 36);
+    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
     const postOnly = options.postOnly !== false;
 
     const details = await adapter.getProductDetails(productId);

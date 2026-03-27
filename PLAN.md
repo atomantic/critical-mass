@@ -4,8 +4,7 @@ For completed work, see [DONE.md](./DONE.md).
 
 ## Next Up
 
-1. **Fix missing `fast-xml-parser` dependency** — Required by `src/sentinel/feed-poller.js` but not installed; sentinel service will crash at startup
-2. **Per-engine memory tuning** — Profile each PM2 process under load, set `max_memory_restart` per-engine in ecosystem.config.cjs (currently uniform 512M)
+1. **Per-engine memory tuning** — Profile each PM2 process under load, set `max_memory_restart` per-engine in ecosystem.config.cjs (currently uniform 512M)
 3. **Sentinel service test coverage** — Unit tests for classifier and feed-poller to catch parsing edge cases
 
 ## Backlog
