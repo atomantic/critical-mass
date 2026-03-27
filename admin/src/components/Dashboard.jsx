@@ -61,10 +61,10 @@ function StatCard({ label, value, subtext, color = 'blue' }) {
   }
 
   return (
-    <div className={`p-2 rounded-lg border ${colors[color]}`}>
-      <div className="text-xs text-gray-400">{label}</div>
-      <div className="text-base font-bold">{value}</div>
-      {subtext && <div className="text-xs text-gray-500">{subtext}</div>}
+    <div className={`p-2 rounded-lg border min-w-0 overflow-hidden ${colors[color]}`}>
+      <div className="text-xs text-gray-400 truncate">{label}</div>
+      <div className="text-sm sm:text-base font-bold truncate">{value}</div>
+      {subtext && <div className="text-xs text-gray-500 overflow-hidden">{subtext}</div>}
     </div>
   )
 }
@@ -235,17 +235,17 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
   const formatAsset = (n) => `${parseFloat((n || 0).toFixed(8))} ${baseCurrency}`
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
+    <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 overflow-hidden">
       {/* Main Content Column */}
       <div className="flex-1 space-y-4 min-w-0">
         {/* Live Price Banner + Controls */}
         <div className="bg-gray-800 rounded-lg p-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
-            <div className="flex items-center gap-4">
-              <span className="text-gray-400">{config?.productId || 'BTC-' + quoteCurrency}</span>
-              <span className="text-2xl sm:text-3xl font-bold">{formatPrice(currentPrice)}</span>
+            <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+              <span className="text-gray-400 shrink-0 text-sm sm:text-base">{config?.productId || 'BTC-' + quoteCurrency}</span>
+              <span className="text-xl sm:text-3xl font-bold truncate">{formatPrice(currentPrice)}</span>
             </div>
-            <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-4">
               <ToggleSwitch
                 label="Automation"
                 checked={config.enabled}
@@ -260,9 +260,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 disabled={updating}
                 colorOn="bg-yellow-500"
               />
-              <div className="text-right pl-4 border-l border-gray-700">
+              <div className="text-right pl-2 sm:pl-4 border-l border-gray-700">
                 <div className="text-xs text-gray-400">Mode</div>
-                <div className={`text-sm font-semibold ${
+                <div className={`text-xs sm:text-sm font-semibold ${
                   !config.enabled ? 'text-red-400' :
                   config.dryRun ? 'text-yellow-400' : 'text-green-400'
                 }`}>
@@ -278,39 +278,39 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
           {/* Fund Assets */}
           <div className="bg-gray-800 rounded-lg p-4">
             <h3 className="text-xs text-gray-400 mb-2">Fund Assets</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <div className="text-lg font-bold text-green-400">{formatCurrency(state.usdcFundSize)}</div>
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+              <div className="min-w-0">
+                <div className="text-base sm:text-lg font-bold text-green-400 truncate">{formatCurrency(state.usdcFundSize)}</div>
                 <div className="text-xs text-gray-500">{quoteCurrency}</div>
               </div>
-              <div>
-                <div className="text-lg font-bold text-orange-400">{formatCurrency(assetValue + pendingAssetValue)}</div>
+              <div className="min-w-0">
+                <div className="text-base sm:text-lg font-bold text-orange-400 truncate">{formatCurrency(assetValue + pendingAssetValue)}</div>
                 <div className="text-xs text-gray-500">{baseCurrency} Value</div>
               </div>
-              <div>
-                <div className="text-lg font-bold text-blue-400">{formatCurrency((state.usdcFundSize || 0) + assetValue + pendingAssetValue)}</div>
+              <div className="min-w-0">
+                <div className="text-base sm:text-lg font-bold text-blue-400 truncate">{formatCurrency((state.usdcFundSize || 0) + assetValue + pendingAssetValue)}</div>
                 <div className="text-xs text-gray-400">Total</div>
               </div>
             </div>
             {/* Asset Holdings Breakdown */}
             <div className="mt-3 pt-3 border-t border-gray-700">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-                <div className="text-center">
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Pending Sale</div>
                   <div className="text-yellow-400 font-semibold truncate">{formatAsset(state.outstandingOrdersAsset || 0)}</div>
-                  <div className="text-gray-500">Cost: {formatCurrency(costBasis?.pendingCostBasis || 0)}</div>
-                  <div className="text-green-400">Exp: {formatCurrency(state.outstandingOrdersUSDC || 0)}</div>
+                  <div className="text-gray-500 truncate">Cost: {formatCurrency(costBasis?.pendingCostBasis || 0)}</div>
+                  <div className="text-green-400 truncate">Exp: {formatCurrency(state.outstandingOrdersUSDC || 0)}</div>
                 </div>
-                <div className="text-center">
+                <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Reserves</div>
                   <div className="text-orange-400 font-semibold truncate">{formatAsset(state.assetReserves || 0)}</div>
-                  <div className="text-gray-500">Cost: {formatCurrency(costBasis?.reservesCostBasis || 0)}</div>
-                  <div className="text-gray-500">Val: {formatCurrency(assetValue)}</div>
+                  <div className="text-gray-500 truncate">Cost: {formatCurrency(costBasis?.reservesCostBasis || 0)}</div>
+                  <div className="text-gray-500 truncate">Val: {formatCurrency(assetValue)}</div>
                 </div>
-                <div className="text-center">
+                <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Total {baseCurrency}</div>
                   <div className="text-purple-400 font-semibold truncate">{formatAsset(totalAssetHeld)}</div>
-                  <div className="text-gray-500">Cost: {formatCurrency(totalAssetCostBasis)}</div>
+                  <div className="text-gray-500 truncate">Cost: {formatCurrency(totalAssetCostBasis)}</div>
                   <div className="text-gray-500 truncate">Avg: {formatPrice(totalAssetHeld > 0 ? totalAssetCostBasis / totalAssetHeld : 0)}/{baseCurrency}</div>
                 </div>
               </div>
@@ -324,7 +324,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
               <StatCard label="Total Sells" value={stats.totalSells} color="green" />
               <StatCard label="Pending" value={stats.pendingOrders} color="yellow" />
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               {(() => {
                 // Current market value of all asset holdings
                 const totalAssetMarketValue = totalAssetHeld * currentPrice
@@ -352,7 +352,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                     <StatCard
                       label="Realized"
                       value={`${totalRealizedLiquid >= 0 ? '+' : ''}${formatCurrency(totalRealizedLiquid)}`}
-                      subtext={assetReserves > 0 ? <><span className="text-white">{formatCurrency(realizedPnL)} USD</span> <span className="text-orange-400">+{assetReserves.toFixed(8)} {baseCurrency}</span></> : null}
+                      subtext={assetReserves > 0 ? <span className="flex flex-col leading-tight"><span className="text-white">{formatCurrency(realizedPnL)} USD</span><span className="text-orange-400">+{assetReserves.toFixed(8)} {baseCurrency}</span></span> : null}
                       color={totalRealizedLiquid >= 0 ? 'green' : 'red'}
                     />
                   </>
@@ -371,9 +371,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Allocation Progress */}
           <div className="bg-gray-800 rounded-lg p-4">
-            <div className="flex justify-between mb-2 text-sm">
+            <div className="flex flex-wrap justify-between mb-2 text-sm gap-x-2">
               <span className="text-gray-400">Allocation Progress</span>
-              <span className="text-white">
+              <span className="text-white truncate">
                 {formatCurrency(stats.allocationUsed)} / {formatCurrency(config.totalAllocation)}
               </span>
             </div>
@@ -383,7 +383,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 style={{ width: `${Math.min(100, (stats.allocationUsed / config.totalAllocation) * 100)}%` }}
               />
             </div>
-            <div className="flex justify-between mt-2 text-xs text-gray-500">
+            <div className="flex flex-wrap justify-between mt-2 text-xs text-gray-500 gap-x-2">
               <span>{stats.intervalsRun || 0} of {config.intervalsToSpread || config.daysToSpread} intervals</span>
               <span>{formatCurrency(stats.allocationRemaining)} remaining</span>
             </div>
@@ -410,15 +410,15 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
           {/* Config Summary */}
           <div className="bg-gray-800 rounded-lg p-4">
             <h3 className="text-xs text-gray-400 mb-2">Configuration</h3>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              <div><span className="text-gray-500">Product:</span> <span className="text-white">{config.productId}</span></div>
-              <div><span className="text-gray-500">Interval:</span> <span className="text-white">{config.intervalType || 'daily'}</span></div>
-              <div><span className="text-gray-500">Buy:</span> <span className="text-white">{formatCurrency(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span></div>
-              <div><span className="text-gray-500">Intervals:</span> <span className="text-white">{config.intervalsToSpread || config.daysToSpread}</span></div>
-              <div><span className="text-gray-500">Markup:</span> <span className="text-white">+{config.sellMarkupPercent}%</span></div>
-              <div><span className="text-gray-500">Holdback:</span> <span className="text-white">{config.holdbackPercent}%</span></div>
-              <div><span className="text-gray-500">Max Price:</span> <span className="text-white">{formatPrice(config.maxBuyPrice)}</span></div>
-              <div><span className="text-gray-500">Consolidate:</span> <span className="text-white">{config.consolidateAfterOrders || 'Off'}</span></div>
+            <div className="grid grid-cols-2 gap-x-3 sm:gap-x-4 gap-y-1 text-xs">
+              <div className="truncate"><span className="text-gray-500">Product:</span> <span className="text-white">{config.productId}</span></div>
+              <div className="truncate"><span className="text-gray-500">Interval:</span> <span className="text-white">{config.intervalType || 'daily'}</span></div>
+              <div className="truncate"><span className="text-gray-500">Buy:</span> <span className="text-white">{formatCurrency(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span></div>
+              <div className="truncate"><span className="text-gray-500">Intervals:</span> <span className="text-white">{config.intervalsToSpread || config.daysToSpread}</span></div>
+              <div className="truncate"><span className="text-gray-500">Markup:</span> <span className="text-white">+{config.sellMarkupPercent}%</span></div>
+              <div className="truncate"><span className="text-gray-500">Holdback:</span> <span className="text-white">{config.holdbackPercent}%</span></div>
+              <div className="truncate"><span className="text-gray-500">Max Price:</span> <span className="text-white">{formatPrice(config.maxBuyPrice)}</span></div>
+              <div className="truncate"><span className="text-gray-500">Consolidate:</span> <span className="text-white">{config.consolidateAfterOrders || 'Off'}</span></div>
             </div>
           </div>
         </div>
@@ -477,11 +477,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
                 <tbody>
                   {(state.orders || []).filter(o => o.status === 'pending').sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map((order, i) => (
                     <tr key={i} className="border-t border-gray-700">
-                      <td className="py-2">{new Date(order.createdAt).toISOString().replace('T', ' ').slice(0, 19)}</td>
-                      <td className="py-2">{formatPrice(order.buyPrice)}</td>
-                      <td className="py-2">{formatPrice(order.sellPrice)}</td>
-                      <td className="py-2">{order.sellQuantity?.toFixed(8)} {baseCurrency}</td>
-                      <td className="py-2">{formatCurrency(order.sellQuantity * order.sellPrice)}</td>
+                      <td className="py-2 whitespace-nowrap">{new Date(order.createdAt).toISOString().replace('T', ' ').slice(0, 19)}</td>
+                      <td className="py-2 whitespace-nowrap">{formatPrice(order.buyPrice)}</td>
+                      <td className="py-2 whitespace-nowrap">{formatPrice(order.sellPrice)}</td>
+                      <td className="py-2 whitespace-nowrap">{order.sellQuantity?.toFixed(8)} {baseCurrency}</td>
+                      <td className="py-2 whitespace-nowrap">{formatCurrency(order.sellQuantity * order.sellPrice)}</td>
                     </tr>
                   ))}
                 </tbody>

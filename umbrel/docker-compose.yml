@@ -1,0 +1,17 @@
+version: "3.7"
+services:
+  app_proxy:
+    environment:
+      APP_HOST: critical-mass_web_1
+      APP_PORT: 5563
+
+  web:
+    image: ghcr.io/atomantic/critical-mass:v2.19.2
+    user: "1000:1000"
+    restart: on-failure
+    stop_grace_period: 1m
+    volumes:
+      - ${APP_DATA_DIR}/data:/app/data
+      - ${APP_DATA_DIR}/logs:/app/logs
+    environment:
+      - NODE_ENV=production

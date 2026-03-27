@@ -1,0 +1,28 @@
+manifestVersion: 1
+id: critical-mass
+name: Critical Mass
+tagline: Multi-exchange BTC accumulation engine
+icon: https://raw.githubusercontent.com/atomantic/critical-mass/main/admin/public/icon-512.png
+category: bitcoin
+version: "2.19.2"
+port: 5563
+description: >-
+  Critical Mass is a multi-exchange BTC accumulation engine with celestial
+  position management. It supports Coinbase, Gemini, and Crypto.com with
+  regime-based trading, DCA scheduling, and real-time market data monitoring.
+developer: Adam Eivy
+website: https://github.com/atomantic/critical-mass
+repo: https://github.com/atomantic/critical-mass
+support: https://github.com/atomantic/critical-mass/issues
+submitter: Adam Eivy
+submission: https://github.com/getumbrel/umbrel-apps
+gallery:
+  - https://raw.githubusercontent.com/atomantic/critical-mass/main/umbrel/gallery/screenshot-1.png
+  - https://raw.githubusercontent.com/atomantic/critical-mass/main/umbrel/gallery/screenshot-2.png
+  - https://raw.githubusercontent.com/atomantic/critical-mass/main/umbrel/gallery/screenshot-3.png
+releaseNotes: >-
+  Initial Umbrel release.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

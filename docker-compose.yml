@@ -1,0 +1,17 @@
+version: "3.8"
+services:
+  critical-mass:
+    build: .
+    container_name: critical-mass
+    restart: unless-stopped
+    ports:
+      - "5563:5563"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - NODE_ENV=production
+
+networks:
+  default:
+    name: critical-mass-network
