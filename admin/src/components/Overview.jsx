@@ -2,7 +2,7 @@ import { useState, useEffect, lazy, Suspense } from 'react'
 import { Link } from 'react-router-dom'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
-import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 
@@ -184,7 +184,9 @@ function Overview() {
   const totalRealizedUsdc = cards.reduce((sum, c) => sum + c.realizedUsdcPnL, 0)
   const assetBreakdown = cards.reduce((acc, c) => {
     if (c.realizedAssetPnL > 0) {
-      acc[c.baseCurrency] = (acc[c.baseCurrency] || 0) + c.realizedAssetPnL
+      if (!acc[c.baseCurrency]) acc[c.baseCurrency] = { qty: 0, usd: 0 }
+      acc[c.baseCurrency].qty += c.realizedAssetPnL
+      acc[c.baseCurrency].usd += c.realizedAssetPnL * c.lastPrice
     }
     return acc
   }, {})
@@ -240,8 +242,8 @@ function Overview() {
             {totals.realized >= 0 ? '+' : ''}{formatCurrency(totals.realized)}
           </div>
           <div className="text-xs text-white font-mono truncate">{formatCurrency(totalRealizedUsdc)} USD</div>
-          {Object.entries(assetBreakdown).map(([asset, qty]) => (
-            <div key={asset} className="text-xs text-orange-400 font-mono truncate">+{qty.toFixed(8)} {asset}</div>
+          {Object.entries(assetBreakdown).map(([asset, { qty, usd }]) => (
+            <div key={asset} className="text-xs text-orange-400 font-mono truncate">+{formatAsset(qty, asset)} ({formatCurrency(usd)})</div>
           ))}
         </div>
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
@@ -392,16 +394,26 @@ function Overview() {
                     <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5 min-w-0 overflow-hidden">
                       <div className="text-green-400/70 text-[10px]">Daily ({card.dailyReturnPercent.toFixed(2)}%)</div>
                       <div className="font-mono text-xs text-green-400 truncate">
-                        ${card.estimatedDailyUsdc.toFixed(2)}
-                        {card.estimatedDailyAsset > 0 && <span className="text-orange-400"> +{card.estimatedDailyAsset.toFixed(8)}</span>}
+                        {formatCurrency(card.estimatedDailyUsdc + (card.estimatedDailyAsset * card.lastPrice))}
                       </div>
+                      <div className="text-white text-[10px] font-mono truncate">{formatCurrency(card.estimatedDailyUsdc)} USD</div>
+                      {card.estimatedDailyAsset > 0 && (
+                        <div className="text-orange-400 text-[10px] font-mono truncate">
+                          +{formatAsset(card.estimatedDailyAsset, card.baseCurrency)} ({formatCurrency(card.estimatedDailyAsset * card.lastPrice)})
+                        </div>
+                      )}
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5 min-w-0 overflow-hidden">
                       <div className="text-cyan-400/70 text-[10px] truncate">Annual ({card.estimatedApy > 9999 ? '>9999' : card.estimatedApy.toFixed(0)}% APY)</div>
                       <div className="font-mono text-xs text-cyan-400 truncate">
-                        ${(card.estimatedDailyUsdc * 365).toFixed(2)}
-                        {card.estimatedDailyAsset > 0 && <span className="text-orange-400"> +{(card.estimatedDailyAsset * 365).toFixed(6)}</span>}
+                        {formatCurrency((card.estimatedDailyUsdc * 365) + (card.estimatedDailyAsset * 365 * card.lastPrice))}/yr
                       </div>
+                      <div className="text-white text-[10px] font-mono truncate">{formatCurrency(card.estimatedDailyUsdc * 365)} USD</div>
+                      {card.estimatedDailyAsset > 0 && (
+                        <div className="text-orange-400 text-[10px] font-mono truncate">
+                          +{(card.estimatedDailyAsset * 365).toFixed(6)} {card.baseCurrency} ({formatCurrency(card.estimatedDailyAsset * 365 * card.lastPrice)})
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
