@@ -2,6 +2,9 @@
 
 ## Added
 
+- Unrealized P&L subtext on Overview — "paper value if sold now" label plus expected gain when active cycles close at target sell prices
+- Docker containerization — multi-stage Dockerfile, docker-compose, PM2 entrypoint, multi-arch GitHub Actions build workflow
+- Umbrel app packaging — app manifest, app_proxy docker-compose, exports.sh for Umbrel App Store submission
 - Expected annual yield on Overview Estimated APY header — total liquid $/yr, USD breakdown, and per-asset quantity with USD equivalent
 - News Sentinel — RSS feed monitor for market-moving events (Fed decisions, geopolitical, tariffs, etc.) with keyword pre-filter, optional AI classification, Telegram alerts, Socket.IO real-time updates, and full dashboard UI at `/sentinel`
 - Inline capital adjustment UI — click "Available" in APY panel to edit deposited & max capital directly from dashboard
@@ -54,6 +57,7 @@
 - NEUTRAL and NTZ (NO_TRADE_ZONE) annotations no longer render on price charts — only BUY/SELL markers shown
 - NTZ entries filtered from signal history recording (backend + frontend seed + live tracking)
 - Weekly macro chart now receives signal annotations (was the only chart missing them)
+- DCA Dashboard mobile overflow — truncate/responsive text for price banner, fund assets grid, stat cards, config summary, allocation progress, and pending orders table
 - Overview cards: CRO_USD stats (APY, Daily/Annual, Deposited/Max/Avail) now display when engine is running even without saved engineStartTime
 - Crypto.com INVALID_ORDERQTY spam — validate order quantity meets exchange minimum before sending to API
 - Crypto.com sub-minimum $0.05 orders — remaining budget "last order" logic now requires budget >= minOrderSize

@@ -133,6 +133,14 @@ function Overview() {
     const regimeMode = regime?.mode || (status?.config?.regimeMode) || null
     const healthMode = health?.mode || 'STOPPED'
 
+    // Expected gain if all pending sell orders fill at their target prices
+    const expectedCycleGain = (celestial?.bodies || []).reduce((sum, body) => {
+      if (body.tpPrice > 0 && body.assetOnOrder > 0) {
+        return sum + body.assetOnOrder * (body.tpPrice - body.avgPrice)
+      }
+      return sum
+    }, 0)
+
     return {
       exchange: ex.name,
       pair,
@@ -148,6 +156,7 @@ function Overview() {
       availableCapital,
       unrealizedPnL,
       unrealizedPct,
+      expectedCycleGain,
       realizedPnL,
       realizedUsdcPnL,
       estimatedApy,
@@ -178,7 +187,8 @@ function Overview() {
     available: acc.available + c.availableCapital,
     unrealized: acc.unrealized + c.unrealizedPnL,
     realized: acc.realized + c.realizedPnL,
-  }), { deployed: 0, available: 0, unrealized: 0, realized: 0 })
+    expectedCycleGain: acc.expectedCycleGain + c.expectedCycleGain,
+  }), { deployed: 0, available: 0, unrealized: 0, realized: 0, expectedCycleGain: 0 })
 
   // Aggregate realized USD + per-asset breakdown
   const totalRealizedUsdc = cards.reduce((sum, c) => sum + c.realizedUsdcPnL, 0)
@@ -235,6 +245,13 @@ function Overview() {
           <div className={`text-base sm:text-lg font-bold truncate ${totals.unrealized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {totals.unrealized >= 0 ? '+' : ''}{formatCurrency(totals.unrealized)}
           </div>
+          <div className="text-xs text-gray-500 truncate">paper value if sold now</div>
+          {totals.expectedCycleGain > 0 && (
+            <div className="mt-1">
+              <div className="text-xs text-cyan-400 font-mono truncate">+{formatCurrency(totals.expectedCycleGain)}</div>
+              <div className="text-xs text-gray-500 truncate">expected when cycles close</div>
+            </div>
+          )}
         </div>
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Realized P&L</div>
@@ -353,6 +370,10 @@ function Overview() {
                     <div className={`text-xs ${card.unrealizedPct >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                       {card.unrealizedPct >= 0 ? '+' : ''}{card.unrealizedPct.toFixed(2)}%
                     </div>
+                  )}
+                  {card.totalCostBasis > 0 && <div className="text-[10px] text-gray-500">if sold now</div>}
+                  {card.expectedCycleGain > 0 && (
+                    <div className="text-[10px] text-cyan-400 font-mono truncate">+{formatCurrency(card.expectedCycleGain)} at target</div>
                   )}
                 </div>
                 <div className="min-w-0">
