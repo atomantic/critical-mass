@@ -2,7 +2,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
 
@@ -254,7 +254,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<MarketBuyResult>} Order result
    */
   adapter.placeMarketBuy = async (productId, quoteAmount) => {
-    const clientOrderId = uuidv4();
+    const clientOrderId = crypto.randomUUID();
 
     const orderData = {
       client_order_id: clientOrderId,
@@ -285,7 +285,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<LimitSellResult>} Order result
    */
   adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
-    const clientOrderId = uuidv4();
+    const clientOrderId = crypto.randomUUID();
     const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
@@ -337,7 +337,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<LimitBuyResult>} Order result
    */
   adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
-    const clientOrderId = uuidv4();
+    const clientOrderId = crypto.randomUUID();
     const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
@@ -512,7 +512,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<{orderId: string, clientOrderId: string, success: boolean, errorMessage?: string, baseSize: number, stopPrice: number, limitPrice: number}>}
    */
   adapter.placeStopLimitSell = async (productId, baseAmount, stopPrice, limitPrice) => {
-    const clientOrderId = uuidv4();
+    const clientOrderId = crypto.randomUUID();
 
     const product = await adapter.getProductDetails(productId);
 
@@ -560,7 +560,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<{orderId: string, clientOrderId: string, success: boolean, errorMessage?: string, baseSize: number}>}
    */
   adapter.placeMarketSell = async (productId, baseAmount) => {
-    const clientOrderId = uuidv4();
+    const clientOrderId = crypto.randomUUID();
 
     const product = await adapter.getProductDetails(productId);
     const baseIncrement = parseFloat(product.baseIncrement);

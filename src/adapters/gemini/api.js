@@ -3,7 +3,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
 const { incrementToDecimals } = require('../../shared-utils');
@@ -217,7 +217,7 @@ const createGeminiAdapter = (keysPath = null) => {
    */
   adapter.placeMarketBuy = async (productId, quoteAmount) => {
     const symbol = toGeminiSymbol(productId);
-    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 32);
+    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
 
     // Get current price and add slippage for IOC order
     const currentPrice = await adapter.getCurrentPrice(productId);
@@ -255,7 +255,7 @@ const createGeminiAdapter = (keysPath = null) => {
    */
   adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
     const symbol = toGeminiSymbol(productId);
-    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 32);
+    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
     const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding
@@ -303,7 +303,7 @@ const createGeminiAdapter = (keysPath = null) => {
    */
   adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
     const symbol = toGeminiSymbol(productId);
-    const clientOrderId = uuidv4().replace(/-/g, '').substring(0, 32);
+    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
     const postOnly = options.postOnly !== false; // Default to true
 
     // Get product details for proper rounding

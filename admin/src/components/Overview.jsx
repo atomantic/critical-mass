@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { Link } from 'react-router-dom'
+import { ExternalLink } from 'lucide-react'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
@@ -292,13 +293,12 @@ function Overview() {
           const healthColor = HEALTH_COLORS[card.healthMode] || 'text-gray-400'
 
           return (
-            <Link
+            <div
               key={`${card.exchange}-${card.pair}`}
-              to={`/${card.exchange}/${card.pair}`}
-              className="bg-gray-800 rounded-lg border border-gray-700 hover:border-gray-500 transition-colors p-4 block"
+              className="bg-gray-800 rounded-lg border border-gray-700 transition-colors p-4 block"
             >
               {/* Header: icon + name + pair + badges */}
-              <div className="flex items-center justify-between mb-3">
+              <Link to={`/${card.exchange}/${card.pair}`} className="flex items-center justify-between mb-3 hover:opacity-80 transition-opacity">
                 <div className="flex items-center gap-2">
                   <span className={`w-7 h-7 flex items-center justify-center rounded shrink-0 ${EXCHANGE_COLORS[card.exchange] || 'bg-gray-600'}`}>
                     {EXCHANGE_ICONS[card.exchange] || '?'}
@@ -308,11 +308,12 @@ function Overview() {
                     <span className="text-gray-400 mx-1">/</span>
                     <span className="text-sm text-gray-300">{card.pair}</span>
                   </div>
+                  <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
                 </div>
                 <span className={`text-xs px-2 py-0.5 rounded ${engineStatus.color} ${engineStatus.textColor} ${engineStatus.pulse ? 'animate-pulse' : ''}`}>
                   {engineStatus.label}
                 </span>
-              </div>
+              </Link>
 
               {/* Status pills */}
               <div className="flex items-center gap-2 mb-3">
@@ -447,7 +448,7 @@ function Overview() {
                   <span>{card.bodiesActive} active {card.tierSummary ? `(${card.tierSummary})` : ''}</span>
                 )}
               </div>
-            </Link>
+            </div>
           )
         })}
       </div>
