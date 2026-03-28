@@ -75,10 +75,8 @@
 ## Removed
 
 - `cors`, `uuid`, `json-bigint` npm dependencies — replaced with built-in Node.js APIs (`crypto.randomUUID()`, inline CORS middleware) or removed as unused
-
-- Kalshi/hedge references from PLAN.md, docs, IPC modules, and shared utilities (post-removal cleanup)
-- STRATEGY-GUIDE.md (Kalshi-specific, no longer applicable)
-- Kalshi strategy config warning from CLAUDE.md
+- Stale docs: `docs/cryptofeed-evaluation.md` (rejected dependency eval), `docs/UPDOWN-EVALUATION.md` (obsolete), dead doc links from PLAN.md
+- Kalshi references from CHANGELOG.md unreleased section and DONE.md
 - "Live" WebSocket connection indicator from overview page
 - Direction (Dir) column from UpDown trade history table — directional stats still shown in Up/Down win rate summary
 - ADX dynamic weight shift — replaced by static trend-following-dominant weights (was compounding bug)

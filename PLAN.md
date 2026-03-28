@@ -25,5 +25,3 @@ For completed work, see [DONE.md](./DONE.md).
 
 - [PM2 Architecture](./docs/pm2-architecture.md)
 - [Fill Ledger Sell Linkage](./docs/fill-ledger-sell-linkage.md)
-- [UpDown Evaluation](./docs/UPDOWN-EVALUATION.md)
-- [Cryptofeed Evaluation](./docs/cryptofeed-evaluation.md)
