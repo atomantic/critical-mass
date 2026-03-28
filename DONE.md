@@ -4,7 +4,6 @@ Completed items archived from PLAN.md.
 
 ## 2026-03-27
 
-- Removed Kalshi and hedge systems, cleaned up references across docs/plan/shared utilities
 - Celestial systems overhaul — asteroid/nebula tiers, visualizations, Systems page
 - UpDown SELL signals — neutral short-TF scoring, debounce history
 - Crypto.com partial TP fills — handle partial fills, fix getOpenOrders
