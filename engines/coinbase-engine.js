@@ -456,6 +456,17 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange) => {
   };
 });
 
+ipcServer.onRequest('regime:sync-fills', async (payload, exchange) => {
+  const { dryRun = false } = payload || {};
+  const { syncFills } = require('../src/sync-fills');
+
+  invalidateStandaloneLedger(exchange);
+  const fillLedger = getStandaloneLedger(exchange);
+
+  const result = await syncFills(exchange, fillLedger, { dryRun });
+  return result;
+});
+
 ipcServer.onRequest('regime:convert-dca', async (payload, exchange) => {
   if (regimeEngines.has(exchange)) {
     return { success: false, error: 'Regime engine is running — stop it before converting DCA orders' };

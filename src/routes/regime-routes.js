@@ -186,6 +186,14 @@ module.exports = (app, deps) => {
     res.json(result);
   });
 
+  app.post('/api/:exchange/regime/sync-fills', async (req, res) => {
+    const { exchange } = req.params;
+    const { dryRun = false } = req.body;
+    const result = await getIPC(exchange).request('regime:sync-fills', { dryRun }, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
   app.post('/api/:exchange/regime/convert-dca', async (req, res) => {
     const { exchange } = req.params;
     const { preview = true, merge = false } = req.body;

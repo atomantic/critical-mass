@@ -2,6 +2,12 @@
 
 ## Added
 
+- Fill sync API (`POST /api/:exchange/regime/sync-fills`) — fetches all trades from exchange, compares with local fill ledger, and ingests any missing fills; supports Gemini and Coinbase
+- Sync Fills button on Open Orders card — always-visible UI control to trigger exchange-to-ledger reconciliation with result banner
+- `adapter.getAllTrades(symbol, sinceTimestampMs)` method on Gemini adapter — paginated trade history fetch
+- `skipPersist` option on `fillLedger.ingestFill()` — enables batch ingestion with a single disk write
+- Gemini audit script (`scripts/audit-gemini-fills.js`) — compare Gemini exchange fills vs local ledger
+
 - Unrealized P&L subtext on Overview — "paper value if sold now" label plus expected gain when active cycles close at target sell prices
 - Docker containerization — multi-stage Dockerfile, docker-compose, PM2 entrypoint, multi-arch GitHub Actions build workflow
 - Umbrel app packaging — app manifest, app_proxy docker-compose, exports.sh for Umbrel App Store submission
@@ -40,6 +46,9 @@
 - Signal history debounced — 5-minute minimum between consecutive same-type entries to prevent threshold oscillation flooding
 
 ## Fixed
+
+- Gemini BTCUSD missing 28 buy fills — synced from exchange and associated with galaxy body, position corrected from 0.04 to 0.069 BTC
+- Startup `syncPositionState` gap — celestial body totals were not synced to position after recovery, causing totalAsset=0 despite bodies having correct data
 
 - `calculateCostBasis` now reads asset-generic field names (`buyQuantity`, `holdbackAsset`, `sellQuantity`) instead of BTC-specific ones — fixes cost basis display for CRO and other non-BTC DCA funds
 - Overview position double-counting — `totalAssetQty` was summing body assets twice (`position.totalAsset` already equals body sum from `syncPositionState`)

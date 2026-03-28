@@ -1217,6 +1217,11 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         }
       }
 
+      // Sync position totals from celestial bodies (ensures recovery didn't zero them out)
+      if ((positionState.celestialBodies || []).length > 0) {
+        celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+      }
+
       // Recalculate cycles from fill ledger to ensure accurate P&L tracking
       // This catches any discrepancies between saved state and actual fills
       // Note: recalculateCycles skips satellite fills — body/satellite P&L tracked separately

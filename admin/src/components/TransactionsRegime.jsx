@@ -12,8 +12,32 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
   const [sortField, setSortField] = useState('timestamp')
   const [sortDir, setSortDir] = useState('desc')
   const [productId, setProductId] = useState(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncResult, setSyncResult] = useState(null)
 
   const formatAsset = (n) => (n || 0).toFixed(8)
+
+  const handleSyncFills = async () => {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/sync-fills`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: false }),
+      })
+      const data = await res.json()
+      setSyncResult(data)
+      if (data.success && data.ingested > 0) {
+        // Refresh data after successful sync
+        fetchData()
+      }
+    } catch (err) {
+      setSyncResult({ success: false, error: err.message })
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const fetchData = useCallback(async () => {
     const [fillsRes, statusRes, ordersRes, configRes] = await Promise.all([
@@ -234,12 +258,46 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
       )}
 
       {/* Open Orders Section */}
-      {openOrders.length > 0 && (
-        <div className="bg-gray-800 rounded-lg p-4">
-          <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
-            <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></span>
-            Open Orders
-          </h3>
+      <div className="bg-gray-800 rounded-lg p-4">
+        <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
+          {openOrders.length > 0 && <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></span>}
+          Open Orders
+          <button
+            onClick={handleSyncFills}
+            disabled={syncing}
+            className={`ml-auto px-3 py-1 rounded text-xs font-medium transition-colors ${
+              syncing
+                ? 'bg-gray-600 text-gray-400 cursor-wait'
+                : 'bg-blue-600/30 text-blue-400 hover:bg-blue-600/50 border border-blue-500/30'
+            }`}
+            title="Sync fills from exchange — fetches all trades and ingests any missing fills"
+          >
+            {syncing ? 'Syncing...' : 'Sync Fills'}
+          </button>
+        </h3>
+        {syncResult && (
+          <div className={`mb-3 p-2 rounded text-xs ${
+            syncResult.success
+              ? syncResult.ingested > 0
+                ? 'bg-green-900/30 border border-green-700/50 text-green-400'
+                : 'bg-gray-700/50 border border-gray-600/50 text-gray-400'
+              : 'bg-red-900/30 border border-red-700/50 text-red-400'
+          }`}>
+            {syncResult.success ? (
+              syncResult.ingested > 0 ? (
+                <span>Synced {syncResult.ingested} missing fill(s): {syncResult.missingBuys?.count || 0} buys ({syncResult.missingBuys?.btc} BTC), {syncResult.missingSells?.count || 0} sells ({syncResult.missingSells?.btc} BTC)</span>
+              ) : syncResult.missing > 0 ? (
+                <span>Found {syncResult.missing} missing fill(s) (dry run)</span>
+              ) : (
+                <span>All fills in sync ({syncResult.exchangeTotal} exchange, {syncResult.ledgerTotal} ledger)</span>
+              )
+            ) : (
+              <span>Sync failed: {syncResult.error}</span>
+            )}
+            <button onClick={() => setSyncResult(null)} className="ml-2 text-gray-500 hover:text-gray-300">x</button>
+          </div>
+        )}
+        {openOrders.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -288,8 +346,11 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+        )}
+        {openOrders.length === 0 && !syncResult && (
+          <div className="text-sm text-gray-500">No open orders</div>
+        )}
+      </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-4 items-center">

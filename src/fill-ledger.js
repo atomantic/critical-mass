@@ -138,7 +138,7 @@ const createFillLedger = (exchange, productId) => {
    * @param {number} [orderPlacedAt] - Optional timestamp when the order was placed (for fill time tracking)
    * @returns {{ingested: boolean, fill: Fill|null}} Result
    */
-  const ingestFill = (fillData, orderPlacedAt = null) => {
+  const ingestFill = (fillData, orderPlacedAt = null, options = {}) => {
     const tradeId = fillData.tradeId || fillData.trade_id;
 
     // Idempotency check
@@ -177,7 +177,7 @@ const createFillLedger = (exchange, productId) => {
       if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
       cycleIndex.get(fill.cycleId).add(tradeId);
     }
-    persist();
+    if (!options.skipPersist) persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
     console.log(`📝 [${exchange}] Fill ingested: tradeId=${tradeId} orderId=${fill.orderId} ${fill.side} ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);

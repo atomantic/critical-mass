@@ -529,6 +529,34 @@ const createGeminiAdapter = (keysPath = null) => {
     }
   };
 
+  /**
+   * Get all trades for a symbol since a timestamp (paginated)
+   * @param {string} symbol - Trading pair symbol (e.g., 'btcusd')
+   * @param {number} sinceTimestampMs - Start timestamp in milliseconds
+   * @returns {Promise<Array>} All trades since the timestamp
+   */
+  adapter.getAllTrades = async (symbol, sinceTimestampMs) => {
+    const allTrades = [];
+    let timestamp = Math.floor(sinceTimestampMs / 1000);
+
+    for (let page = 1; page <= 50; page++) {
+      const trades = await makeRestRequest('/v1/mytrades', {
+        symbol,
+        limit_trades: 500,
+        timestamp,
+      });
+
+      if (!Array.isArray(trades) || trades.length === 0) break;
+      allTrades.push(...trades);
+      if (trades.length < 500) break;
+
+      const lastTs = Math.max(...trades.map(t => t.timestampms || (t.timestamp * 1000)));
+      timestamp = Math.floor(lastTs / 1000) + 1;
+    }
+
+    return allTrades;
+  };
+
   return adapter;
 };
 
