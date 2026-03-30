@@ -45,23 +45,25 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       {/* Fog for depth — pushed further out for wider views */}
       <fog attach="fog" args={['#0f0f14', 30, 80]} />
 
-      {/* Ambient light */}
-      <ambientLight intensity={hasHighTier ? 0.12 : 0.25} />
+      {/* Ambient and Global Depth Lighting */}
+      <hemisphereLight intensity={0.2} groundColor="#000000" color="#4f46e5" />
+      <ambientLight intensity={hasHighTier ? 0.2 : 0.4} />
 
-      {/* Central point light - amber glow from center */}
+      {/* Central point light - amber/red glow from center */}
       <pointLight
         position={[0, 0, 0]}
         color={hasBlackHole ? '#EF4444' : '#F59E0B'}
-        intensity={hasHighTier ? 3.0 : 1.0}
-        distance={40}
-        decay={2}
+        intensity={hasHighTier ? 4.0 : 2.0}
+        distance={50}
+        decay={1.5}
       />
 
-      {/* Secondary fill light from above */}
-      <pointLight position={[0, 8, 0]} color="#ffffff" intensity={0.15} distance={25} decay={2} />
+      {/* Secondary fill lights for visibility on dark sides */}
+      <pointLight position={[0, 10, 0]} color="#ffffff" intensity={0.5} distance={30} decay={1.5} />
+      <pointLight position={[0, -10, 0]} color="#4338ca" intensity={0.3} distance={30} decay={2} />
 
       {/* Rim fill light */}
-      <directionalLight position={[5, 3, 5]} intensity={0.15} color="#ffffff" />
+      <directionalLight position={[5, 3, 5]} intensity={0.4} color="#ffffff" />
 
       {/* Dual starfield background */}
       <Stars radius={60} depth={50} count={1500} factor={3} saturation={0.1} fade speed={0.3} />

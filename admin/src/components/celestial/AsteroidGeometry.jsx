@@ -1,12 +1,16 @@
 import { useMemo } from 'react'
 import * as THREE from 'three'
+import { getRockTexture } from './rockTexture'
 
 /**
  * Asteroid-shaped geometry: irregular rocky body using displaced icosahedron.
- * Brown/gray coloring with rough surface — no glow halo (dead rocky body).
+ * Enhanced with procedural rock texture and flat shading for a rugged look.
  */
 const AsteroidGeometry = ({ size, color, emissiveInt }) => {
+  const texture = useMemo(() => getRockTexture(), [])
+  
   const geometry = useMemo(() => {
+    // Lower detail for a more angular, low-poly rocky feel
     const geo = new THREE.IcosahedronGeometry(size, 1)
     const posAttr = geo.getAttribute('position')
     const arr = posAttr.array
@@ -16,9 +20,8 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
     for (let i = 0; i < arr.length; i += 3) {
       const len = Math.sqrt(arr[i] ** 2 + arr[i + 1] ** 2 + arr[i + 2] ** 2)
       if (len === 0) continue
-      // Deterministic-ish displacement based on vertex index
       const hash = Math.sin((i + seed) * 127.1) * 43758.5453
-      const displacement = 0.7 + (hash - Math.floor(hash)) * 0.6 // 0.7..1.3 range
+      const displacement = 0.6 + (hash - Math.floor(hash)) * 0.8 // 0.6..1.4 range
       const scale = (size * displacement) / len
       arr[i] *= scale
       arr[i + 1] *= scale
@@ -32,11 +35,12 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
   return (
     <mesh geometry={geometry}>
       <meshStandardMaterial
+        map={texture}
         color={color}
         emissive={color}
-        emissiveIntensity={emissiveInt}
-        roughness={0.85}
-        metalness={0.15}
+        emissiveIntensity={emissiveInt * 0.4}
+        roughness={0.9}
+        metalness={0.05}
         flatShading
       />
     </mesh>
