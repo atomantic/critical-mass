@@ -61,7 +61,7 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
         <meshStandardMaterial
           color="#94A3B8"
           emissive={color}
-          emissiveIntensity={emissiveInt * 0.3}
+          emissiveIntensity={emissiveInt * 0.75}
           roughness={0.2}
           metalness={0.9}
         />
@@ -80,7 +80,7 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
           <meshStandardMaterial
             color="#1E3A8A"
             emissive="#3B82F6"
-            emissiveIntensity={0.1}
+            emissiveIntensity={0.2}
             roughness={0.1}
             metalness={0.8}
           />
@@ -90,7 +90,7 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
           <meshStandardMaterial
             color="#1E3A8A"
             emissive="#3B82F6"
-            emissiveIntensity={0.1}
+            emissiveIntensity={0.2}
             roughness={0.1}
             metalness={0.8}
           />
@@ -103,7 +103,7 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
         <meshStandardMaterial
           color="#64748B"
           emissive={color}
-          emissiveIntensity={emissiveInt * 0.2}
+          emissiveIntensity={emissiveInt * 0.5}
           roughness={0.3}
           metalness={0.7}
         />

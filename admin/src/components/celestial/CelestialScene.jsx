@@ -42,12 +42,12 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
         minPolarAngle={Math.PI * 0.15}
       />
 
-      {/* Fog for depth — pushed further out for wider views */}
-      <fog attach="fog" args={['#0f0f14', 30, 80]} />
+      {/* Fog for depth — keep it subtle so the scene retains contrast */}
+      <fog attach="fog" args={['#111827', 38, 96]} />
 
       {/* Ambient and Global Depth Lighting */}
-      <hemisphereLight intensity={0.2} groundColor="#000000" color="#4f46e5" />
-      <ambientLight intensity={hasHighTier ? 0.2 : 0.4} />
+      <hemisphereLight intensity={0.32} groundColor="#020617" color="#C7D2FE" />
+      <ambientLight intensity={hasHighTier ? 0.24 : 0.42} />
 
       {/* Central point light - amber/red glow from center */}
       <pointLight
@@ -59,15 +59,17 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       />
 
       {/* Secondary fill lights for visibility on dark sides */}
-      <pointLight position={[0, 10, 0]} color="#ffffff" intensity={0.5} distance={30} decay={1.5} />
-      <pointLight position={[0, -10, 0]} color="#4338ca" intensity={0.3} distance={30} decay={2} />
+      <pointLight position={[0, 10, 0]} color="#ffffff" intensity={0.6} distance={34} decay={1.5} />
+      <pointLight position={[0, -10, 0]} color="#60A5FA" intensity={0.35} distance={34} decay={2} />
 
       {/* Rim fill light */}
-      <directionalLight position={[5, 3, 5]} intensity={0.4} color="#ffffff" />
+      <directionalLight position={[5, 3, 5]} intensity={0.45} color="#ffffff" />
+      <directionalLight position={[-4, 2, 6]} intensity={0.2} color="#FDBA74" />
 
-      {/* Dual starfield background */}
-      <Stars radius={60} depth={50} count={1500} factor={3} saturation={0.1} fade speed={0.3} />
-      <Stars radius={100} depth={80} count={1000} factor={2} saturation={0.2} fade speed={0.1} />
+      {/* Multi-layer starfield background */}
+      <Stars radius={60} depth={50} count={1800} factor={3.2} saturation={0.15} fade speed={0.3} />
+      <Stars radius={100} depth={80} count={1600} factor={2.1} saturation={0.25} fade speed={0.1} />
+      <Stars radius={140} depth={110} count={2400} factor={1.2} saturation={0.4} fade speed={0.05} />
 
       {/* Hierarchical celestial bodies - largest at center, each smaller orbits the next-larger */}
       <HierarchicalOrbit
@@ -91,10 +93,10 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       {/* Bloom post-processing */}
       <EffectComposer>
         <Bloom
-          luminanceThreshold={0.3}
-          luminanceSmoothing={0.8}
-          intensity={0.8}
-          radius={0.6}
+          luminanceThreshold={0.26}
+          luminanceSmoothing={0.78}
+          intensity={0.85}
+          radius={0.62}
           mipmapBlur
         />
       </EffectComposer>

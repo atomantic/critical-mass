@@ -77,6 +77,19 @@ export const GLOW_INTENSITY = {
   black_hole: 2.0,
 }
 
+// Minimum halo opacity floor so every body remains legible against the dark background
+export const MIN_GLOW_OPACITY = {
+  satellite:  0.08,
+  asteroid:   0.1,
+  moon:       0.08,
+  planet:     0.1,
+  sun:        0.14,
+  hypergiant: 0.16,
+  nebula:     0.16,
+  galaxy:     0.18,
+  black_hole: 0.16,
+}
+
 // Emissive intensity per tier (used for rocky/cold bodies)
 export const EMISSIVE_INTENSITY = {
   satellite:  0.2,

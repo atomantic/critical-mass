@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import {
   TIER_COLORS, CORE_COLORS,
-  GLOW_INTENSITY, EMISSIVE_INTENSITY, STELLAR_TIERS, getBodySize,
+  GLOW_INTENSITY, EMISSIVE_INTENSITY, MIN_GLOW_OPACITY, STELLAR_TIERS, getBodySize,
 } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
 import MoonGeometry from './MoonGeometry'
@@ -16,7 +16,7 @@ import PlanetGeometry from './PlanetGeometry'
 /**
  * Individual celestial body (visual only — parent handles orbital positioning).
  *
- * Rocky bodies (satellite, asteroid, moon, planet):
+ * Rocky/mechanical bodies (satellite, asteroid, moon, planet):
  *   MeshStandardMaterial with emissive tint + thin BackSide glow halo
  *
  * Stellar bodies (sun, hypergiant):
@@ -29,6 +29,7 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
 
   const color = TIER_COLORS[body.tier] || TIER_COLORS.satellite
   const glowInt = GLOW_INTENSITY[body.tier] || 0.3
+  const minGlowOpacity = MIN_GLOW_OPACITY[body.tier] || 0.08
   const emissiveInt = EMISSIVE_INTENSITY[body.tier] || 0.2
   const size = getBodySize(body.costBasis, maxUsdcDeployed)
   const hasTP = body.tpPrice > 0
@@ -41,9 +42,9 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
     // Glow animation
     if (glowRef.current) {
       if (!hasTP) {
-        glowRef.current.material.opacity = 0.08 + Math.sin(time * 2) * 0.04
+        glowRef.current.material.opacity = minGlowOpacity + Math.sin(time * 2) * 0.03
       } else {
-        glowRef.current.material.opacity = isStellar ? 0.12 : glowInt * 0.25
+        glowRef.current.material.opacity = isStellar ? Math.max(0.12, minGlowOpacity) : Math.max(minGlowOpacity, glowInt * 0.25)
       }
     }
 
@@ -60,7 +61,8 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
   const isSun = body.tier === 'sun'
   const isPlanet = body.tier === 'planet'
   const useGroupGeometry = isMoon || isSatellite || isAsteroid || isHypergiant || isSun || isPlanet
-  const skipGlow = isMoon || isSatellite || isAsteroid
+  const usesSphericalHalo = !isSatellite && !isAsteroid
+  const glowScale = isMoon ? 1.16 : isStellar ? 1.3 : 1.4
 
   return (
     <group>
@@ -97,14 +99,14 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
         </mesh>
       )}
 
-      {/* Glow halo — skip for moon (no atmosphere), satellite (mechanical), asteroid (dead rock) */}
-      {!skipGlow && (
-        <mesh ref={glowRef} scale={isStellar ? 1.3 : 1.4}>
+      {/* Spherical halo works for round bodies; irregular/mechanical bodies handle readability in their own geometry */}
+      {usesSphericalHalo && (
+        <mesh ref={glowRef} scale={glowScale}>
           <sphereGeometry args={[size, 16, 16]} />
           <meshBasicMaterial
             color={color}
             transparent
-            opacity={0.12}
+            opacity={minGlowOpacity}
             side={THREE.BackSide}
           />
         </mesh>
