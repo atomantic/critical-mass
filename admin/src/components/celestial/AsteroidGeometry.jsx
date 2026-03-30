@@ -39,32 +39,62 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
       
       posAttr.needsUpdate = true
       geo.computeVertexNormals()
-      return { ...chunk, geo }
+      const edges = new THREE.EdgesGeometry(geo, 22)
+      return { ...chunk, geo, edges }
     })
   }, [size])
 
   return (
     <group>
       {chunks.map((chunk, i) => (
-        <mesh 
-          key={i} 
-          geometry={chunk.geo} 
+        <group
+          key={i}
           position={chunk.pos}
-          rotation={[i, i * 2, 0]} // Randomish rotation per chunk
+          rotation={[i, i * 2, 0]}
         >
-          <meshStandardMaterial
-            map={textures.map}
-            bumpMap={textures.bumpMap}
-            bumpScale={0.15}
-            emissiveMap={textures.emissiveMap}
-            emissive={new THREE.Color('#FCD34D')} // Gold/Yellow glow for ore
-            emissiveIntensity={emissiveInt * 4}   // High intensity for bloom
-            color={color}
-            roughness={0.8}
-            metalness={0.2}
-            flatShading
+          <pointLight
+            color="#F97316"
+            intensity={0.35 * chunk.scale}
+            distance={size * 3.2}
+            decay={2}
           />
-        </mesh>
+          <mesh geometry={chunk.geo}>
+            <meshStandardMaterial
+              map={textures.map}
+              bumpMap={textures.bumpMap}
+              bumpScale={0.15}
+              emissiveMap={textures.emissiveMap}
+              color={new THREE.Color(color).lerp(new THREE.Color('#8A5530'), 0.65)}
+              emissiveIntensity={Math.max(emissiveInt * 7, 0.9)}
+              emissive={new THREE.Color('#7C2D12')}
+              roughness={0.78}
+              metalness={0.18}
+              flatShading
+            />
+          </mesh>
+          <mesh geometry={chunk.geo} scale={0.995}>
+            <meshBasicMaterial
+              color="#F59E0B"
+              transparent
+              opacity={0.035}
+            />
+          </mesh>
+          <mesh geometry={chunk.geo} scale={1.02}>
+            <meshBasicMaterial
+              color="#EA580C"
+              transparent
+              opacity={0.07}
+              side={THREE.BackSide}
+            />
+          </mesh>
+          <lineSegments geometry={chunk.edges} scale={1.025}>
+            <lineBasicMaterial
+              color="#FB923C"
+              transparent
+              opacity={0.4}
+            />
+          </lineSegments>
+        </group>
       ))}
     </group>
   )
