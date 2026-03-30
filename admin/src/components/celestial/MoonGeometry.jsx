@@ -3,21 +3,24 @@ import { getMoonTexture } from './moonTexture'
 
 /**
  * Moon-specific mesh: sphere with procedural cratered texture.
- * Matte rocky look (high roughness, low metalness).
+ * Enhanced with bump and roughness maps for a more realistic rocky surface.
  */
 const MoonGeometry = ({ size, color, emissiveInt }) => {
-  const texture = useMemo(() => getMoonTexture(), [])
+  const textures = useMemo(() => getMoonTexture(), [])
 
   return (
     <mesh>
-      <sphereGeometry args={[size, 32, 32]} />
+      <sphereGeometry args={[size, 64, 64]} /> {/* Increased segments for better bump mapping visibility */}
       <meshStandardMaterial
-        map={texture}
+        map={textures.map}
+        bumpMap={textures.bumpMap}
+        bumpScale={0.08}
+        roughnessMap={textures.roughnessMap}
         color={color}
         emissive={color}
-        emissiveIntensity={emissiveInt}
-        roughness={0.7}
-        metalness={0.1}
+        emissiveIntensity={emissiveInt * 0.5} // Lower emissive so texture details aren't washed out
+        roughness={0.9}
+        metalness={0.05}
       />
     </mesh>
   )
