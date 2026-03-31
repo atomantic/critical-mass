@@ -6,7 +6,6 @@
  * Handles per-feed errors gracefully (log + skip).
  */
 
-const axios = require('axios');
 const { XMLParser } = require('fast-xml-parser');
 const { log } = require('../logger');
 
@@ -60,13 +59,21 @@ const normalizeAtomEntry = (entry, sourceName) => {
  */
 const fetchFeed = async (feed, timeoutMs = 15000) => {
   try {
-    const response = await axios.get(feed.url, {
-      timeout: timeoutMs,
-      headers: { 'User-Agent': 'CriticalMass-Sentinel/1.0' },
-      responseType: 'text',
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let text;
+    try {
+      const response = await fetch(feed.url, {
+        headers: { 'User-Agent': 'CriticalMass-Sentinel/1.0' },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      text = await response.text();
+    } finally {
+      clearTimeout(timeout);
+    }
 
-    const parsed = parser.parse(response.data);
+    const parsed = parser.parse(text);
 
     // RSS 2.0
     if (parsed.rss?.channel) {

@@ -31,6 +31,7 @@
 
 ## Changed
 
+- All npm dependencies version-pinned (no `^` ranges) to prevent supply chain attacks from auto-upgrading
 - Celestial visuals — removed tron-style wireframe/geometric rings from black hole, galaxy, and nebula; enhanced galaxy with denser spiral arms (3×800 particles), Gaussian spread, diffuse dust layer, and layered disc glows
 
 - Indicator weights rebalanced for trend-following dominance (61%): MACD 0.24, OBV 0.20, Momentum 0.17; mean-reversion reduced: RSI 0.12, Stochastic 0.10, Bollinger 0.08
@@ -85,6 +86,7 @@
 
 ## Removed
 
+- `axios` dependency — replaced with native `fetch` (Node 22) across all 7 files (exchange adapters, notifier, backtest engine, sync-fills, feed-poller) to eliminate supply chain attack surface
 - `cors`, `uuid`, `json-bigint` npm dependencies — replaced with built-in Node.js APIs (`crypto.randomUUID()`, inline CORS middleware) or removed as unused
 - Stale docs: `docs/cryptofeed-evaluation.md` (rejected dependency eval), `docs/UPDOWN-EVALUATION.md` (obsolete), dead doc links from PLAN.md
 - Kalshi references from CHANGELOG.md unreleased section and DONE.md

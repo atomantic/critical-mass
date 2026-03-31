@@ -1,5 +1,4 @@
 // @ts-check
-const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -96,27 +95,40 @@ const createCryptocomAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const body = createAuthenticatedRequest(method, params, apiKey, apiSecret);
 
-    const response = await axios.post(`${REST_BASE_URL}/${method}`, body, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      transformResponse: [safeParseBigInt],
-    }).catch(err => {
-      const status = err.response?.status || 'unknown';
-      const errData = err.response?.data;
+    let response;
+    try {
+      response = await fetch(`${REST_BASE_URL}/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      const cleanError = new Error(`Crypto.com API network: ${err.message}`);
+      cleanError.status = 'network';
+      cleanError.endpoint = method;
+      throw cleanError;
+    }
+
+    const rawText = await response.text();
+
+    if (!response.ok) {
+      let errData;
+      try { errData = safeParseBigInt(rawText); } catch { errData = {}; }
       const detail = errData?.message || errData?.description || '';
-      const cleanError = new Error(`Crypto.com API ${status}: ${err.message}${detail ? ` (${detail})` : ''}`);
-      cleanError.status = status;
+      const cleanError = new Error(`Crypto.com API ${response.status}: ${response.statusText}${detail ? ` (${detail})` : ''}`);
+      cleanError.status = response.status;
       cleanError.endpoint = method;
       cleanError.responseData = errData;
       throw cleanError;
-    });
-
-    if (response.data.code !== 0) {
-      throw new Error(`Crypto.com API error: ${response.data.message || 'Unknown error'} (code: ${response.data.code})`);
     }
 
-    return response.data.result;
+    const data = safeParseBigInt(rawText);
+
+    if (data.code !== 0) {
+      throw new Error(`Crypto.com API error: ${data.message || 'Unknown error'} (code: ${data.code})`);
+    }
+
+    return data.result;
   };
 
   /**
@@ -134,18 +146,23 @@ const createCryptocomAdapter = (keysPath = null) => {
       ? `${REST_BASE_URL}/${method}?${queryString}`
       : `${REST_BASE_URL}/${method}`;
 
-    const response = await axios.get(url, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      transformResponse: [safeParseBigInt],
+    const response = await fetch(url, {
+      headers: { 'Content-Type': 'application/json' },
     });
 
-    if (response.data.code !== 0) {
-      throw new Error(`Crypto.com API error: ${response.data.message || 'Unknown error'} (code: ${response.data.code})`);
+    const rawText = await response.text();
+
+    if (!response.ok) {
+      throw new Error(`Crypto.com API ${response.status}: ${response.statusText}`);
     }
 
-    return response.data.result;
+    const data = safeParseBigInt(rawText);
+
+    if (data.code !== 0) {
+      throw new Error(`Crypto.com API error: ${data.message || 'Unknown error'} (code: ${data.code})`);
+    }
+
+    return data.result;
   };
 
   /**

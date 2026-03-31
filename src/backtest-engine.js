@@ -4,7 +4,6 @@ const { getIntervalConfig } = require('./interval-utils');
 const { getAuthHeaders } = require('./auth');
 const { getExchangeDataDir } = require('./migration');
 const { getAdapter } = require('./adapters');
-const axios = require('axios');
 const { getFibonacciBuyAmount, getAverageCostBasis, getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 
 const BASE_URL = 'https://api.coinbase.com';
@@ -45,14 +44,14 @@ const makeRequest = async (method, apiPath) => {
   const { apiKey, apiSecret } = loadCredentials();
   const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
 
-  return axios({ method, url: `${BASE_URL}${apiPath}`, headers })
-    .then(response => response.data)
-    .catch(err => {
-      const status = err.response?.status || 'unknown';
-      const message = err.response?.data?.message || err.response?.data?.error || err.message;
-      const errorDetails = err.response?.data?.error_details || '';
-      throw new Error(`Coinbase API error (${status}): ${message}${errorDetails ? ` - ${errorDetails}` : ''}`);
-    });
+  const resp = await fetch(`${BASE_URL}${apiPath}`, { method, headers });
+  if (!resp.ok) {
+    const errData = await resp.json().catch(() => ({}));
+    const message = errData.message || errData.error || resp.statusText;
+    const errorDetails = errData.error_details || '';
+    throw new Error(`Coinbase API error (${resp.status}): ${message}${errorDetails ? ` - ${errorDetails}` : ''}`);
+  }
+  return resp.json();
 };
 
 /**

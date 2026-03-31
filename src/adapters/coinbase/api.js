@@ -1,5 +1,4 @@
 // @ts-check
-const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -124,42 +123,57 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
 
-    const config = {
+    const fetchOptions = {
       method,
-      url: `${BASE_URL}${apiPath}`,
       headers,
-      timeout: 30000, // 30 second timeout
     };
 
     if (data) {
-      config.data = data;
+      fetchOptions.headers = { ...headers, 'Content-Type': 'application/json' };
+      fetchOptions.body = JSON.stringify(data);
     }
 
     let lastError;
     for (let attempt = 0; attempt <= retries; attempt++) {
-      const response = await axios(config).catch(err => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      let response;
+      try {
+        response = await fetch(`${BASE_URL}${apiPath}`, {
+          ...fetchOptions,
+          signal: controller.signal,
+        });
+      } catch (err) {
         lastError = err;
-        return null;
-      });
+        response = null;
+      } finally {
+        clearTimeout(timeout);
+      }
 
       if (response) {
-        return response.data;
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          const message = errData.message || errData.error_details || response.statusText;
+          const errorData = errData.error || '';
+          const cleanError = new Error(`Coinbase API ${response.status}: ${message}${errorData ? ` (${errorData})` : ''}`);
+          cleanError.status = response.status;
+          cleanError.endpoint = `${method} ${apiPath}`;
+          throw cleanError;
+        }
+        return response.json();
       }
 
       // Check if we should retry
       if (attempt < retries && isTransientNetworkError(lastError)) {
-        const delay = Math.min(1000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
+        const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
         console.log(`⚠️ [coinbase] Network error on ${method} ${apiPath.split('?')[0]}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
 
-      // Non-retryable error or out of retries, throw clean error
-      const status = lastError.response?.status || 'unknown';
-      const message = lastError.response?.data?.message || lastError.response?.data?.error_details || lastError.message;
-      const errorData = lastError.response?.data?.error || '';
-      const cleanError = new Error(`Coinbase API ${status}: ${message}${errorData ? ` (${errorData})` : ''}`);
-      cleanError.status = status;
+      // Non-retryable error or out of retries
+      const cleanError = new Error(`Coinbase API network error: ${lastError.message}`);
+      cleanError.status = 'network';
       cleanError.endpoint = `${method} ${apiPath}`;
       throw cleanError;
     }

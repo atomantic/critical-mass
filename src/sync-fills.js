@@ -11,8 +11,6 @@ const { getAuthHeaders } = require('./adapters/coinbase/auth');
 const { loadRegimeState } = require('./state-tracker');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { log } = require('./logger');
-const axios = require('axios');
-
 /**
  * Fetch all Coinbase fills since a timestamp using paginated brokerage API
  * @param {Object} adapter - Coinbase adapter (used for credentials)
@@ -30,17 +28,26 @@ const fetchAllCoinbaseFills = async (adapter, startTimestampMs) => {
     if (cursor) apiPath += `&cursor=${cursor}`;
 
     const headers = getAuthHeaders(apiKey, apiSecret, 'GET', apiPath);
-    const resp = await axios({
-      method: 'GET',
-      url: `https://api.coinbase.com${apiPath}`,
-      headers,
-      timeout: 30000,
-    });
-
-    const fills = resp.data.fills || [];
-    allFills.push(...fills);
-    cursor = resp.data.cursor || null;
-    if (!cursor) break;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const resp = await fetch(`https://api.coinbase.com${apiPath}`, {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        throw new Error(`Coinbase API ${resp.status}: ${body}`);
+      }
+      const data = await resp.json();
+      const fills = data.fills || [];
+      allFills.push(...fills);
+      cursor = data.cursor || null;
+      if (!cursor) break;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   return allFills;
