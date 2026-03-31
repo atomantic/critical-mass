@@ -75,8 +75,6 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
   const coreGlowRef = useRef()
   const cloudRef1 = useRef()
   const cloudRef2 = useRef()
-  const contourArcRef = useRef()
-  const contourArcOuterRef = useRef()
 
   const size = getBodySize(body.costBasis, maxUsdcDeployed)
   const hasTP = body.tpPrice > 0
@@ -101,14 +99,6 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
     if (cloudRef2.current) {
       cloudRef2.current.rotation.y -= 0.0006
       cloudRef2.current.material.opacity = 0.1 + Math.sin(time * 0.9 + 1.2) * 0.025
-    }
-    if (contourArcRef.current) {
-      contourArcRef.current.rotation.z += 0.001
-      contourArcRef.current.material.opacity = 0.12 + Math.sin(time * 1.7) * 0.03
-    }
-    if (contourArcOuterRef.current) {
-      contourArcOuterRef.current.rotation.z -= 0.0007
-      contourArcOuterRef.current.material.opacity = 0.08 + Math.sin(time * 1.3 + 0.8) * 0.02
     }
   })
 
@@ -147,16 +137,6 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
           opacity={0.1}
           side={THREE.BackSide}
         />
-      </mesh>
-
-      <mesh ref={contourArcRef} rotation={[Math.PI * 0.4, 0, Math.PI * 0.1]}>
-        <ringGeometry args={[size * 0.95, size * 1.1, 96, 1, 0.4, Math.PI * 1.25]} />
-        <meshBasicMaterial color="#67E8F9" transparent opacity={0.12} side={THREE.DoubleSide} />
-      </mesh>
-
-      <mesh ref={contourArcOuterRef} rotation={[Math.PI * 0.62, 0, -Math.PI * 0.14]}>
-        <ringGeometry args={[size * 1.18, size * 1.28, 96, 1, 0.9, Math.PI * 1.05]} />
-        <meshBasicMaterial color="#F472B6" transparent opacity={0.08} side={THREE.DoubleSide} />
       </mesh>
 
       <points ref={pointsRef}>
