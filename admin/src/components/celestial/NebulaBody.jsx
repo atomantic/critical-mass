@@ -73,6 +73,10 @@ const buildNebulaGeometry = (size) => {
 const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const pointsRef = useRef()
   const coreGlowRef = useRef()
+  const cloudRef1 = useRef()
+  const cloudRef2 = useRef()
+  const contourArcRef = useRef()
+  const contourArcOuterRef = useRef()
 
   const size = getBodySize(body.costBasis, maxUsdcDeployed)
   const hasTP = body.tpPrice > 0
@@ -80,15 +84,31 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
   const { positions, colors } = useMemo(() => buildNebulaGeometry(size), [size])
 
   useFrame((state) => {
+    const time = state.clock.elapsedTime
     if (pointsRef.current) {
       pointsRef.current.rotation.y += 0.002
       pointsRef.current.rotation.x += 0.0005
     }
     if (coreGlowRef.current) {
-      const time = state.clock.elapsedTime
       coreGlowRef.current.material.opacity = hasTP
         ? 0.18
-        : 0.12 + Math.sin(time * 1.5) * 0.06
+        : 0.14 + Math.sin(time * 1.5) * 0.05
+    }
+    if (cloudRef1.current) {
+      cloudRef1.current.rotation.y += 0.0008
+      cloudRef1.current.material.opacity = 0.14 + Math.sin(time * 1.1) * 0.03
+    }
+    if (cloudRef2.current) {
+      cloudRef2.current.rotation.y -= 0.0006
+      cloudRef2.current.material.opacity = 0.1 + Math.sin(time * 0.9 + 1.2) * 0.025
+    }
+    if (contourArcRef.current) {
+      contourArcRef.current.rotation.z += 0.001
+      contourArcRef.current.material.opacity = 0.12 + Math.sin(time * 1.7) * 0.03
+    }
+    if (contourArcOuterRef.current) {
+      contourArcOuterRef.current.rotation.z -= 0.0007
+      contourArcOuterRef.current.material.opacity = 0.08 + Math.sin(time * 1.3 + 0.8) * 0.02
     }
   })
 
@@ -109,12 +129,42 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
         <meshBasicMaterial color="#06B6D4" transparent opacity={0.15} side={THREE.BackSide} />
       </mesh>
 
+      <mesh ref={cloudRef1} scale={[1.9, 1.15, 1.45]} rotation={[0.25, 0.2, 0]}>
+        <sphereGeometry args={[size * 0.7, 18, 18]} />
+        <meshBasicMaterial
+          color="#22D3EE"
+          transparent
+          opacity={0.14}
+          side={THREE.BackSide}
+        />
+      </mesh>
+
+      <mesh ref={cloudRef2} scale={[1.7, 0.95, 1.8]} rotation={[-0.18, -0.4, 0.12]}>
+        <sphereGeometry args={[size * 0.9, 18, 18]} />
+        <meshBasicMaterial
+          color="#A78BFA"
+          transparent
+          opacity={0.1}
+          side={THREE.BackSide}
+        />
+      </mesh>
+
+      <mesh ref={contourArcRef} rotation={[Math.PI * 0.4, 0, Math.PI * 0.1]}>
+        <ringGeometry args={[size * 0.95, size * 1.1, 96, 1, 0.4, Math.PI * 1.25]} />
+        <meshBasicMaterial color="#67E8F9" transparent opacity={0.12} side={THREE.DoubleSide} />
+      </mesh>
+
+      <mesh ref={contourArcOuterRef} rotation={[Math.PI * 0.62, 0, -Math.PI * 0.14]}>
+        <ringGeometry args={[size * 1.18, size * 1.28, 96, 1, 0.9, Math.PI * 1.05]} />
+        <meshBasicMaterial color="#F472B6" transparent opacity={0.08} side={THREE.DoubleSide} />
+      </mesh>
+
       <points ref={pointsRef}>
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" count={TOTAL} array={positions} itemSize={3} />
           <bufferAttribute attach="attributes-color" count={TOTAL} array={colors} itemSize={3} />
         </bufferGeometry>
-        <pointsMaterial vertexColors size={0.07} sizeAttenuation transparent opacity={0.85} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <pointsMaterial vertexColors size={0.1} sizeAttenuation transparent opacity={0.58} blending={THREE.AdditiveBlending} depthWrite={false} />
       </points>
 
       {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}
