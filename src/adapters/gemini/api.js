@@ -1,5 +1,4 @@
 // @ts-check
-const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
@@ -94,27 +93,35 @@ const createGeminiAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
+    let response;
     try {
-      const response = await axios.post(`${REST_BASE_URL}${endpoint}`, null, {
+      response = await fetch(`${REST_BASE_URL}${endpoint}`, {
+        method: 'POST',
         headers,
-        // Preserve big integers as strings using regex before JSON parse
-        transformResponse: [data => {
-          // Convert large numbers (order_id, tid) to strings before JSON.parse
-          const preserved = data.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
-          return JSON.parse(preserved);
-        }],
       });
-      return response.data;
     } catch (err) {
-      // Create clean error without bloated axios internals (config, request, socket objects)
-      const status = err.response?.status || 'unknown';
-      const detail = err.response?.data?.reason || err.response?.data?.message || '';
-      const cleanError = new Error(`Gemini API ${status}: ${err.message}${detail ? ` (${detail})` : ''}`);
-      cleanError.status = status;
+      const cleanError = new Error(`Gemini API network: ${err.message}`);
+      cleanError.status = 'network';
       cleanError.endpoint = `POST ${endpoint}`;
-      cleanError.responseData = err.response?.data;
       throw cleanError;
     }
+
+    // Preserve big integers as strings using regex before JSON parse
+    const rawText = await response.text();
+
+    if (!response.ok) {
+      let errData;
+      try { errData = JSON.parse(rawText); } catch { errData = {}; }
+      const detail = errData.reason || errData.message || '';
+      const cleanError = new Error(`Gemini API ${response.status}: ${response.statusText}${detail ? ` (${detail})` : ''}`);
+      cleanError.status = response.status;
+      cleanError.endpoint = `POST ${endpoint}`;
+      cleanError.responseData = errData;
+      throw cleanError;
+    }
+
+    const preserved = rawText.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
+    return JSON.parse(preserved);
   };
 
   /**
@@ -123,8 +130,11 @@ const createGeminiAdapter = (keysPath = null) => {
    * @returns {Promise<any>} API response
    */
   const makePublicRequest = async (endpoint) => {
-    const response = await axios.get(`${REST_BASE_URL}${endpoint}`);
-    return response.data;
+    const response = await fetch(`${REST_BASE_URL}${endpoint}`);
+    if (!response.ok) {
+      throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
+    }
+    return response.json();
   };
 
   /**

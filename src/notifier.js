@@ -6,7 +6,6 @@
  * Factory function pattern (like createHealthMonitor).
  */
 
-const axios = require('axios');
 const { tradeEvents } = require('./trade-events');
 const { getNotificationConfig, getConfiguredExchanges, getRegimeConfig } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
@@ -136,13 +135,21 @@ const createNotifier = () => {
    */
   const sendTelegram = (text) => {
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
-    return axios.post(url, {
-      chat_id: config.telegram.chatId,
-      text,
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true,
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: config.telegram.chatId,
+        text,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+      }),
     })
-      .then(() => {
+      .then(async (resp) => {
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw { status: resp.status, description: data.description || resp.statusText };
+        }
         stats.sent++;
         stats.dailySent++;
         stats.lastSentAt = new Date().toISOString();
@@ -151,8 +158,8 @@ const createNotifier = () => {
       .catch((err) => {
         stats.errors++;
         stats.dailyErrors++;
-        const status = err.response?.status || 'unknown';
-        const desc = err.response?.data?.description || err.message;
+        const status = err.status || 'unknown';
+        const desc = err.description || err.message;
         log('ERROR', `📨 Telegram send failed (${status}): ${desc}`);
         return false;
       });
@@ -358,16 +365,25 @@ const createNotifier = () => {
     }
 
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
-    return axios.post(url, {
-      chat_id: config.telegram.chatId,
-      text: '🧪 *Critical Mass* - Test notification\nTelegram integration is working!',
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true,
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: config.telegram.chatId,
+        text: '🧪 *Critical Mass* - Test notification\nTelegram integration is working!',
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+      }),
     })
-      .then(() => ({ success: true }))
+      .then(async (resp) => {
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          return { success: false, error: data.description || resp.statusText };
+        }
+        return { success: true };
+      })
       .catch((err) => {
-        const desc = err.response?.data?.description || err.message;
-        return { success: false, error: desc };
+        return { success: false, error: err.message };
       });
   };
 

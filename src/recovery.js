@@ -128,7 +128,7 @@ const createRecoveryModule = (exchange, adapter, productId) => {
   const validateState = async (position) => {
     const discrepancies = [];
 
-    const baseCurrency = productId.replace('_', '-').split('-')[0];
+    const baseCurrency = getBaseCurrency(productId);
     const baseBalance = await adapter.getAccountBalance(baseCurrency);
 
     const trackedAsset = position.totalAsset;
