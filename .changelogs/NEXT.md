@@ -32,6 +32,7 @@
 ## Changed
 
 - All npm dependencies version-pinned (no `^` ranges) to prevent supply chain attacks from auto-upgrading
+- `.npmrc` added with `ignore-scripts=true` to block postinstall/lifecycle scripts from dependencies by default
 - Celestial visuals — removed tron-style wireframe/geometric rings from black hole, galaxy, and nebula; enhanced galaxy with denser spiral arms (3×800 particles), Gaussian spread, diffuse dust layer, and layered disc glows
 
 - Indicator weights rebalanced for trend-following dominance (61%): MACD 0.24, OBV 0.20, Momentum 0.17; mean-reversion reduced: RSI 0.12, Stochastic 0.10, Bollinger 0.08
