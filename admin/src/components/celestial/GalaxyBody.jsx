@@ -82,6 +82,10 @@ const buildGalaxyGeometry = (size) => {
 const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const pointsRef = useRef()
   const coreGlowRef = useRef()
+  const discGlowRef = useRef()
+  const guideRingRef = useRef()
+  const guideRingOuterRef = useRef()
+  const discWireRef = useRef()
 
   const size = getBodySize(body.costBasis, maxUsdcDeployed)
   const hasTP = body.tpPrice > 0
@@ -94,11 +98,27 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
       pointsRef.current.rotation.y += 0.003
     }
     // Pulse core glow
+    const time = state.clock.elapsedTime
     if (coreGlowRef.current) {
-      const time = state.clock.elapsedTime
       coreGlowRef.current.material.opacity = hasTP
         ? 0.15
         : 0.1 + Math.sin(time * 2) * 0.05
+    }
+    if (discGlowRef.current) {
+      discGlowRef.current.rotation.z += 0.0005
+      discGlowRef.current.material.opacity = 0.12 + Math.sin(time * 1.2) * 0.03
+    }
+    if (guideRingRef.current) {
+      guideRingRef.current.rotation.z += 0.0011
+      guideRingRef.current.material.opacity = 0.12 + Math.sin(time * 1.5) * 0.02
+    }
+    if (guideRingOuterRef.current) {
+      guideRingOuterRef.current.rotation.z -= 0.0008
+      guideRingOuterRef.current.material.opacity = 0.08 + Math.sin(time * 1.2 + 1.1) * 0.02
+    }
+    if (discWireRef.current) {
+      discWireRef.current.rotation.y += 0.0013
+      discWireRef.current.material.opacity = 0.045 + Math.sin(time * 1.7) * 0.015
     }
   })
 
@@ -115,7 +135,12 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
       {/* Bright core sphere */}
       <mesh>
         <sphereGeometry args={[size * 0.25, 16, 16]} />
-        <meshBasicMaterial color="#FCE7F3" />
+        <meshBasicMaterial color="#FFF1F2" />
+      </mesh>
+
+      <mesh scale={1.2}>
+        <sphereGeometry args={[size * 0.16, 12, 12]} />
+        <meshBasicMaterial color="#FFFFFF" transparent opacity={0.9} />
       </mesh>
 
       {/* Core glow halo */}
@@ -126,6 +151,37 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
           transparent
           opacity={0.12}
           side={THREE.BackSide}
+        />
+      </mesh>
+
+      <mesh ref={discGlowRef} rotation={[Math.PI / 2, 0, 0]} scale={[1.35, 1, 1.35]}>
+        <circleGeometry args={[size * 1.35, 64]} />
+        <meshBasicMaterial
+          color="#C084FC"
+          transparent
+          opacity={0.1}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      <mesh ref={guideRingRef} rotation={[Math.PI * 0.48, 0, Math.PI * 0.1]}>
+        <ringGeometry args={[size * 0.46, size * 0.58, 96]} />
+        <meshBasicMaterial color="#F472B6" transparent opacity={0.12} side={THREE.DoubleSide} />
+      </mesh>
+
+      <mesh ref={guideRingOuterRef} rotation={[Math.PI * 0.48, 0, -Math.PI * 0.16]}>
+        <ringGeometry args={[size * 0.82, size * 0.92, 96]} />
+        <meshBasicMaterial color="#A78BFA" transparent opacity={0.08} side={THREE.DoubleSide} />
+      </mesh>
+
+      <mesh ref={discWireRef} rotation={[Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[size * 0.95, size * 1.45, 48]} />
+        <meshBasicMaterial
+          color="#C084FC"
+          wireframe
+          transparent
+          opacity={0.045}
+          side={THREE.DoubleSide}
         />
       </mesh>
 
@@ -147,10 +203,10 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
         </bufferGeometry>
         <pointsMaterial
           vertexColors
-          size={0.06}
+          size={0.08}
           sizeAttenuation
           transparent
-          opacity={0.9}
+          opacity={0.72}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
