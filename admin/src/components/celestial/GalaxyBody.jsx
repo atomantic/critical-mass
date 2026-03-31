@@ -5,21 +5,35 @@ import { getBodySize, bodyPropsEqual } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
 
 const ARM_COUNT = 3
-const POINTS_PER_ARM = 400
-const CORE_POINTS = 200
-const TOTAL = ARM_COUNT * POINTS_PER_ARM + CORE_POINTS
+const POINTS_PER_ARM = 800
+const CORE_POINTS = 500
+const DUST_POINTS = 600
+const TOTAL_MAIN = ARM_COUNT * POINTS_PER_ARM + CORE_POINTS
 
 /**
- * Generate spiral galaxy particle positions and colors.
- * Returns { positions, colors } Float32Arrays.
+ * Simple Box-Muller for Gaussian-distributed spread
  */
-const buildGalaxyGeometry = (size) => {
-  const positions = new Float32Array(TOTAL * 3)
-  const colors = new Float32Array(TOTAL * 3)
+const gaussRandom = () => {
+  let u = 0, v = 0
+  while (u === 0) u = Math.random()
+  while (v === 0) v = Math.random()
+  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v)
+}
 
-  const coreColor = new THREE.Color('#FCE7F3') // pink-white core
-  const armColor = new THREE.Color('#EC4899')   // pink
-  const tipColor = new THREE.Color('#8B5CF6')   // purple at tips
+/**
+ * Build main spiral arms + dense core.
+ * Returns { positions, colors, sizes } Float32Arrays.
+ */
+const buildMainGeometry = (size) => {
+  const positions = new Float32Array(TOTAL_MAIN * 3)
+  const colors = new Float32Array(TOTAL_MAIN * 3)
+  const sizes = new Float32Array(TOTAL_MAIN)
+
+  const coreColor = new THREE.Color('#FFF1F2')
+  const armInner = new THREE.Color('#F472B6')
+  const armMid = new THREE.Color('#EC4899')
+  const tipColor = new THREE.Color('#8B5CF6')
+  const scratch = new THREE.Color()
 
   let idx = 0
 
@@ -27,24 +41,32 @@ const buildGalaxyGeometry = (size) => {
   for (let arm = 0; arm < ARM_COUNT; arm++) {
     const armAngle = (arm / ARM_COUNT) * Math.PI * 2
     for (let i = 0; i < POINTS_PER_ARM; i++) {
-      const t = i / POINTS_PER_ARM // 0..1 along arm
-      const r = t * size * 2.5 + size * 0.3
-      const spiralAngle = armAngle + t * Math.PI * 2.5 // ~2.5 turns
-      const spread = size * 0.15 * t // arm gets wider at tips
+      const t = i / POINTS_PER_ARM
+      const r = t * size * 2.8 + size * 0.25
+      const spiralAngle = armAngle + t * Math.PI * 2.8
+      // Tight Gaussian spread — thin spine with soft fringe
+      const spread = size * 0.08 * (0.1 + t * 0.9)
 
-      const x = Math.cos(spiralAngle) * r + (Math.random() - 0.5) * spread * 2
-      const z = Math.sin(spiralAngle) * r + (Math.random() - 0.5) * spread * 2
-      const y = (Math.random() - 0.5) * size * 0.12 * (1 - t * 0.5) // thin disk, thinner at edge
+      const x = Math.cos(spiralAngle) * r + gaussRandom() * spread
+      const z = Math.sin(spiralAngle) * r + gaussRandom() * spread
+      const y = gaussRandom() * size * 0.06 * (1 - t * 0.6)
 
       positions[idx * 3] = x
       positions[idx * 3 + 1] = y
       positions[idx * 3 + 2] = z
 
-      // Color gradient: pink near center → purple at tips
-      const c = new THREE.Color().lerpColors(armColor, tipColor, t)
-      colors[idx * 3] = c.r
-      colors[idx * 3 + 1] = c.g
-      colors[idx * 3 + 2] = c.b
+      // Three-stop color gradient: pink-inner → hot-pink → purple-tip
+      if (t < 0.4) {
+        scratch.lerpColors(armInner, armMid, t / 0.4)
+      } else {
+        scratch.lerpColors(armMid, tipColor, (t - 0.4) / 0.6)
+      }
+      colors[idx * 3] = scratch.r
+      colors[idx * 3 + 1] = scratch.g
+      colors[idx * 3 + 2] = scratch.b
+
+      // Larger near core, smaller at tips
+      sizes[idx] = 1.0 - t * 0.65
 
       idx++
     }
@@ -52,161 +74,170 @@ const buildGalaxyGeometry = (size) => {
 
   // Dense core cluster
   for (let i = 0; i < CORE_POINTS; i++) {
-    const r = Math.random() * size * 0.5
+    const r = Math.abs(gaussRandom()) * size * 0.35
     const angle = Math.random() * Math.PI * 2
-    const x = Math.cos(angle) * r * (0.5 + Math.random() * 0.5)
-    const z = Math.sin(angle) * r * (0.5 + Math.random() * 0.5)
-    const y = (Math.random() - 0.5) * size * 0.08
+    const x = Math.cos(angle) * r
+    const z = Math.sin(angle) * r
+    const y = gaussRandom() * size * 0.04
 
     positions[idx * 3] = x
     positions[idx * 3 + 1] = y
     positions[idx * 3 + 2] = z
 
-    // Core is brighter, whiter
-    const t = r / (size * 0.5)
-    const c = new THREE.Color().lerpColors(coreColor, armColor, t)
-    colors[idx * 3] = c.r
-    colors[idx * 3 + 1] = c.g
-    colors[idx * 3 + 2] = c.b
+    const t = Math.min(r / (size * 0.35), 1)
+    scratch.lerpColors(coreColor, armInner, t)
+    colors[idx * 3] = scratch.r
+    colors[idx * 3 + 1] = scratch.g
+    colors[idx * 3 + 2] = scratch.b
+
+    sizes[idx] = 1.2 - t * 0.5
 
     idx++
+  }
+
+  return { positions, colors, sizes }
+}
+
+/**
+ * Build diffuse background dust — fills gaps between arms.
+ */
+const buildDustGeometry = (size) => {
+  const positions = new Float32Array(DUST_POINTS * 3)
+  const colors = new Float32Array(DUST_POINTS * 3)
+
+  const dustColor1 = new THREE.Color('#D946EF')
+  const dustColor2 = new THREE.Color('#7C3AED')
+  const scratch = new THREE.Color()
+
+  for (let i = 0; i < DUST_POINTS; i++) {
+    const r = Math.abs(gaussRandom()) * size * 1.4 + size * 0.3
+    const angle = Math.random() * Math.PI * 2
+    const x = Math.cos(angle) * r
+    const z = Math.sin(angle) * r
+    const y = gaussRandom() * size * 0.1
+
+    positions[i * 3] = x
+    positions[i * 3 + 1] = y
+    positions[i * 3 + 2] = z
+
+    const t = Math.min(r / (size * 2.5), 1)
+    scratch.lerpColors(dustColor1, dustColor2, t)
+    colors[i * 3] = scratch.r
+    colors[i * 3 + 1] = scratch.g
+    colors[i * 3 + 2] = scratch.b
   }
 
   return { positions, colors }
 }
 
 /**
- * Spiral galaxy body — particle-based spiral arms + bright core.
- * Replaces the plain bright sphere for galaxy tier.
+ * Spiral galaxy body — particle-based spiral arms + bright core + dust layer.
  */
 const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
-  const pointsRef = useRef()
+  const mainRef = useRef()
+  const dustRef = useRef()
   const coreGlowRef = useRef()
-  const discGlowRef = useRef()
-  const guideRingRef = useRef()
-  const guideRingOuterRef = useRef()
-  const discWireRef = useRef()
+  const discGlow1Ref = useRef()
+  const discGlow2Ref = useRef()
+  const discGlow3Ref = useRef()
 
   const size = getBodySize(body.costBasis, maxUsdcDeployed)
   const hasTP = body.tpPrice > 0
 
-  const { positions, colors } = useMemo(() => buildGalaxyGeometry(size), [size])
+  const main = useMemo(() => buildMainGeometry(size), [size])
+  const dust = useMemo(() => buildDustGeometry(size), [size])
 
   useFrame((state) => {
-    // Slow rotation of the entire galaxy
-    if (pointsRef.current) {
-      pointsRef.current.rotation.y += 0.003
-    }
-    // Pulse core glow
     const time = state.clock.elapsedTime
+    if (mainRef.current) mainRef.current.rotation.y += 0.0025
+    if (dustRef.current) dustRef.current.rotation.y += 0.0018
+
     if (coreGlowRef.current) {
       coreGlowRef.current.material.opacity = hasTP
-        ? 0.15
-        : 0.1 + Math.sin(time * 2) * 0.05
+        ? 0.2
+        : 0.15 + Math.sin(time * 2) * 0.05
     }
-    if (discGlowRef.current) {
-      discGlowRef.current.rotation.z += 0.0005
-      discGlowRef.current.material.opacity = 0.12 + Math.sin(time * 1.2) * 0.03
+    if (discGlow1Ref.current) {
+      discGlow1Ref.current.material.opacity = 0.14 + Math.sin(time * 1.1) * 0.03
     }
-    if (guideRingRef.current) {
-      guideRingRef.current.rotation.z += 0.0011
-      guideRingRef.current.material.opacity = 0.12 + Math.sin(time * 1.5) * 0.02
+    if (discGlow2Ref.current) {
+      discGlow2Ref.current.material.opacity = 0.08 + Math.sin(time * 0.8 + 1) * 0.02
     }
-    if (guideRingOuterRef.current) {
-      guideRingOuterRef.current.rotation.z -= 0.0008
-      guideRingOuterRef.current.material.opacity = 0.08 + Math.sin(time * 1.2 + 1.1) * 0.02
-    }
-    if (discWireRef.current) {
-      discWireRef.current.rotation.y += 0.0013
-      discWireRef.current.material.opacity = 0.045 + Math.sin(time * 1.7) * 0.015
+    if (discGlow3Ref.current) {
+      discGlow3Ref.current.material.opacity = 0.04 + Math.sin(time * 0.6 + 2) * 0.015
     }
   })
 
   return (
     <group>
       {/* Invisible hover target sphere */}
-      <mesh
-        onPointerOver={(e) => { e.stopPropagation(); onHover(body.id) }}
-      >
-        <sphereGeometry args={[size * 1.5, 8, 8]} />
+      <mesh onPointerOver={(e) => { e.stopPropagation(); onHover(body.id) }}>
+        <sphereGeometry args={[size * 2.0, 8, 8]} />
         <meshBasicMaterial visible={false} />
       </mesh>
 
       {/* Bright core sphere */}
       <mesh>
-        <sphereGeometry args={[size * 0.25, 16, 16]} />
-        <meshBasicMaterial color="#FFF1F2" />
+        <sphereGeometry args={[size * 0.22, 24, 24]} />
+        <meshBasicMaterial color="#FFFFFF" />
       </mesh>
 
-      <mesh scale={1.2}>
-        <sphereGeometry args={[size * 0.16, 12, 12]} />
-        <meshBasicMaterial color="#FFFFFF" transparent opacity={0.9} />
+      <mesh>
+        <sphereGeometry args={[size * 0.32, 20, 20]} />
+        <meshBasicMaterial color="#FFF1F2" transparent opacity={0.85} />
       </mesh>
 
-      {/* Core glow halo */}
-      <mesh ref={coreGlowRef} scale={1.8}>
-        <sphereGeometry args={[size * 0.3, 12, 12]} />
-        <meshBasicMaterial
-          color="#EC4899"
-          transparent
-          opacity={0.12}
-          side={THREE.BackSide}
-        />
+      {/* Core glow halo - tight bright bloom */}
+      <mesh ref={coreGlowRef} scale={2.2}>
+        <sphereGeometry args={[size * 0.3, 16, 16]} />
+        <meshBasicMaterial color="#EC4899" transparent opacity={0.18} side={THREE.BackSide} />
       </mesh>
 
-      <mesh ref={discGlowRef} rotation={[Math.PI / 2, 0, 0]} scale={[1.35, 1, 1.35]}>
-        <circleGeometry args={[size * 1.35, 64]} />
-        <meshBasicMaterial
-          color="#C084FC"
-          transparent
-          opacity={0.1}
-          side={THREE.DoubleSide}
-        />
+      {/* Layered disc glows — inner hot, mid warm, outer faint */}
+      <mesh ref={discGlow1Ref} rotation={[Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[size * 1.0, 64]} />
+        <meshBasicMaterial color="#F472B6" transparent opacity={0.14} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
       </mesh>
 
-      <mesh ref={guideRingRef} rotation={[Math.PI * 0.48, 0, Math.PI * 0.1]}>
-        <ringGeometry args={[size * 0.46, size * 0.58, 96]} />
-        <meshBasicMaterial color="#F472B6" transparent opacity={0.12} side={THREE.DoubleSide} />
+      <mesh ref={discGlow2Ref} rotation={[Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[size * 1.8, 64]} />
+        <meshBasicMaterial color="#C084FC" transparent opacity={0.08} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
       </mesh>
 
-      <mesh ref={guideRingOuterRef} rotation={[Math.PI * 0.48, 0, -Math.PI * 0.16]}>
-        <ringGeometry args={[size * 0.82, size * 0.92, 96]} />
-        <meshBasicMaterial color="#A78BFA" transparent opacity={0.08} side={THREE.DoubleSide} />
+      <mesh ref={discGlow3Ref} rotation={[Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[size * 2.6, 64]} />
+        <meshBasicMaterial color="#7C3AED" transparent opacity={0.04} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
       </mesh>
 
-      <mesh ref={discWireRef} rotation={[Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[size * 0.95, size * 1.45, 48]} />
-        <meshBasicMaterial
-          color="#C084FC"
-          wireframe
-          transparent
-          opacity={0.045}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      {/* Spiral arm particles */}
-      <points ref={pointsRef}>
+      {/* Main spiral arm + core particles */}
+      <points ref={mainRef}>
         <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            count={TOTAL}
-            array={positions}
-            itemSize={3}
-          />
-          <bufferAttribute
-            attach="attributes-color"
-            count={TOTAL}
-            array={colors}
-            itemSize={3}
-          />
+          <bufferAttribute attach="attributes-position" count={TOTAL_MAIN} array={main.positions} itemSize={3} />
+          <bufferAttribute attach="attributes-color" count={TOTAL_MAIN} array={main.colors} itemSize={3} />
         </bufferGeometry>
         <pointsMaterial
           vertexColors
-          size={0.08}
+          size={0.1}
           sizeAttenuation
           transparent
-          opacity={0.72}
+          opacity={0.8}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </points>
+
+      {/* Diffuse dust layer — fills gaps, softer glow */}
+      <points ref={dustRef}>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" count={DUST_POINTS} array={dust.positions} itemSize={3} />
+          <bufferAttribute attach="attributes-color" count={DUST_POINTS} array={dust.colors} itemSize={3} />
+        </bufferGeometry>
+        <pointsMaterial
+          vertexColors
+          size={0.12}
+          sizeAttenuation
+          transparent
+          opacity={0.15}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />

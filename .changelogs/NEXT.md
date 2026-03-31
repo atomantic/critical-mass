@@ -31,6 +31,8 @@
 
 ## Changed
 
+- Celestial visuals — removed tron-style wireframe/geometric rings from black hole, galaxy, and nebula; enhanced galaxy with denser spiral arms (3×800 particles), Gaussian spread, diffuse dust layer, and layered disc glows
+
 - Indicator weights rebalanced for trend-following dominance (61%): MACD 0.24, OBV 0.20, Momentum 0.17; mean-reversion reduced: RSI 0.12, Stochastic 0.10, Bollinger 0.08
 - Signal thresholds lowered — neutral 25→15, strong 45→30, with proportional vol-scaling adjustments
 - Soft ceiling raised from 35 to 50 — full linear scoring range before compression

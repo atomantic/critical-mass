@@ -15,8 +15,6 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurre
   const outerGlowRef = useRef()
   const photonRingRef = useRef()
   const photonRingOuterRef = useRef()
-  const lensRingRef = useRef()
-  const diskWireRef = useRef()
 
   const size = getBodySize(body.costBasis, maxUsdcDeployed) * 1.2
   const hasTP = body.tpPrice > 0
@@ -41,14 +39,6 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurre
     if (outerGlowRef.current) {
       const pulse = hasTP ? 0.1 : 0.045 + Math.sin(time * 1.5) * 0.02
       outerGlowRef.current.material.opacity = pulse
-    }
-    if (lensRingRef.current) {
-      lensRingRef.current.rotation.z -= 0.0012
-      lensRingRef.current.material.opacity = 0.18 + Math.sin(time * 1.8) * 0.04
-    }
-    if (diskWireRef.current) {
-      diskWireRef.current.rotation.z += 0.0015
-      diskWireRef.current.material.opacity = 0.16 + Math.sin(time * 1.4 + 1) * 0.03
     }
   })
 
@@ -114,17 +104,6 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurre
         />
       </mesh>
 
-      <mesh ref={diskWireRef} rotation={[diskTilt, 0, 0]}>
-        <ringGeometry args={[size * 1.38, size * 1.74, 24, 1]} />
-        <meshBasicMaterial
-          color="#FB923C"
-          transparent
-          opacity={0.16}
-          side={THREE.DoubleSide}
-          wireframe
-        />
-      </mesh>
-
       {/* Faint outermost disk edge */}
       <mesh rotation={[diskTilt, 0, 0]}>
         <ringGeometry args={[size * 1.8, size * 2.2, 64]} />
@@ -132,16 +111,6 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurre
           color="#7C2D12"
           transparent
           opacity={0.06}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      <mesh ref={lensRingRef} rotation={[Math.PI * 0.56, 0, Math.PI * 0.12]}>
-        <ringGeometry args={[size * 1.95, size * 2.08, 96]} />
-        <meshBasicMaterial
-          color="#FCA5A5"
-          transparent
-          opacity={0.18}
           side={THREE.DoubleSide}
         />
       </mesh>
