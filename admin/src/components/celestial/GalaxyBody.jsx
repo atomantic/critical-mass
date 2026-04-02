@@ -10,6 +10,30 @@ const CORE_POINTS = 500
 const DUST_POINTS = 600
 const TOTAL_MAIN = ARM_COUNT * POINTS_PER_ARM + CORE_POINTS
 
+// Custom shader needed: PointsMaterial doesn't support per-vertex sizes
+const GALAXY_VERT = /* glsl */`
+  attribute float size;
+  attribute vec3 color;
+  varying vec3 vColor;
+  void main() {
+    vColor = color;
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = size * (110.0 / -mvPosition.z);
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`
+
+const GALAXY_FRAG = /* glsl */`
+  varying vec3 vColor;
+  void main() {
+    vec2 uv = gl_PointCoord - vec2(0.5);
+    float d = length(uv);
+    if (d > 0.5) discard;
+    float a = smoothstep(0.5, 0.05, d) * 0.88;
+    gl_FragColor = vec4(vColor, a);
+  }
+`
+
 /**
  * Simple Box-Muller for Gaussian-distributed spread
  */
@@ -209,20 +233,19 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
         <meshBasicMaterial color="#7C3AED" transparent opacity={0.04} side={THREE.DoubleSide} blending={THREE.AdditiveBlending} depthWrite={false} />
       </mesh>
 
-      {/* Main spiral arm + core particles */}
+      {/* Main spiral arm + core particles — custom shader for per-vertex sizes */}
       <points ref={mainRef}>
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" count={TOTAL_MAIN} array={main.positions} itemSize={3} />
           <bufferAttribute attach="attributes-color" count={TOTAL_MAIN} array={main.colors} itemSize={3} />
+          <bufferAttribute attach="attributes-size" count={TOTAL_MAIN} array={main.sizes} itemSize={1} />
         </bufferGeometry>
-        <pointsMaterial
-          vertexColors
-          size={0.1}
-          sizeAttenuation
+        <shaderMaterial
+          vertexShader={GALAXY_VERT}
+          fragmentShader={GALAXY_FRAG}
           transparent
-          opacity={0.8}
-          blending={THREE.AdditiveBlending}
           depthWrite={false}
+          blending={THREE.AdditiveBlending}
         />
       </points>
 

@@ -174,8 +174,8 @@ const Systems = () => {
             if (!body) return null
 
             return (
-              <div key={tier} className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
-                <div className="h-40" style={{ background: '#0f0f14' }}>
+              <div key={tier} className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden" style={{ borderTop: `2px solid ${TIER_COLORS[tier]}` }}>
+                <div className="h-48" style={{ background: '#0f0f14' }}>
                   <Canvas
                     dpr={[1, 1]}
                     camera={{ position: [0, 2, 4], fov: 40, near: 0.01, far: 50 }}
@@ -196,7 +196,10 @@ const Systems = () => {
                         {TIER_EMOJIS[tier]} {tier.replace('_', ' ')}
                       </span>
                     </div>
-                    <span className="text-gray-500 text-xs font-mono">{TIER_RANGES[tier]}</span>
+                    <span
+                      className="text-xs font-mono font-medium px-1.5 py-0.5 rounded"
+                      style={{ backgroundColor: `${TIER_COLORS[tier]}22`, color: TIER_COLORS[tier], border: `1px solid ${TIER_COLORS[tier]}55` }}
+                    >{TIER_RANGES[tier]}</span>
                   </div>
                   <p className="text-gray-400 text-xs leading-relaxed">
                     {TIER_DESCRIPTIONS[tier]}

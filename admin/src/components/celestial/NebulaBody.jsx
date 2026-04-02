@@ -5,8 +5,8 @@ import { getBodySize, bodyPropsEqual } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
 
 const CLOUD_LAYERS = 3
-const POINTS_PER_LAYER = 500
-const CORE_POINTS = 150
+const POINTS_PER_LAYER = 800
+const CORE_POINTS = 300
 const TOTAL = CLOUD_LAYERS * POINTS_PER_LAYER + CORE_POINTS
 
 const buildNebulaGeometry = (size) => {

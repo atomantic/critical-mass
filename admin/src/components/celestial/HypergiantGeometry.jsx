@@ -25,7 +25,7 @@ const HypergiantGeometry = ({ size }) => {
     }
     if (shellRef.current) {
       shellRef.current.rotation.y += 0.0007
-      shellRef.current.material.opacity = 0.08 + Math.sin(time * 1.1) * 0.02
+      shellRef.current.material.opacity = 0.16 + Math.sin(time * 1.1) * 0.04
     }
   })
 
@@ -47,7 +47,7 @@ const HypergiantGeometry = ({ size }) => {
           color="#C084FC"
           wireframe
           transparent
-          opacity={0.08}
+          opacity={0.16}
         />
       </mesh>
 
