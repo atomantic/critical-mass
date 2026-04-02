@@ -415,6 +415,8 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const [presets, setPresets] = useState(null)
   const [rollUpConfirm, setRollUpConfirm] = useState(null)
   const [rollingUp, setRollingUp] = useState(false)
+  const [tpEditModal, setTpEditModal] = useState(null) // { bodyId, currentTpPct, bodyLabel, inputValue }
+  const [settingTp, setSettingTp] = useState(false)
   const [fillSearchId, setFillSearchId] = useState('')
   const [openSearchId, setOpenSearchId] = useState('')
   const [dcaState, setDcaState] = useState(null)
@@ -663,6 +665,25 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
       // (avoids race where socketStatus overrides stale localStatus from fetchStatus)
       setSocketStatus(data.status)
       // Re-fetch fills so buy order annotations (bodyId, sellOrderId) reflect the merge
+      fetchFills()
+    }
+  }
+
+  // Manually set TP% for a celestial body
+  const handleSetTpPercent = async () => {
+    const pct = parseFloat(tpEditModal.inputValue)
+    if (isNaN(pct) || pct <= 0) return
+    setSettingTp(true)
+    const res = await fetch(`/api/${exchange}/regime/set-body-tp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bodyId: tpEditModal.bodyId, tpPct: pct }),
+    })
+    const data = await res.json()
+    setSettingTp(false)
+    setTpEditModal(null)
+    if (data.success && data.status) {
+      setSocketStatus(data.status)
       fetchFills()
     }
   }
@@ -2153,7 +2174,27 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                                   })()}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
-                                  {order.tpPercent ? `${order.tpPercent}%` : '—'}
+                                  <span className="inline-flex items-center gap-1 justify-end">
+                                    {order.tpPercent ? `${order.tpPercent}%` : '—'}
+                                    {(() => {
+                                      const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
+                                      if (!isBodyTp || !isRunning) return null
+                                      const bd = bodyLookup.get(order.orderId)
+                                      if (!bd) return null
+                                      return (
+                                        <button
+                                          title="Edit TP%"
+                                          className="text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? '') })
+                                          }}
+                                        >
+                                          ✎
+                                        </button>
+                                      )
+                                    })()}
+                                  </span>
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-white">
                                   {order.size?.toFixed(8)}
@@ -2898,6 +2939,52 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 disabled={rollingUp}
               >
                 {rollingUp ? 'Merging...' : 'Roll Up'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TP% edit dialog */}
+      {tpEditModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !settingTp && setTpEditModal(null)}>
+          <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-sm mx-4 w-full" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white text-lg font-medium mb-1">Set TP%</h3>
+            <p className="text-gray-400 text-xs font-mono mb-4">body …{tpEditModal.bodyLabel}</p>
+            <div className="mb-1">
+              <label className="text-gray-400 text-xs block mb-1">Take-profit % above avg cost</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  max="50"
+                  className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
+                  value={tpEditModal.inputValue}
+                  onChange={(e) => setTpEditModal(prev => ({ ...prev, inputValue: e.target.value }))}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSetTpPercent()}
+                  autoFocus
+                />
+                <span className="text-gray-400 text-sm">%</span>
+              </div>
+            </div>
+            {tpEditModal.currentTpPct && (
+              <p className="text-gray-500 text-xs mt-1 mb-4">Current: {tpEditModal.currentTpPct}%</p>
+            )}
+            <div className="flex justify-end gap-3 mt-4">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                onClick={() => setTpEditModal(null)}
+                disabled={settingTp}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded transition-colors disabled:opacity-50"
+                onClick={handleSetTpPercent}
+                disabled={settingTp || !tpEditModal.inputValue || parseFloat(tpEditModal.inputValue) <= 0}
+              >
+                {settingTp ? 'Placing...' : 'Set TP%'}
               </button>
             </div>
           </div>

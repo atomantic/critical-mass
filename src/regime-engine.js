@@ -2939,6 +2939,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * @returns {Promise<boolean>} Whether TP was successfully placed
    */
   const placeBodyTp = async (body) => {
+    // Extract hints immediately so they never leak if we return early
+    const mergeMaxTpPct = body._maxTpPct ?? null;
+    const overrideTpPct = body._overrideTpPct ?? null;
+    delete body._maxTpPct;
+    delete body._overrideTpPct;
+
     if (body.tpOrderId) {
       console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} already has TP ${body.tpOrderId.slice(0, 8)}, skipping duplicate placement`);
       return false;
@@ -2979,6 +2985,15 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       ? Math.max(feeFloorPct, holdbackFloorPct)
       : feeFloorPct;
     let finalTpPct = Math.min(Math.max(tierTpPct, minTpPct), effectiveMax);
+
+    if (overrideTpPct != null) {
+      // User-specified override: use exactly this TP%, subject to fee floor only
+      finalTpPct = Math.max(overrideTpPct, minTpPct);
+    } else if (mergeMaxTpPct != null) {
+      // Merge cap: after a manual merge, TP% must not exceed the pre-merge target's TP%.
+      // This guarantees the combined sell price is lower (lower avgPrice × capped TP%).
+      finalTpPct = Math.max(Math.min(finalTpPct, mergeMaxTpPct), minTpPct);
+    }
 
     let tpPrice = roundPrice(body.avgPrice * (1 + finalTpPct / 100), priceIncrement);
 
@@ -3750,6 +3765,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (source.tpOrderId) pendingMergeTpOrders.set(source.tpOrderId, sourceSnapshot);
     if (target.tpOrderId) pendingMergeTpOrders.set(target.tpOrderId, targetSnapshot);
 
+    // Capture pre-merge TP% so the merged body's TP% can only decrease, never increase.
+    // Merging cheaper buys lowers avgPrice; capping at prevTpPct ensures the absolute
+    // sell price also decreases (new tpPrice = lowerAvgPrice × cappedTpPct < oldTpPrice).
+    const prevTargetTpPct = targetSnapshot.tpPrice > 0 && targetSnapshot.avgPrice > 0
+      ? (targetSnapshot.tpPrice / targetSnapshot.avgPrice - 1) * 100
+      : null;
+
     // Cancel source TP
     const srcCancel = await orderExecutor.cancelBodyTpOrder(source.id);
     if (!srcCancel.cancelled) {
@@ -3816,7 +3838,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       }
     }
 
-    // Place new combined TP (handles holdback, annotation for ALL source buy fills)
+    // Place new combined TP (handles holdback, annotation for ALL source buy fills).
+    // Cap TP% at the pre-merge target level so the sell price can only go down after merge.
+    if (prevTargetTpPct != null) merged._maxTpPct = prevTargetTpPct;
     await placeBodyTp(merged);
 
     // Persist
@@ -3850,6 +3874,51 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         avgPrice: merged.avgPrice,
         buyCount: merged.buyOrders?.length || 0,
       },
+    };
+  };
+
+  /**
+   * Manually set the TP% for a specific celestial body.
+   * Cancels the existing TP, then re-places it at the specified percentage above avgPrice.
+   * The override is subject to the fee floor (cannot be set so low it loses money).
+   * @param {string} bodyId
+   * @param {number} tpPct - Desired TP% (e.g. 2.5 means 2.5% above avgPrice)
+   * @returns {Promise<{success: boolean, message: string, status?: Object}>}
+   */
+  const setBodyTpPercent = async (bodyId, tpPct) => {
+    if (!isRunning) return { success: false, message: 'Engine not running' };
+
+    const body = (positionState.celestialBodies || []).find(b => b.id === bodyId);
+    if (!body) return { success: false, message: `Body ${bodyId.slice(-8)} not found` };
+
+    if (body.tpOrderId) {
+      const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id);
+      if (!cancelResult.cancelled) {
+        const reason = cancelResult.filled ? 'already filled' : 'cancel failed';
+        return { success: false, message: `Existing TP ${reason}` };
+      }
+      body.tpOrderId = null;
+      body.tpPrice = 0;
+      body.assetOnOrder = 0;
+    }
+
+    body._overrideTpPct = tpPct;
+    const placed = await placeBodyTp(body);
+
+    if (!placed) {
+      return { success: false, message: `Could not place TP at ${tpPct.toFixed(2)}% — below fee floor or invalid` };
+    }
+
+    const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+    console.log(`${tierCfg.emoji} [${exchange}] Manual TP% set: body ${body.id.slice(-8)} @ ${tpPct.toFixed(2)}% → ${fmtPrice(body.tpPrice)}`);
+
+    saveLiveState();
+    if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(getState());
+
+    return {
+      success: true,
+      message: `TP set to ${body.tpPrice ? fmtPrice(body.tpPrice) : `${tpPct.toFixed(2)}%`} for body ${bodyId.slice(-8)}`,
+      status: getStatus(),
     };
   };
 
@@ -4077,6 +4146,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     getFillStats,
     forceResumeDrawdown,
     manualMergeBody,
+    setBodyTpPercent,
     rebuildTP,
     previewLadder,
     rebuildLadder,

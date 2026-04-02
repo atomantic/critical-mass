@@ -267,6 +267,13 @@ ipcServer.onRequest('regime:rollup-body', async (payload, exchange) => {
   return { success: result.success, exchange, message: result.message, mergedBody: result.mergedBody || null, status: engine.getStatus() };
 });
 
+ipcServer.onRequest('regime:set-body-tp', async (payload, exchange) => {
+  const engine = regimeEngines.get(exchange);
+  if (!engine) return { success: false, error: 'Regime engine not running' };
+  const result = await engine.setBodyTpPercent(payload.bodyId, payload.tpPct);
+  return { success: result.success, exchange, message: result.message, status: result.status || engine.getStatus() };
+});
+
 ipcServer.onRequest('regime:config', async (payload, exchange) => {
   const regimeConfig = getRegimeConfig(exchange);
   const exchangeConfig = getExchangeConfig(exchange);
