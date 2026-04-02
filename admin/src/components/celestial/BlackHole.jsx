@@ -15,6 +15,8 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurre
   const outerGlowRef = useRef()
   const photonRingRef = useRef()
   const photonRingOuterRef = useRef()
+  const jetCoreRefs = useRef([])
+  const jetHaloRefs = useRef([])
 
   const size = getBodySize(body.costBasis, maxUsdcDeployed) * 1.2
   const hasTP = body.tpPrice > 0
@@ -40,10 +42,18 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurre
       const pulse = hasTP ? 0.1 : 0.045 + Math.sin(time * 1.5) * 0.02
       outerGlowRef.current.material.opacity = pulse
     }
+
+    // Relativistic jets — anti-phase core/halo for depth effect
+    const jetCore = 0.42 + Math.sin(time * 2.2) * 0.12
+    const jetHalo = 0.16 + Math.sin(time * 2.2 + Math.PI) * 0.06
+    jetCoreRefs.current.forEach(r => { if (r) r.material.opacity = jetCore })
+    jetHaloRefs.current.forEach(r => { if (r) r.material.opacity = jetHalo })
   })
 
   // Disk tilt: nearly horizontal with a slight tilt for depth (80° from vertical)
   const diskTilt = Math.PI * 0.44
+  const jetLen = size * 2.8
+  const jetHalf = size + jetLen / 2
 
   return (
     <group position={[0, 0, 0]}>
@@ -124,6 +134,24 @@ const BlackHole = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurre
           opacity={0.08}
           side={THREE.BackSide}
         />
+      </mesh>
+
+      {/* Relativistic jets — bipolar beams along the rotation axis */}
+      <mesh ref={el => { jetCoreRefs.current[0] = el }} position={[0, jetHalf, 0]}>
+        <cylinderGeometry args={[size * 0.02, size * 0.09, jetLen, 8, 1, true]} />
+        <meshBasicMaterial color="#A5F3FC" transparent opacity={0.42} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh ref={el => { jetHaloRefs.current[0] = el }} position={[0, jetHalf, 0]}>
+        <cylinderGeometry args={[size * 0.07, size * 0.22, jetLen, 8, 1, true]} />
+        <meshBasicMaterial color="#67E8F9" transparent opacity={0.16} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh ref={el => { jetCoreRefs.current[1] = el }} position={[0, -jetHalf, 0]} rotation={[Math.PI, 0, 0]}>
+        <cylinderGeometry args={[size * 0.02, size * 0.09, jetLen, 8, 1, true]} />
+        <meshBasicMaterial color="#A5F3FC" transparent opacity={0.42} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
+      </mesh>
+      <mesh ref={el => { jetHaloRefs.current[1] = el }} position={[0, -jetHalf, 0]} rotation={[Math.PI, 0, 0]}>
+        <cylinderGeometry args={[size * 0.07, size * 0.22, jetLen, 8, 1, true]} />
+        <meshBasicMaterial color="#67E8F9" transparent opacity={0.16} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
       </mesh>
 
       {showTooltip && <CelestialTooltip body={body} position={[0, size + 0.8, 0]} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} />}

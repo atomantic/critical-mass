@@ -35,7 +35,11 @@ const SunGeometry = ({ size }) => {
     }
     if (flareSpokesRef.current) {
       flareSpokesRef.current.rotation.z += 0.0016
-      flareSpokesRef.current.material.opacity = 0.18 + Math.sin(time * 3.2) * 0.05
+      flareSpokesRef.current.children.forEach((child, i) => {
+        if (!child.material) return
+        const base = i % 2 === 0 ? 0.22 : 0.13
+        child.material.opacity = base + Math.sin(time * 3.2 + i * (Math.PI / 4)) * 0.08
+      })
     }
   })
 
@@ -71,10 +75,33 @@ const SunGeometry = ({ size }) => {
         <meshBasicMaterial color="#FDBA74" transparent opacity={0.14} side={THREE.DoubleSide} />
       </mesh>
 
-      <mesh ref={flareSpokesRef} rotation={[Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[size * 1.28, size * 1.62, 12, 1]} />
-        <meshBasicMaterial color="#FB923C" transparent opacity={0.18} side={THREE.DoubleSide} wireframe />
-      </mesh>
+      {/* Solar flare rays — 4 major + 4 minor alternating, spin slowly */}
+      <group ref={flareSpokesRef} rotation={[Math.PI / 2, 0, 0]}>
+        {Array.from({ length: 8 }, (_, i) => {
+          const isMajor = i % 2 === 0
+          const angle = (i / 8) * Math.PI * 2
+          const rayLen = isMajor ? size * 0.62 : size * 0.38
+          const rayWidth = isMajor ? size * 0.055 : size * 0.034
+          const midR = size * (isMajor ? 1.55 : 1.42)
+          return (
+            <mesh
+              key={i}
+              position={[Math.cos(angle) * midR, Math.sin(angle) * midR, 0]}
+              rotation={[0, 0, angle - Math.PI / 2]}
+            >
+              <planeGeometry args={[rayWidth, rayLen]} />
+              <meshBasicMaterial
+                color={isMajor ? '#FB923C' : '#FDE68A'}
+                transparent
+                opacity={isMajor ? 0.22 : 0.13}
+                side={THREE.DoubleSide}
+                blending={THREE.AdditiveBlending}
+                depthWrite={false}
+              />
+            </mesh>
+          )
+        })}
+      </group>
     </group>
   )
 }

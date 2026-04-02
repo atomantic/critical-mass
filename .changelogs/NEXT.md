@@ -34,6 +34,12 @@
 - All npm dependencies version-pinned (no `^` ranges) to prevent supply chain attacks from auto-upgrading
 - `.npmrc` added with `ignore-scripts=true` to block postinstall/lifecycle scripts from dependencies by default
 - Celestial visuals — removed tron-style wireframe/geometric rings from black hole, galaxy, and nebula; enhanced galaxy with denser spiral arms (3×800 particles), Gaussian spread, diffuse dust layer, and layered disc glows
+- Black hole relativistic jets — bipolar cyan beams (core + halo cylinders) along the rotation axis with anti-phase pulse animation
+- Galaxy per-vertex point sizes — custom ShaderMaterial activates previously-dead `sizes` buffer; core particles render ~3× larger than arm tips
+- Sun solar flare rays — 8 individual animated plane-geometry rays (4 major orange + 4 minor yellow) replace the single wireframe ring; each ray flickers independently
+- Hypergiant wireframe atmosphere shell opacity doubled (0.08→0.16) with wider pulse range
+- Nebula point density increased 1,650→2,700 particles for fuller cloud coverage
+- Systems page tier cards — colored top border per tier, range % shown as tier-colored badge, card canvas height increased (h-40→h-48)
 
 - Indicator weights rebalanced for trend-following dominance (61%): MACD 0.24, OBV 0.20, Momentum 0.17; mean-reversion reduced: RSI 0.12, Stochastic 0.10, Bollinger 0.08
 - Signal thresholds lowered — neutral 25→15, strong 45→30, with proportional vol-scaling adjustments
