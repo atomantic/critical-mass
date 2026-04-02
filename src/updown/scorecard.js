@@ -17,11 +17,19 @@ const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SAMPLE_INTERVAL_MS = 60_000
 const EVAL_WINDOWS = [60_000, 300_000, 900_000, 3_600_000]
 const WINDOW_LABELS = { 60000: '1m', 300000: '5m', 900000: '15m', 3600000: '1h' }
-const DIRECTION_THRESHOLD = 10
+const DIRECTION_THRESHOLD = 15 // aligned with signal-engine's neutralThreshold for BUY signals
 const BUFFER_SIZE = 2000
 const EMIT_THROTTLE_MS = 5_000
 const DEDUP_WINDOW_MS = 55_000
 const WEIGHT_LOG_THROTTLE_MS = 300_000
+// Prevents 1-tick noise from inflating short-window accuracy stats.
+const EVAL_NOISE_FLOORS_BPS = {
+  60000: 5,      // 1m: 5 bps (~$4 on $80k BTC) — noise filter
+  300000: 10,    // 5m: 10 bps
+  900000: 20,    // 15m: 20 bps
+  3600000: 40,   // 1h: 40 bps
+}
+
 const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum', 'obv']
 const BASE_WEIGHTS = { rsi: 0.12, stochastic: 0.10, macd: 0.24, bollinger: 0.08, vwap: 0.09, momentum: 0.17, obv: 0.20 }
 const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
@@ -234,7 +242,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     }
 
     const priceChangeBps = ((exitPrice - prediction.price) / prediction.price) * 10000
-    const compositeCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps)
+    const compositeCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs)
 
     // Per-timeframe evaluation
     const tfResults = {}
@@ -244,7 +252,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       const direction = getDirection(tfData.score)
       tfResults[tf] = {
         direction,
-        correct: evaluateDirection(direction, priceChangeBps),
+        correct: evaluateDirection(direction, priceChangeBps, windowMs),
       }
     }
 
@@ -260,7 +268,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
         const direction = getDirection(indScore)
         if (direction === 'neutral') continue
         predictions++
-        if (evaluateDirection(direction, priceChangeBps)) correct++
+        if (evaluateDirection(direction, priceChangeBps, windowMs)) correct++
       }
       indicatorResults[ind] = {
         predictions,
@@ -282,6 +290,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       entryPrice: prediction.price,
       exitPrice,
       priceChangeBps: Math.round(priceChangeBps * 100) / 100,
+      compositeScore: prediction.compositeScore ?? 0,
       compositeDirection: prediction.compositeDirection,
       compositeCorrect,
       tfResults,
@@ -307,15 +316,18 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
   }
 
   /**
-   * Evaluate if a directional prediction was correct
+   * Evaluate if a directional prediction was correct.
+   * Requires a minimum price move (noise floor) to avoid counting 1-tick fluctuations.
    * @param {'up' | 'down' | 'neutral'} direction
    * @param {number} priceChangeBps
+   * @param {number} [windowMs=300000] - Evaluation window in ms (determines noise floor)
    * @returns {boolean | null} null if neutral (skipped)
    */
-  const evaluateDirection = (direction, priceChangeBps) => {
+  const evaluateDirection = (direction, priceChangeBps, windowMs = 300000) => {
     if (direction === 'neutral') return null
-    if (direction === 'up') return priceChangeBps > 0
-    return priceChangeBps < 0
+    const noiseBps = EVAL_NOISE_FLOORS_BPS[windowMs] ?? 10
+    if (direction === 'up') return priceChangeBps > noiseBps
+    return priceChangeBps < -noiseBps
   }
 
   /**
@@ -422,20 +434,27 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       }
     }
 
-    // By indicator
+    // By indicator — weighted by composite signal strength so strong signals influence
+    // adaptive weights more than marginal ones (score 30 = 1x, score 60+ = 2x, score ~0 = ~0x)
     const byIndicator = {}
     for (const ind of INDICATORS) {
       let indTotal = 0
       let indCorrect = 0
+      let rawCount = 0
       for (const o of outcomeBuffer) {
         const indResult = o.indicatorResults?.[ind]
         if (!indResult || indResult.predictions === 0) continue
-        indTotal += indResult.predictions
-        indCorrect += indResult.correct
+        // Weight by signal strength; records without compositeScore default to 1x (backward compat)
+        const strengthWeight = o.compositeScore != null
+          ? Math.min(2, Math.abs(o.compositeScore) / 30)
+          : 1.0
+        indTotal += indResult.predictions * strengthWeight
+        indCorrect += indResult.correct * strengthWeight
+        rawCount += indResult.predictions
       }
       byIndicator[ind] = {
         accuracy: indTotal > 0 ? Math.round(indCorrect / indTotal * 10000) / 100 : null,
-        predictions: indTotal,
+        predictions: rawCount, // unweighted count for activity ratio in adaptive weights
       }
     }
 

@@ -41,6 +41,8 @@
 - Nebula point density increased 1,650→2,700 particles for fuller cloud coverage
 - Systems page tier cards — colored top border per tier, range % shown as tier-colored badge, card canvas height increased (h-40→h-48)
 
+- UpDown prediction accuracy improvements — direction threshold aligned to BUY signal threshold (10→15), per-window noise floors prevent 1-tick moves from counting as correct, signal strength weighting in adaptive indicator weights, MACD histogram divergence detection added alongside RSI divergence, RSI mid-range gradient (±12 for RSI 35-65), MACD counter-trend crossovers reduced (±90→±50), multi-factor confidence metric (score + TF agreement + ADX regime), breakout detection on pivot levels, O(n²)→O(n) volatility context computation
+
 - Indicator weights rebalanced for trend-following dominance (61%): MACD 0.24, OBV 0.20, Momentum 0.17; mean-reversion reduced: RSI 0.12, Stochastic 0.10, Bollinger 0.08
 - Signal thresholds lowered — neutral 25→15, strong 45→30, with proportional vol-scaling adjustments
 - Soft ceiling raised from 35 to 50 — full linear scoring range before compression
@@ -71,6 +73,9 @@
 - Realized P&L card now shows total liquid value (USD + asset at market price) as the primary number, with USD and asset breakdowns below (RegimeDashboard, Overview, and DCA Dashboard)
 - Added missing `asteroid` and `nebula` tiers to open orders tier style map
 - Capital adjustment UI now allows reducing available cash — clamps depositedCapital and maxUsdcDeployed to valid server ranges instead of sending out-of-range values
+- Manual TP% override — edit icon on open orders table lets you set an exact take-profit % for any celestial body; takes effect immediately by cancelling and replacing the TP order
+- Merge TP cap — after a body rollup/merge, the merged body's TP% is capped at the pre-merge target's level so the absolute sell price can only decrease, never increase after absorbing cheaper buys
+
 - Signal history now sorted newest-first — API results were displayed in arbitrary order
 - Signal panel and banner show "CALCULATING..." loading state until live indicators arrive, preventing false BUY/SELL display from stale cached signals on page load
 - NEUTRAL and NTZ (NO_TRADE_ZONE) annotations no longer render on price charts — only BUY/SELL markers shown

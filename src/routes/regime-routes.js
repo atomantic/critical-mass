@@ -154,6 +154,18 @@ module.exports = (app, deps) => {
     res.json(result);
   });
 
+  app.post('/api/:exchange/regime/set-body-tp', async (req, res) => {
+    const { exchange } = req.params;
+    const { bodyId, tpPct } = req.body || {};
+    if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
+    const pct = parseFloat(tpPct);
+    if (isNaN(pct) || pct <= 0 || pct > 50) return res.status(400).json({ success: false, error: 'tpPct must be a number between 0 and 50' });
+
+    const result = await getIPC(exchange).request('regime:set-body-tp', { bodyId, tpPct: pct }, exchange).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
   // ============ Data Queries (forwarded via IPC) ============
 
   app.get('/api/:exchange/regime/chart-data', async (req, res) => {

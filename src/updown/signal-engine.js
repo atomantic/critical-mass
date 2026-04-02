@@ -16,9 +16,9 @@
  * 8. Multi-Candle Horizon Prediction
  */
 
-const { calculateRSI, calculateRSISeries, calculateStochastic, calculateMACD, calculateBollingerBands, calculateOBV, calculateADX } = require('./indicators');
-const { calculateATR, calculateVWAP, calculateEMA, calculateMomentumAcceleration } = require('../volatility-utils');
-const { detectDivergence } = require('./divergence');
+const { calculateRSI, calculateRSISeries, calculateStochastic, calculateMACD, calculateMACDHistogramSeries, calculateBollingerBands, calculateOBV, calculateADX } = require('./indicators');
+const { calculateATR, calculateVWAP, calculateEMA, calculateMomentumAcceleration, calculateTrueRange } = require('../volatility-utils');
+const { detectDivergence, detectMACDDivergence } = require('./divergence');
 const { calculatePivotPoints, computePivotDampening } = require('./pivot-points');
 
 const INDICATOR_WEIGHTS = {
@@ -69,12 +69,13 @@ const scoreRSI = (rsi, trendBias = 'neutral') => {
     if (rsi > 65) return -50;
     return 0;
   }
-  // neutral: original mean-reversion logic
+  // neutral: extreme zones + gentle mid-range gradient (RSI 35-65 → ±12 max)
   if (rsi < 30) return 80;
   if (rsi < 35) return 50;
   if (rsi > 70) return -80;
   if (rsi > 65) return -50;
-  return 0;
+  // Gentle gradient: RSI 50 = 0, RSI 35 ≈ +12, RSI 65 ≈ -12
+  return Math.round((50 - rsi) * 0.8);
 };
 
 /**
@@ -125,9 +126,9 @@ const scoreMACD = (macd, prevMacd, trendBias = 'neutral') => {
   const bullishCross = prevMacd && prevMacd.macd <= prevMacd.signal && macd.macd > macd.signal;
   const bearishCross = prevMacd && prevMacd.macd >= prevMacd.signal && macd.macd < macd.signal;
 
-  // Crossover takes precedence
-  if (bullishCross) return 90;
-  if (bearishCross) return -90;
+  // Crossover takes precedence, but counter-trend crossovers carry less conviction
+  if (bullishCross) return trendBias === 'bearish' ? 50 : 90;
+  if (bearishCross) return trendBias === 'bullish' ? -50 : -90;
 
   // Continuous score from histogram magnitude (normalized by signal line)
   const denominator = Math.max(Math.abs(macd.signal), Math.abs(macd.macd) * 0.1, 1e-8);
@@ -365,6 +366,8 @@ const computeADXRegime = (adxData) => {
 
 /**
  * Compute volatility context from 5m candles (ATR ratio to baseline)
+ * Uses incremental Wilder's-smoothed ATR computation (O(n)) instead of
+ * recomputing ATR from scratch for each bar (which was O(n²)).
  * @param {Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>} candles5m
  * @returns {{atr: number, baseline: number, ratio: number}}
  */
@@ -373,24 +376,38 @@ const computeVolatilityContext = (candles5m) => {
     return { atr: 0, baseline: 0, ratio: 1 };
   }
 
-  const atr = calculateATR(candles5m, 14);
+  const period = 14;
+  const n = candles5m.length;
 
-  // Compute ATR values over the history for EMA baseline
-  const atrValues = [];
-  for (let i = 14; i < candles5m.length; i++) {
-    const slice = candles5m.slice(0, i + 1);
-    atrValues.push(calculateATR(slice, 14));
+  // Compute true ranges for all candles in a single O(n) pass
+  const trueRanges = [];
+  for (let i = 0; i < n; i++) {
+    trueRanges.push(calculateTrueRange(candles5m[i], i > 0 ? candles5m[i - 1].close : undefined));
   }
 
-  if (atrValues.length < 50) {
+  // Seed ATR with SMA of first `period` true ranges, then apply Wilder's smoothing (O(n))
+  let atrVal = 0;
+  for (let i = 0; i < period; i++) atrVal += trueRanges[i];
+  atrVal /= period;
+  const atrSeries = [atrVal];
+  for (let i = period; i < n; i++) {
+    atrVal = ((atrVal * (period - 1)) + trueRanges[i]) / period;
+    atrSeries.push(atrVal);
+  }
+
+  const atr = atrSeries[atrSeries.length - 1];
+
+  if (atrSeries.length < 50) {
     return { atr, baseline: atr, ratio: 1 };
   }
 
-  // EMA(50) of ATR values as baseline — compute manually from values array
+  // EMA(50) of the ATR series as the baseline
   const mul = 2 / 51;
-  let baseline = atrValues.slice(0, 50).reduce((s, v) => s + v, 0) / 50;
-  for (let i = 50; i < atrValues.length; i++) {
-    baseline = (atrValues[i] - baseline) * mul + baseline;
+  let baseline = 0;
+  for (let i = 0; i < 50; i++) baseline += atrSeries[i];
+  baseline /= 50;
+  for (let i = 50; i < atrSeries.length; i++) {
+    baseline = (atrSeries[i] - baseline) * mul + baseline;
   }
 
   const ratio = baseline > 0 ? atr / baseline : 1;
@@ -559,18 +576,31 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
   const volumeSurge = computeVolumeSurge(candles);
   weightedScore *= volumeSurge.multiplier;
 
-  // Feature 5: Divergence detection
+  // Feature 5: Divergence detection (RSI + MACD histogram)
   const rsiSeries = calculateRSISeries(closes);
   const divergence = detectDivergence(closes, rsiSeries);
-  if (divergence.type === 'bearish' && weightedScore > 0) {
-    weightedScore *= (1 - 0.3 * divergence.strength);
-  } else if (divergence.type === 'bullish' && weightedScore < 0) {
-    weightedScore *= (1 - 0.3 * divergence.strength);
+  const macdHistSeries = calculateMACDHistogramSeries(closes);
+  const macdDivergence = detectMACDDivergence(closes, macdHistSeries);
+
+  // Apply the strongest applicable divergence signal
+  const bearishStrength = Math.max(
+    divergence.type === 'bearish' ? divergence.strength : 0,
+    macdDivergence.type === 'bearish' ? macdDivergence.strength : 0
+  );
+  const bullishStrength = Math.max(
+    divergence.type === 'bullish' ? divergence.strength : 0,
+    macdDivergence.type === 'bullish' ? macdDivergence.strength : 0
+  );
+
+  if (bearishStrength > 0 && weightedScore > 0) {
+    weightedScore *= (1 - 0.3 * bearishStrength);
+  } else if (bullishStrength > 0 && weightedScore < 0) {
+    weightedScore *= (1 - 0.3 * bullishStrength);
   }
 
   const indicators = {
     rsi, stochastic: stoch, macd, bollingerBands: bb, atr, vwap, momentum,
-    volumeSurge, divergence, obv, adx,
+    volumeSurge, divergence, macdDivergence, obv, adx,
   };
 
   return { scores, indicators, weightedScore };
@@ -696,8 +726,9 @@ const createSignalEngine = (candleAggregator) => {
       if (cachedPivots) {
         const closes5m = candleAggregator.getCandles('5m');
         const currentPrice = closes5m?.length > 0 ? closes5m[closes5m.length - 1].close : 0;
+        const prevPrice5m = closes5m?.length > 1 ? closes5m[closes5m.length - 2].close : null;
         if (currentPrice > 0) {
-          pivotPoints = computePivotDampening(currentPrice, cachedPivots);
+          pivotPoints = computePivotDampening(currentPrice, cachedPivots, 0.001, prevPrice5m);
           // Dampen positive scores near resistance, negative scores near support
           if (pivotPoints.nearLevel) {
             const isResistance = pivotPoints.nearLevel.startsWith('R');
@@ -739,7 +770,14 @@ const createSignalEngine = (candleAggregator) => {
     const candles5m = candleAggregator.getCandles('5m');
     const volatility = computeVolatilityContext(candles5m);
     const type = noTradeZone ? 'NO_TRADE_ZONE' : scoreToSignalDynamic(compositeScore, volatility.ratio);
-    const confidence = Math.min(1, Math.abs(compositeScore) / 60);
+
+    // Multi-factor confidence: score magnitude (0-0.5) + TF agreement (0-0.3) + ADX regime (0-0.2)
+    const scoreFactor = Math.min(0.5, Math.abs(compositeScore) / 100);
+    const agreementFactor = confluence.totalDirectional > 0
+      ? 0.3 * (confluence.agreeing / confluence.totalDirectional)
+      : 0;
+    const adxFactor = adxRegime.regime === 'trending' ? 0.2 : 0.1;
+    const confidence = Math.min(1, Math.round((scoreFactor + agreementFactor + adxFactor) * 100) / 100);
 
     // Feature 8: Horizon prediction
     const horizonPrediction = scorecardMetrics?.byWindow

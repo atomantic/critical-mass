@@ -263,6 +263,40 @@ const calculateOBV = (candles, lookback = 14) => {
 };
 
 /**
+ * Calculate MACD histogram series (full array, same length as closes)
+ * Useful for divergence detection where we need the full histogram history.
+ * @param {number[]} closes - Array of closing prices (oldest first)
+ * @param {number} [fast=12]
+ * @param {number} [slow=26]
+ * @param {number} [signalPeriod=9]
+ * @returns {number[]} Histogram array (zeros where insufficient data)
+ */
+const calculateMACDHistogramSeries = (closes, fast = 12, slow = 26, signalPeriod = 9) => {
+  const result = new Array(closes?.length ?? 0).fill(0);
+  if (!closes || closes.length < slow + signalPeriod) return result;
+
+  const fastEMA = emaFromValues(closes, fast);
+  const slowEMA = emaFromValues(closes, slow);
+
+  // MACD line valid from index slow-1 onward
+  const macdLine = [];
+  const offset = slow - 1;
+  for (let i = offset; i < closes.length; i++) {
+    macdLine.push(fastEMA[i] - slowEMA[i]);
+  }
+
+  const signalLine = emaFromValues(macdLine, signalPeriod);
+
+  // signalLine[0..signalPeriod-2] are 0 (signal not yet warmed up).
+  // Zero those bars to avoid spurious divergence from raw MACD values.
+  for (let i = 0; i < macdLine.length; i++) {
+    result[offset + i] = i < signalPeriod - 1 ? 0 : macdLine[i] - signalLine[i];
+  }
+
+  return result;
+};
+
+/**
  * Calculate Average Directional Index (ADX) using Wilder's method
  * @param {Array<{high: number, low: number, close: number}>} candles - Candle data (oldest first)
  * @param {number} [period=14] - ADX smoothing period
@@ -360,6 +394,7 @@ module.exports = {
   calculateRSISeries,
   calculateStochastic,
   calculateMACD,
+  calculateMACDHistogramSeries,
   calculateBollingerBands,
   calculateOBV,
   calculateADX,
