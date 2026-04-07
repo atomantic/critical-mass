@@ -2697,9 +2697,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   if (isDryRun) {
                     totalHoldback = sellGroups.reduce((s, g) => s + (g.sell.holdbackAsset || 0), 0)
                     return (
-                      <div className="overflow-x-auto max-h-[48rem] overflow-y-auto">
+                      <div className="overflow-x-auto">
                         <table className="w-full text-sm">
-                          <thead className="sticky top-0 bg-gray-800 z-10">
+                          <thead>
                             {tableHeader}
                           </thead>
                           <tbody>
@@ -2751,7 +2751,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                   })
 
                   return (
-                    <div className="overflow-x-auto max-h-[48rem] overflow-y-auto space-y-2">
+                    <div className="overflow-x-auto space-y-2">
                       {/* Grand totals bar */}
                       {cycleGroups.length > 0 && (
                         <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
