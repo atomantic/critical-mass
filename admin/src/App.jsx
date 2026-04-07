@@ -1,5 +1,5 @@
-import { useState, useEffect, createContext, useContext, lazy, Suspense } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate, useParams, Navigate } from 'react-router-dom'
+import { useState, useEffect, lazy, Suspense } from 'react'
+import { Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom'
 import Dashboard from './components/Dashboard'
 import ConfigEditor from './components/ConfigEditor'
 import TransactionsDCA from './components/TransactionsDCA'
@@ -51,17 +51,6 @@ export function getBaseCurrency(productId) {
   // For Gemini-style (BTCUSD), assume BTC prefix
   return 'BTC'
 }
-
-// Exchange context for sharing current exchange and strategy across components
-export const ExchangeContext = createContext({
-  exchange: 'coinbase',
-  strategy: 'dca',
-  setExchange: () => {},
-  setStrategy: () => {},
-  exchanges: [],
-})
-
-export const useExchange = () => useContext(ExchangeContext)
 
 // Strategy-aware tab configuration
 const getTabsForStrategy = (strategy) => {
@@ -119,8 +108,12 @@ function AppContent() {
   const urlExchange = VALID_EXCHANGES.includes(pathParts[0]) ? pathParts[0] : null
   const urlPair = urlExchange && pathParts[1] ? pathParts[1] : null
 
-  const [currentExchange, setCurrentExchange] = useState(urlExchange || 'coinbase')
-  const [currentStrategy, setCurrentStrategy] = useState('regime')
+  // currentExchange/currentStrategy/currentPair are DERIVED from URL (with state fallback
+  // for non-exchange pages). Using local state caused a one-render lag during navigation:
+  // the route would briefly mount the wrong dashboard with stale data before the state
+  // catches up to the URL.
+  const [lastExchange, setLastExchange] = useState(urlExchange || 'coinbase')
+  const currentExchange = urlExchange || lastExchange
   const [exchanges, setExchanges] = useState([])
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -133,11 +126,14 @@ function AppContent() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [simpleDcaEnabled, setSimpleDcaEnabled] = useState(false)
 
+  const currentExchangeConfig = exchanges?.find(e => e.name === currentExchange)
+  const resolveStrategy = (config) =>
+    !simpleDcaEnabled || config?.strategy === 'regime' ? 'regime' : 'dca'
+  const currentStrategy = resolveStrategy(currentExchangeConfig)
+  const currentPair = urlPair || currentExchangeConfig?.productId || 'BTC-USDC'
+
   // WebSocket connection for regime strategy
   const { connected: wsConnected } = useRegimeEvents(currentStrategy === 'regime' ? currentExchange : null)
-
-  // Derive current pair from exchange config or URL
-  const currentPair = exchanges?.find(e => e.name === currentExchange)?.productId || urlPair || 'BTC-USDC'
 
   // Get tabs based on current strategy
   const tabs = getTabsForStrategy(currentStrategy)
@@ -156,10 +152,8 @@ function AppContent() {
         const first = data.exchanges?.[0]
         const targetExchange = enabled?.name || first?.name || 'coinbase'
         const exchangeConfig = enabled || first
-        const targetStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
         const targetPair = exchangeConfig?.productId || 'BTC-USDC'
-        setCurrentExchange(targetExchange)
-        setCurrentStrategy(targetStrategy)
+        setLastExchange(targetExchange)
         // Don't redirect away from non-exchange pages (overview, notifications, etc.)
         const nonExchangePaths = ['/', '/updown', '/sentinel', '/gateway', '/notifications', '/backups', '/systems', '/ai']
         const isNonExchangePage = nonExchangePaths.some(p => location.pathname === p || location.pathname.startsWith(p + '/'))
@@ -169,28 +163,17 @@ function AppContent() {
       } else if (autoSelect && urlExchange && !urlPair) {
         // URL has exchange but no pair - redirect to pair path
         const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
-        const targetStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
         const targetPair = exchangeConfig?.productId || 'BTC-USDC'
-        setCurrentExchange(urlExchange)
-        setCurrentStrategy(targetStrategy)
         navigate(`/${urlExchange}/${targetPair}`, { replace: true })
-      } else if (autoSelect && urlExchange && urlPair) {
-        // URL already has exchange and pair - derive strategy from config
-        setCurrentExchange(urlExchange)
-        const exchangeConfig = data.exchanges?.find(e => e.name === urlExchange)
-        const targetStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
-        setCurrentStrategy(targetStrategy)
       }
     }
   }
 
   // Handle exchange change from selector - update URL with pair
   const handleExchangeChange = (newExchange, newPair) => {
-    const exchangeConfig = exchanges?.find(e => e.name === newExchange)
-    const newStrategy = exchangeConfig?.strategy === 'regime' ? 'regime' : 'dca'
-    setCurrentExchange(newExchange)
-    setCurrentStrategy(newStrategy)
-    // Navigate to new exchange/pair, preserving current tab if valid
+    const newStrategy = resolveStrategy(exchanges?.find(e => e.name === newExchange))
+    setLastExchange(newExchange)
+    // Preserve the current tab subpath only if it exists in the new strategy's tab list
     const currentTab = pathParts[2] || ''
     const newTabs = getTabsForStrategy(newStrategy)
     const tabValid = currentTab === '' || newTabs.some(t => t.path === `/${currentTab}`)
@@ -258,24 +241,10 @@ function AppContent() {
     fetchExchanges(true)
   }, [])
 
-  // Sync exchange from URL when it changes, derive strategy from config
+  // Remember the last visited exchange so non-exchange pages (Overview) can build tab links
   useEffect(() => {
-    if (urlExchange && urlExchange !== currentExchange) {
-      setCurrentExchange(urlExchange)
-      const exchangeConfig = exchanges?.find(e => e.name === urlExchange)
-      if (exchangeConfig) {
-        setCurrentStrategy(exchangeConfig.strategy === 'regime' ? 'regime' : 'dca')
-      }
-    }
-  }, [urlExchange, urlPair])
-
-  // Auto-redirect away from DCA when simpleDcaEnabled is false (only on exchange pages)
-  useEffect(() => {
-    if (!simpleDcaEnabled && currentStrategy === 'dca' && urlExchange) {
-      setCurrentStrategy('regime')
-      navigate(`/${currentExchange}/${currentPair}`, { replace: true })
-    }
-  }, [simpleDcaEnabled, currentStrategy, currentExchange, currentPair, urlExchange])
+    if (urlExchange && urlExchange !== lastExchange) setLastExchange(urlExchange)
+  }, [urlExchange, lastExchange])
 
   // Fetch data when exchange changes
   useEffect(() => {
@@ -329,14 +298,7 @@ function AppContent() {
   const buildPath = (tabPath) => `/${currentExchange}/${currentPair}${tabPath}`
 
   return (
-    <ExchangeContext.Provider value={{
-      exchange: currentExchange,
-      strategy: currentStrategy,
-      setExchange: setCurrentExchange,
-      setStrategy: setCurrentStrategy,
-      exchanges
-    }}>
-      <div className="min-h-screen">
+    <div className="min-h-screen">
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
           <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-2 md:py-4">
@@ -670,7 +632,6 @@ function AppContent() {
           )}
         </main>
       </div>
-    </ExchangeContext.Provider>
   )
 }
 

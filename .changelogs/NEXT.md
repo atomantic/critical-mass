@@ -95,6 +95,8 @@
 - Regime engine reconciliation now preserves engineStartTime, initialCapital, originalCapital, and depositedCapital across position rebuilds
 - Capital auto-adjust skipped when depositedCapital is explicitly provided in the same update
 - RegimeDashboard P&L total now uses pnlMap (matches server globalRealizedPnL) instead of sell-group sum
+- Overview/DCA dashboard fund navigation no longer briefly mounts the wrong dashboard (e.g. coinbase/BTC) when clicking another fund — `currentExchange`/`currentStrategy`/`currentPair` are now derived from the URL instead of lagging React state, and the auto-redirect useEffect that navigated using stale state has been removed
+- Filled Orders table on RegimeDashboard no longer constrained to a 48rem inner-scroll box; it now expands with the page like Open Orders
 
 ## Removed
 
