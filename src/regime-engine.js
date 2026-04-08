@@ -3050,6 +3050,12 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       body.tpPrice = tpPrice;
       body.assetOnOrder = sellQty;
 
+      // Re-aggregate position-level fields so positionState.assetOnOrder reflects
+      // ALL bodies' TP orders, not just the most-recently-placed one. Without this,
+      // satellite bodies created after the main body's TP leave assetOnOrder stale,
+      // making the dashboard's "On Order" panel under-report by the satellite size.
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
       // Link all source buy fills to this sell order (use both sourceOrderIds and buyOrders for coverage)
       const annotatedSrcIds = new Set();
       for (const srcId of (body.sourceOrderIds || [])) {
