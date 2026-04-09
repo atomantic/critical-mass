@@ -18,6 +18,8 @@ pm2 start ecosystem.config.cjs    # 4. start engines — migration runs automati
 pm2 logs critical-mass-coinbase   # 5. confirm "Pair migration complete"
 ```
 
+You don't strictly *have* to stop PM2 first — the migration runs at engine startup before any state is loaded, so it's safe to do `pm2 restart all` instead. Stopping first just gives you a clean checkpoint to compare against.
+
 ### Why
 
 The system now treats a "fund" as a `(exchange, pair)` tuple instead of an `exchange` alone. State files move from `data/<exchange>/state.json` (etc.) into `data/<exchange>/<pair>/state.json` so multiple funds on the same exchange don't collide. The per-fund subdirectories also hold the regime state, fill ledger, chart buffer, transactions log, price caches, long-term candle store, and the regime-engine-running auto-resume flag.
@@ -41,22 +43,10 @@ For each configured exchange (`coinbase`, `gemini`, `cryptocom`):
 
 ### Safety guarantees
 
-- The migration **refuses to run if any `regime-engine-running.json` flag is present**, either at the legacy or new path. This prevents the running engine from saving state on top of the migration mid-flight (per the project's `CLAUDE.md` runtime-state safety rule).
+- The migration runs **before** anything else on engine startup, so the new engine in the same process hasn't started yet and the previous engine in the previous process is by definition dead (PM2 wouldn't be spawning a new process otherwise). It's always safe to run.
 - If the migration fails for any reason, the engine process logs an error and `process.exit(1)` — it will NOT silently continue with mixed-layout state.
 - The migration uses `fs.renameSync` (atomic move) and refuses to overwrite existing files at the target path. If it sees a conflict (e.g. you started the new code, generated a partial new layout, then tried to restart with old files still around), it logs the conflict and skips that specific file rather than clobbering anything.
-
-### Manual recovery if migration is blocked
-
-If the engine logs `Refusing to migrate <exchange>: regime engine is running` after `pm2 stop`, look for stale `regime-engine-running.json` flag files:
-
-```bash
-find data -name 'regime-engine-running.json'
-# If you confirm no engine is actually running, delete the stale flags:
-rm data/coinbase/regime-engine-running.json
-rm data/gemini/regime-engine-running.json
-rm data/cryptocom/regime-engine-running.json
-pm2 start ecosystem.config.cjs
-```
+- It also cleans up empty pair subdirectories that the API server might have accidentally created before the engine ran (e.g. from gateway requests using `?pair=` before migration completed).
 
 ### After upgrading
 
