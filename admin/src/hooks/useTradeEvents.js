@@ -65,7 +65,7 @@ export function useTradeEvents(exchange = null) {
   }
 }
 
-export function useRegimeEvents(exchange = null) {
+export function useRegimeEvents(exchange = null, pair = null) {
   const [status, setStatus] = useState(null)
   const [regimeState, setRegimeState] = useState(null)
   const [healthState, setHealthState] = useState(null)
@@ -79,13 +79,23 @@ export function useRegimeEvents(exchange = null) {
     const handleConnect = () => setConnected(true)
     const handleDisconnect = () => setConnected(false)
 
+    // Filter incoming events to ONLY this fund (exchange + pair). When pair
+    // is provided, events for other funds on the same exchange are dropped
+    // so e.g. a running gemini/BTCUSD engine doesn't leak into a stopped
+    // gemini/ETHUSD dashboard.
+    const matchesFund = (data) => {
+      if (exchange && data.exchange !== exchange) return false
+      if (pair && data.pair && data.pair !== pair) return false
+      return true
+    }
+
     const handleStatusUpdate = (data) => {
-      if (exchange && data.exchange !== exchange) return
+      if (!matchesFund(data)) return
       setStatus(data.status)
     }
 
     const handleRegimeChange = (data) => {
-      if (exchange && data.exchange !== exchange) return
+      if (!matchesFund(data)) return
       setRegimeState(data)
       setEvents((prev) => [{
         type: 'regime_change',
@@ -95,7 +105,7 @@ export function useRegimeEvents(exchange = null) {
     }
 
     const handleHealthChange = (data) => {
-      if (exchange && data.exchange !== exchange) return
+      if (!matchesFund(data)) return
       setHealthState(data)
       setEvents((prev) => [{
         type: 'health_change',
@@ -105,7 +115,7 @@ export function useRegimeEvents(exchange = null) {
     }
 
     const handlePositionUpdate = (data) => {
-      if (exchange && data.exchange !== exchange) return
+      if (!matchesFund(data)) return
       setPositionState(data)
     }
 
@@ -126,7 +136,7 @@ export function useRegimeEvents(exchange = null) {
       socket.off('regime:health', handleHealthChange)
       socket.off('regime:position', handlePositionUpdate)
     }
-  }, [exchange])
+  }, [exchange, pair])
 
   const clearEvents = useCallback(() => setEvents([]), [])
 

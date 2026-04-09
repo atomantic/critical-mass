@@ -148,7 +148,10 @@ function AppContent() {
   const currentPair = urlPair || currentExchangeConfig?.productId || 'BTC-USDC'
 
   // WebSocket connection for regime strategy
-  const { connected: wsConnected } = useRegimeEvents(currentStrategy === 'regime' ? currentExchange : null)
+  const { connected: wsConnected } = useRegimeEvents(
+    currentStrategy === 'regime' ? currentExchange : null,
+    currentStrategy === 'regime' ? currentPair : null,
+  )
 
   // Get tabs based on current strategy
   const tabs = getTabsForStrategy(currentStrategy)
@@ -792,28 +795,32 @@ function AppContent() {
               {/* Overview dashboard at root */}
               <Route path="/" element={<Overview />} />
 
-              {/* Pair-based routes - strategy determined from exchange config */}
+              {/* Pair-based routes - strategy determined from exchange config.
+                  The `key` includes both exchange and pair so React unmounts
+                  and remounts the dashboard whenever the user navigates to a
+                  different fund — this guarantees fresh state and re-fetched
+                  data instead of stale data from the previous fund. */}
               <Route path="/:exchange/:pair" element={
                 currentStrategy === 'regime'
-                  ? <RegimeDashboard exchange={currentExchange} pair={currentPair} />
-                  : <Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} pair={currentPair} />
+                  ? <RegimeDashboard key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
+                  : <Dashboard key={`${currentExchange}-${currentPair}`} summary={summary} onRefresh={fetchData} exchange={currentExchange} pair={currentPair} />
               } />
               <Route path="/:exchange/:pair/cost-basis" element={
                 currentStrategy === 'regime'
-                  ? <CostBasisRegime exchange={currentExchange} pair={currentPair} />
+                  ? <CostBasisRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                   : <CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
               <Route path="/:exchange/:pair/transactions" element={
                 currentStrategy === 'regime'
-                  ? <TransactionsRegime exchange={currentExchange} pair={currentPair} />
+                  ? <TransactionsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                   : <TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
               <Route path="/:exchange/:pair/charts" element={
                 currentStrategy === 'regime'
-                  ? <ChartsRegime exchange={currentExchange} pair={currentPair} />
+                  ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                   : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
-              <Route path="/:exchange/:pair/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} />} />
+              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} onSave={fetchData} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} />} />
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>
