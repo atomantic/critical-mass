@@ -625,7 +625,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const prevPriceRef = useRef(null)
   const { addToast } = useToast()
 
-  const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange)
+  const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange, pair)
 
   // Use socket status when available, fall back to local status (for initial load / when engine stopped)
   const status = socketStatus || localStatus

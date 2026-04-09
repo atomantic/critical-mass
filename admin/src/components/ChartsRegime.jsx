@@ -6,7 +6,8 @@ import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 
-function ChartsRegime({ exchange = 'coinbase' }) {
+function ChartsRegime({ exchange = 'coinbase', pair }) {
+  const pairQuery = pair ? `?pair=${encodeURIComponent(pair)}` : ''
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [fills, setFills] = useState([])
@@ -14,7 +15,7 @@ function ChartsRegime({ exchange = 'coinbase' }) {
   const [historicalPrices, setHistoricalPrices] = useState([])
   const [historicalAtr, setHistoricalAtr] = useState([])
 
-  const { connected, status: socketStatus } = useRegimeEvents(exchange)
+  const { connected, status: socketStatus } = useRegimeEvents(exchange, pair)
 
   // Use socket status when available, fall back to local status
   const status = socketStatus || localStatus
@@ -27,12 +28,13 @@ function ChartsRegime({ exchange = 'coinbase' }) {
   const atrHistory = historicalAtr.length > 0 ? [...historicalAtr, ...realtimeAtr] : realtimeAtr
 
   const fetchData = useCallback(async () => {
+    const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'
     const [statusRes, configRes, fillsRes, candlesRes, chartDataRes] = await Promise.all([
-      fetch(`/api/${exchange}/regime/status`),
-      fetch(`/api/${exchange}/regime/config`),
-      fetch(`/api/${exchange}/regime/fills`),
-      fetch(`/api/${exchange}/candles?granularity=ONE_MINUTE&limit=60`),
-      fetch(`/api/${exchange}/regime/chart-data`),
+      fetch(`/api/${exchange}/regime/status${pairQuery}`),
+      fetch(`/api/${exchange}/regime/config${pairQuery}`),
+      fetch(`/api/${exchange}/regime/fills${pairQuery}`),
+      fetch(`/api/${exchange}/candles${candlesQuery}`),
+      fetch(`/api/${exchange}/regime/chart-data${pairQuery}`),
     ])
 
     if (statusRes.ok) {
@@ -79,7 +81,7 @@ function ChartsRegime({ exchange = 'coinbase' }) {
       }
     }
     setLoading(false)
-  }, [exchange, initializeFromCache])
+  }, [exchange, pair, initializeFromCache]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     fetchData()
