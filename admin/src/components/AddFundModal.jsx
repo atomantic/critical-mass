@@ -4,40 +4,110 @@ import { useState, useEffect, useRef } from 'react'
  * AddFundModal — create a new (exchange, pair) fund.
  *
  * The modal lets the operator pick an exchange that has API keys configured,
- * type a pair (e.g. "ETH-USDC"), set an initial allocation, and choose
- * dry-run mode. The new fund is created via POST /api/:exchange/funds and
- * starts disabled — the operator must explicitly enable + start it from the
- * fund's dashboard.
+ * type a pair, set an initial allocation, and choose dry-run mode. The new
+ * fund is created via POST /api/:exchange/funds and starts disabled — the
+ * operator must explicitly enable + start it from the fund's dashboard.
  */
+
+// Per-exchange pair format conventions and defaults
+const EXCHANGE_FORMATS = {
+  coinbase: {
+    placeholder: 'BTC-USDC',
+    defaultPair: 'BTC-USDC',
+    hint: 'Coinbase format: BASE-QUOTE (e.g. BTC-USDC, ETH-USDC, SOL-USDC)',
+    separator: '-',
+  },
+  gemini: {
+    placeholder: 'BTCUSD',
+    defaultPair: 'BTCUSD',
+    hint: 'Gemini format: BASEQUOTE all uppercase (e.g. BTCUSD, ETHUSD, SOLUSD)',
+    separator: '',
+  },
+  cryptocom: {
+    placeholder: 'BTC_USD',
+    defaultPair: 'BTC_USD',
+    hint: 'Crypto.com format: BASE_QUOTE (e.g. BTC_USD, ETH_USD, CRO_USD)',
+    separator: '_',
+  },
+}
+
+const fallbackFormat = {
+  placeholder: 'BTC-USDC',
+  defaultPair: 'BTC-USDC',
+  hint: 'Enter the trading pair as it appears on the exchange.',
+  separator: '-',
+}
+
+/**
+ * Normalize a pair string to the selected exchange's format.
+ * - Uppercase, alphanumeric only
+ * - Coinbase: any separator → '-' (BTCUSDC stays as-is, BTC_USD → BTC-USD)
+ * - Gemini: separators stripped (BTC-USD → BTCUSD, BTC_USD → BTCUSD)
+ * - Crypto.com: any separator → '_' (BTC-USD → BTC_USD)
+ */
+const formatPairForExchange = (input, exchange) => {
+  if (!input) return ''
+  // Strip anything that isn't alphanumeric, dash, or underscore
+  let cleaned = input.toUpperCase().replace(/[^A-Z0-9_-]/g, '')
+  const fmt = EXCHANGE_FORMATS[exchange] || fallbackFormat
+  if (fmt.separator === '') {
+    return cleaned.replace(/[-_]/g, '')
+  }
+  if (fmt.separator === '-') {
+    return cleaned.replace(/_/g, '-')
+  }
+  if (fmt.separator === '_') {
+    return cleaned.replace(/-/g, '_')
+  }
+  return cleaned
+}
+
 function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
-  // Default to the first exchange that has API keys configured (we infer
-  // this from the existing exchanges list — any exchange listed is configured).
+  // The exchanges prop contains one entry per (exchange, pair) fund — collapse
+  // to unique exchange names so the dropdown lists each exchange once.
   const exchangeNames = Array.from(new Set((exchanges || []).map(e => e.name)))
-  const [exchange, setExchange] = useState(exchangeNames[0] || 'gemini')
-  const [pair, setPair] = useState('')
+  const initialExchange = exchangeNames[0] || 'gemini'
+  const [exchange, setExchange] = useState(initialExchange)
+  const [pair, setPair] = useState(EXCHANGE_FORMATS[initialExchange]?.defaultPair || '')
   const [totalAllocation, setTotalAllocation] = useState('5000')
   const [dryRun, setDryRun] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const inputRef = useRef(null)
 
+  const fmt = EXCHANGE_FORMATS[exchange] || fallbackFormat
+
   useEffect(() => {
     if (open) {
+      const ex = exchangeNames[0] || 'gemini'
       setError(null)
-      setPair('')
+      setExchange(ex)
+      setPair(EXCHANGE_FORMATS[ex]?.defaultPair || '')
       setTotalAllocation('5000')
       setDryRun(true)
-      setExchange(exchangeNames[0] || 'gemini')
-      // Focus the pair input on open
-      setTimeout(() => inputRef.current?.focus(), 50)
+      // Focus and select the pair input on open so the user can immediately type to replace
+      setTimeout(() => {
+        inputRef.current?.focus()
+        inputRef.current?.select()
+      }, 50)
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Per-exchange hint about pair format conventions
-  const pairHint = {
-    coinbase: 'Coinbase format: BASE-QUOTE (e.g. ETH-USDC, SOL-USDC)',
-    gemini: 'Gemini format: BASEQUOTE all uppercase (e.g. ETHUSD, SOLUSD)',
-    cryptocom: 'Crypto.com format: BASE_QUOTE (e.g. ETH_USD, SOL_USD)',
+  // When the exchange dropdown changes, re-format the existing pair value
+  // to the new exchange's separator convention. This lets the operator type
+  // BTC-USDC, switch to gemini, and have it automatically become BTCUSD.
+  const handleExchangeChange = (newExchange) => {
+    setExchange(newExchange)
+    setPair((prev) => {
+      // If the previous value matches the previous exchange's default, swap
+      // to the new exchange's default (so switching exchanges shows the new
+      // format right away). Otherwise just re-format whatever the user typed.
+      const prevDefault = EXCHANGE_FORMATS[exchange]?.defaultPair
+      if (prev === prevDefault) {
+        return EXCHANGE_FORMATS[newExchange]?.defaultPair || ''
+      }
+      return formatPairForExchange(prev, newExchange)
+    })
   }
 
   const handleSubmit = async (e) => {
@@ -50,8 +120,8 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
       return
     }
     // Light client-side format validation matching the server regex
-    if (!/^[A-Z0-9]+[-_][A-Z0-9]+$/.test(trimmedPair) && !/^[A-Z0-9]{6,}$/.test(trimmedPair)) {
-      setError('Pair must use BASE-QUOTE, BASE_QUOTE, or BASEQUOTE format (uppercase)')
+    if (!/^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/.test(trimmedPair)) {
+      setError(`Invalid pair format: ${trimmedPair}. Expected ${fmt.placeholder} for ${exchange}.`)
       return
     }
     const allocation = parseFloat(totalAllocation)
@@ -105,7 +175,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
             <label className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Exchange</label>
             <select
               value={exchange}
-              onChange={(e) => setExchange(e.target.value)}
+              onChange={(e) => handleExchangeChange(e.target.value)}
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white focus:border-blue-500 focus:outline-none"
               disabled={submitting}
             >
@@ -121,13 +191,14 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
               ref={inputRef}
               type="text"
               value={pair}
-              onChange={(e) => setPair(e.target.value.toUpperCase())}
-              placeholder="ETHUSD, ETH-USDC, ETH_USD"
+              onChange={(e) => setPair(formatPairForExchange(e.target.value, exchange))}
+              onFocus={(e) => e.target.select()}
+              placeholder={fmt.placeholder}
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
               disabled={submitting}
               autoComplete="off"
             />
-            <div className="text-xs text-gray-500 mt-1">{pairHint[exchange] || 'Enter the trading pair as it appears on the exchange.'}</div>
+            <div className="text-xs text-gray-500 mt-1">{fmt.hint}</div>
           </div>
 
           <div>

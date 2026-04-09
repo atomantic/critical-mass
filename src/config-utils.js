@@ -659,8 +659,13 @@ const addFund = (exchange, pair, initialConfig = {}) => {
   if (!pair || typeof pair !== 'string') {
     throw new Error('pair is required');
   }
-  if (!/^[A-Z0-9]+[-_][A-Z0-9]+$/.test(pair)) {
-    throw new Error(`Invalid pair format: ${pair} (expected e.g. BTC-USDC, ETHUSD, CRO_USD)`);
+  // Accept three formats:
+  //   BASE-QUOTE (Coinbase, e.g. BTC-USDC)
+  //   BASE_QUOTE (Crypto.com, e.g. BTC_USD)
+  //   BASEQUOTE  (Gemini, e.g. BTCUSD)
+  // The actual product validity is checked downstream via adapter.getProductDetails.
+  if (!/^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/.test(pair)) {
+    throw new Error(`Invalid pair format: ${pair} (expected e.g. BTC-USDC, ETHUSD, BTC_USD)`);
   }
   const existing = getFundsForExchange(exchange);
   if (existing.includes(pair)) {
