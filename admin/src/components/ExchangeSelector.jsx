@@ -48,12 +48,17 @@ const getEngineStatus = (exchange) => {
   return { label: 'Off', color: 'bg-gray-600', textColor: 'text-gray-300' }
 }
 
-function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, onRefresh }) {
+function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, onRefresh, onAddFund }) {
   const [isOpen, setIsOpen] = useState(false)
 
   const handleSelect = (exchangeName, pair) => {
     onChange(exchangeName, pair)
     setIsOpen(false)
+  }
+
+  const handleAddFund = () => {
+    setIsOpen(false)
+    onAddFund?.()
   }
 
   // Close dropdown when clicking outside or pressing Escape
@@ -140,7 +145,18 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
             })}
           </div>
 
-          <div className="border-t border-gray-700 p-2">
+          <div className="border-t border-gray-700 p-2 space-y-1">
+            {onAddFund && (
+              <button
+                onClick={handleAddFund}
+                className="w-full flex items-center gap-2 px-3 py-2 text-blue-300 hover:text-white hover:bg-blue-600/30 rounded-lg transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Add Fund
+              </button>
+            )}
             <button
               onClick={() => {
                 setIsOpen(false)

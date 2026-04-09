@@ -12,6 +12,7 @@ import Backtest from './components/Backtest'
 import Optimizer from './components/Optimizer'
 import Overview from './components/Overview'
 import ExchangeSelector from './components/ExchangeSelector'
+import AddFundModal from './components/AddFundModal'
 import KeysConfig from './components/KeysConfig'
 import NotificationsConfig from './components/NotificationsConfig'
 import BackupRestore from './components/BackupRestore'
@@ -130,6 +131,7 @@ function AppContent() {
   const [closeFundDialogOpen, setCloseFundDialogOpen] = useState(false)
   const [closeFundReason, setCloseFundReason] = useState('')
   const [reopenFundDialogOpen, setReopenFundDialogOpen] = useState(false)
+  const [addFundDialogOpen, setAddFundDialogOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [simpleDcaEnabled, setSimpleDcaEnabled] = useState(false)
 
@@ -570,6 +572,7 @@ function AppContent() {
                     exchanges={exchanges}
                     onChange={handleExchangeChange}
                     onRefresh={fetchExchanges}
+                    onAddFund={() => setAddFundDialogOpen(true)}
                   />
                 {currentStrategy === 'regime' && (<>
 
@@ -713,6 +716,22 @@ function AppContent() {
             </div>
           </div>
         )}
+
+        {/* Add Fund modal (triggered from ExchangeSelector dropdown) */}
+        <AddFundModal
+          open={addFundDialogOpen}
+          onClose={() => setAddFundDialogOpen(false)}
+          exchanges={exchanges}
+          onCreated={async ({ exchange, pair }) => {
+            await fetchExchanges()
+            navigate(`/${exchange}/${pair}/config`)
+            addToast({
+              type: 'success',
+              title: `Fund created: ${exchange}/${pair}`,
+              message: 'Review the regime config and enable the fund when ready.',
+            })
+          }}
+        />
 
         {/* Reopen Fund confirmation dialog */}
         {reopenFundDialogOpen && (
