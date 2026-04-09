@@ -89,20 +89,15 @@ function Overview() {
     load()
   }, [])
 
-  // Merge WebSocket updates into status map.
-  // wsStatuses is currently keyed by exchange name only — for multi-pair
-  // installs we'd need it keyed by `${exchange}::${pair}`. For now, this
-  // updates the default-pair entry on each exchange, which is correct for
-  // single-pair installs.
+  // Merge WebSocket updates into status map. wsStatuses is now keyed by
+  // `${exchange}::${pair}` so each fund updates independently and BTCUSD's
+  // status doesn't leak into ETHUSD on the same exchange.
   useEffect(() => {
     if (Object.keys(wsStatuses).length === 0) return
     setStatusMap(prev => {
       const next = { ...prev }
-      for (const [exchange, status] of Object.entries(wsStatuses)) {
-        // Find any fund key matching this exchange and update it
-        for (const key of Object.keys(next)) {
-          if (key.startsWith(`${exchange}::`)) next[key] = status
-        }
+      for (const [key, status] of Object.entries(wsStatuses)) {
+        if (key in next) next[key] = status
       }
       return next
     })
