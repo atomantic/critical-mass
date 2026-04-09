@@ -34,7 +34,7 @@ const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
-const { loadRegimeState, saveRegimeState } = require('./state-tracker');
+const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
 const celestialHierarchy = require('./celestial-hierarchy');
 
 /** Format price with appropriate decimal places for the asset */
@@ -115,22 +115,19 @@ const createInitialPositionState = () => ({
 });
 
 /**
- * Create regime engine instance
+ * Create regime engine instance.
  *
- * Supports two call signatures for backwards compat:
- *   createRegimeEngine(exchange, exchangeConfig, callbacks)            (legacy)
- *   createRegimeEngine(exchange, pair, exchangeConfig, callbacks)      (multi-pair)
+ * Two signatures (string-typed second arg disambiguates):
+ *   createRegimeEngine(exchange, exchangeConfig, callbacks)
+ *   createRegimeEngine(exchange, pair, exchangeConfig, callbacks)
  *
- * In the legacy 3-arg form, the pair is resolved from the exchange's default pair.
- *
- * @param {string} exchange - Exchange name
- * @param {string|Object} pairOrExchangeConfig - Pair name (4-arg form) or exchangeConfig (3-arg form)
- * @param {Object} [exchangeConfigOrCallbacks] - exchangeConfig (4-arg) or callbacks (3-arg)
- * @param {Object} [maybeCallbacks] - callbacks (4-arg form only)
- * @returns {Object} Regime engine instance
+ * @param {string} exchange
+ * @param {string|Object} pairOrExchangeConfig
+ * @param {Object} [exchangeConfigOrCallbacks]
+ * @param {Object} [maybeCallbacks]
+ * @returns {Object}
  */
 const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCallbacks, maybeCallbacks) => {
-  // Disambiguate signatures: if the second arg is a string, it's the pair.
   let pair;
   let exchangeConfig;
   let callbacks;
@@ -139,12 +136,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     exchangeConfig = exchangeConfigOrCallbacks || {};
     callbacks = maybeCallbacks || {};
   } else {
-    pair = null; // Resolved below from default
+    pair = null;
     exchangeConfig = pairOrExchangeConfig || {};
     callbacks = exchangeConfigOrCallbacks || {};
   }
 
-  // Resolve pair from default if not provided (legacy callers)
   const { getDefaultPair } = require('./config-utils');
   if (!pair) pair = getDefaultPair(exchange) || exchangeConfig.productId || 'default';
 
@@ -2661,7 +2657,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const now = Date.now();
 
     // Fund lifecycle guard: when draining/closed, never place new entries
-    if (positionState.lifecycle && positionState.lifecycle !== 'active') return;
+    if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
 
     // Skip if in insufficient funds cooldown (prevents rapid retry spam on 406 errors)
     if (now < insufficientFundsCooldownUntil) return;
@@ -2703,7 +2699,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const evaluateLadderEntry = async () => {
     // Fund lifecycle guard: when draining/closed, never place new entries
-    if (positionState.lifecycle && positionState.lifecycle !== 'active') return;
+    if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
 
     // Skip if in insufficient funds cooldown
     if (Date.now() < insufficientFundsCooldownUntil) return;
@@ -3262,12 +3258,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const bodyLabel = bodyCount > 0 ? `, ${bodyCount} celestial bodies preserved` : '';
     console.log(`🔄 [${exchange}] Cycle reset, starting new cycle${bodyLabel}`);
 
-    // If the operator put the fund into 'draining' state, this cycle's TP just
-    // filled — transition to 'closed' and signal the host process to stop the
-    // engine. Defer the actual stop to next tick so the current call stack
+    // If the fund is draining, this cycle's TP fill is the trigger to close.
+    // Defer the engine stop to next tick so the current call stack
     // (saveLiveState, fillLedger.persist, etc.) finishes cleanly first.
-    if (positionState.lifecycle === 'draining') {
-      positionState.lifecycle = 'closed';
+    if (positionState.lifecycle === LIFECYCLE.DRAINING) {
+      positionState.lifecycle = LIFECYCLE.CLOSED;
       positionState.lifecycleChangedAt = Date.now();
       positionState.lifecycleClosedCycle = positionState.cyclesCompleted;
       console.log(`🛑 [${exchange}] Fund drained — closing engine after cycle ${positionState.cyclesCompleted}`);
@@ -3627,9 +3622,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         placedAt: b.createdAt,
       })),
     },
-    // Fund lifecycle (active/draining/closed) — see close()/reopen handlers
     lifecycle: {
-      lifecycle: positionState.lifecycle || 'active',
+      lifecycle: positionState.lifecycle || LIFECYCLE.ACTIVE,
       lifecycleChangedAt: positionState.lifecycleChangedAt || null,
       lifecycleReason: positionState.lifecycleReason || null,
       lifecycleClosedCycle: positionState.lifecycleClosedCycle || null,
@@ -3663,20 +3657,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Mark fund as draining: block all new entries, cancel any pending entry
    * orders, and let the current take-profit cycle complete naturally. When
-   * the cycle's TP fills, resetCycle() will transition the lifecycle to
-   * 'closed' and invoke callbacks.onLifecycleClosed so the host process can
-   * stop the engine.
+   * the cycle's TP fills, resetCycle() transitions the lifecycle to closed
+   * and invokes callbacks.onLifecycleClosed so the host process can stop
+   * the engine.
    * @param {string} [reason]
    * @returns {{success: boolean, lifecycle?: string, error?: string}}
    */
   const close = (reason) => {
-    if (positionState.lifecycle === 'closed') {
+    if (positionState.lifecycle === LIFECYCLE.CLOSED) {
       return { success: false, error: 'Fund is already closed' };
     }
-    if (positionState.lifecycle === 'draining') {
+    if (positionState.lifecycle === LIFECYCLE.DRAINING) {
       return { success: false, error: 'Fund is already draining' };
     }
-    positionState.lifecycle = 'draining';
+    positionState.lifecycle = LIFECYCLE.DRAINING;
     positionState.lifecycleChangedAt = Date.now();
     positionState.lifecycleReason = reason || null;
     if (!isDryRun) {
@@ -3692,15 +3686,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       reason: reason || null,
       cyclesCompleted: positionState.cyclesCompleted,
     });
-    return { success: true, lifecycle: 'draining' };
+    return { success: true, lifecycle: LIFECYCLE.DRAINING };
   };
 
   /**
    * Get fund lifecycle state
-   * @returns {{lifecycle: string, lifecycleChangedAt: number|null, lifecycleReason: string|null, lifecycleClosedCycle: number|null}}
    */
   const getLifecycle = () => ({
-    lifecycle: positionState.lifecycle || 'active',
+    lifecycle: positionState.lifecycle || LIFECYCLE.ACTIVE,
     lifecycleChangedAt: positionState.lifecycleChangedAt || null,
     lifecycleReason: positionState.lifecycleReason || null,
     lifecycleClosedCycle: positionState.lifecycleClosedCycle || null,

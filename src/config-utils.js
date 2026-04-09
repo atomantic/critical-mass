@@ -318,18 +318,44 @@ const GLOBAL_DEFAULTS = {
   },
 };
 
+// In-process cache for the merged config. Invalidated when either the base
+// or user config file's mtime changes, so external edits (e.g. from another
+// process) are picked up automatically. This eliminates O(N) disk reads
+// when a single request fans out across many funds.
+let _configCache = null;
+let _configCacheKey = null;
+
+const _statMtimeMs = (file) => {
+  try { return fs.statSync(file).mtimeMs; } catch { return 0; }
+};
+
 /**
- * Load raw configuration from base config, with user overrides from data/config.json merged on top
+ * Test-only hook to bust the in-process config cache. Tests that mock
+ * `fs.existsSync`/`fs.readFileSync` should call this between cases since
+ * the cache key is based on `fs.statSync` mtime (which the tests don't
+ * mock, so the cache would otherwise stick across cases).
+ */
+const _resetConfigCacheForTests = () => {
+  _configCache = null;
+  _configCacheKey = null;
+};
+
+/**
+ * Load raw configuration from base config, with user overrides from data/config.json merged on top.
  * @returns {Object} Raw configuration object
  */
 const loadRawConfig = () => {
-  const base = fs.existsSync(BASE_CONFIG_FILE)
-    ? JSON.parse(fs.readFileSync(BASE_CONFIG_FILE, 'utf8'))
-    : {};
-  const user = fs.existsSync(USER_CONFIG_FILE)
-    ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8'))
-    : {};
-  return Object.keys(user).length ? deepMerge(base, user) : base;
+  const baseMtime = _statMtimeMs(BASE_CONFIG_FILE);
+  const userMtime = _statMtimeMs(USER_CONFIG_FILE);
+  const cacheKey = `${baseMtime}|${userMtime}`;
+  if (_configCache && _configCacheKey === cacheKey) {
+    return _configCache;
+  }
+  const base = baseMtime > 0 ? JSON.parse(fs.readFileSync(BASE_CONFIG_FILE, 'utf8')) : {};
+  const user = userMtime > 0 ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8')) : {};
+  _configCache = Object.keys(user).length ? deepMerge(base, user) : base;
+  _configCacheKey = cacheKey;
+  return _configCache;
 };
 
 /**
@@ -345,6 +371,10 @@ const saveConfig = (config) => {
   const diff = computeDiff(base, config);
   fs.mkdirSync(path.dirname(USER_CONFIG_FILE), { recursive: true });
   fs.writeFileSync(USER_CONFIG_FILE, JSON.stringify(diff, null, 2));
+  // Bust the cache so the next read picks up our write immediately, even
+  // before the OS updates mtime.
+  _configCache = null;
+  _configCacheKey = null;
 };
 
 /**
@@ -864,9 +894,6 @@ const getRegimeConfig = (exchange, pair) => {
  * @returns {MultiExchangeConfig} Updated full configuration
  */
 const updateRegimeConfig = (exchange, pairOrUpdates, maybeUpdates) => {
-  // Support both signatures:
-  //   updateRegimeConfig(exchange, updates)            -> targets default pair
-  //   updateRegimeConfig(exchange, pair, updates)
   let pair;
   let updates;
   if (typeof pairOrUpdates === 'string') {
@@ -1278,6 +1305,7 @@ module.exports = {
   loadConfig,
   saveConfig,
   loadRawConfig,
+  _resetConfigCacheForTests,
   getExchangeConfig,
   getEnabledExchanges,
   getConfiguredExchanges,

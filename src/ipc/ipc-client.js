@@ -134,18 +134,15 @@ const createIPCClient = (url, name, options = {}) => {
   /**
    * Send a request to the engine and wait for a response.
    *
-   * Supports two call signatures for backwards compat:
-   *   request(channel, payload, exchange, timeout)            (legacy)
-   *   request(channel, payload, exchange, pair, timeout)      (multi-pair)
+   * Two signatures (string-typed 4th arg disambiguates):
+   *   request(channel, payload, exchange, timeout)
+   *   request(channel, payload, exchange, pair, timeout)
    *
-   * In the legacy form (4th arg is a number), pair is undefined and the
-   * receiving handler resolves it to the exchange's default pair.
-   *
-   * @param {string} channel - Request channel
-   * @param {*} payload - Request data
-   * @param {string} [exchange] - Exchange name
-   * @param {string|number} [pairOrTimeout] - Pair name (5-arg) or timeout (legacy 4-arg)
-   * @param {number} [maybeTimeout] - Timeout (5-arg form)
+   * @param {string} channel
+   * @param {*} payload
+   * @param {string} [exchange]
+   * @param {string|number} [pairOrTimeout]
+   * @param {number} [maybeTimeout]
    * @returns {Promise<*>}
    */
   const request = (channel, payload, exchange, pairOrTimeout, maybeTimeout) => {

@@ -3,6 +3,7 @@ import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import { useToast } from './Toast'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
+import { pairQuery as buildPairQuery } from '../utils/api'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
@@ -585,13 +586,7 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
 }
 
 function RegimeDashboard({ exchange = 'coinbase', pair }) {
-  // Build the ?pair= query string used by all API fetches in this component
-  // so the gateway routes target the correct fund instead of the exchange's
-  // default pair. When pair is undefined, the empty string yields the
-  // legacy behavior (default-pair lookup).
-  const pairQuery = pair ? `?pair=${encodeURIComponent(pair)}` : ''
-  // For appending to URLs that already have a query string
-  const pairAmp = pair ? `&pair=${encodeURIComponent(pair)}` : ''
+  const pairQuery = buildPairQuery(pair)
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [loading, setLoading] = useState(true)
