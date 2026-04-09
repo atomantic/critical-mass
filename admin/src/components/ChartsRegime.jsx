@@ -5,9 +5,10 @@ import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { pairQuery as buildPairQuery } from '../utils/api'
 
 function ChartsRegime({ exchange = 'coinbase', pair }) {
-  const pairQuery = pair ? `?pair=${encodeURIComponent(pair)}` : ''
+  const pairQuery = buildPairQuery(pair)
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [fills, setFills] = useState([])

@@ -34,12 +34,13 @@ const {
   getMarketDataService,
   stopMarketDataService,
 } = require('../src/market-data-service');
-const { getChartDataBuffer, getChartData, shutdownAllBuffers } = require('../src/chart-data-buffer');
+const { getChartDataBuffer, getChartData, removeChartDataBuffer, shutdownAllBuffers } = require('../src/chart-data-buffer');
 const { createFillLedger } = require('../src/fill-ledger');
 const { createIPCServer } = require('../src/ipc/ipc-server');
 const { createSocketIOProxy } = require('../src/ipc/socket-io-proxy');
-const { saveRegimeRunningFlag, shouldAutoResumeRegime } = require('../src/shared-utils');
-const { needsPairMigration, migrateExchangeToPairs } = require('../src/migration');
+const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel } = require('../src/shared-utils');
+const { migrateExchangeToPairs } = require('../src/migration');
+const { LIFECYCLE } = require('../src/state-tracker');
 
 // ============ Configuration ============
 
@@ -60,12 +61,6 @@ const ioProxy = createSocketIOProxy(ipcServer);
 
 /** Resolve pair from IPC arg, falling back to the exchange's default pair. */
 const resolvePair = (exchange, pair) => pair || getDefaultPair(exchange);
-
-/** Compose a stable Map key for (exchange, pair) lookups. */
-const fundKey = (exchange, pair) => `${exchange}::${pair}`;
-
-/** Format a human-readable label for log lines and event payloads. */
-const fundLabel = (exchange, pair) => `${exchange}/${pair}`;
 
 /** @type {Map<string, Object>} Active regime engines keyed by `${exchange}::${pair}` */
 const regimeEngines = new Map();
@@ -113,7 +108,7 @@ const createEngineCallbacks = (exchange, pair) => ({
     ioProxy.emit('regime:status', { exchange, pair, status });
   },
   // Fired by the regime engine when a draining fund's TP fills and lifecycle
-  // transitions to 'closed'. We stop the engine here (rather than from inside
+  // transitions to closed. We stop the engine here (rather than from inside
   // the engine itself) to avoid re-entrancy in the cycle-completion path.
   onLifecycleClosed: async () => {
     const label = fundLabel(exchange, pair);
@@ -128,6 +123,11 @@ const createEngineCallbacks = (exchange, pair) => ({
     }
     regimeEngines.delete(key);
     invalidateStandaloneLedger(exchange, pair);
+    // Free the chart buffer (with its setInterval) and the market data
+    // service so we don't leak memory for dead funds. Operator can reopen
+    // and start the fund again later — both will be re-created on demand.
+    removeChartDataBuffer(exchange, pair);
+    stopMarketDataService(exchange, pair);
     saveRegimeRunningFlag(exchange, pair, false);
     ioProxy.emit('regime:closed', { exchange, pair });
   },
@@ -148,7 +148,7 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
   // Refuse to start a closed fund — operator must reopen it first.
   const { loadRegimeState } = require('../src/state-tracker');
   const savedState = loadRegimeState(exchange, resolvedPair);
-  if (savedState?.position?.lifecycle === 'closed') {
+  if (savedState?.position?.lifecycle === LIFECYCLE.CLOSED) {
     return { success: false, error: 'Fund is closed — call regime:reopen before starting' };
   }
 
@@ -263,7 +263,7 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
         health: { mode: 'STOPPED' },
         isDryRun: savedState?.isDryRun || false,
         lifecycle: {
-          lifecycle: position?.lifecycle || 'active',
+          lifecycle: position?.lifecycle || LIFECYCLE.ACTIVE,
           lifecycleChangedAt: position?.lifecycleChangedAt || null,
           lifecycleReason: position?.lifecycleReason || null,
           lifecycleClosedCycle: position?.lifecycleClosedCycle || null,
@@ -301,7 +301,7 @@ ipcServer.onRequest('regime:close', async (payload, exchange, pair) => {
   return { ...result, exchange, pair: resolvedPair, status: engine.getStatus() };
 });
 
-// Reopen a closed fund: transitions lifecycle 'closed' → 'active' on disk.
+// Reopen a closed fund: transitions lifecycle CLOSED → ACTIVE on disk.
 // Does NOT restart the engine — operator must call regime:start afterwards.
 ipcServer.onRequest('regime:reopen', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
@@ -313,16 +313,16 @@ ipcServer.onRequest('regime:reopen', async (payload, exchange, pair) => {
   if (!saved?.position) {
     return { success: false, error: 'No saved regime state found' };
   }
-  if (saved.position.lifecycle !== 'closed') {
-    return { success: false, error: `Fund is not closed (lifecycle=${saved.position.lifecycle || 'active'})` };
+  if (saved.position.lifecycle !== LIFECYCLE.CLOSED) {
+    return { success: false, error: `Fund is not closed (lifecycle=${saved.position.lifecycle || LIFECYCLE.ACTIVE})` };
   }
-  saved.position.lifecycle = 'active';
+  saved.position.lifecycle = LIFECYCLE.ACTIVE;
   saved.position.lifecycleChangedAt = Date.now();
   saved.position.lifecycleReason = null;
   saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, resolvedPair);
   log('INFO', `🔓 [${fundLabel(exchange, resolvedPair)}] Fund reopened — lifecycle=active`);
   ioProxy.emit('regime:reopened', { exchange, pair: resolvedPair });
-  return { success: true, exchange, pair: resolvedPair, lifecycle: 'active' };
+  return { success: true, exchange, pair: resolvedPair, lifecycle: LIFECYCLE.ACTIVE };
 });
 
 ipcServer.onRequest('regime:force-regime', async (payload, exchange, pair) => {
@@ -635,18 +635,15 @@ const startup = async () => {
   const exchange = EXCHANGE_NAME;
 
   // ===== One-time multi-pair migration =====
-  // Move legacy data/<exchange>/ files into data/<exchange>/<defaultPair>/
-  // so multiple funds can coexist on the same exchange. Refuses if engine
-  // is currently running. See UPGRADE.md.
-  if (needsPairMigration(exchange)) {
-    log('INFO', `🔧 [${exchange}] Detected legacy single-pair data layout — running multi-pair migration...`);
-    const result = migrateExchangeToPairs(exchange);
-    if (!result.migrated) {
-      log('ERROR', `❌ [${exchange}] Pair migration failed: ${result.reason}`);
-      log('ERROR', `❌ [${exchange}] Refusing to start engine. See UPGRADE.md for instructions.`);
-      process.exit(1);
-    }
-    log('INFO', `✅ [${exchange}] Pair migration complete: moved ${result.movedFiles} files into ${exchange}/${result.defaultPair}/`);
+  // Move legacy data/<exchange>/ files into data/<exchange>/<defaultPair>/.
+  // Idempotent: returns no-op if already migrated. See UPGRADE.md.
+  const migrationResult = migrateExchangeToPairs(exchange);
+  if (migrationResult.migrated) {
+    log('INFO', `✅ [${exchange}] Pair migration complete: moved ${migrationResult.movedFiles} files into ${exchange}/${migrationResult.defaultPair}/`);
+  } else if (migrationResult.reason && !migrationResult.reason.startsWith('no-op')) {
+    log('ERROR', `❌ [${exchange}] Pair migration failed: ${migrationResult.reason}`);
+    log('ERROR', `❌ [${exchange}] Refusing to start engine. See UPGRADE.md for instructions.`);
+    process.exit(1);
   }
 
   ipcServer.start();
@@ -661,7 +658,7 @@ const startup = async () => {
       // Skip auto-resume for closed funds — the operator must explicitly reopen.
       const { loadRegimeState } = require('../src/state-tracker');
       const savedState = loadRegimeState(exchange, fundPair);
-      if (savedState?.position?.lifecycle === 'closed') {
+      if (savedState?.position?.lifecycle === LIFECYCLE.CLOSED) {
         log('INFO', `🛑 [${label}] Skipping auto-resume: fund is closed (call regime:reopen to reactivate)`);
         saveRegimeRunningFlag(exchange, fundPair, false);
         continue;

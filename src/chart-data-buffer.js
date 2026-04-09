@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir } = require('./migration');
+const { fundKey } = require('./shared-utils');
 
 // Maximum data retention (1 hour in milliseconds)
 const MAX_RETENTION_MS = 60 * 60 * 1000;
@@ -219,13 +220,10 @@ const createChartDataBuffer = (exchange, pair) => {
 const chartBuffers = new Map();
 
 const bufferKey = (exchange, pair) => {
-  if (!pair) {
-    // Resolve default pair from config (lazy require to avoid circular deps)
-    const configUtils = require('./config-utils');
-    const resolved = configUtils.getDefaultPair(exchange);
-    return `${exchange}::${resolved || 'default'}`;
-  }
-  return `${exchange}::${pair}`;
+  if (pair) return fundKey(exchange, pair);
+  // Lazy require to avoid circular deps
+  const { getDefaultPair } = require('./config-utils');
+  return fundKey(exchange, getDefaultPair(exchange) || 'default');
 };
 
 /**
@@ -267,6 +265,20 @@ const getChartData = (exchange, pair) => {
 };
 
 /**
+ * Shut down and remove the chart buffer for a fund. Call when the fund's
+ * lifecycle transitions to closed so we don't accumulate dead buffers
+ * (with their setInterval timers and history arrays) in memory.
+ */
+const removeChartDataBuffer = (exchange, pair) => {
+  const key = bufferKey(exchange, pair);
+  const buffer = chartBuffers.get(key);
+  if (buffer) {
+    buffer.shutdown();
+    chartBuffers.delete(key);
+  }
+};
+
+/**
  * Flush all buffers to disk (call on graceful shutdown)
  */
 const shutdownAllBuffers = () => {
@@ -280,6 +292,7 @@ module.exports = {
   createChartDataBuffer,
   getChartDataBuffer,
   clearChartDataBuffer,
+  removeChartDataBuffer,
   getChartData,
   shutdownAllBuffers,
 };

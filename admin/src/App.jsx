@@ -26,6 +26,7 @@ const SentinelDashboard = lazy(() => import('./components/sentinel/Dashboard'))
 import AlertBanner from './components/sentinel/AlertBanner'
 import { ToastProvider, useToast, tradeEventToToast } from './components/Toast'
 import { useTradeEvents, useRegimeEvents } from './hooks/useTradeEvents'
+import { pairQuery as buildPairQuery } from './utils/api'
 
 // Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "CRO_USD" -> "USD", "BTCUSD" -> "USD")
 export function getQuoteCurrency(productId) {
@@ -198,10 +199,7 @@ function AppContent() {
     navigate(`/${newExchange}/${newPair}${tabValid && currentTab ? `/${currentTab}` : ''}`)
   }
 
-  // Build the ?pair= query string for the active fund. Used by every API
-  // call below so the gateway routes target the correct fund instead of the
-  // exchange's default pair.
-  const pairQuery = () => `?pair=${encodeURIComponent(currentPair)}`
+  const pairQuery = () => buildPairQuery(currentPair)
 
   const fetchData = async () => {
     setLoading(true)

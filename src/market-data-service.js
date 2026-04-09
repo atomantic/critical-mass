@@ -18,6 +18,7 @@ const { getAdapter } = require('./adapters');
 const { getRegimeConfig, getFundConfig, getDefaultPair } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
+const { fundKey } = require('./shared-utils');
 
 // Store active market data services keyed by `${exchange}::${pair}`
 const marketDataServices = new Map();
@@ -25,7 +26,7 @@ const marketDataServices = new Map();
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
 const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 
-const serviceKey = (exchange, pair) => `${exchange}::${pair || getDefaultPair(exchange) || 'default'}`;
+const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(exchange) || 'default');
 
 /**
  * Create a market data service for a fund (exchange + pair).

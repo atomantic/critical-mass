@@ -101,11 +101,14 @@ const saveAllState = (state) => {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 };
 
-// Compose a key for the per-fund slot inside the dry-run state file.
-// Backwards-compat: when pair is omitted, the key is just the exchange name
-// (legacy single-fund installations continue to load/save state under their
-// pre-multipair key).
-const fundKey = (exchange, pair) => (pair ? `${exchange}::${pair}` : exchange);
+const { fundKey: composeFundKey } = require('./shared-utils');
+
+// Compose the key for the per-fund slot inside the dry-run state file.
+// Legacy single-fund installations stored state under bare exchange names;
+// for backwards compat we still write that form when no pair is provided
+// (older callers won't break) — but new callers always pass a pair and get
+// a proper composite key.
+const fundKey = (exchange, pair) => (pair ? composeFundKey(exchange, pair) : exchange);
 
 /**
  * Load dry-run state for a fund (exchange + pair).

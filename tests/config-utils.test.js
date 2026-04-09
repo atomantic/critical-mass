@@ -55,6 +55,11 @@ const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
 const setupFsMocks = ({ base = null, user = null } = {}) => {
   let writtenData = null;
 
+  // The config-utils module caches loadRawConfig() between calls keyed on
+  // file mtimes. Tests mock existsSync/readFileSync but not statSync, so
+  // we have to bust the cache explicitly to make each case see fresh mocks.
+  configUtils._resetConfigCacheForTests();
+
   mock.method(fs, 'existsSync', (filePath) => {
     if (filePath === BASE_CONFIG_FILE) return base !== null;
     if (filePath === USER_CONFIG_FILE) return user !== null;
@@ -66,6 +71,17 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
     if (filePath === BASE_CONFIG_FILE && base !== null) return JSON.stringify(base);
     if (filePath === USER_CONFIG_FILE && user !== null) return JSON.stringify(user);
     throw new Error(`ENOENT: no such file: ${filePath}`);
+  });
+
+  // The cache also calls fs.statSync — return synthetic mtimes derived
+  // from the mocked file presence so the cache key changes with each setup.
+  let mtimeCounter = 0;
+  mock.method(fs, 'statSync', (filePath) => {
+    if (filePath === BASE_CONFIG_FILE && base !== null) return { mtimeMs: ++mtimeCounter };
+    if (filePath === USER_CONFIG_FILE && user !== null) return { mtimeMs: ++mtimeCounter };
+    const err = new Error(`ENOENT: no such file: ${filePath}`);
+    err.code = 'ENOENT';
+    throw err;
   });
 
   mock.method(fs, 'writeFileSync', (_filePath, data) => {

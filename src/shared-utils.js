@@ -211,6 +211,26 @@ const getNextTradeInfo = (config, state) => {
   };
 };
 
+// ============ Fund Identity Helpers ============
+
+/**
+ * Compose a stable key for a (exchange, pair) fund used by Maps and event
+ * routing across the engine, market data service, chart buffer, and
+ * dry-run state. Always uses '::' as the separator.
+ * @param {string} exchange
+ * @param {string} pair
+ * @returns {string}
+ */
+const fundKey = (exchange, pair) => `${exchange}::${pair}`;
+
+/**
+ * Human-readable label for a fund used in log lines and event payloads.
+ * @param {string} exchange
+ * @param {string} pair
+ * @returns {string}
+ */
+const fundLabel = (exchange, pair) => `${exchange}/${pair}`;
+
 // ============ Regime Engine Flag Helpers ============
 
 /**
@@ -291,6 +311,8 @@ module.exports = {
   parseTSV,
   calculateCostBasis,
   getNextTradeInfo,
+  fundKey,
+  fundLabel,
   getRegimeRunningFlagPath,
   saveRegimeRunningFlag,
   shouldAutoResumeRegime,

@@ -214,10 +214,10 @@ const getExchangeDataDir = (exchange) => {
 };
 
 /**
- * Resolve the per-fund data directory PATH for (exchange, pair) without
+ * Resolve the per-fund data directory PATH for (exchange, pair) WITHOUT
  * creating it. Use this on read paths (loadState, loadRegimeState, etc.)
- * so we never accidentally create empty subdirectories that then look like
- * "no data" to subsequent reads. Use getFundDataDir for write paths.
+ * so we never accidentally create empty subdirectories that subsequent
+ * reads then mistake for "no data". Use getFundDataDir for write paths.
  *
  * If `pair` is omitted, falls back to the exchange's default pair via
  * config-utils.getDefaultPair.
@@ -229,19 +229,18 @@ const getExchangeDataDir = (exchange) => {
 const resolveFundDataDir = (exchange, pair) => {
   let resolvedPair = pair;
   if (!resolvedPair) {
-    // Lazy require to avoid circular dependency: config-utils → state-tracker → migration
-    // (config-utils itself does not require migration, so this is safe.)
+    // Lazy require avoids circular dep: state-tracker → migration → config-utils
     const configUtils = require('./config-utils');
     resolvedPair = configUtils.getDefaultPair(exchange) || 'default';
   }
-  // Use the exchange-level resolver but NOT through getExchangeDataDir (which
-  // mkdirs). Tests that patch getExchangeDataDir can patch resolveFundDataDir
-  // directly via module.exports if needed.
-  // Read DATA_DIR from the test-patchable parent dir of the exchange dir.
-  // We do this by computing the path relative to DATA_DIR, then adjusting
-  // if a test has redirected it elsewhere by patching getExchangeDataDir.
-  const realParent = path.dirname(module.exports.getExchangeDataDir(exchange));
-  return path.join(realParent, exchange, resolvedPair);
+  // Resolve the exchange dir via module.exports so tests that patch
+  // getExchangeDataDir continue to work. The parent dir gets mkdir'd as
+  // a side effect, which is harmless: any non-empty install already has
+  // the exchange dir, and the test mock points it at a tmp dir anyway.
+  // Crucially, we do NOT mkdir the per-fund subdirectory here — that would
+  // turn read-side path resolution into directory creation, which is what
+  // caused empty BTC-USDC dirs to appear and mask legacy state.
+  return path.join(module.exports.getExchangeDataDir(exchange), resolvedPair);
 };
 
 /**
@@ -442,27 +441,6 @@ const migrateExchangeToPairs = (exchange) => {
 };
 
 /**
- * Run pair migration for all exchanges configured in the application.
- * Called from engine startup before any state is loaded.
- *
- * @returns {Array<{exchange: string, result: Object}>}
- */
-const runPairMigrationIfNeeded = () => {
-  const configUtils = require('./config-utils');
-  const exchanges = configUtils.getConfiguredExchanges();
-  const results = [];
-  for (const exchange of exchanges) {
-    if (!needsPairMigration(exchange)) continue;
-    const result = migrateExchangeToPairs(exchange);
-    results.push({ exchange, result });
-    if (!result.migrated && result.reason) {
-      console.log(`[Pair Migration] ${exchange}: ${result.reason}`);
-    }
-  }
-  return results;
-};
-
-/**
  * Get keys file path for an exchange
  * @param {string} exchange - Exchange name
  * @returns {string} Path to exchange keys file
@@ -483,7 +461,6 @@ module.exports = {
   needsPairMigration,
   resolveFundDataDir,
   migrateExchangeToPairs,
-  runPairMigrationIfNeeded,
   isPerFundFile,
   PER_FUND_FILES,
   PER_FUND_FILE_PREFIXES,

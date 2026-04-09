@@ -29,6 +29,18 @@ const { loadRawConfig } = require('./config-utils');
 const { DATA_DIR } = require('./paths');
 
 /**
+ * Fund lifecycle states. The operator drives transitions:
+ *   ACTIVE → DRAINING (operator clicks Close): block new entries, leave TP in place
+ *   DRAINING → CLOSED (TP fills): engine auto-stops
+ *   CLOSED → ACTIVE (operator clicks Reopen): allows engine to start again
+ */
+const LIFECYCLE = Object.freeze({
+  ACTIVE: 'active',
+  DRAINING: 'draining',
+  CLOSED: 'closed',
+});
+
+/**
  * Atomic write: write to .tmp then rename (POSIX-atomic).
  * Prevents truncated JSON on crash.
  * @param {string} filePath - Target file path
@@ -574,10 +586,8 @@ const createInitialRegimePositionState = () => ({
   },
   // Macro regime state (persisted for recovery)
   macroRegime: null,
-  // Fund lifecycle (operator-controlled). 'active' is the default;
-  // 'draining' blocks new entries and auto-transitions to 'closed' when the
-  // current cycle's TP fills; 'closed' prevents the engine from starting.
-  lifecycle: 'active',
+  // Fund lifecycle — see LIFECYCLE constant exported from this module
+  lifecycle: LIFECYCLE.ACTIVE,
   lifecycleChangedAt: null,
   lifecycleReason: null,
   lifecycleClosedCycle: null,
@@ -832,6 +842,7 @@ const updateRegimeStateAfterTP = (state, fillDetails) => {
 };
 
 module.exports = {
+  LIFECYCLE,
   loadState,
   saveState,
   createInitialState,
