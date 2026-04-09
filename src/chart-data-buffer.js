@@ -7,7 +7,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { getFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./migration');
 
 // Maximum data retention (1 hour in milliseconds)
 const MAX_RETENTION_MS = 60 * 60 * 1000;
@@ -22,12 +22,14 @@ const MAX_POINTS = 4000;
 const SAVE_INTERVAL_MS = 30 * 1000;
 
 /**
- * Get the file path for persisted chart data
+ * Get the file path for persisted chart data.
+ * Read-only path resolution — does NOT create the directory. saveToDisk()
+ * mkdirs before writing.
  * @param {string} exchange
  * @param {string} [pair]
  * @returns {string}
  */
-const getFilePath = (exchange, pair) => path.join(getFundDataDir(exchange, pair), 'chart-data-buffer.json');
+const getFilePath = (exchange, pair) => path.join(resolveFundDataDir(exchange, pair), 'chart-data-buffer.json');
 
 /**
  * Create a chart data buffer for a fund (exchange + pair).

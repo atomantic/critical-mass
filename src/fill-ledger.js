@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getFundDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./migration');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { atomicWriteSync } = require('./state-tracker');
 
@@ -20,13 +20,14 @@ const { atomicWriteSync } = require('./state-tracker');
 
 /**
  * Get fill ledger file path for a fund (exchange + pair).
+ * Read-only path resolution — does NOT create the directory. The persist()
+ * function below mkdirs before writing.
  * @param {string} exchange - Exchange name
  * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {string} Path to fill ledger file
  */
 const getFillLedgerPath = (exchange, pair) => {
-  const dir = getFundDataDir(exchange, pair);
-  return path.join(dir, 'fill-ledger.json');
+  return path.join(resolveFundDataDir(exchange, pair), 'fill-ledger.json');
 };
 
 /**

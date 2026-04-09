@@ -214,19 +214,19 @@ const getExchangeDataDir = (exchange) => {
 };
 
 /**
- * Get the per-fund data directory for (exchange, pair). Each fund has its
- * own subdirectory under the exchange so multiple funds can coexist with
- * independent state, fill ledgers, and price caches.
+ * Resolve the per-fund data directory PATH for (exchange, pair) without
+ * creating it. Use this on read paths (loadState, loadRegimeState, etc.)
+ * so we never accidentally create empty subdirectories that then look like
+ * "no data" to subsequent reads. Use getFundDataDir for write paths.
  *
  * If `pair` is omitted, falls back to the exchange's default pair via
- * config-utils.getDefaultPair (preserves backwards compat for callers that
- * haven't been updated yet). The directory is created on demand.
+ * config-utils.getDefaultPair.
  *
- * @param {string} exchange - Exchange name
- * @param {string} [pair] - Pair name (e.g. 'BTC-USDC'); defaults to the exchange's default pair
- * @returns {string} Path to fund data directory
+ * @param {string} exchange
+ * @param {string} [pair]
+ * @returns {string}
  */
-const getFundDataDir = (exchange, pair) => {
+const resolveFundDataDir = (exchange, pair) => {
   let resolvedPair = pair;
   if (!resolvedPair) {
     // Lazy require to avoid circular dependency: config-utils → state-tracker → migration
@@ -234,9 +234,41 @@ const getFundDataDir = (exchange, pair) => {
     const configUtils = require('./config-utils');
     resolvedPair = configUtils.getDefaultPair(exchange) || 'default';
   }
+  // Use the exchange-level resolver but NOT through getExchangeDataDir (which
+  // mkdirs). Tests that patch getExchangeDataDir can patch resolveFundDataDir
+  // directly via module.exports if needed.
+  // Read DATA_DIR from the test-patchable parent dir of the exchange dir.
+  // We do this by computing the path relative to DATA_DIR, then adjusting
+  // if a test has redirected it elsewhere by patching getExchangeDataDir.
+  const realParent = path.dirname(module.exports.getExchangeDataDir(exchange));
+  return path.join(realParent, exchange, resolvedPair);
+};
+
+/**
+ * Get the per-fund data directory for (exchange, pair). Each fund has its
+ * own subdirectory under the exchange so multiple funds can coexist with
+ * independent state, fill ledgers, and price caches.
+ *
+ * **Side effect: creates the directory tree on disk.** Use this only on
+ * WRITE paths. For read-only path resolution, use resolveFundDataDir.
+ *
+ * If `pair` is omitted, falls back to the exchange's default pair via
+ * config-utils.getDefaultPair (preserves backwards compat for callers that
+ * haven't been updated yet).
+ *
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name (e.g. 'BTC-USDC'); defaults to the exchange's default pair
+ * @returns {string} Path to fund data directory
+ */
+const getFundDataDir = (exchange, pair) => {
   // Resolve the exchange dir via module.exports so existing tests that patch
   // getExchangeDataDir continue to work without also patching getFundDataDir.
   const exchangeDir = module.exports.getExchangeDataDir(exchange);
+  let resolvedPair = pair;
+  if (!resolvedPair) {
+    const configUtils = require('./config-utils');
+    resolvedPair = configUtils.getDefaultPair(exchange) || 'default';
+  }
   const dir = path.join(exchangeDir, resolvedPair);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
@@ -316,46 +348,20 @@ const needsPairMigration = (exchange) => {
 };
 
 /**
- * Detect whether any regime engine for the given exchange is currently
- * running. We refuse to perform pair migration while engines are live
- * because they periodically save state and would silently overwrite the
- * migrated files.
- *
- * Looks for the regime-engine-running.json flag in either the legacy
- * (data/<exchange>/) or new (data/<exchange>/<pair>/) location.
- *
- * @param {string} exchange
- * @returns {boolean}
- */
-const isAnyEngineRunning = (exchange) => {
-  const exchangeDir = path.join(DATA_DIR, exchange);
-  if (!fs.existsSync(exchangeDir)) return false;
-  // Legacy location
-  if (fs.existsSync(path.join(exchangeDir, 'regime-engine-running.json'))) return true;
-  // Per-fund locations
-  try {
-    const entries = fs.readdirSync(exchangeDir, { withFileTypes: true });
-    for (const e of entries) {
-      if (e.isDirectory()) {
-        if (fs.existsSync(path.join(exchangeDir, e.name, 'regime-engine-running.json'))) {
-          return true;
-        }
-      }
-    }
-  } catch {
-    // best-effort
-  }
-  return false;
-};
-
-/**
  * Migrate an exchange from the legacy single-pair layout to the multi-pair
  * layout by moving all per-fund files into a subdirectory named after the
  * exchange's default pair (read from config).
  *
- * Refuses to run if the engine is currently running for this exchange (per
- * the project's runtime-state safety rule). Idempotent: if the migration has
- * already happened, this is a no-op.
+ * This runs at engine startup BEFORE any other initialization, so by
+ * definition no engine is currently running in this process. The previous
+ * engine process (if any) is already dead — PM2 wouldn't be spawning a new
+ * one otherwise. We do NOT block on the regime-engine-running.json flag
+ * because that flag is the auto-resume hint from the previous session and
+ * is left intentionally so the engine can resume on restart.
+ *
+ * Idempotent: if the migration has already happened, this is a no-op.
+ * Cleans up empty pre-existing pair subdirectories that may have been
+ * accidentally created by the API server before migration ran.
  *
  * @param {string} exchange
  * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string}}
@@ -363,14 +369,6 @@ const isAnyEngineRunning = (exchange) => {
 const migrateExchangeToPairs = (exchange) => {
   if (!needsPairMigration(exchange)) {
     return { migrated: false, defaultPair: null, movedFiles: 0, reason: 'no-op (already migrated or empty)' };
-  }
-  if (isAnyEngineRunning(exchange)) {
-    return {
-      migrated: false,
-      defaultPair: null,
-      movedFiles: 0,
-      reason: `Refusing to migrate ${exchange}: regime engine is running. Stop it first with: pm2 stop ecosystem.config.cjs`,
-    };
   }
 
   // Resolve the default pair from config (legacy productId field).
@@ -387,6 +385,12 @@ const migrateExchangeToPairs = (exchange) => {
 
   const exchangeDir = path.join(DATA_DIR, exchange);
   const fundDir = path.join(exchangeDir, defaultPair);
+
+  // If the target subdirectory exists but is empty (e.g. accidentally
+  // created by the API server reading per-fund paths before migration ran),
+  // it's safe to keep it — the rename calls below will populate it.
+  // If it exists with content, that's a previous partial migration; we
+  // skip individual files that already exist at the target.
   fs.mkdirSync(fundDir, { recursive: true });
 
   console.log(`\n[Pair Migration] ${exchange} → ${exchange}/${defaultPair}`);
@@ -412,6 +416,25 @@ const migrateExchangeToPairs = (exchange) => {
     fs.renameSync(src, dst);
     moved++;
     console.log(`  ✓ ${entry.name}`);
+  }
+
+  // Clean up any OTHER empty pair subdirectories (e.g. created by the API
+  // server using a non-default pair key before migration ran). Only removes
+  // dirs that are actually empty — skips the just-populated target.
+  const postEntries = fs.readdirSync(exchangeDir, { withFileTypes: true });
+  for (const e of postEntries) {
+    if (!e.isDirectory()) continue;
+    if (e.name === defaultPair) continue;
+    const subDir = path.join(exchangeDir, e.name);
+    try {
+      const contents = fs.readdirSync(subDir);
+      if (contents.length === 0) {
+        fs.rmdirSync(subDir);
+        console.log(`  🧹 Removed empty pair subdir: ${e.name}/`);
+      }
+    } catch {
+      // best-effort cleanup
+    }
   }
 
   console.log(`[Pair Migration] ${exchange}: moved ${moved} files (${skipped} skipped)`);
@@ -458,7 +481,7 @@ module.exports = {
   getExchangeDataDir,
   getFundDataDir,
   needsPairMigration,
-  isAnyEngineRunning,
+  resolveFundDataDir,
   migrateExchangeToPairs,
   runPairMigrationIfNeeded,
   isPerFundFile,

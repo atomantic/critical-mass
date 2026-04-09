@@ -217,6 +217,8 @@ const getNextTradeInfo = (config, state) => {
  * Get the file path for a regime engine running flag.
  * Per-fund (exchange + pair). Falls back to the exchange's default pair when
  * pair is not provided (preserves backwards compat).
+ * Read-only path resolution — does NOT create the directory. The save
+ * function below mkdirs before writing.
  *
  * @param {string} exchange
  * @param {string} [pair]
@@ -224,8 +226,8 @@ const getNextTradeInfo = (config, state) => {
  */
 const getRegimeRunningFlagPath = (exchange, pair) => {
   // Lazy require to avoid circular deps (migration -> config-utils -> ...).
-  const { getFundDataDir } = require('./migration');
-  return path.join(getFundDataDir(exchange, pair), 'regime-engine-running.json');
+  const { resolveFundDataDir } = require('./migration');
+  return path.join(resolveFundDataDir(exchange, pair), 'regime-engine-running.json');
 };
 
 /**

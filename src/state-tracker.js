@@ -6,7 +6,7 @@ const {
   getRunIdentifier,
   hasRunThisInterval
 } = require('./interval-utils');
-const { getExchangeDataDir, getFundDataDir } = require('./migration');
+const { getExchangeDataDir, getFundDataDir, resolveFundDataDir } = require('./migration');
 
 /**
  * @typedef {import('./types').BotState} BotState
@@ -45,13 +45,15 @@ const saveVersions = new Map();
 
 /**
  * Get state file path for a fund (exchange + pair).
+ * Read-only path resolution — does NOT create the directory. Callers that
+ * write should ensure the directory exists themselves (via mkdirSync), or
+ * use getFundDataDir which creates it as a side effect.
  * @param {string} exchange - Exchange name (default: coinbase)
  * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {string} Path to state file
  */
 const getStateFile = (exchange = 'coinbase', pair) => {
-  const dir = getFundDataDir(exchange, pair);
-  return path.join(dir, 'state.json');
+  return path.join(resolveFundDataDir(exchange, pair), 'state.json');
 };
 
 /**
@@ -520,13 +522,13 @@ const getFibonacciCycleInfo = (state) => {
 
 /**
  * Get regime state file path for a fund (exchange + pair).
+ * Read-only path resolution — does NOT create the directory.
  * @param {string} exchange - Exchange name
  * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {string} Path to regime state file
  */
 const getRegimeStateFile = (exchange = 'coinbase', pair) => {
-  const dir = getFundDataDir(exchange, pair);
-  return path.join(dir, 'regime-state.json');
+  return path.join(resolveFundDataDir(exchange, pair), 'regime-state.json');
 };
 
 /**
