@@ -6,7 +6,7 @@ const {
   getRunIdentifier,
   hasRunThisInterval
 } = require('./interval-utils');
-const { getExchangeDataDir } = require('./migration');
+const { getExchangeDataDir, getFundDataDir } = require('./migration');
 
 /**
  * @typedef {import('./types').BotState} BotState
@@ -44,12 +44,13 @@ const atomicWriteSync = (filePath, data) => {
 const saveVersions = new Map();
 
 /**
- * Get state file path for an exchange
+ * Get state file path for a fund (exchange + pair).
  * @param {string} exchange - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {string} Path to state file
  */
-const getStateFile = (exchange = 'coinbase') => {
-  const dir = getExchangeDataDir(exchange);
+const getStateFile = (exchange = 'coinbase', pair) => {
+  const dir = getFundDataDir(exchange, pair);
   return path.join(dir, 'state.json');
 };
 
@@ -141,7 +142,7 @@ const migrateState = (state) => {
  * @param {string} [exchange] - Exchange name (default: coinbase)
  * @returns {BotState} Current state
  */
-const loadState = (config = null, exchange = 'coinbase') => {
+const loadState = (config = null, exchange = 'coinbase', pair) => {
   if (!config) {
     config = loadRawConfig();
     if (config.exchanges && config.exchanges[exchange]) {
@@ -149,7 +150,7 @@ const loadState = (config = null, exchange = 'coinbase') => {
     }
   }
 
-  const stateFile = getStateFile(exchange);
+  const stateFile = getStateFile(exchange, pair);
 
   if (!fs.existsSync(stateFile)) {
     return createInitialState(config);
@@ -166,7 +167,7 @@ const loadState = (config = null, exchange = 'coinbase') => {
     const delta = config.totalAllocation - state.initialAllocation;
     state.usdcFundSize += delta;
     state.initialAllocation = config.totalAllocation;
-    saveState(state, exchange);
+    saveState(state, exchange, pair);
   }
 
   return state;
@@ -176,10 +177,11 @@ const loadState = (config = null, exchange = 'coinbase') => {
  * Save state to file
  * @param {BotState} state - State to save
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const saveState = (state, exchange = 'coinbase') => {
-  const stateFile = getStateFile(exchange);
+const saveState = (state, exchange = 'coinbase', pair) => {
+  const stateFile = getStateFile(exchange, pair);
   const dir = path.dirname(stateFile);
   fs.mkdirSync(dir, { recursive: true });
   atomicWriteSync(stateFile, JSON.stringify(state, null, 2));
@@ -517,12 +519,13 @@ const getFibonacciCycleInfo = (state) => {
 // ============================================================================
 
 /**
- * Get regime state file path
+ * Get regime state file path for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {string} Path to regime state file
  */
-const getRegimeStateFile = (exchange = 'coinbase') => {
-  const dir = getExchangeDataDir(exchange);
+const getRegimeStateFile = (exchange = 'coinbase', pair) => {
+  const dir = getFundDataDir(exchange, pair);
   return path.join(dir, 'regime-state.json');
 };
 
@@ -569,6 +572,13 @@ const createInitialRegimePositionState = () => ({
   },
   // Macro regime state (persisted for recovery)
   macroRegime: null,
+  // Fund lifecycle (operator-controlled). 'active' is the default;
+  // 'draining' blocks new entries and auto-transitions to 'closed' when the
+  // current cycle's TP fills; 'closed' prevents the engine from starting.
+  lifecycle: 'active',
+  lifecycleChangedAt: null,
+  lifecycleReason: null,
+  lifecycleClosedCycle: null,
 });
 
 /**
@@ -588,10 +598,11 @@ const createInitialRegimeState = () => ({
 /**
  * Load regime state from file
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {{position: RegimePositionState, regime: RegimeState, tpOptimizer?: Object, sizeOptimizer?: Object}}
  */
-const loadRegimeState = (exchange = 'coinbase') => {
-  const stateFile = getRegimeStateFile(exchange);
+const loadRegimeState = (exchange = 'coinbase', pair) => {
+  const stateFile = getRegimeStateFile(exchange, pair);
 
   if (!fs.existsSync(stateFile)) {
     return {
@@ -678,7 +689,7 @@ const loadRegimeState = (exchange = 'coinbase') => {
 
     if (hasCorePosition || hasSatellites) {
       const configUtils = require('./config-utils');
-      const regimeConfig = configUtils.getRegimeConfig(exchange);
+      const regimeConfig = configUtils.getRegimeConfig(exchange, pair);
       const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 10000;
 
       position.celestialBodies = migrateFromLegacy(position, maxUsdcDeployed);
@@ -721,6 +732,7 @@ const loadRegimeState = (exchange = 'coinbase') => {
  * @param {string} exchange - Exchange name
  * @param {Object} [tpOptimizer] - Optional TP optimizer state
  * @param {Object} [sizeOptimizer] - Optional Size optimizer state
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  */
 /**
  * Protected fields that should be preserved from external edits
@@ -728,8 +740,8 @@ const loadRegimeState = (exchange = 'coinbase') => {
  */
 const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'realizedAssetPnL'];
 
-const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null) => {
-  const stateFile = getRegimeStateFile(exchange);
+const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null, pair) => {
+  const stateFile = getRegimeStateFile(exchange, pair);
   const dir = path.dirname(stateFile);
 
   fs.mkdirSync(dir, { recursive: true });

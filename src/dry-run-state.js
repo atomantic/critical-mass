@@ -101,17 +101,25 @@ const saveAllState = (state) => {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 };
 
+// Compose a key for the per-fund slot inside the dry-run state file.
+// Backwards-compat: when pair is omitted, the key is just the exchange name
+// (legacy single-fund installations continue to load/save state under their
+// pre-multipair key).
+const fundKey = (exchange, pair) => (pair ? `${exchange}::${pair}` : exchange);
+
 /**
- * Load dry-run state for a specific exchange
+ * Load dry-run state for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name
  * @returns {ExchangeDryRunState|null}
  */
-const loadState = (exchange) => {
+const loadState = (exchange, pair) => {
+  const key = fundKey(exchange, pair);
   const allState = loadAllState();
-  const exchangeState = allState.exchanges[exchange];
+  const exchangeState = allState.exchanges[key];
 
   if (!exchangeState) {
-    console.log(`ℹ️ [${exchange}] No saved dry-run state found`);
+    console.log(`ℹ️ [${key}] No saved dry-run state found`);
     return null;
   }
 
@@ -119,22 +127,24 @@ const loadState = (exchange) => {
   const ageMs = Date.now() - exchangeState.savedAt;
   const ageDays = ageMs / (1000 * 60 * 60 * 24);
   if (ageDays > 7) {
-    console.log(`⚠️ [${exchange}] Dry-run state is ${ageDays.toFixed(1)} days old, discarding`);
+    console.log(`⚠️ [${key}] Dry-run state is ${ageDays.toFixed(1)} days old, discarding`);
     return null;
   }
 
-  console.log(`📂 [${exchange}] Loaded dry-run state from ${new Date(exchangeState.savedAt).toISOString()}`);
+  console.log(`📂 [${key}] Loaded dry-run state from ${new Date(exchangeState.savedAt).toISOString()}`);
   return exchangeState;
 };
 
 /**
- * Save dry-run state for a specific exchange
+ * Save dry-run state for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
  * @param {ExchangeDryRunState} exchangeState - State to save
+ * @param {string} [pair] - Pair name
  */
-const saveState = (exchange, exchangeState) => {
-  // Always store the latest state for this exchange
-  pendingStates.set(exchange, exchangeState);
+const saveState = (exchange, exchangeState, pair) => {
+  const key = fundKey(exchange, pair);
+  // Always store the latest state for this fund
+  pendingStates.set(key, exchangeState);
 
   // Debounce saves
   const now = Date.now();
@@ -145,9 +155,9 @@ const saveState = (exchange, exchangeState) => {
         pendingSave = null;
         // Flush all pending states
         const allState = loadAllState();
-        const exchangeCount = pendingStates.size;
-        for (const [ex, state] of pendingStates) {
-          allState.exchanges[ex] = {
+        const fundCount = pendingStates.size;
+        for (const [k, state] of pendingStates) {
+          allState.exchanges[k] = {
             ...state,
             savedAt: Date.now(),
           };
@@ -155,7 +165,7 @@ const saveState = (exchange, exchangeState) => {
         pendingStates.clear();
         saveAllState(allState);
         lastSaveTime = Date.now();
-        console.log(`💾 Dry-run state saved for ${exchangeCount} exchange(s)`);
+        console.log(`💾 Dry-run state saved for ${fundCount} fund(s)`);
       }, SAVE_DEBOUNCE_MS);
     }
     return;
@@ -165,43 +175,47 @@ const saveState = (exchange, exchangeState) => {
   pendingStates.clear();
 
   const allState = loadAllState();
-  allState.exchanges[exchange] = {
+  allState.exchanges[key] = {
     ...exchangeState,
     savedAt: now,
   };
   saveAllState(allState);
-  console.log(`💾 [${exchange}] Dry-run state saved`);
+  console.log(`💾 [${key}] Dry-run state saved`);
 };
 
 /**
- * Clear dry-run state for a specific exchange
+ * Clear dry-run state for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name
  */
-const clearState = (exchange) => {
+const clearState = (exchange, pair) => {
+  const key = fundKey(exchange, pair);
   const allState = loadAllState();
-  delete allState.exchanges[exchange];
+  delete allState.exchanges[key];
   saveAllState(allState);
-  console.log(`🗑️ [${exchange}] Dry-run state cleared`);
+  console.log(`🗑️ [${key}] Dry-run state cleared`);
 };
 
 /**
  * Force immediate save (bypass debounce)
  * @param {string} exchange - Exchange name
  * @param {ExchangeDryRunState} exchangeState - State to save
+ * @param {string} [pair] - Pair name
  */
-const forceSave = (exchange, exchangeState) => {
+const forceSave = (exchange, exchangeState, pair) => {
+  const key = fundKey(exchange, pair);
   if (pendingSave) {
     clearTimeout(pendingSave);
     pendingSave = null;
   }
 
   const allState = loadAllState();
-  allState.exchanges[exchange] = {
+  allState.exchanges[key] = {
     ...exchangeState,
     savedAt: Date.now(),
   };
   saveAllState(allState);
-  console.log(`💾 [${exchange}] Dry-run state force saved`);
+  console.log(`💾 [${key}] Dry-run state force saved`);
 };
 
 module.exports = {

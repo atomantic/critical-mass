@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getExchangeDataDir } = require('./migration');
+const { getFundDataDir } = require('./migration');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { atomicWriteSync } = require('./state-tracker');
 
@@ -19,12 +19,13 @@ const { atomicWriteSync } = require('./state-tracker');
  */
 
 /**
- * Get fill ledger file path for an exchange
+ * Get fill ledger file path for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {string} Path to fill ledger file
  */
-const getFillLedgerPath = (exchange) => {
-  const dir = getExchangeDataDir(exchange);
+const getFillLedgerPath = (exchange, pair) => {
+  const dir = getFundDataDir(exchange, pair);
   return path.join(dir, 'fill-ledger.json');
 };
 
@@ -32,9 +33,10 @@ const getFillLedgerPath = (exchange) => {
  * Create fill ledger instance
  * @param {string} exchange - Exchange name
  * @param {string} [productId] - Product ID (e.g. 'BTC-USDC') used to derive base currency for logs
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair (resolved when ledger is created)
  * @returns {Object} Fill ledger instance
  */
-const createFillLedger = (exchange, productId) => {
+const createFillLedger = (exchange, productId, pair) => {
   /** @type {Map<string, Fill>} */
   const fills = new Map();
   /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
@@ -53,7 +55,7 @@ const createFillLedger = (exchange, productId) => {
    * Load fill ledger from disk
    */
   const load = () => {
-    const filePath = getFillLedgerPath(exchange);
+    const filePath = getFillLedgerPath(exchange, pair);
     if (!fs.existsSync(filePath)) {
       return;
     }
@@ -119,7 +121,7 @@ const createFillLedger = (exchange, productId) => {
    * Persist fill ledger to disk
    */
   const persist = () => {
-    const filePath = getFillLedgerPath(exchange);
+    const filePath = getFillLedgerPath(exchange, pair);
     const dir = path.dirname(filePath);
 
     if (!fs.existsSync(dir)) {

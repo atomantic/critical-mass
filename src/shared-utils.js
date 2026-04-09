@@ -214,20 +214,37 @@ const getNextTradeInfo = (config, state) => {
 // ============ Regime Engine Flag Helpers ============
 
 /**
- * Get the file path for a regime engine running flag
+ * Get the file path for a regime engine running flag.
+ * Per-fund (exchange + pair). Falls back to the exchange's default pair when
+ * pair is not provided (preserves backwards compat).
+ *
  * @param {string} exchange
+ * @param {string} [pair]
  * @returns {string}
  */
-const getRegimeRunningFlagPath = (exchange) =>
-  path.join(__dirname, '..', 'data', exchange, 'regime-engine-running.json');
+const getRegimeRunningFlagPath = (exchange, pair) => {
+  // Lazy require to avoid circular deps (migration -> config-utils -> ...).
+  const { getFundDataDir } = require('./migration');
+  return path.join(getFundDataDir(exchange, pair), 'regime-engine-running.json');
+};
 
 /**
- * Save or remove the regime engine running flag
+ * Save or remove the regime engine running flag for a fund.
  * @param {string} exchange
- * @param {boolean} isRunning
+ * @param {boolean|string} isRunningOrPair - 2-arg form: isRunning. 3-arg form: pair name.
+ * @param {boolean} [maybeIsRunning] - 3-arg form: isRunning
  */
-const saveRegimeRunningFlag = (exchange, isRunning) => {
-  const flagPath = getRegimeRunningFlagPath(exchange);
+const saveRegimeRunningFlag = (exchange, isRunningOrPair, maybeIsRunning) => {
+  let pair;
+  let isRunning;
+  if (typeof isRunningOrPair === 'string') {
+    pair = isRunningOrPair;
+    isRunning = maybeIsRunning;
+  } else {
+    pair = undefined;
+    isRunning = isRunningOrPair;
+  }
+  const flagPath = getRegimeRunningFlagPath(exchange, pair);
   const dir = path.dirname(flagPath);
   fs.mkdirSync(dir, { recursive: true });
   if (isRunning) {
@@ -243,10 +260,11 @@ const saveRegimeRunningFlag = (exchange, isRunning) => {
 /**
  * Check if a regime engine should auto-resume on startup
  * @param {string} exchange
+ * @param {string} [pair]
  * @returns {boolean}
  */
-const shouldAutoResumeRegime = (exchange) => {
-  const flagPath = getRegimeRunningFlagPath(exchange);
+const shouldAutoResumeRegime = (exchange, pair) => {
+  const flagPath = getRegimeRunningFlagPath(exchange, pair);
   return fs.existsSync(flagPath);
 };
 

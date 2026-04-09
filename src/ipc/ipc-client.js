@@ -132,20 +132,39 @@ const createIPCClient = (url, name, options = {}) => {
   };
 
   /**
-   * Send a request to the engine and wait for a response
+   * Send a request to the engine and wait for a response.
+   *
+   * Supports two call signatures for backwards compat:
+   *   request(channel, payload, exchange, timeout)            (legacy)
+   *   request(channel, payload, exchange, pair, timeout)      (multi-pair)
+   *
+   * In the legacy form (4th arg is a number), pair is undefined and the
+   * receiving handler resolves it to the exchange's default pair.
+   *
    * @param {string} channel - Request channel
    * @param {*} payload - Request data
    * @param {string} [exchange] - Exchange name
-   * @param {number} [timeout] - Timeout in ms
+   * @param {string|number} [pairOrTimeout] - Pair name (5-arg) or timeout (legacy 4-arg)
+   * @param {number} [maybeTimeout] - Timeout (5-arg form)
    * @returns {Promise<*>}
    */
-  const request = (channel, payload, exchange, timeout = DEFAULT_TIMEOUT) => {
+  const request = (channel, payload, exchange, pairOrTimeout, maybeTimeout) => {
+    let pair;
+    let timeout;
+    if (typeof pairOrTimeout === 'string') {
+      pair = pairOrTimeout;
+      timeout = typeof maybeTimeout === 'number' ? maybeTimeout : DEFAULT_TIMEOUT;
+    } else {
+      pair = undefined;
+      timeout = typeof pairOrTimeout === 'number' ? pairOrTimeout : DEFAULT_TIMEOUT;
+    }
+
     return new Promise((resolve, reject) => {
       if (!connected) {
         return reject(new Error(`IPC not connected (${name})`));
       }
 
-      const msg = createMessage(MSG_TYPE.REQUEST, channel, payload, { exchange });
+      const msg = createMessage(MSG_TYPE.REQUEST, channel, payload, { exchange, pair });
       const timer = setTimeout(() => {
         pendingRequests.delete(msg.id);
         reject(new Error(`IPC request timeout: ${channel} (${name})`));
@@ -165,10 +184,11 @@ const createIPCClient = (url, name, options = {}) => {
    * Send a one-way config update to the engine
    * @param {*} payload - Updated config values
    * @param {string} [exchange] - Exchange name
+   * @param {string} [pair] - Pair name
    */
-  const sendConfigUpdate = (payload, exchange) => {
+  const sendConfigUpdate = (payload, exchange, pair) => {
     if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return;
-    const msg = createMessage(MSG_TYPE.CONFIG_UPDATE, 'config_update', payload, { exchange });
+    const msg = createMessage(MSG_TYPE.CONFIG_UPDATE, 'config_update', payload, { exchange, pair });
     ws.send(serialize(msg));
   };
 

@@ -4,7 +4,23 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, getGlobalConfig, getConfiguredExchanges, getEnabledExchanges, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
+const {
+  getExchangeConfig,
+  getFundConfig,
+  getGlobalConfig,
+  getConfiguredExchanges,
+  getConfiguredFunds,
+  getEnabledExchanges,
+  getEnabledFunds,
+  getFundsForExchange,
+  getDefaultPair,
+  updateExchangeConfig,
+  updateFundConfig,
+  setExchangeEnabled,
+  setExchangeDryRun,
+  addFund,
+  removeFund,
+} = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
@@ -19,25 +35,37 @@ module.exports = (app, deps) => {
   const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
   const getIPC = (exchange) => exchangeIPCMap[exchange] || exchangeIPCMap.coinbase;
 
-  // Get list of all exchanges
+  // Get list of all exchanges (with each fund flattened into the array).
+  // Returns one entry per (exchange, pair) — the legacy `name` field is the
+  // exchange name, and `pair`/`productId` identify the specific fund. The UI
+  // groups by exchange when needed but iterates funds 1:1 with this array.
   app.get('/api/exchanges', (req, res) => {
-    const configured = getConfiguredExchanges();
+    const funds = getConfiguredFunds();
     const enabled = getEnabledExchanges();
 
-    const exchanges = configured.map(name => {
-      const config = getExchangeConfig(name);
+    const exchanges = funds.map(({ exchange, pair }) => {
+      const config = getFundConfig(exchange, pair);
       const strategy = config.dcaStrategy || 'fixed';
       const regimeConfig = config.regime || {};
       const hasRegimeConfig = !!(config.regime && Object.keys(config.regime).length > 0);
+      // Surface fund lifecycle from saved regime state so the UI can render
+      // Draining/Closed badges without an extra round-trip.
+      const regimeState = stateTracker.loadRegimeState(exchange, pair);
+      const lifecycle = regimeState?.position?.lifecycle || 'active';
       return {
-        name,
+        name: exchange,
+        exchange,
+        pair,
         enabled: config.enabled,
         dryRun: config.dryRun,
         productId: config.productId,
         strategy,
         regimeEnabled: regimeConfig.enabled || false,
-        regimeRunning: shouldAutoResumeRegime(name),
+        regimeRunning: shouldAutoResumeRegime(exchange, pair),
         hasRegimeConfig,
+        lifecycle,
+        lifecycleChangedAt: regimeState?.position?.lifecycleChangedAt || null,
+        lifecycleReason: regimeState?.position?.lifecycleReason || null,
       };
     });
 
@@ -45,16 +73,140 @@ module.exports = (app, deps) => {
     res.json({ exchanges, enabled, simpleDcaEnabled: globalConfig.simpleDcaEnabled ?? false });
   });
 
-  // Get config for an exchange
+  // ========= Fund Management =========
+
+  // List funds (pairs) configured on an exchange
+  app.get('/api/:exchange/funds', (req, res) => {
+    const { exchange } = req.params;
+    const funds = getFundsForExchange(exchange);
+    res.json({
+      exchange,
+      defaultPair: getDefaultPair(exchange),
+      funds: funds.map((pair) => {
+        const config = getFundConfig(exchange, pair);
+        const regimeState = stateTracker.loadRegimeState(exchange, pair);
+        return {
+          pair,
+          productId: config.productId,
+          enabled: config.enabled,
+          dryRun: config.dryRun,
+          strategy: config.dcaStrategy || 'fixed',
+          regimeRunning: shouldAutoResumeRegime(exchange, pair),
+          lifecycle: regimeState?.position?.lifecycle || 'active',
+        };
+      }),
+    });
+  });
+
+  // Add a new fund (exchange + pair). Validates pair format, refuses
+  // duplicates, and verifies the productId is supported by the adapter.
+  app.post('/api/:exchange/funds', async (req, res) => {
+    const { exchange } = req.params;
+    const { pair, productId, totalAllocation, dryRun, regime } = req.body || {};
+
+    if (!pair || typeof pair !== 'string') {
+      return res.status(400).json({ success: false, error: 'pair is required (e.g. "ETH-USDC")' });
+    }
+
+    // Verify the exchange has an adapter (guards against bogus exchange names)
+    const { getAdapter } = require('../adapters');
+    let adapter;
+    try {
+      adapter = getAdapter(exchange);
+    } catch (err) {
+      return res.status(400).json({ success: false, error: `Unknown exchange: ${exchange}` });
+    }
+
+    // Verify the productId is valid on this exchange by hitting the API.
+    // This catches typos before we persist anything to disk.
+    const resolvedProductId = productId || pair;
+    if (adapter.hasValidKeys && adapter.hasValidKeys()) {
+      try {
+        const details = await adapter.getProductDetails(resolvedProductId);
+        if (!details) {
+          return res.status(400).json({ success: false, error: `Product ${resolvedProductId} not found on ${exchange}` });
+        }
+      } catch (err) {
+        return res.status(400).json({ success: false, error: `Failed to verify ${resolvedProductId} on ${exchange}: ${err.message}` });
+      }
+    }
+
+    // Persist the new fund
+    try {
+      const initialConfig = {
+        productId: resolvedProductId,
+        enabled: false, // Operator must explicitly enable
+        dryRun: dryRun !== false, // Default to dry-run for safety
+      };
+      if (typeof totalAllocation === 'number' && totalAllocation > 0) {
+        initialConfig.totalAllocation = totalAllocation;
+      }
+      if (regime && typeof regime === 'object') {
+        initialConfig.regime = regime;
+      }
+      addFund(exchange, pair, initialConfig);
+      log('INFO', `🆕 [${exchange}/${pair}] Fund created (productId=${resolvedProductId}, dryRun=${initialConfig.dryRun})`);
+      res.json({
+        success: true,
+        exchange,
+        pair,
+        productId: resolvedProductId,
+        config: getFundConfig(exchange, pair),
+      });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
+  // Remove a fund. Refuses unless the fund is closed (lifecycle === 'closed')
+  // and the engine is not running. Does NOT delete on-disk state files —
+  // operator must remove data/<exchange>/<pair>/ manually if desired.
+  app.delete('/api/:exchange/funds/:pair', (req, res) => {
+    const { exchange, pair } = req.params;
+    const regimeState = stateTracker.loadRegimeState(exchange, pair);
+    const lifecycle = regimeState?.position?.lifecycle || 'active';
+    if (lifecycle !== 'closed') {
+      return res.status(400).json({
+        success: false,
+        error: `Refusing to remove fund: lifecycle is '${lifecycle}'. Close the fund first via POST /api/${exchange}/regime/close, then wait for it to drain.`,
+      });
+    }
+    if (shouldAutoResumeRegime(exchange, pair)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Refusing to remove fund: regime engine is still flagged as running. Stop it first.',
+      });
+    }
+    try {
+      removeFund(exchange, pair);
+      log('INFO', `🗑️  [${exchange}/${pair}] Fund removed from config`);
+      res.json({
+        success: true,
+        exchange,
+        pair,
+        note: `On-disk state at data/${exchange}/${pair}/ was NOT deleted. Remove manually if no longer needed.`,
+      });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
+  // Resolve the pair from request (?pair= query param) defaulting to the
+  // exchange's default pair. Used by all the per-fund endpoints below.
+  const getPair = (req) => req.query?.pair || getDefaultPair(req.params.exchange);
+
+  // Get config for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
-    const config = getExchangeConfig(exchange);
+    const pair = getPair(req);
+    const config = getFundConfig(exchange, pair);
     res.json(config);
   });
 
-  // Update config for an exchange
+  // Update config for an exchange/fund (?pair= optional)
   app.put('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
+    const pair = getPair(req);
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
@@ -63,39 +215,40 @@ module.exports = (app, deps) => {
       updates.regime = req.body.regime;
     }
 
-    const config = updateExchangeConfig(exchange, updates);
+    updateFundConfig(exchange, pair, updates);
 
     if (updates.regime) {
-      getIPC(exchange).request('regime:update-config', updates.regime, exchange).catch(() => {});
+      getIPC(exchange).request('regime:update-config', updates.regime, exchange, pair).catch(() => {});
     }
 
-    res.json({ success: true, config: config.exchanges[exchange] });
+    res.json({ success: true, config: getFundConfig(exchange, pair) });
   });
 
-  // Toggle enabled/dryRun for an exchange
+  // Toggle enabled/dryRun for an exchange/fund (?pair= optional)
   app.patch('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
+    const pair = getPair(req);
     const { enabled, dryRun } = req.body;
 
     if (typeof enabled === 'boolean') {
-      setExchangeEnabled(exchange, enabled);
-      log('INFO', `[${exchange}] Trading automation ${enabled ? 'ENABLED' : 'DISABLED'}`);
+      setExchangeEnabled(exchange, pair, enabled);
+      log('INFO', `[${exchange}/${pair}] Trading automation ${enabled ? 'ENABLED' : 'DISABLED'}`);
     }
 
     if (typeof dryRun === 'boolean') {
-      setExchangeDryRun(exchange, dryRun);
-      log('INFO', `[${exchange}] Dry-run mode ${dryRun ? 'ENABLED' : 'DISABLED'}`);
+      setExchangeDryRun(exchange, pair, dryRun);
+      log('INFO', `[${exchange}/${pair}] Dry-run mode ${dryRun ? 'ENABLED' : 'DISABLED'}`);
     }
 
-    const config = getExchangeConfig(exchange);
-    res.json({ success: true, config });
+    res.json({ success: true, config: getFundConfig(exchange, pair) });
   });
 
-  // Get state for an exchange
+  // Get state for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/state', (req, res) => {
     const { exchange } = req.params;
-    const config = getExchangeConfig(exchange);
-    const state = stateTracker.loadState(config, exchange);
+    const pair = getPair(req);
+    const config = getFundConfig(exchange, pair);
+    const state = stateTracker.loadState(config, exchange, pair);
     res.json(state);
   });
 
@@ -110,10 +263,11 @@ module.exports = (app, deps) => {
   // Get live status for an exchange
   app.get('/api/:exchange/status', async (req, res) => {
     const { exchange } = req.params;
+    const pair = getPair(req);
     const { getAdapter } = require('../adapters');
 
-    const config = getExchangeConfig(exchange);
-    const state = stateTracker.loadState(config, exchange);
+    const config = getFundConfig(exchange, pair);
+    const state = stateTracker.loadState(config, exchange, pair);
 
     let currentPrice = 0;
     let quoteBalance = { available: 0, hold: 0 };
@@ -134,12 +288,13 @@ module.exports = (app, deps) => {
         assetBalance = await adapter.getAccountBalance(config.productId.split(/[-_]/)[0]);
       } catch (err) {
         apiError = err.message || 'API connection failed';
-        log('ERROR', `[${exchange}] Status check failed: ${apiError}`);
+        log('ERROR', `[${exchange}/${pair}] Status check failed: ${apiError}`);
       }
     }
 
     res.json({
       exchange,
+      pair,
       currentPrice,
       quoteBalance,
       assetBalance,
@@ -152,11 +307,12 @@ module.exports = (app, deps) => {
     });
   });
 
-  // Get summary for an exchange
+  // Get summary for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/summary', (req, res) => {
     const { exchange } = req.params;
-    const config = getExchangeConfig(exchange);
-    const state = stateTracker.loadState(config, exchange);
+    const pair = getPair(req);
+    const config = getFundConfig(exchange, pair);
+    const state = stateTracker.loadState(config, exchange, pair);
     const logFile = getLogFile(exchange);
     const transactions = parseTSV(logFile);
 

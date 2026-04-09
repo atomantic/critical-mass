@@ -389,8 +389,10 @@ describe('Fill Ledger', () => {
     ledger1.ingestFill(makeBuyFill({ tradeId: 'persist-buy-1', tradeTime: '2025-01-01T00:00:00Z' }));
     ledger1.ingestFill(makeBuyFill({ tradeId: 'persist-buy-2', tradeTime: '2025-01-01T01:00:00Z' }));
 
-    // Verify file exists on disk
-    const filePath = path.join(tmpDir, exchange, 'fill-ledger.json');
+    // Verify file exists on disk under the per-fund subdirectory.
+    // (Test exchanges have no pair config, so getDefaultPair() returns null
+    // and getFundDataDir falls back to a 'default' subdirectory.)
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
     assert.ok(fs.existsSync(filePath));
 
     // Create new instance for the same exchange — it should load from disk

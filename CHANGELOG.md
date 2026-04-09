@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Multi-pair funds (BREAKING DATA LAYOUT)** — A "fund" is now identified by `(exchange, pair)` instead of just `exchange`. One exchange can host multiple funds (e.g. BTC-USDC and ETH-USDC on Coinbase), each with its own regime config, state, fill ledger, lifecycle, and dashboard. **Requires a one-time on-disk migration** that runs automatically on engine startup. **You must stop the engines before pulling this version** — see `UPGRADE.md` for instructions. Existing single-pair installs continue to work unchanged after migration.
+  - New REST endpoints: `GET /api/:exchange/funds`, `POST /api/:exchange/funds`, `DELETE /api/:exchange/funds/:pair`
+  - All existing per-exchange routes accept an optional `?pair=` query parameter; default falls back to the exchange's first/legacy pair
+  - New "Add Fund" button in the admin Overview opens a modal to create a new fund on an existing exchange
+- **Drain-and-Close fund lifecycle** — Each fund has a `lifecycle` field (`active` / `draining` / `closed`). The "Close Fund" button in the admin header marks the fund draining: blocks new entries immediately, leaves the active take-profit order in place, and when the cycle's TP fills the engine auto-stops and the fund transitions to `closed`. Reopening requires an explicit click. New IPC channels: `regime:close`, `regime:reopen`. New REST endpoints: `POST /api/:exchange/regime/close`, `POST /api/:exchange/regime/reopen`.
 - **`simpleDcaEnabled` global config flag** - Gates simple DCA strategy behind opt-in flag (default: false); admin UI hides DCA routes/selector when disabled, API guards DCA-only endpoints
 - **`onEntryCancelled` callback in order executor** - Regime engine now cleans up pendingEntryOrders when entries are cancelled (stale timeout, refresh, or external cancel)
 - **Stale pending-entry purge on engine startup** - Removes saved pending entries that were filled/cancelled while engine was offline
