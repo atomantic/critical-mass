@@ -398,35 +398,187 @@ const loadConfig = () => {
   return normalizeToMultiExchange(raw);
 };
 
-/**
- * Get configuration for a specific exchange
- * @param {string} exchange - Exchange name
- * @returns {ExchangeConfig} Exchange configuration with defaults applied
- */
-const getExchangeConfig = (exchange) => {
-  const config = loadConfig();
-  const exchangeConfig = config.exchanges?.[exchange] || {};
+// ============================================================================
+// Multi-Pair (Fund) Helpers
+//
+// A "fund" is identified by (exchange, pair). One exchange can host multiple
+// funds, each with its own productId, regime config, allocation, lifecycle,
+// and on-disk state. The on-disk config supports two layouts for an
+// exchange's block:
+//
+//   Legacy (single fund per exchange):
+//     { exchanges: { coinbase: { productId, regime, ...flatFields } } }
+//
+//   Nested (multi-pair):
+//     { exchanges: { coinbase: { pairs: {
+//         "BTC-USDC": { productId, regime, ...flatFields },
+//         "ETH-USDC": { productId, regime, ...flatFields },
+//     } } } }
+//
+// All readers use `normalizeExchangeBlock` so both layouts present a uniform
+// `pairs` map internally. Writers (addFund/updateFundConfig) auto-convert from
+// legacy → nested when a second pair is added.
+// ============================================================================
 
-  // Merge with defaults and global settings
+/** Keys that stay at the exchange level (shared across all funds on that exchange) */
+const EXCHANGE_LEVEL_KEYS = new Set([
+  'pairs',
+  'schedulerInterval',
+  'aggressivenessPresets',
+]);
+
+/**
+ * Normalize an exchange block to its `{ pairs, ...exchangeLevelFields }` form.
+ * If the block is in legacy flat format, synthesizes `pairs[productId]` from
+ * the flat fund-level fields. The original block is NOT mutated.
+ *
+ * @param {Object} exchangeBlock - Raw exchange config block
+ * @returns {Object} { pairs: {pair: fundBlock}, ...exchangeLevelFields }
+ */
+const normalizeExchangeBlock = (exchangeBlock) => {
+  if (!exchangeBlock || typeof exchangeBlock !== 'object') {
+    return { pairs: {} };
+  }
+  if (exchangeBlock.pairs && typeof exchangeBlock.pairs === 'object') {
+    // Already in nested form — return shallow copy with pairs preserved
+    return exchangeBlock;
+  }
+  // Legacy flat → synthesize a single-fund pairs map
+  const productId = exchangeBlock.productId || DEFAULTS.productId;
+  const fundBlock = {};
+  const exchangeLevel = {};
+  for (const [key, value] of Object.entries(exchangeBlock)) {
+    if (EXCHANGE_LEVEL_KEYS.has(key)) {
+      exchangeLevel[key] = value;
+    } else {
+      fundBlock[key] = value;
+    }
+  }
+  return {
+    ...exchangeLevel,
+    pairs: {
+      [productId]: fundBlock,
+    },
+  };
+};
+
+/**
+ * Get the default pair for an exchange. For legacy flat config this is the
+ * exchange's productId; for nested config it is the first key in `pairs`.
+ *
+ * @param {string} exchange - Exchange name
+ * @returns {string|null} Default pair name, or null if exchange has no funds
+ */
+const getDefaultPair = (exchange) => {
+  const config = loadConfig();
+  const block = config.exchanges?.[exchange];
+  if (!block) return null;
+  if (block.pairs && typeof block.pairs === 'object') {
+    const keys = Object.keys(block.pairs);
+    return keys.length > 0 ? keys[0] : null;
+  }
+  return block.productId || null;
+};
+
+/**
+ * Get all configured funds across all exchanges.
+ * @returns {Array<{exchange: string, pair: string}>}
+ */
+const getConfiguredFunds = () => {
+  const config = loadConfig();
+  const funds = [];
+  for (const [exchange, block] of Object.entries(config.exchanges || {})) {
+    const normalized = normalizeExchangeBlock(block);
+    for (const pair of Object.keys(normalized.pairs || {})) {
+      funds.push({ exchange, pair });
+    }
+  }
+  return funds;
+};
+
+/**
+ * Get all configured funds for a specific exchange.
+ * @param {string} exchange
+ * @returns {string[]} List of pair names
+ */
+const getFundsForExchange = (exchange) => {
+  const config = loadConfig();
+  const block = config.exchanges?.[exchange];
+  if (!block) return [];
+  const normalized = normalizeExchangeBlock(block);
+  return Object.keys(normalized.pairs || {});
+};
+
+/**
+ * Get the merged configuration for a specific fund (exchange + pair).
+ * Resolves the fund's pair-level block, merges with DEFAULTS, and applies
+ * interval normalization. If pair is omitted, falls back to the default pair.
+ *
+ * @param {string} exchange
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
+ * @returns {ExchangeConfig} Fund configuration with defaults applied
+ */
+const getFundConfig = (exchange, pair) => {
+  const config = loadConfig();
+  const block = config.exchanges?.[exchange] || {};
+  const normalized = normalizeExchangeBlock(block);
+  const resolvedPair = pair || Object.keys(normalized.pairs || {})[0];
+  const fundBlock = normalized.pairs?.[resolvedPair] || {};
+
   const merged = {
     ...DEFAULTS,
     ...config.global,
-    ...exchangeConfig,
+    ...fundBlock,
   };
 
-  // Apply interval normalization
   return normalizeIntervalConfig(merged);
 };
 
 /**
- * Get list of enabled exchanges
+ * Get configuration for a specific exchange (returns the default fund's config).
+ * Backwards-compat alias retained for legacy callers — new code should use
+ * `getFundConfig(exchange, pair)`.
+ *
+ * @param {string} exchange - Exchange name
+ * @returns {ExchangeConfig} Default fund's configuration with defaults applied
+ */
+const getExchangeConfig = (exchange) => getFundConfig(exchange);
+
+/**
+ * Get list of enabled exchanges (any exchange with at least one enabled fund).
  * @returns {string[]} List of enabled exchange names
  */
 const getEnabledExchanges = () => {
   const config = loadConfig();
-  return Object.entries(config.exchanges || {})
-    .filter(([_, cfg]) => cfg.enabled === true)
-    .map(([name]) => name);
+  const enabled = new Set();
+  for (const [name, block] of Object.entries(config.exchanges || {})) {
+    const normalized = normalizeExchangeBlock(block);
+    for (const fund of Object.values(normalized.pairs || {})) {
+      if (fund.enabled === true) {
+        enabled.add(name);
+        break;
+      }
+    }
+  }
+  return Array.from(enabled);
+};
+
+/**
+ * Get list of enabled funds across all exchanges.
+ * @returns {Array<{exchange: string, pair: string}>}
+ */
+const getEnabledFunds = () => {
+  const config = loadConfig();
+  const funds = [];
+  for (const [exchange, block] of Object.entries(config.exchanges || {})) {
+    const normalized = normalizeExchangeBlock(block);
+    for (const [pair, fundBlock] of Object.entries(normalized.pairs || {})) {
+      if (fundBlock.enabled === true) {
+        funds.push({ exchange, pair });
+      }
+    }
+  }
+  return funds;
 };
 
 /**
@@ -439,23 +591,121 @@ const getConfiguredExchanges = () => {
 };
 
 /**
- * Update configuration for a specific exchange
+ * Update fund-level configuration for a specific (exchange, pair).
+ * Auto-converts the exchange's block from legacy flat → nested if needed.
+ *
+ * @param {string} exchange
+ * @param {string} pair - Pair name
+ * @param {Partial<ExchangeConfig>} updates - Fund-level config updates
+ * @returns {MultiExchangeConfig} Updated full configuration
+ */
+const updateFundConfig = (exchange, pair, updates) => {
+  const config = loadConfig();
+  if (!config.exchanges) config.exchanges = {};
+
+  // Seed DEFAULTS for brand-new exchange entries (preserves legacy behavior:
+  // updateExchangeConfig('kraken', {...}) used to start from DEFAULTS).
+  const isNew = !config.exchanges[exchange];
+  const block = isNew ? { ...DEFAULTS } : config.exchanges[exchange];
+
+  // If the block is in legacy flat form AND the target pair is the legacy
+  // pair (or no pairs map exists yet), update in place to avoid converting
+  // the on-disk schema unnecessarily. Otherwise convert to nested.
+  const isLegacy = !block.pairs || typeof block.pairs !== 'object';
+  const legacyPair = block.productId || DEFAULTS.productId;
+
+  if (isLegacy && pair === legacyPair) {
+    // Update flat fields directly — keep legacy layout
+    config.exchanges[exchange] = { ...block, ...updates };
+  } else {
+    // Convert to nested form (idempotent if already nested)
+    const normalized = normalizeExchangeBlock(block);
+    const fundBlock = normalized.pairs[pair] || {};
+    normalized.pairs[pair] = { ...fundBlock, ...updates };
+    config.exchanges[exchange] = normalized;
+  }
+
+  saveConfig(config);
+  return config;
+};
+
+/**
+ * Update configuration for a specific exchange (legacy single-fund alias).
+ * Updates the exchange's default fund. New code should use updateFundConfig.
+ *
  * @param {string} exchange - Exchange name
  * @param {Partial<ExchangeConfig>} updates - Configuration updates
  * @returns {MultiExchangeConfig} Updated full configuration
  */
 const updateExchangeConfig = (exchange, updates) => {
-  const config = loadConfig();
+  const pair = getDefaultPair(exchange) || DEFAULTS.productId;
+  return updateFundConfig(exchange, pair, updates);
+};
 
-  if (!config.exchanges[exchange]) {
-    config.exchanges[exchange] = { ...DEFAULTS };
+/**
+ * Add a new fund (exchange + pair). The exchange must already exist (i.e.
+ * an adapter is configured for it). Refuses to overwrite an existing fund.
+ *
+ * @param {string} exchange
+ * @param {string} pair
+ * @param {Partial<ExchangeConfig>} initialConfig - Initial fund config (productId, enabled, dryRun, etc.)
+ * @returns {MultiExchangeConfig} Updated full configuration
+ * @throws {Error} If the exchange is unknown or the fund already exists
+ */
+const addFund = (exchange, pair, initialConfig = {}) => {
+  if (!exchange || typeof exchange !== 'string') {
+    throw new Error('exchange is required');
+  }
+  if (!pair || typeof pair !== 'string') {
+    throw new Error('pair is required');
+  }
+  if (!/^[A-Z0-9]+[-_][A-Z0-9]+$/.test(pair)) {
+    throw new Error(`Invalid pair format: ${pair} (expected e.g. BTC-USDC, ETHUSD, CRO_USD)`);
+  }
+  const existing = getFundsForExchange(exchange);
+  if (existing.includes(pair)) {
+    throw new Error(`Fund ${exchange}/${pair} already exists`);
   }
 
-  config.exchanges[exchange] = {
-    ...config.exchanges[exchange],
-    ...updates,
+  // Build the new fund block
+  const fundBlock = {
+    enabled: false,         // safer default — operator must explicitly enable
+    dryRun: true,           // safer default
+    productId: pair,        // pair IS the productId
+    ...initialConfig,
   };
 
+  return updateFundConfig(exchange, pair, fundBlock);
+};
+
+/**
+ * Remove a fund (exchange + pair). Refuses to remove the last remaining fund
+ * on an exchange — at least one fund must remain. Use this only after the
+ * fund has been closed (lifecycle = closed) and its on-disk state archived
+ * elsewhere; this function only mutates config, not state files.
+ *
+ * @param {string} exchange
+ * @param {string} pair
+ * @returns {MultiExchangeConfig} Updated full configuration
+ */
+const removeFund = (exchange, pair) => {
+  const config = loadConfig();
+  const block = config.exchanges?.[exchange];
+  if (!block) {
+    throw new Error(`Exchange ${exchange} not found`);
+  }
+
+  const existing = getFundsForExchange(exchange);
+  if (!existing.includes(pair)) {
+    throw new Error(`Fund ${exchange}/${pair} not found`);
+  }
+  if (existing.length === 1) {
+    throw new Error(`Cannot remove the last remaining fund on ${exchange}`);
+  }
+
+  const normalized = normalizeExchangeBlock(block);
+  delete normalized.pairs[pair];
+  config.exchanges[exchange] = normalized;
   saveConfig(config);
   return config;
 };
@@ -478,23 +728,31 @@ const updateGlobalConfig = (updates) => {
 };
 
 /**
- * Enable or disable an exchange
+ * Enable or disable a fund (or the default fund of an exchange).
  * @param {string} exchange - Exchange name
- * @param {boolean} enabled - Whether to enable
+ * @param {boolean|string} enabledOrPair - 2-arg form: enabled. 3-arg form: pair name.
+ * @param {boolean} [maybeEnabled] - 3-arg form: enabled
  * @returns {MultiExchangeConfig} Updated configuration
  */
-const setExchangeEnabled = (exchange, enabled) => {
-  return updateExchangeConfig(exchange, { enabled });
+const setExchangeEnabled = (exchange, enabledOrPair, maybeEnabled) => {
+  if (typeof enabledOrPair === 'string') {
+    return updateFundConfig(exchange, enabledOrPair, { enabled: maybeEnabled });
+  }
+  return updateExchangeConfig(exchange, { enabled: enabledOrPair });
 };
 
 /**
- * Set dry-run mode for an exchange
+ * Set dry-run mode for a fund (or the default fund of an exchange).
  * @param {string} exchange - Exchange name
- * @param {boolean} dryRun - Whether to enable dry-run
+ * @param {boolean|string} dryRunOrPair - 2-arg form: dryRun. 3-arg form: pair name.
+ * @param {boolean} [maybeDryRun] - 3-arg form: dryRun
  * @returns {MultiExchangeConfig} Updated configuration
  */
-const setExchangeDryRun = (exchange, dryRun) => {
-  return updateExchangeConfig(exchange, { dryRun });
+const setExchangeDryRun = (exchange, dryRunOrPair, maybeDryRun) => {
+  if (typeof dryRunOrPair === 'string') {
+    return updateFundConfig(exchange, dryRunOrPair, { dryRun: maybeDryRun });
+  }
+  return updateExchangeConfig(exchange, { dryRun: dryRunOrPair });
 };
 
 /**
@@ -563,14 +821,20 @@ const getGlobalConfig = () => {
 };
 
 /**
- * Get regime strategy configuration for an exchange
+ * Get regime strategy configuration for a specific fund (exchange + pair).
+ * If pair is omitted, falls back to the exchange's default fund.
+ *
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {RegimeStrategyConfig} Regime configuration with defaults applied
  */
-const getRegimeConfig = (exchange) => {
+const getRegimeConfig = (exchange, pair) => {
   const config = loadConfig();
-  const exchangeConfig = config.exchanges?.[exchange] || {};
-  const regimeConfig = exchangeConfig.regime || {};
+  const block = config.exchanges?.[exchange] || {};
+  const normalized = normalizeExchangeBlock(block);
+  const resolvedPair = pair || Object.keys(normalized.pairs || {})[0];
+  const fundBlock = normalized.pairs?.[resolvedPair] || {};
+  const regimeConfig = fundBlock.regime || {};
 
   const merged = {
     ...REGIME_DEFAULTS,
@@ -586,24 +850,49 @@ const getRegimeConfig = (exchange) => {
 };
 
 /**
- * Update regime configuration for an exchange
+ * Update regime configuration for a specific fund (exchange + pair).
+ * If pair is omitted, updates the exchange's default fund.
+ *
  * @param {string} exchange - Exchange name
- * @param {Partial<RegimeStrategyConfig>} updates - Regime config updates
+ * @param {string|Partial<RegimeStrategyConfig>} pairOrUpdates - Pair name (3-arg form) or updates (legacy 2-arg form)
+ * @param {Partial<RegimeStrategyConfig>} [maybeUpdates] - Regime config updates (3-arg form)
  * @returns {MultiExchangeConfig} Updated full configuration
  */
-const updateRegimeConfig = (exchange, updates) => {
-  const config = loadConfig();
-
-  if (!config.exchanges[exchange]) {
-    config.exchanges[exchange] = { ...DEFAULTS };
+const updateRegimeConfig = (exchange, pairOrUpdates, maybeUpdates) => {
+  // Support both signatures:
+  //   updateRegimeConfig(exchange, updates)            -> targets default pair
+  //   updateRegimeConfig(exchange, pair, updates)
+  let pair;
+  let updates;
+  if (typeof pairOrUpdates === 'string') {
+    pair = pairOrUpdates;
+    updates = maybeUpdates || {};
+  } else {
+    pair = getDefaultPair(exchange) || DEFAULTS.productId;
+    updates = pairOrUpdates || {};
   }
 
-  const merged = {
-    ...(config.exchanges[exchange].regime || {}),
-    ...updates,
-  };
+  const config = loadConfig();
+  if (!config.exchanges) config.exchanges = {};
 
-  config.exchanges[exchange].regime = merged;
+  // Seed DEFAULTS for brand-new exchange entries (legacy behavior).
+  const isNew = !config.exchanges[exchange];
+  const block = isNew ? { ...DEFAULTS } : config.exchanges[exchange];
+  const isLegacy = !block.pairs || typeof block.pairs !== 'object';
+  const legacyPair = block.productId || DEFAULTS.productId;
+
+  if (isLegacy && pair === legacyPair) {
+    // Update flat regime in place
+    const merged = { ...(block.regime || {}), ...updates };
+    config.exchanges[exchange] = { ...block, regime: merged };
+  } else {
+    // Convert to nested form (idempotent if already nested)
+    const normalized = normalizeExchangeBlock(block);
+    if (!normalized.pairs[pair]) normalized.pairs[pair] = {};
+    const merged = { ...(normalized.pairs[pair].regime || {}), ...updates };
+    normalized.pairs[pair].regime = merged;
+    config.exchanges[exchange] = normalized;
+  }
 
   saveConfig(config);
   return config;
@@ -995,6 +1284,16 @@ module.exports = {
   getGlobalConfig,
   isMultiExchangeConfig,
   normalizeToMultiExchange,
+  // Multi-pair (fund) helpers
+  normalizeExchangeBlock,
+  getDefaultPair,
+  getConfiguredFunds,
+  getFundsForExchange,
+  getEnabledFunds,
+  getFundConfig,
+  updateFundConfig,
+  addFund,
+  removeFund,
   // Regime strategy
   getRegimeConfig,
   updateRegimeConfig,

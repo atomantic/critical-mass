@@ -15,22 +15,28 @@ const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
-const { getRegimeConfig, getExchangeConfig } = require('./config-utils');
+const { getRegimeConfig, getFundConfig, getDefaultPair } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 
-// Store active market data services by exchange
+// Store active market data services keyed by `${exchange}::${pair}`
 const marketDataServices = new Map();
 
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
 const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 
+const serviceKey = (exchange, pair) => `${exchange}::${pair || getDefaultPair(exchange) || 'default'}`;
+
 /**
- * Create a market data service for an exchange
+ * Create a market data service for a fund (exchange + pair).
+ * Each fund needs its own service because the WebSocket feed subscribes to a
+ * single product per connection.
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {Object} Market data service instance
  */
-const createMarketDataService = (exchange) => {
+const createMarketDataService = (exchange, pair) => {
+  const resolvedPair = pair || getDefaultPair(exchange);
   let wsFeed = null;
   let regimeDetector = null;
   let fillLedger = null;
@@ -101,15 +107,15 @@ const createMarketDataService = (exchange) => {
       return { success: false, error: 'No API credentials' };
     }
 
-    const config = getRegimeConfig(exchange);
-    const exchangeConfig = getExchangeConfig(exchange);
-    productId = config.productId || exchangeConfig.productId || 'BTC-USDC';
+    const config = getRegimeConfig(exchange, resolvedPair);
+    const fundConfig = getFundConfig(exchange, resolvedPair);
+    productId = fundConfig.productId || resolvedPair || 'BTC-USDC';
 
     // Create regime detector for passive monitoring
     regimeDetector = createRegimeDetector(exchange, config);
 
     // Load any tracked orders from saved regime state
-    const savedState = loadRegimeState(exchange);
+    const savedState = loadRegimeState(exchange, resolvedPair);
     if (savedState.position?.activeTpOrderId) {
       trackedOrders.set(savedState.position.activeTpOrderId, {
         type: 'take_profit',
@@ -122,7 +128,7 @@ const createMarketDataService = (exchange) => {
     }
 
     // Create fill ledger for order fill tracking
-    fillLedger = createFillLedger(exchange, productId);
+    fillLedger = createFillLedger(exchange, productId, resolvedPair);
 
     // Create WebSocket feed
     wsFeed = createWebSocketFeed(exchange, {
@@ -172,7 +178,7 @@ const createMarketDataService = (exchange) => {
 
     // Use cached regime state to avoid disk reads every second
     if (!cachedRegimeState || now - cachedRegimeStateTime > REGIME_STATE_CACHE_MS) {
-      cachedRegimeState = loadRegimeState(exchange);
+      cachedRegimeState = loadRegimeState(exchange, resolvedPair);
       cachedRegimeStateTime = now;
     }
 
@@ -485,44 +491,48 @@ const createMarketDataService = (exchange) => {
 };
 
 /**
- * Start market data service for an exchange
+ * Start market data service for a fund (exchange + pair).
+ * @param {string} exchange
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  */
-const startMarketDataService = async (exchange) => {
+const startMarketDataService = async (exchange, pair) => {
   // Only supported for certain exchanges
   if (!SUPPORTED_EXCHANGES.includes(exchange)) {
     return { success: false, error: `Market data service not supported for ${exchange}` };
   }
 
-  if (marketDataServices.has(exchange)) {
+  const key = serviceKey(exchange, pair);
+  if (marketDataServices.has(key)) {
     return { success: true, message: 'Already running' };
   }
 
-  const service = createMarketDataService(exchange);
+  const service = createMarketDataService(exchange, pair);
   const result = await service.start();
 
   if (result.success) {
-    marketDataServices.set(exchange, service);
+    marketDataServices.set(key, service);
   }
 
   return result;
 };
 
 /**
- * Stop market data service for an exchange
+ * Stop market data service for a fund (exchange + pair).
  */
-const stopMarketDataService = (exchange) => {
-  const service = marketDataServices.get(exchange);
+const stopMarketDataService = (exchange, pair) => {
+  const key = serviceKey(exchange, pair);
+  const service = marketDataServices.get(key);
   if (service) {
     service.stop();
-    marketDataServices.delete(exchange);
+    marketDataServices.delete(key);
   }
 };
 
 /**
- * Get market data service for an exchange
+ * Get market data service for a fund (exchange + pair).
  */
-const getMarketDataService = (exchange) => {
-  return marketDataServices.get(exchange);
+const getMarketDataService = (exchange, pair) => {
+  return marketDataServices.get(serviceKey(exchange, pair));
 };
 
 /**

@@ -20,8 +20,12 @@ const path = require('path');
 const { log } = require('../src/logger');
 const {
   getExchangeConfig,
+  getFundConfig,
   getRegimeConfig,
   getConfiguredExchanges,
+  getConfiguredFunds,
+  getFundsForExchange,
+  getDefaultPair,
 } = require('../src/config-utils');
 const { createRegimeEngine } = require('../src/regime-engine');
 const {
@@ -35,6 +39,7 @@ const { createFillLedger } = require('../src/fill-ledger');
 const { createIPCServer } = require('../src/ipc/ipc-server');
 const { createSocketIOProxy } = require('../src/ipc/socket-io-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime } = require('../src/shared-utils');
+const { needsPairMigration, migrateExchangeToPairs } = require('../src/migration');
 
 // ============ Configuration ============
 
@@ -48,97 +53,148 @@ const ipcServer = createIPCServer(IPC_PORT, ENGINE_NAME);
 const ioProxy = createSocketIOProxy(ipcServer);
 
 // ============ Engine State ============
+//
+// Each fund (exchange + pair) has its own regime engine instance and its own
+// standalone fill ledger. Maps are keyed by `${exchange}::${pair}` so multiple
+// funds can coexist within the same engine process.
 
-/** @type {Map<string, Object>} Active regime engines by exchange */
+/** Resolve pair from IPC arg, falling back to the exchange's default pair. */
+const resolvePair = (exchange, pair) => pair || getDefaultPair(exchange);
+
+/** Compose a stable Map key for (exchange, pair) lookups. */
+const fundKey = (exchange, pair) => `${exchange}::${pair}`;
+
+/** Format a human-readable label for log lines and event payloads. */
+const fundLabel = (exchange, pair) => `${exchange}/${pair}`;
+
+/** @type {Map<string, Object>} Active regime engines keyed by `${exchange}::${pair}` */
 const regimeEngines = new Map();
 
-/** @type {Map<string, Object>} Cached standalone fill ledgers */
+/** @type {Map<string, Object>} Cached standalone fill ledgers keyed by `${exchange}::${pair}` */
 const standaloneLedgers = new Map();
 
-const getStandaloneLedger = (exchange) => {
-  if (!standaloneLedgers.has(exchange)) {
-    const exchConfig = getExchangeConfig(exchange);
-    standaloneLedgers.set(exchange, createFillLedger(exchange, exchConfig?.productId));
+const getStandaloneLedger = (exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const key = fundKey(exchange, resolvedPair);
+  if (!standaloneLedgers.has(key)) {
+    const fundConfig = getFundConfig(exchange, resolvedPair);
+    standaloneLedgers.set(key, createFillLedger(exchange, fundConfig?.productId, resolvedPair));
   }
-  return standaloneLedgers.get(exchange);
+  return standaloneLedgers.get(key);
 };
 
-const invalidateStandaloneLedger = (exchange) => {
-  standaloneLedgers.delete(exchange);
+const invalidateStandaloneLedger = (exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  standaloneLedgers.delete(fundKey(exchange, resolvedPair));
 };
 
 // ============ Engine Callbacks ============
 
-const wireMarketDataCallbacks = (exchange) => {
-  const service = getMarketDataService(exchange);
+const wireMarketDataCallbacks = (exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const service = getMarketDataService(exchange, resolvedPair);
   if (!service) return;
   service.setOnStatusUpdate((status) => {
-    getChartDataBuffer(exchange).processStatus(status);
-    ioProxy.emit('regime:status', { exchange, status });
+    getChartDataBuffer(exchange, resolvedPair).processStatus(status);
+    ioProxy.emit('regime:status', { exchange, pair: resolvedPair, status });
   });
 };
 
-const createEngineCallbacks = (exchange) => ({
+const createEngineCallbacks = (exchange, pair) => ({
   onTradeEvent: (event) => ioProxy.emit('trade:event', event),
   onRegimeChange: (prevMode, newMode, reason) =>
-    ioProxy.emit('regime:change', { exchange, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
+    ioProxy.emit('regime:change', { exchange, pair, prevMode, newMode, reason, message: `${prevMode} -> ${newMode}` }),
   onHealthChange: (mode, reason) =>
-    ioProxy.emit('regime:health', { exchange, mode, reason, message: reason || `Health: ${mode}` }),
+    ioProxy.emit('regime:health', { exchange, pair, mode, reason, message: reason || `Health: ${mode}` }),
   onPositionUpdate: (data) =>
-    ioProxy.emit('regime:position', { exchange, ...data }),
+    ioProxy.emit('regime:position', { exchange, pair, ...data }),
   onStatusUpdate: (status) => {
-    getChartDataBuffer(exchange).processStatus(status);
-    ioProxy.emit('regime:status', { exchange, status });
+    getChartDataBuffer(exchange, pair).processStatus(status);
+    ioProxy.emit('regime:status', { exchange, pair, status });
+  },
+  // Fired by the regime engine when a draining fund's TP fills and lifecycle
+  // transitions to 'closed'. We stop the engine here (rather than from inside
+  // the engine itself) to avoid re-entrancy in the cycle-completion path.
+  onLifecycleClosed: async () => {
+    const label = fundLabel(exchange, pair);
+    log('INFO', `🛑 [${label}] Lifecycle closed — stopping regime engine`);
+    const key = fundKey(exchange, pair);
+    const engine = regimeEngines.get(key);
+    if (!engine) return;
+    try {
+      await engine.stop();
+    } catch (err) {
+      log('ERROR', `❌ [${label}] Error stopping engine after lifecycle close: ${err.message}`);
+    }
+    regimeEngines.delete(key);
+    invalidateStandaloneLedger(exchange, pair);
+    saveRegimeRunningFlag(exchange, pair, false);
+    ioProxy.emit('regime:closed', { exchange, pair });
   },
 });
 
 // ============ IPC Request Handlers ============
 
 // Regime engine control
-ipcServer.onRequest('regime:start', async (payload, exchange) => {
-  if (regimeEngines.has(exchange)) {
-    return { success: false, error: 'Regime engine already running for this exchange' };
+ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const key = fundKey(exchange, resolvedPair);
+  const label = fundLabel(exchange, resolvedPair);
+
+  if (regimeEngines.has(key)) {
+    return { success: false, error: 'Regime engine already running for this fund' };
+  }
+
+  // Refuse to start a closed fund — operator must reopen it first.
+  const { loadRegimeState } = require('../src/state-tracker');
+  const savedState = loadRegimeState(exchange, resolvedPair);
+  if (savedState?.position?.lifecycle === 'closed') {
+    return { success: false, error: 'Fund is closed — call regime:reopen before starting' };
   }
 
   const { getAdapter } = require('../src/adapters');
-  const exchangeConfig = getExchangeConfig(exchange);
+  const fundConfig = getFundConfig(exchange, resolvedPair);
   const adapter = getAdapter(exchange);
 
   if (!adapter.hasValidKeys || !adapter.hasValidKeys()) {
     return { success: false, error: 'API keys not configured for this exchange' };
   }
 
-  const engine = createRegimeEngine(exchange, exchangeConfig, createEngineCallbacks(exchange));
-  regimeEngines.set(exchange, engine);
+  const engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
+  regimeEngines.set(key, engine);
 
   const startResult = await engine.start();
 
   if (!startResult.success) {
-    regimeEngines.delete(exchange);
+    regimeEngines.delete(key);
     return { success: false, error: startResult.error || 'Failed to start regime engine' };
   }
 
-  stopMarketDataService(exchange);
-  invalidateStandaloneLedger(exchange);
-  saveRegimeRunningFlag(exchange, true);
+  stopMarketDataService(exchange, resolvedPair);
+  invalidateStandaloneLedger(exchange, resolvedPair);
+  saveRegimeRunningFlag(exchange, resolvedPair, true);
 
-  log('INFO', `🚀 [${exchange}] Regime engine started`);
-  return { success: true, exchange, status: engine.getStatus() };
+  log('INFO', `🚀 [${label}] Regime engine started`);
+  return { success: true, exchange, pair: resolvedPair, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:stop', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const key = fundKey(exchange, resolvedPair);
+  const label = fundLabel(exchange, resolvedPair);
+
+  const engine = regimeEngines.get(key);
   if (!engine) {
-    return { success: false, error: 'Regime engine not running for this exchange' };
+    return { success: false, error: 'Regime engine not running for this fund' };
   }
 
-  log('INFO', `🛑 [${exchange}] Stopping regime engine...`);
+  log('INFO', `🛑 [${label}] Stopping regime engine...`);
 
-  await startMarketDataService(exchange);
-  wireMarketDataCallbacks(exchange);
+  await startMarketDataService(exchange, resolvedPair);
+  wireMarketDataCallbacks(exchange, resolvedPair);
 
   const stopResult = await engine.stop().catch((err) => {
-    log('ERROR', `❌ [${exchange}] Error stopping engine: ${err.message}`);
+    log('ERROR', `❌ [${label}] Error stopping engine: ${err.message}`);
     return { error: err.message };
   });
 
@@ -146,24 +202,26 @@ ipcServer.onRequest('regime:stop', async (payload, exchange) => {
     return { success: false, error: stopResult.error };
   }
 
-  regimeEngines.delete(exchange);
-  invalidateStandaloneLedger(exchange);
-  saveRegimeRunningFlag(exchange, false);
+  regimeEngines.delete(key);
+  invalidateStandaloneLedger(exchange, resolvedPair);
+  saveRegimeRunningFlag(exchange, resolvedPair, false);
 
-  log('INFO', `✅ [${exchange}] Regime engine stopped successfully`);
-  return { success: true, exchange, stopped: true };
+  log('INFO', `✅ [${label}] Regime engine stopped successfully`);
+  return { success: true, exchange, pair: resolvedPair, stopped: true };
 });
 
-ipcServer.onRequest('regime:status', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const key = fundKey(exchange, resolvedPair);
+  const engine = regimeEngines.get(key);
 
   if (!engine) {
     const { loadRegimeState } = require('../src/state-tracker');
     const celestialHierarchy = require('../src/celestial-hierarchy');
-    const savedState = loadRegimeState(exchange);
+    const savedState = loadRegimeState(exchange, resolvedPair);
     const position = savedState?.position || null;
-    const config = getRegimeConfig(exchange);
-    const marketService = getMarketDataService(exchange);
+    const config = getRegimeConfig(exchange, resolvedPair);
+    const marketService = getMarketDataService(exchange, resolvedPair);
     const serviceStatus = marketService ? marketService.getStatus() : null;
 
     const bodies = position?.celestialBodies || [];
@@ -196,7 +254,7 @@ ipcServer.onRequest('regime:status', async (payload, exchange) => {
     const apy = position ? calculateApyMetrics(position, config, { lastPrice }) : {};
 
     return {
-      success: true, exchange, running: false,
+      success: true, exchange, pair: resolvedPair, running: false,
       status: {
         isRunning: false,
         market: serviceStatus?.market || null,
@@ -204,116 +262,170 @@ ipcServer.onRequest('regime:status', async (payload, exchange) => {
         position, celestial, apy,
         health: { mode: 'STOPPED' },
         isDryRun: savedState?.isDryRun || false,
+        lifecycle: {
+          lifecycle: position?.lifecycle || 'active',
+          lifecycleChangedAt: position?.lifecycleChangedAt || null,
+          lifecycleReason: position?.lifecycleReason || null,
+          lifecycleClosedCycle: position?.lifecycleClosedCycle || null,
+        },
       },
     };
   }
 
-  return { success: true, exchange, running: true, status: engine.getStatus() };
+  return { success: true, exchange, pair: resolvedPair, running: true, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:pause', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:pause', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   engine.pause(payload?.reason || 'Manual pause via API');
-  return { success: true, exchange, paused: true, status: engine.getStatus() };
+  return { success: true, exchange, pair: resolvedPair, paused: true, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:resume', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:resume', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   engine.resume();
-  return { success: true, exchange, resumed: true, status: engine.getStatus() };
+  return { success: true, exchange, pair: resolvedPair, resumed: true, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:force-regime', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+// Mark a fund as draining: blocks new entries, lets the current TP cycle
+// fill, then auto-stops the engine via the onLifecycleClosed callback.
+ipcServer.onRequest('regime:close', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
+  if (!engine) return { success: false, error: 'Regime engine not running' };
+  const result = engine.close(payload?.reason);
+  return { ...result, exchange, pair: resolvedPair, status: engine.getStatus() };
+});
+
+// Reopen a closed fund: transitions lifecycle 'closed' → 'active' on disk.
+// Does NOT restart the engine — operator must call regime:start afterwards.
+ipcServer.onRequest('regime:reopen', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  if (regimeEngines.has(fundKey(exchange, resolvedPair))) {
+    return { success: false, error: 'Engine is running — close it first or wait for it to drain' };
+  }
+  const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
+  const saved = loadRegimeState(exchange, resolvedPair);
+  if (!saved?.position) {
+    return { success: false, error: 'No saved regime state found' };
+  }
+  if (saved.position.lifecycle !== 'closed') {
+    return { success: false, error: `Fund is not closed (lifecycle=${saved.position.lifecycle || 'active'})` };
+  }
+  saved.position.lifecycle = 'active';
+  saved.position.lifecycleChangedAt = Date.now();
+  saved.position.lifecycleReason = null;
+  saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, resolvedPair);
+  log('INFO', `🔓 [${fundLabel(exchange, resolvedPair)}] Fund reopened — lifecycle=active`);
+  ioProxy.emit('regime:reopened', { exchange, pair: resolvedPair });
+  return { success: true, exchange, pair: resolvedPair, lifecycle: 'active' };
+});
+
+ipcServer.onRequest('regime:force-regime', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   engine.forceRegime(payload.regime, payload.reason || 'Forced via API');
-  return { success: true, exchange, regime: payload.regime, status: engine.getStatus() };
+  return { success: true, exchange, pair: resolvedPair, regime: payload.regime, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:resume-drawdown', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:resume-drawdown', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   const result = engine.forceResumeDrawdown();
-  return { success: result.success, exchange, message: result.message, status: engine.getStatus() };
+  return { success: result.success, exchange, pair: resolvedPair, message: result.message, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:preview-ladder', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:preview-ladder', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   const result = await engine.previewLadder();
-  return { ...result, exchange, status: engine.getStatus() };
+  return { ...result, exchange, pair: resolvedPair, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:rebuild-ladder', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:rebuild-ladder', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   const result = await engine.rebuildLadder();
-  return { success: result.success, exchange, message: result.message, status: engine.getStatus() };
+  return { success: result.success, exchange, pair: resolvedPair, message: result.message, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:cancel-ladder', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:cancel-ladder', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   const result = await engine.cancelLadder();
-  return { success: result.success, exchange, message: result.message, status: engine.getStatus() };
+  return { success: result.success, exchange, pair: resolvedPair, message: result.message, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:rollup-body', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:rollup-body', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   const result = await engine.manualMergeBody(payload.bodyId);
-  return { success: result.success, exchange, message: result.message, mergedBody: result.mergedBody || null, status: engine.getStatus() };
+  return { success: result.success, exchange, pair: resolvedPair, message: result.message, mergedBody: result.mergedBody || null, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:set-body-tp', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:set-body-tp', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   const result = await engine.setBodyTpPercent(payload.bodyId, payload.tpPct);
-  return { success: result.success, exchange, message: result.message, status: result.status || engine.getStatus() };
+  return { success: result.success, exchange, pair: resolvedPair, message: result.message, status: result.status || engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:config', async (payload, exchange) => {
-  const regimeConfig = getRegimeConfig(exchange);
-  const exchangeConfig = getExchangeConfig(exchange);
-  return { ...regimeConfig, dryRun: exchangeConfig.dryRun, productId: exchangeConfig.productId };
+ipcServer.onRequest('regime:config', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const regimeConfig = getRegimeConfig(exchange, resolvedPair);
+  const fundConfig = getFundConfig(exchange, resolvedPair);
+  return { ...regimeConfig, dryRun: fundConfig.dryRun, productId: fundConfig.productId };
 });
 
-ipcServer.onRequest('regime:update-config', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:update-config', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (engine) {
     engine.updateConfig(payload);
   }
   return { success: true };
 });
 
-ipcServer.onRequest('regime:chart-data', async (payload, exchange) => {
-  const chartData = getChartData(exchange);
+ipcServer.onRequest('regime:chart-data', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const chartData = getChartData(exchange, resolvedPair);
   if (!chartData) {
-    return { priceHistory: [], atrHistory: [], regimeHistory: [], exchange, timestamp: Date.now() };
+    return { priceHistory: [], atrHistory: [], regimeHistory: [], exchange, pair: resolvedPair, timestamp: Date.now() };
   }
   return chartData;
 });
 
-ipcServer.onRequest('regime:fills', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:fills', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) {
-    const ledger = getStandaloneLedger(exchange);
+    const ledger = getStandaloneLedger(exchange, resolvedPair);
     return { running: false, fills: ledger.getAllFills(), stats: ledger.getStats() };
   }
   return { running: true, fills: engine.getFills(), stats: engine.getFillStats() };
 });
 
-ipcServer.onRequest('regime:open-orders', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:open-orders', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (engine) {
     return { running: true, orders: engine.getOpenOrders ? engine.getOpenOrders() : [] };
   }
 
-  const marketService = getMarketDataService(exchange);
+  const marketService = getMarketDataService(exchange, resolvedPair);
   const { loadRegimeState } = require('../src/state-tracker');
-  const savedState = loadRegimeState(exchange);
+  const savedState = loadRegimeState(exchange, resolvedPair);
   const orders = [];
 
   if (marketService?.getOpenOrders) {
@@ -336,18 +448,20 @@ ipcServer.onRequest('regime:open-orders', async (payload, exchange) => {
     }
   }
 
-  return { running: false, orders };
+  return { running: false, orders, exchange, pair: resolvedPair };
 });
 
-ipcServer.onRequest('regime:dry-run-log', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:dry-run-log', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   if (!engine.isDryRun) return { success: false, error: 'Not in dry-run mode' };
   return { success: true, isDryRun: true, log: engine.getDryRunLog(payload?.limit || 100) };
 });
 
-ipcServer.onRequest('regime:dry-run-pnl', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:dry-run-pnl', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   if (!engine.isDryRun) return { success: false, error: 'Not in dry-run mode' };
   const pnl = engine.getDryRunPnL();
@@ -355,16 +469,18 @@ ipcServer.onRequest('regime:dry-run-pnl', async (payload, exchange) => {
   return { success: true, isDryRun: true, pnl, position: state.position, cyclesCompleted: state.position.cyclesCompleted, realizedPnL: state.position.realizedPnL, unrealizedPnL: state.position.unrealizedPnL };
 });
 
-ipcServer.onRequest('regime:dry-run-reset', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:dry-run-reset', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   if (!engine.isDryRun) return { success: false, error: 'Not in dry-run mode' };
   const reset = engine.resetDryRun();
   return { success: reset, status: engine.getStatus() };
 });
 
-ipcServer.onRequest('regime:dry-run-state', async (payload, exchange) => {
-  const engine = regimeEngines.get(exchange);
+ipcServer.onRequest('regime:dry-run-state', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) return { success: false, error: 'Regime engine not running' };
   const state = engine.getState();
   if (!state.isDryRun) return { success: false, error: 'Not in dry-run mode' };
@@ -374,37 +490,53 @@ ipcServer.onRequest('regime:dry-run-state', async (payload, exchange) => {
 // Stop all running regime engines (used by backup restore)
 ipcServer.onRequest('regime:stop-all', async () => {
   const stopped = [];
-  for (const [exchange, engine] of regimeEngines) {
-    log('INFO', `🛑 [${exchange}] Stopping regime engine (stop-all)...`);
+  for (const [key, engine] of regimeEngines) {
+    const [stoppedExchange, stoppedPair] = key.split('::');
+    log('INFO', `🛑 [${fundLabel(stoppedExchange, stoppedPair)}] Stopping regime engine (stop-all)...`);
     await engine.stop().catch((err) => {
-      log('ERROR', `❌ [${exchange}] Error stopping engine: ${err.message}`);
+      log('ERROR', `❌ [${fundLabel(stoppedExchange, stoppedPair)}] Error stopping engine: ${err.message}`);
     });
-    stopped.push(exchange);
-    saveRegimeRunningFlag(exchange, false);
+    stopped.push({ exchange: stoppedExchange, pair: stoppedPair });
+    saveRegimeRunningFlag(stoppedExchange, stoppedPair, false);
   }
   regimeEngines.clear();
   return { success: true, stopped };
 });
 
-// Exchange info queries
+// Exchange/fund info queries
 ipcServer.onRequest('exchanges:list', async () => {
   const configured = getConfiguredExchanges();
   return configured.map((name) => {
-    const engine = regimeEngines.get(name);
+    const funds = getFundsForExchange(name);
+    const anyRunning = funds.some((p) => regimeEngines.has(fundKey(name, p)));
     return {
       name,
-      regimeRunning: engine?.getState?.()?.isRunning || false,
+      pairs: funds,
+      regimeRunning: anyRunning,
     };
   });
 });
 
-ipcServer.onRequest('regime:recalculate', async (payload, exchange) => {
+// List funds (exchange + pair) configured on a specific exchange
+ipcServer.onRequest('funds:list', async (payload, exchange) => {
+  const funds = getFundsForExchange(exchange);
+  return {
+    exchange,
+    funds: funds.map((pair) => ({
+      pair,
+      regimeRunning: regimeEngines.has(fundKey(exchange, pair)),
+    })),
+  };
+});
+
+ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
   const { apply = false } = payload || {};
   const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
 
-  invalidateStandaloneLedger(exchange);
-  const fillLedger = getStandaloneLedger(exchange);
-  const currentState = loadRegimeState(exchange);
+  invalidateStandaloneLedger(exchange, resolvedPair);
+  const fillLedger = getStandaloneLedger(exchange, resolvedPair);
+  const currentState = loadRegimeState(exchange, resolvedPair);
 
   const recalcResult = fillLedger.recalculateCycles();
   const currentCycleFills = fillLedger.getCurrentCycleFills();
@@ -445,17 +577,17 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange) => {
       syncPositionState(updatedPosition, bodies);
     }
 
-    saveRegimeState(updatedPosition, currentState.regime, exchange, currentState.tpOptimizer, currentState.sizeOptimizer);
+    saveRegimeState(updatedPosition, currentState.regime, exchange, currentState.tpOptimizer, currentState.sizeOptimizer, resolvedPair);
     fillLedger.persist();
 
-    const engine = regimeEngines.get(exchange);
+    const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
     if (engine?.updatePosition) {
       engine.updatePosition(updatedPosition);
     }
   }
 
   return {
-    success: true, exchange, applied: apply, changes,
+    success: true, exchange, pair: resolvedPair, applied: apply, changes,
     cycleDetails: recalcResult.cycleDetails,
     orphansFixed: recalcResult.orphansFixed,
     activeCycleId: recalcResult.activeCycleId,
@@ -463,31 +595,33 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange) => {
   };
 });
 
-ipcServer.onRequest('regime:sync-fills', async (payload, exchange) => {
+ipcServer.onRequest('regime:sync-fills', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
   const { dryRun = false } = payload || {};
   const { syncFills } = require('../src/sync-fills');
 
-  invalidateStandaloneLedger(exchange);
-  const fillLedger = getStandaloneLedger(exchange);
+  invalidateStandaloneLedger(exchange, resolvedPair);
+  const fillLedger = getStandaloneLedger(exchange, resolvedPair);
 
   const result = await syncFills(exchange, fillLedger, { dryRun });
   return result;
 });
 
-ipcServer.onRequest('regime:convert-dca', async (payload, exchange) => {
-  if (regimeEngines.has(exchange)) {
+ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  if (regimeEngines.has(fundKey(exchange, resolvedPair))) {
     return { success: false, error: 'Regime engine is running — stop it before converting DCA orders' };
   }
   const { preview = true, merge = false } = payload || {};
   const { previewConversion, executeConversion, mergeToRegime } = require('../src/dca-converter');
 
   if (preview) {
-    return { success: true, preview: true, exchange, ...previewConversion(exchange) };
+    return { success: true, preview: true, exchange, pair: resolvedPair, ...previewConversion(exchange) };
   }
 
   const result = merge ? mergeToRegime(exchange) : executeConversion(exchange);
-  invalidateStandaloneLedger(exchange);
-  return { success: true, preview: false, exchange, ...result };
+  invalidateStandaloneLedger(exchange, resolvedPair);
+  return { success: true, preview: false, exchange, pair: resolvedPair, ...result };
 });
 
 // ============ Startup ============
@@ -498,45 +632,76 @@ const startup = async () => {
   log('INFO', `\n📡 ${label} Engine v${version}`);
   log('INFO', `   IPC: ws://127.0.0.1:${IPC_PORT}`);
 
-  ipcServer.start();
-
   const exchange = EXCHANGE_NAME;
 
-  // Auto-resume regime engine if it was running before restart
-  if (shouldAutoResumeRegime(exchange)) {
-    log('INFO', `🔄 [${exchange}] Auto-resuming regime engine from previous session...`);
-
-    const { getAdapter } = require('../src/adapters');
-    const exchangeConfig = getExchangeConfig(exchange);
-    const adapter = getAdapter(exchange);
-
-    if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-      const engine = createRegimeEngine(exchange, exchangeConfig, createEngineCallbacks(exchange));
-      regimeEngines.set(exchange, engine);
-
-      const startResult = await engine.start();
-      if (startResult.success) {
-        log('INFO', `✅ [${exchange}] Regime engine auto-resumed successfully`);
-      } else {
-        log('ERROR', `❌ [${exchange}] Failed to auto-resume: ${startResult.error}`);
-        regimeEngines.delete(exchange);
-        saveRegimeRunningFlag(exchange, false);
-      }
-    } else {
-      log('WARN', `⚠️ [${exchange}] Cannot auto-resume: API keys not configured`);
-      saveRegimeRunningFlag(exchange, false);
+  // ===== One-time multi-pair migration =====
+  // Move legacy data/<exchange>/ files into data/<exchange>/<defaultPair>/
+  // so multiple funds can coexist on the same exchange. Refuses if engine
+  // is currently running. See UPGRADE.md.
+  if (needsPairMigration(exchange)) {
+    log('INFO', `🔧 [${exchange}] Detected legacy single-pair data layout — running multi-pair migration...`);
+    const result = migrateExchangeToPairs(exchange);
+    if (!result.migrated) {
+      log('ERROR', `❌ [${exchange}] Pair migration failed: ${result.reason}`);
+      log('ERROR', `❌ [${exchange}] Refusing to start engine. See UPGRADE.md for instructions.`);
+      process.exit(1);
     }
+    log('INFO', `✅ [${exchange}] Pair migration complete: moved ${result.movedFiles} files into ${exchange}/${result.defaultPair}/`);
   }
 
-  // Start market data service for passive streaming
-  const regimeConfig = getRegimeConfig(exchange);
-  if (regimeConfig && Object.keys(regimeConfig).length > 0 && !regimeEngines.has(exchange)) {
-    log('INFO', `📊 [${exchange}] Starting market data service...`);
-    startMarketDataService(exchange)
-      .then(() => wireMarketDataCallbacks(exchange))
-      .catch((err) => {
-        log('WARN', `⚠️ [${exchange}] Failed to start market data service: ${err.message}`);
-      });
+  ipcServer.start();
+
+  // Auto-resume each fund (exchange + pair) that was running before restart
+  const fundsForExchange = getFundsForExchange(exchange);
+  for (const fundPair of fundsForExchange) {
+    const label = fundLabel(exchange, fundPair);
+    const key = fundKey(exchange, fundPair);
+
+    if (shouldAutoResumeRegime(exchange, fundPair)) {
+      // Skip auto-resume for closed funds — the operator must explicitly reopen.
+      const { loadRegimeState } = require('../src/state-tracker');
+      const savedState = loadRegimeState(exchange, fundPair);
+      if (savedState?.position?.lifecycle === 'closed') {
+        log('INFO', `🛑 [${label}] Skipping auto-resume: fund is closed (call regime:reopen to reactivate)`);
+        saveRegimeRunningFlag(exchange, fundPair, false);
+        continue;
+      }
+      log('INFO', `🔄 [${label}] Auto-resuming regime engine from previous session...`);
+
+      const { getAdapter } = require('../src/adapters');
+      const fundConfig = getFundConfig(exchange, fundPair);
+      const adapter = getAdapter(exchange);
+
+      if (adapter.hasValidKeys && adapter.hasValidKeys()) {
+        const engine = createRegimeEngine(exchange, fundPair, fundConfig, createEngineCallbacks(exchange, fundPair));
+        regimeEngines.set(key, engine);
+
+        const startResult = await engine.start();
+        if (startResult.success) {
+          log('INFO', `✅ [${label}] Regime engine auto-resumed successfully`);
+        } else {
+          log('ERROR', `❌ [${label}] Failed to auto-resume: ${startResult.error}`);
+          regimeEngines.delete(key);
+          saveRegimeRunningFlag(exchange, fundPair, false);
+        }
+      } else {
+        log('WARN', `⚠️ [${label}] Cannot auto-resume: API keys not configured`);
+        saveRegimeRunningFlag(exchange, fundPair, false);
+      }
+    }
+
+    // Start passive market data service for funds whose engine isn't running
+    if (!regimeEngines.has(key)) {
+      const regimeConfig = getRegimeConfig(exchange, fundPair);
+      if (regimeConfig && Object.keys(regimeConfig).length > 0) {
+        log('INFO', `📊 [${label}] Starting market data service...`);
+        startMarketDataService(exchange, fundPair)
+          .then(() => wireMarketDataCallbacks(exchange, fundPair))
+          .catch((err) => {
+            log('WARN', `⚠️ [${label}] Failed to start market data service: ${err.message}`);
+          });
+      }
+    }
   }
 };
 
@@ -553,8 +718,8 @@ const gracefulShutdown = async (signal) => {
   stopAllMarketDataServices();
 
   const stopPromises = [];
-  for (const [exchange, engine] of regimeEngines) {
-    log('INFO', `Stopping regime engine for ${exchange}...`);
+  for (const [key, engine] of regimeEngines) {
+    log('INFO', `Stopping regime engine for ${key}...`);
     stopPromises.push(engine.stop());
   }
   await Promise.all(stopPromises);

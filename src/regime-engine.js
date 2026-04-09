@@ -116,19 +116,44 @@ const createInitialPositionState = () => ({
 
 /**
  * Create regime engine instance
+ *
+ * Supports two call signatures for backwards compat:
+ *   createRegimeEngine(exchange, exchangeConfig, callbacks)            (legacy)
+ *   createRegimeEngine(exchange, pair, exchangeConfig, callbacks)      (multi-pair)
+ *
+ * In the legacy 3-arg form, the pair is resolved from the exchange's default pair.
+ *
  * @param {string} exchange - Exchange name
- * @param {Object} exchangeConfig - Exchange configuration
- * @param {Object} [callbacks] - Event callbacks
- * @param {Function} [callbacks.onTrade] - Trade event callback
- * @param {Function} [callbacks.onRegimeChange] - Regime change callback
- * @param {Function} [callbacks.onHealthChange] - Health change callback
- * @param {Function} [callbacks.onStatusUpdate] - Throttled status update callback
+ * @param {string|Object} pairOrExchangeConfig - Pair name (4-arg form) or exchangeConfig (3-arg form)
+ * @param {Object} [exchangeConfigOrCallbacks] - exchangeConfig (4-arg) or callbacks (3-arg)
+ * @param {Object} [maybeCallbacks] - callbacks (4-arg form only)
  * @returns {Object} Regime engine instance
  */
-const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
+const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCallbacks, maybeCallbacks) => {
+  // Disambiguate signatures: if the second arg is a string, it's the pair.
+  let pair;
+  let exchangeConfig;
+  let callbacks;
+  if (typeof pairOrExchangeConfig === 'string') {
+    pair = pairOrExchangeConfig;
+    exchangeConfig = exchangeConfigOrCallbacks || {};
+    callbacks = maybeCallbacks || {};
+  } else {
+    pair = null; // Resolved below from default
+    exchangeConfig = pairOrExchangeConfig || {};
+    callbacks = exchangeConfigOrCallbacks || {};
+  }
+
+  // Resolve pair from default if not provided (legacy callers)
+  const { getDefaultPair } = require('./config-utils');
+  if (!pair) pair = getDefaultPair(exchange) || exchangeConfig.productId || 'default';
+
   const { productId } = exchangeConfig;
-  const config = getRegimeConfig(exchange);
+  const config = getRegimeConfig(exchange, pair);
   const baseCurrency = productId.replace('_', '-').split('-')[0];
+
+  // Prefix used in log lines and trade events to identify this fund
+  const fundLabel = `${exchange}/${pair}`;
 
   // Throttled status update tracking
   let lastStatusUpdate = 0;
@@ -143,7 +168,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const adapter = getAdapter(exchange);
 
   // Create all component instances
-  const fillLedger = createFillLedger(exchange, productId);
+  const fillLedger = createFillLedger(exchange, productId, pair);
   const healthMonitor = createHealthMonitor(exchange, config, {
     onSafeMode: async (reason) => {
       console.log(`⚠️ [${exchange}] SAFE mode: ${reason}`);
@@ -277,7 +302,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     config.holdbackRatio = adjustment.holdbackRatio;
 
     // Persist to config.json
-    updateRegimeConfig(exchange, {
+    updateRegimeConfig(exchange, pair, {
       tpMinPercent: adjustment.tpMinPercent,
       tpMaxPercent: adjustment.tpMaxPercent,
       holdbackRatio: adjustment.holdbackRatio,
@@ -313,7 +338,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     config.maxUsdcDeployed = adjustment.maxUsdcDeployed;
 
     // Persist to config.json
-    updateRegimeConfig(exchange, updates);
+    updateRegimeConfig(exchange, pair, updates);
 
     tradeEvents.emitTradeEvent('size_adjusted', exchange, `Size adjusted: base=$${adjustment.baseSizeUsdc}`, {
       baseSizeUsdc: adjustment.baseSizeUsdc,
@@ -379,7 +404,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       position: { ...positionState },
       tpOptimizer: tpOptimizer.exportState(),
       sizeOptimizer: sizeOptimizer.exportState(),
-    });
+    }, pair);
   };
 
   /**
@@ -389,7 +414,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const loadDryRunState = () => {
     if (!isDryRun || !orderExecutor.importState) return false;
 
-    const savedState = dryRunState.loadState(exchange);
+    const savedState = dryRunState.loadState(exchange, pair);
     if (!savedState || !savedState.isDryRun) return false;
 
     // Restore executor state
@@ -462,7 +487,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const regimeState = regimeDetector.getState();
     const tpOptimizerState = tpOptimizer.exportState();
     const sizeOptimizerState = sizeOptimizer.exportState();
-    saveRegimeState(positionState, regimeState, exchange, tpOptimizerState, sizeOptimizerState);
+    saveRegimeState(positionState, regimeState, exchange, tpOptimizerState, sizeOptimizerState, pair);
   };
 
   /**
@@ -472,7 +497,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const loadLiveState = () => {
     if (isDryRun) return false;
 
-    const savedState = loadRegimeState(exchange);
+    const savedState = loadRegimeState(exchange, pair);
     const pos = savedState.position;
     // Check if state has any meaningful data (not just default initial state)
     // Even with totalAsset=0, there may be satellites, TP orders, or historical data to restore
@@ -607,7 +632,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
           const prevMaxUsdc = config.maxUsdcDeployed;
           config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-          updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+          updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
           positionState.celestialBodies = positionState.celestialBodies.filter(
             b => b.tpOrderId !== body.tpOrderId
@@ -1504,7 +1529,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     if (!isDryRun) {
       const reloadHandler = () => {
         console.log(`🔄 [${exchange}] SIGUSR1 received — reloading state from disk`);
-        const savedState = loadRegimeState(exchange);
+        const savedState = loadRegimeState(exchange, pair);
         const diskPos = savedState.position;
         if (!diskPos) {
           console.log(`⚠️ [${exchange}] No position in disk state, skipping reload`);
@@ -1553,7 +1578,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
         position: { ...positionState },
         tpOptimizer: tpOptimizer.exportState(),
-      });
+      }, pair);
     } else {
       // Save live state on shutdown
       saveLiveState();
@@ -1991,7 +2016,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
         orderExecutor.removeBodyTracking(fillData.orderId);
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
@@ -2061,7 +2086,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         // Grow capital
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
         if (isPartial) {
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
@@ -2202,7 +2227,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
           const prevMaxUsdc = config.maxUsdcDeployed;
           config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-          updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+          updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
           console.log(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
@@ -2635,6 +2660,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const evaluateReactiveEntry = async () => {
     const now = Date.now();
 
+    // Fund lifecycle guard: when draining/closed, never place new entries
+    if (positionState.lifecycle && positionState.lifecycle !== 'active') return;
+
     // Skip if in insufficient funds cooldown (prevents rapid retry spam on 406 errors)
     if (now < insufficientFundsCooldownUntil) return;
 
@@ -2674,6 +2702,9 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
    * Evaluate ladder entry - pre-position liquidity ladder
    */
   const evaluateLadderEntry = async () => {
+    // Fund lifecycle guard: when draining/closed, never place new entries
+    if (positionState.lifecycle && positionState.lifecycle !== 'active') return;
+
     // Skip if in insufficient funds cooldown
     if (Date.now() < insufficientFundsCooldownUntil) return;
 
@@ -3230,6 +3261,28 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     const bodyCount = bodies.length;
     const bodyLabel = bodyCount > 0 ? `, ${bodyCount} celestial bodies preserved` : '';
     console.log(`🔄 [${exchange}] Cycle reset, starting new cycle${bodyLabel}`);
+
+    // If the operator put the fund into 'draining' state, this cycle's TP just
+    // filled — transition to 'closed' and signal the host process to stop the
+    // engine. Defer the actual stop to next tick so the current call stack
+    // (saveLiveState, fillLedger.persist, etc.) finishes cleanly first.
+    if (positionState.lifecycle === 'draining') {
+      positionState.lifecycle = 'closed';
+      positionState.lifecycleChangedAt = Date.now();
+      positionState.lifecycleClosedCycle = positionState.cyclesCompleted;
+      console.log(`🛑 [${exchange}] Fund drained — closing engine after cycle ${positionState.cyclesCompleted}`);
+      tradeEvents.emitTradeEvent('fund_closed', exchange, `Fund closed after cycle ${positionState.cyclesCompleted}`, {
+        cyclesCompleted: positionState.cyclesCompleted,
+        reason: positionState.lifecycleReason,
+      });
+      if (callbacks.onLifecycleClosed) {
+        setImmediate(() => {
+          try { callbacks.onLifecycleClosed(); } catch (err) {
+            console.log(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`);
+          }
+        });
+      }
+    }
   };
 
   /**
@@ -3325,7 +3378,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
         positionState.celestialBodies.splice(bodyIdx, 1);
         orderExecutor.removeBodyTracking(orderId);
@@ -3366,7 +3419,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, { maxUsdcDeployed: config.maxUsdcDeployed });
+        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
         console.log(`💰 [${exchange}] [DRY-RUN] Capital growth: $${prevMaxUsdc.toFixed(2)} → $${config.maxUsdcDeployed.toFixed(2)} (+$${pnl.toFixed(2)})`);
 
@@ -3574,6 +3627,13 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
         placedAt: b.createdAt,
       })),
     },
+    // Fund lifecycle (active/draining/closed) — see close()/reopen handlers
+    lifecycle: {
+      lifecycle: positionState.lifecycle || 'active',
+      lifecycleChangedAt: positionState.lifecycleChangedAt || null,
+      lifecycleReason: positionState.lifecycleReason || null,
+      lifecycleClosedCycle: positionState.lifecycleClosedCycle || null,
+    },
   });
 
   /**
@@ -3599,6 +3659,52 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
   const resume = () => {
     healthMonitor.resume();
   };
+
+  /**
+   * Mark fund as draining: block all new entries, cancel any pending entry
+   * orders, and let the current take-profit cycle complete naturally. When
+   * the cycle's TP fills, resetCycle() will transition the lifecycle to
+   * 'closed' and invoke callbacks.onLifecycleClosed so the host process can
+   * stop the engine.
+   * @param {string} [reason]
+   * @returns {{success: boolean, lifecycle?: string, error?: string}}
+   */
+  const close = (reason) => {
+    if (positionState.lifecycle === 'closed') {
+      return { success: false, error: 'Fund is already closed' };
+    }
+    if (positionState.lifecycle === 'draining') {
+      return { success: false, error: 'Fund is already draining' };
+    }
+    positionState.lifecycle = 'draining';
+    positionState.lifecycleChangedAt = Date.now();
+    positionState.lifecycleReason = reason || null;
+    if (!isDryRun) {
+      saveLiveState();
+    }
+    // Cancel pending entry orders so the order book doesn't keep stale buys.
+    // TP orders are NOT touched — they're what drains the cycle.
+    orderExecutor.cancelAllEntries().catch((err) => {
+      console.log(`⚠️ [${exchange}] Failed to cancel entries during close: ${err.message}`);
+    });
+    console.log(`🚦 [${exchange}] Fund draining${reason ? ` (${reason})` : ''} — new entries blocked, awaiting TP fill`);
+    tradeEvents.emitTradeEvent('fund_draining', exchange, `Fund draining${reason ? `: ${reason}` : ''}`, {
+      reason: reason || null,
+      cyclesCompleted: positionState.cyclesCompleted,
+    });
+    return { success: true, lifecycle: 'draining' };
+  };
+
+  /**
+   * Get fund lifecycle state
+   * @returns {{lifecycle: string, lifecycleChangedAt: number|null, lifecycleReason: string|null, lifecycleClosedCycle: number|null}}
+   */
+  const getLifecycle = () => ({
+    lifecycle: positionState.lifecycle || 'active',
+    lifecycleChangedAt: positionState.lifecycleChangedAt || null,
+    lifecycleReason: positionState.lifecycleReason || null,
+    lifecycleClosedCycle: positionState.lifecycleClosedCycle || null,
+  });
 
   /**
    * Get current status (alias for getState for API consistency)
@@ -3694,7 +3800,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
       orderExecutor.resetDryRunState();
       positionState = createInitialPositionState();
       // Clear saved state file
-      dryRunState.clearState(exchange);
+      dryRunState.clearState(exchange, pair);
       return true;
     }
     return false;
@@ -4127,7 +4233,7 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
 
     // Switch config to reactive
     config.entryMode = 'reactive';
-    updateRegimeConfig(exchange, { entryMode: 'reactive' });
+    updateRegimeConfig(exchange, pair, { entryMode: 'reactive' });
 
     saveLiveState();
 
@@ -4146,6 +4252,8 @@ const createRegimeEngine = (exchange, exchangeConfig, callbacks = {}) => {
     forceRegime,
     pause,
     resume,
+    close,
+    getLifecycle,
     updateConfig,
     updatePosition,
     getFills,

@@ -422,7 +422,7 @@ function AggressivenessControl({ config, exchange, onConfigUpdate, presets }) {
     const params = computeAggressivenessParams(level, presets)
     const updates = { aggressiveness: level, ...params }
 
-    const res = await fetch(`/api/${exchange}/regime/config`, {
+    const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
@@ -584,7 +584,14 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
   )
 }
 
-function RegimeDashboard({ exchange = 'coinbase' }) {
+function RegimeDashboard({ exchange = 'coinbase', pair }) {
+  // Build the ?pair= query string used by all API fetches in this component
+  // so the gateway routes target the correct fund instead of the exchange's
+  // default pair. When pair is undefined, the empty string yields the
+  // legacy behavior (default-pair lookup).
+  const pairQuery = pair ? `?pair=${encodeURIComponent(pair)}` : ''
+  // For appending to URLs that already have a query string
+  const pairAmp = pair ? `&pair=${encodeURIComponent(pair)}` : ''
   const [localStatus, setLocalStatus] = useState(null)
   const [config, setConfig] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -683,7 +690,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Fetch status (only used for initial load and when engine is stopped)
   const fetchStatus = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/status`)
+    const res = await fetch(`/api/${exchange}/regime/status${pairQuery}`)
     if (res.ok) {
       const data = await res.json()
       setLocalStatus(data.status)
@@ -693,7 +700,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Fetch config
   const fetchConfig = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/config`)
+    const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`)
     if (res.ok) {
       const data = await res.json()
       setConfig(data.config)
@@ -702,7 +709,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Fetch live fills from fill ledger
   const fetchFills = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/fills`)
+    const res = await fetch(`/api/${exchange}/regime/fills${pairQuery}`)
     if (res.ok) {
       const data = await res.json()
       setLiveFills(data.fills || [])
@@ -711,7 +718,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Fetch cached chart data from server
   const fetchCachedChartData = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/chart-data`)
+    const res = await fetch(`/api/${exchange}/regime/chart-data${pairQuery}`)
     if (res.ok) {
       const data = await res.json()
       if (data.data) {
@@ -733,7 +740,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   const isRunning = status?.isRunning
   useEffect(() => {
     if (!isRunning) {
-      fetch(`/api/${exchange}/state`).then(r => r.json()).then(setDcaState).catch(() => {})
+      fetch(`/api/${exchange}/state${pairQuery}`).then(r => r.json()).then(setDcaState).catch(() => {})
     } else {
       setDcaState(null)
     }
@@ -741,7 +748,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // DCA conversion handlers
   const handlePreviewConvert = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/convert-dca`, {
+    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ preview: true, merge: true }),
@@ -758,7 +765,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   const handleExecuteConvert = useCallback(async () => {
     setConverting(true)
-    const res = await fetch(`/api/${exchange}/regime/convert-dca`, {
+    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ preview: false, merge: convertPreview?.merge }),
@@ -798,14 +805,14 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   // Resume from drawdown pause
   const handleResumeDrawdown = async () => {
     if (!confirm('Resume trading from drawdown pause? This will reset the peak equity to current levels.')) return
-    const res = await fetch(`/api/${exchange}/regime/resume-drawdown`, { method: 'POST' })
+    const res = await fetch(`/api/${exchange}/regime/resume-drawdown${pairQuery}`, { method: 'POST' })
     if (res.ok) await fetchStatus()
   }
 
   // Preview recalculate
   const handleRecalculatePreview = async () => {
     setRecalculating(true)
-    const res = await fetch(`/api/${exchange}/regime/recalculate`, {
+    const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apply: false }),
@@ -820,7 +827,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   // Apply recalculate
   const handleRecalculateApply = async () => {
     setRecalculating(true)
-    const res = await fetch(`/api/${exchange}/regime/recalculate`, {
+    const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apply: true }),
@@ -836,7 +843,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   // Manual body roll-up merge
   const handleRollUp = async (bodyId) => {
     setRollingUp(true)
-    const res = await fetch(`/api/${exchange}/regime/rollup-body`, {
+    const res = await fetch(`/api/${exchange}/regime/rollup-body${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bodyId }),
@@ -858,7 +865,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     const pct = parseFloat(tpEditModal.inputValue)
     if (isNaN(pct) || pct <= 0) return
     setSettingTp(true)
-    const res = await fetch(`/api/${exchange}/regime/set-body-tp`, {
+    const res = await fetch(`/api/${exchange}/regime/set-body-tp${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bodyId: tpEditModal.bodyId, tpPct: pct }),
@@ -874,7 +881,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Fetch ladder preview
   const fetchLadderPreview = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/preview-ladder`)
+    const res = await fetch(`/api/${exchange}/regime/preview-ladder${pairQuery}`)
     const data = await res.json()
     if (data.success) {
       setLadderPreview(data.preview)
@@ -886,7 +893,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   // Save ladder config edits
   const saveLadderEdits = useCallback(async (edits) => {
-    const res = await fetch(`/api/${exchange}/regime/config`, {
+    const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(edits),
@@ -900,7 +907,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
   // Place ladder orders
   const handlePlaceLadder = async () => {
     setPlacingLadder(true)
-    const res = await fetch(`/api/${exchange}/regime/rebuild-ladder`, {
+    const res = await fetch(`/api/${exchange}/regime/rebuild-ladder${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     })
@@ -918,7 +925,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
 
   const handleCancelLadder = async () => {
     setCancellingLadder(true)
-    const res = await fetch(`/api/${exchange}/regime/cancel-ladder`, {
+    const res = await fetch(`/api/${exchange}/regime/cancel-ladder${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     })
@@ -981,7 +988,7 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
     }
     setCapitalAdjusting(true)
     try {
-      const res = await fetch(`/api/${exchange}/regime/config`, {
+      const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),

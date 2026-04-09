@@ -7,7 +7,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { DATA_DIR } = require('./paths');
+const { getFundDataDir } = require('./migration');
 
 // Maximum data retention (1 hour in milliseconds)
 const MAX_RETENTION_MS = 60 * 60 * 1000;
@@ -24,16 +24,18 @@ const SAVE_INTERVAL_MS = 30 * 1000;
 /**
  * Get the file path for persisted chart data
  * @param {string} exchange
+ * @param {string} [pair]
  * @returns {string}
  */
-const getFilePath = (exchange) => path.join(DATA_DIR, exchange, 'chart-data-buffer.json');
+const getFilePath = (exchange, pair) => path.join(getFundDataDir(exchange, pair), 'chart-data-buffer.json');
 
 /**
- * Create a chart data buffer for an exchange
+ * Create a chart data buffer for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {Object} Chart data buffer instance
  */
-const createChartDataBuffer = (exchange) => {
+const createChartDataBuffer = (exchange, pair) => {
   let priceHistory = [];
   let atrHistory = [];
   let regimeHistory = [];
@@ -60,7 +62,7 @@ const createChartDataBuffer = (exchange) => {
    */
   const saveToDisk = () => {
     if (!dirty) return;
-    const filePath = getFilePath(exchange);
+    const filePath = getFilePath(exchange, pair);
     const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
     const data = {
@@ -77,7 +79,7 @@ const createChartDataBuffer = (exchange) => {
    * Load buffer from disk
    */
   const loadFromDisk = () => {
-    const filePath = getFilePath(exchange);
+    const filePath = getFilePath(exchange, pair);
     if (!fs.existsSync(filePath)) return;
     const raw = fs.readFileSync(filePath, 'utf8');
     const data = JSON.parse(raw);
@@ -211,39 +213,53 @@ const createChartDataBuffer = (exchange) => {
   };
 };
 
-// Store buffers per exchange
+// Store buffers per fund (key: `${exchange}::${pair}`)
 const chartBuffers = new Map();
 
-/**
- * Get or create chart data buffer for an exchange
- * @param {string} exchange - Exchange name
- * @returns {Object} Chart data buffer
- */
-const getChartDataBuffer = (exchange) => {
-  if (!chartBuffers.has(exchange)) {
-    chartBuffers.set(exchange, createChartDataBuffer(exchange));
+const bufferKey = (exchange, pair) => {
+  if (!pair) {
+    // Resolve default pair from config (lazy require to avoid circular deps)
+    const configUtils = require('./config-utils');
+    const resolved = configUtils.getDefaultPair(exchange);
+    return `${exchange}::${resolved || 'default'}`;
   }
-  return chartBuffers.get(exchange);
+  return `${exchange}::${pair}`;
 };
 
 /**
- * Clear chart data buffer for an exchange
+ * Get or create chart data buffer for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
+ * @returns {Object} Chart data buffer
  */
-const clearChartDataBuffer = (exchange) => {
-  const buffer = chartBuffers.get(exchange);
+const getChartDataBuffer = (exchange, pair) => {
+  const key = bufferKey(exchange, pair);
+  if (!chartBuffers.has(key)) {
+    chartBuffers.set(key, createChartDataBuffer(exchange, pair));
+  }
+  return chartBuffers.get(key);
+};
+
+/**
+ * Clear chart data buffer for a fund (exchange + pair).
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
+ */
+const clearChartDataBuffer = (exchange, pair) => {
+  const buffer = chartBuffers.get(bufferKey(exchange, pair));
   if (buffer) {
     buffer.clear();
   }
 };
 
 /**
- * Get chart data for an exchange
+ * Get chart data for a fund (exchange + pair).
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {Object|null} Chart data or null if no buffer exists
  */
-const getChartData = (exchange) => {
-  const buffer = chartBuffers.get(exchange);
+const getChartData = (exchange, pair) => {
+  const buffer = chartBuffers.get(bufferKey(exchange, pair));
   if (!buffer) return null;
   return buffer.getData();
 };
@@ -252,9 +268,9 @@ const getChartData = (exchange) => {
  * Flush all buffers to disk (call on graceful shutdown)
  */
 const shutdownAllBuffers = () => {
-  for (const [exchange, buffer] of chartBuffers) {
+  for (const [key, buffer] of chartBuffers) {
     buffer.shutdown();
-    console.log(`📊 chart buffer flushed for ${exchange}`);
+    console.log(`📊 chart buffer flushed for ${key}`);
   }
 };
 

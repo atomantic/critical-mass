@@ -22,7 +22,7 @@ const createIPCServer = (port, name) => {
   let wss = null;
   /** @type {Set<WebSocket>} */
   const clients = new Set();
-  /** @type {Map<string, (payload: any, exchange: string|null) => Promise<any>>} */
+  /** @type {Map<string, (payload: any, exchange: string|null, pair: string|null) => Promise<any>>} */
   const requestHandlers = new Map();
 
   const start = () => {
@@ -77,7 +77,7 @@ const createIPCServer = (port, name) => {
       }
 
       try {
-        const result = await handler(msg.payload, msg.exchange);
+        const result = await handler(msg.payload, msg.exchange, msg.pair);
         const response = createMessage(MSG_TYPE.RESPONSE, msg.channel, result, { id: msg.id });
         ws.send(serialize(response));
       } catch (err) {
@@ -93,7 +93,7 @@ const createIPCServer = (port, name) => {
     if (msg.type === MSG_TYPE.CONFIG_UPDATE) {
       const handler = requestHandlers.get('config_update');
       if (handler) {
-        handler(msg.payload, msg.exchange).catch((err) => {
+        handler(msg.payload, msg.exchange, msg.pair).catch((err) => {
           log('ERROR', `🔗 [${name}] config_update handler error: ${err.message}`);
         });
       }
@@ -117,9 +117,14 @@ const createIPCServer = (port, name) => {
   };
 
   /**
-   * Register a handler for incoming requests on a channel
+   * Register a handler for incoming requests on a channel.
+   * Handler signature: (payload, exchange, pair) => Promise<any>
+   * The pair argument is optional — handlers that don't need it can ignore it
+   * (existing handlers using the legacy 2-arg form continue to work since
+   * extra arguments are silently ignored).
+   *
    * @param {string} channel - Request channel name
-   * @param {(payload: any, exchange: string|null) => Promise<any>} handler
+   * @param {(payload: any, exchange: string|null, pair: string|null) => Promise<any>} handler
    */
   const onRequest = (channel, handler) => {
     requestHandlers.set(channel, handler);

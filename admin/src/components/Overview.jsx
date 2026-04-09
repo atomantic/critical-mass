@@ -1,9 +1,10 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { ExternalLink } from 'lucide-react'
 import { useMultiRegimeStatuses } from '../hooks/useTradeEvents'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
+import AddFundModal from './AddFundModal'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
 
@@ -42,10 +43,26 @@ const getEngineStatus = (isRunning, isDryRun) => {
 }
 
 function Overview() {
+  const navigate = useNavigate()
   const [exchanges, setExchanges] = useState([])
   const [statusMap, setStatusMap] = useState({})
   const [loading, setLoading] = useState(true)
+  const [addFundOpen, setAddFundOpen] = useState(false)
   const { statuses: wsStatuses, connected } = useMultiRegimeStatuses()
+
+  const refreshExchanges = async () => {
+    const res = await fetch('/api/exchanges')
+    if (res.ok) {
+      const data = await res.json()
+      setExchanges(data.exchanges || [])
+    }
+  }
+
+  // Per-fund key used in statusMap. The /api/exchanges response now returns
+  // one entry per (exchange, pair) fund — we use composite keys so two funds
+  // on the same exchange (e.g., coinbase BTC-USDC and coinbase ETH-USDC) keep
+  // independent status entries.
+  const fundKey = (ex) => `${ex.name}::${ex.pair || ex.productId || 'default'}`
 
   // Fetch exchange list and initial statuses
   useEffect(() => {
@@ -56,13 +73,14 @@ function Overview() {
       const exchangeList = data.exchanges || []
       setExchanges(exchangeList)
 
-      // Fetch regime status for each exchange in parallel
+      // Fetch regime status for each fund in parallel (pair-aware)
       const entries = await Promise.all(
         exchangeList.map(async (ex) => {
-          const r = await fetch(`/api/${ex.name}/regime/status`)
-          if (!r.ok) return [ex.name, null]
+          const pairParam = ex.pair || ex.productId || ''
+          const r = await fetch(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`)
+          if (!r.ok) return [fundKey(ex), null]
           const d = await r.json()
-          return [ex.name, d.status || null]
+          return [fundKey(ex), d.status || null]
         })
       )
       setStatusMap(Object.fromEntries(entries))
@@ -71,13 +89,20 @@ function Overview() {
     load()
   }, [])
 
-  // Merge WebSocket updates into status map
+  // Merge WebSocket updates into status map.
+  // wsStatuses is currently keyed by exchange name only — for multi-pair
+  // installs we'd need it keyed by `${exchange}::${pair}`. For now, this
+  // updates the default-pair entry on each exchange, which is correct for
+  // single-pair installs.
   useEffect(() => {
     if (Object.keys(wsStatuses).length === 0) return
     setStatusMap(prev => {
       const next = { ...prev }
       for (const [exchange, status] of Object.entries(wsStatuses)) {
-        next[exchange] = status
+        // Find any fund key matching this exchange and update it
+        for (const key of Object.keys(next)) {
+          if (key.startsWith(`${exchange}::`)) next[key] = status
+        }
       }
       return next
     })
@@ -85,8 +110,8 @@ function Overview() {
 
   // Build card data from exchanges + statuses
   const cards = exchanges.map(ex => {
-    const status = statusMap[ex.name]
-    const pair = ex.productId || 'BTC-USDC'
+    const status = statusMap[fundKey(ex)]
+    const pair = ex.pair || ex.productId || 'BTC-USDC'
     const baseCurrency = getBaseCurrency(pair)
     const quoteCurrency = getQuoteCurrency(pair)
     const position = status?.position
@@ -232,6 +257,29 @@ function Overview() {
 
   return (
     <div>
+      {/* Header with Add Fund button */}
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl font-bold text-white">Funds</h1>
+        <button
+          onClick={() => setAddFundOpen(true)}
+          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium text-white transition-colors"
+          title="Create a new trading fund on an existing exchange"
+        >
+          + Add Fund
+        </button>
+      </div>
+
+      <AddFundModal
+        open={addFundOpen}
+        onClose={() => setAddFundOpen(false)}
+        exchanges={exchanges}
+        onCreated={async ({ exchange, pair }) => {
+          await refreshExchanges()
+          // Navigate to the new fund's config page so the operator can review/enable it
+          navigate(`/${exchange}/${pair}/config`)
+        }}
+      />
+
       {/* Aggregate summary bar */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">

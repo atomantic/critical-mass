@@ -120,13 +120,22 @@ function AppContent() {
   const [error, setError] = useState(null)
   const [regimeRunning, setRegimeRunning] = useState(false)
   const [regimeDryRun, setRegimeDryRun] = useState(false)
+  const [regimeLifecycle, setRegimeLifecycle] = useState('active')
   const [stopping, setStopping] = useState(false)
   const [starting, setStarting] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [closing, setClosing] = useState(false)
+  const [reopening, setReopening] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [simpleDcaEnabled, setSimpleDcaEnabled] = useState(false)
 
-  const currentExchangeConfig = exchanges?.find(e => e.name === currentExchange)
+  // The exchanges array now contains one entry per (exchange, pair) fund.
+  // Look up the fund matching both the current exchange AND pair from the URL.
+  // Falls back to the first entry on this exchange if the pair is missing
+  // (e.g. on initial load before urlPair is set).
+  const currentExchangeConfig = exchanges?.find(
+    (e) => e.name === currentExchange && (urlPair ? e.pair === urlPair : true)
+  ) || exchanges?.find((e) => e.name === currentExchange)
   const resolveStrategy = (config) =>
     !simpleDcaEnabled || config?.strategy === 'regime' ? 'regime' : 'dca'
   const currentStrategy = resolveStrategy(currentExchangeConfig)
@@ -180,10 +189,15 @@ function AppContent() {
     navigate(`/${newExchange}/${newPair}${tabValid && currentTab ? `/${currentTab}` : ''}`)
   }
 
+  // Build the ?pair= query string for the active fund. Used by every API
+  // call below so the gateway routes target the correct fund instead of the
+  // exchange's default pair.
+  const pairQuery = () => `?pair=${encodeURIComponent(currentPair)}`
+
   const fetchData = async () => {
     setLoading(true)
     setError(null)
-    const res = await fetch(`/api/${currentExchange}/summary`)
+    const res = await fetch(`/api/${currentExchange}/summary${pairQuery()}`)
     if (!res.ok) {
       setError('Failed to fetch data')
       setLoading(false)
@@ -200,21 +214,25 @@ function AppContent() {
   // Fetch regime status (for header controls)
   const fetchRegimeStatus = async () => {
     if (currentStrategy !== 'regime') return
-    const res = await fetch(`/api/${currentExchange}/regime/status`)
+    const res = await fetch(`/api/${currentExchange}/regime/status${pairQuery()}`)
     if (res.ok) {
       const data = await res.json()
       setRegimeRunning(data.status?.isRunning || false)
       setRegimeDryRun(data.status?.isDryRun || false)
+      setRegimeLifecycle(data.status?.lifecycle?.lifecycle || 'active')
     }
   }
 
   // Start regime engine
   const handleStartRegime = async () => {
     setStarting(true)
-    const res = await fetch(`/api/${currentExchange}/regime/start`, { method: 'POST' })
+    const res = await fetch(`/api/${currentExchange}/regime/start${pairQuery()}`, { method: 'POST' })
     if (res.ok) {
       setRegimeRunning(true)
       fetchRegimeStatus()
+    } else {
+      const err = await res.json().catch(() => ({}))
+      alert(err.error || 'Failed to start regime engine')
     }
     setStarting(false)
   }
@@ -222,17 +240,65 @@ function AppContent() {
   // Stop regime engine
   const handleStopRegime = async () => {
     setStopping(true)
-    const res = await fetch(`/api/${currentExchange}/regime/stop`, { method: 'POST' })
+    const res = await fetch(`/api/${currentExchange}/regime/stop${pairQuery()}`, { method: 'POST' })
     if (res.ok) {
       setRegimeRunning(false)
     }
     setStopping(false)
   }
 
+  // Close fund: drain current cycle, then auto-stop
+  const handleCloseFund = async () => {
+    const reason = window.prompt(
+      `Block new entries on ${currentExchange}/${currentPair}.\n\n` +
+      `Existing take-profit orders will remain in place. The fund will close ` +
+      `automatically after the current cycle's TP fills.\n\n` +
+      `Optional: enter a reason (or leave blank):`
+    )
+    // null = user clicked Cancel; empty string = user pressed OK with no input
+    if (reason === null) return
+    setClosing(true)
+    const res = await fetch(`/api/${currentExchange}/regime/close${pairQuery()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason || undefined }),
+    })
+    if (res.ok) {
+      setRegimeLifecycle('draining')
+      fetchRegimeStatus()
+      fetchExchanges()
+    } else {
+      const err = await res.json().catch(() => ({}))
+      alert(err.error || 'Failed to close fund')
+    }
+    setClosing(false)
+  }
+
+  // Reopen a closed fund (lifecycle 'closed' → 'active'). Does NOT restart the engine.
+  const handleReopenFund = async () => {
+    const ok = window.confirm(
+      `Reopen ${currentExchange}/${currentPair}?\n\n` +
+      `This restores the fund's lifecycle to 'active' but does NOT restart the engine. ` +
+      `You will need to click Start afterwards.`
+    )
+    if (!ok) return
+    setReopening(true)
+    const res = await fetch(`/api/${currentExchange}/regime/reopen${pairQuery()}`, { method: 'POST' })
+    if (res.ok) {
+      setRegimeLifecycle('active')
+      fetchRegimeStatus()
+      fetchExchanges()
+    } else {
+      const err = await res.json().catch(() => ({}))
+      alert(err.error || 'Failed to reopen fund')
+    }
+    setReopening(false)
+  }
+
   // Reset dry-run state
   const handleResetDryRun = async () => {
     setResetting(true)
-    await fetch(`/api/${currentExchange}/regime/dry-run/reset`, { method: 'POST' })
+    await fetch(`/api/${currentExchange}/regime/dry-run/reset${pairQuery()}`, { method: 'POST' })
     setResetting(false)
   }
 
@@ -487,6 +553,7 @@ function AppContent() {
                 <div className="flex items-center gap-2 md:gap-3 flex-wrap px-3 md:px-0 py-1.5 shrink-0 md:ml-auto">
                   <ExchangeSelector
                     currentExchange={currentExchange}
+                    currentPair={currentPair}
                     exchanges={exchanges}
                     onChange={handleExchangeChange}
                     onRefresh={fetchExchanges}
@@ -496,6 +563,16 @@ function AppContent() {
                     {regimeDryRun && (
                       <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-900/50 border border-purple-500 text-purple-400 text-[10px] md:text-xs font-medium rounded">
                         DRY-RUN
+                      </span>
+                    )}
+                    {regimeLifecycle === 'draining' && (
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-yellow-900/50 border border-yellow-500 text-yellow-300 text-[10px] md:text-xs font-medium rounded animate-pulse" title="Draining: blocking new entries; will close after current cycle's TP fills.">
+                        DRAINING
+                      </span>
+                    )}
+                    {regimeLifecycle === 'closed' && (
+                      <span className="px-1.5 md:px-2 py-0.5 md:py-1 bg-red-900/50 border border-red-500 text-red-300 text-[10px] md:text-xs font-medium rounded" title="Fund is closed. Click Reopen to reactivate.">
+                        CLOSED
                       </span>
                     )}
                     <div className="flex items-center gap-1 md:gap-1.5 text-xs md:text-sm">
@@ -522,6 +599,16 @@ function AppContent() {
                             {resetting ? '...' : 'Reset'}
                           </button>
                         )}
+                        {regimeLifecycle === 'active' && (
+                          <button
+                            onClick={handleCloseFund}
+                            disabled={closing}
+                            className="px-2 md:px-3 py-1 md:py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 rounded text-xs md:text-sm font-medium transition-colors"
+                            title="Block new entries; auto-close after current cycle's TP fills"
+                          >
+                            {closing ? '...' : 'Close Fund'}
+                          </button>
+                        )}
                         <button
                           onClick={handleStopRegime}
                           disabled={stopping}
@@ -530,6 +617,15 @@ function AppContent() {
                           {stopping ? '...' : 'Stop'}
                         </button>
                       </>
+                    ) : regimeLifecycle === 'closed' ? (
+                      <button
+                        onClick={handleReopenFund}
+                        disabled={reopening}
+                        className="px-2 md:px-3 py-1 md:py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-xs md:text-sm font-medium transition-colors"
+                        title="Reopen fund (does not restart the engine)"
+                      >
+                        {reopening ? '...' : 'Reopen'}
+                      </button>
                     ) : (
                       <button
                         onClick={handleStartRegime}
@@ -569,25 +665,25 @@ function AppContent() {
               {/* Pair-based routes - strategy determined from exchange config */}
               <Route path="/:exchange/:pair" element={
                 currentStrategy === 'regime'
-                  ? <RegimeDashboard exchange={currentExchange} />
-                  : <Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} />
+                  ? <RegimeDashboard exchange={currentExchange} pair={currentPair} />
+                  : <Dashboard summary={summary} onRefresh={fetchData} exchange={currentExchange} pair={currentPair} />
               } />
               <Route path="/:exchange/:pair/cost-basis" element={
                 currentStrategy === 'regime'
-                  ? <CostBasisRegime exchange={currentExchange} />
+                  ? <CostBasisRegime exchange={currentExchange} pair={currentPair} />
                   : <CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
               <Route path="/:exchange/:pair/transactions" element={
                 currentStrategy === 'regime'
-                  ? <TransactionsRegime exchange={currentExchange} />
+                  ? <TransactionsRegime exchange={currentExchange} pair={currentPair} />
                   : <TransactionsDCA transactions={summary?.transactions} baseCurrency={getBaseCurrency(summary?.config?.productId)} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
               <Route path="/:exchange/:pair/charts" element={
                 currentStrategy === 'regime'
-                  ? <ChartsRegime exchange={currentExchange} />
+                  ? <ChartsRegime exchange={currentExchange} pair={currentPair} />
                   : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
-              <Route path="/:exchange/:pair/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} strategy={currentStrategy} />} />
+              <Route path="/:exchange/:pair/config" element={<ConfigEditor config={summary?.config} onSave={fetchData} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} />} />
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>

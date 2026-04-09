@@ -14,6 +14,23 @@ const EXCHANGE_COLORS = {
 
 // Get engine status for an exchange
 const getEngineStatus = (exchange) => {
+  // Lifecycle takes precedence over running/ready state.
+  if (exchange?.lifecycle === 'draining') {
+    return {
+      label: 'Draining',
+      color: 'bg-yellow-600',
+      textColor: 'text-yellow-100',
+      pulse: true,
+    }
+  }
+  if (exchange?.lifecycle === 'closed') {
+    return {
+      label: 'Closed',
+      color: 'bg-red-700',
+      textColor: 'text-red-100',
+    }
+  }
+
   const isRunning = exchange?.regimeRunning
   const isDry = exchange?.dryRun
 
@@ -31,12 +48,10 @@ const getEngineStatus = (exchange) => {
   return { label: 'Off', color: 'bg-gray-600', textColor: 'text-gray-300' }
 }
 
-function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
+function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, onRefresh }) {
   const [isOpen, setIsOpen] = useState(false)
 
-  const handleSelect = (exchangeName) => {
-    const exchangeConfig = exchanges?.find(e => e.name === exchangeName)
-    const pair = exchangeConfig?.productId || 'BTC-USDC'
+  const handleSelect = (exchangeName, pair) => {
     onChange(exchangeName, pair)
     setIsOpen(false)
   }
@@ -60,9 +75,14 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
     }
   }, [isOpen])
 
-  const currentExchangeConfig = exchanges?.find(e => e.name === currentExchange)
+  // Find the entry matching both exchange AND pair (multi-pair installs may
+  // have several entries per exchange). Falls back to the first entry on
+  // this exchange if no pair was passed.
+  const currentExchangeConfig = exchanges?.find(
+    (e) => e.name === currentExchange && (currentPair ? e.pair === currentPair : true)
+  ) || exchanges?.find((e) => e.name === currentExchange)
   const currentStatus = getEngineStatus(currentExchangeConfig)
-  const currentPair = currentExchangeConfig?.productId || 'Not configured'
+  const displayPair = currentPair || currentExchangeConfig?.pair || currentExchangeConfig?.productId || 'Not configured'
 
   return (
     <div className="exchange-selector relative">
@@ -75,7 +95,7 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
         </span>
         <span className="font-medium capitalize hidden md:inline">{currentExchange}</span>
         <span className="text-gray-400 hidden md:inline">/</span>
-        <span className="text-xs md:text-sm text-gray-300 shrink-0">{currentPair}</span>
+        <span className="text-xs md:text-sm text-gray-300 shrink-0">{displayPair}</span>
         <span className={`text-[10px] md:text-xs px-1 md:px-2 py-0.5 rounded shrink-0 ${currentStatus.color} ${currentStatus.textColor} ${currentStatus.pulse ? 'animate-pulse' : ''}`}>
           {currentStatus.label}
         </span>
@@ -91,12 +111,14 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
 
             {exchanges?.map(exchange => {
               const status = getEngineStatus(exchange)
-              const isSelected = exchange.name === currentExchange
+              const pairValue = exchange.pair || exchange.productId
+              const isSelected = exchange.name === currentExchange && pairValue === currentPair
+              const key = `${exchange.name}::${pairValue}`
 
               return (
                 <button
-                  key={exchange.name}
-                  onClick={() => handleSelect(exchange.name)}
+                  key={key}
+                  onClick={() => handleSelect(exchange.name, pairValue)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 mb-1 rounded-lg transition-colors ${
                     isSelected
                       ? 'bg-blue-600/20 text-blue-300 border border-blue-500/50'
@@ -108,7 +130,7 @@ function ExchangeSelector({ currentExchange, exchanges, onChange, onRefresh }) {
                   </span>
                   <div className="flex-1 text-left">
                     <div className="text-sm font-medium capitalize">{exchange.name}</div>
-                    <div className="text-xs text-gray-400">{exchange.productId || 'Not configured'}</div>
+                    <div className="text-xs text-gray-400">{pairValue || 'Not configured'}</div>
                   </div>
                   <span className={`text-xs px-2 py-0.5 rounded ${status.color}/50 ${status.textColor.replace('100', '200')} ${status.pulse ? 'animate-pulse' : ''}`}>
                     {status.label}
