@@ -153,6 +153,10 @@ export function useRegimeEvents(exchange = null, pair = null) {
 }
 
 export function useMultiRegimeStatuses() {
+  // Keyed by `${exchange}::${pair}` so multi-pair installs keep independent
+  // status entries per fund. Events without a pair (legacy engines that
+  // haven't been restarted yet) are stored under `${exchange}::${exchange}`
+  // so the Overview's matching code can still find them by exchange.
   const [statuses, setStatuses] = useState({})
   const [connected, setConnected] = useState(false)
 
@@ -164,7 +168,9 @@ export function useMultiRegimeStatuses() {
 
     const handleStatusUpdate = (data) => {
       if (!data.exchange) return
-      setStatuses(prev => ({ ...prev, [data.exchange]: data.status }))
+      const pair = data.pair || data.exchange
+      const key = `${data.exchange}::${pair}`
+      setStatuses(prev => ({ ...prev, [key]: data.status }))
     }
 
     socket.on('connect', handleConnect)
