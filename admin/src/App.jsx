@@ -102,6 +102,7 @@ function TradeEventListener() {
 function AppContent() {
   const location = useLocation()
   const navigate = useNavigate()
+  const { addToast } = useToast()
 
   // Extract exchange and pair from URL path (e.g., /coinbase/BTC-USDC/config -> coinbase, BTC-USDC)
   const pathParts = location.pathname.split('/').filter(Boolean)
@@ -126,6 +127,9 @@ function AppContent() {
   const [resetting, setResetting] = useState(false)
   const [closing, setClosing] = useState(false)
   const [reopening, setReopening] = useState(false)
+  const [closeFundDialogOpen, setCloseFundDialogOpen] = useState(false)
+  const [closeFundReason, setCloseFundReason] = useState('')
+  const [reopenFundDialogOpen, setReopenFundDialogOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [simpleDcaEnabled, setSimpleDcaEnabled] = useState(false)
 
@@ -232,7 +236,7 @@ function AppContent() {
       fetchRegimeStatus()
     } else {
       const err = await res.json().catch(() => ({}))
-      alert(err.error || 'Failed to start regime engine')
+      addToast({ type: 'error', title: 'Failed to start regime engine', message: err.error || 'Unknown error' })
     }
     setStarting(false)
   }
@@ -247,50 +251,59 @@ function AppContent() {
     setStopping(false)
   }
 
-  // Close fund: drain current cycle, then auto-stop
-  const handleCloseFund = async () => {
-    const reason = window.prompt(
-      `Block new entries on ${currentExchange}/${currentPair}.\n\n` +
-      `Existing take-profit orders will remain in place. The fund will close ` +
-      `automatically after the current cycle's TP fills.\n\n` +
-      `Optional: enter a reason (or leave blank):`
-    )
-    // null = user clicked Cancel; empty string = user pressed OK with no input
-    if (reason === null) return
+  // Open the Close Fund confirmation dialog
+  const openCloseFundDialog = () => {
+    setCloseFundReason('')
+    setCloseFundDialogOpen(true)
+  }
+
+  // Submit close — drain current cycle, then auto-stop
+  const submitCloseFund = async () => {
     setClosing(true)
     const res = await fetch(`/api/${currentExchange}/regime/close${pairQuery()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: reason || undefined }),
+      body: JSON.stringify({ reason: closeFundReason || undefined }),
     })
     if (res.ok) {
       setRegimeLifecycle('draining')
+      setCloseFundDialogOpen(false)
       fetchRegimeStatus()
       fetchExchanges()
+      addToast({
+        type: 'success',
+        title: `Draining ${currentExchange}/${currentPair}`,
+        message: 'New entries blocked. Fund will close after the current cycle\'s TP fills.',
+      })
     } else {
       const err = await res.json().catch(() => ({}))
-      alert(err.error || 'Failed to close fund')
+      addToast({ type: 'error', title: 'Failed to close fund', message: err.error || 'Unknown error' })
     }
     setClosing(false)
   }
 
-  // Reopen a closed fund (lifecycle 'closed' → 'active'). Does NOT restart the engine.
-  const handleReopenFund = async () => {
-    const ok = window.confirm(
-      `Reopen ${currentExchange}/${currentPair}?\n\n` +
-      `This restores the fund's lifecycle to 'active' but does NOT restart the engine. ` +
-      `You will need to click Start afterwards.`
-    )
-    if (!ok) return
+  // Open the Reopen confirmation dialog
+  const openReopenFundDialog = () => {
+    setReopenFundDialogOpen(true)
+  }
+
+  // Submit reopen — lifecycle 'closed' → 'active'. Does NOT restart the engine.
+  const submitReopenFund = async () => {
     setReopening(true)
     const res = await fetch(`/api/${currentExchange}/regime/reopen${pairQuery()}`, { method: 'POST' })
     if (res.ok) {
       setRegimeLifecycle('active')
+      setReopenFundDialogOpen(false)
       fetchRegimeStatus()
       fetchExchanges()
+      addToast({
+        type: 'success',
+        title: `Reopened ${currentExchange}/${currentPair}`,
+        message: 'Fund lifecycle restored to active. Click Start to resume trading.',
+      })
     } else {
       const err = await res.json().catch(() => ({}))
-      alert(err.error || 'Failed to reopen fund')
+      addToast({ type: 'error', title: 'Failed to reopen fund', message: err.error || 'Unknown error' })
     }
     setReopening(false)
   }
@@ -601,7 +614,7 @@ function AppContent() {
                         )}
                         {regimeLifecycle === 'active' && (
                           <button
-                            onClick={handleCloseFund}
+                            onClick={openCloseFundDialog}
                             disabled={closing}
                             className="px-2 md:px-3 py-1 md:py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 rounded text-xs md:text-sm font-medium transition-colors"
                             title="Block new entries; auto-close after current cycle's TP fills"
@@ -619,7 +632,7 @@ function AppContent() {
                       </>
                     ) : regimeLifecycle === 'closed' ? (
                       <button
-                        onClick={handleReopenFund}
+                        onClick={openReopenFundDialog}
                         disabled={reopening}
                         className="px-2 md:px-3 py-1 md:py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-xs md:text-sm font-medium transition-colors"
                         title="Reopen fund (does not restart the engine)"
@@ -644,6 +657,104 @@ function AppContent() {
 
         {/* Global Alert Banner */}
         <AlertBanner />
+
+        {/* Close Fund confirmation dialog */}
+        {closeFundDialogOpen && (
+          <div
+            className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+            onClick={() => !closing && setCloseFundDialogOpen(false)}
+          >
+            <div
+              className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4 w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-white text-lg font-medium mb-3">
+                Close <span className="font-mono text-yellow-400">{currentExchange}/{currentPair}</span>?
+              </h3>
+              <p className="text-gray-300 text-sm mb-2">
+                This blocks all new entries immediately. The fund's existing take-profit
+                order(s) will remain in place, and the fund will close automatically
+                after the current cycle's TP fills.
+              </p>
+              <p className="text-gray-500 text-xs mb-4">
+                You can reopen the fund later, but it will not auto-resume on engine restart.
+              </p>
+              <div className="mb-4">
+                <label className="block text-xs uppercase tracking-wider text-gray-400 mb-1">
+                  Reason (optional)
+                </label>
+                <input
+                  type="text"
+                  value={closeFundReason}
+                  onChange={(e) => setCloseFundReason(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submitCloseFund()}
+                  placeholder="e.g. winding down for tax season"
+                  className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white text-sm focus:border-yellow-500 focus:outline-none"
+                  disabled={closing}
+                  autoFocus
+                />
+              </div>
+              <div className="flex justify-end gap-3">
+                <button
+                  className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50"
+                  onClick={() => setCloseFundDialogOpen(false)}
+                  disabled={closing}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="px-4 py-2 text-sm text-white bg-yellow-600 hover:bg-yellow-500 rounded transition-colors disabled:opacity-50"
+                  onClick={submitCloseFund}
+                  disabled={closing}
+                >
+                  {closing ? 'Closing...' : 'Close Fund'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Reopen Fund confirmation dialog */}
+        {reopenFundDialogOpen && (
+          <div
+            className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+            onClick={() => !reopening && setReopenFundDialogOpen(false)}
+          >
+            <div
+              className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4 w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-white text-lg font-medium mb-3">
+                Reopen <span className="font-mono text-blue-400">{currentExchange}/{currentPair}</span>?
+              </h3>
+              <p className="text-gray-300 text-sm mb-2">
+                This restores the fund's lifecycle to <span className="text-green-400">active</span> so the
+                regime engine can run again.
+              </p>
+              <p className="text-gray-500 text-xs mb-4">
+                Reopening does <strong>not</strong> restart the engine. After confirming, click
+                <span className="font-mono text-green-400"> Start </span>
+                to resume trading.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50"
+                  onClick={() => setReopenFundDialogOpen(false)}
+                  disabled={reopening}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded transition-colors disabled:opacity-50"
+                  onClick={submitReopenFund}
+                  disabled={reopening}
+                >
+                  {reopening ? 'Reopening...' : 'Reopen Fund'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Main Content */}
         <main className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6">
