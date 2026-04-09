@@ -59,6 +59,7 @@
 
 ## Fixed
 
+- Aggressiveness Level buttons did nothing on any non-default fund — `AggressivenessControl` referenced `pairQuery` but never received it as a prop, so clicking a level threw `ReferenceError: pairQuery is not defined` and the PUT to `/api/:exchange/regime/config` never fired. Pass `pairQuery` into the child component. Bug introduced by the multi-pair refactor (66fb595)
 - Add Fund modal's "Total Allocation" was only saved as legacy `totalAllocation` (which the regime engine ignores), leaving `regime.depositedCapital` and `regime.maxUsdcDeployed` at 0 — the dashboard then showed Deposited as $0. POST `/api/:exchange/funds` now mirrors the entered amount into both regime fields and enables regime by default; modal label updated to "Initial Capital"
 - Gemini BTCUSD missing 28 buy fills — synced from exchange and associated with galaxy body, position corrected from 0.04 to 0.069 BTC
 - Startup `syncPositionState` gap — celestial body totals were not synced to position after recovery, causing totalAsset=0 despite bodies having correct data

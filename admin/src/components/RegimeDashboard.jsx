@@ -408,7 +408,7 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
 }
 
 // Aggressiveness control component
-function AggressivenessControl({ config, exchange, onConfigUpdate, presets }) {
+function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, presets }) {
   const [updating, setUpdating] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [previewLevel, setPreviewLevel] = useState(null)
@@ -1980,6 +1980,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <AggressivenessControl
                   config={config}
                   exchange={exchange}
+                  pairQuery={pairQuery}
                   onConfigUpdate={fetchConfig}
                   presets={presets}
                 />
