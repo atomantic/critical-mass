@@ -138,12 +138,19 @@ module.exports = (app, deps) => {
         enabled: false, // Operator must explicitly enable
         dryRun: dryRun !== false, // Default to dry-run for safety
       };
+      // The "Total Allocation" entered in the Add Fund modal is the operator's
+      // intended budget for this fund. The regime engine (the active engine)
+      // does not read `totalAllocation` — it uses `regime.depositedCapital`
+      // and `regime.maxUsdcDeployed`. Mirror the value into all three so the
+      // dashboard's Deposited field and the engine's risk caps both reflect
+      // what the operator entered, instead of leaving regime at 0.
+      const seedRegime = { enabled: true, ...(regime && typeof regime === 'object' ? regime : {}) };
       if (typeof totalAllocation === 'number' && totalAllocation > 0) {
         initialConfig.totalAllocation = totalAllocation;
+        seedRegime.depositedCapital ??= totalAllocation;
+        seedRegime.maxUsdcDeployed ??= totalAllocation;
       }
-      if (regime && typeof regime === 'object') {
-        initialConfig.regime = regime;
-      }
+      initialConfig.regime = seedRegime;
       addFund(exchange, pair, initialConfig);
       log('INFO', `🆕 [${exchange}/${pair}] Fund created (productId=${resolvedProductId}, dryRun=${initialConfig.dryRun})`);
       res.json({

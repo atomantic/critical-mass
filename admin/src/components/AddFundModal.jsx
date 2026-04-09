@@ -202,7 +202,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
           </div>
 
           <div>
-            <label className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Total Allocation (quote currency)</label>
+            <label className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Initial Capital (quote currency)</label>
             <input
               type="number"
               min="0"
@@ -212,7 +212,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
               disabled={submitting}
             />
-            <div className="text-xs text-gray-500 mt-1">Initial budget for this fund. You can adjust this later in the fund's config.</div>
+            <div className="text-xs text-gray-500 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
           </div>
 
           <div className="flex items-center gap-2">
