@@ -623,13 +623,33 @@ const createCryptocomAdapter = (keysPath = null) => {
       'ONE_DAY': '1D',
     };
 
+    // Granularity → seconds per candle, used to size the count parameter
+    const granularitySeconds = {
+      'ONE_MINUTE': 60,
+      'FIVE_MINUTE': 300,
+      'FIFTEEN_MINUTE': 900,
+      'THIRTY_MINUTE': 1800,
+      'ONE_HOUR': 3600,
+      'SIX_HOUR': 14400,
+      'ONE_DAY': 86400,
+    };
+
     const timeframe = granularityMap[granularity] || '1D';
+    const granSec = granularitySeconds[granularity] || 86400;
+
+    // Crypto.com defaults count=25 and caps at 300. Without an explicit
+    // count, large windows silently return only the 25 most recent candles
+    // — which broke the long-term candle store. Compute a count that fills
+    // the requested window, capped at the API's maximum.
+    const windowSec = Math.max(0, end - start);
+    const requestedCount = Math.min(300, Math.max(1, Math.ceil(windowSec / granSec)));
 
     const result = await makePublicRequest('public/get-candlestick', {
       instrument_name: instrument,
       timeframe,
       start_ts: start * 1000, // Convert to milliseconds
       end_ts: end * 1000,
+      count: requestedCount,
     });
 
     const candles = result.data || [];

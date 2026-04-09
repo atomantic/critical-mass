@@ -211,6 +211,14 @@ const REGIME_DEFAULTS = {
   macroDeclineTpMult: 0.7,            // TP multiplier in DECLINE (tighter)
   macroDeclineOffsetMult: 1.5,        // Offset multiplier in DECLINE (wider entries)
 
+  // Long-Term Bias / Auto-Aggressiveness (Phase 1: observe-only)
+  // See PLAN.md → Auto-Aggressiveness Roadmap. Phase 1 is purely advisory —
+  // the depression score is computed and displayed but does not affect sizing.
+  longTermBiasEnabled: true,           // Compute and expose depression score on macro state
+  longTermLookbackDays: 365,           // History depth for percentile/drawdown/z-score
+  longTermUpdateIntervalMs: 3600000,   // Refresh cadence for long-term candle store (1h)
+  autoAggressivenessEnabled: false,    // Phase 3: actually modulate sizing from the score
+
   // Entry Mode
   entryMode: 'reactive',              // 'reactive' | 'ladder'
 

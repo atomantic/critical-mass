@@ -86,8 +86,48 @@ const CONFIG_TOOLTIPS = {
   maxCycleBuys: 'Maximum buy orders in a single accumulation cycle before the bot waits for corresponding sells to complete',
 }
 
+// Tooltip descriptions for the regime/entry status panels
+const REGIME_TOOLTIPS = {
+  micro: (
+    <>
+      <div className="font-semibold text-gray-200 mb-1">Micro Regime</div>
+      <div className="mb-1">Short-term market state derived from 1m ATR, realized volatility vs baseline, and VWAP distance.</div>
+      <div><span className="text-green-400">HARVEST</span>: calm / mean-reverting → full sizing (1.0x). The <em>most aggressive</em> buy/sell cycling mode — &quot;harvest&quot; refers to harvesting micro cycles, NOT selling out.</div>
+      <div><span className="text-yellow-400">CAUTION</span>: volatility expanding → sizing scaled by <code>cautionScale</code>.</div>
+      <div><span className="text-red-400">TREND</span>: strong directional move → entries blocked unless <code>trendScale &gt; 0</code>.</div>
+    </>
+  ),
+  macro: (
+    <>
+      <div className="font-semibold text-gray-200 mb-1">Macro Regime</div>
+      <div className="mb-1">Multi-day trend context from 21h/50h/200h hourly EMAs + 20d daily EMA. Lookback maxes at ~200 hours / 20 days — the bot has no concept of multi-month or yearly cycles.</div>
+      <div><span className="text-blue-400">ACCUMULATION</span>: price stacked below EMAs → 1.3x size, tighter TP, smaller offset.</div>
+      <div><span className="text-gray-400">RANGING</span>: neutral → no modulation (1.0x / 1.0x / 1.0x).</div>
+      <div><span className="text-green-400">MARKUP</span>: confirmed uptrend → 0.7x size, wider TP.</div>
+      <div><span className="text-red-400">DECLINE</span>: confirmed downtrend → 0.4x size, tighter TP, wider offset.</div>
+    </>
+  ),
+  entryStatus: (
+    <>
+      <div className="font-semibold text-gray-200 mb-1">Entry Status</div>
+      <div>Gates that must pass for the bot to place a buy order:</div>
+      <div className="mt-1">• <strong>Health</strong>: Ready / Safe / Paused / Stopped</div>
+      <div>• <strong>Regime</strong>: Allowed unless micro regime is TREND</div>
+      <div>• <strong>Celestial bodies</strong>: open-position capacity by tier (Sun / Planet / Asteroid)</div>
+      <div>• <strong>Macro</strong>: long-term trend indicator (informational unless macro multipliers are non-zero)</div>
+    </>
+  ),
+  entryMode: (
+    <>
+      <div className="font-semibold text-gray-200 mb-1">Entry Mode</div>
+      <div><span className="text-gray-300">REACTIVE</span>: single buy order placed when the ATR trigger fires. Best for low-volatility / mean-reverting conditions.</div>
+      <div className="mt-1"><span className="text-indigo-400">LADDER</span>: multiple pre-positioned buy orders descending from current price. Auto-activates when volatility expansion exceeds <code>ladderAutoSwitchVolMult</code> (default 2.0x).</div>
+    </>
+  ),
+}
+
 // Info icon + hover tooltip for config labels
-function ConfigTooltip({ tip, align = 'center' }) {
+function ConfigTooltip({ tip, align = 'center', width = 'w-52' }) {
   const alignClass = align === 'left' ? 'left-0' : align === 'right' ? 'right-0' : 'left-1/2 -translate-x-1/2'
   return (
     <span className="relative group cursor-help ml-1 inline-flex align-middle">
@@ -95,7 +135,7 @@ function ConfigTooltip({ tip, align = 'center' }) {
         <circle cx="12" cy="12" r="10" />
         <path d="M12 16v-4M12 8h.01" />
       </svg>
-      <span className={`absolute bottom-full ${alignClass} mb-2 px-3 py-2 bg-gray-900 border border-gray-700 text-xs text-gray-300 rounded-lg shadow-lg w-52 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50`}>
+      <span className={`absolute bottom-full ${alignClass} mb-2 px-3 py-2 bg-gray-900 border border-gray-700 text-xs text-gray-300 rounded-lg shadow-lg ${width} opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-50 space-y-0.5 leading-snug text-left normal-case font-normal`}>
         {tip}
       </span>
     </span>
@@ -108,6 +148,150 @@ const AGGRESSIVENESS_LEVEL_META = {
   moderate: { label: 'Moderate', color: 'blue' },
   aggressive: { label: 'Aggressive', color: 'yellow' },
   maximum: { label: 'Maximum', color: 'red' },
+}
+
+// Tailwind classes per suggested aggressiveness level
+const SUGGESTED_LEVEL_STYLES = {
+  conservative: { bg: 'bg-green-900/40',  border: 'border-green-700/50',  text: 'text-green-400',  bar: 'bg-green-500',  label: 'Conservative' },
+  moderate:     { bg: 'bg-blue-900/40',   border: 'border-blue-700/50',   text: 'text-blue-400',   bar: 'bg-blue-500',   label: 'Moderate' },
+  aggressive:   { bg: 'bg-yellow-900/40', border: 'border-yellow-700/50', text: 'text-yellow-400', bar: 'bg-yellow-500', label: 'Aggressive' },
+  maximum:      { bg: 'bg-red-900/40',    border: 'border-red-700/50',    text: 'text-red-400',    bar: 'bg-red-500',    label: 'Maximum' },
+}
+
+// Cache health badge styles
+const CACHE_HEALTH_STYLES = {
+  full:    { bg: 'bg-green-900/40',  text: 'text-green-400',  label: 'Full cache' },
+  partial: { bg: 'bg-yellow-900/40', text: 'text-yellow-400', label: 'Partial cache' },
+  sparse:  { bg: 'bg-orange-900/40', text: 'text-orange-400', label: 'Sparse cache' },
+  empty:   { bg: 'bg-gray-900',      text: 'text-gray-500',   label: 'Empty cache' },
+}
+
+const LONG_TERM_BIAS_TOOLTIP = (
+  <>
+    <div className="font-semibold text-gray-200 mb-1">Long-Term Bias (Depression Score)</div>
+    <div className="mb-1">Composite signal of how cheap an asset is relative to its trailing window. <strong>Phase 1 — observe only.</strong> Does not affect sizing yet.</div>
+    <div>• <strong>Percentile of range</strong> (60% weight): position in trailing high/low. 1.0 = at the period low.</div>
+    <div>• <strong>Drawdown</strong> (30%): % below trailing high. Maps 80% drawdown → 1.0.</div>
+    <div>• <strong>Z-score</strong> (10%): standard deviations below the trailing mean.</div>
+    <div className="mt-1">The &quot;Suggested&quot; level is what the bot would auto-pick if Phase 3 were enabled. See PLAN.md → Auto-Aggressiveness Roadmap.</div>
+  </>
+)
+
+// Long-term bias / depression score panel (Phase 1: observe-only)
+function LongTermBiasPanel({ bias, config, presets }) {
+  if (!bias) return null
+
+  const currentLevel = detectAggressivenessLevel(config, presets)
+  const suggested = bias.suggestedLevel || 'conservative'
+  const suggestedStyle = SUGGESTED_LEVEL_STYLES[suggested] || SUGGESTED_LEVEL_STYLES.conservative
+  const divergent = currentLevel && currentLevel !== 'custom' && suggested !== currentLevel
+
+  const cacheHealth = bias.cache?.health || 'empty'
+  const healthStyle = CACHE_HEALTH_STYLES[cacheHealth] || CACHE_HEALTH_STYLES.empty
+  const coveragePct = bias.cache?.coveragePct || 0
+
+  if (!bias.ready) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-3 border border-gray-700">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-medium text-gray-400">
+            Long-Term Bias<ConfigTooltip tip={LONG_TERM_BIAS_TOOLTIP} align="left" width="w-80" />
+          </h3>
+          <span className={`px-1.5 py-0.5 rounded text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
+            {healthStyle.label}
+          </span>
+        </div>
+        <div className="text-[10px] text-gray-500">
+          Need ≥30 daily candles. Currently have {bias.sampleSize || 0}.
+          {bias.cache?.lastRefresh ? ` Last refresh ${new Date(bias.cache.lastRefresh).toLocaleTimeString()}.` : ' Refreshing...'}
+        </div>
+      </div>
+    )
+  }
+
+  const c = bias.components || {}
+  const scorePct = (bias.score * 100).toFixed(0)
+
+  return (
+    <div className={`bg-gray-800 rounded-lg p-3 border ${suggestedStyle.border}`}>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-xs font-medium text-gray-400">
+          Long-Term Bias<ConfigTooltip tip={LONG_TERM_BIAS_TOOLTIP} align="left" width="w-80" />
+        </h3>
+        <div className="flex items-center gap-1">
+          <span className={`px-1.5 py-0.5 rounded text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
+            {healthStyle.label}
+          </span>
+          <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-900 text-gray-500 border border-gray-700">
+            Observe-only
+          </span>
+        </div>
+      </div>
+
+      {/* Score bar */}
+      <div className="mb-2">
+        <div className="flex items-center justify-between text-[10px] text-gray-500 mb-0.5">
+          <span>Depression Score</span>
+          <span className={`font-mono ${suggestedStyle.text}`}>{scorePct}/100</span>
+        </div>
+        <div className="h-2 bg-gray-900 rounded overflow-hidden">
+          <div
+            className={`h-full ${suggestedStyle.bar} transition-all`}
+            style={{ width: `${scorePct}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Suggested vs current level */}
+      <div className={`p-2 rounded mb-2 ${suggestedStyle.bg} border ${suggestedStyle.border}`}>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-400">Suggested</span>
+          <span className={`font-semibold ${suggestedStyle.text}`}>{suggestedStyle.label}</span>
+        </div>
+        {currentLevel && (
+          <div className="flex items-center justify-between text-[10px] text-gray-500 mt-0.5">
+            <span>Current</span>
+            <span>
+              {currentLevel === 'custom' ? 'Custom' : (AGGRESSIVENESS_LEVEL_META[currentLevel]?.label || currentLevel)}
+              {divergent && <span className="ml-1 text-yellow-400">⚠ diverges</span>}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Component breakdown */}
+      <div className="space-y-1 text-[10px]">
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Percentile of range ({(c.percentile?.weight * 100 || 0).toFixed(0)}%)</span>
+          <span className="font-mono text-gray-300">{((c.percentile?.score || 0) * 100).toFixed(0)}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Drawdown from high ({(c.drawdown?.weight * 100 || 0).toFixed(0)}%)</span>
+          <span className="font-mono text-gray-300">
+            {((c.drawdown?.score || 0) * 100).toFixed(0)}
+            <span className="text-gray-600 ml-1">(-{(c.drawdown?.drawdownPct || 0).toFixed(1)}%)</span>
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-gray-500">Z-score vs mean ({(c.zscore?.weight * 100 || 0).toFixed(0)}%)</span>
+          <span className="font-mono text-gray-300">
+            {((c.zscore?.score || 0) * 100).toFixed(0)}
+            <span className="text-gray-600 ml-1">(σ {(c.zscore?.zscore || 0).toFixed(2)})</span>
+          </span>
+        </div>
+      </div>
+
+      <div className="text-[10px] text-gray-500 mt-2 pt-2 border-t border-gray-700 flex items-center justify-between">
+        <span>
+          {bias.sampleSize || 0} / {bias.cache?.lookbackDays || 0}d
+          <span className="text-gray-600 ml-1">({coveragePct.toFixed(0)}%)</span>
+        </span>
+        {bias.cache?.lastRefresh && (
+          <span>refreshed {new Date(bias.cache.lastRefresh).toLocaleTimeString()}</span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // Build AGGRESSIVENESS_LEVELS array from presets object (from API)
@@ -913,7 +1097,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               {/* Entry Status */}
               <div className="col-span-1">
                 <div className="bg-gray-900 rounded p-1.5 h-full">
-                  <div className="text-[10px] text-gray-500 mb-0.5">Entry Status</div>
+                  <div className="text-[10px] text-gray-500 mb-0.5">
+                    Entry Status<ConfigTooltip tip={REGIME_TOOLTIPS.entryStatus} align="left" width="w-72" />
+                  </div>
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-1">
                       <span className={`w-1.5 h-1.5 rounded-full ${health.mode === 'ACTIVE' ? 'bg-green-400' : 'bg-yellow-400'}`} />
@@ -950,7 +1136,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               {/* Compact Current Regime */}
               <div className={`col-span-1 ${regimeStyle.bg} border ${regimeStyle.border} rounded p-1.5`}>
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-gray-400">Regime</span>
+                  <span className="text-[10px] text-gray-400">
+                    Regime<ConfigTooltip tip={REGIME_TOOLTIPS.micro} align="left" width="w-80" />
+                  </span>
                   <span className={`${healthStyle.bg} ${healthStyle.text} px-1 py-0.5 rounded text-[10px]`}>
                     {health.mode || 'ACTIVE'}
                   </span>
@@ -960,12 +1148,22 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
                 {config?.macroEnabled && status?.macro ? (() => {
                   const macroStyle = MACRO_COLORS[status.macro.mode] || MACRO_COLORS.RANGING
+                  const lt = status.macro.longTermBias
+                  const ltStyle = lt?.ready ? SUGGESTED_LEVEL_STYLES[lt.suggestedLevel] : null
                   return (
-                    <div className="flex items-center gap-1 mt-0.5">
+                    <div className="flex items-center gap-1 mt-0.5 flex-wrap">
                       <span className={`px-1 py-0.5 rounded text-[10px] ${macroStyle.bg} border ${macroStyle.border} ${macroStyle.text}`}>
                         {macroStyle.label}
                       </span>
                       <span className="text-[10px] text-gray-500">{status.macro.score?.toFixed(0)}</span>
+                      {ltStyle && (
+                        <span
+                          className={`px-1 py-0.5 rounded text-[10px] ${ltStyle.bg} border ${ltStyle.border} ${ltStyle.text}`}
+                          title={`Long-term bias: ${(lt.score * 100).toFixed(0)}/100 — suggests ${ltStyle.label}`}
+                        >
+                          🤖 {ltStyle.label}
+                        </span>
+                      )}
                     </div>
                   )
                 })() : (
@@ -978,7 +1176,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               {/* Entry Mode */}
               <div className={`col-span-1 ${status?.entryMode === 'ladder' ? 'bg-indigo-900/30 border-indigo-700/50' : 'bg-gray-800 border-gray-700'} border rounded p-1.5`}>
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-gray-400">Entry</span>
+                  <span className="text-[10px] text-gray-400">
+                    Entry<ConfigTooltip tip={REGIME_TOOLTIPS.entryMode} align="right" width="w-72" />
+                  </span>
                   {config?.ladderAutoSwitch && (
                     <span className="px-1 py-0.5 bg-purple-900/50 text-purple-400 text-[10px] rounded">Auto</span>
                   )}
@@ -1694,7 +1894,9 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
               return (
                 <div className={`bg-gray-800 rounded-lg p-3 border ${macroStyle.border}`}>
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-xs font-medium text-gray-400">Macro Regime</h3>
+                    <h3 className="text-xs font-medium text-gray-400">
+                      Macro Regime<ConfigTooltip tip={REGIME_TOOLTIPS.macro} align="left" width="w-80" />
+                    </h3>
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${macroStyle.bg} ${macroStyle.text}`}>
                       {macroStyle.label} ({m.score?.toFixed(0)})
                     </span>
@@ -1737,6 +1939,15 @@ function RegimeDashboard({ exchange = 'coinbase' }) {
                 </div>
               )
             })()}
+
+            {/* Long-Term Bias Panel (Phase 1: observe-only depression score) */}
+            {status?.macro?.longTermBias && (
+              <LongTermBiasPanel
+                bias={status.macro.longTermBias}
+                config={config}
+                presets={presets}
+              />
+            )}
 
             {/* Regime Timeline */}
             <RegimeTimeline data={regimeHistory} currentRegime={regime} height={60} />

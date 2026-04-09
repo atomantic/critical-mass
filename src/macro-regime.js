@@ -14,6 +14,8 @@
  */
 
 const { calculateEMA, clamp } = require('./volatility-utils');
+const { createLongTermCandleStore } = require('./long-term-candle-store');
+const { computeDepressionScore } = require('./depression-score');
 
 /**
  * @typedef {import('./types').MacroRegimeMode} MacroRegimeMode
@@ -180,6 +182,14 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   let candleCounts = { hourly: 0, daily: 0 };
   let updateTimer = null;
 
+  // Long-term bias / depression score (Phase 1 of auto-aggressiveness)
+  // This is a separate signal layered on top of the existing macro EMAs.
+  // The store fetches multi-year daily candles on a slow cadence and caches
+  // them to disk. The score is recomputed on each macro update cycle.
+  /** @type {ReturnType<typeof createLongTermCandleStore>|null} */
+  let longTermStore = null;
+  let longTermBias = null;
+
   /**
    * Fetch hourly candles (200 most recent)
    * @returns {Promise<Array>}
@@ -266,10 +276,40 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     mode = classifyMacroMode(score, mode, hysteresis, thresholds);
     lastUpdate = Date.now();
 
+    // Compute long-term bias / depression score from the candle store.
+    // If the cache is empty or under-filled (e.g. first update on a cold
+    // start, or recovering from a previous partial fetch), wait for the
+    // in-flight refresh to settle so we don't display stale data for an
+    // entire macro update cycle.
+    if (longTermStore && config.longTermBiasEnabled !== false) {
+      let stats = longTermStore.getStats();
+      if (stats.health === 'empty' || stats.health === 'sparse' || stats.health === 'partial') {
+        try {
+          await longTermStore.refresh();
+          stats = longTermStore.getStats();
+        } catch {
+          // Non-fatal — fall through with whatever we have
+        }
+      }
+      const ltCandles = longTermStore.getCandles();
+      longTermBias = computeDepressionScore(price, ltCandles);
+    }
+
     if (prevMode !== mode) {
       console.log(`🔭 [${exchange}] Macro regime: ${prevMode} → ${mode} (score=${score.toFixed(1)}, EMAs: 21h=$${h21.toFixed(0)} 50h=$${h50.toFixed(0)} 200h=$${h200.toFixed(0)} 20d=$${d20.toFixed(0)})`);
     } else {
       console.log(`🔭 [${exchange}] Macro update: ${mode} score=${score.toFixed(1)} (align=${alignmentScore} price200=${priceVsLongScore.toFixed(1)} daily=${dailyTrendScore.toFixed(1)} conv=${convergenceScore.toFixed(1)})`);
+    }
+
+    // Log the long-term bias on every cycle so we can correlate it with
+    // entries and watch the score evolve. Compact one-liner.
+    if (longTermBias?.ready) {
+      const c = longTermBias.components;
+      console.log(`🗓️ [${exchange}] LT bias: ${(longTermBias.score * 100).toFixed(0)}/100 → ${longTermBias.suggestedLevel.toUpperCase()} ` +
+        `(pct=${(c.percentile.score * 100).toFixed(0)} ` +
+        `dd=${c.drawdown.drawdownPct.toFixed(1)}% ` +
+        `z=${c.zscore.zscore.toFixed(2)}) ` +
+        `n=${longTermBias.sampleSize}`);
     }
   };
 
@@ -318,6 +358,12 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     emas: { ...emas },
     lastUpdate,
     candles: { ...candleCounts },
+    // Long-term bias is intentionally not persisted to disk — it's
+    // recomputed from cached candles on every update cycle.
+    longTermBias: longTermBias ? {
+      ...longTermBias,
+      cache: longTermStore ? longTermStore.getStats() : null,
+    } : null,
   });
 
   /**
@@ -351,6 +397,18 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     const interval = config.macroUpdateIntervalMs || 300000;
     console.log(`🔭 [${exchange}] Macro regime started (update every ${(interval / 1000).toFixed(0)}s)`);
 
+    // Spin up the long-term candle store on its own slow cadence.
+    // Default off-by-default could be enabled later, but Phase 1 is observe-only
+    // so it's safe to leave on by default — no sizing impact.
+    if (config.longTermBiasEnabled !== false) {
+      longTermStore = createLongTermCandleStore(exchange, adapter, productId, {
+        lookbackDays: config.longTermLookbackDays || 365,
+        refreshIntervalMs: config.longTermUpdateIntervalMs || 3600000,
+      });
+      longTermStore.start();
+      console.log(`🗓️ [${exchange}] Long-term bias store started (${config.longTermLookbackDays || 365}d window, refresh every ${((config.longTermUpdateIntervalMs || 3600000) / 60000).toFixed(0)}m)`);
+    }
+
     // Initial update
     update().catch(err => {
       console.log(`⚠️ [${exchange}] Macro initial update failed: ${err.message}`);
@@ -371,6 +429,10 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     if (updateTimer) {
       clearInterval(updateTimer);
       updateTimer = null;
+    }
+    if (longTermStore) {
+      longTermStore.stop();
+      longTermStore = null;
     }
     console.log(`🔭 [${exchange}] Macro regime stopped`);
   };
