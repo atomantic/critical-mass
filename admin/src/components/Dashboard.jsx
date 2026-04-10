@@ -2,32 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import ActivityFeed from './ActivityFeed'
 import { useToast } from './Toast'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
-
-// Extract quote currency from product ID (e.g., "BTC-USDC" -> "USDC", "BTCUSD" -> "USD", "CRO_USD" -> "USD")
-function getQuoteCurrency(productId) {
-  if (!productId) return 'USDC'
-  if (productId.includes('-')) {
-    return productId.split('-')[1]
-  }
-  if (productId.includes('_')) {
-    return productId.split('_')[1]
-  }
-  // For Gemini-style (BTCUSD), strip BTC prefix
-  return productId.replace(/^BTC/, '') || 'USD'
-}
-
-// Extract base currency from product ID (e.g., "BTC-USDC" -> "BTC", "BTCUSD" -> "BTC", "CRO_USD" -> "CRO")
-function getBaseCurrency(productId) {
-  if (!productId) return 'BTC'
-  if (productId.includes('-')) {
-    return productId.split('-')[0]
-  }
-  if (productId.includes('_')) {
-    return productId.split('_')[0]
-  }
-  // For Gemini-style (BTCUSD), assume BTC prefix
-  return 'BTC'
-}
+import { getBaseCurrency, getQuoteCurrency } from '../App'
 
 function ToggleSwitch({ label, checked, onChange, disabled, colorOn = 'bg-green-500', colorOff = 'bg-gray-600' }) {
   return (
