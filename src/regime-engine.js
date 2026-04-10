@@ -1253,14 +1253,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, ${baseCurrency} reserves=${totalAssetPnL.toFixed(6)}`);
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         positionState.realizedPnL = totalPnL;
-        // Only update realizedAssetPnL if it would increase — the saved value may have
-        // been corrected via reconcileAssetReserves and the fill-ledger holdback sum
-        // can be inflated by body consolidation cycles
-        if (totalAssetPnL <= positionState.realizedAssetPnL) {
-          // Recalc gives a lower or equal value — safe to use
-          positionState.realizedAssetPnL = totalAssetPnL;
-        }
-        // Otherwise keep the saved (lower) value — it was corrected by reconciliation
+        // Trust recalc value — reconcileAssetReserves (which runs after startup)
+        // will cap any inflation from body consolidation against actual exchange balance
+        positionState.realizedAssetPnL = totalAssetPnL;
         // Keep celestial body P&L counter in sync
         const bodyOnlyPnL = totalPnL - recalcResult.realizedPnL;
         const bodyOnlyBtcPnL = totalAssetPnL - recalcResult.realizedAssetPnL;
