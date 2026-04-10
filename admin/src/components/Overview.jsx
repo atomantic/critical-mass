@@ -107,8 +107,8 @@ function Overview() {
   const cards = exchanges.map(ex => {
     const status = statusMap[fundKey(ex)]
     const pair = ex.pair || ex.productId || 'BTC-USDC'
-    const baseCurrency = getBaseCurrency(pair)
-    const quoteCurrency = getQuoteCurrency(pair)
+    const baseCurrency = getBaseCurrency(ex.productId || pair)
+    const quoteCurrency = getQuoteCurrency(ex.productId || pair)
     const position = status?.position
     const market = status?.market
     const apy = status?.apy

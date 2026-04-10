@@ -104,6 +104,9 @@
 - Gemini ETHUSD page showed BTC units instead of ETH — frontend `getBaseCurrency`/`getQuoteCurrency` hardcoded BTC for Gemini-style pairs; now parses base/quote by stripping known quote suffixes (matching backend logic). Deduplicated Dashboard.jsx copies to import from App.jsx
 - Gemini BTCUSD and ETHUSD funds shared a single flat config — ETHUSD had no config entry, inheriting BTC defaults for regime params, capital limits, and aggressiveness. Converted Gemini to nested multi-pair config with separate BTCUSD and ETHUSD blocks
 - Backend `baseCurrency`/`quoteCurrency` parsing broken for Gemini-style pairs (BTCUSD, ETHUSD) in 10 files — inline `split('-')[0]` returned full pair name instead of base currency, causing wrong balance lookups and log labels. Centralized `getBaseCurrency`/`getQuoteCurrency` in config-utils and replaced all inline patterns
+- Asset reserves zeroed on restart — auto-recalc guard rejected correct fill-ledger values when saved state was 0 (from prior baseCurrency bug); removed guard and rely on `reconcileAssetReserves` to cap inflation post-startup
+- Dashboard stale data when navigating between pairs on same exchange — `fetchData` and `fetchRegimeStatus` effects only depended on `currentExchange`, missing `currentPair`
+- Overview aggregate P&L used config pair key (e.g. "BTCUSD") instead of actual productId to derive baseCurrency — misattributed asset reserves when pair key differed from traded instrument
 
 ## Removed
 

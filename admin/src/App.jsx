@@ -336,7 +336,6 @@ function AppContent() {
     if (urlExchange && urlExchange !== lastExchange) setLastExchange(urlExchange)
   }, [urlExchange, lastExchange])
 
-  // Fetch data when exchange changes
   useEffect(() => {
     if (currentExchange) {
       fetchData()
@@ -344,7 +343,7 @@ function AppContent() {
       const interval = setInterval(fetchData, 30000)
       return () => clearInterval(interval)
     }
-  }, [currentExchange])
+  }, [currentExchange, currentPair])
 
   // Fetch regime status when on regime strategy
   useEffect(() => {
@@ -355,7 +354,7 @@ function AppContent() {
     } else {
       setRegimeRunning(false)
     }
-  }, [currentExchange, currentStrategy])
+  }, [currentExchange, currentPair, currentStrategy])
 
   // Get the current sub-path (tab) without the exchange/pair prefix
   const getSubPath = () => {
