@@ -107,6 +107,7 @@
 - Asset reserves zeroed on restart — auto-recalc guard rejected correct fill-ledger values when saved state was 0 (from prior baseCurrency bug); removed guard and rely on `reconcileAssetReserves` to cap inflation post-startup
 - Dashboard stale data when navigating between pairs on same exchange — `fetchData` and `fetchRegimeStatus` effects only depended on `currentExchange`, missing `currentPair`
 - Overview aggregate P&L used config pair key (e.g. "BTCUSD") instead of actual productId to derive baseCurrency — misattributed asset reserves when pair key differed from traded instrument
+- Overview WebSocket updates replaced full status with partial market-only data — market data service emits only `market`/`regime` fields, wiping `position`/`apy`/`celestial` from the initial API fetch; now merges instead of replacing
 
 ## Removed
 
