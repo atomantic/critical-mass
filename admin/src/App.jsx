@@ -37,11 +37,15 @@ export function getQuoteCurrency(productId) {
   if (productId.includes('_')) {
     return productId.split('_')[1]
   }
-  // For Gemini-style (BTCUSD), strip BTC prefix
-  return productId.replace(/^BTC/, '') || 'USD'
+  // Gemini format: BTCUSD - extract quote by removing known quote suffixes
+  const upper = productId.toUpperCase()
+  if (upper.endsWith('USDC')) return 'USDC'
+  if (upper.endsWith('USDT')) return 'USDT'
+  if (upper.endsWith('USD')) return 'USD'
+  return 'USD'
 }
 
-// Extract base currency from product ID (e.g., "BTC-USDC" -> "BTC", "CRO_USD" -> "CRO", "BTCUSD" -> "BTC")
+// Extract base currency from product ID (e.g., "BTC-USDC" -> "BTC", "CRO_USD" -> "CRO", "BTCUSD" -> "BTC", "ETHUSD" -> "ETH")
 export function getBaseCurrency(productId) {
   if (!productId) return 'BTC'
   if (productId.includes('-')) {
@@ -50,8 +54,12 @@ export function getBaseCurrency(productId) {
   if (productId.includes('_')) {
     return productId.split('_')[0]
   }
-  // For Gemini-style (BTCUSD), assume BTC prefix
-  return 'BTC'
+  // Gemini format: BTCUSD - extract base by removing known quote suffixes
+  const upper = productId.toUpperCase()
+  if (upper.endsWith('USDC')) return upper.slice(0, -4)
+  if (upper.endsWith('USDT')) return upper.slice(0, -4)
+  if (upper.endsWith('USD')) return upper.slice(0, -3)
+  return upper
 }
 
 // Strategy-aware tab configuration
