@@ -1141,7 +1141,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             const bodySum = (positionState.celestialBodies || []).reduce((s, b) => s + (b.assetQty || 0), 0);
             const reserves = positionState.realizedAssetPnL || 0;
             const orphanedAsset = roundAsset(totalExchange - bodySum - reserves);
-            const currentPrice = marketState.lastPrice || 0;
+            // Get price from adapter (marketState.lastPrice may be 0 before WebSocket connects)
+            const livePrice = await adapter.getCurrentPrice(productId).catch(() => 0);
+            const currentPrice = livePrice || marketState.lastPrice || 0;
             const orphanedValue = orphanedAsset * currentPrice;
             const minOrder = config.minOrderSize || 1;
 
