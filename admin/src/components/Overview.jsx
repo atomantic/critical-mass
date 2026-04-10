@@ -97,7 +97,7 @@ function Overview() {
     setStatusMap(prev => {
       const next = { ...prev }
       for (const [key, status] of Object.entries(wsStatuses)) {
-        if (key in next) next[key] = status
+        if (key in next) next[key] = { ...next[key], ...status }
       }
       return next
     })
