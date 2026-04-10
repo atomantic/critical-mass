@@ -1129,6 +1129,61 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       }
 
+      // Detect orphaned available asset on exchange not tracked by any body or reserves.
+      // This recovers CRO/BTC from historical partial fills that were incorrectly treated
+      // as full fills — the unsold portion was removed from body tracking but remains on
+      // the exchange. Creates a new body and places a TP sell so it's managed automatically.
+      if (!isDryRun) {
+        try {
+          const bal = await adapter.getAccountBalance(baseCurrency);
+          if (bal) {
+            const totalExchange = (parseFloat(bal.available) || 0) + (parseFloat(bal.hold) || 0);
+            const bodySum = (positionState.celestialBodies || []).reduce((s, b) => s + (b.assetQty || 0), 0);
+            const reserves = positionState.realizedAssetPnL || 0;
+            const orphanedAsset = roundAsset(totalExchange - bodySum - reserves);
+            const currentPrice = marketState.lastPrice || 0;
+            const orphanedValue = orphanedAsset * currentPrice;
+            const minOrder = config.minOrderSize || 1;
+
+            if (orphanedAsset > 0 && orphanedValue >= minOrder) {
+              // Derive cost basis from orphaned buy fills (buys whose body no longer exists)
+              const allFills = fillLedger.getAllFills();
+              const activeBodyIds = new Set((positionState.celestialBodies || []).map(b => b.id));
+              const orphanedBuys = allFills.filter(f =>
+                f.side === 'buy' && f.bodyId && !activeBodyIds.has(f.bodyId)
+              );
+
+              let avgPrice, costBasis;
+              if (orphanedBuys.length > 0) {
+                const totalCost = orphanedBuys.reduce((s, f) => s + f.quoteAmount + (f.netFee || 0), 0);
+                const totalQty = orphanedBuys.reduce((s, f) => s + f.size, 0);
+                avgPrice = totalQty > 0 ? totalCost / totalQty : currentPrice;
+                costBasis = roundUSDC(orphanedAsset * avgPrice);
+              } else {
+                avgPrice = positionState.avgCostBasis || currentPrice;
+                costBasis = roundUSDC(orphanedAsset * avgPrice);
+              }
+
+              const bodyEntry = celestialHierarchy.createNewBody({
+                assetQty: orphanedAsset,
+                costBasis,
+                avgPrice,
+                buyOrderId: `orphan-recovery-${Date.now()}`,
+              }, `orphan-recovery-${Date.now()}`);
+
+              positionState.celestialBodies = positionState.celestialBodies || [];
+              positionState.celestialBodies.push(bodyEntry);
+              celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+              console.log(`🔄 [${exchange}] Recovered ${orphanedAsset.toFixed(2)} orphaned ${baseCurrency} as ${bodyEntry.tier} body (avg cost: ${fmtPrice(avgPrice)}, cost basis: $${costBasis.toFixed(2)}) — placing TP sell`);
+              await placeBodyTp(bodyEntry);
+            }
+          }
+        } catch (err) {
+          console.log(`⚠️ [${exchange}] Failed to check for orphaned assets: ${err.message}`);
+        }
+      }
+
       // Retroactively annotate body fills that are missing isBodyOwned flag
       // This fixes historical fills that were processed before annotation code was deployed
       const currentCycleId = fillLedger.getCurrentCycleId();
@@ -1253,9 +1308,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, ${baseCurrency} reserves=${totalAssetPnL.toFixed(6)}`);
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         positionState.realizedPnL = totalPnL;
-        // Trust recalc value — reconcileAssetReserves (which runs after startup)
-        // will cap any inflation from body consolidation against actual exchange balance
-        positionState.realizedAssetPnL = totalAssetPnL;
+        // Only update realizedAssetPnL if recalc gives a lower/equal value, OR if
+        // the saved value is 0 (recovery from baseCurrency bug). Body consolidation
+        // inflates the fill-ledger holdback sum, so we preserve the saved value
+        // (which may have been corrected by reconcileAssetReserves or manual fix).
+        if (totalAssetPnL <= positionState.realizedAssetPnL || positionState.realizedAssetPnL === 0) {
+          positionState.realizedAssetPnL = totalAssetPnL;
+        }
         // Keep celestial body P&L counter in sync
         const bodyOnlyPnL = totalPnL - recalcResult.realizedPnL;
         const bodyOnlyBtcPnL = totalAssetPnL - recalcResult.realizedAssetPnL;
@@ -2067,12 +2126,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
         if (!isPartial) cs.bodiesCompleted += 1;
         cs.bodiesRealizedPnL += pnl;
-        cs.bodiesRealizedAssetPnL += (isPartial ? summary.totalSize : holdbackAsset);
+        cs.bodiesRealizedAssetPnL += (isPartial ? 0 : holdbackAsset);
         positionState.celestialState = cs;
 
         // Update shared realized P&L
         positionState.realizedPnL += pnl;
-        positionState.realizedAssetPnL += (isPartial ? summary.totalSize : holdbackAsset);
+        positionState.realizedAssetPnL += (isPartial ? 0 : holdbackAsset);
 
         // Grow capital
         const prevMaxUsdc = config.maxUsdcDeployed;
@@ -2162,7 +2221,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           bodyCostBasis: proratedCostBasis,
           bodyAvgPrice: body.avgPrice,
           bodyBtcQty: isPartial ? summary.totalSize : body.assetQty,
-          bodyHoldbackAsset: isPartial ? roundAsset(body.assetQty) : holdbackAsset,
+          bodyHoldbackAsset: isPartial ? 0 : holdbackAsset,
           bodyPnl: pnl,
           ...(isPartial && { partialFill: true }),
         });
