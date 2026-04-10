@@ -450,6 +450,43 @@ const loadConfig = () => {
 // legacy → nested when a second pair is added.
 // ============================================================================
 
+// ============================================================================
+// Currency parsing utilities
+// ============================================================================
+
+/**
+ * Extract base currency from product ID.
+ * Handles all exchange formats: BTC-USDC (Coinbase), CRO_USD (Crypto.com), BTCUSD (Gemini).
+ * @param {string} productId
+ * @returns {string} Base currency (e.g., 'BTC', 'ETH', 'CRO')
+ */
+const getBaseCurrency = (productId) => {
+  if (!productId) return 'BTC';
+  if (productId.includes('-')) return productId.split('-')[0];
+  if (productId.includes('_')) return productId.split('_')[0];
+  const upper = productId.toUpperCase();
+  if (upper.endsWith('USDC')) return upper.slice(0, -4);
+  if (upper.endsWith('USDT')) return upper.slice(0, -4);
+  if (upper.endsWith('USD')) return upper.slice(0, -3);
+  return upper;
+};
+
+/**
+ * Extract quote currency from product ID.
+ * @param {string} productId
+ * @returns {string} Quote currency (e.g., 'USDC', 'USD')
+ */
+const getQuoteCurrency = (productId) => {
+  if (!productId) return 'USD';
+  if (productId.includes('-')) return productId.split('-')[1];
+  if (productId.includes('_')) return productId.split('_')[1];
+  const upper = productId.toUpperCase();
+  if (upper.endsWith('USDC')) return 'USDC';
+  if (upper.endsWith('USDT')) return 'USDT';
+  if (upper.endsWith('USD')) return 'USD';
+  return 'USD';
+};
+
 /** Keys that stay at the exchange level (shared across all funds on that exchange) */
 const EXCHANGE_LEVEL_KEYS = new Set([
   'pairs',
@@ -1349,4 +1386,7 @@ module.exports = {
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,
   NOTIFICATION_DEFAULTS,
+  // Currency parsing
+  getBaseCurrency,
+  getQuoteCurrency,
 };

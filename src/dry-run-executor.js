@@ -13,6 +13,7 @@
  */
 
 const { roundAsset, roundPrice } = require('./volatility-utils');
+const { getBaseCurrency } = require('./config-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -92,7 +93,7 @@ const getOrderIdCounter = () => orderIdCounter;
 const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, productId) => {
   /** @type {Map<string, SimulatedOrder>} */
   const pendingOrders = new Map();
-  const baseCurrency = productId ? productId.replace('_', '-').split('-')[0] : 'BTC';
+  const baseCurrency = getBaseCurrency(productId);
   let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
 
   /** @type {DecisionLogEntry[]} */

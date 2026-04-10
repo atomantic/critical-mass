@@ -102,6 +102,8 @@
 - Bump vite 7.3.1 → 7.3.2 in admin to patch 3 advisories: arbitrary file read via dev server WebSocket (high), `server.fs.deny` bypass with queries (high), and path traversal in optimized deps `.map` handling (medium)
 - Pin transitive lodash to ^4.18.1 via npm `overrides` in admin (recharts 2.x ships with 4.17.23) — patches code injection via `_.template` (high) and prototype pollution in `_.unset`/`_.omit` (medium)
 - Gemini ETHUSD page showed BTC units instead of ETH — frontend `getBaseCurrency`/`getQuoteCurrency` hardcoded BTC for Gemini-style pairs; now parses base/quote by stripping known quote suffixes (matching backend logic). Deduplicated Dashboard.jsx copies to import from App.jsx
+- Gemini BTCUSD and ETHUSD funds shared a single flat config — ETHUSD had no config entry, inheriting BTC defaults for regime params, capital limits, and aggressiveness. Converted Gemini to nested multi-pair config with separate BTCUSD and ETHUSD blocks
+- Backend `baseCurrency`/`quoteCurrency` parsing broken for Gemini-style pairs (BTCUSD, ETHUSD) in 10 files — inline `split('-')[0]` returned full pair name instead of base currency, causing wrong balance lookups and log labels. Centralized `getBaseCurrency`/`getQuoteCurrency` in config-utils and replaced all inline patterns
 
 ## Removed
 

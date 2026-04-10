@@ -2,6 +2,7 @@
 const { getAdapter } = require('./adapters');
 const { log } = require('./logger');
 const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
+const { getBaseCurrency } = require('./config-utils');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -80,7 +81,7 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
   const fillDetails = await waitForBuyFill(buyResult.orderId, adapter);
 
   // Extract base currency from product ID (e.g., CRO_USD -> CRO, BTC-USDC -> BTC)
-  const baseCurrency = config.productId.split(/[-_]/)[0];
+  const baseCurrency = getBaseCurrency(config.productId);
   log('INFO', `Buy filled: ${fillDetails.assetAmount.toFixed(8)} ${baseCurrency} at ${fillDetails.price.toFixed(2)}`);
   log('INFO', `Fees: ${fillDetails.fees.toFixed(4)}, Rebates: ${fillDetails.rebates.toFixed(4)}, Net: ${fillDetails.netFees.toFixed(4)}`);
 
@@ -103,7 +104,7 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
   // Calculate sell price (plus markup)
   const sellPrice = buyDetails.price * (1 + config.sellMarkupPercent / 100);
 
-  const baseCurrency = config.productId.split(/[-_]/)[0];
+  const baseCurrency = getBaseCurrency(config.productId);
   log('INFO', `Placing post-only sell for ${sellQuantity} ${baseCurrency} at ${sellPrice}`);
 
   const sellResult = await adapter.placeLimitSell(config.productId, sellQuantity, sellPrice);
@@ -260,7 +261,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   const totalAsset = eligibleOrders.reduce((sum, o) => sum + o.sellQuantity, 0);
   const weightedPriceSum = eligibleOrders.reduce((sum, o) => sum + (o.sellQuantity * o.sellPrice), 0);
   const consolidatedPrice = weightedPriceSum / totalAsset;
-  const baseCurrency = config.productId.split(/[-_]/)[0];
+  const baseCurrency = getBaseCurrency(config.productId);
 
   log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
 
@@ -317,7 +318,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
  * @returns {Promise<{sellOrder: SellOrder, sellQuantity: number, holdbackAsset: number}>} Sell order result
  */
 const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, prevOrderId, adapter) => {
-  const baseCurrency = config.productId.split(/[-_]/)[0];
+  const baseCurrency = getBaseCurrency(config.productId);
 
   // Cancel previous order if it exists and is not filled
   if (prevOrderId) {

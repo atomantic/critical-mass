@@ -7,7 +7,7 @@
  */
 
 const { tradeEvents } = require('./trade-events');
-const { getNotificationConfig, getConfiguredExchanges, getRegimeConfig } = require('./config-utils');
+const { getNotificationConfig, getConfiguredExchanges, getRegimeConfig, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { log } = require('./logger');
 
@@ -265,7 +265,7 @@ const createNotifier = () => {
       const cycles = pos.cyclesCompleted || 0;
       const buys = pos.cycleBuys || 0;
       const regimeConfig = getRegimeConfig(exchange);
-      const asset = (regimeConfig.productId || 'BTC-USDC').replace('_', '-').split('-')[0];
+      const asset = getBaseCurrency(regimeConfig.productId);
 
       lines.push(`*${exchange}* (${regime})`);
       lines.push(`  Position: ${assetQty.toFixed(8)} ${asset}`);

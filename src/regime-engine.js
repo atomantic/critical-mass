@@ -15,7 +15,7 @@
  */
 
 const { getAdapter } = require('./adapters');
-const { getRegimeConfig, updateRegimeConfig } = require('./config-utils');
+const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
 const { createFillLedger } = require('./fill-ledger');
 const { createHealthMonitor } = require('./health-monitor');
 const { createTailEventsMonitor } = require('./tail-events');
@@ -146,7 +146,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   const { productId } = exchangeConfig;
   const config = getRegimeConfig(exchange, pair);
-  const baseCurrency = productId.replace('_', '-').split('-')[0];
+  const baseCurrency = getBaseCurrency(productId);
 
   // Prefix used in log lines and trade events to identify this fund
   const fundLabel = `${exchange}/${pair}`;
@@ -2721,7 +2721,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Calculate remaining budget, capped at actual available balance
     let remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
-    const quoteCurrency = productId.replace('_', '-').split('-')[1] || 'USD';
+    const quoteCurrency = getQuoteCurrency(productId);
     const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
     if (!quoteBalance) {
       // Can't verify balance — skip ladder to avoid placing orders we can't fund
@@ -4069,7 +4069,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     let remainingBudget = config.maxUsdcDeployed - allocatedCapital;
 
     // Fetch actual exchange balance to cap budget at reality
-    const quoteCurrency = productId.replace('_', '-').split('-')[1] || 'USD';
+    const quoteCurrency = getQuoteCurrency(productId);
     const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
     const exchangeBalance = quoteBalance ? (parseFloat(quoteBalance.available) || 0) : null;
     if (exchangeBalance !== null && exchangeBalance < remainingBudget) {
@@ -4131,7 +4131,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     const allocatedCapital = getAllocatedCapital();
     let remainingBudget = config.maxUsdcDeployed - allocatedCapital;
-    const quoteCurrency = productId.replace('_', '-').split('-')[1] || 'USD';
+    const quoteCurrency = getQuoteCurrency(productId);
     const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
     if (!quoteBalance) {
       return { success: false, message: 'Could not fetch account balance — skipping ladder' };

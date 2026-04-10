@@ -12,6 +12,7 @@
  */
 
 const { roundAsset, roundUSDC } = require('./volatility-utils');
+const { getBaseCurrency } = require('./config-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -26,7 +27,7 @@ const { roundAsset, roundUSDC } = require('./volatility-utils');
  * @returns {Object} Risk manager instance
  */
 const createRiskManager = (exchange, config, productId) => {
-  const assetLabel = productId ? productId.replace('_', '-').split('-')[0].toLowerCase() : 'asset';
+  const assetLabel = productId ? getBaseCurrency(productId).toLowerCase() : 'asset';
   let peakEquity = null; // null = uninitialized, will be set to first observed equity
   let maxDrawdownSeen = 0;
   let isDrawdownPaused = false;

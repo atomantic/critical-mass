@@ -12,6 +12,7 @@ const path = require('path');
 const { resolveFundDataDir } = require('./migration');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { atomicWriteSync } = require('./state-tracker');
+const { getBaseCurrency } = require('./config-utils');
 
 /**
  * @typedef {import('./types').Fill} Fill
@@ -44,7 +45,7 @@ const createFillLedger = (exchange, productId, pair) => {
   const cycleIndex = new Map();
   let currentCycleId = null;
   let nextCycleNumber = 1;
-  const baseCurrency = productId ? productId.replace('_', '-').split('-')[0] : 'BTC';
+  const baseCurrency = getBaseCurrency(productId);
   const fmtPrice = (p) => {
     if (p == null || isNaN(p)) return '-';
     if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
