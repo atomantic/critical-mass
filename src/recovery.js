@@ -12,7 +12,7 @@
  */
 
 const { roundAsset, roundUSDC } = require('./volatility-utils');
-const { getBaseCurrency, getQuoteCurrency } = require('./dca-engine');
+const { getBaseCurrency, getQuoteCurrency } = require('./config-utils');
 
 /**
  * @typedef {import('./types').ExchangeAdapter} ExchangeAdapter

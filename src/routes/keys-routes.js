@@ -7,6 +7,7 @@ const fs = require('fs');
 const { getExchangeKeysPath } = require('../migration');
 const { log } = require('../logger');
 const { loadConfig } = require('../dca-engine');
+const { getQuoteCurrency } = require('../config-utils');
 
 /**
  * @param {import('express').Express} app
@@ -76,12 +77,7 @@ module.exports = (app, deps) => {
     const adapter = getAdapter(exchange);
     const exchangeConfig = loadConfig(exchange);
     const productId = exchangeConfig.productId || '';
-    const parts = productId.replace('_', '-').split('-');
-    let quoteCurrency = parts[1] || 'USD';
-
-    if (exchange === 'gemini' && quoteCurrency === 'USDC') {
-      quoteCurrency = 'USD';
-    }
+    const quoteCurrency = getQuoteCurrency(productId);
 
     if (!adapter.hasValidKeys || !adapter.hasValidKeys()) {
       return res.json({ success: false, exchange, error: 'API keys not configured or invalid. Please save valid API keys first.' });

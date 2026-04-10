@@ -11,6 +11,7 @@
 
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
+const { getBaseCurrency } = require('./config-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -44,7 +45,7 @@ const fmtPrice = (p) => {
 const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {}) => {
   /** @type {Map<string, PendingOrder>} */
   const pendingOrders = new Map();
-  const baseCurrency = productId.replace('_', '-').split('-')[0];
+  const baseCurrency = getBaseCurrency(productId);
 
   let lastCancelTime = 0;
   let lastTpPrice = 0;

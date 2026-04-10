@@ -6,7 +6,7 @@ const stateTracker = require('./state-tracker');
 const orderManager = require('./order-manager');
 const logger = require('./logger');
 const { consolidatePendingOrders } = require('./order-manager');
-const { getExchangeConfig, getEnabledExchanges } = require('./config-utils');
+const { getExchangeConfig, getEnabledExchanges, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
 const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
 const { getFibonacciBuyAmount } = require('./fibonacci-utils');
@@ -28,54 +28,6 @@ const { getFibonacciBuyAmount } = require('./fibonacci-utils');
  */
 const loadConfig = (exchange = 'coinbase') => getExchangeConfig(exchange);
 
-/**
- * Extract quote currency from product ID
- * @param {string} productId - Product ID (e.g., 'BTC-USDC', 'BTCUSD', 'CRO_USD')
- * @returns {string} Quote currency (e.g., 'USDC', 'USD')
- */
-const getQuoteCurrency = (productId) => {
-  if (!productId) return 'USD';
-  // Handle different formats:
-  // Coinbase: BTC-USDC -> USDC
-  // Gemini: BTCUSD -> USD
-  // Crypto.com: CRO_USD -> USD
-  if (productId.includes('-')) {
-    return productId.split('-')[1];
-  }
-  if (productId.includes('_')) {
-    return productId.split('_')[1];
-  }
-  // Gemini format: BTCUSD - extract last 3 chars (USD) or 4 (USDC, USDT)
-  const upper = productId.toUpperCase();
-  if (upper.endsWith('USDC')) return 'USDC';
-  if (upper.endsWith('USDT')) return 'USDT';
-  if (upper.endsWith('USD')) return 'USD';
-  return 'USD'; // Default fallback
-};
-
-/**
- * Extract base currency from product ID
- * @param {string} productId - Product ID (e.g., 'BTC-USDC', 'BTCUSD', 'CRO_USD')
- * @returns {string} Base currency (e.g., 'BTC', 'CRO')
- */
-const getBaseCurrency = (productId) => {
-  if (!productId) return 'BTC';
-  // Handle different formats:
-  // Coinbase: BTC-USDC -> BTC
-  // Crypto.com: CRO_USD -> CRO
-  if (productId.includes('-')) {
-    return productId.split('-')[0];
-  }
-  if (productId.includes('_')) {
-    return productId.split('_')[0];
-  }
-  // Gemini format: BTCUSD - extract base by removing known quote suffixes
-  const upper = productId.toUpperCase();
-  if (upper.endsWith('USDC')) return upper.slice(0, -4);
-  if (upper.endsWith('USDT')) return upper.slice(0, -4);
-  if (upper.endsWith('USD')) return upper.slice(0, -3);
-  return upper; // Return as-is if no pattern matches
-};
 
 /**
  * Sync order statuses and update state for filled orders
@@ -620,6 +572,4 @@ module.exports = {
   syncOrderStatuses,
   loadConfig,
   executeConsolidation,
-  getQuoteCurrency,
-  getBaseCurrency,
 };

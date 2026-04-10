@@ -15,7 +15,7 @@ const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
-const { getRegimeConfig, getFundConfig, getDefaultPair } = require('./config-utils');
+const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
@@ -272,7 +272,7 @@ const createMarketDataService = (exchange, pair) => {
     const trackedOrder = trackedOrders.get(orderId);
 
     if (status === 'FILLED') {
-      const baseCurr = productId.replace('_', '-').split('-')[0];
+      const baseCurr = getBaseCurrency(productId);
       console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
 
       // Get fills for this order and ingest them

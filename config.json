@@ -121,25 +121,50 @@
       }
     },
     "gemini": {
-      "enabled": true,
-      "dryRun": false,
-      "productId": "BTCUSD",
-      "totalAllocation": 5000,
-      "intervalsToSpread": 50,
-      "intervalType": "daily",
-      "sellMarkupPercent": 8,
-      "holdbackPercent": 4,
-      "minOrderSize": 1,
-      "maxBuyPrice": 150000,
       "schedulerInterval": 30000,
-      "consolidateAfterOrders": 25,
-      "consolidateInterval": "never",
-      "dcaStrategy": "fixed",
-      "fibBaseAmount": 10,
-      "regime": {
-        "enabled": true,
-        "maxUsdcDeployed": 5024,
-        "depositedCapital": 5024
+      "pairs": {
+        "BTCUSD": {
+          "enabled": true,
+          "dryRun": false,
+          "productId": "BTCUSD",
+          "totalAllocation": 5000,
+          "intervalsToSpread": 50,
+          "intervalType": "daily",
+          "sellMarkupPercent": 8,
+          "holdbackPercent": 4,
+          "minOrderSize": 1,
+          "maxBuyPrice": 150000,
+          "consolidateAfterOrders": 25,
+          "consolidateInterval": "never",
+          "dcaStrategy": "fixed",
+          "fibBaseAmount": 10,
+          "regime": {
+            "enabled": true,
+            "maxUsdcDeployed": 5024,
+            "depositedCapital": 5024
+          }
+        },
+        "ETHUSD": {
+          "enabled": true,
+          "dryRun": false,
+          "productId": "ETHUSD",
+          "totalAllocation": 1000,
+          "intervalsToSpread": 50,
+          "intervalType": "daily",
+          "sellMarkupPercent": 8,
+          "holdbackPercent": 4,
+          "minOrderSize": 1,
+          "maxBuyPrice": 5000,
+          "consolidateAfterOrders": 25,
+          "consolidateInterval": "never",
+          "dcaStrategy": "fixed",
+          "fibBaseAmount": 10,
+          "regime": {
+            "enabled": true,
+            "maxUsdcDeployed": 1000,
+            "depositedCapital": 1000
+          }
+        }
       }
     },
     "cryptocom": {

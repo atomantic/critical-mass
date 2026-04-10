@@ -20,6 +20,8 @@ const {
   setExchangeDryRun,
   addFund,
   removeFund,
+  getBaseCurrency,
+  getQuoteCurrency,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
@@ -281,9 +283,7 @@ module.exports = (app, deps) => {
     let assetBalance = { available: 0, hold: 0 };
     let keysConfigured = false;
     let apiError = null;
-    // Extract quote currency from productId (e.g., CRO_USD -> USD, BTC-USDC -> USDC)
-    const productParts = (config.productId || '').replace('_', '-').split('-');
-    const quoteCurrency = exchange === 'gemini' ? 'USD' : (productParts[1] || 'USDC');
+    const quoteCurrency = getQuoteCurrency(config.productId);
 
     const adapter = getAdapter(exchange);
 
@@ -292,7 +292,7 @@ module.exports = (app, deps) => {
       try {
         currentPrice = await adapter.getCurrentPrice(config.productId);
         quoteBalance = await adapter.getAccountBalance(quoteCurrency);
-        assetBalance = await adapter.getAccountBalance(config.productId.split(/[-_]/)[0]);
+        assetBalance = await adapter.getAccountBalance(getBaseCurrency(config.productId));
       } catch (err) {
         apiError = err.message || 'API connection failed';
         log('ERROR', `[${exchange}/${pair}] Status check failed: ${apiError}`);
