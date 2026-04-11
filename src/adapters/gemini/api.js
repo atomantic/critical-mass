@@ -278,6 +278,18 @@ const createGeminiAdapter = (keysPath = null) => {
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
+    const baseMinSize = parseFloat(product.baseMinSize) || baseIncrement;
+    if (roundedAmount < baseMinSize) {
+      return {
+        orderId: '',
+        clientOrderId,
+        success: false,
+        errorMessage: `Order quantity ${baseAmount} rounds to ${roundedAmount}, below minimum ${baseMinSize}`,
+        baseSize: roundedAmount,
+        limitPrice: roundedPrice,
+      };
+    }
+
     const orderPayload = {
       symbol,
       amount: roundedAmount.toFixed(baseDecimals),
@@ -325,6 +337,18 @@ const createGeminiAdapter = (keysPath = null) => {
 
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
+
+    const baseMinSize = parseFloat(product.baseMinSize) || baseIncrement;
+    if (roundedAmount < baseMinSize) {
+      return {
+        orderId: '',
+        clientOrderId,
+        success: false,
+        errorMessage: `Order quantity ${baseAmount} rounds to ${roundedAmount}, below minimum ${baseMinSize}`,
+        baseSize: roundedAmount,
+        limitPrice: roundedPrice,
+      };
+    }
 
     const orderPayload = {
       symbol,
