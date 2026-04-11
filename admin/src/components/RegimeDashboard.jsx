@@ -1688,7 +1688,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </div>
                   )}
                   <div className="text-white text-xs font-mono truncate">${position.realizedPnL?.toFixed(2) || '0'} USD</div>
-                  {(position.realizedAssetPnL || 0) > 0 && <div className="text-orange-400 text-xs font-mono truncate">+{position.realizedAssetPnL?.toFixed(8)} {asset}</div>}
+                  {(position.realizedAssetPnL || 0) > 0 && (
+                    <div className="text-orange-400 text-xs font-mono truncate">
+                      +{position.realizedAssetPnL?.toFixed(8)} {asset}
+                      {market.lastPrice > 0 && ` ($${(position.realizedAssetPnL * market.lastPrice).toFixed(2)})`}
+                    </div>
+                  )}
                 </div>
               </div>
 

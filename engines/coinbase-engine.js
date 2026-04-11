@@ -239,7 +239,7 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
         position.lifecycle = LIFECYCLE.CLOSED;
         position.lifecycleChangedAt = Date.now();
         position.lifecycleClosedCycle = position.cyclesCompleted || 0;
-        saveRegimeState(savedState, exchange, resolvedPair);
+        saveRegimeState(position, savedState.regime, exchange, savedState.tpOptimizer, savedState.sizeOptimizer, resolvedPair);
         saveRegimeRunningFlag(exchange, resolvedPair, false);
         log('INFO', `🛑 [${fundLabel(exchange, resolvedPair)}] Draining fund has empty position — auto-closed`);
       }
