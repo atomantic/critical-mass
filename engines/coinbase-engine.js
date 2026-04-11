@@ -216,13 +216,27 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
   const engine = regimeEngines.get(key);
 
   if (!engine) {
-    const { loadRegimeState } = require('../src/state-tracker');
+    const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
     const celestialHierarchy = require('../src/celestial-hierarchy');
     const savedState = loadRegimeState(exchange, resolvedPair);
     const position = savedState?.position || null;
     const config = getRegimeConfig(exchange, resolvedPair);
     const marketService = getMarketDataService(exchange, resolvedPair);
     const serviceStatus = marketService ? marketService.getStatus() : null;
+
+    // Auto-close: if fund is draining but position is fully empty, transition to closed
+    if (position && position.lifecycle === LIFECYCLE.DRAINING) {
+      const bodies = position.celestialBodies || [];
+      const hasPosition = (position.totalAsset || 0) > 0 || bodies.length > 0;
+      if (!hasPosition) {
+        position.lifecycle = LIFECYCLE.CLOSED;
+        position.lifecycleChangedAt = Date.now();
+        position.lifecycleClosedCycle = position.cyclesCompleted || 0;
+        saveRegimeState(savedState, exchange, resolvedPair);
+        saveRegimeRunningFlag(exchange, resolvedPair, false);
+        log('INFO', `🛑 [${fundLabel(exchange, resolvedPair)}] Draining fund has empty position — auto-closed`);
+      }
+    }
 
     const bodies = position?.celestialBodies || [];
     const celestial = {
