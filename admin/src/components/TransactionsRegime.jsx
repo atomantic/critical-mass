@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
+import { pairQuery as buildPairQuery } from '../utils/api'
 
-function TransactionsRegime({ exchange = 'coinbase' }) {
+function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [fills, setFills] = useState([])
   const [openOrders, setOpenOrders] = useState([])
   const [status, setStatus] = useState(null)
@@ -17,11 +18,13 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
 
   const formatAsset = (n) => (n || 0).toFixed(8)
 
+  const pairQuery = buildPairQuery(pair)
+
   const handleSyncFills = async () => {
     setSyncing(true)
     setSyncResult(null)
     try {
-      const res = await fetch(`/api/${exchange}/regime/sync-fills`, {
+      const res = await fetch(`/api/${exchange}/regime/sync-fills${pairQuery}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dryRun: false }),
@@ -41,10 +44,10 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
 
   const fetchData = useCallback(async () => {
     const [fillsRes, statusRes, ordersRes, configRes] = await Promise.all([
-      fetch(`/api/${exchange}/regime/fills`),
-      fetch(`/api/${exchange}/regime/status`),
-      fetch(`/api/${exchange}/regime/open-orders`),
-      fetch(`/api/${exchange}/config`),
+      fetch(`/api/${exchange}/regime/fills${pairQuery}`),
+      fetch(`/api/${exchange}/regime/status${pairQuery}`),
+      fetch(`/api/${exchange}/regime/open-orders${pairQuery}`),
+      fetch(`/api/${exchange}/config${pairQuery}`),
     ])
 
     if (fillsRes.ok) {
@@ -64,7 +67,7 @@ function TransactionsRegime({ exchange = 'coinbase' }) {
       setProductId(data.config?.productId || data.productId || null)
     }
     setLoading(false)
-  }, [exchange])
+  }, [exchange, pairQuery])
 
   useEffect(() => {
     fetchData()

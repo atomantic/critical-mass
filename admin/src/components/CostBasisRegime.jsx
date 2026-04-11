@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
+import { pairQuery as buildPairQuery } from '../utils/api'
 
-function CostBasisRegime({ exchange = 'coinbase' }) {
+function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const [status, setStatus] = useState(null)
   const [fills, setFills] = useState([])
   const [loading, setLoading] = useState(true)
@@ -10,12 +11,13 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
   const [productId, setProductId] = useState(null)
 
   const formatAsset = (n) => (n || 0).toFixed(8)
+  const pairQuery = buildPairQuery(pair)
 
   const fetchData = useCallback(async () => {
     const [statusRes, fillsRes, configRes] = await Promise.all([
-      fetch(`/api/${exchange}/regime/status`),
-      fetch(`/api/${exchange}/regime/fills`),
-      fetch(`/api/${exchange}/config`),
+      fetch(`/api/${exchange}/regime/status${pairQuery}`),
+      fetch(`/api/${exchange}/regime/fills${pairQuery}`),
+      fetch(`/api/${exchange}/config${pairQuery}`),
     ])
 
     if (statusRes.ok) {
@@ -32,7 +34,7 @@ function CostBasisRegime({ exchange = 'coinbase' }) {
       setProductId(data.config?.productId || data.productId || null)
     }
     setLoading(false)
-  }, [exchange])
+  }, [exchange, pairQuery])
 
   useEffect(() => {
     fetchData()

@@ -45,7 +45,7 @@ function SectionCard({ title, children, className = '' }) {
   )
 }
 
-function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', strategy = 'dca' }) {
+function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca' }) {
   const [config, setConfig] = useState(initialConfig || {})
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState(null)
@@ -159,10 +159,12 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', st
   // Get regime config with defaults
   const regimeConfig = config.regime || {}
 
+  const pairQuery = pair ? `?pair=${encodeURIComponent(pair)}` : ''
+
   const handleSave = async () => {
     setSaving(true)
     setMessage(null)
-    const res = await fetch(`/api/${exchange}/config`, {
+    const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
