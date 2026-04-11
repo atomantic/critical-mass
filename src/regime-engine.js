@@ -1394,6 +1394,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       macroRegime.restoreState(positionState.macroRegime);
     }
 
+    // Auto-close: if fund is draining but position is fully empty after recovery,
+    // transition to closed immediately instead of running an empty engine.
+    if (positionState.lifecycle === LIFECYCLE.DRAINING) {
+      const bodies = positionState.celestialBodies || [];
+      const hasPosition = (positionState.totalAsset || 0) > 0 || bodies.length > 0;
+      if (!hasPosition) {
+        positionState.lifecycle = LIFECYCLE.CLOSED;
+        positionState.lifecycleChangedAt = Date.now();
+        positionState.lifecycleClosedCycle = positionState.cyclesCompleted || 0;
+        console.log(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
+        if (!isDryRun) saveLiveState();
+        if (callbacks.onLifecycleClosed) {
+          setImmediate(() => {
+            try { callbacks.onLifecycleClosed(); } catch (err) {
+              console.log(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`);
+            }
+          });
+        }
+        return { success: true, autoClosed: true };
+      }
+    }
+
     // Start WebSocket feed
     await connectWebSocket();
 
