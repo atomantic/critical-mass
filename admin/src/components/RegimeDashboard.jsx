@@ -1677,23 +1677,26 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   </div>
                 </div>
                 <div className="bg-gray-900/50 rounded p-2 min-w-0">
-                  <div className="text-gray-500 truncate">Realized P&L {apy.totalLiquidValuePercent ? `(${apy.totalLiquidValuePercent.toFixed(2)}%)` : ''}</div>
-                  {apy.totalLiquidValue !== undefined ? (
-                    <div className={`font-mono text-base ${apy.totalLiquidValue >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      ${apy.totalLiquidValue?.toFixed(2)}
-                    </div>
-                  ) : (
-                    <div className={`font-mono text-base ${position.realizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      ${position.realizedPnL?.toFixed(2) || '0'}
-                    </div>
-                  )}
-                  <div className="text-white text-xs font-mono truncate">${position.realizedPnL?.toFixed(2) || '0'} USD</div>
-                  {(position.realizedAssetPnL || 0) > 0 && (
-                    <div className="text-orange-400 text-xs font-mono truncate">
-                      +{position.realizedAssetPnL?.toFixed(8)} {asset}
-                      {market.lastPrice > 0 && ` ($${(position.realizedAssetPnL * market.lastPrice).toFixed(2)})`}
-                    </div>
-                  )}
+                  {(() => {
+                    const usdPnL = position.realizedPnL || 0
+                    const assetPnL = position.realizedAssetPnL || 0
+                    const assetUsd = assetPnL * (market.lastPrice || 0)
+                    const totalPnL = usdPnL + assetUsd
+                    const pct = apy.totalLiquidValuePercent
+                    return <>
+                      <div className="text-gray-500 truncate">Realized P&L {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
+                      <div className={`font-mono text-base ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        ${totalPnL.toFixed(2)}
+                      </div>
+                      <div className="text-white text-xs font-mono truncate">${usdPnL.toFixed(2)} USD</div>
+                      {assetPnL > 0 && (
+                        <div className="text-orange-400 text-xs font-mono truncate">
+                          +{assetPnL.toFixed(8)} {asset}
+                          {assetUsd > 0 && ` ($${assetUsd.toFixed(2)})`}
+                        </div>
+                      )}
+                    </>
+                  })()}
                 </div>
               </div>
 
