@@ -3,6 +3,7 @@ import ActivityFeed from './ActivityFeed'
 import { useToast } from './Toast'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
+import { pairQuery as buildPairQuery } from '../utils/api'
 
 function ToggleSwitch({ label, checked, onChange, disabled, colorOn = 'bg-green-500', colorOff = 'bg-gray-600' }) {
   return (
@@ -65,7 +66,7 @@ function formatCountdown(ms) {
   return `${seconds}s`
 }
 
-function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
+function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const [liveData, setLiveData] = useState(null)
   const [updating, setUpdating] = useState(false)
   const [countdown, setCountdown] = useState('')
@@ -76,10 +77,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
   const [showConvertConfirm, setShowConvertConfirm] = useState(false)
   const [converting, setConverting] = useState(false)
   const { addToast } = useToast()
+  const pairQuery = buildPairQuery(pair)
 
   useEffect(() => {
     const fetchLive = async () => {
-      const res = await fetch(`/api/${exchange}/status`)
+      const res = await fetch(`/api/${exchange}/status${pairQuery}`)
       if (res.ok) {
         const data = await res.json()
         setLiveData(data)
@@ -88,7 +90,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
     fetchLive()
     const interval = setInterval(fetchLive, 10000)
     return () => clearInterval(interval)
-  }, [exchange])
+  }, [exchange, pairQuery])
 
   // Live countdown timer
   useEffect(() => {
@@ -112,7 +114,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
 
   const toggleConfig = async (key, value) => {
     setUpdating(true)
-    const res = await fetch(`/api/${exchange}/config`, {
+    const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [key]: value })
@@ -125,7 +127,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
 
   const handleConsolidate = async () => {
     setConsolidating(true)
-    const res = await fetch(`/api/${exchange}/consolidate`, {
+    const res = await fetch(`/api/${exchange}/consolidate${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -138,7 +140,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
 
   const handleSync = async () => {
     setSyncing(true)
-    const res = await fetch(`/api/${exchange}/sync`, { method: 'POST' })
+    const res = await fetch(`/api/${exchange}/sync${pairQuery}`, { method: 'POST' })
     if (res.ok && onRefresh) {
       onRefresh()
     }
@@ -147,14 +149,14 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
 
   // Check if regime engine is running (for Export to Regime button)
   useEffect(() => {
-    fetch(`/api/${exchange}/regime/status`)
+    fetch(`/api/${exchange}/regime/status${pairQuery}`)
       .then(r => r.json())
       .then(data => setRegimeRunning(data.running || data.status?.isRunning || false))
       .catch(() => {})
-  }, [exchange])
+  }, [exchange, pairQuery])
 
   const handlePreviewExport = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/convert-dca`, {
+    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ preview: true, merge: true }),
@@ -167,11 +169,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
     const data = await res.json()
     setConvertPreview(data)
     setShowConvertConfirm(true)
-  }, [exchange, addToast])
+  }, [exchange, pairQuery, addToast])
 
   const handleExecuteExport = useCallback(async () => {
     setConverting(true)
-    const res = await fetch(`/api/${exchange}/regime/convert-dca`, {
+    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ preview: false, merge: true }),
@@ -193,7 +195,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase' }) {
       message: `${data.summary?.pendingOrders || 0} positions exported. Start the regime engine to place sell orders.`,
     })
     if (onRefresh) onRefresh()
-  }, [exchange, addToast, onRefresh])
+  }, [exchange, pairQuery, addToast, onRefresh])
 
   if (!summary) return null
 

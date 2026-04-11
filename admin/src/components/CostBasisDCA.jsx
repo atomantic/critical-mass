@@ -1,17 +1,17 @@
 import { useState, useEffect } from 'react'
-import { useParams } from 'react-router-dom'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
+import { pairQuery as buildPairQuery } from '../utils/api'
 
-function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
+function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', pair }) {
   const baseCurrency = getBaseCurrency(summary?.config?.productId)
-  const { exchange = 'coinbase' } = useParams()
+  const pairQuery = buildPairQuery(pair)
   const [currentPrice, setCurrentPrice] = useState(0)
 
   useEffect(() => {
     const fetchPrice = async () => {
       try {
-        const res = await fetch(`/api/${exchange}/status`)
+        const res = await fetch(`/api/${exchange}/status${pairQuery}`)
         const data = await res.json()
         setCurrentPrice(data.currentPrice || 0)
       } catch (err) {
@@ -21,7 +21,7 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC' }) {
     fetchPrice()
     const interval = setInterval(fetchPrice, 10000)
     return () => clearInterval(interval)
-  }, [exchange])
+  }, [exchange, pairQuery])
 
   if (!summary?.costBasis) {
     return (

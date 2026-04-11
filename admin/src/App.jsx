@@ -813,7 +813,7 @@ function AppContent() {
               <Route path="/:exchange/:pair/cost-basis" element={
                 currentStrategy === 'regime'
                   ? <CostBasisRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
-                  : <CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
+                  : <CostBasisDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} exchange={currentExchange} pair={currentPair} />
               } />
               <Route path="/:exchange/:pair/transactions" element={
                 currentStrategy === 'regime'
@@ -829,8 +829,8 @@ function AppContent() {
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>
-              <Route path="/:exchange/:pair/backtest" element={<Backtest summary={summary} exchange={currentExchange} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/:pair/optimizer" element={<Optimizer exchange={currentExchange} />} />
+              <Route path="/:exchange/:pair/backtest" element={<Backtest summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/:pair/optimizer" element={<Optimizer exchange={currentExchange} pair={currentPair} />} />
               </>}
 
               {/* API Keys - in sub-nav tabs */}

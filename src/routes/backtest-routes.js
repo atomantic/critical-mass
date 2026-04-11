@@ -7,7 +7,7 @@ const path = require('path');
 const backtestEngine = require('../backtest-engine');
 const optimizerEngine = require('../optimizer-engine');
 const { formatInterval } = require('../interval-utils');
-const { loadConfig } = require('../dca-engine');
+const { getFundConfig, getDefaultPair } = require('../config-utils');
 const { log } = require('../logger');
 
 /**
@@ -17,7 +17,11 @@ const { log } = require('../logger');
 module.exports = (app, deps) => {
   const { io, readJSON, writeJSON, DATA_DIR } = deps;
 
-  const getOptimizerCacheFile = (exchange) => path.join(DATA_DIR, exchange, 'optimizer-cache.json');
+  const getPair = (req) => req.query?.pair || getDefaultPair(req.params.exchange);
+  const getOptimizerCacheFile = (exchange, productId) => {
+    const slug = (productId || 'default').toLowerCase().replace(/[^a-z0-9]/g, '-');
+    return path.join(DATA_DIR, exchange, `optimizer-cache-${slug}.json`);
+  };
 
   // Get historical price data
   app.get('/api/:exchange/backtest/prices', async (req, res) => {
@@ -32,8 +36,9 @@ module.exports = (app, deps) => {
   // Run backtest
   app.post('/api/:exchange/backtest/run', async (req, res) => {
     const { exchange } = req.params;
-    const exchangeConfig = loadConfig(exchange);
-    const configProductId = exchangeConfig.productId || null;
+    const pair = getPair(req);
+    const fundConfig = getFundConfig(exchange, pair);
+    const configProductId = fundConfig.productId || null;
 
     const {
       intervalBuyAmount = 500, sellMarkupPercent = 10, holdbackPercent = 5,
@@ -43,31 +48,35 @@ module.exports = (app, deps) => {
 
     const fundInfo = fundSize > 0 ? `, $${fundSize} fund` : ', unlimited funds';
     const intervalLabel = formatInterval(intervalType);
-    log('INFO', `[${exchange}] Running backtest for ${productId}: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`);
+    log('INFO', `[${exchange}/${pair}] Running backtest for ${productId}: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`);
 
     const results = await backtestEngine.runBacktest({
       intervalBuyAmount, sellMarkupPercent, holdbackPercent, feePercent, rebatePercent,
       intervals, intervalType, fundSize, exchange, productId,
     });
 
-    log('INFO', `[${exchange}] Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`);
+    log('INFO', `[${exchange}/${pair}] Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`);
     res.json({ success: true, ...results });
   });
 
-  // Optimizer cache
+  // Optimizer cache (per-pair)
   app.get('/api/:exchange/optimizer/cache', (req, res) => {
     const { exchange } = req.params;
-    const cache = readJSON(getOptimizerCacheFile(exchange), null);
+    const pair = getPair(req);
+    const fundConfig = getFundConfig(exchange, pair);
+    const cache = readJSON(getOptimizerCacheFile(exchange, fundConfig.productId), null);
     res.json(cache ? { success: true, cached: true, ...cache } : { success: true, cached: false });
   });
 
   app.delete('/api/:exchange/optimizer/cache', (req, res) => {
     const { exchange } = req.params;
+    const pair = getPair(req);
+    const fundConfig = getFundConfig(exchange, pair);
     const fs = require('fs');
-    const cacheFile = getOptimizerCacheFile(exchange);
+    const cacheFile = getOptimizerCacheFile(exchange, fundConfig.productId);
     if (fs.existsSync(cacheFile)) {
       fs.unlinkSync(cacheFile);
-      log('INFO', `Optimizer cache cleared for ${exchange}`);
+      log('INFO', `[${exchange}/${pair}] Optimizer cache cleared`);
     }
     res.json({ success: true, message: 'Cache cleared' });
   });
@@ -77,14 +86,15 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/optimizer/run', (req, res) => {
     const { exchange } = req.params;
-    const exchangeConfig = loadConfig(exchange);
-    const configProductId = exchangeConfig.productId || null;
+    const pair = getPair(req);
+    const fundConfig = getFundConfig(exchange, pair);
+    const configProductId = fundConfig.productId || null;
 
     const {
       fundSize = 10000, forceRefresh = false, productId = configProductId,
       intervals = null, markups = null, periods = null, buyAmounts = null,
     } = req.body;
-    const cacheFile = getOptimizerCacheFile(exchange);
+    const cacheFile = getOptimizerCacheFile(exchange, productId);
     const configKey = JSON.stringify({ intervals, markups, periods });
 
     if (!forceRefresh) {

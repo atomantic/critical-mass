@@ -102,7 +102,7 @@ const parseProductId = (productId) => {
   }
 }
 
-function Backtest({ summary, exchange = 'coinbase', quoteCurrency: defaultQuoteCurrency = 'USDC' }) {
+function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: defaultQuoteCurrency = 'USDC' }) {
   const [params, setParams] = useState(DEFAULT_PARAMS)
   const [selectedPeriod, setSelectedPeriod] = useState('1D')
   const [loading, setLoading] = useState(false)

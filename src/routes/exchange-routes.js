@@ -372,15 +372,16 @@ module.exports = (app, deps) => {
     });
   });
 
-  // Get candles for an exchange (for charts)
+  // Get candles for an exchange/fund (for charts)
   app.get('/api/:exchange/candles', async (req, res) => {
     const { exchange } = req.params;
+    const pair = getPair(req);
     const { granularity = 'ONE_MINUTE', limit = 60 } = req.query;
-    const config = getExchangeConfig(exchange);
+    const config = getFundConfig(exchange, pair);
     const { getAdapter } = require('../adapters');
     const adapter = getAdapter(exchange);
 
-    const productId = config.productId || 'BTC-USDC';
+    const productId = config.productId;
     const now = Math.floor(Date.now() / 1000);
 
     const granularitySeconds = {
@@ -398,53 +399,57 @@ module.exports = (app, deps) => {
     res.json({ success: true, candles: result });
   });
 
-  // Sync pending orders for an exchange
+  // Sync pending orders for an exchange/fund
   app.post('/api/:exchange/sync', async (req, res) => {
     const { exchange } = req.params;
+    const pair = getPair(req);
 
     if (!getGlobalConfig().simpleDcaEnabled) {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
     }
 
-    const config = getExchangeConfig(exchange);
-    const state = stateTracker.loadState(config, exchange);
+    const config = getFundConfig(exchange, pair);
+    const state = stateTracker.loadState(config, exchange, pair);
 
     const filledOrders = await syncOrderStatuses(state, exchange);
     if (filledOrders.length > 0) {
-      stateTracker.saveState(state, exchange);
+      stateTracker.saveState(state, exchange, pair);
     }
 
     res.json({
       success: true,
       exchange,
+      pair,
       filledOrders: filledOrders.length,
       lastSyncTime: new Date().toISOString(),
     });
   });
 
-  // Trigger trade for an exchange
+  // Trigger trade for an exchange/fund
   app.post('/api/:exchange/trade', async (req, res) => {
     const { exchange } = req.params;
+    const pair = getPair(req);
 
     if (!getGlobalConfig().simpleDcaEnabled) {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
     }
 
-    log('INFO', `[${exchange}] Manual trade triggered via API`);
+    log('INFO', `[${exchange}/${pair}] Manual trade triggered via API`);
 
     const result = await runIntervalCycle(exchange);
     res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
   });
 
-  // Consolidate pending orders for an exchange
+  // Consolidate pending orders for an exchange/fund
   app.post('/api/:exchange/consolidate', async (req, res) => {
     const { exchange } = req.params;
+    const pair = getPair(req);
     const { orderIds } = req.body || {};
 
-    log('INFO', `[${exchange}] Consolidation triggered via API`);
+    log('INFO', `[${exchange}/${pair}] Consolidation triggered via API`);
 
-    const config = getExchangeConfig(exchange);
-    const state = stateTracker.loadState(config, exchange);
+    const config = getFundConfig(exchange, pair);
+    const state = stateTracker.loadState(config, exchange, pair);
     const pendingOrders = (state.orders || []).filter(o => o.status === 'pending');
 
     const ordersToConsolidate = orderIds && orderIds.length > 0

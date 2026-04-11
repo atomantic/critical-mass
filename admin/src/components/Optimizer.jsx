@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { io } from 'socket.io-client'
 import { formatCurrency } from './charts/chartUtils'
 import { useToast } from './Toast'
+import { pairQuery as buildPairQuery } from '../utils/api'
 
 // Available options for optimizer
 const ALL_INTERVALS = ['5min', '10min', '30min', '1hour', '4hour', 'daily']
@@ -36,7 +37,7 @@ function ToggleChip({ label, checked, onChange, disabled }) {
   )
 }
 
-function Optimizer({ exchange = 'coinbase' }) {
+function Optimizer({ exchange = 'coinbase', pair }) {
   const [fundSize, setFundSize] = useState(10000)
   const [loading, setLoading] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
@@ -54,6 +55,7 @@ function Optimizer({ exchange = 'coinbase' }) {
   const [buyAmounts, setBuyAmounts] = useState({ ...DEFAULT_BUY_AMOUNTS })
 
   const { addToast } = useToast()
+  const pairQuery = buildPairQuery(pair)
 
   // Connect to WebSocket
   useEffect(() => {
@@ -86,7 +88,7 @@ function Optimizer({ exchange = 'coinbase' }) {
 
   // Load cached results on mount
   useEffect(() => {
-    fetch(`/api/${exchange}/optimizer/cache`)
+    fetch(`/api/${exchange}/optimizer/cache${pairQuery}`)
       .then(res => res.json())
       .then(data => {
         if (data.cached) {
@@ -149,7 +151,7 @@ function Optimizer({ exchange = 'coinbase' }) {
     setCurrentBest(null)
     if (forceRefresh) setResults(null)
 
-    fetch(`/api/${exchange}/optimizer/run`, {
+    fetch(`/api/${exchange}/optimizer/run${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -180,7 +182,7 @@ function Optimizer({ exchange = 'coinbase' }) {
   }
 
   const clearCache = async () => {
-    fetch(`/api/${exchange}/optimizer/cache`, { method: 'DELETE' })
+    fetch(`/api/${exchange}/optimizer/cache${pairQuery}`, { method: 'DELETE' })
       .then(res => res.json())
       .then(() => setResults(null))
       .catch(err => setError(err.message))
@@ -195,7 +197,7 @@ function Optimizer({ exchange = 'coinbase' }) {
       holdbackPercent: result.holdbackPercent
     }
 
-    fetch(`/api/${exchange}/config`, {
+    fetch(`/api/${exchange}/config${pairQuery}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config)
