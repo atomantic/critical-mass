@@ -33,7 +33,13 @@ const HEALTH_COLORS = {
   STOPPED: 'text-red-400',
 }
 
-const getEngineStatus = (isRunning, isDryRun) => {
+const getEngineStatus = (isRunning, isDryRun, lifecycle) => {
+  if (lifecycle === 'closed') {
+    return { label: 'Closed', color: 'bg-gray-700', textColor: 'text-gray-400' }
+  }
+  if (lifecycle === 'draining') {
+    return { label: 'Draining', color: 'bg-yellow-700', textColor: 'text-yellow-200', pulse: true }
+  }
   if (isRunning) {
     return isDryRun
       ? { label: 'Dry-Run', color: 'bg-purple-600', textColor: 'text-purple-100', pulse: true }
@@ -117,6 +123,7 @@ function Overview() {
     const celestial = status?.celestial
     const isRunning = status?.isRunning ?? false
     const isDryRun = status?.isDryRun ?? false
+    const lifecycle = status?.lifecycle?.lifecycle || ex.lifecycle || 'active'
 
     const lastPrice = market?.lastPrice ?? 0
 
@@ -169,6 +176,7 @@ function Overview() {
       quoteCurrency,
       isRunning,
       isDryRun,
+      lifecycle,
       healthMode,
       regimeMode,
       lastPrice,
@@ -328,10 +336,10 @@ function Overview() {
         </div>
       </div>
 
-      {/* Card grid */}
+      {/* Active fund cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {cards.map(card => {
-          const engineStatus = getEngineStatus(card.isRunning, card.isDryRun)
+        {cards.filter(c => c.lifecycle !== 'closed').map(card => {
+          const engineStatus = getEngineStatus(card.isRunning, card.isDryRun, card.lifecycle)
           const regimeColor = REGIME_COLORS[card.regimeMode] || {}
           const healthColor = HEALTH_COLORS[card.healthMode] || 'text-gray-400'
 
@@ -495,6 +503,42 @@ function Overview() {
           )
         })}
       </div>
+
+      {/* Closed funds section */}
+      {cards.some(c => c.lifecycle === 'closed') && (
+        <div className="mt-6">
+          <h2 className="text-sm font-medium text-gray-500 mb-2">Closed Funds</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {cards.filter(c => c.lifecycle === 'closed').map(card => (
+              <Link
+                key={`${card.exchange}-${card.pair}`}
+                to={`/${card.exchange}/${card.pair}`}
+                className="bg-gray-800/60 rounded-lg border border-gray-700/50 p-3 flex items-center justify-between hover:bg-gray-800 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`w-6 h-6 flex items-center justify-center rounded shrink-0 text-sm ${EXCHANGE_COLORS[card.exchange] || 'bg-gray-600'}`}>
+                    {EXCHANGE_ICONS[card.exchange] || '?'}
+                  </span>
+                  <div>
+                    <span className="font-medium capitalize text-gray-400 text-sm">{card.exchange}</span>
+                    <span className="text-gray-600 mx-1">/</span>
+                    <span className="text-sm text-gray-500">{card.pair}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-gray-500">{card.cyclesCompleted} cycles</span>
+                  {card.realizedPnL !== 0 && (
+                    <span className={`font-mono ${card.realizedPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {card.realizedPnL >= 0 ? '+' : ''}{formatCurrency(card.realizedPnL)}
+                    </span>
+                  )}
+                  <span className="px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">Closed</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {cards.length === 0 && (
         <div className="text-center text-gray-400 py-12">
