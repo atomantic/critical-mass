@@ -109,7 +109,8 @@
 - Overview aggregate P&L used config pair key (e.g. "BTCUSD") instead of actual productId to derive baseCurrency — misattributed asset reserves when pair key differed from traded instrument
 - Overview WebSocket updates replaced full status with partial market-only data — market data service emits only `market`/`regime` fields, wiping `position`/`apy`/`celestial` from the initial API fetch; now merges instead of replacing
 - Partial fill body TP incorrectly counted SOLD amount as asset reserves — for partial fills, the sold CRO was added to `realizedAssetPnL` instead of 0; the remaining CRO stays as an active body, not reserves. Also fixed fill annotation `bodyHoldbackAsset` which was set to the remaining body size instead of 0 for partial fills
-- Orphaned available asset recovery on startup — detects untracked CRO/BTC on the exchange (from historical partial fills treated as full fills), derives cost basis from fill ledger, creates a body, and places a TP sell so it's managed automatically
+- Orphan sell reclamation on startup disabled — was adopting ANY untracked sell order on the exchange as engine-owned, which sold non-engine BTC. Now log-only (manual review required)
+- Recovery body creation on startup disabled — was creating bodies and placing TP sells for untracked position asset, which could sell user holdings. Now log-only
 
 ## Removed
 

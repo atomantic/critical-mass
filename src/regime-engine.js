@@ -1033,99 +1033,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         o.side.toUpperCase() === 'SELL' && !trackedSellIds.has(o.orderId) && o.size > 0
       );
 
+      // Log orphaned sell orders but do NOT adopt them. Automatic reclamation
+      // is unsafe — it can sell non-engine assets (user holdings, other bots).
       if (orphanedSells.length > 0) {
-        const cycleFills = fillLedger.getCurrentCycleFills();
-        let reclaimedBodies = 0;
-
         for (const order of orphanedSells) {
-          const orderValue = order.size * order.price;
-
-          // Reclaim as celestial body regardless of size
-          const candidates = cycleFills.filter(f =>
-            f.side === 'buy' && !(f.isBodyOwned || f.isSatellite)
-            && f.size > 0 && (f.size / order.size) > 0.99 && (f.size / order.size) < 1.02
-          );
-          const matchingBuy = candidates.length > 0
-            ? candidates.reduce((best, buy) =>
-              Math.abs(buy.size - order.size) < Math.abs(best.size - order.size) ? buy : best
-            )
-            : null;
-
-          const costBasis = matchingBuy
-            ? (matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0))
-            : orderValue;
-          const avgPrice = matchingBuy ? matchingBuy.price : order.price;
-          const assetQty = matchingBuy ? matchingBuy.size : order.size;
-          const placedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
-
-          const bodyEntry = celestialHierarchy.createNewBody({
-            assetQty,
-            costBasis,
-            avgPrice,
-            buyOrderId: matchingBuy ? matchingBuy.orderId : `orphan-${order.orderId}`,
-          }, matchingBuy ? matchingBuy.orderId : `orphan-${order.orderId}`);
-
-          // Override TP info from exchange order
-          bodyEntry.tpOrderId = order.orderId;
-          bodyEntry.tpPrice = order.price;
-          bodyEntry.assetOnOrder = order.size;
-          bodyEntry.createdAt = placedAt;
-
-          // Reclassify tier based on actual cost basis
-          const tierCfg = celestialHierarchy.classifyTier(costBasis, config.maxUsdcDeployed);
-          bodyEntry.tier = tierCfg.name;
-
-          // Sanity check: cancel orphans selling at or below cost (stale/duplicate artifacts)
-          if (order.price <= avgPrice) {
-            console.log(`🗑️ [${exchange}] Orphan ${order.orderId.slice(0, 8)} sells @ ${fmtPrice(order.price)} ≤ avg ${fmtPrice(avgPrice)} — cancelling stale order`);
-            const orphanCancel = await adapter.cancelOrder(order.orderId);
-            if (!orphanCancel.success) {
-              const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
-              if (orphanStatus && (orphanStatus.status === 'FILLED' || orphanStatus.completionPercentage >= 100)) {
-                console.log(`📋 [${exchange}] Orphan ${order.orderId.slice(0, 8)} already filled — polling will process`);
-              }
-            }
-            continue;
-          }
-
-          positionState.celestialBodies = positionState.celestialBodies || [];
-          positionState.celestialBodies.push(bodyEntry);
-
-          if (orderExecutor.restoreBodyTpOrder) {
-            const orphanPlacedAt = order.createdTime ? new Date(order.createdTime).getTime() : Date.now();
-            orderExecutor.restoreBodyTpOrder(bodyEntry.id, order.orderId, order.size, order.price, orphanPlacedAt);
-          }
-
-          reclaimedBodies++;
-          console.log(`🌌 [${exchange}] Reclaimed orphaned body (${bodyEntry.tier}): ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} ${baseCurrency} @ ${fmtPrice(order.price)}${matchingBuy ? ` (matched buy ${matchingBuy.orderId.slice(0, 8)})` : ' (no buy match)'}`);
-
-          // Check if reclaimed body's TP% exceeds effective max — reprice if so
-          if (bodyEntry.avgPrice > 0) {
-            const reclaimedTpPct = ((bodyEntry.tpPrice - bodyEntry.avgPrice) / bodyEntry.avgPrice) * 100;
-            const rTierCfg = celestialHierarchy.getTierConfig(bodyEntry.tier);
-            const rEffMax = config.tpMaxPercent * (rTierCfg.tpMaxScale || 1);
-            if (reclaimedTpPct > rEffMax * 1.01) {
-              console.log(`⚠️ [${exchange}] Reclaimed body ${bodyEntry.id.slice(-8)} TP% ${reclaimedTpPct.toFixed(2)}% exceeds max ${rEffMax.toFixed(2)}% — repricing`);
-              const rCancel = await adapter.cancelOrder(bodyEntry.tpOrderId);
-              if (rCancel.success) {
-                if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(bodyEntry.tpOrderId);
-                bodyEntry.tpOrderId = null;
-                bodyEntry.tpPrice = 0;
-                bodyEntry.assetOnOrder = 0;
-                await placeBodyTp(bodyEntry);
-              } else {
-                const rStatus = await adapter.getOrder(bodyEntry.tpOrderId).catch(() => null);
-                if (rStatus && (rStatus.status === 'FILLED' || rStatus.completionPercentage >= 100)) {
-                  console.log(`📋 [${exchange}] Reclaimed body ${bodyEntry.id.slice(-8)} TP already filled — polling will process`);
-                }
-              }
-            }
-          }
-        }
-
-        if (reclaimedBodies > 0) {
-          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-          console.log(`🌌 [${exchange}] Reclaimed ${reclaimedBodies} orphaned body orders from exchange`);
+          console.log(`⚠️ [${exchange}] Untracked sell order on exchange: ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} ${baseCurrency} @ ${fmtPrice(order.price)} — NOT adopting (manual review required)`);
         }
       }
 
@@ -1438,21 +1350,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       }
 
-      // Safety net: detect position BTC not tracked by any celestial body and create a recovery body
+      // Log untracked position asset but do NOT create recovery bodies or place sells.
+      // Automatic sell placement for untracked assets is unsafe — it can sell non-engine holdings.
       const allRecoveryBodies = positionState.celestialBodies || [];
       if (allRecoveryBodies.length > 0 && positionState.totalAsset > 0) {
         const trackedBtc = allRecoveryBodies.reduce((sum, b) => sum + b.assetQty, 0);
         const untrackedAsset = roundAsset(positionState.totalAsset - trackedBtc);
         if (untrackedAsset > 0.00000100) {
-          const untrackedCostBasis = roundUSDC(untrackedAsset * positionState.avgCostBasis);
-          const recoveryBody = celestialHierarchy.createNewBody({
-            assetQty: untrackedAsset,
-            costBasis: untrackedCostBasis,
-            avgPrice: positionState.avgCostBasis,
-          }, `recovery-${Date.now()}`);
-          positionState.celestialBodies.push(recoveryBody);
-          console.log(`🔧 [${exchange}] Created recovery body for ${untrackedAsset.toFixed(8)} untracked ${baseCurrency} ($${untrackedCostBasis.toFixed(2)})`);
-          await placeBodyTp(recoveryBody);
+          console.log(`⚠️ [${exchange}] ${untrackedAsset.toFixed(8)} ${baseCurrency} in position not tracked by any body — manual review required`);
         }
       }
 
