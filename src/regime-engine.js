@@ -2968,6 +2968,36 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return false;
     }
 
+    // Pre-check sell qty against exchange minimum order size to avoid failed placements.
+    // If holdback pushes qty below minimum, sell the full body (zero holdback).
+    // If even the full body is below minimum, skip — it needs more buys to consolidate.
+    if (productDetails?.baseMinSize) {
+      const baseMinSize = parseFloat(productDetails.baseMinSize);
+      const baseIncrement = parseFloat(productDetails.baseIncrement) || 0.00000001;
+      const roundedSellQty = Math.floor(sellQty / baseIncrement) * baseIncrement;
+
+      if (roundedSellQty < baseMinSize) {
+        const fullQty = roundAsset(body.assetQty);
+        const roundedFullQty = Math.floor(fullQty / baseIncrement) * baseIncrement;
+
+        if (roundedFullQty >= baseMinSize) {
+          const fullProceeds = fullQty * tpPrice * (1 - feeRatePerSide);
+          const fullPnl = fullProceeds - body.costBasis;
+          if (fullPnl >= 0.01) {
+            console.log(`📏 [${exchange}] Body ${body.id.slice(-8)} sellQty ${sellQty} below exchange min ${baseMinSize}, selling full qty ${fullQty} (no holdback)`);
+            sellQty = fullQty;
+            holdbackQty = 0;
+          } else {
+            console.log(`🚫 [${exchange}] Body ${body.id.slice(-8)} full qty ${fullQty} PnL $${fullPnl.toFixed(4)} < $0.01 even without holdback, skipping`);
+            return false;
+          }
+        } else {
+          console.log(`📏 [${exchange}] Body ${body.id.slice(-8)} assetQty ${fullQty} (rounded ${roundedFullQty}) below exchange min ${baseMinSize}, waiting for consolidation`);
+          return false;
+        }
+      }
+    }
+
     let result;
     try {
       result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id);
