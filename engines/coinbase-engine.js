@@ -170,6 +170,13 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
     return { success: false, error: startResult.error || 'Failed to start regime engine' };
   }
 
+  // Auto-close: engine detected a drained fund and closed it instead of running
+  if (startResult.autoClosed) {
+    regimeEngines.delete(key);
+    log('INFO', `🛑 [${label}] Fund auto-closed (empty draining position)`);
+    return { success: true, exchange, pair: resolvedPair, autoClosed: true };
+  }
+
   stopMarketDataService(exchange, resolvedPair);
   invalidateStandaloneLedger(exchange, resolvedPair);
   saveRegimeRunningFlag(exchange, resolvedPair, true);
@@ -688,7 +695,10 @@ const startup = async () => {
         regimeEngines.set(key, engine);
 
         const startResult = await engine.start();
-        if (startResult.success) {
+        if (startResult.autoClosed) {
+          regimeEngines.delete(key);
+          log('INFO', `🛑 [${label}] Fund auto-closed on resume (empty draining position)`);
+        } else if (startResult.success) {
           log('INFO', `✅ [${label}] Regime engine auto-resumed successfully`);
         } else {
           log('ERROR', `❌ [${label}] Failed to auto-resume: ${startResult.error}`);
