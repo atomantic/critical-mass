@@ -205,6 +205,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let marketState = createInitialMarketState();
   let positionState = createInitialPositionState();
   let priceIncrement = 0.01; // Updated from product details in start()
+  let productDetails = null; // Cached from start() for min-order-size checks
 
   // Track if cycle buys limit warning has been logged (to avoid log spam)
   let cycleBuysLimitWarningLogged = false;
@@ -792,7 +793,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     console.log(`🚀 [${exchange}] ${modeLabel}Starting regime engine for ${productId}`);
 
     // Fetch product details for price tick size (affects TP price rounding)
-    const productDetails = await adapter.getProductDetails(productId).catch((err) => {
+    productDetails = await adapter.getProductDetails(productId).catch((err) => {
       console.log(`⚠️ [${exchange}] Could not fetch product details: ${err.message}, using default price increment`);
       return null;
     });
