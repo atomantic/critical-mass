@@ -3818,6 +3818,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     const target = candidates[0];
 
+    // Check both orders for partial fills before merging
+    for (const body of [source, target]) {
+      if (body.tpOrderId) {
+        const orderStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
+        if (orderStatus && orderStatus.filledSize > 0) {
+          const label = body === source ? 'Source' : 'Target';
+          return { success: false, message: `${label} body ${body.id.slice(-8)} has a partially filled TP order (${orderStatus.filledSize} filled) — cannot merge` };
+        }
+      }
+    }
+
     console.log(`🔗 [${exchange}] Manual roll-up: merging body ${source.id.slice(-8)} (TP ${fmtPrice(source.tpPrice)}) → ${target.id.slice(-8)} (TP ${fmtPrice(target.tpPrice)})`);
 
     // Race 3: snapshot both bodies before cancelling TPs

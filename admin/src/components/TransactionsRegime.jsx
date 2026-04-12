@@ -333,13 +333,26 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                     }`}>
                       {(order.side || (order.type === 'take_profit' ? 'sell' : 'buy')).toUpperCase()}
                     </td>
-                    <td className="px-4 py-2 font-mono">{formatAsset(order.size)}</td>
+                    <td className="px-4 py-2 font-mono">
+                      {formatAsset(order.size)}
+                      {order.filledSize > 0 && (
+                        <span className="ml-1 text-yellow-400 text-xs" title={`${formatAsset(order.filledSize)} filled of ${formatAsset(order.size)}`}>
+                          ({formatAsset(order.filledSize)} filled)
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-2">{formatPrice(order.price)}</td>
                     <td className="px-4 py-2">{formatCurrency((order.price || 0) * (order.size || 0))}</td>
                     <td className="px-4 py-2">
-                      <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">
-                        {order.status || 'open'}
-                      </span>
+                      {order.filledSize > 0 ? (
+                        <span className="px-2 py-0.5 rounded text-xs bg-orange-900/50 text-orange-400">
+                          partial
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">
+                          {order.status || 'open'}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-2 text-gray-500 text-xs font-mono">
                       {order.orderId}

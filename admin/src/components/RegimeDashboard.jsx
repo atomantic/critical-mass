@@ -2421,7 +2421,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 <td className="text-right py-2 pr-2 font-mono text-white">
                                   {order.size?.toFixed(8)}
                                   {order.filledSize > 0 && (
-                                    <span className="ml-1 px-1 py-0.5 rounded text-[10px] bg-yellow-900/50 text-yellow-400" title={`Partially filled: ${order.filledSize.toFixed(8)} filled`}>PF</span>
+                                    <span className="ml-1 px-1 py-0.5 rounded text-[10px] bg-orange-900/50 text-orange-400" title={`${order.filledSize.toFixed(8)} of ${order.size?.toFixed(8)} filled`}>
+                                      {order.filledSize.toFixed(8)} filled
+                                    </span>
                                   )}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-white">
@@ -2444,7 +2446,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 <td className="py-2 text-center">
                                   {(() => {
                                     const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
-                                    const canRollUp = isBodyTp && isRunning && celestialBodies.length >= 2 && order.price < highestBodyTpPrice
+                                    const hasPartialFill = order.filledSize > 0
+                                    const canRollUp = isBodyTp && isRunning && celestialBodies.length >= 2 && order.price < highestBodyTpPrice && !hasPartialFill
                                     if (!canRollUp) return null
                                     const bodyData = bodyLookup.get(order.orderId)
                                     if (!bodyData) return null
@@ -2452,6 +2455,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                       .filter(b => b.tpPrice > (bodyData.tpPrice || order.price))
                                       .sort((a, b) => a.tpPrice - b.tpPrice)[0]
                                     if (!targetBody) return null
+                                    // Check if target order is partially filled
+                                    const targetOrder = sellOrders.find(o => o.orderId === targetBody.tpOrderId)
+                                    if (targetOrder?.filledSize > 0) return null
                                     const srcLabel = `${bodyData.id?.slice(-8)} ($${bodyData.costBasis?.toFixed(0)})`
                                     const tgtLabel = `${targetBody.id?.slice(-8)} ($${targetBody.costBasis?.toFixed(0)})`
                                     return (

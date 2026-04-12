@@ -441,7 +441,9 @@ ipcServer.onRequest('regime:open-orders', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (engine) {
-    return { running: true, orders: engine.getOpenOrders ? engine.getOpenOrders() : [] };
+    // Use engine status pendingOrders which includes filledSize from partialFillTracker
+    const status = engine.getStatus();
+    return { running: true, orders: status.pendingOrders || [] };
   }
 
   const marketService = getMarketDataService(exchange, resolvedPair);
