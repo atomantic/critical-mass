@@ -28,6 +28,8 @@
 - ADX regime modulation — +15% composite boost in trending markets, -20% in ranging markets
 - Tick momentum confirmation — aligned tick momentum boosts composite score up to +25%, contradicting reduces up to -15%
 - UpDown signal history now includes NEUTRAL entries — shows actual BUY→NEUTRAL→BUY pattern instead of hiding the gaps
+- Partial fill visibility on open orders — both Dashboard and Transactions views show filled amount for partially filled sell orders; status badge changes to orange "partial"
+- Merge (roll-up) blocked for partially filled orders — server-side guard checks exchange order status before merging; UI hides roll-up button when source or target is partially filled
 
 ## Changed
 
