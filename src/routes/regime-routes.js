@@ -240,20 +240,75 @@ module.exports = (app, deps) => {
     res.json(result);
   });
 
-  app.post('/api/:exchange/regime/sync-fills', async (req, res) => {
-    const { exchange } = req.params;
-    const pair = getPair(req);
-    const { dryRun = false } = req.body;
-    const result = await getIPC(exchange).request('regime:sync-fills', { dryRun }, exchange, pair).catch(engineError);
-    if (!result.success) return res.status(errStatus(result)).json(result);
-    res.json(result);
-  });
-
   app.post('/api/:exchange/regime/convert-dca', async (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const { preview = true, merge = false } = req.body;
     const result = await getIPC(exchange).request('regime:convert-dca', { preview, merge }, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  // ============ Manual Trade Tracking ============
+
+  app.get('/api/:exchange/regime/unaccounted-fills', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getPair(req);
+    const { startDate } = req.query;
+    if (!startDate) return res.status(400).json({ success: false, error: 'startDate query parameter is required' });
+    const result = await getIPC(exchange).request('regime:unaccounted-fills', { startDate }, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.get('/api/:exchange/regime/manual-trades', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getPair(req);
+    const result = await getIPC(exchange).request('regime:manual-trades', {}, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.post('/api/:exchange/regime/manual-trade', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getPair(req);
+    const result = await getIPC(exchange).request('regime:manual-trade', req.body, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.post('/api/:exchange/regime/manual-trade/:tradeId/check', async (req, res) => {
+    const { exchange, tradeId } = req.params;
+    const pair = getPair(req);
+    const result = await getIPC(exchange).request('regime:manual-trade-check', { tradeId }, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.post('/api/:exchange/regime/manual-trade-buy', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getPair(req);
+    const result = await getIPC(exchange).request('regime:manual-trade-buy', req.body, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.post('/api/:exchange/regime/manual-trade-pair', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getPair(req);
+    const result = await getIPC(exchange).request('regime:manual-trade-pair', req.body, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  app.post('/api/:exchange/regime/dismiss-fills', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getPair(req);
+    const { orderIds } = req.body;
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'orderIds array is required' });
+    }
+    const result = await getIPC(exchange).request('regime:dismiss-fills', { orderIds }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });

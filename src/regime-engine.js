@@ -1219,6 +1219,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       } catch { /* no corrective buys file */ }
 
+      // Load manual trade recovery buy order IDs to avoid cancelling them as orphans
+      try {
+        const { resolveFundDataDir } = require('./migration');
+        const mtPath = require('path').join(resolveFundDataDir(exchange, pair), 'manual-trades.json');
+        const mtData = JSON.parse(require('fs').readFileSync(mtPath, 'utf8'));
+        for (const mt of (mtData.trades || [])) {
+          if (mt.buyOrderId && mt.status === 'buy_pending') correctiveBuyIds.add(mt.buyOrderId);
+        }
+      } catch { /* no manual trades file */ }
+
       let restoredEntries = 0;
       let orphanedEntries = 0;
 
@@ -2585,6 +2595,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Fund lifecycle guard: when draining/closed, never place new entries
     if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
+
+    // Don't place new entry if there's already a pending entry order on the exchange
+    if (orderExecutor.getPendingCounts().entries > 0) return;
 
     // Skip if in insufficient funds cooldown (prevents rapid retry spam on 406 errors)
     if (now < insufficientFundsCooldownUntil) return;
@@ -4205,6 +4218,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     return { success: true, message: msg };
   };
 
+  /**
+   * Inject an externally-created celestial body into the running engine.
+   * Syncs position aggregates, places TP, and saves state.
+   * @param {Object} body - A body created via celestialHierarchy.createNewBody()
+   * @returns {Promise<{success: boolean, bodyId: string, tpPlaced: boolean}>}
+   */
+  const injectBody = async (body) => {
+    if (!isRunning) return { success: false, error: 'Engine not running' };
+    positionState.celestialBodies = positionState.celestialBodies || [];
+    positionState.celestialBodies.push(body);
+    celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+    const tpResult = await placeBodyTp(body);
+    saveLiveState();
+    console.log(`📦 [${exchange}] Injected body ${body.id} (${body.tier}): ${body.assetQty} BTC @ $${body.avgPrice.toFixed(2)}, TP placed: ${!!tpResult}`);
+    return { success: true, bodyId: body.id, tpPlaced: !!tpResult };
+  };
+
   return {
     start,
     stop,
@@ -4218,6 +4248,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     updateConfig,
     updatePosition,
     getFills,
+    getFillLedger: () => fillLedger,
     getFillStats,
     forceResumeDrawdown,
     manualMergeBody,
@@ -4226,6 +4257,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     previewLadder,
     rebuildLadder,
     cancelLadder,
+    injectBody,
     // Dry-run specific methods
     isDryRun,
     getDryRunLog,
