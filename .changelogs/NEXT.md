@@ -93,6 +93,11 @@
 - Cycle display shows current cycle number (completed + 1) instead of completed count
 - Dashboard stale after body TP fill — `callbacks.onStatusUpdate` was not called after processing body TP fills, so the UI never received the updated position/cycle state
 - Dashboard P&L and APY values truncated with "..." — removed `truncate` from BTC reserves, daily estimate, and annual estimate lines so values wrap instead of being cut off
+- Closed trades ledger (`closed-trades.json`) — immutable P&L records written at fill time; migration from existing fills uses bodyId-matched buy costs instead of corrupted bodyPnl annotations; fixes inflated CRO realized P&L from body consolidation bug
+- Cycle completion detection counts all sells (body + core) instead of only core — fixes body-only cycles not recognized on restart
+- `recalculateCycles` global P&L uses FIFO cost-lot replay as fallback when no closed trades exist
+- Cycle auto-linking restricted to completed cycles only — prevents over-linking unsold buys to early sells in active cycles
+- Cycle renumbering restricted to orphan-fix scenarios only — prevents stable cycle IDs from being reshuffled by timestamp ordering
 
 - Signal history now sorted newest-first — API results were displayed in arbitrary order
 - Signal panel and banner show "CALCULATING..." loading state until live indicators arrive, preventing false BUY/SELL display from stale cached signals on page load

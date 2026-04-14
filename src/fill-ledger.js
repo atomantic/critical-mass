@@ -518,55 +518,33 @@ const createFillLedger = (exchange, productId, pair) => {
     let totalRealizedPnL = 0;
     let totalRealizedAssetPnL = 0;
 
-    // Global realized P&L: sum per-sell P&L from bodyPnl annotations (authoritative,
-    // computed at fill time from exact cost basis). Falls back to linked-buy cost
-    // for sells without annotations. Only counts realized (sold) P&L — excludes
-    // unrealized buy costs from active positions.
+    // Global realized P&L via FIFO cost basis replay. This is the gold standard:
+    // replay all buys and sells chronologically, track cost lots, compute realized
+    // P&L on each sell. Independent of annotations and buy-sell linkage.
     let globalRealizedPnL = 0;
     let globalRealizedAssetPnL = 0;
-
-    // Build sell aggregates (sum bodyPnl across all fills per order) and buy-sell linkage
-    const sellAgg = new Map(); // orderId -> { proceeds, bodyPnl, holdback, hasAnnotation }
-    const buysBySellId = new Map();
+    const costLots = []; // [{qty, unitCost}]
     for (const fill of allFills) {
-      if (fill.side === 'sell') {
-        const pnl = fill.bodyPnl ?? fill.satellitePnl ?? null;
-        const holdback = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0;
-        const prev = sellAgg.get(fill.orderId);
-        if (prev) {
-          prev.proceeds += fill.quoteAmount - fill.netFee;
-          prev.totalSold += fill.size;
-          if (pnl != null) { prev.bodyPnl += pnl; prev.holdback += holdback; prev.hasAnnotation = true; }
-        } else {
-          sellAgg.set(fill.orderId, {
-            proceeds: fill.quoteAmount - fill.netFee,
-            totalSold: fill.size,
-            bodyPnl: pnl ?? 0,
-            holdback,
-            hasAnnotation: pnl != null,
-          });
+      if (fill.side === 'buy') {
+        const cost = fill.quoteAmount + fill.netFee;
+        costLots.push({ qty: fill.size, unitCost: fill.size > 0 ? cost / fill.size : 0 });
+      } else if (fill.side === 'sell') {
+        const proceeds = fill.quoteAmount - fill.netFee;
+        let remain = fill.size;
+        let costBasis = 0;
+        while (remain > 1e-12 && costLots.length > 0) {
+          const lot = costLots[0];
+          const use = Math.min(remain, lot.qty);
+          costBasis += use * lot.unitCost;
+          lot.qty -= use;
+          remain -= use;
+          if (lot.qty <= 1e-12) costLots.shift();
         }
-      } else if (fill.side === 'buy' && fill.sellOrderId) {
-        if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, []);
-        buysBySellId.get(fill.sellOrderId).push(fill);
+        globalRealizedPnL += proceeds - costBasis;
       }
     }
-
-    for (const [orderId, data] of sellAgg) {
-      if (data.hasAnnotation) {
-        globalRealizedPnL += data.bodyPnl;
-        globalRealizedAssetPnL += data.holdback;
-      } else {
-        // Fallback: compute from linked buys
-        const linked = buysBySellId.get(orderId);
-        if (linked && linked.length > 0) {
-          const buyCost = linked.reduce((s, b) => s + b.quoteAmount + b.netFee, 0);
-          globalRealizedPnL += data.proceeds - buyCost;
-          const buyQty = linked.reduce((s, b) => s + b.size, 0);
-          globalRealizedAssetPnL += Math.max(0, buyQty - data.totalSold);
-        }
-      }
-    }
+    // Remaining lots = unsold position (holdback reserves + active position)
+    globalRealizedAssetPnL = roundAsset(costLots.reduce((s, l) => s + l.qty, 0));
     globalRealizedPnL = roundUSDC(globalRealizedPnL);
     globalRealizedAssetPnL = roundAsset(globalRealizedAssetPnL);
 
