@@ -2675,30 +2675,48 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       return Array.from(m.values())
                     }
 
-                    // P&L: deterministic total from raw buy/sell math
-                    let totalBuyCost = 0, totalSellProceeds = 0
-                    let totalBuyQty = 0, totalSellQty = 0
+                    // P&L: per-sell computation from bodyPnl annotations (sum across all
+                    // fills per order) with linked-buy fallback. Only counts realized P&L.
                     const pnlMap = new Map()
+                    const buysBySellId = new Map()
                     filteredFills.forEach(fill => {
-                      if (fill.side === 'buy') {
-                        totalBuyCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
-                        totalBuyQty += fill.size
+                      if (fill.side === 'buy' && fill.sellOrderId) {
+                        if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, [])
+                        buysBySellId.get(fill.sellOrderId).push(fill)
                       } else if (fill.side === 'sell') {
-                        const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
-                        totalSellProceeds += proceeds
-                        totalSellQty += fill.size
-                        // Per-sell P&L from bodyPnl annotation (for per-order display)
                         const bodyPnl = fill.bodyPnl ?? fill.satellitePnl
-                        const holdbackAsset = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0
-                        if (bodyPnl != null) {
-                          const prev = pnlMap.get(fill.orderId)
-                          if (!prev) pnlMap.set(fill.orderId, { pnl: bodyPnl, holdback: holdbackAsset })
+                        const holdback = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0
+                        const prev = pnlMap.get(fill.orderId)
+                        if (prev) {
+                          prev.proceeds += (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
+                          prev.totalSold += fill.size
+                          if (bodyPnl != null) { prev.pnl += bodyPnl; prev.holdback += holdback; prev.hasAnnotation = true }
+                        } else {
+                          pnlMap.set(fill.orderId, {
+                            pnl: bodyPnl ?? 0,
+                            holdback,
+                            hasAnnotation: bodyPnl != null,
+                            proceeds: (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0),
+                            totalSold: fill.size,
+                          })
                         }
                       }
                     })
 
-                    // Authoritative total from raw math (matches server globalRealizedPnL)
-                    pnlMapTotal = totalSellProceeds - totalBuyCost
+                    // Compute authoritative total from per-sell P&L
+                    pnlMapTotal = 0
+                    for (const [orderId, data] of pnlMap) {
+                      if (data.hasAnnotation) {
+                        pnlMapTotal += data.pnl
+                      } else {
+                        const linked = buysBySellId.get(orderId)
+                        if (linked && linked.length > 0) {
+                          const buyCost = linked.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
+                          data.pnl = data.proceeds - buyCost
+                          pnlMapTotal += data.pnl
+                        }
+                      }
+                    }
 
                     // Aggregate fills by orderId
                     const aggBuysAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy'))
