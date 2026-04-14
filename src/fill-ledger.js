@@ -518,26 +518,57 @@ const createFillLedger = (exchange, productId, pair) => {
     let totalRealizedPnL = 0;
     let totalRealizedAssetPnL = 0;
 
-    // Global P&L: total sell proceeds minus total buy costs.
-    // This is always correct regardless of annotation state or buy-sell linkage.
+    // Global realized P&L: sum per-sell P&L from bodyPnl annotations (authoritative,
+    // computed at fill time from exact cost basis). Falls back to linked-buy cost
+    // for sells without annotations. Only counts realized (sold) P&L — excludes
+    // unrealized buy costs from active positions.
     let globalRealizedPnL = 0;
     let globalRealizedAssetPnL = 0;
-    let totalBuyQty = 0, totalBuyCost = 0;
-    let totalSellQty = 0, totalSellProceeds = 0;
+
+    // Build sell aggregates (sum bodyPnl across all fills per order) and buy-sell linkage
+    const sellAgg = new Map(); // orderId -> { proceeds, bodyPnl, holdback, hasAnnotation }
+    const buysBySellId = new Map();
     for (const fill of allFills) {
-      if (fill.side === 'buy') {
-        totalBuyQty += fill.size;
-        totalBuyCost += fill.quoteAmount + fill.netFee;
-      } else if (fill.side === 'sell') {
-        totalSellQty += fill.size;
-        totalSellProceeds += fill.quoteAmount - fill.netFee;
+      if (fill.side === 'sell') {
+        const pnl = fill.bodyPnl ?? fill.satellitePnl ?? null;
+        const holdback = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0;
+        const prev = sellAgg.get(fill.orderId);
+        if (prev) {
+          prev.proceeds += fill.quoteAmount - fill.netFee;
+          prev.totalSold += fill.size;
+          if (pnl != null) { prev.bodyPnl += pnl; prev.holdback += holdback; prev.hasAnnotation = true; }
+        } else {
+          sellAgg.set(fill.orderId, {
+            proceeds: fill.quoteAmount - fill.netFee,
+            totalSold: fill.size,
+            bodyPnl: pnl ?? 0,
+            holdback,
+            hasAnnotation: pnl != null,
+          });
+        }
+      } else if (fill.side === 'buy' && fill.sellOrderId) {
+        if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, []);
+        buysBySellId.get(fill.sellOrderId).push(fill);
       }
     }
-    globalRealizedPnL = roundUSDC(totalSellProceeds - totalBuyCost);
-    // Net asset = total bought - total sold. This includes both holdback reserves
-    // (from completed sells) and any active unsold position. The caller should
-    // subtract the active position to isolate realized holdback if needed.
-    globalRealizedAssetPnL = roundAsset(totalBuyQty - totalSellQty);
+
+    for (const [orderId, data] of sellAgg) {
+      if (data.hasAnnotation) {
+        globalRealizedPnL += data.bodyPnl;
+        globalRealizedAssetPnL += data.holdback;
+      } else {
+        // Fallback: compute from linked buys
+        const linked = buysBySellId.get(orderId);
+        if (linked && linked.length > 0) {
+          const buyCost = linked.reduce((s, b) => s + b.quoteAmount + b.netFee, 0);
+          globalRealizedPnL += data.proceeds - buyCost;
+          const buyQty = linked.reduce((s, b) => s + b.size, 0);
+          globalRealizedAssetPnL += Math.max(0, buyQty - data.totalSold);
+        }
+      }
+    }
+    globalRealizedPnL = roundUSDC(globalRealizedPnL);
+    globalRealizedAssetPnL = roundAsset(globalRealizedAssetPnL);
 
     for (const { cycleId, fills: cycleFills } of completedCycles) {
       let totalAsset = 0;
@@ -741,16 +772,18 @@ const createFillLedger = (exchange, productId, pair) => {
       nextCycleNumber = cycleNum;
     }
 
-    // Auto-link buys to sells within the same cycle (fixes orphaned buys display)
+    // Auto-link buys to sells within completed cycles only (fixes orphaned buys display).
+    // Skip active cycles to avoid linking unsold buys to early partial sells.
     let linkedCount = 0;
+    const completedCycleIds = new Set(cycleDetails.map(d => d.cycleId));
     const cycleSellIds = new Map(); // cycleId -> first sell orderId
     for (const fill of fills.values()) {
-      if (fill.side === 'sell' && fill.cycleId && !cycleSellIds.has(fill.cycleId)) {
+      if (fill.side === 'sell' && fill.cycleId && completedCycleIds.has(fill.cycleId) && !cycleSellIds.has(fill.cycleId)) {
         cycleSellIds.set(fill.cycleId, fill.orderId);
       }
     }
     for (const fill of fills.values()) {
-      if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId) {
+      if (fill.side === 'buy' && fill.cycleId && !fill.sellOrderId && completedCycleIds.has(fill.cycleId)) {
         const sellId = cycleSellIds.get(fill.cycleId);
         if (sellId) {
           fill.sellOrderId = sellId;

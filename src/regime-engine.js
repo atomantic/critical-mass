@@ -1164,9 +1164,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const recalcResult = fillLedger.recalculateCycles();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
         const totalPnL = recalcResult.globalRealizedPnL;
-        // globalRealizedAssetPnL is net (bought - sold) across all fills, which includes
-        // any active unsold position. Subtract it to isolate realized holdback reserves.
-        const totalAssetPnL = roundAsset(recalcResult.globalRealizedAssetPnL - positionState.totalAsset);
+        const totalAssetPnL = recalcResult.globalRealizedAssetPnL;
         console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, ${baseCurrency} reserves=${totalAssetPnL.toFixed(6)}`);
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         positionState.realizedPnL = totalPnL;
