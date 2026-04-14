@@ -518,96 +518,23 @@ const createFillLedger = (exchange, productId, pair) => {
     let totalRealizedPnL = 0;
     let totalRealizedAssetPnL = 0;
 
-    // Global P&L pass: mirrors dashboard Filled Orders buy-linkage computation.
-    // Step 1: Build pnlMap (running average for core, annotations for body)
+    // Global P&L: total sell proceeds minus total buy costs.
+    // This is always correct regardless of annotation state or buy-sell linkage.
     let globalRealizedPnL = 0;
     let globalRealizedAssetPnL = 0;
-    let gRunAsset = 0, gRunCost = 0;
-    const sellPnlMap = new Map(); // orderId -> { pnl, holdback }
+    let totalBuyQty = 0, totalBuyCost = 0;
+    let totalSellQty = 0, totalSellProceeds = 0;
     for (const fill of allFills) {
-      const isBody = fill.isBodyOwned ?? fill.isSatellite;
       if (fill.side === 'buy') {
-        if (!isBody) { gRunAsset += fill.size; gRunCost += fill.quoteAmount + fill.netFee; }
+        totalBuyQty += fill.size;
+        totalBuyCost += fill.quoteAmount + fill.netFee;
       } else if (fill.side === 'sell') {
-        if (isBody) {
-          const bodyPnl = fill.bodyPnl ?? fill.satellitePnl;
-          const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount - fill.netFee) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0);
-          const holdback = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0;
-          const prev = sellPnlMap.get(fill.orderId);
-          if (prev) {
-            // bodyPnl annotations are total body P&L, not per-fill — skip duplicates
-            if (bodyPnl == null) { prev.pnl += pnl; prev.holdback += holdback; }
-            prev.quoteAmount = (prev.quoteAmount || 0) + fill.quoteAmount;
-            prev.netFee = (prev.netFee || 0) + fill.netFee;
-            prev.isBody = true;
-          }
-          else sellPnlMap.set(fill.orderId, { pnl, holdback, isBody: true, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: bodyPnl != null });
-        } else {
-          const avgCost = gRunAsset > 0 ? gRunCost / gRunAsset : 0;
-          const proceeds = fill.quoteAmount - fill.netFee;
-          const pnl = proceeds - avgCost * fill.size;
-          const prev = sellPnlMap.get(fill.orderId);
-          if (prev) { prev.pnl += pnl; prev.quoteAmount += fill.quoteAmount; prev.netFee += fill.netFee; }
-          else sellPnlMap.set(fill.orderId, { pnl, holdback: 0, isBody: false, quoteAmount: fill.quoteAmount, netFee: fill.netFee, hasAnnotation: false });
-          const rem = gRunAsset - fill.size;
-          gRunAsset = rem > 0 ? rem : 0;
-          gRunCost = rem > 0 ? avgCost * rem : 0;
-        }
+        totalSellQty += fill.size;
+        totalSellProceeds += fill.quoteAmount - fill.netFee;
       }
     }
-    // Step 2: Build buy-sell linkage and override P&L (matches dashboard lines 2049-2055)
-    const buysBySellId = new Map();
-    for (const fill of allFills) {
-      if (fill.side !== 'buy' || !fill.sellOrderId) continue;
-      if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, []);
-      buysBySellId.get(fill.sellOrderId).push(fill);
-    }
-    // Also build bodyId -> sell orderId map for orphan redirect
-    const sellIdByBodyId = new Map();
-    const knownSellIds = new Set(sellPnlMap.keys());
-    for (const fill of allFills) {
-      if (fill.side === 'sell' && fill.bodyId) sellIdByBodyId.set(fill.bodyId, fill.orderId);
-    }
-    // Redirect orphaned buys (sellOrderId points to non-existent sell) via bodyId
-    for (const fill of allFills) {
-      if (fill.side !== 'buy' || !fill.sellOrderId || knownSellIds.has(fill.sellOrderId)) continue;
-      const bodyId = fill.bodyId;
-      if (!bodyId) continue;
-      const realSellId = sellIdByBodyId.get(bodyId);
-      if (!realSellId) continue;
-      if (!buysBySellId.has(realSellId)) buysBySellId.set(realSellId, []);
-      const existing = buysBySellId.get(realSellId);
-      if (!existing.some(b => b.orderId === fill.orderId)) existing.push(fill);
-    }
-    // Fallback: link buys by bodyId for sells with no sellOrderId linkage
-    const buysByBodyId = new Map();
-    for (const fill of allFills) {
-      if (fill.side !== 'buy' || !fill.bodyId) continue;
-      if (!buysByBodyId.has(fill.bodyId)) buysByBodyId.set(fill.bodyId, []);
-      buysByBodyId.get(fill.bodyId).push(fill);
-    }
-    // Override P&L from linked buys for sells that don't have trusted annotations
-    for (const [orderId, data] of sellPnlMap) {
-      let linkedBuys = buysBySellId.get(orderId);
-      if (!linkedBuys || linkedBuys.length === 0) {
-        // Try bodyId fallback
-        const sellFill = allFills.find(f => f.side === 'sell' && f.orderId === orderId);
-        if (sellFill?.bodyId) linkedBuys = buysByBodyId.get(sellFill.bodyId);
-      }
-      if (!linkedBuys || linkedBuys.length === 0) continue;
-      // Skip body sells with trusted bodyPnl annotations
-      if (data.isBody && data.hasAnnotation) continue;
-      // Skip non-body sells — running average P&L is already correct
-      if (!data.isBody) continue;
-      const buyCost = linkedBuys.reduce((s, b) => s + b.quoteAmount + b.netFee, 0);
-      const sellProceeds = data.quoteAmount - data.netFee;
-      data.pnl = sellProceeds - buyCost;
-    }
-    // Sum all sell P&L
-    for (const [, data] of sellPnlMap) {
-      globalRealizedPnL += data.pnl;
-      globalRealizedAssetPnL += data.holdback;
-    }
+    globalRealizedPnL = roundUSDC(totalSellProceeds - totalBuyCost);
+    globalRealizedAssetPnL = roundAsset(totalBuyQty - totalSellQty);
 
     for (const { cycleId, fills: cycleFills } of completedCycles) {
       let totalAsset = 0;
@@ -839,7 +766,7 @@ const createFillLedger = (exchange, productId, pair) => {
       realizedPnL: roundUSDC(totalRealizedPnL),
       realizedAssetPnL: roundAsset(totalRealizedAssetPnL),
       globalRealizedPnL: roundUSDC(globalRealizedPnL),
-      globalRealizedAssetPnL: roundAsset(totalRealizedAssetPnL + globalRealizedAssetPnL),
+      globalRealizedAssetPnL: roundAsset(globalRealizedAssetPnL),
       cycleDetails,
       orphansFixed,
       activeCycleId: currentCycleId,
