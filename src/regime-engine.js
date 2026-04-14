@@ -2125,6 +2125,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         saveLiveState();
         fillLedger.persist();
+        if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(getState());
 
       } else {
         // UNTRACKED SELL — could be a core TP from before migration
@@ -4005,12 +4006,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     console.log(`${tierCfg.emoji} [${exchange}] Manual TP% set: body ${body.id.slice(-8)} @ ${tpPct.toFixed(2)}% → ${fmtPrice(body.tpPrice)}`);
 
     saveLiveState();
-    if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(getState());
+    const state = getState();
+    if (callbacks.onStatusUpdate) callbacks.onStatusUpdate(state);
 
     return {
       success: true,
       message: `TP set to ${body.tpPrice ? fmtPrice(body.tpPrice) : `${tpPct.toFixed(2)}%`} for body ${bodyId.slice(-8)}`,
-      status: getStatus(),
+      status: state,
     };
   };
 
@@ -4022,8 +4024,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {Promise<{success: boolean, message: string, status?: Object}>}
    */
   const setBodyTpPrice = async (bodyId, limitPrice) => {
-    if (!isRunning) return { success: false, message: 'Engine not running' };
-
     const body = (positionState.celestialBodies || []).find(b => b.id === bodyId);
     if (!body) return { success: false, message: `Body ${bodyId.slice(-8)} not found` };
     if (body.avgPrice <= 0) return { success: false, message: 'Body has no avg price' };

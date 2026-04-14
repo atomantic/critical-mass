@@ -856,34 +856,17 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }
 
-  // Manually set TP% for a celestial body
-  const handleSetTpPercent = async () => {
-    const pct = parseFloat(tpEditModal.inputValue)
-    if (isNaN(pct) || pct <= 0) return
+  // Manually set TP target (by % or limit price) for a celestial body
+  const handleSetTp = async (mode) => {
+    const value = parseFloat(mode === 'pct' ? tpEditModal.inputValue : tpEditModal.priceValue)
+    if (isNaN(value) || value <= 0) return
+    const endpoint = mode === 'pct' ? 'set-body-tp' : 'set-body-tp-price'
+    const payload = mode === 'pct' ? { bodyId: tpEditModal.bodyId, tpPct: value } : { bodyId: tpEditModal.bodyId, limitPrice: value }
     setSettingTp(true)
-    const res = await fetch(`/api/${exchange}/regime/set-body-tp${pairQuery}`, {
+    const res = await fetch(`/api/${exchange}/regime/${endpoint}${pairQuery}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bodyId: tpEditModal.bodyId, tpPct: pct }),
-    })
-    const data = await res.json()
-    setSettingTp(false)
-    setTpEditModal(null)
-    if (data.success && data.status) {
-      setSocketStatus(data.status)
-      fetchFills()
-    }
-  }
-
-  // Manually set TP limit price for a celestial body
-  const handleSetTpPrice = async () => {
-    const price = parseFloat(tpEditModal.priceValue)
-    if (isNaN(price) || price <= 0) return
-    setSettingTp(true)
-    const res = await fetch(`/api/${exchange}/regime/set-body-tp-price${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bodyId: tpEditModal.bodyId, limitPrice: price }),
+      body: JSON.stringify(payload),
     })
     const data = await res.json()
     setSettingTp(false)
@@ -1685,8 +1668,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <div className="text-white font-mono truncate">${formatPrice(position.avgCostBasis)}</div>
                 </div>
                 <div className="min-w-0">
-                  <div className="text-gray-500">Cycles</div>
-                  <div className="text-white font-mono">{position.cyclesCompleted || 0}</div>
+                  <div className="text-gray-500">Cycle</div>
+                  <div className="text-white font-mono">{(position.cyclesCompleted || 0) + 1}</div>
                 </div>
               </div>
               <div className="mt-2 pt-2 border-t border-gray-700 grid grid-cols-2 gap-2 text-xs">
@@ -2233,6 +2216,24 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   // Build body lookup from status.celestial.bodies for fallback
                   const celestialBodies = status?.celestial?.bodies || []
                   const bodyLookup = new Map(celestialBodies.map(b => [b.tpOrderId, b]))
+                  const renderTpEditBtn = (order, mode) => {
+                    const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
+                    if (!isBodyTp || !isRunning) return null
+                    const bd = bodyLookup.get(order.orderId)
+                    if (!bd) return null
+                    return (
+                      <button
+                        title="Edit TP target"
+                        className="text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode })
+                        }}
+                      >
+                        ✎
+                      </button>
+                    )
+                  }
 
                   // Build buy orders for each open TP
                   // For body TPs: use body.buyOrders (filter migration artifacts)
@@ -2418,24 +2419,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
                                   <span className="inline-flex items-center gap-1 justify-end">
                                     {order.tpPercent ? `${order.tpPercent}%` : '—'}
-                                    {(() => {
-                                      const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
-                                      if (!isBodyTp || !isRunning) return null
-                                      const bd = bodyLookup.get(order.orderId)
-                                      if (!bd) return null
-                                      return (
-                                        <button
-                                          title="Edit TP target"
-                                          className="text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none"
-                                          onClick={(e) => {
-                                            e.stopPropagation()
-                                            setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode: 'pct' })
-                                          }}
-                                        >
-                                          ✎
-                                        </button>
-                                      )
-                                    })()}
+                                    {renderTpEditBtn(order, 'pct')}
                                   </span>
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-white">
@@ -2449,24 +2433,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 <td className="text-right py-2 pr-2 font-mono text-white">
                                   <span className="inline-flex items-center gap-1 justify-end">
                                     ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
-                                    {(() => {
-                                      const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
-                                      if (!isBodyTp || !isRunning) return null
-                                      const bd = bodyLookup.get(order.orderId)
-                                      if (!bd) return null
-                                      return (
-                                        <button
-                                          title="Edit TP target"
-                                          className="text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none"
-                                          onClick={(e) => {
-                                            e.stopPropagation()
-                                            setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode: 'price' })
-                                          }}
-                                        >
-                                          ✎
-                                        </button>
-                                      )
-                                    })()}
+                                    {renderTpEditBtn(order, 'price')}
                                   </span>
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
@@ -3252,7 +3219,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                         : tpEditModal.priceValue
                       setTpEditModal(prev => ({ ...prev, inputValue: e.target.value, priceValue: newPrice }))
                     }}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSetTpPercent()}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSetTp('pct')}
                     autoFocus
                   />
                   <span className="text-gray-400 text-sm">%</span>
@@ -3282,7 +3249,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                         : tpEditModal.inputValue
                       setTpEditModal(prev => ({ ...prev, priceValue: e.target.value, inputValue: newPct }))
                     }}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSetTpPrice()}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSetTp('price')}
                     autoFocus
                   />
                 </div>
@@ -3308,7 +3275,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               {tpEditModal.mode === 'pct' ? (
                 <button
                   className="px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded transition-colors disabled:opacity-50"
-                  onClick={handleSetTpPercent}
+                  onClick={() => handleSetTp('pct')}
                   disabled={settingTp || !tpEditModal.inputValue || parseFloat(tpEditModal.inputValue) <= 0}
                 >
                   {settingTp ? 'Placing...' : 'Set TP%'}
@@ -3316,7 +3283,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               ) : (
                 <button
                   className="px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded transition-colors disabled:opacity-50"
-                  onClick={handleSetTpPrice}
+                  onClick={() => handleSetTp('price')}
                   disabled={settingTp || !tpEditModal.priceValue || parseFloat(tpEditModal.priceValue) <= (tpEditModal.avgPrice || 0)}
                 >
                   {settingTp ? 'Placing...' : 'Set Price'}

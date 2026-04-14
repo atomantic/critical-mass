@@ -87,6 +87,11 @@
 - Manual TP limit price editing — edit icon next to limit price opens modal in price mode; percentage and price tabs live-sync with each other; shows avg cost and equivalent % when editing by price
 - Persistent manual TP override — `manualTpPct` saved on body state so manual TP targets survive reconciliation loops, bot restarts, and external cancel recovery; startup overpriced-TP check skips bodies with manual overrides
 - Merge TP cap — after a body rollup/merge, the merged body's TP% is capped at the pre-merge target's level so the absolute sell price can only decrease, never increase after absorbing cheaper buys
+- WebSocket status push after body TP fill — UI now refreshes immediately when a body TP order fills, instead of waiting for the next ticker update
+
+- Cycle completion detection now counts all sells (body TP + core TP) instead of only core TP sells — fixes cycle-11 (body-only) not being recognized as completed on restart
+- Cycle display shows current cycle number (completed + 1) instead of completed count
+- Dashboard stale after body TP fill — `callbacks.onStatusUpdate` was not called after processing body TP fills, so the UI never received the updated position/cycle state
 
 - Signal history now sorted newest-first — API results were displayed in arbitrary order
 - Signal panel and banner show "CALCULATING..." loading state until live indicators arrive, preventing false BUY/SELL display from stale cached signals on page load
