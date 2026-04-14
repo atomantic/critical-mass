@@ -73,34 +73,29 @@ const createFillLedger = (exchange, productId, pair) => {
     }
 
     // Restore currentCycleId from loaded fills
-    // Find the most recent cycle that's still active (core TP hasn't filled)
-    // Only count non-body/non-satellite sells — satellite/body sells happen continuously
-    // within an active cycle and don't indicate cycle completion
-    const cycleStats = new Map(); // cycleId -> { buysAsset, coreSellsAsset }
+    // Find the most recent cycle that's still active (sells haven't closed out the position)
+    const cycleStats = new Map(); // cycleId -> { buysAsset, sellsAsset }
     for (const fill of fills.values()) {
       if (!fill.cycleId) continue;
       if (!cycleStats.has(fill.cycleId)) {
-        cycleStats.set(fill.cycleId, { buysAsset: 0, coreSellsAsset: 0 });
+        cycleStats.set(fill.cycleId, { buysAsset: 0, sellsAsset: 0 });
       }
       const stats = cycleStats.get(fill.cycleId);
       if (fill.side === 'buy') stats.buysAsset += fill.size;
-      else if (fill.side === 'sell' && !fill.isBodyOwned && !fill.isSatellite && !fill.bodyId) {
-        stats.coreSellsAsset += fill.size;
-      }
+      else if (fill.side === 'sell') stats.sellsAsset += fill.size;
     }
 
     // Find an active cycle - prefer most recent
-    // A cycle is "active" if less than 50% of core BTC has been sold
-    // (core TP sells ~99.75%; body/satellite sells are excluded from this check)
+    // A cycle is "active" if less than 50% of position has been sold
     const allFills = Array.from(fills.values()).sort((a, b) => b.timestamp - a.timestamp);
     for (const fill of allFills) {
       if (!fill.cycleId) continue;
       const stats = cycleStats.get(fill.cycleId);
       if (!stats || stats.buysAsset === 0) continue;
-      const sellRatio = stats.coreSellsAsset / stats.buysAsset;
+      const sellRatio = stats.sellsAsset / stats.buysAsset;
       if (sellRatio < 0.5) {
         currentCycleId = fill.cycleId;
-        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% core sells)`);
+        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sells)`);
         break;
       }
     }
@@ -495,27 +490,22 @@ const createFillLedger = (exchange, productId, pair) => {
       }
     }
 
-    // Identify completed cycles (core TP has sold most of the position)
-    // Satellite TP sells are tiny fractions; core TP sells ~99.75%
+    // Identify completed cycles (sells have closed most of the position)
     const completedCycles = [];
     const activeCycles = [];
 
     for (const [cycleId, cycleFills] of cycleMap) {
       let buysAsset = 0;
-      let coreSellsAsset = 0;
+      let allSellsAsset = 0;
       for (const fill of cycleFills) {
         if (fill.side === 'buy') buysAsset += fill.size;
         else if (fill.side === 'sell') {
-          // Only count non-body/non-satellite sells for completion detection.
-          // Satellite/body sells happen continuously within an active cycle and
-          // don't indicate cycle completion — only a core TP sell does.
-          if (!fill.isBodyOwned && !fill.isSatellite && !fill.bodyId) {
-            coreSellsAsset += fill.size;
-          }
+          allSellsAsset += fill.size;
         }
       }
-      // A cycle is "completed" only when core TP has fired (selling most of position)
-      const sellRatio = buysAsset > 0 ? coreSellsAsset / buysAsset : 0;
+      // A cycle is "completed" when total sells cover most of the bought position
+      // (body TP sells, core TP sells, or any combination)
+      const sellRatio = buysAsset > 0 ? allSellsAsset / buysAsset : 0;
       if (sellRatio >= 0.5) {
         completedCycles.push({ cycleId, fills: cycleFills });
       } else {
