@@ -581,11 +581,17 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
   const fillLedger = getStandaloneLedger(exchange, resolvedPair);
   const currentState = loadRegimeState(exchange, resolvedPair);
 
+  // Use closed trades as authoritative P&L source
+  const { createClosedTrades } = require('../src/closed-trades');
+  const closedTrades = createClosedTrades(exchange, resolvedPair);
+  const hasClosedTrades = closedTrades.load();
+  if (!hasClosedTrades) closedTrades.migrateFromFills(fillLedger);
+
   const recalcResult = fillLedger.recalculateCycles();
   const currentCycleFills = fillLedger.getCurrentCycleFills();
   const currentPosition = fillLedger.rebuildPositionFromFills(currentCycleFills);
 
-  const totalRealizedPnL = recalcResult.globalRealizedPnL;
+  const totalRealizedPnL = closedTrades.getCount() > 0 ? closedTrades.getTotalPnL() : recalcResult.globalRealizedPnL;
   const totalRealizedAssetPnL = recalcResult.globalRealizedAssetPnL;
 
   const changes = {
