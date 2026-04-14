@@ -2703,18 +2703,26 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       }
                     })
 
-                    // Compute authoritative total from per-sell P&L
+                    // Compute authoritative total: prefer linked-buy cost (FIFO capped
+                    // to sell qty to handle over-linked buys), fall back to annotations
                     pnlMapTotal = 0
                     for (const [orderId, data] of pnlMap) {
-                      if (data.hasAnnotation) {
-                        pnlMapTotal += data.pnl
-                      } else {
-                        const linked = buysBySellId.get(orderId)
-                        if (linked && linked.length > 0) {
-                          const buyCost = linked.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
-                          data.pnl = data.proceeds - buyCost
-                          pnlMapTotal += data.pnl
+                      const linked = buysBySellId.get(orderId)
+                      if (linked && linked.length > 0) {
+                        linked.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+                        let remain = data.totalSold
+                        let buyCost = 0
+                        for (const buy of linked) {
+                          if (remain <= 0) break
+                          const use = Math.min(remain, buy.size || 0)
+                          const unitCost = buy.size > 0 ? ((buy.quoteAmount || buy.size * buy.price) + (buy.netFee || buy.fee || 0)) / buy.size : 0
+                          buyCost += use * unitCost
+                          remain -= use
                         }
+                        data.pnl = data.proceeds - buyCost
+                        pnlMapTotal += data.pnl
+                      } else if (data.hasAnnotation) {
+                        pnlMapTotal += data.pnl
                       }
                     }
 
@@ -2829,11 +2837,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     return <div className="text-gray-500 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
                   }
 
-                  // Use pnlMap total for grand total in live mode (matches server-side
-                  // globalRealizedPnL and Position card's realizedPnL). Dry-run uses sell group sum.
-                  const totalPnl = pnlMapTotal != null
-                    ? pnlMapTotal
-                    : sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)
+                  // Prefer closed trades summary for grand total (authoritative, matches Position card).
+                  // Fall back to client-side pnlMap, then sell group sum.
+                  const closedTradesSummary = status?.closedTradesSummary
+                  const totalPnl = closedTradesSummary?.totalPnl != null
+                    ? closedTradesSummary.totalPnl
+                    : (pnlMapTotal != null ? pnlMapTotal : sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0))
                   let totalHoldback = 0
 
                   // Shared sell + buy row renderer

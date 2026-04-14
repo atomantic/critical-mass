@@ -17,6 +17,7 @@
 const { getAdapter } = require('./adapters');
 const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
 const { createFillLedger } = require('./fill-ledger');
+const { createClosedTrades } = require('./closed-trades');
 const { createHealthMonitor } = require('./health-monitor');
 const { createTailEventsMonitor } = require('./tail-events');
 const { createWebSocketFeed } = require('./websocket-feed');
@@ -165,6 +166,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
   // Create all component instances
   const fillLedger = createFillLedger(exchange, productId, pair);
+  const closedTrades = createClosedTrades(exchange, pair);
   const healthMonitor = createHealthMonitor(exchange, config, {
     onSafeMode: async (reason) => {
       console.log(`⚠️ [${exchange}] SAFE mode: ${reason}`);
@@ -585,6 +587,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           offlineFill: true,
         });
 
+        closedTrades.record({
+          sellOrderId: positionState.activeTpOrderId,
+          timestamp: Date.now(),
+          recordedAt: Date.now(),
+          qtySold: summary.totalSize,
+          sellProceeds: roundUSDC(proceeds),
+          sellFees: roundUSDC(summary.totalFees),
+          costBasis: roundUSDC(soldCostBasis),
+          buyAvgPrice: roundUSDC(positionState.avgCostBasis),
+          pnl: roundUSDC(pnl),
+          holdbackAsset,
+          isPartial: false,
+          bodyId: null,
+          bodyTier: null,
+          cycleId: fillLedger.getCurrentCycleId(),
+          buyOrderIds: [],
+          source: 'offline',
+        });
+
         // Reset cycle
         await resetCycle();
       }
@@ -664,6 +685,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
           // Sync aggregates after body removal
           celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+          closedTrades.record({
+            sellOrderId: body.tpOrderId,
+            timestamp: Date.now(),
+            recordedAt: Date.now(),
+            qtySold: summary.totalSize,
+            sellProceeds: roundUSDC(proceeds),
+            sellFees: roundUSDC(summary.totalFees),
+            costBasis: proratedCostBasis,
+            buyAvgPrice: roundUSDC(body.avgPrice),
+            pnl: roundUSDC(pnl),
+            holdbackAsset,
+            isPartial: false,
+            bodyId: body.id,
+            bodyTier: body.tier,
+            cycleId: fillLedger.getCurrentCycleId(),
+            buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
+            source: 'offline',
+          });
 
           console.log(`${tierCfg.emoji} [${exchange}] Offline body fill: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
@@ -1158,29 +1198,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
       }
 
-      // Recalculate cycles from fill ledger to ensure accurate P&L tracking
-      // This catches any discrepancies between saved state and actual fills
-      // Note: recalculateCycles skips satellite fills — body/satellite P&L tracked separately
+      // Load or migrate closed trades ledger
+      const hasClosedTrades = closedTrades.load();
+      if (!hasClosedTrades) {
+        closedTrades.migrateFromFills(fillLedger);
+      }
+
+      // Recalculate cycles from fill ledger for cycle counting and per-cycle details
       const recalcResult = fillLedger.recalculateCycles();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
-        const totalPnL = recalcResult.globalRealizedPnL;
-        const totalAssetPnL = recalcResult.globalRealizedAssetPnL;
-        console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, ${baseCurrency} reserves=${totalAssetPnL.toFixed(6)}`);
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
-        positionState.realizedPnL = totalPnL;
-        // Only update realizedAssetPnL if recalc gives a lower/equal value, OR if
-        // the saved value is 0 (recovery from baseCurrency bug). Body consolidation
-        // inflates the fill-ledger holdback sum, so we preserve the saved value
-        // (which may have been corrected by reconcileAssetReserves or manual fix).
-        if (totalAssetPnL <= positionState.realizedAssetPnL || positionState.realizedAssetPnL === 0) {
-          positionState.realizedAssetPnL = totalAssetPnL;
-        }
-        // Keep celestial body P&L counter in sync
-        const bodyOnlyPnL = totalPnL - recalcResult.realizedPnL;
-        const bodyOnlyBtcPnL = totalAssetPnL - recalcResult.realizedAssetPnL;
-        if (positionState.celestialState) {
-          positionState.celestialState.bodiesRealizedPnL = Math.round(bodyOnlyPnL * 100) / 100;
-          positionState.celestialState.bodiesRealizedAssetPnL = Math.round(bodyOnlyBtcPnL * 1e8) / 1e8;
+
+        // Use closed trades as authoritative P&L source when available
+        if (closedTrades.getCount() > 0) {
+          const totalPnL = closedTrades.getTotalPnL();
+          console.log(`📋 [${exchange}] P&L from closed trades: $${totalPnL.toFixed(2)} (${closedTrades.getCount()} trades)`);
+          positionState.realizedPnL = totalPnL;
+        } else {
+          const totalPnL = recalcResult.globalRealizedPnL;
+          const totalAssetPnL = recalcResult.globalRealizedAssetPnL;
+          console.log(`🔧 [${exchange}] Auto-recalculated from fills: ${recalcResult.cyclesCompleted} cycles, globalPnL=$${totalPnL.toFixed(2)}, ${baseCurrency} reserves=${totalAssetPnL.toFixed(6)}`);
+          positionState.realizedPnL = totalPnL;
+          if (totalAssetPnL <= positionState.realizedAssetPnL || positionState.realizedAssetPnL === 0) {
+            positionState.realizedAssetPnL = totalAssetPnL;
+          }
         }
       }
 
@@ -2122,6 +2163,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: fillData.orderId });
           }
         }
+
+        // Record immutable closed trade
+        closedTrades.record({
+          sellOrderId: fillData.orderId,
+          timestamp: Date.now(),
+          recordedAt: Date.now(),
+          qtySold: summary.totalSize,
+          sellProceeds: roundUSDC(proceeds),
+          sellFees: roundUSDC(summary.totalFees),
+          costBasis: proratedCostBasis,
+          buyAvgPrice: roundUSDC(body.avgPrice),
+          pnl: roundUSDC(pnl),
+          holdbackAsset: isPartial ? 0 : holdbackAsset,
+          isPartial,
+          bodyId: body.id,
+          bodyTier: body.tier,
+          cycleId: fillLedger.getCurrentCycleId(),
+          buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
+          source: 'live',
+        });
 
         saveLiveState();
         fillLedger.persist();
@@ -3504,6 +3565,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     tpOptimizer: tpOptimizer.getStatus(),
     sizeOptimizer: sizeOptimizer.getStatus(),
     fillTimeStats: fillLedger.getFillTimeStats ? fillLedger.getFillTimeStats(7) : null,
+    closedTradesSummary: {
+      totalPnl: closedTrades.getTotalPnL(),
+      totalHoldback: closedTrades.getTotalHoldback(),
+      count: closedTrades.getCount(),
+    },
     effectiveStaleMs: !isDryRun && orderExecutor.getEffectiveStaleMs ? orderExecutor.getEffectiveStaleMs() : config.orderStaleMs,
     // Include current config for real-time dashboard updates
     config: {
