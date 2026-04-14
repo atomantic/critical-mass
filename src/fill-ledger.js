@@ -762,7 +762,7 @@ const createFillLedger = (exchange, productId, pair) => {
       console.log(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`);
     }
 
-    if (orphansFixed > 0 || renumbered > 0 || linkedCount > 0) {
+    if (orphansFixed > 0 || linkedCount > 0) {
       persist();
     }
 
