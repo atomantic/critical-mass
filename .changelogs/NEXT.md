@@ -92,6 +92,7 @@
 - Cycle completion detection now counts all sells (body TP + core TP) instead of only core TP sells — fixes cycle-11 (body-only) not being recognized as completed on restart
 - Cycle display shows current cycle number (completed + 1) instead of completed count
 - Dashboard stale after body TP fill — `callbacks.onStatusUpdate` was not called after processing body TP fills, so the UI never received the updated position/cycle state
+- Dashboard P&L and APY values truncated with "..." — removed `truncate` from BTC reserves, daily estimate, and annual estimate lines so values wrap instead of being cut off
 
 - Signal history now sorted newest-first — API results were displayed in arbitrary order
 - Signal panel and banner show "CALCULATING..." loading state until live indicators arrive, preventing false BUY/SELL display from stale cached signals on page load

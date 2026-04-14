@@ -1693,7 +1693,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       </div>
                       <div className="text-white text-xs font-mono truncate">{formatCurrency(usdPnL)} USD</div>
                       {assetPnL > 0 && (
-                        <div className="text-orange-400 text-xs font-mono truncate">
+                        <div className="text-orange-400 text-xs font-mono">
                           +{assetPnL.toFixed(8)} {asset}
                           {assetUsd > 0 && ` (${formatCurrency(assetUsd)})`}
                         </div>
@@ -1858,15 +1858,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5 min-w-0">
                       <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
                       <div className="flex flex-col font-mono text-xs min-w-0">
-                        <span className="text-green-400 truncate">{formatCurrency(apy.estimatedDailyUsdc || 0)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
+                        <span className="text-green-400">{formatCurrency(apy.estimatedDailyUsdc || 0)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
                         <span className="text-green-400">= {formatCurrency((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0))}</span>
                       </div>
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5 min-w-0">
                       <div className="text-cyan-400/70 text-[10px]">Annual ({(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}% APY)</div>
                       <div className="flex flex-col font-mono text-xs min-w-0">
-                        <span className="text-green-400 truncate">{formatCurrency((apy.estimatedDailyUsdc || 0) * 365)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
-                        <span className="text-cyan-400 truncate">= {formatCurrency(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365)}</span>
+                        <span className="text-green-400">{formatCurrency((apy.estimatedDailyUsdc || 0) * 365)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
+                        <span className="text-cyan-400">= {formatCurrency(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365)}</span>
                       </div>
                     </div>
                   </div>
