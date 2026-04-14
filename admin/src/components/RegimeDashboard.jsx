@@ -602,7 +602,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [presets, setPresets] = useState(null)
   const [rollUpConfirm, setRollUpConfirm] = useState(null)
   const [rollingUp, setRollingUp] = useState(false)
-  const [tpEditModal, setTpEditModal] = useState(null) // { bodyId, currentTpPct, bodyLabel, inputValue }
+  const [tpEditModal, setTpEditModal] = useState(null) // { bodyId, currentTpPct, currentPrice, avgPrice, bodyLabel, inputValue, priceValue, mode: 'pct'|'price' }
   const [settingTp, setSettingTp] = useState(false)
   const [fillSearchId, setFillSearchId] = useState('')
   const [openSearchId, setOpenSearchId] = useState('')
@@ -865,6 +865,25 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bodyId: tpEditModal.bodyId, tpPct: pct }),
+    })
+    const data = await res.json()
+    setSettingTp(false)
+    setTpEditModal(null)
+    if (data.success && data.status) {
+      setSocketStatus(data.status)
+      fetchFills()
+    }
+  }
+
+  // Manually set TP limit price for a celestial body
+  const handleSetTpPrice = async () => {
+    const price = parseFloat(tpEditModal.priceValue)
+    if (isNaN(price) || price <= 0) return
+    setSettingTp(true)
+    const res = await fetch(`/api/${exchange}/regime/set-body-tp-price${pairQuery}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bodyId: tpEditModal.bodyId, limitPrice: price }),
     })
     const data = await res.json()
     setSettingTp(false)
@@ -2406,11 +2425,11 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                       if (!bd) return null
                                       return (
                                         <button
-                                          title="Edit TP%"
+                                          title="Edit TP target"
                                           className="text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none"
                                           onClick={(e) => {
                                             e.stopPropagation()
-                                            setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? '') })
+                                            setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode: 'pct' })
                                           }}
                                         >
                                           ✎
@@ -2428,7 +2447,27 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                   )}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-white">
-                                  ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
+                                  <span className="inline-flex items-center gap-1 justify-end">
+                                    ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
+                                    {(() => {
+                                      const isBodyTp = order.type === 'body_tp' || order.type === 'satellite_tp'
+                                      if (!isBodyTp || !isRunning) return null
+                                      const bd = bodyLookup.get(order.orderId)
+                                      if (!bd) return null
+                                      return (
+                                        <button
+                                          title="Edit TP target"
+                                          className="text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode: 'price' })
+                                          }}
+                                        >
+                                          ✎
+                                        </button>
+                                      )
+                                    })()}
+                                  </span>
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
                                   ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -3174,31 +3213,89 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
         </div>
       )}
 
-      {/* TP% edit dialog */}
+      {/* TP edit dialog (% or price) */}
       {tpEditModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !settingTp && setTpEditModal(null)}>
           <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-sm mx-4 w-full" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-white text-lg font-medium mb-1">Set TP%</h3>
-            <p className="text-gray-400 text-xs font-mono mb-4">body …{tpEditModal.bodyLabel}</p>
-            <div className="mb-1">
-              <label className="text-gray-400 text-xs block mb-1">Take-profit % above avg cost</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  max="50"
-                  className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
-                  value={tpEditModal.inputValue}
-                  onChange={(e) => setTpEditModal(prev => ({ ...prev, inputValue: e.target.value }))}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSetTpPercent()}
-                  autoFocus
-                />
-                <span className="text-gray-400 text-sm">%</span>
-              </div>
+            <h3 className="text-white text-lg font-medium mb-1">Set TP Target</h3>
+            <p className="text-gray-400 text-xs font-mono mb-3">body …{tpEditModal.bodyLabel}</p>
+            {/* Mode tabs */}
+            <div className="flex mb-3 border border-gray-600 rounded overflow-hidden">
+              <button
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${tpEditModal.mode === 'pct' ? 'bg-cyan-800 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+                onClick={() => setTpEditModal(prev => ({ ...prev, mode: 'pct' }))}
+              >
+                Percentage
+              </button>
+              <button
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${tpEditModal.mode === 'price' ? 'bg-cyan-800 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
+                onClick={() => setTpEditModal(prev => ({ ...prev, mode: 'price' }))}
+              >
+                Limit Price
+              </button>
             </div>
-            {tpEditModal.currentTpPct && (
-              <p className="text-gray-500 text-xs mt-1 mb-4">Current: {tpEditModal.currentTpPct}%</p>
+            {tpEditModal.mode === 'pct' ? (
+              <div className="mb-1">
+                <label className="text-gray-400 text-xs block mb-1">Take-profit % above avg cost</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max="50"
+                    className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
+                    value={tpEditModal.inputValue}
+                    onChange={(e) => {
+                      const pct = parseFloat(e.target.value)
+                      const newPrice = tpEditModal.avgPrice && !isNaN(pct) && pct > 0
+                        ? (tpEditModal.avgPrice * (1 + pct / 100)).toFixed(2)
+                        : tpEditModal.priceValue
+                      setTpEditModal(prev => ({ ...prev, inputValue: e.target.value, priceValue: newPrice }))
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSetTpPercent()}
+                    autoFocus
+                  />
+                  <span className="text-gray-400 text-sm">%</span>
+                </div>
+                {tpEditModal.currentTpPct && (
+                  <p className="text-gray-500 text-xs mt-1">Current: {tpEditModal.currentTpPct}%</p>
+                )}
+                {tpEditModal.avgPrice && tpEditModal.inputValue && !isNaN(parseFloat(tpEditModal.inputValue)) && (
+                  <p className="text-gray-500 text-xs mt-0.5">= ${(tpEditModal.avgPrice * (1 + parseFloat(tpEditModal.inputValue) / 100)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                )}
+              </div>
+            ) : (
+              <div className="mb-1">
+                <label className="text-gray-400 text-xs block mb-1">Limit sell price (USD)</label>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-400 text-sm">$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-cyan-500"
+                    value={tpEditModal.priceValue}
+                    onChange={(e) => {
+                      const price = parseFloat(e.target.value)
+                      const newPct = tpEditModal.avgPrice && !isNaN(price) && price > tpEditModal.avgPrice
+                        ? (((price - tpEditModal.avgPrice) / tpEditModal.avgPrice) * 100).toFixed(2)
+                        : tpEditModal.inputValue
+                      setTpEditModal(prev => ({ ...prev, priceValue: e.target.value, inputValue: newPct }))
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSetTpPrice()}
+                    autoFocus
+                  />
+                </div>
+                {tpEditModal.currentPrice && (
+                  <p className="text-gray-500 text-xs mt-1">Current: ${tpEditModal.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                )}
+                {tpEditModal.avgPrice && tpEditModal.priceValue && !isNaN(parseFloat(tpEditModal.priceValue)) && parseFloat(tpEditModal.priceValue) > tpEditModal.avgPrice && (
+                  <p className="text-gray-500 text-xs mt-0.5">= {(((parseFloat(tpEditModal.priceValue) - tpEditModal.avgPrice) / tpEditModal.avgPrice) * 100).toFixed(2)}% above avg cost</p>
+                )}
+                {tpEditModal.avgPrice && (
+                  <p className="text-gray-500 text-xs mt-0.5">Avg cost: ${tpEditModal.avgPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                )}
+              </div>
             )}
             <div className="flex justify-end gap-3 mt-4">
               <button
@@ -3208,13 +3305,23 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               >
                 Cancel
               </button>
-              <button
-                className="px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded transition-colors disabled:opacity-50"
-                onClick={handleSetTpPercent}
-                disabled={settingTp || !tpEditModal.inputValue || parseFloat(tpEditModal.inputValue) <= 0}
-              >
-                {settingTp ? 'Placing...' : 'Set TP%'}
-              </button>
+              {tpEditModal.mode === 'pct' ? (
+                <button
+                  className="px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded transition-colors disabled:opacity-50"
+                  onClick={handleSetTpPercent}
+                  disabled={settingTp || !tpEditModal.inputValue || parseFloat(tpEditModal.inputValue) <= 0}
+                >
+                  {settingTp ? 'Placing...' : 'Set TP%'}
+                </button>
+              ) : (
+                <button
+                  className="px-4 py-2 text-sm text-white bg-cyan-700 hover:bg-cyan-600 rounded transition-colors disabled:opacity-50"
+                  onClick={handleSetTpPrice}
+                  disabled={settingTp || !tpEditModal.priceValue || parseFloat(tpEditModal.priceValue) <= (tpEditModal.avgPrice || 0)}
+                >
+                  {settingTp ? 'Placing...' : 'Set Price'}
+                </button>
+              )}
             </div>
           </div>
         </div>

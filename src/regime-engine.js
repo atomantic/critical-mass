@@ -999,6 +999,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Cancel directly via adapter since executor map may not be populated yet
         for (const body of savedBodies) {
           if (!body.tpOrderId || body.avgPrice <= 0) continue;
+          // Skip bodies with a manual TP override — user intentionally set this price
+          if (body.manualTpPct != null) continue;
           const currentTpPct = ((body.tpPrice - body.avgPrice) / body.avgPrice) * 100;
           const bTierCfg = celestialHierarchy.getTierConfig(body.tier);
           const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
@@ -2956,6 +2958,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (overrideTpPct != null) {
       // User-specified override: use exactly this TP%, subject to fee floor only
       finalTpPct = Math.max(overrideTpPct, minTpPct);
+    } else if (body.manualTpPct != null) {
+      // Persisted manual override: re-use the user's last manual TP% on re-placement
+      finalTpPct = Math.max(body.manualTpPct, minTpPct);
     } else if (mergeMaxTpPct != null) {
       // Merge cap: after a manual merge, TP% must not exceed the pre-merge target's TP%.
       // This guarantees the combined sell price is lower (lower avgPrice × capped TP%).
@@ -3988,6 +3993,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       body.assetOnOrder = 0;
     }
 
+    body.manualTpPct = tpPct;
     body._overrideTpPct = tpPct;
     const placed = await placeBodyTp(body);
 
@@ -4006,6 +4012,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       message: `TP set to ${body.tpPrice ? fmtPrice(body.tpPrice) : `${tpPct.toFixed(2)}%`} for body ${bodyId.slice(-8)}`,
       status: getStatus(),
     };
+  };
+
+  /**
+   * Manually set the TP limit price for a specific celestial body.
+   * Converts to TP% internally and delegates to the same placement flow.
+   * @param {string} bodyId
+   * @param {number} limitPrice - Desired limit price (must be above avgPrice + fee floor)
+   * @returns {Promise<{success: boolean, message: string, status?: Object}>}
+   */
+  const setBodyTpPrice = async (bodyId, limitPrice) => {
+    if (!isRunning) return { success: false, message: 'Engine not running' };
+
+    const body = (positionState.celestialBodies || []).find(b => b.id === bodyId);
+    if (!body) return { success: false, message: `Body ${bodyId.slice(-8)} not found` };
+    if (body.avgPrice <= 0) return { success: false, message: 'Body has no avg price' };
+    if (limitPrice <= body.avgPrice) return { success: false, message: `Price must be above avg cost ${fmtPrice(body.avgPrice)}` };
+
+    const tpPct = ((limitPrice - body.avgPrice) / body.avgPrice) * 100;
+    return setBodyTpPercent(bodyId, tpPct);
   };
 
   /**
@@ -4253,6 +4278,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     forceResumeDrawdown,
     manualMergeBody,
     setBodyTpPercent,
+    setBodyTpPrice,
     rebuildTP,
     previewLadder,
     rebuildLadder,

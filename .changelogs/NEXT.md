@@ -84,6 +84,8 @@
 - Added missing `asteroid` and `nebula` tiers to open orders tier style map
 - Capital adjustment UI now allows reducing available cash — clamps depositedCapital and maxUsdcDeployed to valid server ranges instead of sending out-of-range values
 - Manual TP% override — edit icon on open orders table lets you set an exact take-profit % for any celestial body; takes effect immediately by cancelling and replacing the TP order
+- Manual TP limit price editing — edit icon next to limit price opens modal in price mode; percentage and price tabs live-sync with each other; shows avg cost and equivalent % when editing by price
+- Persistent manual TP override — `manualTpPct` saved on body state so manual TP targets survive reconciliation loops, bot restarts, and external cancel recovery; startup overpriced-TP check skips bodies with manual overrides
 - Merge TP cap — after a body rollup/merge, the merged body's TP% is capped at the pre-merge target's level so the absolute sell price can only decrease, never increase after absorbing cheaper buys
 
 - Signal history now sorted newest-first — API results were displayed in arbitrary order

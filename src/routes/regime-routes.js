@@ -204,6 +204,19 @@ module.exports = (app, deps) => {
     res.json(result);
   });
 
+  app.post('/api/:exchange/regime/set-body-tp-price', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getPair(req);
+    const { bodyId, limitPrice } = req.body || {};
+    if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
+    const price = parseFloat(limitPrice);
+    if (isNaN(price) || price <= 0) return res.status(400).json({ success: false, error: 'limitPrice must be a positive number' });
+
+    const result = await getIPC(exchange).request('regime:set-body-tp-price', { bodyId, limitPrice: price }, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
   // ============ Data Queries (forwarded via IPC) ============
 
   app.get('/api/:exchange/regime/chart-data', async (req, res) => {
