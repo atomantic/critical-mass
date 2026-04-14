@@ -68,9 +68,9 @@ export const useSocketPrice = (config) => {
     })
 
     socket.on(priceEvent, (data) => {
-      const next = new Map(pricesRef.current)
-      next.set(data.ticker, data)
-      pricesRef.current = next
+      // Mutate the ref map in place — no copy per tick.
+      // Only snapshot into a new Map when the throttle fires a render.
+      pricesRef.current.set(data.ticker, data)
 
       if (!throttleRef.current) {
         throttleRef.current = setTimeout(() => {
@@ -104,9 +104,7 @@ export const useSocketPrice = (config) => {
       socketRef.current.emit(unsubscribeEvent, tickerList)
     }
 
-    const next = new Map(pricesRef.current)
-    tickerList.forEach(t => next.delete(t))
-    pricesRef.current = next
+    tickerList.forEach(t => pricesRef.current.delete(t))
     setPrices(new Map(pricesRef.current))
   }, [unsubscribeEvent])
 

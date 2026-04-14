@@ -30,6 +30,12 @@
 - UpDown signal history now includes NEUTRAL entries — shows actual BUY→NEUTRAL→BUY pattern instead of hiding the gaps
 - Partial fill visibility on open orders — both Dashboard and Transactions views show filled amount for partially filled sell orders; status badge changes to orange "partial"
 - Merge (roll-up) blocked for partially filled orders — server-side guard checks exchange order status before merging; UI hides roll-up button when source or target is partially filled
+- Universal manual trade import — Import button on both BUY and SELL orders in unaccounted fills; import as orphan or pair with match
+- Buy-first manual trade flow — import a manual buy with optional celestial body creation for TP management (`injectBody` on regime engine)
+- Paired manual trade import — match a buy and sell order together with P&L linkage annotations in fill ledger
+- Client-side match suggestions — scores opposite-side orders by size similarity, time proximity, price relationship, and spread
+- Manual trade data model extended with `buy_recorded`, `tp_pending` statuses, `tradeType` field, `addManualBuy`, `addPairedTrade`, `markTpPlaced` methods
+- Analysis scripts for identifying and importing unaccounted exchange fills (`scripts/analyze-unaccounted*.js`, `scripts/import-*.js`)
 
 ## Changed
 
@@ -113,6 +119,7 @@
 - Partial fill body TP incorrectly counted SOLD amount as asset reserves — for partial fills, the sold CRO was added to `realizedAssetPnL` instead of 0; the remaining CRO stays as an active body, not reserves. Also fixed fill annotation `bodyHoldbackAsset` which was set to the remaining body size instead of 0 for partial fills
 - Orphan sell reclamation on startup disabled — was adopting ANY untracked sell order on the exchange as engine-owned, which sold non-engine BTC. Now log-only (manual review required)
 - Recovery body creation on startup disabled — was creating bodies and placing TP sells for untracked position asset, which could sell user holdings. Now log-only
+- RegimeDashboard dollar values (realized/unrealized P&L, daily/annual estimates, budget, holdback values) now use `formatCurrency` with comma-separated thousands instead of raw `toFixed(2)`
 
 ## Removed
 

@@ -33,6 +33,7 @@ const formatPrice = (price) => {
   const d = getPriceDecimals(price)
   return price.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
 }
+const formatCurrency = (value) => `$${(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 // Format timestamp as YYYY-MM-DD HH:MM:SS local time
 const formatTimestamp = (ts) => {
@@ -1673,7 +1674,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <div className="bg-gray-900/50 rounded p-2 min-w-0">
                   <div className="text-gray-500">Unrealized P&L</div>
                   <div className={`font-mono text-base ${position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    ${position.unrealizedPnL?.toFixed(2) || '0'}
+                    {formatCurrency(position.unrealizedPnL || 0)}
                   </div>
                 </div>
                 <div className="bg-gray-900/50 rounded p-2 min-w-0">
@@ -1686,13 +1687,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     return <>
                       <div className="text-gray-500 truncate">Realized P&L {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
                       <div className={`font-mono text-base ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        ${totalPnL.toFixed(2)}
+                        {formatCurrency(totalPnL)}
                       </div>
-                      <div className="text-white text-xs font-mono truncate">${usdPnL.toFixed(2)} USD</div>
+                      <div className="text-white text-xs font-mono truncate">{formatCurrency(usdPnL)} USD</div>
                       {assetPnL > 0 && (
                         <div className="text-orange-400 text-xs font-mono truncate">
                           +{assetPnL.toFixed(8)} {asset}
-                          {assetUsd > 0 && ` ($${assetUsd.toFixed(2)})`}
+                          {assetUsd > 0 && ` (${formatCurrency(assetUsd)})`}
                         </div>
                       )}
                     </>
@@ -1752,9 +1753,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </div>
 
                     <div className="text-gray-300">P&L</div>
-                    <div className="text-gray-500">${recalcPreview.changes?.realizedPnL?.before?.toFixed(2)}</div>
+                    <div className="text-gray-500">{formatCurrency(recalcPreview.changes?.realizedPnL?.before)}</div>
                     <div className={recalcPreview.changes?.realizedPnL?.before !== recalcPreview.changes?.realizedPnL?.after ? 'text-yellow-400' : 'text-gray-500'}>
-                      ${recalcPreview.changes?.realizedPnL?.after?.toFixed(2)}
+                      {formatCurrency(recalcPreview.changes?.realizedPnL?.after)}
                     </div>
 
                     <div className="text-gray-300">{asset} Reserves</div>
@@ -1855,15 +1856,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="bg-green-900/20 border border-green-700/30 rounded p-1.5 min-w-0">
                       <div className="text-green-400/70 text-[10px]">Daily ({(apy.dailyReturnPercent || 0).toFixed(2)}%)</div>
                       <div className="flex flex-col font-mono text-xs min-w-0">
-                        <span className="text-green-400 truncate">${(apy.estimatedDailyUsdc || 0).toFixed(2)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
-                        <span className="text-green-400">= ${((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)).toFixed(2)}</span>
+                        <span className="text-green-400 truncate">{formatCurrency(apy.estimatedDailyUsdc || 0)} + <span className="text-orange-400">{(apy.estimatedDailyAsset || 0).toFixed(8)}</span></span>
+                        <span className="text-green-400">= {formatCurrency((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0))}</span>
                       </div>
                     </div>
                     <div className="bg-cyan-900/20 border border-cyan-700/30 rounded p-1.5 min-w-0">
                       <div className="text-cyan-400/70 text-[10px]">Annual ({(apy.estimatedApy || 0) > 9999 ? '>9999' : (apy.estimatedApy || 0).toFixed(0)}% APY)</div>
                       <div className="flex flex-col font-mono text-xs min-w-0">
-                        <span className="text-green-400 truncate">${((apy.estimatedDailyUsdc || 0) * 365).toFixed(2)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
-                        <span className="text-cyan-400 truncate">= ${(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365).toFixed(2)}</span>
+                        <span className="text-green-400 truncate">{formatCurrency((apy.estimatedDailyUsdc || 0) * 365)} + <span className="text-orange-400">{((apy.estimatedDailyAsset || 0) * 365).toFixed(6)} {asset}</span></span>
+                        <span className="text-cyan-400 truncate">= {formatCurrency(((apy.estimatedDailyUsdc || 0) + (apy.estimatedDailyAsset || 0) * (market.lastPrice || 0)) * 365)}</span>
                       </div>
                     </div>
                   </div>
@@ -2161,7 +2162,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="flex items-center gap-4 text-xs text-gray-300">
                       <span>{ladderPreview.levelCount} levels</span>
                       <span>{formatPrice(ladderPreview.levels[0]?.price)} — {formatPrice(ladderPreview.levels[ladderPreview.levels.length - 1]?.price)}</span>
-                      <span title={`Max: $${ladderPreview.maxUsdcDeployed?.toFixed(2)} − Allocated: $${ladderPreview.allocatedCapital?.toFixed(2)}`}>Budget: ${ladderPreview.totalBudget?.toFixed(2)}</span>
+                      <span title={`Max: ${formatCurrency(ladderPreview.maxUsdcDeployed)} − Allocated: ${formatCurrency(ladderPreview.allocatedCapital)}`}>Budget: {formatCurrency(ladderPreview.totalBudget)}</span>
                       <span>Range: {ladderPreview.lowerBoundPct?.toFixed(1)}%</span>
                     </div>
                     <div className="max-h-40 overflow-y-auto">
@@ -2433,11 +2434,11 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                   ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
                                 <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
-                                  {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}$${order.estPnl.toFixed(2)}` : '—'}
+                                  {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}${formatCurrency(order.estPnl)}` : '—'}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
                                   {order.estHoldback !== null ? (
-                                    <span title={`≈$${order.estHoldbackValue?.toFixed(2)}`}>+{order.estHoldback.toFixed(8)}</span>
+                                    <span title={`≈${formatCurrency(order.estHoldbackValue)}`}>+{order.estHoldback.toFixed(8)}</span>
                                   ) : '—'}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-gray-500 text-xs">
@@ -2515,10 +2516,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           <td className="py-2 pr-2"></td>
                           <td className="text-right py-2 pr-2 font-mono text-gray-300">${totalSellValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                           <td className={`text-right py-2 pr-2 font-mono ${hasPnl ? (totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={totalSellFees ? `After est. sell fees: $${totalSellFees.toFixed(4)}` : undefined}>
-                            {hasPnl ? `${totalSellPnl >= 0 ? '+' : ''}$${totalSellPnl.toFixed(2)}` : '—'}
+                            {hasPnl ? `${totalSellPnl >= 0 ? '+' : ''}${formatCurrency(totalSellPnl)}` : '—'}
                           </td>
                           <td className="text-right py-2 pr-2 font-mono text-cyan-400">
-                            {hasHoldback ? <span title={`≈$${totalHoldbackValue.toFixed(2)}`}>+{totalHoldback.toFixed(8)}</span> : '—'}
+                            {hasHoldback ? <span title={`≈${formatCurrency(totalHoldbackValue)}`}>+{totalHoldback.toFixed(8)}</span> : '—'}
                           </td>
                           <td className="py-2 pr-2"></td>
                           <td className="py-2"></td>
@@ -2855,7 +2856,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
                             sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'
                           }`}>
-                            {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}$${sellPnl.toFixed(2)}` : '—'}
+                            {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}${formatCurrency(sellPnl)}` : '—'}
                             {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title={`Holdback ${asset}`}>+{sellHoldback.toFixed(8)}</span>}
                           </td>
                           <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
@@ -2936,7 +2937,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 <td className="py-1.5 pr-1"></td>
                                 <td className="py-1.5 pr-2 text-gray-400 text-xs" colSpan={4}>Totals ({sellGroups.length} sells)</td>
                                 <td className={`text-right py-1.5 pr-2 font-mono text-xs ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                  {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
+                                  {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
                                   {totalHoldback > 0 && <span className="ml-1 text-cyan-400" title="Total holdback">+{totalHoldback.toFixed(8)}</span>}
                                 </td>
                                 <td className="text-right py-1.5"></td>
@@ -2985,7 +2986,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                         <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
                           <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
                           <span className={`font-mono ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}` : '—'}
+                            {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
                             {totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{totalHoldback.toFixed(8)}</span>}
                           </span>
                         </div>
@@ -3099,7 +3100,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 )}
                               </div>
                               <span className={`font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}$${cycle.totalPnl.toFixed(2)}` : '—'}
+                                {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
                                 {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
                               </span>
                             </div>
@@ -3119,7 +3120,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                         <td className="text-right py-1.5 pr-2"></td>
                                         <td className="text-right py-1.5 pr-2"></td>
                                         <td className={`text-right py-1.5 pr-2 font-mono text-xs ${cycle.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                          {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}$${cycle.totalPnl.toFixed(2)}` : '—'}
+                                          {cycle.totalPnl !== 0 ? `${cycle.totalPnl >= 0 ? '+' : ''}${formatCurrency(cycle.totalPnl)}` : '—'}
                                           {cycle.totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{cycle.totalHoldback.toFixed(8)}</span>}
                                         </td>
                                         <td className="text-right py-1.5"></td>

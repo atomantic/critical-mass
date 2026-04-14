@@ -11,4 +11,5 @@ admin/dist/
 tmp-*
 *.png
 .ghostty-theme
-.claude/worktrees/
+.claude/
+scripts/*.txt

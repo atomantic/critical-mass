@@ -11,6 +11,17 @@ const { getAuthHeaders } = require('./adapters/coinbase/auth');
 const { loadRegimeState } = require('./state-tracker');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { log } = require('./logger');
+
+/** Group an array of fill objects by orderId into a Map */
+const groupFillsByOrder = (fills) => {
+  const map = new Map();
+  for (const f of fills) {
+    if (!map.has(f.orderId)) map.set(f.orderId, []);
+    map.get(f.orderId).push(f);
+  }
+  return map;
+};
+
 /**
  * Fetch all Coinbase fills since a timestamp using paginated brokerage API
  * @param {Object} adapter - Coinbase adapter (used for credentials)
@@ -86,14 +97,18 @@ const normalizeFills = (exchange, rawFills) => {
       const tid = raw.trade_id;
       if (fills.has(tid)) continue;
       const price = parseFloat(raw.price);
-      const size = parseFloat(raw.size);
+      const rawSize = parseFloat(raw.size);
+      // Coinbase returns size in quote currency (USDC) for some order types
+      const sizeInQuote = raw.size_in_quote === true || raw.size_in_quote === 'true';
+      const size = sizeInQuote ? rawSize / price : rawSize;
+      const quoteAmount = sizeInQuote ? rawSize : price * size;
       fill = {
         tradeId: tid,
         orderId: raw.order_id,
         side: raw.side.toLowerCase(),
         price,
         size,
-        quoteAmount: price * size,
+        quoteAmount,
         fee: parseFloat(raw.commission || 0),
         feeCurrency: 'USDC',
         timestamp: new Date(raw.trade_time).getTime(),
@@ -194,11 +209,7 @@ const syncFills = async (exchange, fillLedger, options = {}) => {
   }
 
   // Pre-group missing fills by orderId for O(n) aggregation
-  const fillsByOrderId = new Map();
-  for (const f of missingFills) {
-    if (!fillsByOrderId.has(f.orderId)) fillsByOrderId.set(f.orderId, []);
-    fillsByOrderId.get(f.orderId).push(f);
-  }
+  const fillsByOrderId = groupFillsByOrder(missingFills);
 
   const missingBuys = missingFills.filter(f => f.side === 'buy');
   const missingSells = missingFills.filter(f => f.side === 'sell');
@@ -249,4 +260,84 @@ const syncFills = async (exchange, fillLedger, options = {}) => {
   return result;
 };
 
-module.exports = { syncFills };
+/**
+ * Get unaccounted fills from exchange (fills not in the local ledger)
+ * @param {string} exchange - Exchange name
+ * @param {Object} fillLedger - Fill ledger instance
+ * @param {Object} manualTradeStore - Manual trade store instance
+ * @param {Object} options
+ * @param {string} options.startDate - Required ISO date string
+ * @returns {Promise<Object>} Unaccounted fills grouped by orderId
+ */
+const getUnaccountedFills = async (exchange, fillLedger, manualTradeStore, options = {}) => {
+  const { startDate } = options;
+  if (!startDate) {
+    return { success: false, error: 'startDate is required' };
+  }
+
+  const startTimestampMs = new Date(startDate).getTime();
+  if (isNaN(startTimestampMs)) {
+    return { success: false, error: 'Invalid startDate format' };
+  }
+
+  const adapter = getAdapter(exchange);
+
+  let rawFills;
+  try {
+    if (exchange === 'coinbase') {
+      rawFills = await fetchAllCoinbaseFills(adapter, startTimestampMs);
+    } else if (exchange === 'gemini') {
+      rawFills = await adapter.getAllTrades('btcusd', startTimestampMs);
+    } else {
+      return { success: false, error: `Not supported for ${exchange}` };
+    }
+  } catch (err) {
+    return { success: false, error: `Failed to fetch trades: ${err.message}` };
+  }
+
+  const exchangeFills = normalizeFills(exchange, rawFills);
+
+  // Filter out fills already in ledger and dismissed fills
+  const unaccounted = [];
+  for (const [tid, exFill] of exchangeFills) {
+    if (fillLedger.hasProcessedTrade(tid)) continue;
+    if (manualTradeStore && manualTradeStore.isFillDismissed(exFill.orderId)) continue;
+    unaccounted.push(exFill);
+  }
+
+  const byOrderId = groupFillsByOrder(unaccounted);
+
+  const orders = [...byOrderId.entries()].map(([orderId, fills]) => {
+    const totalBtc = fills.reduce((s, f) => s + f.size, 0);
+    const totalUsdc = fills.reduce((s, f) => s + f.quoteAmount, 0);
+    return {
+      orderId,
+      side: fills[0].side,
+      totalBtc: roundAsset(totalBtc),
+      totalUsdc: roundUSDC(totalUsdc),
+      avgPrice: roundUSDC(totalBtc > 0 ? totalUsdc / totalBtc : 0),
+      fillCount: fills.length,
+      time: new Date(fills[0].timestamp).toISOString(),
+      fills: fills.map(f => ({
+        tradeId: f.tradeId,
+        price: f.price,
+        size: f.size,
+        quoteAmount: roundUSDC(f.quoteAmount),
+        fee: f.fee,
+        timestamp: f.timestamp,
+      })),
+    };
+  }).sort((a, b) => b.time < a.time ? -1 : b.time > a.time ? 1 : 0);
+
+  return {
+    success: true,
+    exchange,
+    startDate,
+    exchangeTotal: exchangeFills.size,
+    ledgerTotal: fillLedger.getFillCount(),
+    unaccountedCount: unaccounted.length,
+    unaccountedOrders: orders,
+  };
+};
+
+module.exports = { syncFills, getUnaccountedFills, fetchAllCoinbaseFills, normalizeFills };

@@ -73,7 +73,9 @@ const getStandaloneLedger = (exchange, pair) => {
   const key = fundKey(exchange, resolvedPair);
   if (!standaloneLedgers.has(key)) {
     const fundConfig = getFundConfig(exchange, resolvedPair);
-    standaloneLedgers.set(key, createFillLedger(exchange, fundConfig?.productId, resolvedPair));
+    const ledger = createFillLedger(exchange, fundConfig?.productId, resolvedPair);
+    ledger.load();
+    standaloneLedgers.set(key, ledger);
   }
   return standaloneLedgers.get(key);
 };
@@ -81,6 +83,15 @@ const getStandaloneLedger = (exchange, pair) => {
 const invalidateStandaloneLedger = (exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   standaloneLedgers.delete(fundKey(exchange, resolvedPair));
+};
+
+/** Get the best available fill ledger — engine's own if running, standalone otherwise */
+const getActiveLedger = (exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
+  if (engine) return engine.getFillLedger();
+  invalidateStandaloneLedger(exchange, resolvedPair);
+  return getStandaloneLedger(exchange, resolvedPair);
 };
 
 // ============ Engine Callbacks ============
@@ -123,6 +134,7 @@ const createEngineCallbacks = (exchange, pair) => ({
     }
     regimeEngines.delete(key);
     invalidateStandaloneLedger(exchange, pair);
+    manualTradeStores.delete(fundKey(exchange, pair));
     // Free the chart buffer (with its setInterval) and the market data
     // service so we don't leak memory for dead funds. Operator can reopen
     // and start the fund again later — both will be re-created on demand.
@@ -618,17 +630,391 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
   };
 });
 
-ipcServer.onRequest('regime:sync-fills', async (payload, exchange, pair) => {
+
+// ============ Manual Trade Tracking ============
+
+/** @type {Map<string, Object>} Cached manual trade stores keyed by `${exchange}::${pair}` */
+const manualTradeStores = new Map();
+
+/**
+ * Ingest adapter fills into the fill-ledger, accumulating totals.
+ * Avoids duplicated ingestion loops across manual-trade handlers.
+ * @returns {{ tradeIds: string[], totalSize: number, totalQuote: number }}
+ */
+const ingestAdapterFills = (fillLedger, fills, orderId, defaultSide) => {
+  const tradeIds = [];
+  let totalSize = 0;
+  let totalQuote = 0;
+  for (const raw of fills) {
+    tradeIds.push(raw.tradeId);
+    totalSize += raw.size;
+    totalQuote += raw.price * raw.size;
+    fillLedger.ingestFill({
+      tradeId: raw.tradeId,
+      orderId,
+      side: raw.side?.toLowerCase() || defaultSide,
+      price: raw.price,
+      size: raw.size,
+      totalCommission: raw.totalCommission || raw.commission || 0,
+      commission: raw.commission || 0,
+      rebate: raw.rebate || 0,
+      netFee: raw.netFee || raw.commission || 0,
+      liquidityIndicator: raw.liquidityIndicator || 'TAKER',
+      tradeTime: raw.tradeTime,
+      fee_asset: 'USDC',
+    }, null, { skipPersist: true });
+  }
+  return { tradeIds, totalSize, totalQuote };
+};
+
+const getManualTradeStore = (exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
-  const { dryRun = false } = payload || {};
-  const { syncFills } = require('../src/sync-fills');
+  const key = fundKey(exchange, resolvedPair);
+  if (!manualTradeStores.has(key)) {
+    const { createManualTradeStore } = require('../src/manual-trades');
+    const store = createManualTradeStore(exchange, resolvedPair);
+    store.load();
+    manualTradeStores.set(key, store);
+  }
+  return manualTradeStores.get(key);
+};
 
-  invalidateStandaloneLedger(exchange, resolvedPair);
-  const fillLedger = getStandaloneLedger(exchange, resolvedPair);
+ipcServer.onRequest('regime:unaccounted-fills', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const { startDate } = payload || {};
+  const { getUnaccountedFills } = require('../src/sync-fills');
 
-  const result = await syncFills(exchange, fillLedger, { dryRun });
+  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  const manualTradeStore = getManualTradeStore(exchange, resolvedPair);
+
+  const result = await getUnaccountedFills(exchange, fillLedger, manualTradeStore, { startDate });
   return result;
 });
+
+ipcServer.onRequest('regime:manual-trades', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const store = getManualTradeStore(exchange, resolvedPair);
+  return { success: true, exchange, pair: resolvedPair, trades: store.getAll() };
+});
+
+ipcServer.onRequest('regime:manual-trade', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const { sellOrderId, recoveryBuyPrice, existingBuyOrderId, note } = payload || {};
+
+  if (!sellOrderId) {
+    return { success: false, error: 'sellOrderId is required' };
+  }
+
+  const { getAdapter } = require('../src/adapters');
+  const adapter = getAdapter(exchange);
+  const store = getManualTradeStore(exchange, resolvedPair);
+
+  let sellFills;
+  try {
+    sellFills = await adapter.getOrderFills(sellOrderId);
+  } catch (err) {
+    return { success: false, error: `Failed to fetch sell order fills: ${err.message}` };
+  }
+
+  if (!sellFills || sellFills.length === 0) {
+    return { success: false, error: `No fills found for order ${sellOrderId}` };
+  }
+
+  const fillLedger = getActiveLedger(exchange, resolvedPair);
+
+  const { tradeIds: sellFillTradeIds, totalSize: totalSellSize, totalQuote: totalSellQuote } =
+    ingestAdapterFills(fillLedger, sellFills, sellOrderId, 'sell');
+  fillLedger.persist();
+
+  const avgSellPrice = totalSellSize > 0 ? totalSellQuote / totalSellSize : 0;
+
+  const trade = store.addManualSell({
+    sellOrderId,
+    sellPrice: avgSellPrice,
+    sellSize: totalSellSize,
+    sellQuoteAmount: totalSellQuote,
+    sellTimestamp: new Date(sellFills[0].tradeTime).getTime(),
+    sellFillTradeIds,
+    note: note || '',
+  });
+
+  if (recoveryBuyPrice && !existingBuyOrderId) {
+    const buyPrice = parseFloat(recoveryBuyPrice);
+    if (isNaN(buyPrice) || buyPrice <= 0) {
+      return { success: false, error: 'Invalid recoveryBuyPrice' };
+    }
+
+    const fundConfig = getFundConfig(exchange, resolvedPair);
+    const productId = fundConfig?.productId || 'BTC-USDC';
+    const buySize = totalSellSize; // Recover same amount
+
+    try {
+      const result = await adapter.placeLimitBuy(productId, buySize, buyPrice, { postOnly: false });
+      if (result.success) {
+        store.recordRecoveryBuy(trade.id, result.orderId, buyPrice, buySize);
+        log('INFO', `📝 [${exchange}] Manual trade: placed recovery buy ${buySize} BTC @ $${buyPrice} (orderId=${result.orderId})`);
+      } else {
+        return { success: false, error: `Failed to place recovery buy: ${result.errorMessage || 'unknown'}` };
+      }
+    } catch (err) {
+      return { success: false, error: `Failed to place recovery buy: ${err.message}` };
+    }
+  } else if (existingBuyOrderId) {
+    store.linkExistingBuy(trade.id, existingBuyOrderId);
+    log('INFO', `📝 [${exchange}] Manual trade: linked existing buy order ${existingBuyOrderId}`);
+  }
+
+  return { success: true, exchange, pair: resolvedPair, trade: store.getById(trade.id) };
+});
+
+ipcServer.onRequest('regime:manual-trade-check', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const { tradeId } = payload || {};
+
+  if (!tradeId) {
+    return { success: false, error: 'tradeId is required' };
+  }
+
+  const store = getManualTradeStore(exchange, resolvedPair);
+  const trade = store.getById(tradeId);
+  if (!trade) {
+    return { success: false, error: `Manual trade ${tradeId} not found` };
+  }
+
+  const { STATUS } = require('../src/manual-trades');
+  if (trade.status !== STATUS.BUY_PENDING || !trade.buyOrderId) {
+    return { success: true, exchange, pair: resolvedPair, trade, message: 'No pending buy to check' };
+  }
+
+  const { getAdapter } = require('../src/adapters');
+  const adapter = getAdapter(exchange);
+
+  let orderStatus;
+  try {
+    orderStatus = await adapter.getOrder(trade.buyOrderId);
+  } catch (err) {
+    return { success: false, error: `Failed to check buy order: ${err.message}` };
+  }
+
+  const normalizedStatus = (orderStatus.status || '').toUpperCase();
+
+  if (normalizedStatus === 'FILLED' || orderStatus.completionPercentage >= 100) {
+    // Buy filled — fetch fills and complete the trade
+    let buyFills;
+    try {
+      buyFills = await adapter.getOrderFills(trade.buyOrderId);
+    } catch (err) {
+      return { success: false, error: `Buy order filled but failed to fetch fills: ${err.message}` };
+    }
+
+    const fillLedger = getActiveLedger(exchange, resolvedPair);
+
+    const { tradeIds: buyFillTradeIds, totalSize: totalBuySize, totalQuote: totalBuyQuote } =
+      ingestAdapterFills(fillLedger, buyFills, trade.buyOrderId, 'buy');
+
+    fillLedger.annotateFillsByOrderId(trade.buyOrderId, { sellOrderId: trade.sellOrderId });
+    fillLedger.persist();
+
+    const avgBuyPrice = totalBuySize > 0 ? totalBuyQuote / totalBuySize : 0;
+    store.markBuyFilled(tradeId, {
+      buyPrice: avgBuyPrice,
+      buySize: totalBuySize,
+      buyFillTradeIds,
+    });
+
+    log('INFO', `✅ [${exchange}] Manual trade completed: sold ${trade.sellSize} BTC @ $${trade.sellPrice.toFixed(2)}, bought back ${totalBuySize} BTC @ $${avgBuyPrice.toFixed(2)}`);
+    return { success: true, exchange, pair: resolvedPair, trade: store.getById(tradeId), filled: true };
+  }
+
+  if (normalizedStatus === 'CANCELLED') {
+    return { success: true, exchange, pair: resolvedPair, trade, cancelled: true, message: 'Buy order was cancelled on exchange' };
+  }
+
+  return {
+    success: true,
+    exchange,
+    pair: resolvedPair,
+    trade,
+    orderStatus: normalizedStatus,
+    filledPercent: orderStatus.completionPercentage || 0,
+    message: `Buy order is ${normalizedStatus}`,
+  };
+});
+
+ipcServer.onRequest('regime:dismiss-fills', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const { orderIds } = payload || {};
+
+  if (!Array.isArray(orderIds) || orderIds.length === 0) {
+    return { success: false, error: 'orderIds array is required' };
+  }
+
+  const store = getManualTradeStore(exchange, resolvedPair);
+  store.dismissFills(orderIds);
+
+  return { success: true, exchange, pair: resolvedPair, dismissed: orderIds.length };
+});
+
+// ============ Manual Trade: Buy Import ============
+
+ipcServer.onRequest('regime:manual-trade-buy', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const { buyOrderId, note, createBody = true } = payload || {};
+
+  if (!buyOrderId) {
+    return { success: false, error: 'buyOrderId is required' };
+  }
+
+  const { getAdapter } = require('../src/adapters');
+  const adapter = getAdapter(exchange);
+  const store = getManualTradeStore(exchange, resolvedPair);
+
+  let buyFills;
+  try {
+    buyFills = await adapter.getOrderFills(buyOrderId);
+  } catch (err) {
+    return { success: false, error: `Failed to fetch buy order fills: ${err.message}` };
+  }
+
+  if (!buyFills || buyFills.length === 0) {
+    return { success: false, error: `No fills found for order ${buyOrderId}` };
+  }
+
+  const fillLedger = getActiveLedger(exchange, resolvedPair);
+
+  const { tradeIds: buyFillTradeIds, totalSize: totalBuySize, totalQuote: totalBuyQuote } =
+    ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');
+  fillLedger.persist();
+
+  const avgBuyPrice = totalBuySize > 0 ? totalBuyQuote / totalBuySize : 0;
+
+  const trade = store.addManualBuy({
+    buyOrderId,
+    buyPrice: avgBuyPrice,
+    buySize: totalBuySize,
+    buyQuoteAmount: totalBuyQuote,
+    buyTimestamp: new Date(buyFills[0].tradeTime).getTime(),
+    buyFillTradeIds,
+    note: note || '',
+  });
+
+  if (createBody) {
+    const { createNewBody, syncPositionState } = require('../src/celestial-hierarchy');
+    const totalFees = buyFills.reduce((s, f) => s + (f.commission || f.totalCommission || 0), 0);
+    const body = createNewBody({
+      assetQty: totalBuySize,
+      costBasis: totalBuyQuote + totalFees,
+      avgPrice: avgBuyPrice,
+    }, buyOrderId);
+
+    // Annotate fills with body ownership
+    fillLedger.annotateFillsByOrderId(buyOrderId, { bodyId: body.id, isBodyOwned: true, isSatellite: true, bodyTier: body.tier });
+    fillLedger.persist();
+
+    const key = fundKey(exchange, resolvedPair);
+    const engine = regimeEngines.get(key);
+
+    if (engine && engine.injectBody) {
+      const injectResult = await engine.injectBody(body);
+      log('INFO', `📦 [${exchange}] Manual buy import: injected body ${body.id} into running engine (TP placed: ${injectResult.tpPlaced})`);
+    } else {
+      // Engine not running — persist body to disk state
+      const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
+      const saved = loadRegimeState(exchange, resolvedPair);
+      if (saved.position) {
+        saved.position.celestialBodies = saved.position.celestialBodies || [];
+        saved.position.celestialBodies.push(body);
+        syncPositionState(saved.position, saved.position.celestialBodies);
+        saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, resolvedPair);
+        log('INFO', `📦 [${exchange}] Manual buy import: saved body ${body.id} to disk (engine not running, TP will be placed on start)`);
+      }
+    }
+
+    store.markTpPlaced(trade.id, body.id);
+  }
+
+  return { success: true, exchange, pair: resolvedPair, trade: store.getById(trade.id) };
+});
+
+// ============ Manual Trade: Paired Import ============
+
+ipcServer.onRequest('regime:manual-trade-pair', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const { buyOrderId, sellOrderId, note } = payload || {};
+
+  if (!buyOrderId || !sellOrderId) {
+    return { success: false, error: 'Both buyOrderId and sellOrderId are required' };
+  }
+
+  const { getAdapter } = require('../src/adapters');
+  const adapter = getAdapter(exchange);
+  const store = getManualTradeStore(exchange, resolvedPair);
+  const fillLedger = getActiveLedger(exchange, resolvedPair);
+
+  // Fetch and ingest buy fills
+  let buyFills;
+  try {
+    buyFills = await adapter.getOrderFills(buyOrderId);
+  } catch (err) {
+    return { success: false, error: `Failed to fetch buy order fills: ${err.message}` };
+  }
+  if (!buyFills || buyFills.length === 0) {
+    return { success: false, error: `No fills found for buy order ${buyOrderId}` };
+  }
+
+  const { tradeIds: buyFillTradeIds, totalSize: totalBuySize, totalQuote: totalBuyQuote } =
+    ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');
+
+  // Fetch and ingest sell fills
+  let sellFills;
+  try {
+    sellFills = await adapter.getOrderFills(sellOrderId);
+  } catch (err) {
+    return { success: false, error: `Failed to fetch sell order fills: ${err.message}` };
+  }
+  if (!sellFills || sellFills.length === 0) {
+    return { success: false, error: `No fills found for sell order ${sellOrderId}` };
+  }
+
+  const { tradeIds: sellFillTradeIds, totalSize: totalSellSize, totalQuote: totalSellQuote } =
+    ingestAdapterFills(fillLedger, sellFills, sellOrderId, 'sell');
+
+  // Link buy fills to sell order for P&L calculation
+  fillLedger.annotateFillsByOrderId(buyOrderId, { sellOrderId });
+  fillLedger.persist();
+
+  const avgBuyPrice = totalBuySize > 0 ? totalBuyQuote / totalBuySize : 0;
+  const avgSellPrice = totalSellSize > 0 ? totalSellQuote / totalSellSize : 0;
+
+  const trade = store.addPairedTrade(
+    {
+      buyOrderId,
+      buyPrice: avgBuyPrice,
+      buySize: totalBuySize,
+      buyQuoteAmount: totalBuyQuote,
+      buyTimestamp: new Date(buyFills[0].tradeTime).getTime(),
+      buyFillTradeIds,
+    },
+    {
+      sellOrderId,
+      sellPrice: avgSellPrice,
+      sellSize: totalSellSize,
+      sellQuoteAmount: totalSellQuote,
+      sellTimestamp: new Date(sellFills[0].tradeTime).getTime(),
+      sellFillTradeIds,
+    },
+    note,
+  );
+
+  // Dismiss both orders from unaccounted view
+  store.dismissFills([buyOrderId, sellOrderId]);
+
+  log('INFO', `📝 [${exchange}] Manual paired import: buy ${totalBuySize} BTC @ $${avgBuyPrice.toFixed(2)} + sell ${totalSellSize} BTC @ $${avgSellPrice.toFixed(2)}`);
+
+  return { success: true, exchange, pair: resolvedPair, trade: store.getById(trade.id) };
+});
+
+// ============ DCA Conversion ============
 
 ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
