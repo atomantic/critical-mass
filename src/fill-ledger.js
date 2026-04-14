@@ -534,6 +534,9 @@ const createFillLedger = (exchange, productId, pair) => {
       }
     }
     globalRealizedPnL = roundUSDC(totalSellProceeds - totalBuyCost);
+    // Net asset = total bought - total sold. This includes both holdback reserves
+    // (from completed sells) and any active unsold position. The caller should
+    // subtract the active position to isolate realized holdback if needed.
     globalRealizedAssetPnL = roundAsset(totalBuyQty - totalSellQty);
 
     for (const { cycleId, fills: cycleFills } of completedCycles) {
