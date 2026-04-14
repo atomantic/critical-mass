@@ -2675,36 +2675,30 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       return Array.from(m.values())
                     }
 
-                    // P&L calculation on raw fills
-                    const sortedAll = [...filteredFills].sort((a, b) => a.timestamp - b.timestamp)
-                    let runBtc = 0, runCost = 0
+                    // P&L: deterministic total from raw buy/sell math
+                    let totalBuyCost = 0, totalSellProceeds = 0
+                    let totalBuyQty = 0, totalSellQty = 0
                     const pnlMap = new Map()
-                    sortedAll.forEach(fill => {
+                    filteredFills.forEach(fill => {
                       if (fill.side === 'buy') {
-                        if (!(fill.isBodyOwned ?? fill.isSatellite)) { runBtc += fill.size; runCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0) }
-                      } else if (fill.isBodyOwned ?? fill.isSatellite) {
-                        const bodyPnl = fill.bodyPnl ?? fill.satellitePnl
-                        const pnl = bodyPnl != null ? bodyPnl : (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0) - ((fill.bodyCostBasis ?? fill.satelliteCostBasis) || 0)
-                        const holdbackAsset = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0
-                        const prev = pnlMap.get(fill.orderId)
-                        if (prev) { if (bodyPnl == null) { prev.pnl += pnl; prev.holdback += holdbackAsset } }
-                        else pnlMap.set(fill.orderId, { pnl, holdback: holdbackAsset })
-                      } else {
-                        const avgCost = runBtc > 0 ? runCost / runBtc : 0
+                        totalBuyCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
+                        totalBuyQty += fill.size
+                      } else if (fill.side === 'sell') {
                         const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
-                        const pnl = proceeds - avgCost * fill.size
-                        const prev = pnlMap.get(fill.orderId)
-                        if (prev) { prev.pnl += pnl }
-                        else pnlMap.set(fill.orderId, { pnl, holdback: 0 })
-                        const rem = runBtc - fill.size
-                        runBtc = rem > 0 ? rem : 0
-                        runCost = rem > 0 ? avgCost * rem : 0
+                        totalSellProceeds += proceeds
+                        totalSellQty += fill.size
+                        // Per-sell P&L from bodyPnl annotation (for per-order display)
+                        const bodyPnl = fill.bodyPnl ?? fill.satellitePnl
+                        const holdbackAsset = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0
+                        if (bodyPnl != null) {
+                          const prev = pnlMap.get(fill.orderId)
+                          if (!prev) pnlMap.set(fill.orderId, { pnl: bodyPnl, holdback: holdbackAsset })
+                        }
                       }
                     })
 
-                    // Compute authoritative total from pnlMap (matches server globalRealizedPnL)
-                    pnlMapTotal = 0
-                    for (const [, data] of pnlMap) pnlMapTotal += data.pnl || 0
+                    // Authoritative total from raw math (matches server globalRealizedPnL)
+                    pnlMapTotal = totalSellProceeds - totalBuyCost
 
                     // Aggregate fills by orderId
                     const aggBuysAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy'))
