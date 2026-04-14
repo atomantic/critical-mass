@@ -2996,8 +2996,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       if (buyTs > 0) { entry.minTs = Math.min(entry.minTs, buyTs); entry.maxTs = Math.max(entry.maxTs, buyTs) }
                     })
                   })
-                  // Compute grand total holdback from per-cycle sums
-                  cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
+                  // Use position reserves as authoritative holdback (capped by exchange balance).
+                  // Per-cycle annotation sums are inflated by CRO body consolidation bug.
+                  if (position.realizedAssetPnL > 0) {
+                    totalHoldback = position.realizedAssetPnL
+                  } else {
+                    cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
+                  }
                   const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => {
                     if (a.cycleId === 'unknown') return 1
                     if (b.cycleId === 'unknown') return -1
