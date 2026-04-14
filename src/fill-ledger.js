@@ -686,58 +686,60 @@ const createFillLedger = (exchange, productId, pair) => {
       }
     }
 
-    // Renumber all cycles sequentially (cycle-1, cycle-2, etc.)
-    const cycleTimestamps = new Map();
-    for (const fill of Array.from(fills.values())) {
-      if (!fill.cycleId) continue;
-      const existing = cycleTimestamps.get(fill.cycleId);
-      if (!existing || fill.timestamp < existing) {
-        cycleTimestamps.set(fill.cycleId, fill.timestamp);
-      }
-    }
-
-    const completedIds = new Set(cycleDetails.map(d => d.cycleId));
-    const completedEntries = [];
-    const activeEntries = [];
-    for (const [id, ts] of cycleTimestamps) {
-      if (completedIds.has(id)) completedEntries.push([id, ts]);
-      else activeEntries.push([id, ts]);
-    }
-    completedEntries.sort((a, b) => a[1] - b[1]);
-    activeEntries.sort((a, b) => a[1] - b[1]);
-
-    let cycleNum = 1;
-    let renumbered = 0;
-    const idMap = new Map();
-    for (const [oldId] of [...completedEntries, ...activeEntries]) {
-      const newId = `cycle-${cycleNum}`;
-      idMap.set(oldId, newId);
-      if (oldId !== newId) renumbered++;
-      cycleNum++;
-    }
-
-    if (renumbered > 0) {
-      // Rebuild cycle index after renumbering
-      cycleIndex.clear();
+    // Renumber cycles only when orphan fills created new cycle IDs that need
+    // sequential numbering. Skip renumbering otherwise to preserve stable IDs.
+    if (orphansFixed > 0) {
+      const cycleTimestamps = new Map();
       for (const fill of Array.from(fills.values())) {
-        if (fill.cycleId && idMap.has(fill.cycleId)) {
-          fill.cycleId = idMap.get(fill.cycleId);
-          fills.set(fill.tradeId, fill);
-        }
-        if (fill.cycleId) {
-          if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
-          cycleIndex.get(fill.cycleId).add(fill.tradeId);
+        if (!fill.cycleId) continue;
+        const existing = cycleTimestamps.get(fill.cycleId);
+        if (!existing || fill.timestamp < existing) {
+          cycleTimestamps.set(fill.cycleId, fill.timestamp);
         }
       }
-      for (const detail of cycleDetails) {
-        if (idMap.has(detail.cycleId)) detail.cycleId = idMap.get(detail.cycleId);
+
+      const completedIds = new Set(cycleDetails.map(d => d.cycleId));
+      const completedEntries = [];
+      const activeEntries = [];
+      for (const [id, ts] of cycleTimestamps) {
+        if (completedIds.has(id)) completedEntries.push([id, ts]);
+        else activeEntries.push([id, ts]);
       }
-      if (currentCycleId && idMap.has(currentCycleId)) {
-        currentCycleId = idMap.get(currentCycleId);
+      completedEntries.sort((a, b) => a[1] - b[1]);
+      activeEntries.sort((a, b) => a[1] - b[1]);
+
+      let cycleNum = 1;
+      let renumbered = 0;
+      const idMap = new Map();
+      for (const [oldId] of [...completedEntries, ...activeEntries]) {
+        const newId = `cycle-${cycleNum}`;
+        idMap.set(oldId, newId);
+        if (oldId !== newId) renumbered++;
+        cycleNum++;
       }
-      console.log(`🔢 [${exchange}] Renumbered ${renumbered} cycles to sequential IDs (cycle-1 through cycle-${cycleNum - 1})`);
+
+      if (renumbered > 0) {
+        cycleIndex.clear();
+        for (const fill of Array.from(fills.values())) {
+          if (fill.cycleId && idMap.has(fill.cycleId)) {
+            fill.cycleId = idMap.get(fill.cycleId);
+            fills.set(fill.tradeId, fill);
+          }
+          if (fill.cycleId) {
+            if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
+            cycleIndex.get(fill.cycleId).add(fill.tradeId);
+          }
+        }
+        for (const detail of cycleDetails) {
+          if (idMap.has(detail.cycleId)) detail.cycleId = idMap.get(detail.cycleId);
+        }
+        if (currentCycleId && idMap.has(currentCycleId)) {
+          currentCycleId = idMap.get(currentCycleId);
+        }
+        console.log(`🔢 [${exchange}] Renumbered ${renumbered} cycles to sequential IDs (cycle-1 through cycle-${cycleNum - 1})`);
+      }
+      nextCycleNumber = cycleNum;
     }
-    nextCycleNumber = cycleNum;
 
     // Auto-link buys to sells within the same cycle (fixes orphaned buys display)
     let linkedCount = 0;
