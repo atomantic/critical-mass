@@ -49,7 +49,9 @@ const fetchCoinbaseCandles = async (tf, hours, granularity) => {
       Date.now() - hours * 3_600_000,
     );
     const url = `${COINBASE_EXCHANGE_URL}/products/BTC-USD/candles?granularity=${granularity}&start=${new Date(pageStartMs).toISOString()}&end=${new Date(pageEndMs).toISOString()}`;
-    const res = await fetch(url).catch(() => null);
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(url, { signal: controller.signal }).catch(() => null).finally(() => clearTimeout(fetchTimeout));
     if (!res?.ok) {
       log('WARN', `🕯️ candle-cache: coinbase ${tf} fetch failed status=${res?.status}`);
       continue;
@@ -82,7 +84,9 @@ const fetchCryptocomCandles = async (tf, hours, cryptocomTf) => {
   const endTs = Date.now();
   const startTs = endTs - hours * 3_600_000;
   const url = `${CRYPTOCOM_API_URL}/get-candlestick?instrument_name=BTC_USDT&timeframe=${cryptocomTf}&start_ts=${startTs}&end_ts=${endTs}`;
-  const res = await fetch(url).catch(() => null);
+  const controller = new AbortController();
+  const fetchTimeout = setTimeout(() => controller.abort(), 15000);
+  const res = await fetch(url, { signal: controller.signal }).catch(() => null).finally(() => clearTimeout(fetchTimeout));
   if (!res?.ok) {
     log('WARN', `🕯️ candle-cache: cryptocom ${tf} fetch failed status=${res?.status}`);
     return [];

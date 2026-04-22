@@ -44,7 +44,14 @@ const makeRequest = async (method, apiPath) => {
   const { apiKey, apiSecret } = loadCredentials();
   const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
 
-  const resp = await fetch(`${BASE_URL}${apiPath}`, { method, headers });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let resp;
+  try {
+    resp = await fetch(`${BASE_URL}${apiPath}`, { method, headers, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!resp.ok) {
     const errData = await resp.json().catch(() => ({}));
     const message = errData.message || errData.error || resp.statusText;

@@ -43,6 +43,10 @@ export const useSentinelSocket = (options = {}) => {
 
     return () => {
       socket.emit('sentinel:unsubscribe')
+      socket.off('connect')
+      socket.off('disconnect')
+      socket.off('sentinel:alert')
+      socket.off('sentinel:status')
       socket.disconnect()
     }
   }, [autoConnect])
