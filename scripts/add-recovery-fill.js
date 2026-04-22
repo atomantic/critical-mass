@@ -7,19 +7,16 @@
  * Usage: node scripts/add-recovery-fill.js [--dry-run]
  */
 
-const axios = require('axios');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { roundBTC, roundUSDC } = require('../src/volatility-utils');
+const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
 const { updateRegimeConfig } = require('../src/config-utils');
 
-const DATA_DIR = path.join(__dirname, '../data/coinbase');
-const LEDGER_PATH = path.join(DATA_DIR, 'fill-ledger.json');
-const STATE_PATH = path.join(DATA_DIR, 'regime-state.json');
-const KEYS_PATH = path.join(__dirname, '../data/coinbase-keys.json');
-
+const { DATA_DIR } = require('../src/paths');
+const COINBASE_DIR = path.join(DATA_DIR, 'coinbase');
+const LEDGER_PATH = path.join(COINBASE_DIR, 'fill-ledger.json');
+const STATE_PATH = path.join(COINBASE_DIR, 'regime-state.json');
 const DRY_RUN = process.argv.includes('--dry-run');
 const API_URL = 'https://api.coinbase.com';
 const PRODUCT_ID = 'BTC-USDC';
@@ -28,49 +25,16 @@ const RECOVERY_ORDER_ID = 'ba399979-6972-4fcb-a715-d2bf21e4d641';
 const EC8B_SELL_ORDER_ID = 'ec8b7bcb-325a-4bad-a38e-3f76762e3494';
 const EC8B_BODY_ID = 'body-mli0qebf';
 
-// ── Auth helpers ──
-const keysRaw = JSON.parse(fs.readFileSync(KEYS_PATH, 'utf8'));
+const keysRaw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'coinbase-keys.json'), 'utf8'));
 const keys = { apiKey: keysRaw.name, apiSecret: keysRaw.privateKey };
 
-const preparePrivateKey = (rawKey) => {
-  if (!rawKey.includes('-----BEGIN')) return rawKey;
-  const pemMatch = rawKey.match(/(-----BEGIN [A-Z ]+-----)(.+)(-----END [A-Z ]+-----)/s);
-  if (!pemMatch) return rawKey;
-  const [, header, content, footer] = pemMatch;
-  const cleanContent = content.replace(/[\s\n\r]/g, '');
-  const lines = [];
-  for (let i = 0; i < cleanContent.length; i += 64) {
-    lines.push(cleanContent.substring(i, i + 64));
-  }
-  return `${header}\n${lines.join('\n')}\n${footer}\n`;
-};
-
-const generateJWT = (apiKey, apiSecret, method, apiPath) => {
-  const pemKey = preparePrivateKey(apiSecret);
-  const pathWithoutQuery = apiPath.split('?')[0];
-  const uri = `${method} api.coinbase.com${pathWithoutQuery}`;
-  return jwt.sign(
-    {
-      iss: 'cdp',
-      nbf: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 120,
-      sub: apiKey,
-      uri,
-    },
-    pemKey,
-    { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
-  );
-};
-
 const makeRequest = async (method, apiPath) => {
-  const token = generateJWT(keys.apiKey, keys.apiSecret, method, apiPath);
-  const resp = await axios({
+  const resp = await fetch(`${API_URL}${apiPath}`, {
     method,
-    url: `${API_URL}${apiPath}`,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    timeout: 30000,
+    headers: getAuthHeaders(keys.apiKey, keys.apiSecret, method, apiPath),
   });
-  return resp.data;
+  if (!resp.ok) throw new Error(`Coinbase API ${resp.status}: ${resp.statusText}`);
+  return resp.json();
 };
 
 async function main() {

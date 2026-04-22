@@ -3,48 +3,28 @@
  * Restore regime engine state from Coinbase fills (most recent 15 orders only)
  */
 
-const axios = require('axios');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const { roundBTC, roundUSDC } = require('../src/volatility-utils');
+const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
+const { DATA_DIR } = require('../src/paths');
 
 const API_URL = 'https://api.coinbase.com';
 const productId = 'BTC-USDC';
 
-const keysPath = path.join(__dirname, '../data/coinbase-keys.json');
-const keysRaw = JSON.parse(fs.readFileSync(keysPath, 'utf8'));
+const keysRaw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'coinbase-keys.json'), 'utf8'));
 const keys = { apiKey: keysRaw.name, apiSecret: keysRaw.privateKey };
 
-const preparePrivateKey = (rawKey) => {
-  if (!rawKey.includes('-----BEGIN')) return rawKey;
-  const pemMatch = rawKey.match(/(-----BEGIN [A-Z ]+-----)(.+)(-----END [A-Z ]+-----)/s);
-  if (!pemMatch) return rawKey;
-  const [, header, content, footer] = pemMatch;
-  const cleanContent = content.replace(/[\s\n\r]/g, '');
-  const lines = [];
-  for (let i = 0; i < cleanContent.length; i += 64) lines.push(cleanContent.substring(i, i + 64));
-  return header + '\n' + lines.join('\n') + '\n' + footer + '\n';
-};
-
-const generateJWT = (apiKey, apiSecret, method, apiPath) => {
-  const pemKey = preparePrivateKey(apiSecret);
-  const pathWithoutQuery = apiPath.split('?')[0];
-  const uri = method + ' api.coinbase.com' + pathWithoutQuery;
-  return jwt.sign({ iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri }, pemKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
-};
-
 const makeRequest = async (method, apiPath, data = null) => {
-  const token = generateJWT(keys.apiKey, keys.apiSecret, method, apiPath);
-  const config = {
+  const fetchOptions = {
     method,
-    url: API_URL + apiPath,
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(keys.apiKey, keys.apiSecret, method, apiPath),
   };
-  if (data) config.data = data;
-  return (await axios(config)).data;
+  if (data) fetchOptions.body = JSON.stringify(data);
+  const resp = await fetch(`${API_URL}${apiPath}`, fetchOptions);
+  if (!resp.ok) throw new Error(`Coinbase API ${resp.status}: ${resp.statusText}`);
+  return resp.json();
 };
 
 async function main() {
@@ -128,7 +108,7 @@ async function main() {
   console.log('Sell: ' + sellBtc + ' BTC, Holdback: ' + holdbackBtc + ' BTC');
 
   // Update state file
-  const statePath = path.join(__dirname, '../data/coinbase/regime-state.json');
+  const statePath = path.join(DATA_DIR, 'coinbase/regime-state.json');
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
 
   state.position = {
@@ -157,7 +137,7 @@ async function main() {
   console.log('\n✅ State file updated');
 
   // Update fill ledger
-  const fillLedgerPath = path.join(__dirname, '../data/coinbase/fill-ledger.json');
+  const fillLedgerPath = path.join(DATA_DIR, 'coinbase/fill-ledger.json');
   fs.writeFileSync(fillLedgerPath, JSON.stringify(fills, null, 2));
   console.log('✅ Fill ledger updated with ' + fills.length + ' fills');
 

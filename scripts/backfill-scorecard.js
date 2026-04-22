@@ -18,8 +18,7 @@ const path = require('path')
 const { createCandleAggregator } = require('../src/candle-aggregator')
 const { createSignalEngine } = require('../src/updown/signal-engine')
 const { computeAdaptiveWeights } = require('../src/updown/scorecard')
-
-const DATA_DIR = path.join(__dirname, '..', 'data')
+const { DATA_DIR } = require('../src/paths')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const SCORECARD_DIR = path.join(DATA_DIR, 'updown', 'scorecard')
 

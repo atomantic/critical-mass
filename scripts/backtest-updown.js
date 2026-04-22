@@ -22,10 +22,9 @@ const path = require('path')
 const { getAdapter } = require('../src/adapters')
 const { createCandleAggregator, TIMEFRAMES } = require('../src/candle-aggregator')
 const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
+const { DATA_DIR } = require('../src/paths')
 
 const coinbase = getAdapter('coinbase')
-
-const DATA_DIR = path.join(__dirname, '..', 'data')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const BACKTEST_DIR = path.join(DATA_DIR, 'updown', 'backtest')
 const CACHE_FILE = path.join(COINBASE_DIR, 'btc-usdc-price-cache-1min.json')
