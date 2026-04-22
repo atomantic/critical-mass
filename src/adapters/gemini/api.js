@@ -140,9 +140,19 @@ const createGeminiAdapter = (keysPath = null) => {
     let response;
     try {
       response = await fetch(`${REST_BASE_URL}${endpoint}`, { signal: controller.signal });
-    } finally {
+    } catch (err) {
       clearTimeout(timeout);
+      const networkError = new Error(
+        err && err.name === 'AbortError'
+          ? `Gemini public request timed out for ${endpoint}`
+          : `Gemini public request failed for ${endpoint}: ${err && err.message ? err.message : String(err)}`
+      );
+      networkError.status = 'network';
+      networkError.endpoint = endpoint;
+      networkError.cause = err;
+      throw networkError;
     }
+    clearTimeout(timeout);
     if (!response.ok) {
       throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
     }

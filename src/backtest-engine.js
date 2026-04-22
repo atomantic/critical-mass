@@ -49,9 +49,14 @@ const makeRequest = async (method, apiPath) => {
   let resp;
   try {
     resp = await fetch(`${BASE_URL}${apiPath}`, { method, headers, signal: controller.signal });
-  } finally {
+  } catch (err) {
     clearTimeout(timeout);
+    if (err && err.name === 'AbortError') {
+      throw new Error(`Coinbase request timed out after 30000ms: ${method} ${apiPath}`);
+    }
+    throw new Error(`Coinbase request failed: ${method} ${apiPath} - ${err && err.message ? err.message : String(err)}`);
   }
+  clearTimeout(timeout);
   if (!resp.ok) {
     const errData = await resp.json().catch(() => ({}));
     const message = errData.message || errData.error || resp.statusText;
