@@ -8,13 +8,29 @@
  *  - localhost and trailing-dot variants
  *  - IPv6 blocked ranges (::, ::1, ULA, link-local)
  *  - IPv4-mapped IPv6 (::ffff:127.0.0.1, ::ffff:7f00:0001)
- *  - Public URLs are accepted
+ *  - Public URLs accepted (DNS stubbed — no real network calls)
  *  - DNS failure causes rejection
  */
-const { describe, it } = require('node:test');
+const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
+const dns = require('dns');
 
 const { validateEndpointUrl, isBlockedIPv4, isBlockedIPv6, checkHostnameTextual } = require('../src/url-validator');
+
+// ---------------------------------------------------------------------------
+// DNS stub helpers
+// ---------------------------------------------------------------------------
+
+/** Replace dns.lookup with a controlled stub for the duration of a test block. */
+let _origDnsLookup;
+function stubDnsLookup(impl) {
+  _origDnsLookup = dns.lookup;
+  dns.lookup = impl;
+}
+function restoreDnsLookup() {
+  if (_origDnsLookup) dns.lookup = _origDnsLookup;
+  _origDnsLookup = null;
+}
 
 // ============================================================================
 // isBlockedIPv4
@@ -184,7 +200,24 @@ describe('validateEndpointUrl — private/localhost URLs rejected', () => {
   }
 });
 
-describe('validateEndpointUrl — public URLs accepted', () => {
+describe('validateEndpointUrl — public URLs accepted (DNS stubbed)', () => {
+  before(() => {
+    // Stub dns.lookup to return a public IP so tests are deterministic and
+    // do not depend on real network availability or external DNS.
+    stubDnsLookup((hostname, options, callback) => {
+      // Bare IPs never reach dns.lookup in the validator, but stub anyway.
+      if (typeof options === 'function') { callback = options; }
+      // Return a believable public IP for any hostname lookup.
+      const results = [{ address: '104.21.0.1', family: 4 }];
+      if (options && options.all) return callback(null, results);
+      callback(null, results[0].address, results[0].family);
+    });
+  });
+
+  after(() => {
+    restoreDnsLookup();
+  });
+
   const publicUrls = [
     'https://api.openai.com/v1',
     'https://api.anthropic.com',
@@ -195,10 +228,28 @@ describe('validateEndpointUrl — public URLs accepted', () => {
   for (const url of publicUrls) {
     it(`accepts ${url}`, async () => {
       const result = await validateEndpointUrl(url);
-      // DNS for 1.1.1.1 and 8.8.8.8 are bare IPs (no DNS lookup needed);
-      // api.openai.com / api.anthropic.com resolve publicly in CI.
-      // If DNS is unavailable in the test env, this may fail; that is intentional.
       assert.equal(result.valid, true, `Expected ${url} to be accepted but got: ${result.error}`);
     });
   }
+});
+
+describe('validateEndpointUrl — DNS failure causes rejection', () => {
+  before(() => {
+    stubDnsLookup((hostname, options, callback) => {
+      if (typeof options === 'function') { callback = options; }
+      const err = new Error('getaddrinfo ENOTFOUND unresolvable.invalid');
+      err.code = 'ENOTFOUND';
+      callback(err);
+    });
+  });
+
+  after(() => {
+    restoreDnsLookup();
+  });
+
+  it('rejects a URL when DNS lookup fails', async () => {
+    const result = await validateEndpointUrl('https://unresolvable.invalid/api');
+    assert.equal(result.valid, false);
+    assert.match(result.error, /could not be resolved/i);
+  });
 });

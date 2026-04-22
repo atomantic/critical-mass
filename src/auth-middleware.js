@@ -46,7 +46,11 @@ function apiAuthMiddleware(req, res, next) {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
   if (!token) {
-    return res.status(401).json({ success: false, error: 'Missing Authorization header' });
+    const scheme = authHeader.split(' ')[0];
+    const error = scheme && scheme.toLowerCase() !== 'bearer'
+      ? `Authorization scheme must be Bearer, got "${scheme}"`
+      : 'Missing Authorization header';
+    return res.status(401).json({ success: false, error });
   }
 
   // Constant-time comparison to prevent timing attacks.

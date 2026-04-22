@@ -6,9 +6,8 @@
  * require() time, so each scenario re-requires the module with a fresh env state
  * using require() after manipulating process.env and clearing the module cache.
  */
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('crypto');
 
 /**
  * Load a fresh copy of auth-middleware with a specific env configuration.
@@ -112,7 +111,7 @@ describe('apiAuthMiddleware — API_TOKEN configured', () => {
     assert.equal(res._body, null);
   });
 
-  it('returns 401 for non-Bearer auth schemes', () => {
+  it('returns 401 for non-Bearer auth schemes with a specific scheme error', () => {
     const { apiAuthMiddleware } = loadMiddleware({ API_TOKEN: TOKEN });
     const req = mockReq({ authorization: `Basic ${TOKEN}` });
     const res = mockRes();
@@ -120,6 +119,8 @@ describe('apiAuthMiddleware — API_TOKEN configured', () => {
     apiAuthMiddleware(req, res, () => { nextCalled = true; });
     assert.equal(res._status, 401);
     assert.equal(nextCalled, false);
+    assert.match(res._body.error, /scheme must be Bearer/i);
+    assert.match(res._body.error, /Basic/);
   });
 });
 
