@@ -157,11 +157,12 @@ function KeysConfig({ exchange, onSave }) {
         <div className="space-y-4">
           {config.fields.map(field => (
             <div key={field.key}>
-              <label className="block text-sm font-medium text-gray-300 mb-1">
+              <label htmlFor={field.key} className="block text-sm font-medium text-gray-300 mb-1">
                 {field.label}
               </label>
               {field.type === 'textarea' ? (
                 <textarea
+                  id={field.key}
                   value={keys[field.key] || ''}
                   onChange={(e) => handleChange(field.key, e.target.value)}
                   placeholder={field.placeholder}
@@ -170,6 +171,7 @@ function KeysConfig({ exchange, onSave }) {
                 />
               ) : (
                 <input
+                  id={field.key}
                   type={field.type === 'password' && !showSecrets ? 'password' : 'text'}
                   value={keys[field.key] || ''}
                   onChange={(e) => handleChange(field.key, e.target.value)}

@@ -33,8 +33,16 @@ const createIPCServer = (port, name) => {
       log('INFO', `🔗 [${name}] IPC client connected (${clients.size} total)`);
 
       ws.on('message', (data) => {
-        const msg = deserialize(data.toString());
-        handleIncoming(ws, msg);
+        let msg;
+        try {
+          msg = deserialize(data.toString());
+        } catch (err) {
+          log('ERROR', `🔗 [${name}] IPC message deserialize error: ${String(err)}`);
+          return;
+        }
+        handleIncoming(ws, msg).catch((err) => {
+          log('ERROR', `🔗 [${name}] IPC message handler error: ${String(err)}`);
+        });
       });
 
       ws.on('close', () => {

@@ -44,14 +44,27 @@ const makeRequest = async (method, apiPath) => {
   const { apiKey, apiSecret } = loadCredentials();
   const headers = getAuthHeaders(apiKey, apiSecret, method, apiPath);
 
-  const resp = await fetch(`${BASE_URL}${apiPath}`, { method, headers });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let resp;
+  let respData;
+  try {
+    resp = await fetch(`${BASE_URL}${apiPath}`, { method, headers, signal: controller.signal });
+    respData = await resp.json().catch(() => ({}));
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err && err.name === 'AbortError') {
+      throw new Error(`Coinbase request timed out after 30000ms: ${method} ${apiPath}`);
+    }
+    throw new Error(`Coinbase request failed: ${method} ${apiPath} - ${err && err.message ? err.message : String(err)}`);
+  }
+  clearTimeout(timeout);
   if (!resp.ok) {
-    const errData = await resp.json().catch(() => ({}));
-    const message = errData.message || errData.error || resp.statusText;
-    const errorDetails = errData.error_details || '';
+    const message = respData.message || respData.error || resp.statusText;
+    const errorDetails = respData.error_details || '';
     throw new Error(`Coinbase API error (${resp.status}): ${message}${errorDetails ? ` - ${errorDetails}` : ''}`);
   }
-  return resp.json();
+  return respData;
 };
 
 /**
