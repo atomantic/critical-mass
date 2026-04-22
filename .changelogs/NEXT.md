@@ -67,6 +67,7 @@
 
 ## Fixed
 
+- Gemini ETHUSD orphaned buys — 12 buy orders (0.64 ETH) on exchange missing from fill-ledger; recovery script fetches exchange history, adds fills, creates celestial bodies, and fixes migration closed-trade holdback/PnL
 - Aggressiveness Level buttons did nothing on any non-default fund — `AggressivenessControl` referenced `pairQuery` but never received it as a prop, so clicking a level threw `ReferenceError: pairQuery is not defined` and the PUT to `/api/:exchange/regime/config` never fired. Pass `pairQuery` into the child component. Bug introduced by the multi-pair refactor (66fb595)
 - Add Fund modal's "Total Allocation" was only saved as legacy `totalAllocation` (which the regime engine ignores), leaving `regime.depositedCapital` and `regime.maxUsdcDeployed` at 0 — the dashboard then showed Deposited as $0. POST `/api/:exchange/funds` now mirrors the entered amount into both regime fields and enables regime by default; modal label updated to "Initial Capital"
 - Gemini BTCUSD missing 28 buy fills — synced from exchange and associated with galaxy body, position corrected from 0.04 to 0.069 BTC
@@ -136,6 +137,8 @@
 
 ## Removed
 
+- API auth middleware, rate limiting, and WebSocket token validation — unnecessary for single-user local/Tailscale app; caused IPC connection failures and blocked dashboard access
+- `express-rate-limit` dependency
 - `axios` dependency — replaced with native `fetch` (Node 22) across all 7 files (exchange adapters, notifier, backtest engine, sync-fills, feed-poller) to eliminate supply chain attack surface
 - `cors`, `uuid`, `json-bigint` npm dependencies — replaced with built-in Node.js APIs (`crypto.randomUUID()`, inline CORS middleware) or removed as unused
 - Stale docs: `docs/cryptofeed-evaluation.md` (rejected dependency eval), `docs/UPDOWN-EVALUATION.md` (obsolete), dead doc links from PLAN.md
