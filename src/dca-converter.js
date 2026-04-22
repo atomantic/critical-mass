@@ -14,6 +14,7 @@ const { createFillLedger } = require('./fill-ledger');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
 const { setExchangeEnabled, getRegimeConfig, getExchangeConfig } = require('./config-utils');
 const { getExchangeDataDir } = require('./migration');
+const { log } = require('./logger');
 
 /**
  * Categorize DCA orders into pending (open sells), filled (completed), and consolidated
@@ -104,11 +105,11 @@ const executeConversion = (exchange) => {
       backedUp.push(file);
     }
   }
-  console.log(`💾 [${exchange}] DCA conversion backup: ${backedUp.join(', ')} → ${backupSuffix}`);
+  log('INFO', `💾 [${exchange}] DCA conversion backup: ${backedUp.join(', ')} → ${backupSuffix}`);
 
   // 2. Disable DCA engine
   setExchangeEnabled(exchange, false);
-  console.log(`⏹️ [${exchange}] DCA engine disabled`);
+  log('INFO', `⏹️ [${exchange}] DCA engine disabled`);
 
   // 3. Load DCA state and categorize orders
   const state = loadState(null, exchange);
@@ -182,7 +183,7 @@ const executeConversion = (exchange) => {
   }
 
   fillLedger.persist();
-  console.log(`📝 [${exchange}] Fill ledger: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
+  log('INFO', `📝 [${exchange}] Fill ledger: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
 
   // 5. Build regime state
   const recalcResult = fillLedger.recalculateCycles();
@@ -252,7 +253,7 @@ const executeConversion = (exchange) => {
   };
 
   saveRegimeState(position, regime, exchange);
-  console.log(`🚀 [${exchange}] Regime state created: ${celestialBodies.length} celestial bodies, ${recalcResult.cyclesCompleted} completed cycles`);
+  log('INFO', `🚀 [${exchange}] Regime state created: ${celestialBodies.length} celestial bodies, ${recalcResult.cyclesCompleted} completed cycles`);
 
   // 6. Mark converted orders in DCA state so dashboard no longer shows them
   const dcaState = loadState(null, exchange);
@@ -268,7 +269,7 @@ const executeConversion = (exchange) => {
     }
   }
   saveState(dcaState, exchange);
-  console.log(`🧹 [${exchange}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
+  log('INFO', `🧹 [${exchange}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
 
   return {
     success: true,
@@ -309,7 +310,7 @@ const mergeToRegime = (exchange) => {
       backedUp.push(file);
     }
   }
-  console.log(`💾 [${exchange}] DCA merge backup: ${backedUp.join(', ')} → ${backupSuffix}`);
+  log('INFO', `💾 [${exchange}] DCA merge backup: ${backedUp.join(', ')} → ${backupSuffix}`);
 
   // 2. Load existing regime state and DCA state
   const existingState = loadRegimeState(exchange);
@@ -380,7 +381,7 @@ const mergeToRegime = (exchange) => {
   }
 
   fillLedger.persist();
-  console.log(`📝 [${exchange}] Fill ledger merge: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
+  log('INFO', `📝 [${exchange}] Fill ledger merge: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
 
   // 4. Create celestial bodies from pending DCA orders
   const regimeConfig = getRegimeConfig(exchange);
@@ -441,7 +442,7 @@ const mergeToRegime = (exchange) => {
 
   // 10. Save regime state (preserving existing regime, tpOptimizer, sizeOptimizer)
   saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer);
-  console.log(`🔗 [${exchange}] Regime state merged: +${newBodies.length} celestial bodies (total: ${position.celestialBodies.length})`);
+  log('INFO', `🔗 [${exchange}] Regime state merged: +${newBodies.length} celestial bodies (total: ${position.celestialBodies.length})`);
 
   // 11. Mark converted orders in DCA state
   const dcaState = loadState(null, exchange);
@@ -457,7 +458,7 @@ const mergeToRegime = (exchange) => {
     }
   }
   saveState(dcaState, exchange);
-  console.log(`🧹 [${exchange}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
+  log('INFO', `🧹 [${exchange}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
 
   return {
     success: true,
