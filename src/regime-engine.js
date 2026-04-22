@@ -273,6 +273,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
+  let reconcileInProgress = false; // Lock to prevent concurrent reconciliation ticks
   let stateSaveInterval = null;
   let entryInProgress = false; // Lock to prevent concurrent entry evaluations
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
@@ -481,7 +482,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     // Cap asset reserves at actual exchange balance before saving
-    reconcileAssetReserves().catch(() => {});
+    reconcileAssetReserves().catch(err => console.log(`⚠️ [${exchange}] reconcileAssetReserves failed: ${err.message}`));
 
     const regimeState = regimeDetector.getState();
     const tpOptimizerState = tpOptimizer.exportState();
@@ -1260,7 +1261,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         for (const cb of cbData) {
           if (!cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
         }
-      } catch { /* no corrective buys file */ }
+      } catch (err) { if (err.code !== 'ENOENT') console.log('[regime-engine] Error reading pending-corrective-buys.json:', err.message); }
 
       // Load manual trade recovery buy order IDs to avoid cancelling them as orphans
       try {
@@ -1270,7 +1271,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         for (const mt of (mtData.trades || [])) {
           if (mt.buyOrderId && mt.status === 'buy_pending') correctiveBuyIds.add(mt.buyOrderId);
         }
-      } catch { /* no manual trades file */ }
+      } catch (err) { if (err.code !== 'ENOENT') console.log('[regime-engine] Error reading manual-trades.json:', err.message); }
 
       let restoredEntries = 0;
       let orphanedEntries = 0;
@@ -1628,7 +1629,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       apiSecret: credentials.apiSecret,
       onTicker: (data) => { if (isRunning) handleTicker(data); },
       onTrade: (data) => { if (isRunning) handleTrade(data); },
-      onOrderUpdate: (data) => { if (isRunning) handleOrderUpdate(data); },
+      onOrderUpdate: (data) => { if (isRunning) handleOrderUpdate(data).catch(err => console.log(`❌ [${exchange}] handleOrderUpdate error: ${err.message}`)); },
       onConnect: () => {
         if (isRunning) healthMonitor.recordWsStatus(true);
       },
@@ -2333,8 +2334,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       const allCandles = [];
       let endSec = nowSec;
+      const maxPages = 20;
+      let pages = 0;
 
-      while (true) {
+      while (pages < maxPages) {
+        pages++;
         const startSec = endSec - (maxCandlesPerRequest * daySec);
         const batch = await adapter.getCandles(productId, startSec, endSec, 'ONE_DAY').catch(err => {
           console.log(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`);
@@ -2463,6 +2467,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const startReconciliation = () => {
     reconcileInterval = setInterval(() => {
       if (!isRunning) return; // Guard against firing after stop
+      if (reconcileInProgress) return; // Skip tick if previous run is still in progress
+      reconcileInProgress = true;
 
       // Check for entry fills that WebSocket might have missed
       if (!isDryRun && orderExecutor.checkPendingOrderFills) {
@@ -2500,8 +2506,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             const errCode = err.response?.data?.code;
             if (err.message?.includes('not found') || err.response?.status === 404 || errCode === 40003) {
               console.log(`⚠️ [${exchange}] TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
+              const cancelledTpId = positionState.activeTpOrderId;
               positionState.activeTpOrderId = null;
-              orderExecutor.handleOrderCancel(positionState.activeTpOrderId);
+              orderExecutor.handleOrderCancel(cancelledTpId);
             } else {
               console.log(`❌ [${exchange}] TP order check failed: ${err.message}`);
             }
@@ -2605,6 +2612,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         })
         .catch(err => {
           console.log(`❌ [${exchange}] Reconciliation failed: ${err.message}`);
+        })
+        .finally(() => {
+          reconcileInProgress = false;
         });
     }, config.reconcileIntervalMs);
   };

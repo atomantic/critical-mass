@@ -62,7 +62,13 @@ const createFillLedger = (exchange, productId, pair) => {
       return;
     }
 
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (err) {
+      console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — starting empty`);
+      return;
+    }
     for (const fill of data) {
       fills.set(fill.tradeId, fill);
       // Populate cycle index
@@ -86,14 +92,14 @@ const createFillLedger = (exchange, productId, pair) => {
     }
 
     // Find an active cycle - prefer most recent
-    // A cycle is "active" if less than 50% of position has been sold
+    // A cycle is "active" if it has not been fully closed (any unsold portion remains)
     const allFills = Array.from(fills.values()).sort((a, b) => b.timestamp - a.timestamp);
     for (const fill of allFills) {
       if (!fill.cycleId) continue;
       const stats = cycleStats.get(fill.cycleId);
       if (!stats || stats.buysAsset === 0) continue;
       const sellRatio = stats.sellsAsset / stats.buysAsset;
-      if (sellRatio < 0.5) {
+      if (sellRatio < 1.0) {
         currentCycleId = fill.cycleId;
         console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sells)`);
         break;
