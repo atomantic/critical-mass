@@ -68,6 +68,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     dailyReturnPercent: 0, estimatedAnnualReturn: 0, estimatedApy: 0,
     cyclesPerDay: 0, avgPnlPerCycle: 0,
     totalReturn: 0, totalReturnPercent: 0,
+    isApyClamped: false,
   };
 
   if (!startTime || (totalUsdcReturn === 0 && totalAssetReturn === 0)) {
@@ -89,7 +90,9 @@ const calculateApyMetrics = (positionState, config, marketState) => {
 
   const estimatedAnnualReturn = hasEnoughData ? dailyReturnPercent * 365 : 0;
 
-  const dailyReturnDecimal = Math.min(dailyReturnPercent / 100, 0.1);
+  const rawDailyReturnDecimal = dailyReturnPercent / 100;
+  const isApyClamped = rawDailyReturnDecimal > 0.1;
+  const dailyReturnDecimal = Math.min(rawDailyReturnDecimal, 0.1);
   let estimatedApy = 0;
   if (hasEnoughData && elapsedDays > 0) {
     const rawApy = (Math.pow(1 + dailyReturnDecimal, 365) - 1) * 100;
@@ -132,6 +135,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     dailyReturnPercent: roundUSDC(dailyReturnPercent * 100) / 100,
     estimatedAnnualReturn: roundUSDC(estimatedAnnualReturn * 100) / 100,
     estimatedApy: roundUSDC(estimatedApy * 100) / 100,
+    isApyClamped,
     cyclesPerDay: roundUSDC(cyclesPerDay * 100) / 100,
     avgPnlPerCycle: roundUSDC(avgPnlPerCycle),
     totalReturn: roundUSDC(totalLiquidValue),
