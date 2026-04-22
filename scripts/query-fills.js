@@ -4,74 +4,27 @@
  * Usage: node scripts/query-fills.js
  */
 
-const axios = require('axios');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const { roundBTC, roundUSDC } = require('../src/volatility-utils');
+const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
+const { DATA_DIR } = require('../src/paths');
 
 const API_URL = 'https://api.coinbase.com';
 const productId = 'BTC-USDC';
 
 // Load API keys
-const keysPath = path.join(__dirname, '../data/coinbase-keys.json');
-const keysRaw = JSON.parse(fs.readFileSync(keysPath, 'utf8'));
-// Use the full name as apiKey (same as the adapter)
-const keys = {
-  apiKey: keysRaw.name,
-  apiSecret: keysRaw.privateKey,
-};
-
-const preparePrivateKey = (rawKey) => {
-  if (!rawKey.includes('-----BEGIN')) return rawKey;
-  const pemMatch = rawKey.match(/(-----BEGIN [A-Z ]+-----)(.+)(-----END [A-Z ]+-----)/s);
-  if (!pemMatch) return rawKey;
-  const [, header, content, footer] = pemMatch;
-  const cleanContent = content.replace(/[\s\n\r]/g, '');
-  const lines = [];
-  for (let i = 0; i < cleanContent.length; i += 64) {
-    lines.push(cleanContent.substring(i, i + 64));
-  }
-  return `${header}\n${lines.join('\n')}\n${footer}\n`;
-};
-
-const generateJWT = (apiKey, apiSecret, method, apiPath) => {
-  const pemKey = preparePrivateKey(apiSecret);
-  // Strip query parameters from path for JWT URI (same as adapter)
-  const pathWithoutQuery = apiPath.split('?')[0];
-  const uri = `${method} api.coinbase.com${pathWithoutQuery}`;
-  return jwt.sign(
-    {
-      iss: 'cdp',
-      nbf: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 120,
-      sub: apiKey,
-      uri,
-    },
-    pemKey,
-    {
-      algorithm: 'ES256',
-      header: {
-        kid: apiKey,
-        nonce: crypto.randomBytes(16).toString('hex'),
-      },
-    }
-  );
-};
+const keysRaw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'coinbase-keys.json'), 'utf8'));
+const keys = { apiKey: keysRaw.name, apiSecret: keysRaw.privateKey };
 
 const makeRequest = async (method, apiPath) => {
-  const token = generateJWT(keys.apiKey, keys.apiSecret, method, apiPath);
-  const response = await axios({
+  const resp = await fetch(`${API_URL}${apiPath}`, {
     method,
-    url: `${API_URL}${apiPath}`,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: getAuthHeaders(keys.apiKey, keys.apiSecret, method, apiPath),
   });
-  return response.data;
+  if (!resp.ok) throw new Error(`Coinbase API ${resp.status}: ${resp.statusText}`);
+  return resp.json();
 };
 
 async function main() {

@@ -304,8 +304,19 @@ const incrementToDecimals = (increment) => {
   return dot === -1 ? 0 : s.length - dot - 1;
 };
 
+/**
+ * Format a price for display: >= $1 shows 2 decimals, < $1 shows up to 6 significant digits
+ * @param {number} p
+ * @returns {string}
+ */
+const fmtPrice = (p) => {
+  if (p == null || isNaN(p)) return '?.??';
+  if (p >= 1) return p.toFixed(2);
+  const s = p.toPrecision(6);
+  return parseFloat(s).toString();
+};
+
 module.exports = {
-  DATA_DIR,
   readJSON,
   writeJSON,
   parseTSV,
@@ -317,4 +328,5 @@ module.exports = {
   saveRegimeRunningFlag,
   shouldAutoResumeRegime,
   incrementToDecimals,
+  fmtPrice,
 };

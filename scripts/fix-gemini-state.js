@@ -14,9 +14,10 @@ const { roundAsset, roundUSDC } = require('../src/volatility-utils');
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
-const DATA_DIR = path.join(__dirname, '../data/gemini');
-const LEDGER_PATH = path.join(DATA_DIR, 'fill-ledger.json');
-const STATE_PATH = path.join(DATA_DIR, 'regime-state.json');
+const { DATA_DIR } = require('../src/paths');
+const GEMINI_DIR = path.join(DATA_DIR, 'gemini');
+const LEDGER_PATH = path.join(GEMINI_DIR, 'fill-ledger.json');
+const STATE_PATH = path.join(GEMINI_DIR, 'regime-state.json');
 
 const GALAXY_BODY_ID = 'body-15708528-mln0kjy7';
 const GALAXY_SELL_ORDER_ID = '73771275944240402';
