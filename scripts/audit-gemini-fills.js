@@ -14,74 +14,18 @@
 const fs = require('fs');
 const path = require('path');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
-const { getRestAuthHeaders } = require('../src/adapters/gemini/auth');
-const axios = require('axios');
+const { DATA_DIR } = require('../src/paths');
 
 const { roundAsset: roundBTC, roundUSDC } = require('../src/volatility-utils');
 
-const REST_BASE_URL = 'https://api.gemini.com';
 const SYMBOL = 'btcusd';
 
-// ── Auth helpers ────────────────────────────────────────────────
-
-const keysPath = path.join(__dirname, '../data/gemini-keys.json');
-const keysRaw = JSON.parse(fs.readFileSync(keysPath, 'utf8'));
-const apiKey = keysRaw.apiKey || keysRaw.key;
-const apiSecret = keysRaw.apiSecret || keysRaw.secret;
-
-const makeRestRequest = async (endpoint, payload = {}) => {
-  const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
-  const response = await axios.post(`${REST_BASE_URL}${endpoint}`, null, {
-    headers,
-    transformResponse: [data => {
-      const preserved = data.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
-      return JSON.parse(preserved);
-    }],
-  });
-  return response.data;
-};
-
-// ── Fetch ALL trades with pagination ────────────────────────────
-// Gemini /v1/mytrades supports `timestamp` param (seconds) for pagination
-// and `limit_trades` (max 500)
-
-const fetchAllTrades = async (startTimestampMs) => {
-  const allTrades = [];
-  let timestamp = Math.floor(startTimestampMs / 1000); // Gemini uses seconds
-  let page = 0;
-
-  do {
-    page++;
-    process.stdout.write(`Fetching trades page ${page} (from ${new Date(timestamp * 1000).toISOString()})...`);
-
-    const trades = await makeRestRequest('/v1/mytrades', {
-      symbol: SYMBOL,
-      limit_trades: 500,
-      timestamp,
-    });
-
-    if (!Array.isArray(trades) || trades.length === 0) {
-      console.log(' 0 trades (done)');
-      break;
-    }
-
-    console.log(` ${trades.length} trades`);
-    allTrades.push(...trades);
-
-    if (trades.length < 500) break; // No more pages
-
-    // Advance timestamp past the last trade
-    const lastTimestamp = Math.max(...trades.map(t => t.timestampms || (t.timestamp * 1000)));
-    timestamp = Math.floor(lastTimestamp / 1000) + 1;
-  } while (true);
-
-  return allTrades;
-};
+const adapter = createGeminiAdapter();
 
 // ── Load local fill-ledger ─────────────────────────────────────
 
 const loadLedger = () => {
-  const ledgerPath = path.join(__dirname, '../data/gemini/fill-ledger.json');
+  const ledgerPath = path.join(DATA_DIR, 'gemini/fill-ledger.json');
   return JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
 };
 
@@ -89,14 +33,14 @@ const loadLedger = () => {
 
 async function main() {
   // Engine start timestamp from regime-state
-  const statePath = path.join(__dirname, '../data/gemini/regime-state.json');
+  const statePath = path.join(DATA_DIR, 'gemini/regime-state.json');
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   const engineStart = state.position.engineStartTime;
 
   console.log(`\nAuditing Gemini fills since engine start: ${new Date(engineStart).toISOString()}\n`);
 
   // 1. Fetch exchange trades
-  const rawTrades = await fetchAllTrades(engineStart);
+  const rawTrades = await adapter.getAllTrades(SYMBOL, engineStart);
   console.log(`\nTotal trades from exchange: ${rawTrades.length}\n`);
 
   // Deduplicate by tid (trade ID)
@@ -304,7 +248,6 @@ async function main() {
 
   // Exchange balance check
   try {
-    const adapter = createGeminiAdapter();
     const btcBalance = await adapter.getAccountBalance('BTC');
     const usdBalance = await adapter.getAccountBalance('USD');
     console.log(`\n  Exchange BTC balance: ${btcBalance.total} (available: ${btcBalance.available}, hold: ${btcBalance.hold})`);
