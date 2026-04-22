@@ -396,7 +396,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   useEffect(() => {
     let cancelled = false
     let retryTimer = null
-    let controller = new AbortController()
+    let controller = null
     retryRef.current = false
     setIsLoading(true)
     const doFetch = () => {
