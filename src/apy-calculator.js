@@ -68,6 +68,7 @@ const calculateApyMetrics = (positionState, config, marketState) => {
     dailyReturnPercent: 0, estimatedAnnualReturn: 0, estimatedApy: 0,
     cyclesPerDay: 0, avgPnlPerCycle: 0,
     totalReturn: 0, totalReturnPercent: 0,
+    isApyClamped: false,
   };
 
   if (!startTime || (totalUsdcReturn === 0 && totalAssetReturn === 0)) {
