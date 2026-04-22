@@ -11,6 +11,7 @@ const { readFile } = require('fs/promises');
 const path = require('path');
 const { log } = require('../logger');
 const { SENTINEL_DEFAULTS } = require('../config-utils');
+const { validateEndpointUrl } = require('../url-validator');
 
 const PROVIDERS_PATH = path.join(__dirname, '..', '..', 'data', 'providers.json');
 
@@ -82,6 +83,13 @@ Return:
   "summary": "<1-2 sentence summary of market impact>",
   "suggestedAction": "<brief action suggestion for a crypto trader>"
 }`;
+
+    // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
+    const endpointValidation = await validateEndpointUrl(activeProvider.endpoint);
+    if (!endpointValidation.valid) {
+      log('WARN', `Sentinel AI classification rejected: unsafe endpoint: ${endpointValidation.error}`);
+      return null;
+    }
 
     const headers = { 'Content-Type': 'application/json' };
     if (activeProvider.apiKey) headers['Authorization'] = `Bearer ${activeProvider.apiKey}`;
