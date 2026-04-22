@@ -96,23 +96,23 @@ const createGeminiAdapter = (keysPath = null) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
+    let rawText;
     try {
       response = await fetch(`${REST_BASE_URL}${endpoint}`, {
         method: 'POST',
         headers,
         signal: controller.signal,
       });
+      // Preserve big integers as strings using regex before JSON parse
+      rawText = await response.text();
     } catch (err) {
+      clearTimeout(timeout);
       const cleanError = new Error(`Gemini API network: ${err.message}`);
       cleanError.status = 'network';
       cleanError.endpoint = `POST ${endpoint}`;
       throw cleanError;
-    } finally {
-      clearTimeout(timeout);
     }
-
-    // Preserve big integers as strings using regex before JSON parse
-    const rawText = await response.text();
+    clearTimeout(timeout);
 
     if (!response.ok) {
       let errData;
@@ -138,10 +138,16 @@ const createGeminiAdapter = (keysPath = null) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
+    let json;
     try {
       response = await fetch(`${REST_BASE_URL}${endpoint}`, { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
+      }
+      json = await response.json();
     } catch (err) {
       clearTimeout(timeout);
+      if (err.status || err.message?.startsWith('Gemini API')) throw err;
       const networkError = new Error(
         err && err.name === 'AbortError'
           ? `Gemini public request timed out for ${endpoint}`
@@ -153,10 +159,7 @@ const createGeminiAdapter = (keysPath = null) => {
       throw networkError;
     }
     clearTimeout(timeout);
-    if (!response.ok) {
-      throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
-    }
-    return response.json();
+    return json;
   };
 
   /**
