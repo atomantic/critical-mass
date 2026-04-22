@@ -159,9 +159,19 @@ const createCryptocomAdapter = (keysPath = null) => {
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
       });
-    } finally {
+    } catch (err) {
       clearTimeout(timeout);
+      const networkError = new Error(
+        err && err.name === 'AbortError'
+          ? `Crypto.com public request timed out for ${method}`
+          : `Crypto.com public request failed for ${method}: ${err && err.message ? err.message : String(err)}`
+      );
+      networkError.status = 'network';
+      networkError.endpoint = method;
+      networkError.cause = err;
+      throw networkError;
     }
+    clearTimeout(timeout);
 
     const rawText = await response.text();
 

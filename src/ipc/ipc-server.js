@@ -37,11 +37,11 @@ const createIPCServer = (port, name) => {
         try {
           msg = deserialize(data.toString());
         } catch (err) {
-          log('ERROR', `🔗 [${name}] IPC message deserialize error: ${err.message}`);
+          log('ERROR', `🔗 [${name}] IPC message deserialize error: ${String(err)}`);
           return;
         }
         handleIncoming(ws, msg).catch((err) => {
-          log('ERROR', `🔗 [${name}] IPC message handler error: ${err.message}`);
+          log('ERROR', `🔗 [${name}] IPC message handler error: ${String(err)}`);
         });
       });
 

@@ -22,31 +22,36 @@ export const useSentinelSocket = (options = {}) => {
 
     socketRef.current = socket
 
-    socket.on('connect', () => {
+    const onConnect = () => {
       setConnected(true)
       socket.emit('sentinel:subscribe')
-    })
+    }
 
-    socket.on('disconnect', () => {
+    const onDisconnect = () => {
       setConnected(false)
-    })
+    }
 
     // New alert
-    socket.on('sentinel:alert', (alert) => {
+    const onAlert = (alert) => {
       setLatestAlert(alert)
-    })
+    }
 
     // Status update
-    socket.on('sentinel:status', (data) => {
+    const onStatus = (data) => {
       setStatus(data)
-    })
+    }
+
+    socket.on('connect', onConnect)
+    socket.on('disconnect', onDisconnect)
+    socket.on('sentinel:alert', onAlert)
+    socket.on('sentinel:status', onStatus)
 
     return () => {
       socket.emit('sentinel:unsubscribe')
-      socket.off('connect')
-      socket.off('disconnect')
-      socket.off('sentinel:alert')
-      socket.off('sentinel:status')
+      socket.off('connect', onConnect)
+      socket.off('disconnect', onDisconnect)
+      socket.off('sentinel:alert', onAlert)
+      socket.off('sentinel:status', onStatus)
       socket.disconnect()
     }
   }, [autoConnect])
