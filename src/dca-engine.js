@@ -21,6 +21,10 @@ const { getFibonacciBuyAmount } = require('./fibonacci-utils');
  * @typedef {import('./types').TrackedOrder} TrackedOrder
  */
 
+// Fee constants for dry-run simulation
+const FEE_RATE = 0.00125; // ~0.125% taker fee
+const REBATE_RATE = 0.00031; // ~0.031% maker rebate
+
 /**
  * Load configuration for an exchange
  * @param {string} [exchange] - Exchange name (default: coinbase)
@@ -300,8 +304,8 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   if (isDryRun) {
     // Simulate the trade without executing
     const simulatedBtcAmount = actualBuyAmount / currentPrice;
-    const simulatedFees = actualBuyAmount * 0.00125; // ~0.125% fee
-    const simulatedRebates = actualBuyAmount * 0.00031; // ~0.031% rebate
+    const simulatedFees = actualBuyAmount * FEE_RATE;
+    const simulatedRebates = actualBuyAmount * REBATE_RATE;
 
     buyResult = {
       orderId: `dry-run-buy-${Date.now()}`,
