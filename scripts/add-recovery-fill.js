@@ -29,12 +29,19 @@ const keysRaw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'coinbase-keys.js
 const keys = { apiKey: keysRaw.name, apiSecret: keysRaw.privateKey };
 
 const makeRequest = async (method, apiPath) => {
-  const resp = await fetch(`${API_URL}${apiPath}`, {
-    method,
-    headers: getAuthHeaders(keys.apiKey, keys.apiSecret, method, apiPath),
-  });
-  if (!resp.ok) throw new Error(`Coinbase API ${resp.status}: ${resp.statusText}`);
-  return resp.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const resp = await fetch(`${API_URL}${apiPath}`, {
+      method,
+      headers: getAuthHeaders(keys.apiKey, keys.apiSecret, method, apiPath),
+      signal: controller.signal,
+    });
+    if (!resp.ok) throw new Error(`Coinbase API ${resp.status}: ${resp.statusText}`);
+    return resp.json();
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 async function main() {
