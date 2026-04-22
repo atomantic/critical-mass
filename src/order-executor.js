@@ -535,7 +535,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    */
   const atomicReplace = async (oldOrderId, newOrderParams) => {
     // Step 1: Cancel old order
-    await adapter.cancelOrder(oldOrderId).catch(err => console.log(`❌ [${exchange}] atomicReplace cancel failed for ${oldOrderId}: ${err.message}`));
+    await adapter.cancelOrder(oldOrderId).catch(err => {
+      console.log(`❌ [${exchange}] atomicReplace cancel failed for ${oldOrderId}: ${err.message}`);
+      throw err;
+    });
 
     // Step 2: Wait for cancel confirmation
     let confirmed = false;
