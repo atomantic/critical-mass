@@ -22,6 +22,7 @@ const {
   removeFund,
   getBaseCurrency,
   getQuoteCurrency,
+  REGIME_DEFAULTS,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
@@ -46,7 +47,6 @@ const validatePairParam = (req) => {
   const raw = req.query?.pair;
   if (!raw) {
     // No pair supplied — fall back to exchange default (may still be null).
-    const { getDefaultPair } = require('../config-utils');
     return { pair: getDefaultPair(req.params.exchange), error: null };
   }
   if (!PAIR_RE.test(String(raw))) {
@@ -56,37 +56,8 @@ const validatePairParam = (req) => {
 };
 
 // --- Security: regime sub-object allowlist ---
-// Keys derived from REGIME_DEFAULTS in config-utils.js.
-const REGIME_ALLOWED_KEYS = new Set([
-  'enabled', 'aggressiveness',
-  'atrPeriod', 'kFactor', 'minIntervalMs', 'maxIntervalMs',
-  'momentumMult', 'volExpansionMult', 'volContractionMult', 'vwapPeriodHours', 'trendConfirmationPeriods',
-  'minOrderSizeUsdc', 'baseSizeUsdc', 'harvestScale', 'cautionScale', 'trendScale',
-  'maxCycleBuys', 'cycleResetHours', 'liquidityFactorCap', 'divergenceScalePct',
-  'tpMult', 'tpMinPercent', 'tpMaxPercent', 'tpUpdateThresholdPct', 'holdbackRatio',
-  'celestialEnabled', 'maxCelestialBodies',
-  'tpAutoManaged', 'tpEvaluationCycles', 'tpEvaluationMaxHours', 'tpMinSampleSize',
-  'tpAbsoluteMin', 'tpAbsoluteMax', 'tpMaxChangePercent',
-  'sizeAutoManaged', 'sizeEvaluationCycles', 'sizeEvaluationMaxHours', 'sizeMinSampleSize',
-  'sizeAbsoluteMinBase', 'sizeAbsoluteMaxBase', 'sizeTargetUtilization', 'sizeMaxChangePercent',
-  'sizeAutoCycleBuys', 'sizeMinCycleBuys', 'sizeMaxCycleBuys',
-  'maxAssetExposure', 'depositedCapital', 'maxUsdcDeployed', 'maxDrawdownPercent', 'drawdownResetHours',
-  'entryOffsetBps', 'entryOffsetUpBps', 'entryOffsetDownBps', 'entryMaxRetries',
-  'cancelRateLimitMs', 'orderStaleMs',
-  'staleDataMs', 'staleOrdersMs', 'maxRestErrors', 'maxRateLimits', 'maxLatencyMs', 'safeRecoveryMs',
-  'maxOpenOrders', 'reconcileIntervalMs',
-  'maxSpreadBps', 'spreadPauseMs', 'minDepthUsdc', 'depthPauseMs',
-  'flashMoveMult', 'flashCooldownMs', 'cancelEntriesOnFlash',
-  'macroEnabled', 'macroUpdateIntervalMs', 'macroHysteresis',
-  'macroAccumulationThreshold', 'macroDeclineThreshold', 'macroMarkupThreshold',
-  'macroAccumulationSizeMult', 'macroAccumulationTpMult', 'macroAccumulationOffsetMult',
-  'macroMarkupSizeMult', 'macroMarkupTpMult', 'macroMarkupOffsetMult',
-  'macroDeclineSizeMult', 'macroDeclineTpMult', 'macroDeclineOffsetMult',
-  'longTermBiasEnabled', 'longTermLookbackDays', 'longTermUpdateIntervalMs', 'autoAggressivenessEnabled',
-  'entryMode',
-  'ladderMaxAthDropPct', 'ladderSpacingMode', 'ladderSizeMode', 'ladderAutoSwitch',
-  'ladderAutoSwitchVolMult', 'ladderMinSpacingPct',
-]);
+// Derived from REGIME_DEFAULTS so it automatically stays in sync as config-utils evolves.
+const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
 
 /**
  * @param {import('express').Express} app

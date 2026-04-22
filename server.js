@@ -50,6 +50,11 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5563;
 
+// Trust the first hop when running behind a reverse proxy (e.g. Umbrel app_proxy).
+// This ensures rate limiters use the real client IP from X-Forwarded-For instead of
+// treating all requests as coming from the proxy/container address.
+app.set('trust proxy', 1);
+
 // CORS allowlist -- only local dev and the server itself
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5564`).split(',').map(s => s.trim());
 
@@ -72,9 +77,9 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(express.json());
 
 // ============ Rate Limiting ============
+// Mounted BEFORE express.json() so the body is not parsed for rate-limited requests.
 
 // Global rate limit: 100 requests per minute across all /api/* routes.
 const globalApiLimiter = rateLimit({
@@ -98,12 +103,16 @@ app.use('/api/', globalApiLimiter);
 app.use('/api/updown/screenshot', screenshotLimiter);
 
 // ============ API Authentication ============
+// Mounted BEFORE express.json() so unauthenticated request bodies are not parsed.
 
 // Bearer token auth — protects all /api/* routes.
 // When API_TOKEN env var is set, requests must supply:
 //   Authorization: Bearer <token>
-// If API_TOKEN is not set, auth is skipped (backward compat warning printed at startup).
+// Fails closed by default — set ALLOW_UNAUTHENTICATED_API=true for development only.
 app.use('/api/', apiAuthMiddleware);
+
+// Parse JSON bodies after rate limiting and auth to reduce wasted CPU/memory.
+app.use(express.json({ limit: '1mb' }));
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
