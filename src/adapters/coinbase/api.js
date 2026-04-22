@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
+const { incrementToDecimals } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -292,13 +293,16 @@ const createCoinbaseAdapter = (keysPath = null) => {
   };
 
   /**
-   * Place a post-only limit sell order
+   * Place a post-only GTC limit order (shared implementation for buy and sell)
+   * @param {'BUY'|'SELL'} side - Order side
    * @param {string} productId - Product ID
-   * @param {number} baseAmount - Amount of base currency to sell
+   * @param {number} baseAmount - Amount of base currency
    * @param {number} price - Limit price in quote currency
-   * @returns {Promise<LimitSellResult>} Order result
+   * @param {Object} [options] - Order options
+   * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
+   * @returns {Promise<LimitSellResult|LimitBuyResult>} Order result
    */
-  adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
+  const placeLimitOrder = async (side, productId, baseAmount, price, options = {}) => {
     const clientOrderId = crypto.randomUUID();
     const postOnly = options.postOnly !== false; // Default to true
 
@@ -313,13 +317,13 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
     // Derive decimal precision from increments
-    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
-    const quotePrecision = Math.max(0, -Math.floor(Math.log10(quoteIncrement)));
+    const basePrecision = incrementToDecimals(baseIncrement);
+    const quotePrecision = incrementToDecimals(quoteIncrement);
 
     const orderData = {
       client_order_id: clientOrderId,
       product_id: productId,
-      side: 'SELL',
+      side,
       order_configuration: {
         limit_limit_gtc: {
           base_size: roundedAmount.toFixed(basePrecision),
@@ -338,7 +342,20 @@ const createCoinbaseAdapter = (keysPath = null) => {
       errorMessage: result.failure_response?.message || result.error_response?.message,
       baseSize: roundedAmount,
       limitPrice: roundedPrice,
+      postOnly,
     };
+  };
+
+  /**
+   * Place a post-only limit sell order
+   * @param {string} productId - Product ID
+   * @param {number} baseAmount - Amount of base currency to sell
+   * @param {number} price - Limit price in quote currency
+   * @param {Object} [options] - Order options
+   * @returns {Promise<LimitSellResult>} Order result
+   */
+  adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
+    return placeLimitOrder('SELL', productId, baseAmount, price, options);
   };
 
   /**
@@ -351,47 +368,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<LimitBuyResult>} Order result
    */
   adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
-    const clientOrderId = crypto.randomUUID();
-    const postOnly = options.postOnly !== false; // Default to true
-
-    // Get product details for proper rounding
-    const product = await adapter.getProductDetails(productId);
-
-    // Round to proper increments
-    const baseIncrement = parseFloat(product.baseIncrement);
-    const quoteIncrement = parseFloat(product.quoteIncrement);
-
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
-
-    // Derive decimal precision from increments
-    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
-    const quotePrecision = Math.max(0, -Math.floor(Math.log10(quoteIncrement)));
-
-    const orderData = {
-      client_order_id: clientOrderId,
-      product_id: productId,
-      side: 'BUY',
-      order_configuration: {
-        limit_limit_gtc: {
-          base_size: roundedAmount.toFixed(basePrecision),
-          limit_price: roundedPrice.toFixed(quotePrecision),
-          post_only: postOnly,
-        },
-      },
-    };
-
-    const result = await makeRequest('POST', '/api/v3/brokerage/orders', orderData);
-
-    return {
-      orderId: result.order_id || result.success_response?.order_id,
-      clientOrderId,
-      success: result.success || !!result.success_response,
-      errorMessage: result.error_response?.message,
-      baseSize: roundedAmount,
-      limitPrice: roundedPrice,
-      postOnly,
-    };
+    return placeLimitOrder('BUY', productId, baseAmount, price, options);
   };
 
   /**
@@ -537,8 +514,8 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const roundedStopPrice = Math.floor(stopPrice / quoteIncrement) * quoteIncrement;
     const roundedLimitPrice = Math.floor(limitPrice / quoteIncrement) * quoteIncrement;
 
-    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
-    const quotePrecision = Math.max(0, -Math.floor(Math.log10(quoteIncrement)));
+    const basePrecision = incrementToDecimals(baseIncrement);
+    const quotePrecision = incrementToDecimals(quoteIncrement);
 
     const orderData = {
       client_order_id: clientOrderId,
@@ -579,7 +556,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const product = await adapter.getProductDetails(productId);
     const baseIncrement = parseFloat(product.baseIncrement);
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const basePrecision = Math.max(0, -Math.floor(Math.log10(baseIncrement)));
+    const basePrecision = incrementToDecimals(baseIncrement);
 
     const orderData = {
       client_order_id: clientOrderId,
