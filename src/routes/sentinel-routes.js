@@ -36,8 +36,36 @@ module.exports = (app, deps) => {
     res.json({ success: true });
   });
 
+  // Allowlist of top-level keys accepted by updateSentinelConfig.
+  // Sub-objects (aiClassification, keywords, feeds) are whitelisted as a unit
+  // and their internal structure is validated by updateSentinelConfig itself.
+  const SENTINEL_CONFIG_ALLOWED_KEYS = new Set([
+    'enabled',
+    'pollIntervalMs',
+    'maxAlerts',
+    'aiClassification',
+    'feeds',
+    'keywords',
+  ]);
+
   app.put('/api/sentinel/config', (req, res) => {
-    updateSentinelConfig(req.body);
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, error: 'Request body must be a JSON object' });
+    }
+
+    // Strip any keys not in the allowlist (mass-assignment defence).
+    const sanitized = {};
+    for (const key of Object.keys(req.body)) {
+      if (SENTINEL_CONFIG_ALLOWED_KEYS.has(key)) {
+        sanitized[key] = req.body[key];
+      }
+    }
+
+    if (Object.keys(sanitized).length === 0) {
+      return res.status(400).json({ success: false, error: `No recognised config keys. Allowed: ${[...SENTINEL_CONFIG_ALLOWED_KEYS].join(', ')}` });
+    }
+
+    updateSentinelConfig(sanitized);
     // Restart service with new config
     sentinelService.stop();
     sentinelService.start();

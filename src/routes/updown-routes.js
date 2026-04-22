@@ -12,6 +12,7 @@ const { exec } = require('child_process');
 const { readFileSync, readdirSync } = fs;
 const { log } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
+const { validateEndpointUrl } = require('../url-validator');
 
 const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
@@ -163,6 +164,13 @@ module.exports = (app, deps) => {
       }],
       stream: false
     };
+
+    // Validate provider endpoint URL to prevent SSRF attacks.
+    const endpointValidation = validateEndpointUrl(provider.endpoint);
+    if (!endpointValidation.valid) {
+      log('WARN', `🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointValidation.error}`);
+      return res.status(400).json({ success: false, error: `Provider endpoint is invalid: ${endpointValidation.error}` });
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), provider.timeout || 120_000);

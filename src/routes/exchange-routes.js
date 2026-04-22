@@ -29,6 +29,65 @@ const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } 
 const { shouldAutoResumeRegime } = require('../shared-utils');
 const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 
+// --- Security: pair validation regex ---
+// Pair query param must be of the form AAAA-BBBB or AAAA_BBBB (case-insensitive).
+// Allows 2-8 alphanumeric chars on each side of an optional dash/underscore separator.
+const PAIR_RE = /^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/i;
+
+/**
+ * Validate and return the trading pair from a request's query param.
+ * Falls back to the exchange default if ?pair= is absent.
+ * Returns null (without throwing) if the value fails validation.
+ *
+ * @param {import('express').Request} req
+ * @returns {{ pair: string | null, error: string | null }}
+ */
+const validatePairParam = (req) => {
+  const raw = req.query?.pair;
+  if (!raw) {
+    // No pair supplied — fall back to exchange default (may still be null).
+    const { getDefaultPair } = require('../config-utils');
+    return { pair: getDefaultPair(req.params.exchange), error: null };
+  }
+  if (!PAIR_RE.test(String(raw))) {
+    return { pair: null, error: `Invalid pair format: "${raw}". Expected e.g. BTC-USDC or BTC_USDC` };
+  }
+  return { pair: String(raw).toUpperCase(), error: null };
+};
+
+// --- Security: regime sub-object allowlist ---
+// Keys derived from REGIME_DEFAULTS in config-utils.js.
+const REGIME_ALLOWED_KEYS = new Set([
+  'enabled', 'aggressiveness',
+  'atrPeriod', 'kFactor', 'minIntervalMs', 'maxIntervalMs',
+  'momentumMult', 'volExpansionMult', 'volContractionMult', 'vwapPeriodHours', 'trendConfirmationPeriods',
+  'minOrderSizeUsdc', 'baseSizeUsdc', 'harvestScale', 'cautionScale', 'trendScale',
+  'maxCycleBuys', 'cycleResetHours', 'liquidityFactorCap', 'divergenceScalePct',
+  'tpMult', 'tpMinPercent', 'tpMaxPercent', 'tpUpdateThresholdPct', 'holdbackRatio',
+  'celestialEnabled', 'maxCelestialBodies',
+  'tpAutoManaged', 'tpEvaluationCycles', 'tpEvaluationMaxHours', 'tpMinSampleSize',
+  'tpAbsoluteMin', 'tpAbsoluteMax', 'tpMaxChangePercent',
+  'sizeAutoManaged', 'sizeEvaluationCycles', 'sizeEvaluationMaxHours', 'sizeMinSampleSize',
+  'sizeAbsoluteMinBase', 'sizeAbsoluteMaxBase', 'sizeTargetUtilization', 'sizeMaxChangePercent',
+  'sizeAutoCycleBuys', 'sizeMinCycleBuys', 'sizeMaxCycleBuys',
+  'maxAssetExposure', 'depositedCapital', 'maxUsdcDeployed', 'maxDrawdownPercent', 'drawdownResetHours',
+  'entryOffsetBps', 'entryOffsetUpBps', 'entryOffsetDownBps', 'entryMaxRetries',
+  'cancelRateLimitMs', 'orderStaleMs',
+  'staleDataMs', 'staleOrdersMs', 'maxRestErrors', 'maxRateLimits', 'maxLatencyMs', 'safeRecoveryMs',
+  'maxOpenOrders', 'reconcileIntervalMs',
+  'maxSpreadBps', 'spreadPauseMs', 'minDepthUsdc', 'depthPauseMs',
+  'flashMoveMult', 'flashCooldownMs', 'cancelEntriesOnFlash',
+  'macroEnabled', 'macroUpdateIntervalMs', 'macroHysteresis',
+  'macroAccumulationThreshold', 'macroDeclineThreshold', 'macroMarkupThreshold',
+  'macroAccumulationSizeMult', 'macroAccumulationTpMult', 'macroAccumulationOffsetMult',
+  'macroMarkupSizeMult', 'macroMarkupTpMult', 'macroMarkupOffsetMult',
+  'macroDeclineSizeMult', 'macroDeclineTpMult', 'macroDeclineOffsetMult',
+  'longTermBiasEnabled', 'longTermLookbackDays', 'longTermUpdateIntervalMs', 'autoAggressivenessEnabled',
+  'entryMode',
+  'ladderMaxAthDropPct', 'ladderSpacingMode', 'ladderSizeMode', 'ladderAutoSwitch',
+  'ladderAutoSwitchVolMult', 'ladderMinSpacingPct',
+]);
+
 /**
  * @param {import('express').Express} app
  * @param {{exchangeIPCMap: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
@@ -200,14 +259,11 @@ module.exports = (app, deps) => {
     }
   });
 
-  // Resolve the pair from request (?pair= query param) defaulting to the
-  // exchange's default pair. Used by all the per-fund endpoints below.
-  const getPair = (req) => req.query?.pair || getDefaultPair(req.params.exchange);
-
   // Get config for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
     res.json(config);
   });
@@ -215,13 +271,28 @@ module.exports = (app, deps) => {
   // Update config for an exchange/fund (?pair= optional)
   app.put('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error: pairError } = validatePairParam(req);
+    if (pairError) return res.status(400).json({ success: false, error: pairError });
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
-    // regime is a nested object — pass through without schema validation
+    // regime is a nested object — validate keys against allowlist before merging
     if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
-      updates.regime = req.body.regime;
+      const sanitizedRegime = {};
+      const rejectedKeys = [];
+      for (const key of Object.keys(req.body.regime)) {
+        if (REGIME_ALLOWED_KEYS.has(key)) {
+          sanitizedRegime[key] = req.body.regime[key];
+        } else {
+          rejectedKeys.push(key);
+        }
+      }
+      if (rejectedKeys.length > 0) {
+        return res.status(400).json({ success: false, error: `Unknown regime keys: ${rejectedKeys.join(', ')}` });
+      }
+      if (Object.keys(sanitizedRegime).length > 0) {
+        updates.regime = sanitizedRegime;
+      }
     }
 
     updateFundConfig(exchange, pair, updates);
@@ -236,7 +307,8 @@ module.exports = (app, deps) => {
   // Toggle enabled/dryRun for an exchange/fund (?pair= optional)
   app.patch('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
     const { enabled, dryRun } = req.body;
 
     if (typeof enabled === 'boolean') {
@@ -255,7 +327,8 @@ module.exports = (app, deps) => {
   // Get state for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/state', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
     const state = stateTracker.loadState(config, exchange, pair);
     res.json(state);
@@ -272,7 +345,8 @@ module.exports = (app, deps) => {
   // Get live status for an exchange
   app.get('/api/:exchange/status', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
     const { getAdapter } = require('../adapters');
 
     const config = getFundConfig(exchange, pair);
@@ -317,7 +391,8 @@ module.exports = (app, deps) => {
   // Get summary for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/summary', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
     const state = stateTracker.loadState(config, exchange, pair);
     const logFile = getLogFile(exchange);
@@ -375,7 +450,8 @@ module.exports = (app, deps) => {
   // Get candles for an exchange/fund (for charts)
   app.get('/api/:exchange/candles', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
     const { granularity = 'ONE_MINUTE', limit = 60 } = req.query;
     const config = getFundConfig(exchange, pair);
     const { getAdapter } = require('../adapters');
@@ -402,7 +478,8 @@ module.exports = (app, deps) => {
   // Sync pending orders for an exchange/fund
   app.post('/api/:exchange/sync', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
 
     if (!getGlobalConfig().simpleDcaEnabled) {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
@@ -428,7 +505,8 @@ module.exports = (app, deps) => {
   // Trigger trade for an exchange/fund
   app.post('/api/:exchange/trade', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
 
     if (!getGlobalConfig().simpleDcaEnabled) {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
@@ -443,7 +521,8 @@ module.exports = (app, deps) => {
   // Consolidate pending orders for an exchange/fund
   app.post('/api/:exchange/consolidate', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const { pair, error } = validatePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
     const { orderIds } = req.body || {};
 
     log('INFO', `[${exchange}/${pair}] Consolidation triggered via API`);
