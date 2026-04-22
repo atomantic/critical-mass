@@ -7,6 +7,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { log } = require('./src/logger');
 const { runMigrationIfNeeded } = require('./src/migration');
+const { apiAuthMiddleware, validateSocketToken } = require('./src/auth-middleware');
+const rateLimit = require('express-rate-limit');
 const {
   getExchangeConfig,
   getEnabledExchanges,
@@ -25,8 +27,8 @@ const {
 const { runIntervalCycle } = require('./src/dca-engine');
 const { createNotifier } = require('./src/notifier');
 const { createBackup, pruneBackups } = require('./src/backup-service');
+const { DATA_DIR } = require('./src/paths');
 const {
-  DATA_DIR,
   readJSON,
   writeJSON,
   parseTSV,
@@ -72,6 +74,36 @@ app.use((req, res, next) => {
 });
 app.use(express.json());
 
+// ============ Rate Limiting ============
+
+// Global rate limit: 100 requests per minute across all /api/* routes.
+const globalApiLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many requests, please try again later.' },
+});
+
+// Tighter limit for the screenshot analysis endpoint (AI calls are expensive).
+const screenshotLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Screenshot endpoint rate limit exceeded (5/min).' },
+});
+
+app.use('/api/', globalApiLimiter);
+app.use('/api/updown/screenshot', screenshotLimiter);
+
+// ============ API Authentication ============
+
+// Bearer token auth — protects all /api/* routes.
+// When API_TOKEN env var is set, requests must supply:
+//   Authorization: Bearer <token>
+// If API_TOKEN is not set, auth is skipped (backward compat warning printed at startup).
+app.use('/api/', apiAuthMiddleware);
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
@@ -307,6 +339,17 @@ tradeEvents.on('trade', (event) => {
 });
 
 io.on('connection', (socket) => {
+  // Validate bearer token on WebSocket connections.
+  // Clients should supply the token either as:
+  //   socket.io handshake auth:  { auth: { token: '<API_TOKEN>' } }
+  //   or as a query param:       ?token=<API_TOKEN>
+  if (!validateSocketToken(socket)) {
+    log('WARN', `WebSocket rejected (invalid token): ${socket.id} from ${socket.handshake.address}`);
+    socket.emit('error', { message: 'Unauthorized: invalid or missing token' });
+    socket.disconnect(true);
+    return;
+  }
+
   log('INFO', `WebSocket client connected: ${socket.id}`);
   socket.on('disconnect', () => {
     const entry = activeLogStreams.get(socket.id);
