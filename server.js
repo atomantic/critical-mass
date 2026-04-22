@@ -7,6 +7,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { log } = require('./src/logger');
 const { runMigrationIfNeeded } = require('./src/migration');
+const { apiAuthMiddleware, validateSocketToken } = require('./src/auth-middleware');
+const rateLimit = require('express-rate-limit');
 const {
   getExchangeConfig,
   getEnabledExchanges,
@@ -25,8 +27,8 @@ const {
 const { runIntervalCycle } = require('./src/dca-engine');
 const { createNotifier } = require('./src/notifier');
 const { createBackup, pruneBackups } = require('./src/backup-service');
+const { DATA_DIR } = require('./src/paths');
 const {
-  DATA_DIR,
   readJSON,
   writeJSON,
   parseTSV,
@@ -47,6 +49,13 @@ runMigrationIfNeeded();
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5563;
+
+// Trust the first reverse-proxy hop only when TRUST_PROXY=1 is set (e.g. Umbrel app_proxy).
+// This ensures rate limiters use the real client IP from X-Forwarded-For.
+// Do NOT enable when the server is exposed directly: clients could spoof X-Forwarded-For.
+if (process.env.TRUST_PROXY === '1') {
+  app.set('trust proxy', 1);
+}
 
 // CORS allowlist -- only local dev and the server itself
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5564`).split(',').map(s => s.trim());
@@ -70,8 +79,42 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(express.json());
 
+// ============ Rate Limiting ============
+// Mounted BEFORE express.json() so the body is not parsed for rate-limited requests.
+
+// Global rate limit: 100 requests per minute across all /api/* routes.
+const globalApiLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many requests, please try again later.' },
+});
+
+// Tighter limit for the screenshot analysis endpoint (AI calls are expensive).
+const screenshotLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Screenshot endpoint rate limit exceeded (5/min).' },
+});
+
+app.use('/api/', globalApiLimiter);
+app.use('/api/updown/screenshot', screenshotLimiter);
+
+// ============ API Authentication ============
+// Mounted BEFORE express.json() so unauthenticated request bodies are not parsed.
+
+// Bearer token auth — protects all /api/* routes.
+// When API_TOKEN env var is set, requests must supply:
+//   Authorization: Bearer <token>
+// Fails closed by default — set ALLOW_UNAUTHENTICATED_API=true for development only.
+app.use('/api/', apiAuthMiddleware);
+
+// Parse JSON bodies after rate limiting and auth to reduce wasted CPU/memory.
+app.use(express.json({ limit: '1mb' }));
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
@@ -304,6 +347,17 @@ const { tradeEvents } = require('./src/trade-events');
 
 tradeEvents.on('trade', (event) => {
   io.emit('trade:event', event);
+});
+
+// Reject unauthorised Socket.IO handshakes before 'connection' fires,
+// so the socket is never fully allocated for unauthenticated clients.
+// Clients must supply the bearer token in handshake.auth.token or ?token=.
+io.use((socket, next) => {
+  if (!validateSocketToken(socket)) {
+    log('WARN', `WebSocket rejected (invalid token): ${socket.id} from ${socket.handshake.address}`);
+    return next(new Error('Unauthorized: invalid or missing token'));
+  }
+  next();
 });
 
 io.on('connection', (socket) => {
