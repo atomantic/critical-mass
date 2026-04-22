@@ -47,8 +47,10 @@ const makeRequest = async (method, apiPath) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30000);
   let resp;
+  let respData;
   try {
     resp = await fetch(`${BASE_URL}${apiPath}`, { method, headers, signal: controller.signal });
+    respData = await resp.json().catch(() => ({}));
   } catch (err) {
     clearTimeout(timeout);
     if (err && err.name === 'AbortError') {
@@ -58,12 +60,11 @@ const makeRequest = async (method, apiPath) => {
   }
   clearTimeout(timeout);
   if (!resp.ok) {
-    const errData = await resp.json().catch(() => ({}));
-    const message = errData.message || errData.error || resp.statusText;
-    const errorDetails = errData.error_details || '';
+    const message = respData.message || respData.error || resp.statusText;
+    const errorDetails = respData.error_details || '';
     throw new Error(`Coinbase API error (${resp.status}): ${message}${errorDetails ? ` - ${errorDetails}` : ''}`);
   }
-  return resp.json();
+  return respData;
 };
 
 /**
