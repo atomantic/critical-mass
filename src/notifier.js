@@ -152,7 +152,11 @@ const createNotifier = () => {
       const data = await resp.json().catch(() => ({}));
       clearTimeout(timeout);
       if (!resp.ok) {
-        throw { status: resp.status, description: data.description || resp.statusText };
+        stats.errors++;
+        stats.dailyErrors++;
+        const desc = data.description || resp.statusText;
+        log('ERROR', `📨 Telegram send failed (${resp.status}): ${desc}`);
+        return false;
       }
       stats.sent++;
       stats.dailySent++;
@@ -163,7 +167,7 @@ const createNotifier = () => {
       stats.errors++;
       stats.dailyErrors++;
       const status = err.status || 'unknown';
-      const desc = err.description || err.message;
+      const desc = err.message || String(err);
       log('ERROR', `📨 Telegram send failed (${status}): ${desc}`);
       return false;
     }
