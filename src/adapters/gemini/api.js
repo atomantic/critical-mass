@@ -93,17 +93,22 @@ const createGeminiAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
     try {
       response = await fetch(`${REST_BASE_URL}${endpoint}`, {
         method: 'POST',
         headers,
+        signal: controller.signal,
       });
     } catch (err) {
       const cleanError = new Error(`Gemini API network: ${err.message}`);
       cleanError.status = 'network';
       cleanError.endpoint = `POST ${endpoint}`;
       throw cleanError;
+    } finally {
+      clearTimeout(timeout);
     }
 
     // Preserve big integers as strings using regex before JSON parse
@@ -130,7 +135,14 @@ const createGeminiAdapter = (keysPath = null) => {
    * @returns {Promise<any>} API response
    */
   const makePublicRequest = async (endpoint) => {
-    const response = await fetch(`${REST_BASE_URL}${endpoint}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let response;
+    try {
+      response = await fetch(`${REST_BASE_URL}${endpoint}`, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) {
       throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
     }

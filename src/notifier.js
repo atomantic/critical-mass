@@ -135,6 +135,8 @@ const createNotifier = () => {
    */
   const sendTelegram = (text) => {
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     return fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -144,7 +146,9 @@ const createNotifier = () => {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
       }),
+      signal: controller.signal,
     })
+      .finally(() => clearTimeout(timeout))
       .then(async (resp) => {
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}));
@@ -365,6 +369,8 @@ const createNotifier = () => {
     }
 
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     return fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -374,7 +380,9 @@ const createNotifier = () => {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
       }),
+      signal: controller.signal,
     })
+      .finally(() => clearTimeout(timeout))
       .then(async (resp) => {
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}));

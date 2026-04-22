@@ -34,7 +34,9 @@ const createIPCServer = (port, name) => {
 
       ws.on('message', (data) => {
         const msg = deserialize(data.toString());
-        handleIncoming(ws, msg);
+        handleIncoming(ws, msg).catch((err) => {
+          log('ERROR', `🔗 [${name}] IPC message handler error: ${err.message}`);
+        });
       });
 
       ws.on('close', () => {

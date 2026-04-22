@@ -395,10 +395,13 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const retryRef = useRef(false)
   useEffect(() => {
     let cancelled = false
+    let retryTimer = null
+    let controller = new AbortController()
     retryRef.current = false
     setIsLoading(true)
     const doFetch = () => {
-      fetch(`/api/candles/${exchange}`)
+      controller = new AbortController()
+      fetch(`/api/candles/${exchange}`, { signal: controller.signal })
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (cancelled || !data?.candles) { if (!cancelled) setIsLoading(false); return }
@@ -409,13 +412,17 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
           } else {
             // Derived TF not seeded yet — retry once after 5s (keep isLoading=true)
             retryRef.current = true
-            setTimeout(() => { if (!cancelled) doFetch() }, 5000)
+            retryTimer = setTimeout(() => { if (!cancelled) doFetch() }, 5000)
           }
         })
         .catch(() => { if (!cancelled) setIsLoading(false) })
     }
     doFetch()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      controller.abort()
+      if (retryTimer !== null) clearTimeout(retryTimer)
+    }
   }, [exchange, candleTf])
 
   // Re-populate from cached candles when view/interval/range changes or data arrives (isLoading → false)

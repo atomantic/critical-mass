@@ -95,18 +95,23 @@ const createCryptocomAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const body = createAuthenticatedRequest(method, params, apiKey, apiSecret);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
     try {
       response = await fetch(`${REST_BASE_URL}/${method}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
     } catch (err) {
       const cleanError = new Error(`Crypto.com API network: ${err.message}`);
       cleanError.status = 'network';
       cleanError.endpoint = method;
       throw cleanError;
+    } finally {
+      clearTimeout(timeout);
     }
 
     const rawText = await response.text();
@@ -146,9 +151,17 @@ const createCryptocomAdapter = (keysPath = null) => {
       ? `${REST_BASE_URL}/${method}?${queryString}`
       : `${REST_BASE_URL}/${method}`;
 
-    const response = await fetch(url, {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const rawText = await response.text();
 
