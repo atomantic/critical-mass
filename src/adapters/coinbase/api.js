@@ -309,16 +309,16 @@ const createCoinbaseAdapter = (keysPath = null) => {
     // Get product details for proper rounding
     const product = await adapter.getProductDetails(productId);
 
-    // Round to proper increments
+    // Round to proper increments (use floats for arithmetic, strings for precision)
     const baseIncrement = parseFloat(product.baseIncrement);
     const quoteIncrement = parseFloat(product.quoteIncrement);
 
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
     const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
 
-    // Derive decimal precision from increments
-    const basePrecision = incrementToDecimals(baseIncrement);
-    const quotePrecision = incrementToDecimals(quoteIncrement);
+    // Derive decimal precision from original increment strings to avoid float → scientific-notation issues
+    const basePrecision = incrementToDecimals(product.baseIncrement);
+    const quotePrecision = incrementToDecimals(product.quoteIncrement);
 
     const orderData = {
       client_order_id: clientOrderId,
@@ -514,8 +514,9 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const roundedStopPrice = Math.floor(stopPrice / quoteIncrement) * quoteIncrement;
     const roundedLimitPrice = Math.floor(limitPrice / quoteIncrement) * quoteIncrement;
 
-    const basePrecision = incrementToDecimals(baseIncrement);
-    const quotePrecision = incrementToDecimals(quoteIncrement);
+    // Derive decimal precision from original increment strings to avoid float → scientific-notation issues
+    const basePrecision = incrementToDecimals(product.baseIncrement);
+    const quotePrecision = incrementToDecimals(product.quoteIncrement);
 
     const orderData = {
       client_order_id: clientOrderId,
@@ -556,7 +557,8 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const product = await adapter.getProductDetails(productId);
     const baseIncrement = parseFloat(product.baseIncrement);
     const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const basePrecision = incrementToDecimals(baseIncrement);
+    // Derive precision from original increment string to avoid float → scientific-notation issues
+    const basePrecision = incrementToDecimals(product.baseIncrement);
 
     const orderData = {
       client_order_id: clientOrderId,

@@ -34,14 +34,21 @@ const keysRaw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'coinbase-keys.js
 const keys = { apiKey: keysRaw.name, apiSecret: keysRaw.privateKey };
 
 const makeRequest = async (method, apiPath, data = null) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
   const fetchOptions = {
     method,
     headers: getAuthHeaders(keys.apiKey, keys.apiSecret, method, apiPath),
+    signal: controller.signal,
   };
   if (data) fetchOptions.body = JSON.stringify(data);
-  const resp = await fetch(`${API_URL}${apiPath}`, fetchOptions);
-  if (!resp.ok) throw new Error(`Coinbase API ${resp.status}: ${resp.statusText}`);
-  return resp.json();
+  try {
+    const resp = await fetch(`${API_URL}${apiPath}`, fetchOptions);
+    if (!resp.ok) throw new Error(`Coinbase API ${resp.status}: ${resp.statusText}`);
+    return resp.json();
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 // ── Fetch fills for a specific order ───────────────────────────

@@ -25,8 +25,8 @@ const {
 const { runIntervalCycle } = require('./src/dca-engine');
 const { createNotifier } = require('./src/notifier');
 const { createBackup, pruneBackups } = require('./src/backup-service');
+const { DATA_DIR } = require('./src/paths');
 const {
-  DATA_DIR,
   readJSON,
   writeJSON,
   parseTSV,
