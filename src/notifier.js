@@ -133,36 +133,44 @@ const createNotifier = () => {
    * @param {string} text - Message text
    * @returns {Promise<boolean>}
    */
-  const sendTelegram = (text) => {
+  const sendTelegram = async (text) => {
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: config.telegram.chatId,
-        text,
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true,
-      }),
-    })
-      .then(async (resp) => {
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}));
-          throw { status: resp.status, description: data.description || resp.statusText };
-        }
-        stats.sent++;
-        stats.dailySent++;
-        stats.lastSentAt = new Date().toISOString();
-        return true;
-      })
-      .catch((err) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: config.telegram.chatId,
+          text,
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+        }),
+        signal: controller.signal,
+      });
+      const data = await resp.json().catch(() => ({}));
+      clearTimeout(timeout);
+      if (!resp.ok) {
         stats.errors++;
         stats.dailyErrors++;
-        const status = err.status || 'unknown';
-        const desc = err.description || err.message;
-        log('ERROR', `📨 Telegram send failed (${status}): ${desc}`);
+        const desc = data.description || resp.statusText;
+        log('ERROR', `📨 Telegram send failed (${resp.status}): ${desc}`);
         return false;
-      });
+      }
+      stats.sent++;
+      stats.dailySent++;
+      stats.lastSentAt = new Date().toISOString();
+      return true;
+    } catch (err) {
+      clearTimeout(timeout);
+      stats.errors++;
+      stats.dailyErrors++;
+      const status = err.status || 'unknown';
+      const desc = err.message || String(err);
+      log('ERROR', `📨 Telegram send failed (${status}): ${desc}`);
+      return false;
+    }
   };
 
   /**
@@ -357,34 +365,38 @@ const createNotifier = () => {
    * Send a test notification
    * @returns {Promise<{success: boolean, error?: string}>}
    */
-  const sendTest = () => {
+  const sendTest = async () => {
     config = getNotificationConfig();
 
     if (!config.telegram.botToken || !config.telegram.chatId) {
-      return Promise.resolve({ success: false, error: 'Bot token and chat ID are required' });
+      return { success: false, error: 'Bot token and chat ID are required' };
     }
 
     const url = `${TELEGRAM_API}${config.telegram.botToken}/sendMessage`;
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: config.telegram.chatId,
-        text: '🧪 *Critical Mass* - Test notification\nTelegram integration is working!',
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true,
-      }),
-    })
-      .then(async (resp) => {
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}));
-          return { success: false, error: data.description || resp.statusText };
-        }
-        return { success: true };
-      })
-      .catch((err) => {
-        return { success: false, error: err.message };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: config.telegram.chatId,
+          text: '🧪 *Critical Mass* - Test notification\nTelegram integration is working!',
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+        }),
+        signal: controller.signal,
       });
+      const data = await resp.json().catch(() => ({}));
+      clearTimeout(timeout);
+      if (!resp.ok) {
+        return { success: false, error: data.description || resp.statusText };
+      }
+      return { success: true };
+    } catch (err) {
+      clearTimeout(timeout);
+      return { success: false, error: err.message };
+    }
   };
 
   /**

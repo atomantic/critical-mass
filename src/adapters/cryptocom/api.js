@@ -95,21 +95,26 @@ const createCryptocomAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const body = createAuthenticatedRequest(method, params, apiKey, apiSecret);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
+    let rawText;
     try {
       response = await fetch(`${REST_BASE_URL}/${method}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      rawText = await response.text();
     } catch (err) {
+      clearTimeout(timeout);
       const cleanError = new Error(`Crypto.com API network: ${err.message}`);
       cleanError.status = 'network';
       cleanError.endpoint = method;
       throw cleanError;
     }
-
-    const rawText = await response.text();
+    clearTimeout(timeout);
 
     if (!response.ok) {
       let errData;
@@ -146,11 +151,29 @@ const createCryptocomAdapter = (keysPath = null) => {
       ? `${REST_BASE_URL}/${method}?${queryString}`
       : `${REST_BASE_URL}/${method}`;
 
-    const response = await fetch(url, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    const rawText = await response.text();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let response;
+    let rawText;
+    try {
+      response = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      });
+      rawText = await response.text();
+    } catch (err) {
+      clearTimeout(timeout);
+      const networkError = new Error(
+        err && err.name === 'AbortError'
+          ? `Crypto.com public request timed out for ${method}`
+          : `Crypto.com public request failed for ${method}: ${err && err.message ? err.message : String(err)}`
+      );
+      networkError.status = 'network';
+      networkError.endpoint = method;
+      networkError.cause = err;
+      throw networkError;
+    }
+    clearTimeout(timeout);
 
     if (!response.ok) {
       throw new Error(`Crypto.com API ${response.status}: ${response.statusText}`);

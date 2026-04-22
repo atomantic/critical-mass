@@ -736,11 +736,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const isRunning = status?.isRunning
   useEffect(() => {
     if (!isRunning) {
-      fetch(`/api/${exchange}/state${pairQuery}`).then(r => r.json()).then(setDcaState).catch(() => {})
+      const controller = new AbortController()
+      fetch(`/api/${exchange}/state${pairQuery}`, { signal: controller.signal }).then(r => r.json()).then(setDcaState).catch(() => {})
+      return () => controller.abort()
     } else {
       setDcaState(null)
     }
-  }, [exchange, isRunning])
+  }, [exchange, isRunning, pairQuery])
 
   // DCA conversion handlers
   const handlePreviewConvert = useCallback(async () => {

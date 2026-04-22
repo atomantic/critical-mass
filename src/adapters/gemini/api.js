@@ -93,21 +93,26 @@ const createGeminiAdapter = (keysPath = null) => {
     const { apiKey, apiSecret } = adapter.loadCredentials();
     const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
     let response;
+    let rawText;
     try {
       response = await fetch(`${REST_BASE_URL}${endpoint}`, {
         method: 'POST',
         headers,
+        signal: controller.signal,
       });
+      // Preserve big integers as strings using regex before JSON parse
+      rawText = await response.text();
     } catch (err) {
+      clearTimeout(timeout);
       const cleanError = new Error(`Gemini API network: ${err.message}`);
       cleanError.status = 'network';
       cleanError.endpoint = `POST ${endpoint}`;
       throw cleanError;
     }
-
-    // Preserve big integers as strings using regex before JSON parse
-    const rawText = await response.text();
+    clearTimeout(timeout);
 
     if (!response.ok) {
       let errData;
@@ -130,11 +135,31 @@ const createGeminiAdapter = (keysPath = null) => {
    * @returns {Promise<any>} API response
    */
   const makePublicRequest = async (endpoint) => {
-    const response = await fetch(`${REST_BASE_URL}${endpoint}`);
-    if (!response.ok) {
-      throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let response;
+    let json;
+    try {
+      response = await fetch(`${REST_BASE_URL}${endpoint}`, { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`Gemini API ${response.status}: ${response.statusText}`);
+      }
+      json = await response.json();
+    } catch (err) {
+      clearTimeout(timeout);
+      if (err.status || err.message?.startsWith('Gemini API')) throw err;
+      const networkError = new Error(
+        err && err.name === 'AbortError'
+          ? `Gemini public request timed out for ${endpoint}`
+          : `Gemini public request failed for ${endpoint}: ${err && err.message ? err.message : String(err)}`
+      );
+      networkError.status = 'network';
+      networkError.endpoint = endpoint;
+      networkError.cause = err;
+      throw networkError;
     }
-    return response.json();
+    clearTimeout(timeout);
+    return json;
   };
 
   /**
