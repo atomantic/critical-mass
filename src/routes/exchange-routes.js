@@ -32,8 +32,8 @@ const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-vali
 
 // --- Security: pair validation regex ---
 // Pair query param must be of the form AAAA-BBBB or AAAA_BBBB (case-insensitive).
-// Allows 2-8 alphanumeric chars on each side of an optional dash/underscore separator.
-const PAIR_RE = /^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/i;
+// Requires a dash or underscore separator: bare concatenated tickers like BTCUSDC are rejected.
+const PAIR_RE = /^[A-Z0-9]{2,8}[-_][A-Z0-9]{2,8}$/i;
 
 /**
  * Validate and return the trading pair from a request's query param.

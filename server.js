@@ -50,10 +50,12 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5563;
 
-// Trust the first hop when running behind a reverse proxy (e.g. Umbrel app_proxy).
-// This ensures rate limiters use the real client IP from X-Forwarded-For instead of
-// treating all requests as coming from the proxy/container address.
-app.set('trust proxy', 1);
+// Trust the first reverse-proxy hop only when TRUST_PROXY=1 is set (e.g. Umbrel app_proxy).
+// This ensures rate limiters use the real client IP from X-Forwarded-For.
+// Do NOT enable when the server is exposed directly: clients could spoof X-Forwarded-For.
+if (process.env.TRUST_PROXY === '1') {
+  app.set('trust proxy', 1);
+}
 
 // CORS allowlist -- only local dev and the server itself
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5564`).split(',').map(s => s.trim());
@@ -347,18 +349,18 @@ tradeEvents.on('trade', (event) => {
   io.emit('trade:event', event);
 });
 
-io.on('connection', (socket) => {
-  // Validate bearer token on WebSocket connections.
-  // Clients should supply the token either as:
-  //   socket.io handshake auth:  { auth: { token: '<API_TOKEN>' } }
-  //   or as a query param:       ?token=<API_TOKEN>
+// Reject unauthorised Socket.IO handshakes before 'connection' fires,
+// so the socket is never fully allocated for unauthenticated clients.
+// Clients must supply the bearer token in handshake.auth.token or ?token=.
+io.use((socket, next) => {
   if (!validateSocketToken(socket)) {
     log('WARN', `WebSocket rejected (invalid token): ${socket.id} from ${socket.handshake.address}`);
-    socket.emit('error', { message: 'Unauthorized: invalid or missing token' });
-    socket.disconnect(true);
-    return;
+    return next(new Error('Unauthorized: invalid or missing token'));
   }
+  next();
+});
 
+io.on('connection', (socket) => {
   log('INFO', `WebSocket client connected: ${socket.id}`);
   socket.on('disconnect', () => {
     const entry = activeLogStreams.get(socket.id);
