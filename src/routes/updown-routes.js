@@ -165,11 +165,12 @@ module.exports = (app, deps) => {
       stream: false
     };
 
-    // Validate provider endpoint URL to prevent SSRF attacks.
-    const endpointValidation = validateEndpointUrl(provider.endpoint);
+    // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
+    const endpointValidation = await validateEndpointUrl(provider.endpoint);
     if (!endpointValidation.valid) {
+      // Log the full detail server-side (includes URL); return only a generic message to the caller.
       log('WARN', `🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointValidation.error}`);
-      return res.status(400).json({ success: false, error: `Provider endpoint is invalid: ${endpointValidation.error}` });
+      return res.status(400).json({ success: false, error: 'Provider endpoint is misconfigured. Contact the administrator.' });
     }
 
     const controller = new AbortController();

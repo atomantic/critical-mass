@@ -38,7 +38,7 @@
   "type": "commonjs",
   "dependencies": {
     "express": "5.2.1",
-    "express-rate-limit": "^8.3.2",
+    "express-rate-limit": "8.3.2",
     "fast-xml-parser": "5.5.9",
     "jsonwebtoken": "9.0.3",
     "portos-ai-toolkit": "0.8.1",

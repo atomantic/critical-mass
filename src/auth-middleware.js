@@ -6,8 +6,10 @@
  * the API_TOKEN environment variable. Uses crypto.timingSafeEqual to
  * prevent timing-based token enumeration attacks.
  *
- * If API_TOKEN is not set, a warning is printed but requests are allowed
- * through for backward-compatibility during transition.
+ * By default the middleware FAILS CLOSED — if API_TOKEN is not set,
+ * all /api/* requests are rejected with 401. To explicitly opt out of
+ * authentication during local development, set:
+ *   ALLOW_UNAUTHENTICATED_API=true
  */
 
 'use strict';
@@ -16,22 +18,29 @@ const crypto = require('crypto');
 const { log } = require('./logger');
 
 const API_TOKEN = process.env.API_TOKEN || '';
+const ALLOW_UNAUTH = process.env.ALLOW_UNAUTHENTICATED_API === 'true';
 
-if (!API_TOKEN) {
-  log('WARN', '[auth] API_TOKEN env var is not set — all /api/* routes are UNPROTECTED. Set API_TOKEN to enable authentication.');
+if (!API_TOKEN && ALLOW_UNAUTH) {
+  log('WARN', '[auth] API_TOKEN is not set and ALLOW_UNAUTHENTICATED_API=true — all /api/* routes are UNPROTECTED. Do not use in production.');
+} else if (!API_TOKEN) {
+  log('ERROR', '[auth] API_TOKEN env var is not set — all /api/* requests will be rejected with 401. Set API_TOKEN to enable authentication, or set ALLOW_UNAUTHENTICATED_API=true to disable auth (development only).');
 }
 
 /**
  * Express middleware that enforces bearer token auth on /api/* routes.
- * Skips authentication when API_TOKEN is not configured (backward compat).
+ * Fails closed by default: rejects all requests if API_TOKEN is not set,
+ * unless ALLOW_UNAUTHENTICATED_API=true is explicitly set.
  *
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @param {import('express').NextFunction} next
  */
 function apiAuthMiddleware(req, res, next) {
-  // No token configured — warn once at startup (above) and allow through.
-  if (!API_TOKEN) return next();
+  // No token configured — fail closed unless explicitly opted out.
+  if (!API_TOKEN) {
+    if (ALLOW_UNAUTH) return next();
+    return res.status(401).json({ success: false, error: 'API authentication is not configured. Set the API_TOKEN environment variable.' });
+  }
 
   const authHeader = req.headers['authorization'] || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -65,13 +74,15 @@ function apiAuthMiddleware(req, res, next) {
  * Validate a Socket.IO handshake for the bearer token.
  * Checks `socket.handshake.auth.token` or `socket.handshake.query.token`.
  *
- * Returns true if the connection is authorised (or if API_TOKEN is not set).
+ * Returns true if the connection is authorised (or if API_TOKEN is not set and
+ * ALLOW_UNAUTHENTICATED_API=true). Returns false when no token is configured
+ * and authentication is not explicitly bypassed.
  *
  * @param {import('socket.io').Socket} socket
  * @returns {boolean}
  */
 function validateSocketToken(socket) {
-  if (!API_TOKEN) return true;
+  if (!API_TOKEN) return ALLOW_UNAUTH;
 
   const token =
     socket.handshake?.auth?.token ||
