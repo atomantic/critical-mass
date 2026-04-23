@@ -1323,18 +1323,57 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         } else if (correctiveBuyIds.has(order.orderId)) {
           console.log(`📋 [${exchange}] Skipping corrective buy order ${order.orderId.slice(0, 8)} (tracked in pending-corrective-buys)`);
         } else if (!savedLadderIds.has(order.orderId)) {
-          // Orphan entry — not in saved state or ladder orders, cancel it
-          orphanedEntries++;
-          console.log(`🧹 [${exchange}] Cancelling orphan entry order ${order.orderId} (not tracked by regime engine)`);
-          const cancelResult = await adapter.cancelOrder(order.orderId);
-          if (cancelResult.success) {
-            console.log(`✅ [${exchange}] Cancelled orphan entry ${order.orderId.slice(0, 8)}`);
+          // Check if this "orphan" has partial fills — if so, restore it instead of cancelling
+          if (order.filledSize && order.filledSize > 0) {
+            console.log(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
+            if (orderExecutor.restorePendingOrder) {
+              orderExecutor.restorePendingOrder(order.orderId, {
+                type: 'entry',
+                price: order.price,
+                size: order.size,
+                sizeUsdc: order.size * order.price,
+                placedAt: order.createdTime ? new Date(order.createdTime).getTime() : Date.now(),
+              });
+            }
+            // Ingest any fills we don't already have
+            const rawFills = await adapter.getOrderFills(order.orderId);
+            let orderHadNewFills = false;
+            let lastFillPrice = 0;
+            let lastFillTime = 0;
+            for (const fill of rawFills) {
+              const result = fillLedger.ingestFill(fill);
+              if (result.ingested) {
+                positionState.totalAsset = roundAsset(positionState.totalAsset + fill.size);
+                positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + (fill.size * fill.price) + fill.netFee);
+                positionState.avgCostBasis = positionState.totalAsset > 0
+                  ? positionState.totalCostBasis / positionState.totalAsset
+                  : 0;
+                orderHadNewFills = true;
+                lastFillPrice = fill.price;
+                lastFillTime = fill.timestamp;
+                console.log(`📝 [${exchange}] Ingested partial fill from orphan: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
+              }
+            }
+            if (orderHadNewFills) {
+              positionState.cycleBuys += 1;
+              positionState.lastEntryPrice = lastFillPrice;
+              positionState.lastEntryTime = lastFillTime;
+            }
+            restoredEntries++;
           } else {
-            const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
-            if (orphanStatus?.status === 'FILLED') {
-              console.log(`📋 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} already filled — recovery will process`);
+            // Orphan entry with no fills — cancel it
+            orphanedEntries++;
+            console.log(`🧹 [${exchange}] Cancelling orphan entry order ${order.orderId} (not tracked by regime engine)`);
+            const cancelResult = await adapter.cancelOrder(order.orderId);
+            if (cancelResult.success) {
+              console.log(`✅ [${exchange}] Cancelled orphan entry ${order.orderId.slice(0, 8)}`);
             } else {
-              console.log(`⚠️ [${exchange}] Failed to cancel orphan entry ${order.orderId.slice(0, 8)}: ${cancelResult.errorMessage || 'unknown'}`);
+              const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
+              if (orphanStatus?.status === 'FILLED') {
+                console.log(`📋 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} already filled — recovery will process`);
+              } else {
+                console.log(`⚠️ [${exchange}] Failed to cancel orphan entry ${order.orderId.slice(0, 8)}: ${cancelResult.errorMessage || 'unknown'}`);
+              }
             }
           }
         }
