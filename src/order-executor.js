@@ -120,19 +120,30 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
         return { cancelled: false, filled: true };
       }
-      if (verified?.status === 'OPEN' && attempt < maxRetries) {
-        console.log(`⚠️ [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} still OPEN — retrying (${attempt + 1}/${maxRetries})`);
+      if ((verified?.status === 'OPEN' || verified?.status === 'PENDING_CANCEL') && attempt < maxRetries) {
+        console.log(`⚠️ [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} still ${verified.status} — retrying (${attempt + 1}/${maxRetries})`);
         continue;
       }
 
-      // Retries exhausted or unexpected status
-      if (verified?.status === 'OPEN') {
-        console.log(`🚨 [${exchange}] Cancel verification failed for ${orderId.slice(0, 8)} — still OPEN after ${maxRetries} retries`);
+      // Retries exhausted and order is still live on exchange
+      if (verified?.status === 'OPEN' || verified?.status === 'PENDING_CANCEL') {
+        console.log(`🚨 [${exchange}] Cancel verification failed for ${orderId.slice(0, 8)} — still ${verified.status} after ${maxRetries} retries`);
         return { cancelled: false, filled: false };
       }
 
-      // Verified status is null/unknown but cancel said success — trust it
-      return { cancelled: true, filled: false };
+      // Verify call failed (null) — do NOT trust the cancel, retry or fail safe
+      if (!verified) {
+        if (attempt < maxRetries) {
+          console.log(`⚠️ [${exchange}] Cancel verify fetch failed for ${orderId.slice(0, 8)} — retrying (${attempt + 1}/${maxRetries})`);
+          continue;
+        }
+        console.log(`🚨 [${exchange}] Cancel verify fetch failed for ${orderId.slice(0, 8)} after ${maxRetries} retries — reporting unverified`);
+        return { cancelled: false, filled: false };
+      }
+
+      // Verified with an unexpected status we don't recognize — fail safe
+      console.log(`⚠️ [${exchange}] Cancel verify returned unexpected status '${verified.status}' for ${orderId.slice(0, 8)} — reporting unverified`);
+      return { cancelled: false, filled: false };
     }
 
     return { cancelled: false, filled: false };
