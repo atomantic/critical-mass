@@ -63,6 +63,7 @@
 - 1d candle history expanded from 60 days to 365 days; Coinbase API fetch now paginates to handle 300-candle limit
 - 1d ring buffer increased to 365 candles, 1w ring buffer increased to 52 candles
 - Short timeframes (1m, 3m, 5m) now use neutral trend bias for indicator scoring — enables SELL signal generation during short-term reversals even when higher-timeframe trend is bullish
+- DCA fund pages default to "All Cycles" view instead of "Current Cycle"
 - Signal history debounced — 5-minute minimum between consecutive same-type entries to prevent threshold oscillation flooding
 
 ## Fixed
@@ -133,6 +134,7 @@
 - Partial fill body TP incorrectly counted SOLD amount as asset reserves — for partial fills, the sold CRO was added to `realizedAssetPnL` instead of 0; the remaining CRO stays as an active body, not reserves. Also fixed fill annotation `bodyHoldbackAsset` which was set to the remaining body size instead of 0 for partial fills
 - Orphan sell reclamation on startup disabled — was adopting ANY untracked sell order on the exchange as engine-owned, which sold non-engine BTC. Now log-only (manual review required)
 - Recovery body creation on startup disabled — was creating bodies and placing TP sells for untracked position asset, which could sell user holdings. Now log-only
+- `safeCancelOrder` race condition leaving stray sell orders on exchange — when cancel verification `getOrder` call failed (network error/timeout), the function trusted Coinbase's cancel API response and reported success; the rollup proceeded, removed the body, and the exchange order persisted as an orphan. Now retries verification and fails safe (`cancelled: false`) if verification cannot confirm. Also handles Coinbase `PENDING_CANCEL` status and unknown statuses as unverified
 - RegimeDashboard dollar values (realized/unrealized P&L, daily/annual estimates, budget, holdback values) now use `formatCurrency` with comma-separated thousands instead of raw `toFixed(2)`
 
 ## Removed
