@@ -31,9 +31,11 @@ const { shouldAutoResumeRegime } = require('../shared-utils');
 const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 
 // --- Security: pair validation regex ---
-// Pair query param must be of the form AAAA-BBBB or AAAA_BBBB (case-insensitive).
-// Requires a dash or underscore separator: bare concatenated tickers like BTCUSDC are rejected.
-const PAIR_RE = /^[A-Z0-9]{2,8}[-_][A-Z0-9]{2,8}$/i;
+// Accepts three pair formats (case-insensitive):
+//   BASE-QUOTE  (Coinbase, e.g. BTC-USDC)
+//   BASE_QUOTE  (Crypto.com, e.g. BTC_USD)
+//   BASEQUOTE   (Gemini, e.g. BTCUSD, ETHUSD)
+const PAIR_RE = /^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/i;
 
 /**
  * Validate and return the trading pair from a request's query param.
@@ -50,7 +52,7 @@ const validatePairParam = (req) => {
     return { pair: getDefaultPair(req.params.exchange), error: null };
   }
   if (!PAIR_RE.test(String(raw))) {
-    return { pair: null, error: `Invalid pair format: "${raw}". Expected e.g. BTC-USDC or BTC_USDC` };
+    return { pair: null, error: `Invalid pair format: "${raw}". Expected e.g. BTC-USDC, BTC_USD, or ETHUSD` };
   }
   return { pair: String(raw).toUpperCase(), error: null };
 };

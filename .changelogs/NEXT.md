@@ -135,6 +135,8 @@
 - Orphan sell reclamation on startup disabled — was adopting ANY untracked sell order on the exchange as engine-owned, which sold non-engine BTC. Now log-only (manual review required)
 - Recovery body creation on startup disabled — was creating bodies and placing TP sells for untracked position asset, which could sell user holdings. Now log-only
 - `safeCancelOrder` race condition leaving stray sell orders on exchange — when cancel verification `getOrder` call failed (network error/timeout), the function trusted Coinbase's cancel API response and reported success; the rollup proceeded, removed the body, and the exchange order persisted as an orphan. Now retries verification and fails safe (`cancelled: false`) if verification cannot confirm. Also handles Coinbase `PENDING_CANCEL` status and unknown statuses as unverified
+- Orphan entry cancellation destroyed partially filled buy orders on restart — if a buy order wasn't in `pendingEntryOrders` (e.g. after crash), startup cancelled it even with 61% fills. Now checks `filledSize > 0` and restores partially filled orphans instead of cancelling, ingesting any missing fills
+- Gemini pair validation rejected unseparated pairs (ETHUSD, BTCUSD) — `PAIR_RE` regex in exchange-routes required a `-` or `_` separator, blocking all Gemini fund pages with "Invalid pair format". Made separator optional
 - RegimeDashboard dollar values (realized/unrealized P&L, daily/annual estimates, budget, holdback values) now use `formatCurrency` with comma-separated thousands instead of raw `toFixed(2)`
 
 ## Removed
