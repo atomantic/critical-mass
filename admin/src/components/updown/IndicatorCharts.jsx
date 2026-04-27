@@ -10,8 +10,14 @@ export default function IndicatorCharts({ indicators }) {
   const [rsiHistory, setRsiHistory] = useState([])
   const [stochHistory, setStochHistory] = useState([])
   const [macdHistory, setMacdHistory] = useState([])
+  const [wrHistory, setWrHistory] = useState([])
+  const [adxHistory, setAdxHistory] = useState([])
+  const [obvHistory, setObvHistory] = useState([])
 
-  // Accumulate indicator history for selected timeframe
+  // Accumulate indicator history for selected timeframe.
+  // Each setter skips the append when the latest tracked value is unchanged,
+  // so the 5s server tick doesn't flood charts with duplicate points and
+  // doesn't trigger needless React re-renders of the chart subtree.
   useEffect(() => {
     const tf = indicators?.[selectedTf]
     if (!tf) return
@@ -19,25 +25,32 @@ export default function IndicatorCharts({ indicators }) {
     const now = Date.now()
     const label = new Date(now).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
 
+    const append = (setter, point, isUnchanged) => setter(prev => {
+      if (prev.length && isUnchanged(prev[prev.length - 1])) return prev
+      const next = [...prev, { time: now, label, ...point }]
+      return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next
+    })
+
     if (tf.rsi != null) {
-      setRsiHistory(prev => {
-        const next = [...prev, { time: now, label, rsi: tf.rsi }]
-        return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next
-      })
+      append(setRsiHistory, { rsi: tf.rsi }, last => last.rsi === tf.rsi)
     }
-
     if (tf.stochastic) {
-      setStochHistory(prev => {
-        const next = [...prev, { time: now, label, k: tf.stochastic.k, d: tf.stochastic.d }]
-        return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next
-      })
+      append(setStochHistory, { k: tf.stochastic.k, d: tf.stochastic.d },
+        last => last.k === tf.stochastic.k && last.d === tf.stochastic.d)
     }
-
     if (tf.macd) {
-      setMacdHistory(prev => {
-        const next = [...prev, { time: now, label, macd: tf.macd.macd, signal: tf.macd.signal, histogram: tf.macd.histogram }]
-        return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next
-      })
+      append(setMacdHistory, { macd: tf.macd.macd, signal: tf.macd.signal, histogram: tf.macd.histogram },
+        last => last.macd === tf.macd.macd && last.signal === tf.macd.signal && last.histogram === tf.macd.histogram)
+    }
+    if (tf.williamsR != null) {
+      append(setWrHistory, { wr: tf.williamsR }, last => last.wr === tf.williamsR)
+    }
+    if (tf.adx) {
+      append(setAdxHistory, { adx: tf.adx.adx, plusDI: tf.adx.plusDI, minusDI: tf.adx.minusDI },
+        last => last.adx === tf.adx.adx && last.plusDI === tf.adx.plusDI && last.minusDI === tf.adx.minusDI)
+    }
+    if (tf.obv) {
+      append(setObvHistory, { slope: tf.obv.slope }, last => last.slope === tf.obv.slope)
     }
   }, [indicators, selectedTf])
 
@@ -46,6 +59,9 @@ export default function IndicatorCharts({ indicators }) {
     setRsiHistory([])
     setStochHistory([])
     setMacdHistory([])
+    setWrHistory([])
+    setAdxHistory([])
+    setObvHistory([])
   }, [selectedTf])
 
   const currentTf = indicators?.[selectedTf]
@@ -77,7 +93,7 @@ export default function IndicatorCharts({ indicators }) {
 
       {/* Current values summary */}
       {currentTf && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4 text-xs">
           <div className="bg-gray-900 rounded p-2">
             <div className="text-gray-500 mb-0.5">RSI</div>
             <div className={`font-mono font-medium ${
@@ -98,6 +114,31 @@ export default function IndicatorCharts({ indicators }) {
               (currentTf.macd?.histogram ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
             }`}>
               {currentTf.macd?.histogram?.toFixed(2) ?? '---'}
+            </div>
+          </div>
+          <div className="bg-gray-900 rounded p-2">
+            <div className="text-gray-500 mb-0.5">Williams %R</div>
+            <div className={`font-mono font-medium ${
+              (currentTf.williamsR ?? -50) > -20 ? 'text-red-400' : (currentTf.williamsR ?? -50) < -80 ? 'text-green-400' : 'text-white'
+            }`}>
+              {currentTf.williamsR?.toFixed(1) ?? '---'}
+            </div>
+          </div>
+          <div className="bg-gray-900 rounded p-2">
+            <div className="text-gray-500 mb-0.5">CCI</div>
+            <div className={`font-mono font-medium ${
+              (currentTf.cci ?? 0) > 100 ? 'text-red-400' : (currentTf.cci ?? 0) < -100 ? 'text-green-400' : 'text-white'
+            }`}>
+              {currentTf.cci?.toFixed(0) ?? '---'}
+            </div>
+          </div>
+          <div className="bg-gray-900 rounded p-2">
+            <div className="text-gray-500 mb-0.5">ADX</div>
+            <div className={`font-mono font-medium ${
+              (currentTf.adx?.adx ?? 0) > 25 ? 'text-yellow-400' : 'text-white'
+            }`}>
+              {currentTf.adx?.adx?.toFixed(1) ?? '---'}
+              <span className="text-gray-500 ml-1 text-[10px]">{currentTf.adx?.trending ? 'TREND' : 'RANGE'}</span>
             </div>
           </div>
         </div>
@@ -153,6 +194,69 @@ export default function IndicatorCharts({ indicators }) {
             <div className="text-xs text-gray-500 mb-1">MACD ({selectedTf})</div>
             <ResponsiveContainer width="100%" height={120}>
               <MacdLineChart data={macdHistory} />
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* Williams %R Chart */}
+        {wrHistory.length >= 2 && (
+          <div>
+            <div className="text-xs text-gray-500 mb-1">Williams %R ({selectedTf})</div>
+            <ResponsiveContainer width="100%" height={120}>
+              <LineChart data={wrHistory} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#6b7280' }} interval="preserveStartEnd" />
+                <YAxis domain={[-100, 0]} tick={{ fontSize: 9, fill: '#6b7280' }} width={30} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '6px', fontSize: '11px' }}
+                  formatter={v => [v?.toFixed(1), '%R']}
+                />
+                <ReferenceLine y={-20} stroke="#ef4444" strokeDasharray="3 3" strokeOpacity={0.5} />
+                <ReferenceLine y={-80} stroke="#10b981" strokeDasharray="3 3" strokeOpacity={0.5} />
+                <Line type="monotone" dataKey="wr" stroke="#ec4899" strokeWidth={1.5} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* ADX Chart */}
+        {adxHistory.length >= 2 && (
+          <div>
+            <div className="text-xs text-gray-500 mb-1">ADX / DI ({selectedTf})</div>
+            <ResponsiveContainer width="100%" height={120}>
+              <LineChart data={adxHistory} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#6b7280' }} interval="preserveStartEnd" />
+                <YAxis domain={[0, 'auto']} tick={{ fontSize: 9, fill: '#6b7280' }} width={30} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '6px', fontSize: '11px' }}
+                  formatter={(v, name) => [v?.toFixed(1), name === 'adx' ? 'ADX' : name === 'plusDI' ? '+DI' : '-DI']}
+                />
+                <ReferenceLine y={25} stroke="#eab308" strokeDasharray="3 3" strokeOpacity={0.5} />
+                <Line type="monotone" dataKey="adx" stroke="#eab308" strokeWidth={1.5} dot={false} />
+                <Line type="monotone" dataKey="plusDI" stroke="#10b981" strokeWidth={1} dot={false} />
+                <Line type="monotone" dataKey="minusDI" stroke="#ef4444" strokeWidth={1} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* OBV Slope Chart */}
+        {obvHistory.length >= 2 && (
+          <div>
+            <div className="text-xs text-gray-500 mb-1">OBV Slope ({selectedTf})</div>
+            <ResponsiveContainer width="100%" height={100}>
+              <LineChart data={obvHistory} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#6b7280' }} interval="preserveStartEnd" />
+                <YAxis domain={[-1, 1]} tick={{ fontSize: 9, fill: '#6b7280' }} width={30} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '6px', fontSize: '11px' }}
+                  formatter={v => [v?.toFixed(3), 'OBV Slope']}
+                />
+                <ReferenceLine y={0} stroke="#6b7280" strokeDasharray="3 3" />
+                <Line type="monotone" dataKey="slope" stroke="#06b6d4" strokeWidth={1.5} dot={false} />
+              </LineChart>
             </ResponsiveContainer>
           </div>
         )}

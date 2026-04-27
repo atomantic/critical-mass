@@ -637,6 +637,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <FormInput label="Max Celestial Bodies" hint="Max concurrent body TP orders (1-15)" value={regimeConfig.maxCelestialBodies ?? 10} onChange={(v) => handleRegimeChange('maxCelestialBodies', Math.round(v))} type="number" />
+                    <FormInput label="Merge Proximity Scale" hint="How aggressively bodies merge (0.25=conservative, 1.0=default, 3.0=aggressive)" value={regimeConfig.mergeProximityScale ?? 1.0} onChange={(v) => handleRegimeChange('mergeProximityScale', Math.max(0.25, Math.min(3.0, Math.round(v * 100) / 100)))} type="number" />
                   </div>
                   <div className="mt-2 text-xs text-gray-500">
                     Each buy creates a celestial body. Bodies merge when TP prices are close, and promote to higher tiers as mass grows.

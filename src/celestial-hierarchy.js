@@ -142,9 +142,12 @@ const createNewBody = (newBuy, buyOrderId) => {
  * @param {number} maxUsdcDeployed - Maximum capital deployed (unused, kept for call-site consistency)
  * @param {number} candidateTpPrice - What TP price the new buy would get
  * @param {number} maxBodies - Maximum allowed bodies
+ * @param {number} [pendingOrderCount] - Current pending order count
+ * @param {number} [maxOpenOrders] - Maximum open orders allowed
+ * @param {number} [proximityScale=1.0] - Scale factor for tier proximity thresholds (0.25=conservative..3.0=aggressive)
  * @returns {CelestialBody|null}
  */
-const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxBodies, pendingOrderCount, maxOpenOrders) => {
+const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxBodies, pendingOrderCount, maxOpenOrders, proximityScale = 1.0) => {
   if (bodies.length === 0) return null;
 
   // Forced merge when at body capacity or order slot budget is full
@@ -166,15 +169,17 @@ const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxB
   }
 
   // Check each body: is new buy's candidate TP within body's tier proximity?
+  // proximityScale widens (>1) or narrows (<1) the proximity window
   let bestTarget = null;
   let bestDistance = Infinity;
 
   for (const body of bodies) {
     if (body.tpPrice <= 0) continue;
     const tier = getTierConfig(body.tier);
+    const scaledProximity = tier.proximity * proximityScale;
     const priceDiff = Math.abs(body.tpPrice - candidateTpPrice) / candidateTpPrice * 100;
 
-    if (priceDiff < tier.proximity && priceDiff < bestDistance) {
+    if (priceDiff < scaledProximity && priceDiff < bestDistance) {
       bestDistance = priceDiff;
       bestTarget = body;
     }

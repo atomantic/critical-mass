@@ -849,21 +849,31 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   /**
    * Cancel a specific body TP order
    * @param {string} bodyId - Celestial body ID
+   * @param {string} [fallbackOrderId] - Order ID to cancel if body isn't in executor tracking
    * @returns {Promise<{cancelled: boolean, filled: boolean}>}
    */
-  const cancelBodyTpOrder = async (bodyId) => {
+  const cancelBodyTpOrder = async (bodyId, fallbackOrderId) => {
     const body = bodyTpOrders.get(bodyId);
-    if (!body) return { cancelled: true, filled: false };
+    const orderToCancel = body?.tpOrderId || fallbackOrderId;
 
-    const result = await safeCancelOrder(body.tpOrderId);
+    if (!orderToCancel) {
+      // No tracking AND no fallback — nothing to cancel
+      return { cancelled: true, filled: false };
+    }
+
+    if (!body && fallbackOrderId) {
+      console.log(`⚠️ [${exchange}] Body ${bodyId.slice(-8)} not in executor tracking, using fallback orderId ${fallbackOrderId.slice(0, 8)} for cancel`);
+    }
+
+    const result = await safeCancelOrder(orderToCancel);
     if (result.cancelled) {
-      pendingOrders.delete(body.tpOrderId);
-      tpOrderToKey.delete(body.tpOrderId);
+      pendingOrders.delete(orderToCancel);
+      tpOrderToKey.delete(orderToCancel);
       bodyTpOrders.delete(bodyId);
       return { cancelled: true, filled: false };
     }
     if (result.filled) {
-      tpOrderToKey.delete(body.tpOrderId);
+      tpOrderToKey.delete(orderToCancel);
       bodyTpOrders.delete(bodyId);
       // Leave in pendingOrders for polling to process the fill
       return { cancelled: false, filled: true };

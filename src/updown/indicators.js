@@ -389,6 +389,67 @@ const calculateADX = (candles, period = 14) => {
   };
 };
 
+/**
+ * Calculate Williams %R
+ * Measures overbought/oversold levels, complementary to Stochastic
+ * @param {Array<{high: number, low: number, close: number}>} candles - Candle data (oldest first)
+ * @param {number} [period=14] - Lookback period
+ * @returns {number|null} Williams %R value (-100 to 0), null if insufficient data
+ */
+const calculateWilliamsR = (candles, period = 14) => {
+  if (!candles || candles.length < period) return null;
+
+  const window = candles.slice(-period);
+  let highest = -Infinity;
+  let lowest = Infinity;
+  for (const c of window) {
+    if (c.high > highest) highest = c.high;
+    if (c.low < lowest) lowest = c.low;
+  }
+
+  const range = highest - lowest;
+  if (range === 0) return -50;
+
+  return ((highest - candles[candles.length - 1].close) / range) * -100;
+};
+
+/**
+ * Calculate Commodity Channel Index (CCI)
+ * Measures deviation from the statistical mean, useful for mean-reversion timing
+ * @param {Array<{high: number, low: number, close: number}>} candles - Candle data (oldest first)
+ * @param {number} [period=20] - Lookback period
+ * @returns {number|null} CCI value (unbounded, typically -200 to +200), null if insufficient data
+ */
+const calculateCCI = (candles, period = 20) => {
+  if (!candles || candles.length < period) return null;
+
+  const window = candles.slice(-period);
+  const typicalPrices = window.map(c => (c.high + c.low + c.close) / 3);
+  const mean = typicalPrices.reduce((s, v) => s + v, 0) / period;
+  const meanDeviation = typicalPrices.reduce((s, v) => s + Math.abs(v - mean), 0) / period;
+
+  if (meanDeviation === 0) return 0;
+
+  const currentTP = typicalPrices[typicalPrices.length - 1];
+  return (currentTP - mean) / (0.015 * meanDeviation);
+};
+
+/**
+ * Calculate Simple Moving Average from candle closes
+ * @param {Array<{close: number}>} candles - Candle data (oldest first)
+ * @param {number} period - SMA period
+ * @returns {number} SMA value (0 if insufficient data)
+ */
+const calculateSMA = (candles, period) => {
+  if (!candles || candles.length < period) return 0;
+
+  let sum = 0;
+  for (let i = candles.length - period; i < candles.length; i++) {
+    sum += candles[i].close;
+  }
+  return sum / period;
+};
+
 module.exports = {
   calculateRSI,
   calculateRSISeries,
@@ -398,5 +459,8 @@ module.exports = {
   calculateBollingerBands,
   calculateOBV,
   calculateADX,
+  calculateWilliamsR,
+  calculateCCI,
+  calculateSMA,
   emaFromValues,
 };
