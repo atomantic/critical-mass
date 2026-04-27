@@ -45,7 +45,7 @@ const CANDLE_COUNT_OPTIONS = [
   { label: '300', value: 300 },
 ]
 
-export default function PriceChart({ tick, indicators, weeklyTrend, contract, signalAnnotations }) {
+export default function PriceChart({ tick, indicators, weeklyTrend, dailySMA, contract, signalAnnotations }) {
   const [candleCount, setCandleCount] = useState(null)
   const referenceLines = useMemo(() => {
     const lines = []
@@ -70,6 +70,20 @@ export default function PriceChart({ tick, indicators, weeklyTrend, contract, si
     return lines
   }, [contract?.target, contract?.stop])
 
+  const dailySMALines = useMemo(() => {
+    const lines = []
+    if (dailySMA?.sma50 > 0) {
+      lines.push({ y: dailySMA.sma50, stroke: '#3b82f6', strokeDasharray: '4 2', label: `SMA50 ${formatBTCPrice(dailySMA.sma50)}`, labelFill: '#3b82f6' })
+    }
+    if (dailySMA?.sma100 > 0) {
+      lines.push({ y: dailySMA.sma100, stroke: '#f59e0b', strokeDasharray: '4 2', label: `SMA100 ${formatBTCPrice(dailySMA.sma100)}`, labelFill: '#f59e0b' })
+    }
+    if (dailySMA?.sma200 > 0) {
+      lines.push({ y: dailySMA.sma200, stroke: '#ef4444', strokeDasharray: '6 3', label: `SMA200 ${formatBTCPrice(dailySMA.sma200)}`, labelFill: '#ef4444' })
+    }
+    return lines
+  }, [dailySMA?.sma50, dailySMA?.sma100, dailySMA?.sma200])
+
   const renderChart = (tf) => {
     const tfScore = indicators?.[tf.interval]?.score ?? 0
     const tfSignal = tfScoreToSignal(tfScore)
@@ -90,7 +104,7 @@ export default function PriceChart({ tick, indicators, weeklyTrend, contract, si
         defaultRange={tf.range}
         overlays={['bollinger', 'vwap']}
         subCharts={[]}
-        referenceLines={tf.interval === '5m' ? referenceLines : []}
+        referenceLines={tf.interval === '5m' ? referenceLines : tf.interval === '1d' ? dailySMALines : []}
         signalAnnotations={signalAnnotations}
         maxBucketsOverride={candleCount}
         height={220}

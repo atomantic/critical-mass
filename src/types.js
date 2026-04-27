@@ -31,6 +31,10 @@
  */
 
 /**
+ * @typedef {'bullish' | 'bearish' | 'neutral'} TrendBias
+ */
+
+/**
  * @typedef {Object} ExchangeConfig
  * @property {string} productId - Trading pair (e.g., 'BTC-USDC', 'BTCUSD')
  * @property {number} totalAllocation - Total amount to allocate in quote currency
@@ -563,6 +567,7 @@
  * @property {number} holdbackRatio - Ratio of position to hold vs sell (0.0-1.0, default: 0.5)
  *
  * Celestial Body Parameters (legacy satellite aliases removed)
+ * @property {number} [mergeProximityScale] - Scale factor for merge proximity thresholds (0.25=conservative..3.0=aggressive, default: 1.0)
  *
  * Risk Cap Parameters
  * @property {number} maxAssetExposure - Maximum asset position, 0 = uncapped (default: 0)

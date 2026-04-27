@@ -9,9 +9,12 @@ const INDICATOR_LABELS = {
   bollinger: 'Bollinger',
   vwap: 'VWAP',
   momentum: 'Momentum',
+  obv: 'OBV',
+  williamsR: 'Will %R',
+  cci: 'CCI',
 }
 
-const BASE_WEIGHTS = { rsi: 0.25, stochastic: 0.20, macd: 0.20, bollinger: 0.15, vwap: 0.10, momentum: 0.10 }
+const BASE_WEIGHTS = { rsi: 0.10, stochastic: 0.08, macd: 0.22, bollinger: 0.07, vwap: 0.08, momentum: 0.15, obv: 0.17, williamsR: 0.06, cci: 0.07 }
 
 function accuracyColor(accuracy) {
   if (accuracy == null) return 'text-gray-500'

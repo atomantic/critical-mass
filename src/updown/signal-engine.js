@@ -16,20 +16,11 @@
  * 8. Multi-Candle Horizon Prediction
  */
 
-const { calculateRSI, calculateRSISeries, calculateStochastic, calculateMACD, calculateMACDHistogramSeries, calculateBollingerBands, calculateOBV, calculateADX } = require('./indicators');
+const { calculateRSI, calculateRSISeries, calculateStochastic, calculateMACD, calculateMACDHistogramSeries, calculateBollingerBands, calculateOBV, calculateADX, calculateWilliamsR, calculateCCI, calculateSMA } = require('./indicators');
 const { calculateATR, calculateVWAP, calculateEMA, calculateMomentumAcceleration, calculateTrueRange } = require('../volatility-utils');
 const { detectDivergence, detectMACDDivergence } = require('./divergence');
 const { calculatePivotPoints, computePivotDampening } = require('./pivot-points');
-
-const INDICATOR_WEIGHTS = {
-  rsi: 0.12,
-  stochastic: 0.10,
-  macd: 0.24,
-  bollinger: 0.08,
-  vwap: 0.09,
-  momentum: 0.17,
-  obv: 0.20,
-};
+const { INDICATOR_WEIGHTS } = require('./indicator-config');
 
 const TIMEFRAME_WEIGHTS = {
   '1m': 0.10,
@@ -293,6 +284,65 @@ const scoreOBV = (obv, priceDirection, trendBias = 'neutral') => {
   return Math.max(-100, Math.min(100, Math.round(score)));
 };
 
+/**
+ * Score Williams %R indicator (-100 to +100)
+ * Complementary to Stochastic — measures overbought/oversold from the high
+ * @param {number|null} wr - Williams %R value (-100 to 0)
+ * @param {string} trendBias
+ * @returns {number}
+ */
+const scoreWilliamsR = (wr, trendBias = 'neutral') => {
+  if (wr == null) return 0;
+  if (trendBias === 'bullish') {
+    if (wr < -80) return 80;   // oversold in uptrend = buy opportunity
+    if (wr < -70) return 40;
+    if (wr > -20) return 0;    // overbought in uptrend = normal
+    return 0;
+  }
+  if (trendBias === 'bearish') {
+    if (wr > -20) return -80;  // overbought in downtrend = sell
+    if (wr > -30) return -40;
+    if (wr < -80) return 0;    // oversold in downtrend = normal
+    return 0;
+  }
+  // neutral: standard mean-reversion
+  if (wr < -80) return 80;
+  if (wr < -70) return 40;
+  if (wr > -20) return -80;
+  if (wr > -30) return -40;
+  return 0;
+};
+
+/**
+ * Score Commodity Channel Index (-100 to +100)
+ * Measures deviation from statistical mean — good for ranging market timing
+ * @param {number|null} cci - CCI value
+ * @param {string} trendBias
+ * @returns {number}
+ */
+const scoreCCI = (cci, trendBias = 'neutral') => {
+  if (cci == null) return 0;
+  if (trendBias === 'bullish') {
+    if (cci < -200) return 80;  // extreme oversold in uptrend = buy
+    if (cci < -100) return 50;
+    if (cci > 200) return 0;    // extreme overbought in uptrend = normal
+    return 0;
+  }
+  if (trendBias === 'bearish') {
+    if (cci > 200) return -80;  // extreme overbought in downtrend = sell
+    if (cci > 100) return -50;
+    if (cci < -200) return 0;   // extreme oversold in downtrend = normal
+    return 0;
+  }
+  // neutral: standard mean-reversion with gentle mid-range gradient
+  if (cci > 200) return -80;
+  if (cci > 100) return -40;
+  if (cci < -200) return 80;
+  if (cci < -100) return 40;
+  // Gentle gradient in normal range: CCI 0 = 0, CCI ±100 = ∓20
+  return Math.max(-30, Math.min(30, Math.round(-cci * 0.2)));
+};
+
 // --- Feature 1: Trend Filter ---
 
 /**
@@ -360,6 +410,53 @@ const computeADXRegime = (adxData) => {
     return { regime: 'ranging', adx: adxData.adx, multiplier: 1.0 };
   }
   return { regime: 'neutral', adx: adxData.adx, multiplier: 1 };
+};
+
+/**
+ * Compute daily SMA trend context from daily candles
+ * Provides macro trend classification using SMA(50), SMA(100), SMA(200)
+ * @param {Array<{close: number, timestamp?: number}>} candles1d - Daily candles
+ * @returns {{sma50: number, sma100: number, sma200: number, trend: 'bullish'|'bearish'|'neutral', goldenCross: boolean, deathCross: boolean, priceVsSMA200: number}}
+ */
+const EMPTY_DAILY_SMA = { sma50: 0, sma100: 0, sma200: 0, trend: 'neutral', goldenCross: false, deathCross: false, priceVsSMA200: 0 };
+let dailySMACache = { key: null, value: EMPTY_DAILY_SMA };
+
+const computeDailySMAContext = (candles1d) => {
+  if (!candles1d || candles1d.length < 50) return EMPTY_DAILY_SMA;
+
+  // Daily SMAs only change when the latest daily candle changes — memoize
+  // on length + last close + last timestamp so the 5s signal tick doesn't
+  // walk 350 closes per call.
+  const last = candles1d[candles1d.length - 1];
+  const key = `${candles1d.length}:${last.timestamp ?? ''}:${last.close}`;
+  if (dailySMACache.key === key) return dailySMACache.value;
+
+  const sma50 = calculateSMA(candles1d, 50);
+  const sma100 = calculateSMA(candles1d, 100);
+  const sma200 = calculateSMA(candles1d, 200);
+  const has200 = sma200 > 0;
+  const has100 = sma100 > 0;
+  const price = last.close;
+
+  let trend = 'neutral';
+  if (has200) {
+    if (price > sma200 && sma50 > sma100) trend = 'bullish';
+    else if (price < sma200 && sma50 < sma100) trend = 'bearish';
+    else if (sma50 > sma100) trend = 'bullish';
+    else if (sma50 < sma100) trend = 'bearish';
+  } else if (has100) {
+    if (sma50 > sma100) trend = 'bullish';
+    else if (sma50 < sma100) trend = 'bearish';
+  }
+
+  const value = {
+    sma50, sma100, sma200, trend,
+    goldenCross: has200 && sma50 > sma200,
+    deathCross: has200 && sma50 < sma200,
+    priceVsSMA200: has200 ? ((price - sma200) / sma200) * 100 : 0,
+  };
+  dailySMACache = { key, value };
+  return value;
 };
 
 // --- Feature 2: Volatility-Scaled Signal Thresholds ---
@@ -548,9 +645,10 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
   const prevStoch = prevIndicators?.stochastic ?? null;
   const prevMacd = prevIndicators?.macd ?? null;
 
-  // OBV and ADX per timeframe
   const obv = calculateOBV(candles);
   const adx = calculateADX(candles);
+  const williamsR = calculateWilliamsR(candles);
+  const cci = calculateCCI(candles);
 
   // Determine price direction from recent closes for OBV scoring
   const priceDir = closes.length >= 3
@@ -565,6 +663,8 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
     vwap: scoreVWAP(currentPrice, vwap, atr, trendBias),
     momentum: scoreMomentumAcceleration(momentum, rsi, trendBias),
     obv: scoreOBV(obv, priceDir, trendBias),
+    williamsR: scoreWilliamsR(williamsR, trendBias),
+    cci: scoreCCI(cci, trendBias),
   };
 
   let weightedScore = 0;
@@ -600,7 +700,7 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
 
   const indicators = {
     rsi, stochastic: stoch, macd, bollingerBands: bb, atr, vwap, momentum,
-    volumeSurge, divergence, macdDivergence, obv, adx,
+    volumeSurge, divergence, macdDivergence, obv, adx, williamsR, cci,
   };
 
   return { scores, indicators, weightedScore };
@@ -649,6 +749,8 @@ const createSignalEngine = (candleAggregator) => {
     // Weekly macro trend filter from 1w candles
     const candles1w = candleAggregator.getCandles('1w');
     const weeklyTrend = computeWeeklyTrendFilter(candles1w);
+
+    const dailySMA = computeDailySMAContext(candleAggregator.getCandles('1d'));
 
     const timeframes = {};
     let compositeScore = 0;
@@ -794,6 +896,7 @@ const createSignalEngine = (candleAggregator) => {
       timestamp: now,
       trendFilter,
       weeklyTrend,
+      dailySMA,
       adxRegime,
       volatility,
       pivotPoints,
@@ -818,8 +921,11 @@ module.exports = {
   scoreMomentum,
   scoreMomentumAcceleration,
   scoreOBV,
+  scoreWilliamsR,
+  scoreCCI,
   computeTrendFilter,
   computeWeeklyTrendFilter,
+  computeDailySMAContext,
   computeADXRegime,
   computeVolatilityContext,
   computeVolumeSurge,

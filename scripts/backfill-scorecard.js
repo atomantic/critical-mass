@@ -18,6 +18,7 @@ const path = require('path')
 const { createCandleAggregator } = require('../src/candle-aggregator')
 const { createSignalEngine } = require('../src/updown/signal-engine')
 const { computeAdaptiveWeights } = require('../src/updown/scorecard')
+const { INDICATORS, INDICATOR_WEIGHTS } = require('../src/updown/indicator-config')
 const { DATA_DIR } = require('../src/paths')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const SCORECARD_DIR = path.join(DATA_DIR, 'updown', 'scorecard')
@@ -29,9 +30,8 @@ const EVAL_WINDOWS = [
   { label: '15m', candles5m: 3 },
   { label: '1h', candles5m: 12 },
 ]
-const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum']
 const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']
-const BASE_WEIGHTS = { rsi: 0.25, stochastic: 0.20, macd: 0.20, bollinger: 0.15, vwap: 0.10, momentum: 0.10 }
+const BASE_WEIGHTS = INDICATOR_WEIGHTS
 
 // File name mapping
 const FILE_MAP = {

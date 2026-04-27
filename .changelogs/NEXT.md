@@ -37,6 +37,12 @@
 - Manual trade data model extended with `buy_recorded`, `tp_pending` statuses, `tradeType` field, `addManualBuy`, `addPairedTrade`, `markTpPlaced` methods
 - Analysis scripts for identifying and importing unaccounted exchange fills (`scripts/analyze-unaccounted*.js`, `scripts/import-*.js`)
 
+- Williams %R and CCI indicators added to the UpDown signal engine — overbought/oversold + mean-reversion scoring at 6% and 7% weights, with their own per-timeframe accumulator charts and live value cards on the dashboard
+- Daily SMA(50/100/200) macro trend context — golden/death cross detection, price-vs-SMA200 distance, and bullish/bearish/neutral classification surfaced via a new SMA pill in the signal banner and dashed reference lines on the 1d price chart
+- `mergeProximityScale` regime config (range 0.25–3.0) for tuning how aggressively celestial bodies merge; included in the four aggressiveness presets (conservative=0.5, moderate=1.0, aggressive=1.5, maximum=2.5) and exposed in the Config Editor
+- `TrendBias` JSDoc typedef in `src/types.js` for the `'bullish'|'bearish'|'neutral'` union shared across the signal engine
+- Single-source-of-truth indicator config (`src/updown/indicator-config.js`) — `INDICATORS`, `INDICATOR_WEIGHTS`, `INDICATOR_LABELS` consumed by signal-engine, scorecard, and the backfill replay script
+
 ## Changed
 
 - All npm dependencies version-pinned (no `^` ranges) to prevent supply chain attacks from auto-upgrading
@@ -66,7 +72,15 @@
 - DCA fund pages default to "All Cycles" view instead of "Current Cycle"
 - Signal history debounced — 5-minute minimum between consecutive same-type entries to prevent threshold oscillation flooding
 
+- `computeDailySMAContext` now memoizes its result by daily-candle length + last close + last timestamp — daily SMAs change once a day but were being recomputed (~350 close ops) on every 5s signal tick
+- IndicatorCharts history accumulators (rsi/stoch/macd/williamsR/adx/obv) now skip the append when the latest tracked value is unchanged — eliminates duplicate chart points and avoids needless React re-renders on every server tick
+- `cancelBodyTpOrder` accepts an optional `fallbackOrderId` so recovery paths can cancel an order even when executor tracking has been dropped (e.g. after a restart between cancel and re-place)
+- Body merges now `saveLiveState()` between cancelling the old TP and placing the merged TP — closes the crash window where a restart could resurrect an orphaned tpOrderId
+- New `placeBodyTpWithRetry` helper retries TP placement once after a 1s delay, so merge and roll-up paths don't silently leave a body without a sell order if the first place call fails
+
 ## Fixed
+
+- `scripts/backfill-scorecard.js` was carrying stale 6-key indicator weights (`rsi: 0.25, stochastic: 0.20, macd: 0.20, bollinger: 0.15, vwap: 0.10, momentum: 0.10`), so re-running the backfill would have produced wrong adaptive-weight outputs once OBV / Williams %R / CCI were added. Script now imports the same `INDICATOR_WEIGHTS` constant as the live engine.
 
 - Gemini ETHUSD orphaned buys — 12 buy orders (0.64 ETH) on exchange missing from fill-ledger; recovery script fetches exchange history, adds fills, creates celestial bodies, and fixes migration closed-trade holdback/PnL
 - Aggressiveness Level buttons did nothing on any non-default fund — `AggressivenessControl` referenced `pairQuery` but never received it as a prop, so clicking a level threw `ReferenceError: pairQuery is not defined` and the PUT to `/api/:exchange/regime/config` never fired. Pass `pairQuery` into the child component. Bug introduced by the multi-pair refactor (66fb595)

@@ -1854,7 +1854,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const bodies = positionState.celestialBodies || [];
       let mergeTarget = celestialHierarchy.findMergeTarget(
         bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-        config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders
+        config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders,
+        config.mergeProximityScale ?? 1.0
       );
 
       positionState.cycleBuys += 1;
@@ -1868,7 +1869,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (mergeTarget.tpOrderId) {
           pendingMergeTpOrders.set(mergeTarget.tpOrderId, { ...mergeTarget });
         }
-        const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
+        const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
         if (!cancelResult.cancelled) {
           if (mergeTarget.tpOrderId) pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
           console.log(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
@@ -1886,6 +1887,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           mergeTarget.tpOrderId = null;
           mergeTarget.tpPrice = 0;
           mergeTarget.assetOnOrder = 0;
+          // Persist before re-place: a crash between cancel and new TP would
+          // otherwise resurrect the orphaned tpOrderId on restart.
+          saveLiveState();
         }
       }
 
@@ -1905,8 +1909,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Sync aggregate fields for backward compatibility
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        // Place body TP for merged body
-        await placeBodyTp(merged);
+        await placeBodyTpWithRetry(merged, 'Merge');
 
         // Defense-in-depth: verify TP covers updated body size after merge
         if (merged.tpOrderId && merged.assetOnOrder > 0 && merged.tpPrice > 0) {
@@ -1916,7 +1919,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           );
           if (Math.abs(sellQty - merged.assetOnOrder) > 0.00000001) {
             console.log(`⚠️ [${exchange}] Stale TP detected for body ${merged.id.slice(-8)}: onOrder=${merged.assetOnOrder}, expected=${sellQty} — cancelling for re-place`);
-            const cancelResult = await orderExecutor.cancelBodyTpOrder(merged.id);
+            const cancelResult = await orderExecutor.cancelBodyTpOrder(merged.id, merged.tpOrderId);
             if (cancelResult.cancelled) {
               orderExecutor.removeBodyTracking(merged.tpOrderId);
               merged.tpOrderId = null;
@@ -2591,7 +2594,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 );
                 if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
                   console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
-                  const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id);
+                  const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
                   if (cancelResult.cancelled) {
                     orderExecutor.removeBodyTracking(body.tpOrderId);
                     body.tpOrderId = null;
@@ -3205,6 +3208,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
   };
 
+  /** Place body TP with a single retry on failure to avoid leaving body without sell */
+  const placeBodyTpWithRetry = async (body, context) => {
+    let placed = await placeBodyTp(body);
+    if (!placed && !body.tpOrderId) {
+      console.log(`⚠️ [${exchange}] ${context} TP placement failed for body ${body.id.slice(-8)}, retrying after 1s...`);
+      await new Promise(r => setTimeout(r, 1000));
+      placed = await placeBodyTp(body);
+      if (!placed && !body.tpOrderId) {
+        console.log(`🚨 [${exchange}] ${context} TP retry failed for body ${body.id.slice(-8)} — body has no sell order, will re-place on next reconcile`);
+      }
+    }
+    return placed;
+  };
+
   /**
    * Place or update take-profit order (legacy compat for untracked core position)
    * In celestial mode, body TPs are managed via placeBodyTp()
@@ -3390,7 +3407,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const bodies = positionState.celestialBodies || [];
       let mergeTarget = celestialHierarchy.findMergeTarget(
         bodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-        config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders
+        config.maxCelestialBodies || 10, orderExecutor.getPendingCounts().total, config.maxOpenOrders,
+        config.mergeProximityScale ?? 1.0
       );
 
       positionState.cycleBuys += 1;
@@ -3398,7 +3416,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.lastEntryTime = Date.now();
 
       if (mergeTarget) {
-        const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id);
+        const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
         if (!cancelResult.cancelled) {
           console.log(`⚠️ [${exchange}] [DRY-RUN] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
           mergeTarget = null;
@@ -3636,6 +3654,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ladderMinSpacingPct: config.ladderMinSpacingPct || 0.5,
       celestialEnabled: config.celestialEnabled !== false,
       maxCelestialBodies: config.maxCelestialBodies || 10,
+      mergeProximityScale: config.mergeProximityScale ?? 1.0,
       macroEnabled: config.macroEnabled || false,
     },
     // Effective entry mode (may differ from config due to auto-switch)
@@ -3980,7 +3999,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       : null;
 
     // Cancel source TP
-    const srcCancel = await orderExecutor.cancelBodyTpOrder(source.id);
+    const srcCancel = await orderExecutor.cancelBodyTpOrder(source.id, source.tpOrderId);
     if (!srcCancel.cancelled) {
       // Clean up snapshots
       if (source.tpOrderId) pendingMergeTpOrders.delete(source.tpOrderId);
@@ -3995,7 +4014,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     source.assetOnOrder = 0;
 
     // Cancel target TP
-    const tgtCancel = await orderExecutor.cancelBodyTpOrder(target.id);
+    const tgtCancel = await orderExecutor.cancelBodyTpOrder(target.id, target.tpOrderId);
     if (!tgtCancel.cancelled) {
       // Clean up snapshots
       if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
@@ -4048,7 +4067,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Place new combined TP (handles holdback, annotation for ALL source buy fills).
     // Cap TP% at the pre-merge target level so the sell price can only go down after merge.
     if (prevTargetTpPct != null) merged._maxTpPct = prevTargetTpPct;
-    await placeBodyTp(merged);
+    await placeBodyTpWithRetry(merged, 'Roll-up');
 
     // Persist
     saveLiveState();
@@ -4099,7 +4118,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (!body) return { success: false, message: `Body ${bodyId.slice(-8)} not found` };
 
     if (body.tpOrderId) {
-      const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id);
+      const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
       if (!cancelResult.cancelled) {
         const reason = cancelResult.filled ? 'already filled' : 'cancel failed';
         return { success: false, message: `Existing TP ${reason}` };

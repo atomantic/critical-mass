@@ -12,6 +12,7 @@ const { existsSync } = require('fs')
 const path = require('path')
 const { log } = require('../logger')
 const { UPDOWN_DATA_DIR } = require('../paths')
+const { INDICATORS, INDICATOR_WEIGHTS } = require('./indicator-config')
 
 const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SAMPLE_INTERVAL_MS = 60_000
@@ -30,8 +31,7 @@ const EVAL_NOISE_FLOORS_BPS = {
   3600000: 40,   // 1h: 40 bps
 }
 
-const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum', 'obv']
-const BASE_WEIGHTS = { rsi: 0.12, stochastic: 0.10, macd: 0.24, bollinger: 0.08, vwap: 0.09, momentum: 0.17, obv: 0.20 }
+const BASE_WEIGHTS = INDICATOR_WEIGHTS
 const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
 
 /**

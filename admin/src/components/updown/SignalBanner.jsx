@@ -65,6 +65,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining }) {
   const volatility = indicators?.volatility
   const confluence = indicators?.confluence
   const horizonPrediction = signal?.horizonPrediction
+  const dailySMA = indicators?.dailySMA
 
   const horizons = useMemo(() => {
     const tf = indicators?.timeframes
@@ -157,6 +158,21 @@ export default function SignalBanner({ signal, indicators, timeRemaining }) {
         )}
         {trendFilter?.trendBias === 'neutral' && (
           <div className="px-2 py-1 rounded text-xs font-bold bg-gray-700/40 text-gray-500" title="Trend: EMA(50) ≈ EMA(200) on 1h candles — no trend bias applied">FLAT</div>
+        )}
+
+        {/* Daily SMA trend pill */}
+        {dailySMA?.sma200 > 0 && (
+          <div
+            className={`px-2 py-1 rounded text-xs font-mono ${
+              dailySMA.trend === 'bullish' ? 'bg-green-900/30 text-green-500'
+              : dailySMA.trend === 'bearish' ? 'bg-red-900/30 text-red-500'
+              : 'bg-gray-700/40 text-gray-500'
+            }`}
+            title={`Daily SMAs — 50: $${dailySMA.sma50?.toFixed(0)} | 100: $${dailySMA.sma100?.toFixed(0)} | 200: $${dailySMA.sma200?.toFixed(0)} | Price vs SMA200: ${dailySMA.priceVsSMA200?.toFixed(1)}% | ${dailySMA.goldenCross ? 'Golden Cross (50>200)' : dailySMA.deathCross ? 'Death Cross (50<200)' : 'No cross'}`}
+          >
+            {dailySMA.goldenCross ? 'GC' : dailySMA.deathCross ? 'DC' : 'SMA'}
+            <span className="ml-1 text-[10px] opacity-70">{dailySMA.priceVsSMA200 >= 0 ? '+' : ''}{dailySMA.priceVsSMA200?.toFixed(1)}%</span>
+          </div>
         )}
 
         {/* Volatility regime pill */}

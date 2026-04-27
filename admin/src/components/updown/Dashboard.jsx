@@ -236,6 +236,7 @@ export default function UpDownDashboard() {
             tick={tick}
             indicators={indicators}
             weeklyTrend={rawIndicators?.weeklyTrend}
+            dailySMA={rawIndicators?.dailySMA}
             contract={status?.contract}
             signalAnnotations={signalAnnotations}
           />

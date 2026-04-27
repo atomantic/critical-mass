@@ -91,6 +91,8 @@ const DEFAULTS = {
  * Default regime strategy configuration
  * @type {RegimeStrategyConfig}
  */
+const MERGE_PROXIMITY_BOUNDS = { min: 0.25, max: 3.0, default: 1.0 };
+
 const REGIME_DEFAULTS = {
   // Mode flags
   enabled: false,
@@ -135,6 +137,7 @@ const REGIME_DEFAULTS = {
   // Celestial Hierarchy
   celestialEnabled: true,             // Enable multi-tier position management
   maxCelestialBodies: 10,             // Maximum concurrent celestial bodies (1-15)
+  mergeProximityScale: MERGE_PROXIMITY_BOUNDS.default,  // Scale factor for merge proximity (range: see MERGE_PROXIMITY_BOUNDS)
 
   // TP Auto-Management
   tpAutoManaged: false,         // Opt-in flag for dynamic TP adjustment
@@ -273,6 +276,7 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     cautionScale: 0.15,
     trendScale: 0,
     maxCycleBuys: 10,
+    mergeProximityScale: 0.5,
   },
   moderate: {
     kFactor: 0.65,
@@ -282,6 +286,7 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     cautionScale: 0.35,
     trendScale: 0.1,
     maxCycleBuys: 15,
+    mergeProximityScale: 1.0,
   },
   aggressive: {
     kFactor: 0.5,
@@ -291,6 +296,7 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     cautionScale: 0.6,
     trendScale: 0.25,
     maxCycleBuys: 25,
+    mergeProximityScale: 1.5,
   },
   maximum: {
     kFactor: 0.3,
@@ -300,6 +306,7 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     cautionScale: 1.0,
     trendScale: 0.5,
     maxCycleBuys: 50,
+    mergeProximityScale: 2.5,
   },
 };
 
@@ -1084,6 +1091,9 @@ const validateRegimeConfig = (config) => {
   if (config.maxCelestialBodies !== undefined && (!Number.isInteger(config.maxCelestialBodies) || config.maxCelestialBodies < 1 || config.maxCelestialBodies > 15)) {
     errors.push('maxCelestialBodies must be an integer between 1 and 15');
   }
+  if (config.mergeProximityScale !== undefined && (typeof config.mergeProximityScale !== 'number' || config.mergeProximityScale < MERGE_PROXIMITY_BOUNDS.min || config.mergeProximityScale > MERGE_PROXIMITY_BOUNDS.max)) {
+    errors.push(`mergeProximityScale must be a number between ${MERGE_PROXIMITY_BOUNDS.min} and ${MERGE_PROXIMITY_BOUNDS.max}`);
+  }
 
   // Ladder / Entry Mode validation
   if (config.entryMode !== undefined) {
@@ -1385,6 +1395,7 @@ module.exports = {
   DEFAULTS,
   GLOBAL_DEFAULTS,
   REGIME_DEFAULTS,
+  MERGE_PROXIMITY_BOUNDS,
   NOTIFICATION_DEFAULTS,
   // Currency parsing
   getBaseCurrency,
