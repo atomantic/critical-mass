@@ -77,6 +77,7 @@
 - `cancelBodyTpOrder` accepts an optional `fallbackOrderId` so recovery paths can cancel an order even when executor tracking has been dropped (e.g. after a restart between cancel and re-place)
 - Body merges now `saveLiveState()` between cancelling the old TP and placing the merged TP — closes the crash window where a restart could resurrect an orphaned tpOrderId
 - New `placeBodyTpWithRetry` helper retries TP placement once after a 1s delay, so merge and roll-up paths don't silently leave a body without a sell order if the first place call fails
+- Engine IPC ports reassigned in `ecosystem.config.cjs` (Coinbase 5570→5565, Gemini 5571→5566, Crypto.com 5574→5567) to consolidate into a contiguous 5563–5567 range
 
 ## Fixed
 
