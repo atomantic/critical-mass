@@ -19,6 +19,8 @@ const {
   createInitialCelestialState,
   getTierSummary,
   buildBodyTpOrder,
+  buildCoreTpOrder,
+  buildPersistedPendingOrders,
 } = require('../src/celestial-hierarchy');
 
 // ============================================================================
@@ -802,5 +804,77 @@ describe('buildBodyTpOrder', () => {
 
   it('falls back to a default emoji for an unknown tier', () => {
     assert.equal(buildBodyTpOrder({ ...baseBody, tier: 'unknown-tier' }).tierEmoji, '🛰️');
+  });
+});
+
+describe('buildCoreTpOrder', () => {
+  it('maps legacy core TP fields from a position', () => {
+    const order = buildCoreTpOrder({
+      activeTpOrderId: 'core-tp-1',
+      lastTpPrice: 110000,
+      assetOnOrder: 0.1,
+      avgCostBasis: 100000,
+    });
+    assert.equal(order.orderId, 'core-tp-1');
+    assert.equal(order.side, 'sell');
+    assert.equal(order.type, 'take_profit');
+    assert.equal(order.status, 'open');
+    assert.equal(order.price, 110000);
+    assert.equal(order.size, 0.1);
+    assert.equal(order.tpPercent, '10.00');
+    assert.equal(order.bodyId, undefined);  // core TPs aren't body-owned
+  });
+
+  it('returns null tpPercent when avgCostBasis or lastTpPrice is zero', () => {
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', avgCostBasis: 0, lastTpPrice: 110000 }).tpPercent, null);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', avgCostBasis: 100000, lastTpPrice: 0 }).tpPercent, null);
+  });
+});
+
+describe('buildPersistedPendingOrders', () => {
+  it('returns an empty array for null position', () => {
+    assert.deepEqual(buildPersistedPendingOrders(null), []);
+    assert.deepEqual(buildPersistedPendingOrders(undefined), []);
+  });
+
+  it('synthesizes only body TPs when bodies exist and no legacy core TP', () => {
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-1', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, assetOnOrder: 0.025, costBasis: 5000 },
+        { id: 'b2', tier: 'moon', tpOrderId: null, assetQty: 0.1 },  // no TP
+      ],
+      activeTpOrderId: null,
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'tp-1');
+    assert.equal(orders[0].type, 'body_tp');
+  });
+
+  it('appends a legacy core TP when activeTpOrderId is set', () => {
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [],
+      activeTpOrderId: 'core-tp-1',
+      lastTpPrice: 110000,
+      assetOnOrder: 0.1,
+      avgCostBasis: 100000,
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'core-tp-1');
+    assert.equal(orders[0].type, 'take_profit');
+  });
+
+  it('combines body TPs and a legacy core TP when both are present', () => {
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-1', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+      activeTpOrderId: 'core-tp-1',
+      lastTpPrice: 105000,
+      assetOnOrder: 0.02,
+      avgCostBasis: 100000,
+    });
+    assert.equal(orders.length, 2);
+    assert.equal(orders.find(o => o.type === 'body_tp').orderId, 'tp-1');
+    assert.equal(orders.find(o => o.type === 'take_profit').orderId, 'core-tp-1');
   });
 });

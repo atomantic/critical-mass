@@ -286,9 +286,10 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
     const lastPrice = serviceStatus?.market?.lastPrice || 0;
     const apy = position ? calculateApyMetrics(position, config, { lastPrice }) : {};
 
-    // Surface body TPs as pendingOrders so the dashboard keeps mapping
-    // body-owned buys to their open sells while the engine is stopped.
-    const pendingOrders = bodies.filter(b => b.tpOrderId).map(celestialHierarchy.buildBodyTpOrder);
+    // Surface persisted TPs (bodies + legacy core) as pendingOrders so the
+    // dashboard keeps mapping buys to their open sells while the engine is
+    // stopped. Covers both celestial and non-celestial fund layouts.
+    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(position);
 
     return {
       success: true, exchange, pair: resolvedPair, running: false,

@@ -184,14 +184,14 @@ const createMarketDataService = (exchange, pair) => {
       cachedRegimeStateTime = now;
     }
 
-    // Synthesize body TPs as pendingOrders + a celestial summary so the
-    // dashboard keeps its buy↔sell linkage when only the market service is
-    // emitting status (engine stopped). Without these the previous good
-    // status payload from the running engine would be overwritten by a
+    // Synthesize persisted TPs (bodies + legacy core) + a celestial summary
+    // so the dashboard keeps its buy↔sell linkage when only the market
+    // service is emitting status (engine stopped). Without these, the prior
+    // good payload from the running engine would be overwritten by a
     // truncated snapshot, dropping all open TPs from the UI.
     const position = cachedRegimeState?.position || null;
     const bodies = position?.celestialBodies || [];
-    const pendingOrders = bodies.filter(b => b.tpOrderId).map(celestialHierarchy.buildBodyTpOrder);
+    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(position);
 
     onStatusUpdateCallback({
       isRunning: false,

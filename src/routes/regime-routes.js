@@ -33,7 +33,7 @@ const buildOfflineStatus = (exchange, pair) => {
     isRunning: false,
     position,
     regime: rs.regime || null,
-    pendingOrders: bodies.filter(b => b.tpOrderId).map(celestialHierarchy.buildBodyTpOrder),
+    pendingOrders: celestialHierarchy.buildPersistedPendingOrders(position),
     celestial: {
       enabled: bodies.length > 0,
       bodies: bodies.map(b => {
