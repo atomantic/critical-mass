@@ -90,7 +90,7 @@ export function useRegimeEvents(exchange = null, pair = null) {
     }
 
     const handleStatusUpdate = (data) => {
-      if (!matchesFund(data)) return
+      if (!matchesFund(data) || !data.status) return
       // Shallow-merge so a truncated emit (e.g., the market service while the
       // engine is stopped) can't blow away fields like pendingOrders/celestial
       // that were present in the prior good snapshot.

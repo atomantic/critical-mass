@@ -58,12 +58,19 @@ if (!fs.existsSync(ledgerPath)) {
   process.exit(1)
 }
 
-const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'))
+const readJson = (p, label) => {
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'))
+  } catch (err) {
+    console.error(`✗ failed to parse ${label} (${p}): ${err.message}`)
+    process.exit(1)
+  }
+}
+
+const ledger = readJson(ledgerPath, 'fill-ledger')
 const fills = Array.isArray(ledger) ? ledger : (ledger.fills || [])
 
-const closedTrades = fs.existsSync(closedTradesPath)
-  ? JSON.parse(fs.readFileSync(closedTradesPath, 'utf8'))
-  : []
+const closedTrades = fs.existsSync(closedTradesPath) ? readJson(closedTradesPath, 'closed-trades') : []
 const closedBySellId = new Map()
 for (const t of (Array.isArray(closedTrades) ? closedTrades : (closedTrades.trades || []))) {
   closedBySellId.set(t.sellOrderId, t)
@@ -276,23 +283,30 @@ for (const sell of sellOrders) {
   }
 }
 
-// 5) orphan_sell_link  (skip TPs still open on the exchange — they just haven't filled yet)
-const orphanByLinkedSell = new Map()
+// 5) orphan_sell_link
+//   Buys point at a sellOrderId that's not in the ledger. We split into two
+//   buckets so a stale persisted tpOrderId (e.g., the engine missed a fill or
+//   cancel while offline) doesn't silently hide a real orphan reference:
+//     - claimed_by_active_body: still listed as a body's tpOrderId in
+//       regime-state.json. Probably an open TP on the exchange, but only
+//       persistence proves it — verify against exchange before trusting.
+//     - orphan_sell_link: no claim from any body — an unambiguous orphan.
 for (const [sellId, linked] of buysBySellId) {
   if (sellIds.has(sellId)) continue
-  if (activeOpenTpIds.has(sellId)) continue  // active body TP, not orphaned
-  orphanByLinkedSell.set(sellId, linked)
-}
-for (const [sellId, linked] of orphanByLinkedSell) {
   const linkedSize = linked.reduce((a, b) => a + b.size, 0)
+  const claimed = activeOpenTpIds.has(sellId)
   push({
-    category: 'orphan_sell_link',
-    severity: linkedSize > 0.01 ? 'high' : 'med',
+    category: claimed ? 'claimed_by_active_body' : 'orphan_sell_link',
+    severity: claimed ? 'low' : (linkedSize > 0.01 ? 'high' : 'med'),
     orderId: sellId,
     linkedSize,
     linkedBuys: linked.map(b => ({ orderId: b.orderId, size: b.size, bodyId: b.bodyId, ts: b.ts })),
-    details: `${linked.length} buys point at sellOrderId ${fmtId(sellId)} which is not in the ledger`,
-    suggestedAction: 'Clear sellOrderId on these buys (or re-link to the real sell that consumed them).',
+    details: claimed
+      ? `${linked.length} buys point at ${fmtId(sellId)} — listed as an active body TP in regime-state (verify it's still open on the exchange)`
+      : `${linked.length} buys point at sellOrderId ${fmtId(sellId)} which is not in the ledger`,
+    suggestedAction: claimed
+      ? 'Confirm the order is still OPEN on the exchange. If it filled/cancelled while offline, ingest the fills (or clear the body tpOrderId) so the linkage repairs itself.'
+      : 'Clear sellOrderId on these buys (or re-link to the real sell that consumed them).',
   })
 }
 

@@ -18,6 +18,7 @@ const {
   migrateFromLegacy,
   createInitialCelestialState,
   getTierSummary,
+  buildBodyTpOrder,
 } = require('../src/celestial-hierarchy');
 
 // ============================================================================
@@ -745,5 +746,61 @@ describe('migrateFromLegacy', () => {
     };
     const bodies = migrateFromLegacy(positionState, 10000);
     assert.equal(bodies.length, 2); // 1 core + 1 legacy satellite
+  });
+});
+
+describe('buildBodyTpOrder', () => {
+  const baseBody = {
+    id: 'body-test-001',
+    tier: 'satellite',
+    tpOrderId: 'tp-abc-123',
+    tpPrice: 105000,
+    avgPrice: 100000,
+    assetQty: 0.05,
+    costBasis: 5000,
+    assetOnOrder: 0.025,
+    createdAt: 1700000000000,
+    lastMergedAt: null,
+    mergeCount: 0,
+  };
+
+  it('maps every dashboard-consumed field from a body to a pendingOrder shape', () => {
+    const order = buildBodyTpOrder(baseBody);
+    assert.equal(order.orderId, 'tp-abc-123');
+    assert.equal(order.side, 'sell');
+    assert.equal(order.type, 'body_tp');
+    assert.equal(order.status, 'open');
+    assert.equal(order.price, 105000);
+    assert.equal(order.bodyId, 'body-test-001');
+    assert.equal(order.bodyTier, 'satellite');
+    assert.equal(order.bodyAvgCost, 100000);
+    assert.equal(order.bodyBtcQty, 0.05);
+    assert.equal(order.bodyCostBasis, 5000);
+    assert.equal(order.tierEmoji, getTierConfig('satellite').emoji);
+  });
+
+  it('prefers assetOnOrder over assetQty for size (TP may be sized post-holdback)', () => {
+    assert.equal(buildBodyTpOrder(baseBody).size, 0.025);
+    const noOnOrder = { ...baseBody, assetOnOrder: undefined };
+    assert.equal(buildBodyTpOrder(noOnOrder).size, 0.05);
+    // Explicit zero is a valid sell-quantity (e.g. body fully holdback) — keep it
+    const zero = { ...baseBody, assetOnOrder: 0 };
+    assert.equal(buildBodyTpOrder(zero).size, 0);
+  });
+
+  it('uses lastMergedAt as placedAt when present, falls back to createdAt, then null', () => {
+    assert.equal(buildBodyTpOrder({ ...baseBody, lastMergedAt: 1800000000000 }).placedAt, 1800000000000);
+    assert.equal(buildBodyTpOrder(baseBody).placedAt, 1700000000000);
+    assert.equal(buildBodyTpOrder({ ...baseBody, createdAt: null, lastMergedAt: null }).placedAt, null);
+  });
+
+  it('computes tpPercent from avgPrice and tpPrice', () => {
+    assert.equal(buildBodyTpOrder(baseBody).tpPercent, '5.00');
+    assert.equal(buildBodyTpOrder({ ...baseBody, avgPrice: 0 }).tpPercent, null);
+    assert.equal(buildBodyTpOrder({ ...baseBody, tpPrice: 0 }).tpPercent, null);
+  });
+
+  it('falls back to a default emoji for an unknown tier', () => {
+    assert.equal(buildBodyTpOrder({ ...baseBody, tier: 'unknown-tier' }).tierEmoji, '🛰️');
   });
 });
