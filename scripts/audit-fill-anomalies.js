@@ -145,8 +145,6 @@ for (const o of orderIndex.values()) {
 
 const anomalies = []
 const fmtId = id => (id || '').slice(0, 12)
-const SIZE_TOL = 1e-6 // treat differences below this as numeric noise
-const PCT = (a, b) => (b === 0 ? Infinity : (a - b) / b)
 
 const push = (a) => { if (!args.ignore.has(a.orderId)) anomalies.push(a) }
 

@@ -210,6 +210,10 @@ const createMarketDataService = (exchange, pair) => {
             tpPercent: b.avgPrice > 0 && b.tpPrice > 0 ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2) : null,
             assetOnOrder: b.assetOnOrder, createdAt: b.createdAt,
             lastMergedAt: b.lastMergedAt, mergeCount: b.mergeCount,
+            buyOrders: (b.buyOrders || []).map(bo => ({
+              orderId: bo.orderId, price: bo.price, assetQty: bo.assetQty,
+              sizeUsdc: bo.sizeUsdc, filledAt: bo.filledAt,
+            })),
           };
         }),
         bodiesActive: bodies.length,
