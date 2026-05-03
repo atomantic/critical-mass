@@ -286,13 +286,17 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
     const lastPrice = serviceStatus?.market?.lastPrice || 0;
     const apy = position ? calculateApyMetrics(position, config, { lastPrice }) : {};
 
+    // Surface body TPs as pendingOrders so the dashboard keeps mapping
+    // body-owned buys to their open sells while the engine is stopped.
+    const pendingOrders = bodies.filter(b => b.tpOrderId).map(celestialHierarchy.buildBodyTpOrder);
+
     return {
       success: true, exchange, pair: resolvedPair, running: false,
       status: {
         isRunning: false,
         market: serviceStatus?.market || null,
         regime: serviceStatus?.regime || null,
-        position, celestial, apy,
+        position, celestial, apy, pendingOrders,
         health: { mode: 'STOPPED' },
         isDryRun: savedState?.isDryRun || false,
         lifecycle: {

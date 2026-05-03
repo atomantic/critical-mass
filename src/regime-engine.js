@@ -47,6 +47,64 @@ const fmtPrice = (p) => {
 };
 
 /**
+ * Build the dashboard pendingOrders payload: enrich the executor's tracked
+ * orders with body/cost-basis metadata, then union any body TPs the executor
+ * doesn't track in-memory (after engine stop, or pre-reconcile after start).
+ */
+const buildPendingOrders = (executorOrders, positionState) => {
+  const bodies = positionState.celestialBodies || [];
+  const enriched = executorOrders.map(order => {
+    if (order.type === 'take_profit') {
+      const body = bodies.find(b => b.tpOrderId === order.orderId);
+      if (body) {
+        const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+        return {
+          ...order,
+          type: 'body_tp',
+          tpPercent: body.avgPrice > 0 ? ((order.price - body.avgPrice) / body.avgPrice * 100).toFixed(2) : null,
+          bodyId: body.id,
+          bodyTier: body.tier,
+          tierEmoji: tierCfg?.emoji || '🛰️',
+          bodyAvgCost: body.avgPrice,
+          bodyBtcQty: body.assetQty,
+          bodyCostBasis: body.costBasis,
+        };
+      }
+      if (positionState.avgCostBasis > 0) {
+        return {
+          ...order,
+          tpPercent: ((order.price - positionState.avgCostBasis) / positionState.avgCostBasis * 100).toFixed(2),
+        };
+      }
+      return order;
+    }
+    if (order.type === 'body_tp' || order.type === 'satellite_tp') {
+      const body = bodies.find(b => b.tpOrderId === order.orderId);
+      const avgPrice = body ? body.avgPrice : 0;
+      const tierCfg = body ? celestialHierarchy.getTierConfig(body.tier) : null;
+      return {
+        ...order,
+        tpPercent: avgPrice > 0 ? ((order.price - avgPrice) / avgPrice * 100).toFixed(2) : null,
+        bodyId: body?.id || null,
+        bodyTier: body?.tier || null,
+        tierEmoji: tierCfg?.emoji || '🛰️',
+        bodyAvgCost: avgPrice,
+        bodyBtcQty: body?.assetQty ?? order.size,
+        bodyCostBasis: body?.costBasis || 0,
+      };
+    }
+    return order;
+  });
+
+  const known = new Set(enriched.map(o => o.orderId));
+  for (const body of bodies) {
+    if (!body.tpOrderId || known.has(body.tpOrderId)) continue;
+    enriched.push(celestialHierarchy.buildBodyTpOrder(body));
+  }
+  return enriched;
+};
+
+/**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
  * @typedef {import('./types').MarketState} MarketState
  * @typedef {import('./types').RegimePositionState} RegimePositionState
@@ -3583,49 +3641,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     risk: riskManager.getState(),
     orders: orderExecutor.getPendingCounts(),
     pendingOrders: !isDryRun && orderExecutor.getPendingOrdersList
-      ? orderExecutor.getPendingOrdersList().map(order => {
-        // Normalize take_profit → body_tp if a celestial body owns this order
-        if (order.type === 'take_profit') {
-          const matchingBody = (positionState.celestialBodies || []).find(b => b.tpOrderId === order.orderId);
-          if (matchingBody) {
-            const tierCfg = celestialHierarchy.getTierConfig(matchingBody.tier);
-            return {
-              ...order,
-              type: 'body_tp',
-              tpPercent: matchingBody.avgPrice > 0 ? ((order.price - matchingBody.avgPrice) / matchingBody.avgPrice * 100).toFixed(2) : null,
-              bodyId: matchingBody.id,
-              bodyTier: matchingBody.tier,
-              tierEmoji: tierCfg ? tierCfg.emoji : '🛰️',
-              bodyAvgCost: matchingBody.avgPrice,
-              bodyBtcQty: matchingBody.assetQty,
-              bodyCostBasis: matchingBody.costBasis,
-            };
-          }
-          if (positionState.avgCostBasis > 0) {
-            return {
-              ...order,
-              tpPercent: ((order.price - positionState.avgCostBasis) / positionState.avgCostBasis * 100).toFixed(2),
-            };
-          }
-        }
-        // Add cost basis + TP% for body_tp orders from their independent position
-        if (order.type === 'body_tp' || order.type === 'satellite_tp') {
-          const body = (positionState.celestialBodies || []).find(b => b.tpOrderId === order.orderId);
-          const avgPrice = body ? body.avgPrice : 0;
-          const tierCfg = body ? celestialHierarchy.getTierConfig(body.tier) : null;
-          return {
-            ...order,
-            tpPercent: avgPrice > 0 ? ((order.price - avgPrice) / avgPrice * 100).toFixed(2) : null,
-            bodyId: body ? body.id : null,
-            bodyTier: body ? body.tier : null,
-            tierEmoji: tierCfg ? tierCfg.emoji : '🛰️',
-            bodyAvgCost: avgPrice,
-            bodyBtcQty: body ? body.assetQty : order.size,
-            bodyCostBasis: body ? body.costBasis : 0,
-          };
-        }
-        return order;
-      })
+      ? buildPendingOrders(orderExecutor.getPendingOrdersList(), positionState)
       : [],
     apy: calculateApyMetrics(),
     dryRun: isDryRun && orderExecutor.getDryRunState ? orderExecutor.getDryRunState() : null,

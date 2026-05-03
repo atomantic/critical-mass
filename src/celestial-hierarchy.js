@@ -426,6 +426,34 @@ const TIER_COLORS = {
   black_hole: '#EF4444',  // red
 };
 
+/**
+ * Build a pendingOrder-shaped object for a body's live TP order on the exchange,
+ * derived from the body's persisted state. Used by the engine status payload
+ * (to surface body TPs the executor doesn't track in-memory) and by the
+ * read-only offline-status route fallback.
+ */
+const buildBodyTpOrder = (body) => {
+  const tierCfg = getTierConfig(body.tier);
+  return {
+    orderId: body.tpOrderId,
+    side: 'sell',
+    type: 'body_tp',
+    status: 'open',
+    price: body.tpPrice,
+    size: body.assetOnOrder ?? body.assetQty,
+    placedAt: body.lastMergedAt || body.createdAt || null,
+    bodyId: body.id,
+    bodyTier: body.tier,
+    tierEmoji: tierCfg?.emoji || '🛰️',
+    bodyAvgCost: body.avgPrice,
+    bodyBtcQty: body.assetQty,
+    bodyCostBasis: body.costBasis,
+    tpPercent: body.avgPrice > 0 && body.tpPrice > 0
+      ? ((body.tpPrice - body.avgPrice) / body.avgPrice * 100).toFixed(2)
+      : null,
+  };
+};
+
 module.exports = {
   TIERS,
   TIER_COLORS,
@@ -442,4 +470,5 @@ module.exports = {
   migrateFromLegacy,
   createInitialCelestialState,
   getTierSummary,
+  buildBodyTpOrder,
 };

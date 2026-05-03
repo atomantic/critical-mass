@@ -7,10 +7,69 @@
  */
 
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig, getFundConfig, getDefaultPair } = require('../config-utils');
+const { loadRegimeState } = require('../state-tracker');
+const celestialHierarchy = require('../celestial-hierarchy');
 const { log } = require('../logger');
 
 /** Convert IPC connection errors to standard response */
 const engineError = (err) => ({ success: false, error: `Engine unavailable: ${err.message}` });
+
+/**
+ * Read-only status synthesized from disk for when the engine IPC is dead.
+ * Surfaces persisted body TPs so the dashboard doesn't classify their buys
+ * as orphans. Trading actions still require the engine.
+ */
+const buildOfflineStatus = (exchange, pair) => {
+  let rs;
+  try {
+    rs = loadRegimeState(exchange, pair);
+  } catch {
+    return null;
+  }
+  const position = rs.position || {};
+  const bodies = position.celestialBodies || [];
+
+  return {
+    isRunning: false,
+    position,
+    regime: rs.regime || null,
+    pendingOrders: bodies.filter(b => b.tpOrderId).map(celestialHierarchy.buildBodyTpOrder),
+    celestial: {
+      enabled: bodies.length > 0,
+      bodies: bodies.map(b => {
+        const tierCfg = celestialHierarchy.getTierConfig(b.tier);
+        return {
+          id: b.id,
+          tier: b.tier,
+          emoji: tierCfg?.emoji,
+          assetQty: b.assetQty,
+          costBasis: b.costBasis,
+          avgPrice: b.avgPrice,
+          tpOrderId: b.tpOrderId,
+          tpPrice: b.tpPrice,
+          tpPercent: b.avgPrice > 0 && b.tpPrice > 0
+            ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2)
+            : null,
+          assetOnOrder: b.assetOnOrder,
+          createdAt: b.createdAt,
+          lastMergedAt: b.lastMergedAt,
+          mergeCount: b.mergeCount,
+          buyOrders: (b.buyOrders || []).map(bo => ({
+            orderId: bo.orderId,
+            price: bo.price,
+            assetQty: bo.assetQty,
+            sizeUsdc: bo.sizeUsdc,
+            filledAt: bo.filledAt,
+          })),
+        };
+      }),
+      bodiesActive: bodies.length,
+      bodiesCompleted: position.celestialState?.bodiesCompleted || 0,
+      bodiesRealizedPnL: position.celestialState?.bodiesRealizedPnL || 0,
+      bodiesRealizedAssetPnL: position.celestialState?.bodiesRealizedAssetPnL || 0,
+    },
+  };
+};
 
 /** HTTP status code for error responses */
 const errStatus = (result) => result.error?.includes('unavailable') ? 503 : 400;
@@ -75,7 +134,16 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const result = await getIPC(exchange).request('regime:status', {}, exchange, pair).catch(engineError);
-    if (!result.success) return res.status(errStatus(result)).json(result);
+    if (!result.success) {
+      // Engine unreachable: serve a read-only status from disk so the dashboard
+      // keeps showing persisted body TPs (and doesn't flag those bodies' buys
+      // as orphans just because pendingOrders is empty).
+      const offlineStatus = buildOfflineStatus(exchange, pair);
+      if (offlineStatus) {
+        return res.json({ success: true, status: offlineStatus, engineDown: true, engineError: result.error });
+      }
+      return res.status(errStatus(result)).json(result);
+    }
     res.json(result);
   });
 
