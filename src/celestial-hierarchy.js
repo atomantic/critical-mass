@@ -428,9 +428,7 @@ const TIER_COLORS = {
 
 /**
  * Build a pendingOrder-shaped object for a body's live TP order on the exchange,
- * derived from the body's persisted state. Used by the engine status payload
- * (to surface body TPs the executor doesn't track in-memory) and by the
- * read-only offline-status route fallback.
+ * derived from the body's persisted state.
  */
 const buildBodyTpOrder = (body) => {
   const tierCfg = getTierConfig(body.tier);
@@ -454,6 +452,39 @@ const buildBodyTpOrder = (body) => {
   };
 };
 
+/**
+ * Build a pendingOrder-shaped object for a legacy/core TP from persisted
+ * position state (non-celestial funds, where there are no bodies but the
+ * position holds a single activeTpOrderId).
+ */
+const buildCoreTpOrder = (position) => ({
+  orderId: position.activeTpOrderId,
+  side: 'sell',
+  type: 'take_profit',
+  status: 'open',
+  price: position.lastTpPrice || 0,
+  size: position.assetOnOrder || 0,
+  placedAt: null,
+  tpPercent: position.avgCostBasis > 0 && position.lastTpPrice > 0
+    ? ((position.lastTpPrice - position.avgCostBasis) / position.avgCostBasis * 100).toFixed(2)
+    : null,
+});
+
+/**
+ * Synthesize the pendingOrders array from a persisted position: all body TPs
+ * plus the legacy core TP if present. Used by every engine-stopped status
+ * fallback so the dashboard sees the same open TPs the exchange holds,
+ * regardless of whether the fund is celestial or legacy/core-only.
+ */
+const buildPersistedPendingOrders = (position) => {
+  if (!position) return [];
+  const orders = (position.celestialBodies || [])
+    .filter(b => b.tpOrderId)
+    .map(buildBodyTpOrder);
+  if (position.activeTpOrderId) orders.push(buildCoreTpOrder(position));
+  return orders;
+};
+
 module.exports = {
   TIERS,
   TIER_COLORS,
@@ -471,4 +502,6 @@ module.exports = {
   createInitialCelestialState,
   getTierSummary,
   buildBodyTpOrder,
+  buildCoreTpOrder,
+  buildPersistedPendingOrders,
 };
