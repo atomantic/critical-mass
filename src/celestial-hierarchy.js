@@ -455,7 +455,9 @@ const buildBodyTpOrder = (body) => {
 /**
  * Build a pendingOrder-shaped object for a legacy/core TP from persisted
  * position state (non-celestial funds, where there are no bodies but the
- * position holds a single activeTpOrderId).
+ * position holds a single activeTpOrderId). Falls back to totalAsset when
+ * assetOnOrder is missing (e.g. legacy state migrated before the field
+ * was tracked) so the dashboard doesn't render the row with size 0.
  */
 const buildCoreTpOrder = (position) => ({
   orderId: position.activeTpOrderId,
@@ -463,7 +465,7 @@ const buildCoreTpOrder = (position) => ({
   type: 'take_profit',
   status: 'open',
   price: position.lastTpPrice || 0,
-  size: position.assetOnOrder || 0,
+  size: position.assetOnOrder || position.totalAsset || 0,
   placedAt: null,
   tpPercent: position.avgCostBasis > 0 && position.lastTpPrice > 0
     ? ((position.lastTpPrice - position.avgCostBasis) / position.avgCostBasis * 100).toFixed(2)
@@ -472,16 +474,18 @@ const buildCoreTpOrder = (position) => ({
 
 /**
  * Synthesize the pendingOrders array from a persisted position: all body TPs
- * plus the legacy core TP if present. Used by every engine-stopped status
- * fallback so the dashboard sees the same open TPs the exchange holds,
- * regardless of whether the fund is celestial or legacy/core-only.
+ * plus the legacy core TP if present. Dedupes by orderId so migrated state
+ * (where the core activeTpOrderId may also be a body's tpOrderId) doesn't
+ * emit the same exchange order twice.
  */
 const buildPersistedPendingOrders = (position) => {
   if (!position) return [];
   const orders = (position.celestialBodies || [])
     .filter(b => b.tpOrderId)
     .map(buildBodyTpOrder);
-  if (position.activeTpOrderId) orders.push(buildCoreTpOrder(position));
+  if (position.activeTpOrderId && !orders.some(o => o.orderId === position.activeTpOrderId)) {
+    orders.push(buildCoreTpOrder(position));
+  }
   return orders;
 };
 

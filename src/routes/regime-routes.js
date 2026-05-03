@@ -6,8 +6,11 @@
  * process via IPC WebSocket. Config reads/writes stay local (file-based).
  */
 
+const fs = require('fs');
+const path = require('path');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig, getFundConfig, getDefaultPair } = require('../config-utils');
 const { loadRegimeState } = require('../state-tracker');
+const { resolveFundDataDir } = require('../migration');
 const celestialHierarchy = require('../celestial-hierarchy');
 const { log } = require('../logger');
 
@@ -16,10 +19,16 @@ const engineError = (err) => ({ success: false, error: `Engine unavailable: ${er
 
 /**
  * Read-only status synthesized from disk for when the engine IPC is dead.
- * Surfaces persisted body TPs so the dashboard doesn't classify their buys
- * as orphans. Trading actions still require the engine.
+ * Returns null when there's no persisted state to fall back on, so a true
+ * IPC outage (e.g., first-time fund or broken connection with no saved
+ * data) still surfaces as 503 rather than masking as a stopped engine.
  */
 const buildOfflineStatus = (exchange, pair) => {
+  // loadRegimeState returns an initial empty state when no file exists, so
+  // checking the return value isn't enough — verify the file is on disk first.
+  const stateFile = path.join(resolveFundDataDir(exchange, pair), 'regime-state.json');
+  if (!fs.existsSync(stateFile)) return null;
+
   let rs;
   try {
     rs = loadRegimeState(exchange, pair);

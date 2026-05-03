@@ -829,6 +829,12 @@ describe('buildCoreTpOrder', () => {
     assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', avgCostBasis: 0, lastTpPrice: 110000 }).tpPercent, null);
     assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', avgCostBasis: 100000, lastTpPrice: 0 }).tpPercent, null);
   });
+
+  it('falls back to totalAsset when assetOnOrder is missing (legacy migrated state)', () => {
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', totalAsset: 0.5 }).size, 0.5);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', assetOnOrder: 0, totalAsset: 0.5 }).size, 0.5);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', assetOnOrder: 0.1, totalAsset: 0.5 }).size, 0.1);
+  });
 });
 
 describe('buildPersistedPendingOrders', () => {
@@ -876,5 +882,21 @@ describe('buildPersistedPendingOrders', () => {
     assert.equal(orders.length, 2);
     assert.equal(orders.find(o => o.type === 'body_tp').orderId, 'tp-1');
     assert.equal(orders.find(o => o.type === 'take_profit').orderId, 'core-tp-1');
+  });
+
+  it('dedupes the core TP when its orderId is already a body tpOrderId (migrated state)', () => {
+    const sharedId = 'tp-shared';
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: sharedId, tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+      activeTpOrderId: sharedId,  // same exchange order — must not be emitted twice
+      lastTpPrice: 110000,
+      assetOnOrder: 0.05,
+      avgCostBasis: 100000,
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].type, 'body_tp');  // body version wins (richer metadata)
+    assert.equal(orders[0].orderId, sharedId);
   });
 });
