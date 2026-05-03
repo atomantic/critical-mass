@@ -19,6 +19,7 @@ const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = requ
 const { loadRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
+const celestialHierarchy = require('./celestial-hierarchy');
 
 // Store active market data services keyed by `${exchange}::${pair}`
 const marketDataServices = new Map();
@@ -183,11 +184,39 @@ const createMarketDataService = (exchange, pair) => {
       cachedRegimeStateTime = now;
     }
 
+    // Synthesize body TPs as pendingOrders + a celestial summary so the
+    // dashboard keeps its buy↔sell linkage when only the market service is
+    // emitting status (engine stopped). Without these the previous good
+    // status payload from the running engine would be overwritten by a
+    // truncated snapshot, dropping all open TPs from the UI.
+    const position = cachedRegimeState?.position || null;
+    const bodies = position?.celestialBodies || [];
+    const pendingOrders = bodies.filter(b => b.tpOrderId).map(celestialHierarchy.buildBodyTpOrder);
+
     onStatusUpdateCallback({
       isRunning: false,
       market: getMarketState(),
       regime: getRegimeState(),
-      position: cachedRegimeState?.position || null,
+      position,
+      pendingOrders,
+      celestial: {
+        enabled: bodies.length > 0,
+        bodies: bodies.map(b => {
+          const tierCfg = celestialHierarchy.getTierConfig(b.tier);
+          return {
+            id: b.id, tier: b.tier, emoji: tierCfg?.emoji,
+            assetQty: b.assetQty, costBasis: b.costBasis, avgPrice: b.avgPrice,
+            tpOrderId: b.tpOrderId, tpPrice: b.tpPrice,
+            tpPercent: b.avgPrice > 0 && b.tpPrice > 0 ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2) : null,
+            assetOnOrder: b.assetOnOrder, createdAt: b.createdAt,
+            lastMergedAt: b.lastMergedAt, mergeCount: b.mergeCount,
+          };
+        }),
+        bodiesActive: bodies.length,
+        bodiesCompleted: position?.celestialState?.bodiesCompleted || 0,
+        bodiesRealizedPnL: position?.celestialState?.bodiesRealizedPnL || 0,
+        bodiesRealizedAssetPnL: position?.celestialState?.bodiesRealizedAssetPnL || 0,
+      },
       health: { mode: 'STOPPED' },
       isDryRun: cachedRegimeState?.isDryRun || false,
     });
