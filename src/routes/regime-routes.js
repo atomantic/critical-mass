@@ -11,7 +11,6 @@ const path = require('path');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig, getFundConfig, getDefaultPair } = require('../config-utils');
 const { loadRegimeState, LIFECYCLE } = require('../state-tracker');
 const { resolveFundDataDir } = require('../migration');
-const { calculateApyMetrics } = require('../apy-calculator');
 const celestialHierarchy = require('../celestial-hierarchy');
 const { log } = require('../logger');
 
@@ -42,52 +41,25 @@ const buildOfflineStatus = (exchange, pair) => {
 
   return {
     isRunning: false,
+    // Distinguish a real IPC outage from a clean operator stop. The dashboard
+    // reads health.mode; ENGINE_DOWN signals "the gateway can't reach the
+    // engine process" so the operator doesn't think the engine is cleanly
+    // halted and take an unsafe control action.
+    health: { mode: 'ENGINE_DOWN' },
+    engineDown: true,
     position,
     regime: rs.regime || null,
     pendingOrders: celestialHierarchy.buildPersistedPendingOrders(position),
-    apy: calculateApyMetrics(position, config, { lastPrice: 0 }),
-    health: { mode: 'STOPPED' },
+    // Skip apy here — without a live market price the BTC component is
+    // wrong, and the dashboard's shallow-merge will preserve the prior
+    // good value from the running engine. Better to show stale than wrong.
     lifecycle: {
       lifecycle: position.lifecycle || LIFECYCLE.ACTIVE,
       lifecycleChangedAt: position.lifecycleChangedAt || null,
       lifecycleReason: position.lifecycleReason || null,
       lifecycleClosedCycle: position.lifecycleClosedCycle || null,
     },
-    celestial: {
-      enabled: config.celestialEnabled !== false,
-      bodies: bodies.map(b => {
-        const tierCfg = celestialHierarchy.getTierConfig(b.tier);
-        return {
-          id: b.id,
-          tier: b.tier,
-          emoji: tierCfg?.emoji,
-          assetQty: b.assetQty,
-          costBasis: b.costBasis,
-          avgPrice: b.avgPrice,
-          tpOrderId: b.tpOrderId,
-          tpPrice: b.tpPrice,
-          tpPercent: b.avgPrice > 0 && b.tpPrice > 0
-            ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2)
-            : null,
-          assetOnOrder: b.assetOnOrder,
-          createdAt: b.createdAt,
-          lastMergedAt: b.lastMergedAt,
-          mergeCount: b.mergeCount,
-          buyOrders: (b.buyOrders || []).map(bo => ({
-            orderId: bo.orderId,
-            price: bo.price,
-            assetQty: bo.assetQty,
-            sizeUsdc: bo.sizeUsdc,
-            filledAt: bo.filledAt,
-          })),
-        };
-      }),
-      bodiesActive: bodies.length,
-      bodiesCompleted: position.celestialState?.bodiesCompleted || 0,
-      bodiesRealizedPnL: position.celestialState?.bodiesRealizedPnL || 0,
-      bodiesRealizedAssetPnL: position.celestialState?.bodiesRealizedAssetPnL || 0,
-      tierSummary: celestialHierarchy.getTierSummary(bodies),
-    },
+    celestial: celestialHierarchy.buildCelestialPayload(position, config),
   };
 };
 

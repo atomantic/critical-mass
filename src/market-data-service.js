@@ -86,6 +86,33 @@ const createMarketDataService = (exchange, pair) => {
   const trackedOrders = new Map(); // orderId -> { type, price, size, placedAt, status }
   let onOrderFillCallback = null; // External callback for when orders fill
 
+  // Pre-populate trackedOrders from a position (called at startup and on
+  // every cache reload) so the WS feed can detect fills/cancels for both
+  // the legacy core TP and any body TPs while the engine is stopped.
+  const trackTpFromPosition = (pos) => {
+    if (pos?.activeTpOrderId && !trackedOrders.has(pos.activeTpOrderId)) {
+      trackedOrders.set(pos.activeTpOrderId, {
+        type: 'take_profit',
+        price: pos.lastTpPrice || 0,
+        size: pos.assetOnOrder || pos.totalAsset || 0,
+        placedAt: pos.lastEntryTime || Date.now(),
+        status: 'open',
+      });
+      console.log(`📋 [${exchange}] Market data service tracking core TP: ${pos.activeTpOrderId}`);
+    }
+    for (const body of (pos?.celestialBodies || [])) {
+      if (!body.tpOrderId || trackedOrders.has(body.tpOrderId)) continue;
+      trackedOrders.set(body.tpOrderId, {
+        type: 'body_tp',
+        price: body.tpPrice || 0,
+        size: body.assetOnOrder || body.assetQty || 0,
+        placedAt: body.lastMergedAt || body.createdAt || Date.now(),
+        status: 'open',
+        bodyId: body.id,
+      });
+    }
+  };
+
   // Price history for calculations
   const priceHistory = [];
   const MAX_PRICE_HISTORY = 300; // 5 minutes of tick data
@@ -117,18 +144,11 @@ const createMarketDataService = (exchange, pair) => {
     // Create regime detector for passive monitoring
     regimeDetector = createRegimeDetector(exchange, config);
 
-    // Load any tracked orders from saved regime state
+    // Load any tracked orders from saved regime state.
     const savedState = loadRegimeState(exchange, resolvedPair);
-    if (savedState.position?.activeTpOrderId) {
-      trackedOrders.set(savedState.position.activeTpOrderId, {
-        type: 'take_profit',
-        price: savedState.position.lastTpPrice || 0,
-        size: savedState.position.assetOnOrder || savedState.position.totalAsset || 0,
-        placedAt: savedState.position.lastEntryTime || Date.now(),
-        status: 'open',
-      });
-      console.log(`📋 [${exchange}] Market data service tracking TP order: ${savedState.position.activeTpOrderId}`);
-    }
+    trackTpFromPosition(savedState.position);
+    const bodyTpCount = (savedState.position?.celestialBodies || []).filter(b => b.tpOrderId).length;
+    if (bodyTpCount > 0) console.log(`📋 [${exchange}] Market data service tracking ${bodyTpCount} body TP(s)`);
 
     // Create fill ledger for order fill tracking
     fillLedger = createFillLedger(exchange, productId, resolvedPair);
@@ -183,6 +203,9 @@ const createMarketDataService = (exchange, pair) => {
     if (!cachedRegimeState || now - cachedRegimeStateTime > REGIME_STATE_CACHE_MS) {
       cachedRegimeState = loadRegimeState(exchange, resolvedPair);
       cachedRegimeStateTime = now;
+      // Pick up any new body TPs created since startup so the WS feed can
+      // detect their fills/cancels while the engine is stopped.
+      trackTpFromPosition(cachedRegimeState?.position);
     }
 
     // Synthesize persisted TPs + the same enrichment fields the running
@@ -213,29 +236,7 @@ const createMarketDataService = (exchange, pair) => {
         lifecycleReason: position?.lifecycleReason || null,
         lifecycleClosedCycle: position?.lifecycleClosedCycle || null,
       },
-      celestial: {
-        enabled: config.celestialEnabled !== false,
-        bodies: bodies.map(b => {
-          const tierCfg = celestialHierarchy.getTierConfig(b.tier);
-          return {
-            id: b.id, tier: b.tier, emoji: tierCfg?.emoji,
-            assetQty: b.assetQty, costBasis: b.costBasis, avgPrice: b.avgPrice,
-            tpOrderId: b.tpOrderId, tpPrice: b.tpPrice,
-            tpPercent: b.avgPrice > 0 && b.tpPrice > 0 ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2) : null,
-            assetOnOrder: b.assetOnOrder, createdAt: b.createdAt,
-            lastMergedAt: b.lastMergedAt, mergeCount: b.mergeCount,
-            buyOrders: (b.buyOrders || []).map(bo => ({
-              orderId: bo.orderId, price: bo.price, assetQty: bo.assetQty,
-              sizeUsdc: bo.sizeUsdc, filledAt: bo.filledAt,
-            })),
-          };
-        }),
-        bodiesActive: bodies.length,
-        bodiesCompleted: position?.celestialState?.bodiesCompleted || 0,
-        bodiesRealizedPnL: position?.celestialState?.bodiesRealizedPnL || 0,
-        bodiesRealizedAssetPnL: position?.celestialState?.bodiesRealizedAssetPnL || 0,
-        tierSummary: celestialHierarchy.getTierSummary(bodies),
-      },
+      celestial: celestialHierarchy.buildCelestialPayload(position, config),
       health: { mode: 'STOPPED' },
       isDryRun: cachedRegimeState?.isDryRun || false,
     });

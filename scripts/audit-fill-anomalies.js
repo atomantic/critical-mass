@@ -90,10 +90,11 @@ if (fs.existsSync(regimeStatePath)) {
   } catch { /* ignore */ }
 }
 // Fallback: regime-state.json doesn't actually persist currentCycleId, so
-// derive it. The current cycle is the most recent one that ISN'T closed —
-// closed defined the same way the fill-ledger does it (sells/buys ≥ 0.5).
-// Picking by latest timestamp alone would mark a just-completed cycle as
-// "current" and silently suppress its unlinked_completed findings.
+// derive it. The current cycle is the most recent one that ISN'T fully
+// closed — match fill-ledger.js which treats a cycle as active until
+// sells fully cover buys (sellRatio < 1.0). A 50% threshold would
+// misclassify any cycle that's 50–99% sold as completed and silently
+// suppress its unlinked_completed findings.
 if (!currentCycleId) {
   const cycleSizes = new Map()  // cycleId -> { buys, sells, latestTs }
   for (const f of fills) {
@@ -105,7 +106,7 @@ if (!currentCycleId) {
     c.latestTs = Math.max(c.latestTs, f.timestamp || 0)
   }
   const open = [...cycleSizes.entries()]
-    .filter(([, c]) => c.buys > 0 && c.sells / c.buys < 0.5)
+    .filter(([, c]) => c.buys > 0 && c.sells / c.buys < 1.0)
     .sort((a, b) => b[1].latestTs - a[1].latestTs)
   currentCycleId = open[0]?.[0] || null  // null = no open cycle, all are completed
 }
