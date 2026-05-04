@@ -18,6 +18,10 @@ const {
   migrateFromLegacy,
   createInitialCelestialState,
   getTierSummary,
+  buildBodyTpOrder,
+  buildCoreTpOrder,
+  buildPersistedPendingOrders,
+  buildCelestialPayload,
 } = require('../src/celestial-hierarchy');
 
 // ============================================================================
@@ -745,5 +749,345 @@ describe('migrateFromLegacy', () => {
     };
     const bodies = migrateFromLegacy(positionState, 10000);
     assert.equal(bodies.length, 2); // 1 core + 1 legacy satellite
+  });
+});
+
+describe('buildBodyTpOrder', () => {
+  const baseBody = {
+    id: 'body-test-001',
+    tier: 'satellite',
+    tpOrderId: 'tp-abc-123',
+    tpPrice: 105000,
+    avgPrice: 100000,
+    assetQty: 0.05,
+    costBasis: 5000,
+    assetOnOrder: 0.025,
+    createdAt: 1700000000000,
+    lastMergedAt: null,
+    mergeCount: 0,
+  };
+
+  it('maps every dashboard-consumed field from a body to a pendingOrder shape', () => {
+    const order = buildBodyTpOrder(baseBody);
+    assert.equal(order.orderId, 'tp-abc-123');
+    assert.equal(order.side, 'sell');
+    assert.equal(order.type, 'body_tp');
+    assert.equal(order.status, 'open');
+    assert.equal(order.price, 105000);
+    assert.equal(order.bodyId, 'body-test-001');
+    assert.equal(order.bodyTier, 'satellite');
+    assert.equal(order.bodyAvgCost, 100000);
+    assert.equal(order.bodyBtcQty, 0.05);
+    assert.equal(order.bodyCostBasis, 5000);
+    assert.equal(order.tierEmoji, getTierConfig('satellite').emoji);
+  });
+
+  it('prefers assetOnOrder over assetQty for size (TP may be sized post-holdback)', () => {
+    assert.equal(buildBodyTpOrder(baseBody).size, 0.025);
+    const noOnOrder = { ...baseBody, assetOnOrder: undefined };
+    assert.equal(buildBodyTpOrder(noOnOrder).size, 0.05);
+    // Explicit zero is a valid sell-quantity (e.g. body fully holdback) — keep it
+    const zero = { ...baseBody, assetOnOrder: 0 };
+    assert.equal(buildBodyTpOrder(zero).size, 0);
+  });
+
+  it('uses lastMergedAt as placedAt when present, falls back to createdAt, then null', () => {
+    assert.equal(buildBodyTpOrder({ ...baseBody, lastMergedAt: 1800000000000 }).placedAt, 1800000000000);
+    assert.equal(buildBodyTpOrder(baseBody).placedAt, 1700000000000);
+    assert.equal(buildBodyTpOrder({ ...baseBody, createdAt: null, lastMergedAt: null }).placedAt, null);
+  });
+
+  it('computes tpPercent from avgPrice and tpPrice', () => {
+    assert.equal(buildBodyTpOrder(baseBody).tpPercent, '5.00');
+    assert.equal(buildBodyTpOrder({ ...baseBody, avgPrice: 0 }).tpPercent, null);
+    assert.equal(buildBodyTpOrder({ ...baseBody, tpPrice: 0 }).tpPercent, null);
+  });
+
+  it('falls back to a default emoji for an unknown tier', () => {
+    assert.equal(buildBodyTpOrder({ ...baseBody, tier: 'unknown-tier' }).tierEmoji, '🛰️');
+  });
+});
+
+describe('buildCoreTpOrder', () => {
+  it('maps legacy core TP fields from a position', () => {
+    const order = buildCoreTpOrder({
+      activeTpOrderId: 'core-tp-1',
+      lastTpPrice: 110000,
+      assetOnOrder: 0.1,
+      avgCostBasis: 100000,
+    });
+    assert.equal(order.orderId, 'core-tp-1');
+    assert.equal(order.side, 'sell');
+    assert.equal(order.type, 'take_profit');
+    assert.equal(order.status, 'open');
+    assert.equal(order.price, 110000);
+    assert.equal(order.size, 0.1);
+    assert.equal(order.tpPercent, '10.00');
+    assert.equal(order.bodyId, undefined);  // core TPs aren't body-owned
+  });
+
+  it('returns null tpPercent when avgCostBasis or lastTpPrice is zero', () => {
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', avgCostBasis: 0, lastTpPrice: 110000 }).tpPercent, null);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', avgCostBasis: 100000, lastTpPrice: 0 }).tpPercent, null);
+  });
+
+  it('falls back to totalAsset when assetOnOrder is missing (legacy migrated state)', () => {
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', totalAsset: 0.5 }).size, 0.5);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', assetOnOrder: 0, totalAsset: 0.5 }).size, 0.5);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', assetOnOrder: 0.1, totalAsset: 0.5 }).size, 0.1);
+  });
+
+  it('uses lastEntryTime as placedAt, falling back to engineStartTime, then null', () => {
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', lastEntryTime: 1800000000000 }).placedAt, 1800000000000);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', engineStartTime: 1700000000000 }).placedAt, 1700000000000);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', lastEntryTime: 1800000000000, engineStartTime: 1700000000000 }).placedAt, 1800000000000);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x' }).placedAt, null);
+  });
+});
+
+describe('buildPersistedPendingOrders', () => {
+  it('returns an empty array for null position', () => {
+    assert.deepEqual(buildPersistedPendingOrders(null), []);
+    assert.deepEqual(buildPersistedPendingOrders(undefined), []);
+  });
+
+  it('synthesizes only body TPs when bodies exist and no legacy core TP', () => {
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-1', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, assetOnOrder: 0.025, costBasis: 5000 },
+        { id: 'b2', tier: 'moon', tpOrderId: null, assetQty: 0.1 },  // no TP
+      ],
+      activeTpOrderId: null,
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'tp-1');
+    assert.equal(orders[0].type, 'body_tp');
+  });
+
+  it('appends a legacy core TP when activeTpOrderId is set', () => {
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [],
+      activeTpOrderId: 'core-tp-1',
+      lastTpPrice: 110000,
+      assetOnOrder: 0.1,
+      avgCostBasis: 100000,
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'core-tp-1');
+    assert.equal(orders[0].type, 'take_profit');
+  });
+
+  it('combines body TPs and a legacy core TP when both are present', () => {
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-1', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+      activeTpOrderId: 'core-tp-1',
+      lastTpPrice: 105000,
+      assetOnOrder: 0.02,
+      avgCostBasis: 100000,
+    });
+    assert.equal(orders.length, 2);
+    assert.equal(orders.find(o => o.type === 'body_tp').orderId, 'tp-1');
+    assert.equal(orders.find(o => o.type === 'take_profit').orderId, 'core-tp-1');
+  });
+
+  it('dedupes the core TP when its orderId is already a body tpOrderId (migrated state)', () => {
+    const sharedId = 'tp-shared';
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: sharedId, tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+      activeTpOrderId: sharedId,  // same exchange order — must not be emitted twice
+      lastTpPrice: 110000,
+      assetOnOrder: 0.05,
+      avgCostBasis: 100000,
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].type, 'body_tp');  // body version wins (richer metadata)
+    assert.equal(orders[0].orderId, sharedId);
+  });
+
+  it('drops persisted TPs that the live tracker reports as filled or cancelled', () => {
+    const position = {
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-open', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+        { id: 'b2', tier: 'satellite', tpOrderId: 'tp-filled', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+      activeTpOrderId: 'tp-cancelled',
+      lastTpPrice: 105000,
+      assetOnOrder: 0.02,
+      avgCostBasis: 100000,
+    };
+    const liveStatus = (id) => ({ 'tp-open': 'open', 'tp-filled': 'filled', 'tp-cancelled': 'cancelled' })[id] ?? null;
+    const orders = buildPersistedPendingOrders(position, liveStatus);
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'tp-open');
+  });
+
+  it('keeps TPs the live tracker doesn\'t know about (returns null)', () => {
+    const position = {
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-untracked', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+    };
+    const liveStatus = () => null;  // tracker has no info — preserve persisted state
+    const orders = buildPersistedPendingOrders(position, liveStatus);
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'tp-untracked');
+  });
+
+  it('synthesizes pendingEntryOrders as live buy entries', () => {
+    const orders = buildPersistedPendingOrders({
+      pendingEntryOrders: [
+        { orderId: 'entry-1', price: 99000, assetQty: 0.0005, sizeUsdc: 49.50, placedAt: 1700000000000 },
+      ],
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'entry-1');
+    assert.equal(orders[0].side, 'buy');
+    assert.equal(orders[0].type, 'entry');
+    assert.equal(orders[0].status, 'open');
+    assert.equal(orders[0].price, 99000);
+    assert.equal(orders[0].size, 0.0005);
+    assert.equal(orders[0].sizeUsdc, 49.50);
+    assert.equal(orders[0].placedAt, 1700000000000);
+  });
+
+  it('synthesizes pendingLadderOrders with ladder_entry type', () => {
+    const orders = buildPersistedPendingOrders({
+      pendingLadderOrders: [
+        { orderId: 'ladder-1', price: 95000, assetQty: 0.001, sizeUsdc: 95, placedAt: 1700000000000 },
+        { orderId: 'ladder-2', price: 90000, assetQty: 0.002, sizeUsdc: 180, placedAt: 1700000000000 },
+      ],
+    });
+    assert.equal(orders.length, 2);
+    assert.equal(orders[0].type, 'ladder_entry');
+    assert.equal(orders[1].type, 'ladder_entry');
+    assert.equal(orders[0].side, 'buy');
+  });
+
+  it('combines TPs and entry orders in a single payload', () => {
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-1', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+      pendingEntryOrders: [
+        { orderId: 'entry-1', price: 99000, assetQty: 0.0005, sizeUsdc: 49.50 },
+      ],
+    });
+    assert.equal(orders.length, 2);
+    assert.equal(orders.find(o => o.side === 'sell').orderId, 'tp-1');
+    assert.equal(orders.find(o => o.side === 'buy').orderId, 'entry-1');
+  });
+
+  it('dedupes entry orders by orderId across all sources', () => {
+    const orders = buildPersistedPendingOrders({
+      pendingEntryOrders: [{ orderId: 'shared-id', price: 99000, assetQty: 0.001 }],
+      pendingLadderOrders: [{ orderId: 'shared-id', price: 95000, assetQty: 0.002 }],
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].type, 'entry');  // entry wins (encountered first)
+  });
+
+  it('drops persisted entry orders the live tracker reports as filled', () => {
+    const orders = buildPersistedPendingOrders(
+      { pendingEntryOrders: [
+        { orderId: 'entry-open', price: 99000, assetQty: 0.001 },
+        { orderId: 'entry-filled', price: 99000, assetQty: 0.001 },
+      ]},
+      (id) => id === 'entry-filled' ? 'filled' : 'open',
+    );
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'entry-open');
+  });
+});
+
+describe('buildCelestialPayload', () => {
+  // The original bug this PR fixes was caused by 4 inline copies of this
+  // shape drifting apart. Lock the contract here so a regression in any
+  // single field will fail loudly rather than silently break the dashboard.
+  const baseBody = {
+    id: 'body-001',
+    tier: 'satellite',
+    assetQty: 0.05,
+    costBasis: 5000,
+    avgPrice: 100000,
+    tpOrderId: 'tp-1',
+    tpPrice: 110000,
+    assetOnOrder: 0.025,
+    createdAt: 1700000000000,
+    lastMergedAt: 1750000000000,
+    mergeCount: 1,
+    buyOrders: [
+      { orderId: 'buy-1', price: 99000, assetQty: 0.025, sizeUsdc: 2475, filledAt: 1700000000000 },
+      { orderId: 'buy-2', price: 101000, assetQty: 0.025, sizeUsdc: 2525, filledAt: 1700000001000, internal: 'should-not-leak' },
+    ],
+  };
+
+  it('returns the full status shape for a populated position', () => {
+    const position = {
+      celestialBodies: [baseBody],
+      celestialState: { bodiesCompleted: 7, bodiesRealizedPnL: 123.45, bodiesRealizedAssetPnL: 0.01 },
+    };
+    const payload = buildCelestialPayload(position, { celestialEnabled: true });
+    assert.equal(payload.enabled, true);
+    assert.equal(payload.bodiesActive, 1);
+    assert.equal(payload.bodiesCompleted, 7);
+    assert.equal(payload.bodiesRealizedPnL, 123.45);
+    assert.equal(payload.bodiesRealizedAssetPnL, 0.01);
+    assert.ok(Array.isArray(payload.bodies));
+    assert.ok(payload.tierSummary);
+  });
+
+  it('serializes each body with the dashboard-required fields', () => {
+    const payload = buildCelestialPayload({ celestialBodies: [baseBody] }, {});
+    const b = payload.bodies[0];
+    assert.equal(b.id, 'body-001');
+    assert.equal(b.tier, 'satellite');
+    assert.equal(b.tpOrderId, 'tp-1');
+    assert.equal(b.tpPrice, 110000);
+    assert.equal(b.tpPercent, '10.00');
+    assert.equal(b.avgPrice, 100000);
+    assert.equal(b.assetQty, 0.05);
+    assert.equal(b.costBasis, 5000);
+    assert.equal(b.assetOnOrder, 0.025);
+    assert.equal(b.createdAt, 1700000000000);
+    assert.equal(b.lastMergedAt, 1750000000000);
+    assert.equal(b.mergeCount, 1);
+    assert.equal(typeof b.emoji, 'string');
+  });
+
+  it('whitelists buyOrders fields (does not leak internal annotations)', () => {
+    const payload = buildCelestialPayload({ celestialBodies: [baseBody] }, {});
+    const buyOrders = payload.bodies[0].buyOrders;
+    assert.equal(buyOrders.length, 2);
+    for (const bo of buyOrders) {
+      assert.deepEqual(Object.keys(bo).sort(), ['assetQty', 'filledAt', 'orderId', 'price', 'sizeUsdc']);
+    }
+  });
+
+  it('treats config.celestialEnabled !== false as enabled (matches engine semantics)', () => {
+    assert.equal(buildCelestialPayload({}, { celestialEnabled: true }).enabled, true);
+    assert.equal(buildCelestialPayload({}, { celestialEnabled: undefined }).enabled, true);
+    assert.equal(buildCelestialPayload({}, {}).enabled, true);
+    assert.equal(buildCelestialPayload({}, undefined).enabled, true);
+    assert.equal(buildCelestialPayload({}, { celestialEnabled: false }).enabled, false);
+  });
+
+  it('returns sane defaults for null/empty position', () => {
+    const empty = buildCelestialPayload(null, {});
+    assert.equal(empty.bodiesActive, 0);
+    assert.equal(empty.bodiesCompleted, 0);
+    assert.equal(empty.bodiesRealizedPnL, 0);
+    assert.equal(empty.bodiesRealizedAssetPnL, 0);
+    assert.deepEqual(empty.bodies, []);
+  });
+
+  it('null tpPercent when avgPrice or tpPrice is zero', () => {
+    const noTp = buildCelestialPayload({ celestialBodies: [{ ...baseBody, tpPrice: 0 }] }, {});
+    assert.equal(noTp.bodies[0].tpPercent, null);
+    const noAvg = buildCelestialPayload({ celestialBodies: [{ ...baseBody, avgPrice: 0 }] }, {});
+    assert.equal(noAvg.bodies[0].tpPercent, null);
   });
 });

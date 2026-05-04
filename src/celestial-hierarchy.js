@@ -426,6 +426,157 @@ const TIER_COLORS = {
   black_hole: '#EF4444',  // red
 };
 
+/**
+ * Build a pendingOrder-shaped object for a body's live TP order on the exchange,
+ * derived from the body's persisted state.
+ */
+const buildBodyTpOrder = (body) => {
+  const tierCfg = getTierConfig(body.tier);
+  return {
+    orderId: body.tpOrderId,
+    side: 'sell',
+    type: 'body_tp',
+    status: 'open',
+    price: body.tpPrice,
+    size: body.assetOnOrder ?? body.assetQty,
+    placedAt: body.lastMergedAt || body.createdAt || null,
+    bodyId: body.id,
+    bodyTier: body.tier,
+    tierEmoji: tierCfg?.emoji || '🛰️',
+    bodyAvgCost: body.avgPrice,
+    bodyBtcQty: body.assetQty,
+    bodyCostBasis: body.costBasis,
+    tpPercent: body.avgPrice > 0 && body.tpPrice > 0
+      ? ((body.tpPrice - body.avgPrice) / body.avgPrice * 100).toFixed(2)
+      : null,
+  };
+};
+
+/**
+ * Build a pendingOrder-shaped object for a legacy/core TP from persisted
+ * position state (non-celestial funds, where there are no bodies but the
+ * position holds a single activeTpOrderId). Falls back to totalAsset when
+ * assetOnOrder is missing (e.g. legacy state migrated before the field
+ * was tracked) so the dashboard doesn't render the row with size 0.
+ */
+const buildCoreTpOrder = (position) => ({
+  orderId: position.activeTpOrderId,
+  side: 'sell',
+  type: 'take_profit',
+  status: 'open',
+  price: position.lastTpPrice || 0,
+  size: position.assetOnOrder || position.totalAsset || 0,
+  // Position state doesn't track exact TP placement time, but the TP is
+  // re-placed after every entry — lastEntryTime is the closest persisted
+  // proxy. Fall back to engineStartTime so the dashboard's "age" display
+  // doesn't render the row as decades old (placedAt of null = epoch).
+  placedAt: position.lastEntryTime || position.engineStartTime || null,
+  tpPercent: position.avgCostBasis > 0 && position.lastTpPrice > 0
+    ? ((position.lastTpPrice - position.avgCostBasis) / position.avgCostBasis * 100).toFixed(2)
+    : null,
+});
+
+/**
+ * Build the dashboard `celestial` payload from a position + config. Single
+ * source of truth for the shape returned by getState (running engine), the
+ * stopped-engine IPC handler, the offline route fallback, and the market-
+ * data-service socket emit. The original bug this PR fixes came from those
+ * payloads drifting apart — keep them sharing this helper.
+ */
+const buildCelestialPayload = (position, config) => {
+  const bodies = position?.celestialBodies || [];
+  return {
+    enabled: config?.celestialEnabled !== false,
+    bodies: bodies.map(b => {
+      const tierCfg = getTierConfig(b.tier);
+      return {
+        id: b.id,
+        tier: b.tier,
+        emoji: tierCfg?.emoji,
+        assetQty: b.assetQty,
+        costBasis: b.costBasis,
+        avgPrice: b.avgPrice,
+        tpOrderId: b.tpOrderId,
+        tpPrice: b.tpPrice,
+        tpPercent: b.avgPrice > 0 && b.tpPrice > 0
+          ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2)
+          : null,
+        assetOnOrder: b.assetOnOrder,
+        createdAt: b.createdAt,
+        lastMergedAt: b.lastMergedAt,
+        mergeCount: b.mergeCount,
+        buyOrders: (b.buyOrders || []).map(bo => ({
+          orderId: bo.orderId,
+          price: bo.price,
+          assetQty: bo.assetQty,
+          sizeUsdc: bo.sizeUsdc,
+          filledAt: bo.filledAt,
+        })),
+      };
+    }),
+    bodiesActive: bodies.length,
+    bodiesCompleted: position?.celestialState?.bodiesCompleted || 0,
+    bodiesRealizedPnL: position?.celestialState?.bodiesRealizedPnL || 0,
+    bodiesRealizedAssetPnL: position?.celestialState?.bodiesRealizedAssetPnL || 0,
+    tierSummary: getTierSummary(bodies),
+  };
+};
+
+/**
+ * Build a pendingOrder-shaped object for a persisted entry buy (single
+ * order from pendingEntryOrders or pendingLadderOrders).
+ */
+const buildEntryOrder = (entry, type) => ({
+  orderId: entry.orderId,
+  side: 'buy',
+  type,
+  status: 'open',
+  price: entry.price,
+  size: entry.assetQty,
+  sizeUsdc: entry.sizeUsdc,
+  placedAt: entry.placedAt || null,
+});
+
+/**
+ * Synthesize the pendingOrders array from a persisted position: body TPs,
+ * the legacy core TP if present, and any persisted buy entry/ladder
+ * orders. Dedupes by orderId so migrated state (where the core
+ * activeTpOrderId may also be a body's tpOrderId) doesn't emit the same
+ * exchange order twice.
+ *
+ * Optional `getLiveStatus(orderId)`: when supplied, drops any persisted
+ * order whose live (WS-confirmed) status is not 'open' — prevents
+ * emitting phantom 'open' rows for orders that filled or were cancelled
+ * while the engine was stopped. Returning null means "not tracked, can't
+ * tell" → keep.
+ */
+const buildPersistedPendingOrders = (position, getLiveStatus = null) => {
+  if (!position) return [];
+  const orders = (position.celestialBodies || [])
+    .filter(b => b.tpOrderId)
+    .map(buildBodyTpOrder);
+  if (position.activeTpOrderId && !orders.some(o => o.orderId === position.activeTpOrderId)) {
+    orders.push(buildCoreTpOrder(position));
+  }
+  for (const e of (position.pendingEntryOrders || [])) {
+    if (e.orderId && !orders.some(o => o.orderId === e.orderId)) {
+      orders.push(buildEntryOrder(e, 'entry'));
+    }
+  }
+  for (const e of (position.pendingLadderOrders || [])) {
+    if (e.orderId && !orders.some(o => o.orderId === e.orderId)) {
+      orders.push(buildEntryOrder(e, 'ladder_entry'));
+    }
+  }
+  if (typeof getLiveStatus === 'function') {
+    return orders.filter(o => {
+      const live = getLiveStatus(o.orderId);
+      return live === null || live === 'open';
+    });
+  }
+  return orders;
+};
+
 module.exports = {
   TIERS,
   TIER_COLORS,
@@ -442,4 +593,8 @@ module.exports = {
   migrateFromLegacy,
   createInitialCelestialState,
   getTierSummary,
+  buildBodyTpOrder,
+  buildCoreTpOrder,
+  buildPersistedPendingOrders,
+  buildCelestialPayload,
 };
