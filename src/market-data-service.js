@@ -94,9 +94,10 @@ const createMarketDataService = (exchange, pair) => {
   let onOrderFillCallback = null; // External callback for when orders fill
 
   // Pre-populate trackedOrders from a position (called at startup and on
-  // every cache reload) so the WS feed can detect fills/cancels for both
-  // the legacy core TP and any body TPs while the engine is stopped. Skips
-  // anything we've already seen settled.
+  // every cache reload) so the WS feed can detect fills/cancels for every
+  // persisted live order — TPs (sell), pending entries (buy), and ladder
+  // entries (buy) — while the engine is stopped. Skips anything already
+  // seen settled.
   const trackTpFromPosition = (pos) => {
     if (pos?.activeTpOrderId && !trackedOrders.has(pos.activeTpOrderId) && !settledOrderIds.has(pos.activeTpOrderId)) {
       trackedOrders.set(pos.activeTpOrderId, {
@@ -119,6 +120,21 @@ const createMarketDataService = (exchange, pair) => {
         bodyId: body.id,
       });
     }
+    const trackEntries = (entries, type) => {
+      for (const e of (entries || [])) {
+        if (!e.orderId || trackedOrders.has(e.orderId) || settledOrderIds.has(e.orderId)) continue;
+        trackedOrders.set(e.orderId, {
+          type,
+          price: e.price || 0,
+          size: e.assetQty || 0,
+          sizeUsdc: e.sizeUsdc,
+          placedAt: e.placedAt || Date.now(),
+          status: 'open',
+        });
+      }
+    };
+    trackEntries(pos?.pendingEntryOrders, 'entry');
+    trackEntries(pos?.pendingLadderOrders, 'ladder_entry');
   };
 
   // Price history for calculations
@@ -347,6 +363,14 @@ const createMarketDataService = (exchange, pair) => {
         console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
       }
 
+      // On transient adapter failure, do not flip the in-memory status to
+      // 'filled' — getOrderStatus() would then report the order as no
+      // longer open, the offline synthesizer would drop it, and the
+      // ledger/linkage would never be written until engine restart.
+      // Leave status='open' so the WS gives us another shot on the next
+      // OrderUpdate event for this orderId.
+      if (!fillsFetched) return;
+
       // Pass placedAt for fill time tracking (only meaningful for buy orders)
       const orderPlacedAt = trackedOrder.type === 'entry' ? trackedOrder.placedAt : null;
       for (const fill of fills) {
@@ -373,13 +397,10 @@ const createMarketDataService = (exchange, pair) => {
         });
       }
 
-      // Only mark settled (and prune) once we've actually ingested the fills.
-      // Otherwise a transient fills-API failure would silently drop the row
-      // from pendingOrders without writing the ledger linkage.
-      if (fillsFetched) {
-        settledOrderIds.add(orderId);
-        setTimeout(() => trackedOrders.delete(orderId), 60000);
-      }
+      // Mark settled and prune from trackedOrders (the settledOrderIds set
+      // outlives the 60s TTL so cache reloads can't resurrect this order).
+      settledOrderIds.add(orderId);
+      setTimeout(() => trackedOrders.delete(orderId), 60000);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
       trackedOrder.status = status.toLowerCase();
