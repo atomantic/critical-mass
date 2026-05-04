@@ -88,8 +88,9 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
       console.log(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`);
       return { fetched: false, fillsCount: 0, ingestedCount: 0 };
     }
-    const recordedSize = (fillLedger.getFillsForOrder(orderId) || [])
-      .reduce((s, f) => s + (f.size || 0), 0);
+    const recordedSize = fillLedger.getRecordedSizeForOrder
+      ? fillLedger.getRecordedSizeForOrder(orderId)
+      : (fillLedger.getFillsForOrder(orderId) || []).reduce((s, f) => s + (f.size || 0), 0);
     if (recordedSize > (trackedOrder.lastIngestedFilledSize || 0)) {
       trackedOrder.lastIngestedFilledSize = recordedSize;
     }
@@ -132,8 +133,12 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
   // cumulative would falsely claim "fully ingested" and suppress future
   // retries that would have caught the missing fills. Reading the ledger
   // ensures the watermark only advances by what actually landed.
-  const recordedSize = (fillLedger.getFillsForOrder(orderId) || [])
-    .reduce((s, f) => s + (f.size || 0), 0);
+  // O(1) via getRecordedSizeForOrder (orderSizeIndex) — getFillsForOrder
+  // would scan + sort the full ledger, which gets slow on long-lived
+  // ledgers since this fires on every WS update.
+  const recordedSize = fillLedger.getRecordedSizeForOrder
+    ? fillLedger.getRecordedSizeForOrder(orderId)
+    : (fillLedger.getFillsForOrder(orderId) || []).reduce((s, f) => s + (f.size || 0), 0);
   trackedOrder.lastIngestedFilledSize = recordedSize;
 
   if (ingestedCount > 0) {
@@ -222,8 +227,11 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   // Crypto.com's adapters synthesize getOrderFills from recent-trade
   // queries and can return a partial set, so a non-empty response can
   // still leave the order short of the full cancelled quantity.
-  const recordedSize = (fillLedger.getFillsForOrder(orderId) || [])
-    .reduce((s, f) => s + (f.size || 0), 0);
+  // O(1) via getRecordedSizeForOrder; the cancel retry chain runs
+  // indefinitely so we cannot afford an O(N) scan on every backoff tick.
+  const recordedSize = fillLedger.getRecordedSizeForOrder
+    ? fillLedger.getRecordedSizeForOrder(orderId)
+    : (fillLedger.getFillsForOrder(orderId) || []).reduce((s, f) => s + (f.size || 0), 0);
   const stillNeedsCatchup = hadUnrecorded && (!catchup.fetched || recordedSize < filledSize);
   if (!stillNeedsCatchup) {
     markSettled(orderId);
@@ -768,7 +776,18 @@ const createMarketDataService = (exchange, pair) => {
         // window. Clear pending here so retryFilledIngest's reschedule
         // (if it doesn't settle) can re-add it.
         pendingRetries.delete(orderId);
-        await retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt);
+        // Wrap in try/catch — without this a throw inside retryFilled
+        // Ingest (e.g. an onOrderFillCallback that fails downstream)
+        // would surface as an unhandled rejection and silently kill the
+        // retry chain without ever settling the order.
+        try {
+          await retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt);
+        } catch (err) {
+          console.log(`❌ [${exchange}] FILLED retry chain crashed for ${orderId}: ${err.message}`);
+          // Reschedule one more time so we don't leak the order. If the
+          // crash is persistent, the next attempt will hit the same path.
+          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt + 1, 'previous attempt threw');
+        }
       }),
       delay
     );

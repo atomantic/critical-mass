@@ -174,9 +174,13 @@ const executeConversion = (exchange) => {
       tradeTime: order.createdAt,
     });
 
-    // Link the buy fill to its existing sell order on exchange
+    // Link the buy fill to its existing sell order on exchange.
+    // markDirty after direct field mutation: ingestFill auto-persisted
+    // and cleared the dirty flag, so the trailing persist() below would
+    // otherwise no-op and lose this sellOrderId on restart.
     if (buyResult.ingested && buyResult.fill) {
       buyResult.fill.sellOrderId = order.orderId;
+      fillLedger.markDirty();
     }
 
     if (buyResult.ingested) pendingIngested++;
@@ -372,9 +376,13 @@ const mergeToRegime = (exchange) => {
       tradeTime: order.createdAt,
     });
 
-    // Mark as body-owned so these fills don't conflict with core position tracking
+    // Mark as body-owned so these fills don't conflict with core position tracking.
+    // markDirty: ingestFill auto-persisted and cleared the dirty flag,
+    // so the trailing persist() below would otherwise no-op and lose
+    // this isBodyOwned flag on restart.
     if (buyResult.ingested && buyResult.fill) {
       buyResult.fill.isBodyOwned = true;
+      fillLedger.markDirty();
     }
 
     if (buyResult.ingested) pendingIngested++;

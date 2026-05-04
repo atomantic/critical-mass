@@ -930,6 +930,51 @@ describe('Fill Ledger', () => {
     assert.equal(mtimeAfter, mtimeBefore, 'clean persists must NOT rewrite the ledger file');
   });
 
+  it('getRecordedSizeForOrder returns the per-order total in O(1)', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-2', orderId: 'o-1', size: '0.3' }));
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-3', orderId: 'o-2', size: '1.0' }));
+
+    assert.equal(ledger.getRecordedSizeForOrder('o-1'), 0.4 + 0.3);
+    assert.equal(ledger.getRecordedSizeForOrder('o-2'), 1.0);
+    assert.equal(ledger.getRecordedSizeForOrder('unknown'), 0);
+  });
+
+  it('getRecordedSizeForOrder restores the per-order index from disk on load', () => {
+    const exchange = 'test-exchange-load-idx';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-2', orderId: 'o-1', size: '0.3' }));
+
+    const ledger2 = createTestLedger(exchange);
+    assert.equal(ledger2.getRecordedSizeForOrder('o-1'), 0.4 + 0.3,
+      'index must be rebuilt on load — production retry loops depend on it');
+  });
+
+  it('markDirty + persist flushes external mutations to disk', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    const result = ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1' }));
+
+    // External mutation directly on the fill object (the dca-converter
+    // pattern). Without markDirty, the trailing persist would no-op.
+    result.fill.sellOrderId = 'sell-XYZ';
+    ledger.markDirty();
+    ledger.persist();
+
+    // Reload and verify the mutation survived.
+    delete require.cache[fillLedgerPath];
+    const { createFillLedger: fresh } = require('../src/fill-ledger');
+    const reloaded = fresh('test-exchange');
+    const fills = reloaded.getFillsForOrder('o-1');
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].sellOrderId, 'sell-XYZ',
+      'markDirty + persist must flush direct field mutations to disk');
+  });
+
   it('persist() rewrites the file when mutations have happened since last persist', () => {
     const ledger = createTestLedger();
     ledger.startNewCycle();

@@ -43,13 +43,18 @@ const createFillLedger = (exchange, productId, pair) => {
   const fills = new Map();
   /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
   const cycleIndex = new Map();
+  /** @type {Map<string, number>} orderId -> total recorded size for O(1) watermark lookups in hot retry loops */
+  const orderSizeIndex = new Map();
   let currentCycleId = null;
   let nextCycleNumber = 1;
   // True when in-memory state has been mutated since the last successful
   // persist. Lets persist() short-circuit when there's nothing new to
   // write, so callers (e.g. unbounded retry loops in market-data-service)
   // can call persist() defensively on every tick without churning the
-  // ledger file or blocking the event loop on every backoff.
+  // ledger file or blocking the event loop on every backoff. External
+  // callers that mutate fill objects directly (via getAllFills /
+  // getFillsForOrder) MUST call markDirty() so the next persist actually
+  // flushes their changes — see dca-converter.js for the pattern.
   let dirtySinceLastPersist = false;
   const baseCurrency = getBaseCurrency(productId);
   const fmtPrice = (p) => {
@@ -81,6 +86,10 @@ const createFillLedger = (exchange, productId, pair) => {
       if (fill.cycleId) {
         if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
         cycleIndex.get(fill.cycleId).add(fill.tradeId);
+      }
+      // Populate per-order size index for O(1) watermark lookups
+      if (fill.orderId) {
+        orderSizeIndex.set(fill.orderId, (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0));
       }
     }
 
@@ -192,6 +201,10 @@ const createFillLedger = (exchange, productId, pair) => {
     if (fill.cycleId) {
       if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
       cycleIndex.get(fill.cycleId).add(tradeId);
+    }
+    // Maintain per-order size index for O(1) watermark lookups in retry loops
+    if (fill.orderId) {
+      orderSizeIndex.set(fill.orderId, (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0));
     }
     dirtySinceLastPersist = true;
     if (!options.skipPersist) persist();
@@ -875,6 +888,8 @@ const createFillLedger = (exchange, productId, pair) => {
   return {
     ingestFill,
     getFillsForOrder,
+    /** O(1) watermark lookup. Use this in hot paths instead of getFillsForOrder + reduce. */
+    getRecordedSizeForOrder: (orderId) => orderSizeIndex.get(orderId) || 0,
     getCurrentCycleFills,
     getCurrentCycleBuysCount,
     rebuildPositionFromFills,
@@ -892,6 +907,10 @@ const createFillLedger = (exchange, productId, pair) => {
     updateFillCycleId,
     annotateFillsByOrderId,
     persist,
+    /** External callers that mutate fill objects directly (via getAllFills /
+     * getFillsForOrder) MUST call this so the next persist() actually
+     * flushes their changes — persist no-ops on a clean dirty flag. */
+    markDirty: () => { dirtySinceLastPersist = true; },
     load,
   };
 };
