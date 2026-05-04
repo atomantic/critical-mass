@@ -178,7 +178,10 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
     retryDelayMaxMs = CANCEL_RETRY_MAX_MS,
     untrackDelayMs = 60000,
     scheduleTimeout = setTimeout,
+    isStopped = () => false,
   } = deps;
+
+  if (isStopped()) return { settledNow: false, retryScheduled: false };
 
   if (attempt === 0) {
     console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
@@ -192,7 +195,11 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   let catchup = { fetched: true, fillsCount: 0, ingestedCount: 0 };
   if (hadUnrecorded) {
     const label = attempt === 0 ? status : `${status} (retry ${attempt})`;
-    catchup = await ingestNewFillsForOrder({ adapter, fillLedger, exchange }, orderId, trackedOrder, filledSize, label);
+    catchup = await ingestNewFillsForOrder({ adapter, fillLedger, exchange, isStopped }, orderId, trackedOrder, filledSize, label);
+    // After the await, the service may have been stopped — bail before
+    // we touch markSettled/scheduleTimeout, which would otherwise
+    // mutate the stopped-service's state after a replacement is up.
+    if (isStopped()) return { settledNow: false, retryScheduled: false };
   }
 
   const stillNeedsCatchup = hadUnrecorded && (!catchup.fetched || catchup.fillsCount === 0);
@@ -268,6 +275,36 @@ const createTimerTracker = () => {
     return n;
   };
   return { trackedSetTimeout, cancelAll, size: () => pending.size, isStopped: () => stopped };
+};
+
+/**
+ * Per-key serialization queue. Returns an enqueue(key, work) function
+ * that chains async work for the same key to run strictly in arrival
+ * order — different keys run concurrently. Used so partial / FILLED /
+ * CANCELLED WS events for the same orderId process in order, since
+ * websocket-feed fire-and-forgets onOrderUpdate (websocket-feed.js
+ * lines 335-336).
+ *
+ * @returns {{ enqueue: (key: string, work: () => Promise<any>) => Promise<any>, size: () => number }}
+ */
+const createWorkQueue = () => {
+  const chains = new Map(); // key -> Promise of latest enqueued work
+  const enqueue = (key, work) => {
+    const previous = chains.get(key) || Promise.resolve();
+    // catch() prevents one failure from poisoning the chain for that key.
+    const next = previous.catch(() => {}).then(() => work());
+    chains.set(key, next);
+    // Use .then(onFulfilled, onRejected) instead of .finally so rejection
+    // from `next` is swallowed here (the caller of enqueue() owns the
+    // returned promise's rejection); .finally would propagate it and
+    // produce an unhandled rejection.
+    const cleanup = () => {
+      if (chains.get(key) === next) chains.delete(key);
+    };
+    next.then(cleanup, cleanup);
+    return next;
+  };
+  return { enqueue, size: () => chains.size };
 };
 
 const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(exchange) || 'default');
@@ -593,17 +630,8 @@ const createMarketDataService = (exchange, pair) => {
   // a partial in-flight could ingest fills AFTER a later FILLED reads
   // the watermark, causing FILLED to hit the empty-fills race and never
   // settle. Chain updates per orderId so they process in arrival order.
-  const orderUpdateChains = new Map(); // orderId -> Promise
-
-  const enqueueOrderWork = (orderId, work) => {
-    const previous = orderUpdateChains.get(orderId) || Promise.resolve();
-    const next = previous.catch(() => {}).then(() => work());
-    orderUpdateChains.set(orderId, next);
-    next.finally(() => {
-      if (orderUpdateChains.get(orderId) === next) orderUpdateChains.delete(orderId);
-    });
-    return next;
-  };
+  const orderWorkQueue = createWorkQueue();
+  const enqueueOrderWork = (orderId, work) => orderWorkQueue.enqueue(orderId, work);
 
   const finalizeFilledOrder = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees) => {
     trackedOrder.status = 'filled';
@@ -1065,4 +1093,5 @@ module.exports = {
   ingestNewFillsForOrder,
   settleCancelledOrder,
   createTimerTracker,
+  createWorkQueue,
 };

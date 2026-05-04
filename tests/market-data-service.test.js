@@ -2,7 +2,7 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker } = require('../src/market-data-service');
+const { ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue } = require('../src/market-data-service');
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -586,5 +586,126 @@ describe('createTimerTracker', () => {
 
     assert.equal(fillFetches, 1, 'retry must NOT have fired after cancelAll');
     assert.equal(trackedOrder.status, 'cancelled', 'status flip on initial call still applied');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createWorkQueue: regression coverage for per-orderId update serialization
+// (T28 — partial / FILLED / CANCELLED for the same order must run in order)
+// ---------------------------------------------------------------------------
+
+describe('createWorkQueue', () => {
+  // Helper: a deferred promise with explicit resolve handle
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise(r => { resolve = r; });
+    return { promise, resolve };
+  };
+
+  it('serializes work for the same key in arrival order', async () => {
+    const q = createWorkQueue();
+    const log = [];
+    const a = deferred();
+    const b = deferred();
+
+    // Enqueue two pieces of work for the same key. Second one must wait
+    // for the first to finish, even though both are "started" instantly.
+    const p1 = q.enqueue('order-1', async () => {
+      log.push('a:start');
+      await a.promise;
+      log.push('a:end');
+    });
+    const p2 = q.enqueue('order-1', async () => {
+      log.push('b:start');
+      await b.promise;
+      log.push('b:end');
+    });
+
+    // Yield: only 'a:start' should appear; b shouldn't have started yet.
+    await new Promise(r => setImmediate(r));
+    assert.deepEqual(log, ['a:start'], 'b must not start until a finishes');
+
+    a.resolve();
+    await p1;
+    // Yield once more so chained microtasks (work() invocation for p2)
+    // run before we assert.
+    await new Promise(r => setImmediate(r));
+    assert.deepEqual(log, ['a:start', 'a:end', 'b:start'], 'b starts only after a ends');
+
+    b.resolve();
+    await p2;
+    assert.deepEqual(log, ['a:start', 'a:end', 'b:start', 'b:end']);
+  });
+
+  it('different keys run concurrently', async () => {
+    const q = createWorkQueue();
+    const log = [];
+    const a = deferred();
+
+    const p1 = q.enqueue('order-1', async () => {
+      log.push('a:start');
+      await a.promise;
+      log.push('a:end');
+    });
+    const p2 = q.enqueue('order-2', async () => {
+      log.push('b:run');
+    });
+
+    await p2;
+    assert.ok(log.includes('a:start'), 'order-1 work started');
+    assert.ok(log.includes('b:run'), 'order-2 ran without waiting for order-1');
+    assert.ok(!log.includes('a:end'), 'order-1 still in flight');
+
+    a.resolve();
+    await p1;
+  });
+
+  it('a failure on key A does not block subsequent work for the same key', async () => {
+    const q = createWorkQueue();
+    const log = [];
+
+    const p1 = q.enqueue('order-1', async () => { throw new Error('boom'); });
+    // Attach a noop catch immediately so the rejection isn't unhandled.
+    p1.catch(() => {});
+    const p2 = q.enqueue('order-1', async () => { log.push('ran'); });
+
+    await p2;
+    assert.deepEqual(log, ['ran'], 'second enqueue must run despite first throwing');
+  });
+
+  it('integrates with handleOrderUpdate-style ordering: partial then FILLED for same orderId resolves correctly', async () => {
+    // Models the real race: partial-fill update is in flight (awaiting
+    // the adapter); FILLED update arrives before partial finishes.
+    // Without serialization, FILLED would read the watermark before the
+    // partial advanced it, hit the empty-fills race, and never settle.
+    // With createWorkQueue, the FILLED handler runs only after partial
+    // completes — and reads the post-partial watermark.
+    const q = createWorkQueue();
+    const watermark = { value: 0 }; // shared "trackedOrder" state
+    const log = [];
+    const partialFetchDone = deferred();
+
+    // Partial-fill work — represents ingestion that takes time
+    q.enqueue('order-1', async () => {
+      log.push('partial:fetch');
+      await partialFetchDone.promise;
+      watermark.value = 0.4; // partial advances watermark
+      log.push('partial:done');
+    });
+
+    // FILLED arrives before partial completes
+    const filledP = q.enqueue('order-1', async () => {
+      log.push('filled:read-watermark');
+      // Without serialization this would see watermark=0; with it, sees 0.4
+      assert.equal(watermark.value, 0.4, 'FILLED must observe partial-advanced watermark');
+      log.push('filled:done');
+    });
+
+    await new Promise(r => setImmediate(r));
+    assert.deepEqual(log, ['partial:fetch'], 'FILLED must wait for partial');
+
+    partialFetchDone.resolve();
+    await filledP;
+    assert.deepEqual(log, ['partial:fetch', 'partial:done', 'filled:read-watermark', 'filled:done']);
   });
 });
