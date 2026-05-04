@@ -46,6 +46,7 @@ const buildOfflineStatus = (exchange, pair) => {
     regime: rs.regime || null,
     pendingOrders: celestialHierarchy.buildPersistedPendingOrders(position),
     apy: calculateApyMetrics(position, config, { lastPrice: 0 }),
+    health: { mode: 'STOPPED' },
     lifecycle: {
       lifecycle: position.lifecycle || LIFECYCLE.ACTIVE,
       lifecycleChangedAt: position.lifecycleChangedAt || null,

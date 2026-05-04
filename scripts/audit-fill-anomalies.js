@@ -89,15 +89,25 @@ if (fs.existsSync(regimeStatePath)) {
     if (rs.position?.activeTpOrderId) activeOpenTpIds.add(rs.position.activeTpOrderId)
   } catch { /* ignore */ }
 }
-// Fallback: most recent cycleId on a fill is current
+// Fallback: regime-state.json doesn't actually persist currentCycleId, so
+// derive it. The current cycle is the most recent one that ISN'T closed —
+// closed defined the same way the fill-ledger does it (sells/buys ≥ 0.5).
+// Picking by latest timestamp alone would mark a just-completed cycle as
+// "current" and silently suppress its unlinked_completed findings.
 if (!currentCycleId) {
-  let latestTs = 0
+  const cycleSizes = new Map()  // cycleId -> { buys, sells, latestTs }
   for (const f of fills) {
-    if (f.cycleId && (f.timestamp || 0) > latestTs) {
-      latestTs = f.timestamp
-      currentCycleId = f.cycleId
-    }
+    if (!f.cycleId) continue
+    if (!cycleSizes.has(f.cycleId)) cycleSizes.set(f.cycleId, { buys: 0, sells: 0, latestTs: 0 })
+    const c = cycleSizes.get(f.cycleId)
+    if (f.side === 'buy') c.buys += Number(f.size || 0)
+    else if (f.side === 'sell') c.sells += Number(f.size || 0)
+    c.latestTs = Math.max(c.latestTs, f.timestamp || 0)
   }
+  const open = [...cycleSizes.entries()]
+    .filter(([, c]) => c.buys > 0 && c.sells / c.buys < 0.5)
+    .sort((a, b) => b[1].latestTs - a[1].latestTs)
+  currentCycleId = open[0]?.[0] || null  // null = no open cycle, all are completed
 }
 
 // ── Aggregate by orderId ──────────────────────────────────────────────────────

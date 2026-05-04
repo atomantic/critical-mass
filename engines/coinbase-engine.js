@@ -288,8 +288,12 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
 
     // Surface persisted TPs (bodies + legacy core) as pendingOrders so the
     // dashboard keeps mapping buys to their open sells while the engine is
-    // stopped. Covers both celestial and non-celestial fund layouts.
-    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(position);
+    // stopped. Pass the market service's live tracker so any TP it's
+    // already seen filled/cancelled is dropped (no phantom open rows).
+    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(
+      position,
+      marketService?.getOrderStatus,
+    );
 
     return {
       success: true, exchange, pair: resolvedPair, running: false,

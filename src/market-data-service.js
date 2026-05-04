@@ -195,7 +195,10 @@ const createMarketDataService = (exchange, pair) => {
     const bodies = position?.celestialBodies || [];
     const config = getRegimeConfig(exchange, resolvedPair);
     const market = getMarketState();
-    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(position);
+    // Drop persisted TPs the WS feed has already confirmed are no longer open
+    // (filled/cancelled while the engine was stopped) — the engine can't
+    // refresh state until it restarts, but we should not show phantom rows.
+    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(position, getOrderStatus);
 
     onStatusUpdateCallback({
       isRunning: false,
@@ -491,6 +494,18 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   /**
+   * Look up a tracked order's status without filtering on 'open'. Returns
+   * the status string ('open' / 'filled' / 'cancelled' / etc.) or null if
+   * the order isn't tracked at all. Used by stopped-engine status
+   * synthesizers to drop persisted TPs that the WS feed has already
+   * confirmed are no longer open.
+   */
+  const getOrderStatus = (orderId) => {
+    const o = trackedOrders.get(orderId);
+    return o ? o.status : null;
+  };
+
+  /**
    * Add an order to track
    */
   const trackOrder = (orderId, orderInfo) => {
@@ -529,6 +544,7 @@ const createMarketDataService = (exchange, pair) => {
     getStatus,
     isConnected: () => isConnected,
     getOpenOrders,
+    getOrderStatus,
     trackOrder,
     untrackOrder,
     setOnOrderFill,

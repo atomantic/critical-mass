@@ -481,14 +481,25 @@ const buildCoreTpOrder = (position) => ({
  * plus the legacy core TP if present. Dedupes by orderId so migrated state
  * (where the core activeTpOrderId may also be a body's tpOrderId) doesn't
  * emit the same exchange order twice.
+ *
+ * Optional `getLiveStatus(orderId)`: when supplied, drops any persisted TP
+ * whose live (WS-confirmed) status is not 'open' — prevents emitting
+ * phantom 'open' rows for TPs that filled or were cancelled while the
+ * engine was stopped. Returning null means "not tracked, can't tell" → keep.
  */
-const buildPersistedPendingOrders = (position) => {
+const buildPersistedPendingOrders = (position, getLiveStatus = null) => {
   if (!position) return [];
   const orders = (position.celestialBodies || [])
     .filter(b => b.tpOrderId)
     .map(buildBodyTpOrder);
   if (position.activeTpOrderId && !orders.some(o => o.orderId === position.activeTpOrderId)) {
     orders.push(buildCoreTpOrder(position));
+  }
+  if (typeof getLiveStatus === 'function') {
+    return orders.filter(o => {
+      const live = getLiveStatus(o.orderId);
+      return live === null || live === 'open';
+    });
   }
   return orders;
 };
