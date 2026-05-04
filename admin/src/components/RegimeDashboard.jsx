@@ -1019,13 +1019,25 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
       {/* Stopped banner when engine is not running but we have data */}
       {!isRunning && (market.lastPrice > 0 || position.totalAsset > 0) && (
-        <div className="bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 flex items-center gap-3">
-          <span className="text-red-400 text-lg">■</span>
-          <div>
-            <span className="text-red-300 font-medium text-sm">Engine Stopped</span>
-            <span className="text-gray-500 text-xs ml-2">Live market data streaming &middot; no trading</span>
+        status?.engineDown ? (
+          <div className="bg-orange-900/30 border border-orange-700/50 rounded-lg px-4 py-2 flex items-center gap-3">
+            <span className="text-orange-400 text-lg">⚠</span>
+            <div>
+              <span className="text-orange-300 font-medium text-sm">Engine Unreachable</span>
+              <span className="text-gray-500 text-xs ml-2">
+                Showing last known state from disk{market.stale ? ' · prices may be stale' : ''}
+              </span>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-2 flex items-center gap-3">
+            <span className="text-red-400 text-lg">■</span>
+            <div>
+              <span className="text-red-300 font-medium text-sm">Engine Stopped</span>
+              <span className="text-gray-500 text-xs ml-2">Live market data streaming &middot; no trading</span>
+            </div>
+          </div>
+        )
       )}
 
       {(!isRunning && !market.lastPrice && !position.totalAsset) ? (
