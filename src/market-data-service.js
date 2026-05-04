@@ -28,6 +28,66 @@ const marketDataServices = new Map();
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
 const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 
+/**
+ * Fetch and ingest any new fills for an order, advancing the
+ * lastIngestedFilledSize watermark on the tracked-order object only on
+ * success. ingestFill is idempotent on tradeId, so re-fetching overlapping
+ * fills (e.g. partial then terminal FILLED) is safe.
+ *
+ * @param {Object} deps
+ * @param {{getOrderFills: Function}} deps.adapter
+ * @param {{ingestFill: Function, persist: Function}} deps.fillLedger
+ * @param {string} deps.exchange - For log prefixes only
+ * @param {string} orderId
+ * @param {Object} trackedOrder - Mutated: lastIngestedFilledSize updated on success
+ * @param {number} cumulativeFilledSize - From the WS event (always cumulative)
+ * @param {string} label - Log label, e.g. 'partial fill', 'FILLED', 'CANCELLED'
+ * @returns {Promise<{fetched: boolean, fillsCount: number, ingestedCount: number}>}
+ *   fetched=false means the adapter call threw — caller should retry on
+ *   the next WS update without advancing terminal state. fillsCount=0
+ *   with fetched=true means the exchange has not yet exposed any fills
+ *   (e.g. Coinbase returns [] briefly right after a FILLED event); the
+ *   watermark is intentionally NOT advanced so the next update retries.
+ */
+const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId, trackedOrder, cumulativeFilledSize, label) => {
+  const lastSize = trackedOrder.lastIngestedFilledSize || 0;
+  if (cumulativeFilledSize <= lastSize) {
+    return { fetched: true, fillsCount: 0, ingestedCount: 0 };
+  }
+
+  let fills = [];
+  try {
+    fills = await adapter.getOrderFills(orderId);
+  } catch (err) {
+    console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
+    return { fetched: false, fillsCount: 0, ingestedCount: 0 };
+  }
+
+  if (fills.length === 0) {
+    return { fetched: true, fillsCount: 0, ingestedCount: 0 };
+  }
+
+  // Pass placedAt for fill time tracking on buy orders (entry + ladder).
+  // Without this for ladders, those fills disappear from the 7-day
+  // fill-time statistics.
+  const isBuyOrder = trackedOrder.type === 'entry' || trackedOrder.type === 'ladder_entry';
+  const orderPlacedAt = isBuyOrder ? trackedOrder.placedAt : null;
+  let ingestedCount = 0;
+  for (const fill of fills) {
+    const result = fillLedger.ingestFill(fill, orderPlacedAt);
+    if (result?.ingested) ingestedCount++;
+  }
+  fillLedger.persist();
+
+  trackedOrder.lastIngestedFilledSize = cumulativeFilledSize;
+
+  if (ingestedCount > 0) {
+    console.log(`📥 [${exchange}] ${label} for ${orderId}: ingested ${ingestedCount} new fill(s), cumulative=${cumulativeFilledSize}`);
+  }
+
+  return { fetched: true, fillsCount: fills.length, ingestedCount };
+};
+
 const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(exchange) || 'default');
 
 /**
@@ -351,25 +411,27 @@ const createMarketDataService = (exchange, pair) => {
     }
 
     const trackedOrder = trackedOrders.get(orderId);
+    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange };
+
+    // Non-terminal partial-fill ingest. Coinbase keeps status='OPEN' while
+    // delivering incremental filledSize updates; without this path, a
+    // partial fill that occurs while the engine is stopped would never
+    // reach the ledger until the terminal FILLED event arrives — and if
+    // the order is later cancelled without fully filling, the partial fill
+    // would be lost entirely. Position-state updates remain the engine's
+    // responsibility (we don't fire onOrderFillCallback here); we only
+    // patch the ledger gap. ingestFill is idempotent on tradeId, so the
+    // FILLED branch re-running this work is safe.
+    if (status !== 'FILLED' && status !== 'CANCELLED' && status !== 'FAILED') {
+      if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
+        await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'partial fill');
+      }
+      return;
+    }
 
     if (status === 'FILLED') {
       const baseCurr = getBaseCurrency(productId);
       console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
-
-      // Get fills for this order and ingest them. Track failure separately
-      // so we can avoid permanently marking the order settled when the
-      // adapter call failed — otherwise a transient API hiccup would drop
-      // the row from pendingOrders without ever updating the ledger
-      // linkage, recreating the orphaned-buy symptom until engine restart.
-      const adapter = getAdapter(exchange);
-      let fillsFetched = false;
-      let fills = [];
-      try {
-        fills = await adapter.getOrderFills(orderId);
-        fillsFetched = true;
-      } catch (err) {
-        console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
-      }
 
       // On transient adapter failure or empty fills response (Coinbase
       // briefly returns [] right after a FILLED event), do not flip the
@@ -378,17 +440,8 @@ const createMarketDataService = (exchange, pair) => {
       // and the ledger/linkage would never be written until engine
       // restart. Leave status='open' so the WS gives us another shot on
       // the next OrderUpdate event for this orderId.
-      if (!fillsFetched || fills.length === 0) return;
-
-      // Pass placedAt for fill time tracking on buy orders (entry +
-      // ladder). Without this for ladders, those fills disappear from
-      // the 7-day fill-time statistics.
-      const isBuyOrder = trackedOrder.type === 'entry' || trackedOrder.type === 'ladder_entry';
-      const orderPlacedAt = isBuyOrder ? trackedOrder.placedAt : null;
-      for (const fill of fills) {
-        fillLedger.ingestFill(fill, orderPlacedAt);
-      }
-      fillLedger.persist();
+      const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED');
+      if (!result.fetched || result.fillsCount === 0) return;
 
       // Update tracked order status
       trackedOrder.status = 'filled';
@@ -415,6 +468,12 @@ const createMarketDataService = (exchange, pair) => {
       setTimeout(() => trackedOrders.delete(orderId), 60000);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
+      // Catch any unrecorded partials before settling — if the order had
+      // fills we never saw an OPEN update for (e.g. WS reconnect right
+      // before a cancel), they'd otherwise be lost on settlement.
+      if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
+        await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, status);
+      }
       trackedOrder.status = status.toLowerCase();
       markSettled(orderId);
       setTimeout(() => trackedOrders.delete(orderId), 60000);
@@ -675,4 +734,5 @@ module.exports = {
   stopMarketDataService,
   getMarketDataService,
   stopAllMarketDataServices,
+  ingestNewFillsForOrder,
 };
