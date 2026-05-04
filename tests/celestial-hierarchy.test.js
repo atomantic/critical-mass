@@ -21,6 +21,7 @@ const {
   buildBodyTpOrder,
   buildCoreTpOrder,
   buildPersistedPendingOrders,
+  buildCelestialPayload,
 } = require('../src/celestial-hierarchy');
 
 // ============================================================================
@@ -934,5 +935,94 @@ describe('buildPersistedPendingOrders', () => {
     const orders = buildPersistedPendingOrders(position, liveStatus);
     assert.equal(orders.length, 1);
     assert.equal(orders[0].orderId, 'tp-untracked');
+  });
+});
+
+describe('buildCelestialPayload', () => {
+  // The original bug this PR fixes was caused by 4 inline copies of this
+  // shape drifting apart. Lock the contract here so a regression in any
+  // single field will fail loudly rather than silently break the dashboard.
+  const baseBody = {
+    id: 'body-001',
+    tier: 'satellite',
+    assetQty: 0.05,
+    costBasis: 5000,
+    avgPrice: 100000,
+    tpOrderId: 'tp-1',
+    tpPrice: 110000,
+    assetOnOrder: 0.025,
+    createdAt: 1700000000000,
+    lastMergedAt: 1750000000000,
+    mergeCount: 1,
+    buyOrders: [
+      { orderId: 'buy-1', price: 99000, assetQty: 0.025, sizeUsdc: 2475, filledAt: 1700000000000 },
+      { orderId: 'buy-2', price: 101000, assetQty: 0.025, sizeUsdc: 2525, filledAt: 1700000001000, internal: 'should-not-leak' },
+    ],
+  };
+
+  it('returns the full status shape for a populated position', () => {
+    const position = {
+      celestialBodies: [baseBody],
+      celestialState: { bodiesCompleted: 7, bodiesRealizedPnL: 123.45, bodiesRealizedAssetPnL: 0.01 },
+    };
+    const payload = buildCelestialPayload(position, { celestialEnabled: true });
+    assert.equal(payload.enabled, true);
+    assert.equal(payload.bodiesActive, 1);
+    assert.equal(payload.bodiesCompleted, 7);
+    assert.equal(payload.bodiesRealizedPnL, 123.45);
+    assert.equal(payload.bodiesRealizedAssetPnL, 0.01);
+    assert.ok(Array.isArray(payload.bodies));
+    assert.ok(payload.tierSummary);
+  });
+
+  it('serializes each body with the dashboard-required fields', () => {
+    const payload = buildCelestialPayload({ celestialBodies: [baseBody] }, {});
+    const b = payload.bodies[0];
+    assert.equal(b.id, 'body-001');
+    assert.equal(b.tier, 'satellite');
+    assert.equal(b.tpOrderId, 'tp-1');
+    assert.equal(b.tpPrice, 110000);
+    assert.equal(b.tpPercent, '10.00');
+    assert.equal(b.avgPrice, 100000);
+    assert.equal(b.assetQty, 0.05);
+    assert.equal(b.costBasis, 5000);
+    assert.equal(b.assetOnOrder, 0.025);
+    assert.equal(b.createdAt, 1700000000000);
+    assert.equal(b.lastMergedAt, 1750000000000);
+    assert.equal(b.mergeCount, 1);
+    assert.equal(typeof b.emoji, 'string');
+  });
+
+  it('whitelists buyOrders fields (does not leak internal annotations)', () => {
+    const payload = buildCelestialPayload({ celestialBodies: [baseBody] }, {});
+    const buyOrders = payload.bodies[0].buyOrders;
+    assert.equal(buyOrders.length, 2);
+    for (const bo of buyOrders) {
+      assert.deepEqual(Object.keys(bo).sort(), ['assetQty', 'filledAt', 'orderId', 'price', 'sizeUsdc']);
+    }
+  });
+
+  it('treats config.celestialEnabled !== false as enabled (matches engine semantics)', () => {
+    assert.equal(buildCelestialPayload({}, { celestialEnabled: true }).enabled, true);
+    assert.equal(buildCelestialPayload({}, { celestialEnabled: undefined }).enabled, true);
+    assert.equal(buildCelestialPayload({}, {}).enabled, true);
+    assert.equal(buildCelestialPayload({}, undefined).enabled, true);
+    assert.equal(buildCelestialPayload({}, { celestialEnabled: false }).enabled, false);
+  });
+
+  it('returns sane defaults for null/empty position', () => {
+    const empty = buildCelestialPayload(null, {});
+    assert.equal(empty.bodiesActive, 0);
+    assert.equal(empty.bodiesCompleted, 0);
+    assert.equal(empty.bodiesRealizedPnL, 0);
+    assert.equal(empty.bodiesRealizedAssetPnL, 0);
+    assert.deepEqual(empty.bodies, []);
+  });
+
+  it('null tpPercent when avgPrice or tpPrice is zero', () => {
+    const noTp = buildCelestialPayload({ celestialBodies: [{ ...baseBody, tpPrice: 0 }] }, {});
+    assert.equal(noTp.bodies[0].tpPercent, null);
+    const noAvg = buildCelestialPayload({ celestialBodies: [{ ...baseBody, avgPrice: 0 }] }, {});
+    assert.equal(noAvg.bodies[0].tpPercent, null);
   });
 });
