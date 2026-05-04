@@ -84,13 +84,21 @@ const createMarketDataService = (exchange, pair) => {
 
   // Tracked open orders (from saved regime state)
   const trackedOrders = new Map(); // orderId -> { type, price, size, placedAt, status }
+  // Orders the WS feed has already confirmed settled (filled/cancelled).
+  // Persisted in-memory for the life of the process so a cache reload can't
+  // resurrect a stale tpOrderId from disk after the 60s trackedOrders TTL —
+  // the engine, while running, would have rewritten regime-state, but if it's
+  // stopped that orderId still appears in disk state and would otherwise come
+  // back as 'open' on the next refresh.
+  const settledOrderIds = new Set();
   let onOrderFillCallback = null; // External callback for when orders fill
 
   // Pre-populate trackedOrders from a position (called at startup and on
   // every cache reload) so the WS feed can detect fills/cancels for both
-  // the legacy core TP and any body TPs while the engine is stopped.
+  // the legacy core TP and any body TPs while the engine is stopped. Skips
+  // anything we've already seen settled.
   const trackTpFromPosition = (pos) => {
-    if (pos?.activeTpOrderId && !trackedOrders.has(pos.activeTpOrderId)) {
+    if (pos?.activeTpOrderId && !trackedOrders.has(pos.activeTpOrderId) && !settledOrderIds.has(pos.activeTpOrderId)) {
       trackedOrders.set(pos.activeTpOrderId, {
         type: 'take_profit',
         price: pos.lastTpPrice || 0,
@@ -101,7 +109,7 @@ const createMarketDataService = (exchange, pair) => {
       console.log(`📋 [${exchange}] Market data service tracking core TP: ${pos.activeTpOrderId}`);
     }
     for (const body of (pos?.celestialBodies || [])) {
-      if (!body.tpOrderId || trackedOrders.has(body.tpOrderId)) continue;
+      if (!body.tpOrderId || trackedOrders.has(body.tpOrderId) || settledOrderIds.has(body.tpOrderId)) continue;
       trackedOrders.set(body.tpOrderId, {
         type: 'body_tp',
         price: body.tpPrice || 0,
@@ -354,11 +362,15 @@ const createMarketDataService = (exchange, pair) => {
         });
       }
 
+      // Remember this orderId is permanently settled so cache reloads from
+      // disk can't resurrect it as 'open' after the trackedOrders TTL fires.
+      settledOrderIds.add(orderId);
       // Remove from tracked orders (keep in Map temporarily for status queries)
       setTimeout(() => trackedOrders.delete(orderId), 60000);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
       trackedOrder.status = status.toLowerCase();
+      settledOrderIds.add(orderId);
       setTimeout(() => trackedOrders.delete(orderId), 60000);
     }
   };
@@ -499,11 +511,14 @@ const createMarketDataService = (exchange, pair) => {
    * the status string ('open' / 'filled' / 'cancelled' / etc.) or null if
    * the order isn't tracked at all. Used by stopped-engine status
    * synthesizers to drop persisted TPs that the WS feed has already
-   * confirmed are no longer open.
+   * confirmed are no longer open. Consults settledOrderIds so the
+   * filter still works after the 60s trackedOrders cleanup fires.
    */
   const getOrderStatus = (orderId) => {
     const o = trackedOrders.get(orderId);
-    return o ? o.status : null;
+    if (o) return o.status;
+    if (settledOrderIds.has(orderId)) return 'settled';
+    return null;
   };
 
   /**
