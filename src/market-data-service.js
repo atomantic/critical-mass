@@ -220,6 +220,13 @@ const createTimerTracker = () => {
   const pending = new Set();
   let stopped = false;
   const trackedSetTimeout = (fn, delay) => {
+    // Refuse to schedule new timers once stopped. A callback firing just
+    // before cancelAll can still await and then call trackedSetTimeout
+    // again (e.g. settleCancelledOrder scheduling its next retry or the
+    // untrack TTL). Without this no-op those post-stop timers would be
+    // added after cancelAll cleared the set and could mutate the now-
+    // stale service instance later.
+    if (stopped) return null;
     let id;
     const wrapped = async () => {
       pending.delete(id);
@@ -619,21 +626,37 @@ const createMarketDataService = (exchange, pair) => {
       return;
     }
 
-    if (filledSize > 0 && averageFilledPrice > 0) {
+    // Synthesize ONLY the unrecorded delta. Earlier partial fills may
+    // already be in the ledger with real exchange tradeIds; synthesizing
+    // for the cumulative filledSize would use a unique synthetic tradeId
+    // that ingestFill cannot dedupe against, so the partial-then-FILLED
+    // empty-fills race would record both real partials AND a full
+    // synthetic — overstating size/P&L. Same for fees: subtract any fees
+    // already in the ledger for this order before stamping the synthetic.
+    const remainingSize = filledSize - (trackedOrder.lastIngestedFilledSize || 0);
+    if (remainingSize > 0 && averageFilledPrice > 0) {
+      const priorFees = (fillLedger.getFillsForOrder(orderId) || [])
+        .reduce((s, f) => s + (f.netFee || 0), 0);
+      const remainingFees = Math.max(0, (totalFees || 0) - priorFees);
       const synthSide = (trackedOrder.type === 'entry' || trackedOrder.type === 'ladder_entry') ? 'buy' : 'sell';
+      const isBuyOrder = synthSide === 'buy';
+      const orderPlacedAt = isBuyOrder ? trackedOrder.placedAt : null;
       const syntheticFill = {
-        tradeId: `synthetic-${orderId}`,
+        // Include cumulative size so a re-ingest with the same delta is
+        // dedupe-safe — and a different cumulative size yields a
+        // different tradeId, which is also what we want.
+        tradeId: `synthetic-${orderId}-${filledSize.toFixed(8)}`,
         orderId,
         side: synthSide,
         price: averageFilledPrice,
-        size: filledSize,
-        quoteAmount: filledSize * averageFilledPrice,
-        netFee: totalFees || 0,
+        size: remainingSize,
+        quoteAmount: remainingSize * averageFilledPrice,
+        netFee: remainingFees,
         timestamp: Date.now(),
       };
-      console.log(`⚠️ [${exchange}] Synthesizing fill from order-status for ${orderId}: ${filledSize} @ $${averageFilledPrice}`);
+      console.log(`⚠️ [${exchange}] Synthesizing fill from order-status for ${orderId}: delta=${remainingSize} @ $${averageFilledPrice} (cumulative=${filledSize})`);
       try {
-        fillLedger.ingestFill(syntheticFill);
+        fillLedger.ingestFill(syntheticFill, orderPlacedAt);
         trackedOrder.lastIngestedFilledSize = filledSize;
       } catch (err) {
         console.log(`❌ [${exchange}] Failed to ingest synthetic fill for ${orderId}: ${err.message}`);
@@ -643,7 +666,22 @@ const createMarketDataService = (exchange, pair) => {
       return;
     }
 
+    if (remainingSize <= 0) {
+      // Watermark already covered by real fills — nothing to synthesize,
+      // just settle.
+      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+      return;
+    }
+
     console.log(`❌ [${exchange}] FILLED ${orderId} has no fills and no usable status data — engine restart will reconcile`);
+  };
+
+  const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, reason) => {
+    console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retrying in 2s`);
+    trackedSetTimeout(
+      () => enqueueOrderWork(orderId, () => retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees)),
+      2000
+    );
   };
 
   /**
@@ -690,20 +728,20 @@ const createMarketDataService = (exchange, pair) => {
       // remaining fills.
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
         const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED');
-        if (!result.fetched) return; // adapter/persist failure — wait for next event
 
+        // FILLED is terminal — Coinbase is not guaranteed to emit follow-
+        // up WS events, so we cannot wait for "the next event" to retry.
+        // Both fetched=false (adapter or persist throw) and fillsCount=0
+        // (eventual-consistency empty fills) need the retry/synthesize
+        // fallback, otherwise the order stays tracked forever. Re-enter
+        // via enqueueOrderWork so the retry serializes against any
+        // later updates for the same order.
+        if (!result.fetched) {
+          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 'fetch/persist failed');
+          return;
+        }
         if (result.fillsCount === 0 && filledSize > 0) {
-          // Coinbase eventual-consistency lag: the FILLED event arrived
-          // but getOrderFills hasn't caught up. FILLED is terminal so we
-          // can't rely on a follow-up WS event. Schedule a retry, then
-          // fall back to synthesizing a fill from the order-status data.
-          // Re-enter the per-orderId chain so the retry serializes
-          // against any later updates for the same order.
-          console.log(`⏳ [${exchange}] FILLED ${orderId} has no fills yet — retrying in 2s`);
-          trackedSetTimeout(
-            () => enqueueOrderWork(orderId, () => retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees)),
-            2000
-          );
+          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 'has no fills yet');
           return;
         }
       }

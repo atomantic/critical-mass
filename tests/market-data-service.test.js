@@ -467,6 +467,25 @@ describe('createTimerTracker', () => {
     assert.equal(tracker.size(), 0, 'fired callback was removed from tracker');
   });
 
+  it('trackedSetTimeout no-ops after cancelAll so callbacks cannot reschedule themselves', async () => {
+    // Guards against the race where a callback fires just before stop()
+    // and, before being clearTimeout-able, invokes trackedSetTimeout to
+    // chain another retry (e.g. settleCancelledOrder's recursion). Once
+    // stopped, new schedules must be rejected outright.
+    const tracker = createTimerTracker();
+    let postStopFired = 0;
+
+    tracker.cancelAll();
+    assert.equal(tracker.isStopped(), true);
+
+    const id = tracker.trackedSetTimeout(() => { postStopFired += 1; }, 5);
+    assert.equal(id, null, 'trackedSetTimeout returns null after stop instead of scheduling');
+
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(postStopFired, 0, 'rejected schedule must not fire');
+    assert.equal(tracker.size(), 0, 'rejected schedule must not enter pending set');
+  });
+
   it('isStopped reflects state + post-stop already-queued callbacks bail before invoking fn', async () => {
     // This guards against the race where setTimeout's callback is already
     // queued (between firing and clearTimeout being called). The wrapped
