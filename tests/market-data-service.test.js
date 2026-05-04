@@ -1,8 +1,8 @@
 // @ts-check
-const { describe, it, beforeEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue } = require('../src/market-data-service');
+const { ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService } = require('../src/market-data-service');
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -813,5 +813,95 @@ describe('createWorkQueue', () => {
     partialFetchDone.resolve();
     await filledP;
     assert.deepEqual(log, ['partial:fetch', 'partial:done', 'filled:read-watermark', 'filled:done']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: handleOrderUpdate via the real factory (uses _test hooks)
+//
+// These cover the regression points one layer up from the helpers — the
+// terminal-status guard at the top of processOrderUpdate had previously
+// blocked replayed CANCELLED events from reaching the mutable-target
+// update logic, even when a retry chain was still in flight.
+// ---------------------------------------------------------------------------
+
+describe('handleOrderUpdate integration: replayed CANCELLED reaches target update during retry chain', () => {
+  // Patch require cache for ./adapters so getAdapter returns our fake.
+  // Used only inside this describe block; restored afterwards.
+  const adaptersPath = require.resolve('../src/adapters');
+
+  let savedAdapters;
+  let fakeAdapter;
+  let getOrderFillsCalls;
+
+  beforeEach(() => {
+    savedAdapters = require.cache[adaptersPath];
+    getOrderFillsCalls = [];
+    fakeAdapter = {
+      getOrderFills: async (orderId) => {
+        const i = getOrderFillsCalls.length;
+        getOrderFillsCalls.push({ orderId });
+        return fakeAdapter.responses[i] instanceof Error
+          ? (function () { throw fakeAdapter.responses[i]; })()
+          : (fakeAdapter.responses[i] ?? []);
+      },
+      responses: [],
+      loadCredentials: () => ({ apiKey: 'k', apiSecret: 's' }),
+    };
+    require.cache[adaptersPath] = {
+      ...require.cache[adaptersPath],
+      exports: { getAdapter: () => fakeAdapter },
+    };
+  });
+
+  afterEach(() => {
+    if (savedAdapters) require.cache[adaptersPath] = savedAdapters;
+    else delete require.cache[adaptersPath];
+  });
+
+  it('replayed CANCELLED with larger filledSize advances the in-flight retry target via processOrderUpdate', async () => {
+    // First CANCELLED: filledSize=0.3, fetch fails → retry scheduled.
+    // Replayed CANCELLED: filledSize=0.7 — must reach the cancel branch
+    // and update the pending target so the retry catches up to 0.7.
+    fakeAdapter.responses = [
+      new Error('boom'),                                   // attempt 0 fails
+      [{ tradeId: 't1', orderId: 'order-X', side: 'sell', price: 70000, size: 0.3, totalCommission: 0.05 },
+       { tradeId: 't2', orderId: 'order-X', side: 'sell', price: 70000, size: 0.4, totalCommission: 0.05 }], // retry: full set
+    ];
+
+    const svc = createMarketDataService('coinbase');
+    const ingestedTradeIds = [];
+    const fakeLedger = {
+      ingestFill: (fill) => {
+        const tradeId = fill.tradeId;
+        if (ingestedTradeIds.includes(tradeId)) return { ingested: false, fill: null };
+        ingestedTradeIds.push(tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => ingestedTradeIds.map(id => ({ size: id === 't1' ? 0.3 : 0.4 })),
+      getRecordedSizeForOrder: () => ingestedTradeIds.reduce((s, id) => s + (id === 't1' ? 0.3 : 0.4), 0),
+      persist: () => {},
+    };
+    svc._test.injectFillLedger(fakeLedger);
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-X', { type: 'take_profit', price: 70000, size: 0.7, placedAt: Date.now() });
+
+    // First CANCELLED at 0.3 — fetch fails, retry scheduled.
+    await svc._test.handleOrderUpdate({ orderId: 'order-X', status: 'CANCELLED', filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0 });
+
+    const pending = svc._test.pendingTerminalRetries.get('order-X');
+    assert.ok(pending, 'retry must be pending after first cancel failed');
+    assert.equal(pending.filledSize, 0.3, 'initial target captured');
+
+    // Replayed CANCELLED at 0.7 — must update the target despite the
+    // settled-status guard (status was flipped to 'cancelled' on the first
+    // call's settleCancelledOrder attempt 0).
+    await svc._test.handleOrderUpdate({ orderId: 'order-X', status: 'CANCELLED', filledSize: 0.7, averageFilledPrice: 70000, totalFees: 0 });
+
+    assert.equal(svc._test.pendingTerminalRetries.get('order-X').filledSize, 0.7,
+      'replayed CANCELLED must advance the mutable target the in-flight retry reads');
+
+    // Cleanup so timers don't leak into other tests
+    svc.stop();
   });
 });

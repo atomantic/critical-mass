@@ -925,9 +925,18 @@ const createMarketDataService = (exchange, pair) => {
     // Without this an already-finalized FILLED would re-fire
     // onOrderFillCallback (the engine would see the same fill twice),
     // and an already-settled CANCELLED would schedule another untrack
-    // timer. The order stays in trackedOrders for 60s post-settle to
-    // block cache-reload resurrection, so this window is real.
-    if (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed') {
+    // timer.
+    //
+    // BUT: settleCancelledOrder flips trackedOrder.status to 'cancelled'/
+    // 'failed' on attempt 0 to suppress the phantom open row during the
+    // retry window. Without the pendingTerminalRetries check, this guard
+    // would block replayed CANCELLED events from reaching the cancel
+    // branch — so a larger replayed cumulative would never advance the
+    // mutable target the in-flight retry chain reads. The retry could
+    // settle short of the real cancelled quantity. Same for FILLED via
+    // the partial-retry pendingPartialRetries.
+    const inRetryChain = pendingTerminalRetries.has(orderId) || pendingPartialRetries.has(orderId);
+    if (!inRetryChain && (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed')) {
       return;
     }
 
@@ -1220,6 +1229,16 @@ const createMarketDataService = (exchange, pair) => {
     untrackOrder,
     setOnOrderFill,
     setOnStatusUpdate,
+    // Test hooks. Expose enough surface to drive processOrderUpdate
+    // through a real factory instance without spinning up the WS feed.
+    _test: {
+      handleOrderUpdate,
+      injectFillLedger: (ledger) => { fillLedger = ledger; },
+      injectProductId: (id) => { productId = id; },
+      pendingTerminalRetries,
+      pendingPartialRetries,
+      timerTracker,
+    },
   };
 };
 
