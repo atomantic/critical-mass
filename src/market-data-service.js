@@ -119,10 +119,19 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
     return { fetched: false, fillsCount: fills.length, ingestedCount: 0 };
   }
 
-  trackedOrder.lastIngestedFilledSize = cumulativeFilledSize;
+  // Derive watermark from actual ledger contents — NOT cumulativeFilledSize.
+  // Coinbase's getOrderFills returns all fills for an order, but Gemini and
+  // Crypto.com synthesize getOrderFills from recent-trade queries and may
+  // return only a subset. Setting the watermark to the WS-reported
+  // cumulative would falsely claim "fully ingested" and suppress future
+  // retries that would have caught the missing fills. Reading the ledger
+  // ensures the watermark only advances by what actually landed.
+  const recordedSize = (fillLedger.getFillsForOrder(orderId) || [])
+    .reduce((s, f) => s + (f.size || 0), 0);
+  trackedOrder.lastIngestedFilledSize = recordedSize;
 
   if (ingestedCount > 0) {
-    console.log(`📥 [${exchange}] ${label} for ${orderId}: ingested ${ingestedCount} new fill(s), cumulative=${cumulativeFilledSize}`);
+    console.log(`📥 [${exchange}] ${label} for ${orderId}: ingested ${ingestedCount} new fill(s), recorded=${recordedSize} of ${cumulativeFilledSize}`);
   }
 
   return { fetched: true, fillsCount: fills.length, ingestedCount };
@@ -202,7 +211,14 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
     if (isStopped()) return { settledNow: false, retryScheduled: false };
   }
 
-  const stillNeedsCatchup = hadUnrecorded && (!catchup.fetched || catchup.fillsCount === 0);
+  // Settle only when the ledger actually covers the WS-reported cumulative
+  // filledSize. A truthy fillsCount alone isn't sufficient: Gemini and
+  // Crypto.com's adapters synthesize getOrderFills from recent-trade
+  // queries and can return a partial set, so a non-empty response can
+  // still leave the order short of the full cancelled quantity.
+  const recordedSize = (fillLedger.getFillsForOrder(orderId) || [])
+    .reduce((s, f) => s + (f.size || 0), 0);
+  const stillNeedsCatchup = hadUnrecorded && (!catchup.fetched || recordedSize < filledSize);
   if (!stillNeedsCatchup) {
     markSettled(orderId);
     scheduleTimeout(() => untrackOrder(orderId), untrackDelayMs);
@@ -698,6 +714,15 @@ const createMarketDataService = (exchange, pair) => {
   const retryFilledIngest = async (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt) => {
     if (!trackedOrders.has(orderId)) return; // already removed by another path
     if (timerTracker.isStopped()) return;
+    // Skip if a replayed terminal event finalized this order while the
+    // retry timer was queued. Without this the retry would hit the
+    // watermark early-out and re-fire onOrderFillCallback for a fill the
+    // engine has already booked (the order remains in trackedOrders for
+    // 60s post-settle to block cache-reload resurrection, so this window
+    // is real).
+    if (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed') {
+      return;
+    }
 
     const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
     const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `FILLED retry ${attempt}`);

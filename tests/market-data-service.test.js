@@ -26,12 +26,14 @@ const makeAdapter = (responses) => {
 
 /**
  * Fake fillLedger that mimics ingestFill's idempotent-on-tradeId contract,
- * including the skipPersist option (real ledger auto-persists per fill
- * unless skipPersist is set).
+ * the skipPersist option (real ledger auto-persists per fill unless
+ * skipPersist is set), and getFillsForOrder for ledger-derived watermark
+ * computations in production code.
  */
 const makeLedger = () => {
   const seen = new Set();
   const ingested = []; // { tradeId, orderPlacedAt, skipPersist }
+  const byOrder = new Map(); // orderId -> [{ size, netFee, quoteAmount }]
   let persistCalls = 0;
   return {
     seen,
@@ -42,9 +44,19 @@ const makeLedger = () => {
       if (seen.has(tradeId)) return { ingested: false, fill: null };
       seen.add(tradeId);
       ingested.push({ tradeId, orderPlacedAt, skipPersist: !!options.skipPersist });
+      const orderId = fill.orderId || fill.order_id;
+      if (orderId) {
+        if (!byOrder.has(orderId)) byOrder.set(orderId, []);
+        byOrder.get(orderId).push({
+          size: parseFloat(fill.size) || 0,
+          netFee: parseFloat(fill.totalCommission || fill.commission || 0) - parseFloat(fill.rebate || 0),
+          quoteAmount: (parseFloat(fill.price) || 0) * (parseFloat(fill.size) || 0),
+        });
+      }
       if (!options.skipPersist) persistCalls += 1;
       return { ingested: true, fill };
     },
+    getFillsForOrder: (orderId) => byOrder.get(orderId) || [],
     persist: () => { persistCalls += 1; },
   };
 };
@@ -232,6 +244,25 @@ describe('ingestNewFillsForOrder', () => {
     assert.equal(persistAttempts, 1, 'must attempt persist on empty-fills path to flush prior in-memory state');
   });
 
+  it('watermark advances by ledger-recorded size, NOT WS-reported cumulative (Gemini partial-history adapter case)', async () => {
+    // Adapter returns only one fill (0.3) even though WS-reported
+    // cumulative is 0.7. With the old behavior, watermark would jump to
+    // 0.7 and suppress future retries, permanently dropping the missing
+    // 0.4. With the fix, watermark = recordedSize (0.3), so the next
+    // call still sees cumulative > watermark and retries.
+    const adapter = makeAdapter([[makeFill('t1', 0.3)]]);
+
+    const result = await ingestNewFillsForOrder(
+      { adapter, fillLedger: ledger, exchange: 'gemini' },
+      'order-1', trackedOrder, 0.7, 'partial fill'
+    );
+
+    assert.equal(result.fetched, true);
+    assert.equal(result.fillsCount, 1);
+    assert.equal(trackedOrder.lastIngestedFilledSize, 0.3,
+      'watermark must reflect actual ledger contents (0.3), not WS cumulative (0.7), so retries can catch the missing 0.4');
+  });
+
   it('returns fetched=false if isStopped() flips during the adapter fetch', async () => {
     let stopped = false;
     const adapter = {
@@ -333,7 +364,8 @@ describe('settleCancelledOrder', () => {
     exchange: 'coinbase',
     markSettled: (id) => { markSettledCalls.push(id); },
     untrackOrder: (id) => { untrackCalls.push(id); },
-    retryDelayMs: 30000,
+    retryDelayBaseMs: 30000,
+    retryDelayMaxMs: 300000,
     untrackDelayMs: 60000,
     scheduleTimeout: (fn, delay) => { scheduledTimeouts.push({ fn, delay }); return scheduledTimeouts.length; },
   });
@@ -463,6 +495,24 @@ describe('settleCancelledOrder', () => {
 
     assert.equal(ledger.ingested.length, 1, 'fill ingested on eventual success');
     assert.deepEqual(markSettledCalls, ['order-1'], 'settles on success');
+  });
+
+  it('keeps retrying when adapter returns partial history (ledger short of WS-reported cumulative)', async () => {
+    // Gemini/Crypto.com case: adapter returns only some of the order's
+    // fills (0.3 of a 1.0 cancel). With the old behavior (`fillsCount > 0`
+    // = success), the chain would settle and lose the missing 0.7. With
+    // the fix (`recordedSize < filledSize` = still needs catchup), the
+    // chain retries.
+    const adapter = makeAdapter([[makeFill('t1', 0.3)]]);
+
+    const result = await settleCancelledOrder(
+      makeDeps(adapter), 'order-1', trackedOrder, 'CANCELLED', 1.0
+    );
+
+    assert.deepEqual(result, { settledNow: false, retryScheduled: true },
+      'must NOT settle when ledger covers only 0.3 of the 1.0 cancelled cumulative');
+    assert.equal(markSettledCalls.length, 0, 'order not settled yet — retry pending');
+    assert.equal(scheduledTimeouts.length, 1, 'retry scheduled');
   });
 
   it('cancel retry routes through enqueueWork when provided so replays serialize', async () => {
