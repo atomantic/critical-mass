@@ -942,6 +942,22 @@ describe('Fill Ledger', () => {
     assert.equal(ledger.getRecordedSizeForOrder('unknown'), 0);
   });
 
+  it('getRecordedSizeForOrder rounds accumulated float sums to asset precision', () => {
+    // Raw float sum of 0.1 + 0.2 + 0.4 produces 0.7000000000000001.
+    // Without rounding, recordedSize < filledSize=0.7 would be false-but-
+    // also-not-equal, and the retry chain would loop forever even though
+    // all fills are present. The index must round to 8-decimal asset
+    // precision after each accumulation.
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.1' }));
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-2', orderId: 'o-1', size: '0.2' }));
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-3', orderId: 'o-1', size: '0.4' }));
+
+    const recorded = ledger.getRecordedSizeForOrder('o-1');
+    assert.equal(recorded, 0.7, 'rounded sum must be exactly 0.7, not 0.7000000000000001');
+  });
+
   it('getRecordedSizeForOrder restores the per-order index from disk on load', () => {
     const exchange = 'test-exchange-load-idx';
     const ledger1 = createTestLedger(exchange);

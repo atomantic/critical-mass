@@ -87,9 +87,15 @@ const createFillLedger = (exchange, productId, pair) => {
         if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
         cycleIndex.get(fill.cycleId).add(fill.tradeId);
       }
-      // Populate per-order size index for O(1) watermark lookups
+      // Populate per-order size index for O(1) watermark lookups.
+      // Round to 8-decimal asset precision after each accumulation —
+      // raw float sums of common decimal sizes (e.g. 0.4 + 0.4) can
+      // produce 0.79999999... which compares strictly less than the
+      // WS-reported 0.8 cumulative. Without rounding the retry chain
+      // would loop forever even with all fills present.
       if (fill.orderId) {
-        orderSizeIndex.set(fill.orderId, (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0));
+        const next = (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0);
+        orderSizeIndex.set(fill.orderId, roundAsset(next));
       }
     }
 
@@ -202,9 +208,12 @@ const createFillLedger = (exchange, productId, pair) => {
       if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
       cycleIndex.get(fill.cycleId).add(tradeId);
     }
-    // Maintain per-order size index for O(1) watermark lookups in retry loops
+    // Maintain per-order size index for O(1) watermark lookups in retry loops.
+    // Round to asset precision so accumulated float error can't keep the
+    // retry chain running on a fully-recorded order (see load() for context).
     if (fill.orderId) {
-      orderSizeIndex.set(fill.orderId, (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0));
+      const next = (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0);
+      orderSizeIndex.set(fill.orderId, roundAsset(next));
     }
     dirtySinceLastPersist = true;
     if (!options.skipPersist) persist();

@@ -244,6 +244,15 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   // exponential backoff capped at retryDelayMaxMs — stop() in the factory
   // clears these timers so they can't outlive the service instance and
   // overwrite a replacement service's ledger.
+  //
+  // KNOWN LIMITATION: this retry state is in-memory only. If the API
+  // process restarts before a retry succeeds, stop() cancels the timer
+  // and the chain is lost — there is no durable marker for engine
+  // startup to resume from. Combined with the engine's
+  // cancelled-with-partials gap (see regime-engine.js KNOWN LIMITATION),
+  // a transient adapter outage right around a cancel can permanently
+  // drop the partials. Persisted retry markers + engine-side
+  // reconciliation are deferred follow-ups.
   const nextDelay = Math.min(retryDelayBaseMs * Math.pow(2, attempt), retryDelayMaxMs);
   console.log(`⏳ [${exchange}] Scheduling cancel catch-up retry ${attempt + 1} for ${orderId} in ${Math.round(nextDelay / 1000)}s`);
   // Re-enter the retry through enqueueOrderWork (when the factory provides
@@ -725,6 +734,60 @@ const createMarketDataService = (exchange, pair) => {
   const FILLED_RETRY_BASE_MS = 2000;
   const FILLED_RETRY_MAX_MS = 300000; // 5 min cap
 
+  // Bounded partial-fill ingest retry. Open orders are still active so
+  // the next WS update will eventually trigger another attempt; this is
+  // a backstop for the case where an OPEN order goes silent for a long
+  // time after a transient ingest failure. Capped attempts so we don't
+  // pile up timers for orders that may never fill again.
+  const PARTIAL_RETRY_BASE_MS = 2000;
+  const PARTIAL_RETRY_MAX_MS = 60000; // 1 min cap — order is still active
+  const PARTIAL_MAX_ATTEMPTS = 5;
+
+  const retryPartialIngest = async (orderId, trackedOrder, filledSize, attempt) => {
+    if (!trackedOrders.has(orderId)) return;
+    if (timerTracker.isStopped()) return;
+    // Skip if a terminal event finalized the order — the FILLED/CANCELLED
+    // path will own catch-up.
+    if (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed') {
+      return;
+    }
+    if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) return; // already covered
+
+    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `partial retry ${attempt}`);
+    if (timerTracker.isStopped()) return;
+
+    if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) return; // recovered
+
+    // Still short. Reschedule up to the attempt cap; after that, let the
+    // next WS event drive recovery (or the terminal-state catch-up).
+    if (attempt + 1 <= PARTIAL_MAX_ATTEMPTS) {
+      const reason = result.fetched ? 'ledger short of cumulative' : 'fetch/persist failed';
+      schedulePartialRetry(orderId, trackedOrder, filledSize, attempt + 1, reason);
+    } else {
+      console.log(`⚠️ [${exchange}] Partial-fill ingest gave up for ${orderId} after ${PARTIAL_MAX_ATTEMPTS} attempts — relying on next WS event or terminal catch-up`);
+    }
+  };
+
+  const schedulePartialRetry = (orderId, trackedOrder, filledSize, attempt, reason) => {
+    if (pendingRetries.has(orderId)) return; // dedupe with FILLED retries too
+    pendingRetries.add(orderId);
+
+    const delay = Math.min(PARTIAL_RETRY_BASE_MS * Math.pow(2, attempt - 1), PARTIAL_RETRY_MAX_MS);
+    console.log(`⏳ [${exchange}] partial ${orderId} ${reason} — retry ${attempt}/${PARTIAL_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`);
+    trackedSetTimeout(
+      () => enqueueOrderWork(orderId, async () => {
+        pendingRetries.delete(orderId);
+        try {
+          await retryPartialIngest(orderId, trackedOrder, filledSize, attempt);
+        } catch (err) {
+          console.log(`❌ [${exchange}] partial retry chain crashed for ${orderId}: ${err.message}`);
+        }
+      }),
+      delay
+    );
+  };
+
   const retryFilledIngest = async (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt) => {
     if (!trackedOrders.has(orderId)) return; // already removed by another path
     if (timerTracker.isStopped()) return;
@@ -835,8 +898,17 @@ const createMarketDataService = (exchange, pair) => {
     // FILLED branch re-running this work is safe.
     if (status !== 'FILLED' && status !== 'CANCELLED' && status !== 'FAILED') {
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
-        await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'partial fill');
+        const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'partial fill');
         if (timerTracker.isStopped()) return;
+        // Schedule a bounded retry on partial-fill ingest failure. Open
+        // orders can stay open for hours without emitting another WS
+        // event, so a single transient adapter/persist error here would
+        // otherwise leave the executed partial unrecorded until the
+        // next fill / cancel / FILLED event — or forever if the process
+        // restarts first (cancelled-with-partials KNOWN LIMITATION).
+        if (!result.fetched && filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
+          schedulePartialRetry(orderId, trackedOrder, filledSize, 1, 'fetch/persist failed');
+        }
       }
       return;
     }
