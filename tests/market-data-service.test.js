@@ -465,6 +465,30 @@ describe('settleCancelledOrder', () => {
     assert.deepEqual(markSettledCalls, ['order-1'], 'settles on success');
   });
 
+  it('cancel retry routes through enqueueWork when provided so replays serialize', async () => {
+    // Verifies T32 wiring: settleCancelledOrder's retry callback uses
+    // deps.enqueueWork (when provided) so a replayed CANCELLED arriving
+    // during the retry window doesn't start a parallel chain.
+    const adapter = makeAdapter([new Error('boom'), [makeFill('t1', 0.3)]]);
+    const enqueueLog = [];
+    const fakeEnqueueWork = async (key, work) => {
+      enqueueLog.push(key);
+      return work();
+    };
+
+    const deps = { ...makeDeps(adapter), enqueueWork: fakeEnqueueWork };
+    await settleCancelledOrder(deps, 'order-1', trackedOrder, 'CANCELLED', 0.3);
+
+    // First synchronous call failed, retry scheduled.
+    assert.equal(scheduledTimeouts.length, 1);
+    assert.equal(enqueueLog.length, 0, 'no enqueue yet — first call ran inline');
+
+    await scheduledTimeouts[0].fn();
+
+    assert.deepEqual(enqueueLog, ['order-1'], 'retry callback routed through enqueueWork');
+    assert.deepEqual(markSettledCalls, ['order-1'], 'retry settled via the queue');
+  });
+
   it('FAILED status follows the same path as CANCELLED', async () => {
     const adapter = makeAdapter([new Error('boom')]);
 

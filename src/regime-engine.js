@@ -1004,19 +1004,24 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         } else {
           // TP order no longer exists on exchange - clear tracking so a new one gets placed.
           //
-          // KNOWN LIMITATION: if this TP partially filled before being
-          // cancelled and the partial fills weren't already captured by
-          // the market-data-service WS path, those fills are not
-          // recovered here. Properly recovering them requires not just
-          // ingesting fills but also reducing positionState.totalAsset,
-          // recomputing avgCostBasis, and accounting for realized P&L.
-          // The same gap applies if the API process restarted while a
-          // market-data-service cancel-retry was still pending — those
-          // retries are in-memory only, so a restart loses them. See
-          // PR #66 discussion (review threads on T12 / T30). The market-
-          // data-service catch-up retry covers the common case while
-          // the engine is stopped; engine-side recovery + persisted
-          // retry markers are follow-ups.
+          // KNOWN LIMITATION: cancelled-with-partials recovery is incomplete here.
+          // If this TP partially filled before being cancelled and the partial
+          // fills weren't already captured by the market-data-service WS path,
+          // they are NOT ingested by this branch — and even ingesting them is
+          // insufficient on its own, because a correct fix must also reduce
+          // positionState.totalAsset, recompute avgCostBasis, and account for
+          // realized P&L from the partial sell. Without that accounting the
+          // replacement TP would be placed for too much asset and could
+          // oversell the account.
+          //
+          // The same gap applies if the API process restarted while a market-
+          // data-service cancel-retry was still pending — those retries live
+          // in-memory only, so a restart loses them.
+          //
+          // The market-data-service catch-up retry covers the common case
+          // while the engine is stopped. Engine-side recovery on startup +
+          // disk-persisted retry markers are deferred; do not extend this
+          // branch to ingest fills until that bookkeeping is in place.
           console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
           positionState.activeTpOrderId = null;
           positionState.lastTpPrice = 0;
@@ -1099,10 +1104,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             restoredBodies++;
           } else {
             // Body TP no longer on exchange — re-place TP.
-            // Same KNOWN LIMITATION as the core-TP branch above: a body
-            // TP that partially filled before being cancelled would
-            // need body.assetQty / body.costBasis updates plus realized-
-            // P&L bookkeeping, which is non-trivial and deferred.
+            // Same KNOWN LIMITATION as the core-TP branch above: cancelled-
+            // with-partials recovery is incomplete. A body TP that partially
+            // filled before cancellation needs body.assetQty / body.costBasis
+            // proration and realized-P&L accounting; without it the
+            // replacement TP would be sized incorrectly. Deferred.
             body.tpOrderId = null;
             expiredBodies++;
           }

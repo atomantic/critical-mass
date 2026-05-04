@@ -216,9 +216,21 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   // overwrite a replacement service's ledger.
   const nextDelay = Math.min(retryDelayBaseMs * Math.pow(2, attempt), retryDelayMaxMs);
   console.log(`⏳ [${exchange}] Scheduling cancel catch-up retry ${attempt + 1} for ${orderId} in ${Math.round(nextDelay / 1000)}s`);
+  // Re-enter the retry through enqueueOrderWork (when the factory provides
+  // it) so the retry callback serializes against any replayed CANCELLED/
+  // FAILED WS update for the same orderId. Without this, two concurrent
+  // settleCancelledOrder chains could fetch fills and mutate trackedOrder
+  // at the same time. Tests that drive settleCancelledOrder directly
+  // don't pass enqueueWork; the retry runs un-serialized in that case.
+  const enqueueWork = deps.enqueueWork;
   scheduleTimeout(async () => {
+    const run = () => settleCancelledOrder(deps, orderId, trackedOrder, status, filledSize, attempt + 1);
     try {
-      await settleCancelledOrder(deps, orderId, trackedOrder, status, filledSize, attempt + 1);
+      if (enqueueWork) {
+        await enqueueWork(orderId, run);
+      } else {
+        await run();
+      }
     } catch (err) {
       console.log(`❌ [${exchange}] Cancel retry chain crashed for ${orderId}: ${err.message}`);
     }
@@ -633,12 +645,22 @@ const createMarketDataService = (exchange, pair) => {
   const orderWorkQueue = createWorkQueue();
   const enqueueOrderWork = (orderId, work) => orderWorkQueue.enqueue(orderId, work);
 
+  // Per-orderId pending-retry guard. WS feeds can replay events; without
+  // this dedupe a second FILLED or CANCELLED for the same order would
+  // start a parallel retry chain alongside the existing one, multiplying
+  // adapter traffic and racing on trackedOrder mutations. Entries are
+  // added when a retry is scheduled and removed on terminal settle.
+  const pendingRetries = new Set();
+
+  const clearPendingRetry = (orderId) => { pendingRetries.delete(orderId); };
+
   const finalizeFilledOrder = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees) => {
     trackedOrder.status = 'filled';
     trackedOrder.filledSize = filledSize;
     trackedOrder.filledPrice = averageFilledPrice;
     trackedOrder.fees = totalFees;
     trackedOrder.filledAt = Date.now();
+    clearPendingRetry(orderId);
 
     if (onOrderFillCallback) {
       onOrderFillCallback({
@@ -697,10 +719,24 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt, reason) => {
+    // Dedupe: if a retry chain is already pending for this orderId, a
+    // replayed FILLED WS event must not spawn a second parallel chain.
+    // The first retry will detect any new state via getOrderFills and
+    // settle the order — at which point clearPendingRetry runs and a
+    // future retry could be scheduled if needed.
+    if (pendingRetries.has(orderId)) return;
+    pendingRetries.add(orderId);
+
     const delay = Math.min(FILLED_RETRY_BASE_MS * Math.pow(2, attempt - 1), FILLED_RETRY_MAX_MS);
     console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retry ${attempt} in ${Math.round(delay / 1000)}s`);
     trackedSetTimeout(
-      () => enqueueOrderWork(orderId, () => retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt)),
+      () => enqueueOrderWork(orderId, async () => {
+        // The retry's work-queue slot is the canonical "retry running"
+        // window. Clear pending here so retryFilledIngest's reschedule
+        // (if it doesn't settle) can re-add it.
+        pendingRetries.delete(orderId);
+        await retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt);
+      }),
       delay
     );
   };
@@ -723,6 +759,17 @@ const createMarketDataService = (exchange, pair) => {
     if (!trackedOrders.has(orderId)) return;
 
     const trackedOrder = trackedOrders.get(orderId);
+
+    // Skip replayed terminal events for orders we've already settled.
+    // Without this an already-finalized FILLED would re-fire
+    // onOrderFillCallback (the engine would see the same fill twice),
+    // and an already-settled CANCELLED would schedule another untrack
+    // timer. The order stays in trackedOrders for 60s post-settle to
+    // block cache-reload resurrection, so this window is real.
+    if (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed') {
+      return;
+    }
+
     const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
 
     // Non-terminal partial-fill ingest. Coinbase keeps status='OPEN' while
@@ -774,15 +821,22 @@ const createMarketDataService = (exchange, pair) => {
 
       finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
-      await settleCancelledOrder(
+      // Dedupe replayed CANCELLED/FAILED: if a cancel-retry chain is
+      // already pending for this order, the existing chain will pick up
+      // any new state on its next tick. Spawning a second settle here
+      // would create parallel retry chains.
+      if (pendingRetries.has(orderId)) return;
+      const result = await settleCancelledOrder(
         {
           ...ingestDeps,
           markSettled,
-          untrackOrder: (id) => trackedOrders.delete(id),
+          untrackOrder: (id) => { clearPendingRetry(id); trackedOrders.delete(id); },
           scheduleTimeout: trackedSetTimeout,
+          enqueueWork: enqueueOrderWork,
         },
         orderId, trackedOrder, status, filledSize
       );
+      if (result?.retryScheduled) pendingRetries.add(orderId);
     }
   };
 
