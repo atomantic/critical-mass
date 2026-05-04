@@ -85,12 +85,20 @@ const createMarketDataService = (exchange, pair) => {
   // Tracked open orders (from saved regime state)
   const trackedOrders = new Map(); // orderId -> { type, price, size, placedAt, status }
   // Orders the WS feed has already confirmed settled (filled/cancelled).
-  // Persisted in-memory for the life of the process so a cache reload can't
-  // resurrect a stale tpOrderId from disk after the 60s trackedOrders TTL —
-  // the engine, while running, would have rewritten regime-state, but if it's
-  // stopped that orderId still appears in disk state and would otherwise come
-  // back as 'open' on the next refresh.
-  const settledOrderIds = new Set();
+  // Kept in-memory so a cache reload can't resurrect a stale tpOrderId from
+  // disk after the 60s trackedOrders TTL fires. Bounded to prevent unbounded
+  // growth over long uptime — when full, the oldest entry is evicted (Map
+  // preserves insertion order). New body TPs created after eviction will be
+  // re-tracked from disk and the WS feed will re-detect any settlement.
+  const SETTLED_MAX = 5000;
+  const settledOrderIds = new Map(); // orderId -> 1 (Map for insertion-order eviction)
+  const markSettled = (orderId) => {
+    settledOrderIds.set(orderId, 1);
+    if (settledOrderIds.size > SETTLED_MAX) {
+      const oldest = settledOrderIds.keys().next().value;
+      settledOrderIds.delete(oldest);
+    }
+  };
   let onOrderFillCallback = null; // External callback for when orders fill
 
   // Pre-populate trackedOrders from a position (called at startup and on
@@ -98,7 +106,7 @@ const createMarketDataService = (exchange, pair) => {
   // persisted live order — TPs (sell), pending entries (buy), and ladder
   // entries (buy) — while the engine is stopped. Skips anything already
   // seen settled.
-  const trackTpFromPosition = (pos) => {
+  const trackPersistedOrders = (pos) => {
     if (pos?.activeTpOrderId && !trackedOrders.has(pos.activeTpOrderId) && !settledOrderIds.has(pos.activeTpOrderId)) {
       trackedOrders.set(pos.activeTpOrderId, {
         type: 'take_profit',
@@ -170,7 +178,7 @@ const createMarketDataService = (exchange, pair) => {
 
     // Load any tracked orders from saved regime state.
     const savedState = loadRegimeState(exchange, resolvedPair);
-    trackTpFromPosition(savedState.position);
+    trackPersistedOrders(savedState.position);
     const bodyTpCount = (savedState.position?.celestialBodies || []).filter(b => b.tpOrderId).length;
     if (bodyTpCount > 0) console.log(`📋 [${exchange}] Market data service tracking ${bodyTpCount} body TP(s)`);
 
@@ -229,7 +237,7 @@ const createMarketDataService = (exchange, pair) => {
       cachedRegimeStateTime = now;
       // Pick up any new body TPs created since startup so the WS feed can
       // detect their fills/cancels while the engine is stopped.
-      trackTpFromPosition(cachedRegimeState?.position);
+      trackPersistedOrders(cachedRegimeState?.position);
     }
 
     // Synthesize persisted TPs + the same enrichment fields the running
@@ -363,20 +371,24 @@ const createMarketDataService = (exchange, pair) => {
         console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
       }
 
-      // On transient adapter failure, do not flip the in-memory status to
-      // 'filled' — getOrderStatus() would then report the order as no
-      // longer open, the offline synthesizer would drop it, and the
-      // ledger/linkage would never be written until engine restart.
-      // Leave status='open' so the WS gives us another shot on the next
-      // OrderUpdate event for this orderId.
-      if (!fillsFetched) return;
+      // On transient adapter failure or empty fills response (Coinbase
+      // briefly returns [] right after a FILLED event), do not flip the
+      // in-memory status to 'filled' — getOrderStatus() would report the
+      // order as no longer open, the offline synthesizer would drop it,
+      // and the ledger/linkage would never be written until engine
+      // restart. Leave status='open' so the WS gives us another shot on
+      // the next OrderUpdate event for this orderId.
+      if (!fillsFetched || fills.length === 0) return;
 
-      // Pass placedAt for fill time tracking (only meaningful for buy orders)
-      const orderPlacedAt = trackedOrder.type === 'entry' ? trackedOrder.placedAt : null;
+      // Pass placedAt for fill time tracking on buy orders (entry +
+      // ladder). Without this for ladders, those fills disappear from
+      // the 7-day fill-time statistics.
+      const isBuyOrder = trackedOrder.type === 'entry' || trackedOrder.type === 'ladder_entry';
+      const orderPlacedAt = isBuyOrder ? trackedOrder.placedAt : null;
       for (const fill of fills) {
         fillLedger.ingestFill(fill, orderPlacedAt);
       }
-      if (fills.length > 0) fillLedger.persist();
+      fillLedger.persist();
 
       // Update tracked order status
       trackedOrder.status = 'filled';
@@ -397,14 +409,14 @@ const createMarketDataService = (exchange, pair) => {
         });
       }
 
-      // Mark settled and prune from trackedOrders (the settledOrderIds set
-      // outlives the 60s TTL so cache reloads can't resurrect this order).
-      settledOrderIds.add(orderId);
+      // Mark settled and prune from trackedOrders (settledOrderIds outlives
+      // the 60s TTL so cache reloads can't resurrect this order).
+      markSettled(orderId);
       setTimeout(() => trackedOrders.delete(orderId), 60000);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
       trackedOrder.status = status.toLowerCase();
-      settledOrderIds.add(orderId);
+      markSettled(orderId);
       setTimeout(() => trackedOrders.delete(orderId), 60000);
     }
   };
