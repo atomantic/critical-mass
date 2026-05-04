@@ -2,7 +2,7 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { ingestNewFillsForOrder } = require('../src/market-data-service');
+const { ingestNewFillsForOrder, settleCancelledOrder } = require('../src/market-data-service');
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -25,22 +25,24 @@ const makeAdapter = (responses) => {
 };
 
 /**
- * Fake fillLedger that mimics ingestFill's idempotent-on-tradeId contract.
- * Accumulates calls so tests can assert what was ingested and what was deduped.
+ * Fake fillLedger that mimics ingestFill's idempotent-on-tradeId contract,
+ * including the skipPersist option (real ledger auto-persists per fill
+ * unless skipPersist is set).
  */
 const makeLedger = () => {
   const seen = new Set();
-  const ingested = []; // { tradeId, orderPlacedAt }
+  const ingested = []; // { tradeId, orderPlacedAt, skipPersist }
   let persistCalls = 0;
   return {
     seen,
     ingested,
     get persistCalls() { return persistCalls; },
-    ingestFill: (fill, orderPlacedAt = null) => {
+    ingestFill: (fill, orderPlacedAt = null, options = {}) => {
       const tradeId = fill.tradeId || fill.trade_id;
       if (seen.has(tradeId)) return { ingested: false, fill: null };
       seen.add(tradeId);
-      ingested.push({ tradeId, orderPlacedAt });
+      ingested.push({ tradeId, orderPlacedAt, skipPersist: !!options.skipPersist });
+      if (!options.skipPersist) persistCalls += 1;
       return { ingested: true, fill };
     },
     persist: () => { persistCalls += 1; },
@@ -102,7 +104,22 @@ describe('ingestNewFillsForOrder', () => {
     assert.equal(ledger.ingested.length, 1);
     assert.equal(ledger.ingested[0].tradeId, 't1');
     assert.equal(trackedOrder.lastIngestedFilledSize, 0.4);
-    assert.equal(ledger.persistCalls, 1);
+    assert.equal(ledger.persistCalls, 1, 'one trailing persist, not one per fill');
+  });
+
+  it('uses skipPersist + a single trailing persist regardless of fill count', async () => {
+    // Three new fills in one update — without skipPersist this would be 3
+    // synchronous JSON rewrites on the hot path.
+    const adapter = makeAdapter([[makeFill('t1', 0.2), makeFill('t2', 0.3), makeFill('t3', 0.5)]]);
+
+    await ingestNewFillsForOrder(
+      { adapter, fillLedger: ledger, exchange: 'coinbase' },
+      'order-1', trackedOrder, 1.0, 'FILLED'
+    );
+
+    assert.equal(ledger.ingested.length, 3);
+    assert.ok(ledger.ingested.every((x) => x.skipPersist === true), 'each ingestFill must pass skipPersist');
+    assert.equal(ledger.persistCalls, 1, 'exactly one persist per call, regardless of fill count');
   });
 
   it('does not double-count when the terminal FILLED event re-fetches an already-ingested partial', async () => {
@@ -214,5 +231,120 @@ describe('ingestNewFillsForOrder', () => {
     assert.equal(ledger.ingested.length, 3);
     assert.deepEqual(ledger.ingested.map(x => x.tradeId), ['t1', 't2', 't3']);
     assert.equal(trackedOrder.lastIngestedFilledSize, 1.0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// settleCancelledOrder: regression coverage for the cancel/fail catch-up path
+// ---------------------------------------------------------------------------
+
+describe('settleCancelledOrder', () => {
+  let ledger;
+  let trackedOrder;
+  let markSettledCalls;
+  let untrackCalls;
+  let scheduledTimeouts; // [{ fn, delay }]
+
+  beforeEach(() => {
+    ledger = makeLedger();
+    trackedOrder = { type: 'take_profit', placedAt: Date.now(), status: 'open' };
+    markSettledCalls = [];
+    untrackCalls = [];
+    scheduledTimeouts = [];
+  });
+
+  const makeDeps = (adapter) => ({
+    adapter,
+    fillLedger: ledger,
+    exchange: 'coinbase',
+    markSettled: (id) => { markSettledCalls.push(id); },
+    untrackOrder: (id) => { untrackCalls.push(id); },
+    retryDelayMs: 30000,
+    untrackDelayMs: 60000,
+    scheduleTimeout: (fn, delay) => { scheduledTimeouts.push({ fn, delay }); return scheduledTimeouts.length; },
+  });
+
+  it('settles immediately when there were no unrecorded partials', async () => {
+    const adapter = makeAdapter([new Error('should not be called')]);
+    trackedOrder.lastIngestedFilledSize = 0;
+
+    const result = await settleCancelledOrder(
+      makeDeps(adapter), 'order-1', trackedOrder, 'CANCELLED', 0
+    );
+
+    assert.deepEqual(result, { settledNow: true, retryScheduled: false });
+    assert.equal(trackedOrder.status, 'cancelled');
+    assert.deepEqual(markSettledCalls, ['order-1']);
+    assert.equal(scheduledTimeouts.length, 1, 'one untrack delay scheduled');
+    assert.equal(scheduledTimeouts[0].delay, 60000);
+  });
+
+  it('settles after successful catch-up when partials were unrecorded', async () => {
+    const adapter = makeAdapter([[makeFill('t1', 0.3)]]);
+
+    const result = await settleCancelledOrder(
+      makeDeps(adapter), 'order-1', trackedOrder, 'CANCELLED', 0.3
+    );
+
+    assert.deepEqual(result, { settledNow: true, retryScheduled: false });
+    assert.equal(ledger.ingested.length, 1, 'partial caught up before settle');
+    assert.deepEqual(markSettledCalls, ['order-1']);
+    assert.equal(trackedOrder.lastIngestedFilledSize, 0.3);
+  });
+
+  it('does NOT settle when adapter fetch fails on cancel with unrecorded partials — schedules retry instead', async () => {
+    const adapter = makeAdapter([new Error('network down')]);
+
+    const result = await settleCancelledOrder(
+      makeDeps(adapter), 'order-1', trackedOrder, 'CANCELLED', 0.3
+    );
+
+    assert.deepEqual(result, { settledNow: false, retryScheduled: true });
+    assert.equal(markSettledCalls.length, 0, 'must not settle yet — markSettled is sticky');
+    assert.equal(untrackCalls.length, 0, 'must not untrack yet');
+    assert.equal(trackedOrder.status, 'open', 'status must not flip until retry resolves');
+    assert.equal(scheduledTimeouts.length, 1, 'one retry scheduled');
+    assert.equal(scheduledTimeouts[0].delay, 30000);
+  });
+
+  it('does NOT settle when adapter returns [] on cancel with unrecorded partials (post-event race) — schedules retry', async () => {
+    const adapter = makeAdapter([[]]);
+
+    const result = await settleCancelledOrder(
+      makeDeps(adapter), 'order-1', trackedOrder, 'CANCELLED', 0.3
+    );
+
+    assert.deepEqual(result, { settledNow: false, retryScheduled: true });
+    assert.equal(markSettledCalls.length, 0, 'must not settle on empty fills response');
+    assert.equal(scheduledTimeouts.length, 1);
+  });
+
+  it('retry callback ingests fills then settles + untracks', async () => {
+    // First call (synchronous in handleOrderUpdate path) fails; the
+    // scheduled retry succeeds.
+    const adapter = makeAdapter([new Error('transient'), [makeFill('t1', 0.3)]]);
+
+    await settleCancelledOrder(
+      makeDeps(adapter), 'order-1', trackedOrder, 'CANCELLED', 0.3
+    );
+
+    assert.equal(scheduledTimeouts.length, 1);
+    // Run the retry callback
+    await scheduledTimeouts[0].fn();
+
+    assert.equal(ledger.ingested.length, 1, 'retry must ingest the previously-missed fill');
+    assert.deepEqual(markSettledCalls, ['order-1'], 'retry must settle');
+    assert.deepEqual(untrackCalls, ['order-1'], 'retry must untrack');
+  });
+
+  it('FAILED status follows the same path as CANCELLED', async () => {
+    const adapter = makeAdapter([new Error('boom')]);
+
+    const result = await settleCancelledOrder(
+      makeDeps(adapter), 'order-1', trackedOrder, 'FAILED', 0.5
+    );
+
+    assert.equal(result.retryScheduled, true);
+    assert.equal(markSettledCalls.length, 0);
   });
 });
