@@ -9,8 +9,9 @@
 const fs = require('fs');
 const path = require('path');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig, getFundConfig, getDefaultPair } = require('../config-utils');
-const { loadRegimeState } = require('../state-tracker');
+const { loadRegimeState, LIFECYCLE } = require('../state-tracker');
 const { resolveFundDataDir } = require('../migration');
+const { calculateApyMetrics } = require('../apy-calculator');
 const celestialHierarchy = require('../celestial-hierarchy');
 const { log } = require('../logger');
 
@@ -37,14 +38,22 @@ const buildOfflineStatus = (exchange, pair) => {
   }
   const position = rs.position || {};
   const bodies = position.celestialBodies || [];
+  const config = getRegimeConfig(exchange, pair);
 
   return {
     isRunning: false,
     position,
     regime: rs.regime || null,
     pendingOrders: celestialHierarchy.buildPersistedPendingOrders(position),
+    apy: calculateApyMetrics(position, config, { lastPrice: 0 }),
+    lifecycle: {
+      lifecycle: position.lifecycle || LIFECYCLE.ACTIVE,
+      lifecycleChangedAt: position.lifecycleChangedAt || null,
+      lifecycleReason: position.lifecycleReason || null,
+      lifecycleClosedCycle: position.lifecycleClosedCycle || null,
+    },
     celestial: {
-      enabled: bodies.length > 0,
+      enabled: config.celestialEnabled !== false,
       bodies: bodies.map(b => {
         const tierCfg = celestialHierarchy.getTierConfig(b.tier);
         return {
@@ -76,6 +85,7 @@ const buildOfflineStatus = (exchange, pair) => {
       bodiesCompleted: position.celestialState?.bodiesCompleted || 0,
       bodiesRealizedPnL: position.celestialState?.bodiesRealizedPnL || 0,
       bodiesRealizedAssetPnL: position.celestialState?.bodiesRealizedAssetPnL || 0,
+      tierSummary: celestialHierarchy.getTierSummary(bodies),
     },
   };
 };
@@ -147,9 +157,15 @@ module.exports = (app, deps) => {
       // Engine unreachable: serve a read-only status from disk so the dashboard
       // keeps showing persisted body TPs (and doesn't flag those bodies' buys
       // as orphans just because pendingOrders is empty).
-      const offlineStatus = buildOfflineStatus(exchange, pair);
-      if (offlineStatus) {
-        return res.json({ success: true, status: offlineStatus, engineDown: true, engineError: result.error });
+      // Skip the fallback for request timeouts — the engine process is likely
+      // still alive but slow, and reporting it as "stopped" would mislead the
+      // operator. Only fall back when the IPC connection is actually broken.
+      const isTimeout = (result.error || '').toLowerCase().includes('request timeout');
+      if (!isTimeout) {
+        const offlineStatus = buildOfflineStatus(exchange, pair);
+        if (offlineStatus) {
+          return res.json({ success: true, status: offlineStatus, engineDown: true, engineError: result.error });
+        }
       }
       return res.status(errStatus(result)).json(result);
     }

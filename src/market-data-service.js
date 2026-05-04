@@ -16,9 +16,10 @@ const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
-const { loadRegimeState } = require('./state-tracker');
+const { loadRegimeState, LIFECYCLE } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
+const { calculateApyMetrics } = require('./apy-calculator');
 const celestialHierarchy = require('./celestial-hierarchy');
 
 // Store active market data services keyed by `${exchange}::${pair}`
@@ -184,23 +185,33 @@ const createMarketDataService = (exchange, pair) => {
       cachedRegimeStateTime = now;
     }
 
-    // Synthesize persisted TPs (bodies + legacy core) + a celestial summary
-    // so the dashboard keeps its buy↔sell linkage when only the market
-    // service is emitting status (engine stopped). Without these, the prior
-    // good payload from the running engine would be overwritten by a
-    // truncated snapshot, dropping all open TPs from the UI.
+    // Synthesize persisted TPs + the same enrichment fields the running
+    // engine emits (apy, lifecycle, celestial summary) so a hard refresh
+    // while the engine is stopped doesn't lose APY/capital sections or
+    // misreport celestial as off between cycles. Each tick from this
+    // service overwrites socketStatus, so the payload must be shape-
+    // compatible with the running-engine status.
     const position = cachedRegimeState?.position || null;
     const bodies = position?.celestialBodies || [];
+    const config = getRegimeConfig(exchange, resolvedPair);
+    const market = getMarketState();
     const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(position);
 
     onStatusUpdateCallback({
       isRunning: false,
-      market: getMarketState(),
+      market,
       regime: getRegimeState(),
       position,
       pendingOrders,
+      apy: position ? calculateApyMetrics(position, config, { lastPrice: market?.lastPrice || 0 }) : {},
+      lifecycle: {
+        lifecycle: position?.lifecycle || LIFECYCLE.ACTIVE,
+        lifecycleChangedAt: position?.lifecycleChangedAt || null,
+        lifecycleReason: position?.lifecycleReason || null,
+        lifecycleClosedCycle: position?.lifecycleClosedCycle || null,
+      },
       celestial: {
-        enabled: bodies.length > 0,
+        enabled: config.celestialEnabled !== false,
         bodies: bodies.map(b => {
           const tierCfg = celestialHierarchy.getTierConfig(b.tier);
           return {
@@ -220,6 +231,7 @@ const createMarketDataService = (exchange, pair) => {
         bodiesCompleted: position?.celestialState?.bodiesCompleted || 0,
         bodiesRealizedPnL: position?.celestialState?.bodiesRealizedPnL || 0,
         bodiesRealizedAssetPnL: position?.celestialState?.bodiesRealizedAssetPnL || 0,
+        tierSummary: celestialHierarchy.getTierSummary(bodies),
       },
       health: { mode: 'STOPPED' },
       isDryRun: cachedRegimeState?.isDryRun || false,

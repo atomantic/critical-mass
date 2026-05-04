@@ -466,7 +466,11 @@ const buildCoreTpOrder = (position) => ({
   status: 'open',
   price: position.lastTpPrice || 0,
   size: position.assetOnOrder || position.totalAsset || 0,
-  placedAt: null,
+  // Position state doesn't track exact TP placement time, but the TP is
+  // re-placed after every entry — lastEntryTime is the closest persisted
+  // proxy. Fall back to engineStartTime so the dashboard's "age" display
+  // doesn't render the row as decades old (placedAt of null = epoch).
+  placedAt: position.lastEntryTime || position.engineStartTime || null,
   tpPercent: position.avgCostBasis > 0 && position.lastTpPrice > 0
     ? ((position.lastTpPrice - position.avgCostBasis) / position.avgCostBasis * 100).toFixed(2)
     : null,

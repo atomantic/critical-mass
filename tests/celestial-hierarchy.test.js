@@ -835,6 +835,13 @@ describe('buildCoreTpOrder', () => {
     assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', assetOnOrder: 0, totalAsset: 0.5 }).size, 0.5);
     assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', assetOnOrder: 0.1, totalAsset: 0.5 }).size, 0.1);
   });
+
+  it('uses lastEntryTime as placedAt, falling back to engineStartTime, then null', () => {
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', lastEntryTime: 1800000000000 }).placedAt, 1800000000000);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', engineStartTime: 1700000000000 }).placedAt, 1700000000000);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x', lastEntryTime: 1800000000000, engineStartTime: 1700000000000 }).placedAt, 1800000000000);
+    assert.equal(buildCoreTpOrder({ activeTpOrderId: 'x' }).placedAt, null);
+  });
 });
 
 describe('buildPersistedPendingOrders', () => {

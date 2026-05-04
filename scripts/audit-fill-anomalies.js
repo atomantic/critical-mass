@@ -395,5 +395,6 @@ if (args.out) {
     anomalies: filtered,
   }
   fs.writeFileSync(args.out, JSON.stringify(report, null, 2))
-  console.log(`📄 Full report written: ${args.out}  (${anomalies.length} anomalies)`)
+  const filterNote = args.category ? ` (${args.category}, ${anomalies.length} total in ledger)` : ''
+  console.log(`📄 Full report written: ${args.out}  (${filtered.length} anomalies${filterNote})`)
 }
