@@ -11,8 +11,33 @@ const path = require('path');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig, getFundConfig, getDefaultPair } = require('../config-utils');
 const { loadRegimeState, LIFECYCLE } = require('../state-tracker');
 const { resolveFundDataDir } = require('../migration');
+const { calculateApyMetrics } = require('../apy-calculator');
 const celestialHierarchy = require('../celestial-hierarchy');
 const { log } = require('../logger');
+
+/**
+ * Best-effort last market price from disk for the offline route fallback.
+ * Reads the most recent fill from fill-ledger.json. Stale (engine has been
+ * down for some time) but better than 0 — without this, APY's BTC component
+ * shows zero until the engine restarts, and on a hard browser refresh
+ * (which uses fetch as full replacement) the APY/capital panels would be
+ * blank because the dashboard doesn't have a prior socket snapshot to merge.
+ */
+const lastPriceFromLedger = (dataDir) => {
+  const ledgerPath = path.join(dataDir, 'fill-ledger.json');
+  if (!fs.existsSync(ledgerPath)) return 0;
+  try {
+    const raw = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    const fills = Array.isArray(raw) ? raw : (raw.fills || []);
+    let latest = null;
+    for (const f of fills) {
+      if (!latest || (f.timestamp || 0) > (latest.timestamp || 0)) latest = f;
+    }
+    return Number(latest?.price) || 0;
+  } catch {
+    return 0;
+  }
+};
 
 /** Convert IPC connection errors to standard response */
 const engineError = (err) => ({ success: false, error: `Engine unavailable: ${err.message}` });
@@ -26,7 +51,8 @@ const engineError = (err) => ({ success: false, error: `Engine unavailable: ${er
 const buildOfflineStatus = (exchange, pair) => {
   // loadRegimeState returns an initial empty state when no file exists, so
   // checking the return value isn't enough — verify the file is on disk first.
-  const stateFile = path.join(resolveFundDataDir(exchange, pair), 'regime-state.json');
+  const dataDir = resolveFundDataDir(exchange, pair);
+  const stateFile = path.join(dataDir, 'regime-state.json');
   if (!fs.existsSync(stateFile)) return null;
 
   let rs;
@@ -38,6 +64,10 @@ const buildOfflineStatus = (exchange, pair) => {
   const position = rs.position || {};
   const bodies = position.celestialBodies || [];
   const config = getRegimeConfig(exchange, pair);
+  // Use the most recent fill price as a stale-but-reasonable last price.
+  // A hard refresh uses fetch as full replacement (no socket snapshot to
+  // merge with), so omitting apy would leave capital/APY panels blank.
+  const lastPrice = lastPriceFromLedger(dataDir);
 
   return {
     isRunning: false,
@@ -50,9 +80,7 @@ const buildOfflineStatus = (exchange, pair) => {
     position,
     regime: rs.regime || null,
     pendingOrders: celestialHierarchy.buildPersistedPendingOrders(position),
-    // Skip apy here — without a live market price the BTC component is
-    // wrong, and the dashboard's shallow-merge will preserve the prior
-    // good value from the running engine. Better to show stale than wrong.
+    apy: calculateApyMetrics(position, config, { lastPrice }),
     lifecycle: {
       lifecycle: position.lifecycle || LIFECYCLE.ACTIVE,
       lifecycleChangedAt: position.lifecycleChangedAt || null,
