@@ -79,6 +79,10 @@ const buildOfflineStatus = (exchange, pair) => {
     engineDown: true,
     position,
     regime: rs.regime || null,
+    // Surface the stale price as market.lastPrice too — the live-price
+    // banner and cost-basis page read status.market.lastPrice and would
+    // otherwise show $0 on a hard refresh during an IPC outage.
+    market: { lastPrice, stale: true },
     pendingOrders: celestialHierarchy.buildPersistedPendingOrders(position),
     apy: calculateApyMetrics(position, config, { lastPrice }),
     lifecycle: {

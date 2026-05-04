@@ -3,17 +3,22 @@
  * Read-only audit of a pair's fill-ledger.json for buy↔sell linkage anomalies.
  *
  * Categories detected:
- *   1. body_size_mismatch  - sell.size ≠ bodyBtcQty/satelliteBtcQty (wrong body annotation
- *                            or order-quantity drift after merge/roll-up)
- *   2. bodyowned_no_bodyid - sell has isBodyOwned:true but bodyId is missing
- *   3. overlinked_buys     - sum(linkedBuys.size) > expected (body sells: > bodyBtcQty;
- *                            non-body sells: > sell.size + holdback)
- *   4. underlinked_buys    - sum(linkedBuys.size) << expected (sell consumed buys
- *                            that aren't pointing at it)
- *   5. orphan_sell_link    - buy carries sellOrderId that doesn't exist in the ledger
- *   6. cross_body_link     - buy linked to a sell that belongs to a different bodyId
- *                            (often an intentional manual repair; review before fixing)
- *   7. unlinked_completed  - buys in a non-current cycle with no sellOrderId at all
+ *   1. body_size_mismatch     - sell.size ≠ bodyBtcQty/satelliteBtcQty (wrong body
+ *                               annotation or order-quantity drift after merge/roll-up)
+ *   2. bodyowned_no_bodyid    - sell has isBodyOwned:true but bodyId is missing
+ *   3. overlinked_buys        - sum(linkedBuys.size) > expected (body sells:
+ *                               > bodyBtcQty; non-body sells: > sell.size + holdback)
+ *   4. underlinked_buys       - sum(linkedBuys.size) << expected (sell consumed
+ *                               buys that aren't pointing at it)
+ *   5. orphan_sell_link       - buy carries sellOrderId that doesn't exist in the
+ *                               ledger AND isn't an active body's tpOrderId
+ *   6. claimed_by_active_body - buy carries sellOrderId that's not in the ledger but
+ *                               IS an active body's tpOrderId (likely a still-open TP
+ *                               on the exchange; verify it's still live there)
+ *   7. cross_body_link        - buy linked to a sell that belongs to a different
+ *                               bodyId (often an intentional manual repair; review
+ *                               before fixing)
+ *   8. unlinked_completed     - buys in a non-current cycle with no sellOrderId
  *
  * Each anomaly carries a severity (high/med/low) and a suggestedAction hint.
  *
