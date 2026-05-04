@@ -53,7 +53,8 @@ const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
  *   to distinguish (a) from (b) should check the watermark themselves
  *   before calling — see handleOrderUpdate's FILLED branch.
  */
-const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId, trackedOrder, cumulativeFilledSize, label) => {
+const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFilledSize, label) => {
+  const { adapter, fillLedger, exchange, isStopped = () => false } = deps;
   const lastSize = trackedOrder.lastIngestedFilledSize || 0;
   if (cumulativeFilledSize <= lastSize) {
     return { fetched: true, fillsCount: 0, ingestedCount: 0 };
@@ -67,7 +68,25 @@ const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId
     return { fetched: false, fillsCount: 0, ingestedCount: 0 };
   }
 
+  // After awaiting I/O, recheck stopped — caller's service may have been
+  // stopped during the fetch. Don't write to a now-stale fillLedger.
+  if (isStopped()) {
+    return { fetched: false, fillsCount: fills.length, ingestedCount: 0 };
+  }
+
   if (fills.length === 0) {
+    // Adapter has nothing to give us this round. Still attempt persist
+    // so any in-memory fills from a previous failed-persist call are
+    // flushed to disk — without this, the watermark stays unadvanced
+    // (correct) but disk falls permanently behind memory (durability
+    // hole T22 flagged). We also do NOT advance lastIngestedFilledSize
+    // since the adapter still hasn't confirmed the cumulative.
+    try {
+      fillLedger.persist();
+    } catch (err) {
+      console.log(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`);
+      return { fetched: false, fillsCount: 0, ingestedCount: 0 };
+    }
     return { fetched: true, fillsCount: 0, ingestedCount: 0 };
   }
 
@@ -618,26 +637,49 @@ const createMarketDataService = (exchange, pair) => {
   // order-status data carried on the WS event.
   const retryFilledIngest = async (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees) => {
     if (!trackedOrders.has(orderId)) return; // already removed by another path
-    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange };
+    if (timerTracker.isStopped()) return;
+
+    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
     const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED retry');
+    if (timerTracker.isStopped()) return;
 
     if (result.fetched && result.fillsCount > 0) {
       finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
       return;
     }
 
-    // Synthesize ONLY the unrecorded delta. Earlier partial fills may
-    // already be in the ledger with real exchange tradeIds; synthesizing
-    // for the cumulative filledSize would use a unique synthetic tradeId
-    // that ingestFill cannot dedupe against, so the partial-then-FILLED
-    // empty-fills race would record both real partials AND a full
-    // synthetic — overstating size/P&L. Same for fees: subtract any fees
-    // already in the ledger for this order before stamping the synthetic.
-    const remainingSize = filledSize - (trackedOrder.lastIngestedFilledSize || 0);
-    if (remainingSize > 0 && averageFilledPrice > 0) {
-      const priorFees = (fillLedger.getFillsForOrder(orderId) || [])
-        .reduce((s, f) => s + (f.netFee || 0), 0);
-      const remainingFees = Math.max(0, (totalFees || 0) - priorFees);
+    // Use the in-memory ledger as the source of truth for what's already
+    // recorded — NOT trackedOrder.lastIngestedFilledSize. The watermark
+    // can lag the ledger if an earlier persist threw (in-memory ledger
+    // advanced but disk and watermark didn't). Reading from the ledger
+    // here ensures we synthesize on top of the actual recorded state and
+    // don't double-count fills that are already in memory.
+    const ledgerFills = fillLedger.getFillsForOrder(orderId) || [];
+    const inLedgerSize = ledgerFills.reduce((s, f) => s + (f.size || 0), 0);
+    const inLedgerQuote = ledgerFills.reduce((s, f) => s + (f.quoteAmount || 0), 0);
+    const inLedgerFees = ledgerFills.reduce((s, f) => s + (f.netFee || 0), 0);
+    const remainingSize = filledSize - inLedgerSize;
+
+    if (remainingSize <= 0) {
+      // Ledger already covers the cumulative filledSize (real fills came
+      // in via the partial path, or a previous synth recovered). Just
+      // settle.
+      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+      return;
+    }
+
+    if (averageFilledPrice > 0) {
+      // Compute the delta's price from the gross quote difference, NOT
+      // the order-wide weighted-average price. Earlier partials may
+      // have priced at different levels; using averageFilledPrice for
+      // the tail would misprice the synthetic record (e.g. 0.4@100
+      // followed by 0.6@120 would synthesize the 0.6 tail at 112 — the
+      // weighted average — instead of 120).
+      const totalQuote = filledSize * averageFilledPrice;
+      const deltaQuote = Math.max(0, totalQuote - inLedgerQuote);
+      const deltaPrice = remainingSize > 0 ? deltaQuote / remainingSize : averageFilledPrice;
+      const remainingFees = Math.max(0, (totalFees || 0) - inLedgerFees);
+
       const synthSide = (trackedOrder.type === 'entry' || trackedOrder.type === 'ladder_entry') ? 'buy' : 'sell';
       const isBuyOrder = synthSide === 'buy';
       const orderPlacedAt = isBuyOrder ? trackedOrder.placedAt : null;
@@ -648,13 +690,17 @@ const createMarketDataService = (exchange, pair) => {
         tradeId: `synthetic-${orderId}-${filledSize.toFixed(8)}`,
         orderId,
         side: synthSide,
-        price: averageFilledPrice,
+        price: deltaPrice,
         size: remainingSize,
-        quoteAmount: remainingSize * averageFilledPrice,
-        netFee: remainingFees,
+        quoteAmount: deltaQuote,
+        // ingestFill computes netFee from totalCommission/commission
+        // minus rebate (fill-ledger.js:166-169), not from a netFee
+        // field. Pass totalCommission so the fee actually lands.
+        totalCommission: remainingFees,
         timestamp: Date.now(),
       };
-      console.log(`⚠️ [${exchange}] Synthesizing fill from order-status for ${orderId}: delta=${remainingSize} @ $${averageFilledPrice} (cumulative=${filledSize})`);
+      console.log(`⚠️ [${exchange}] Synthesizing fill from order-status for ${orderId}: delta=${remainingSize} @ $${deltaPrice.toFixed(2)} (cumulative=${filledSize})`);
+      if (timerTracker.isStopped()) return;
       try {
         fillLedger.ingestFill(syntheticFill, orderPlacedAt);
         trackedOrder.lastIngestedFilledSize = filledSize;
@@ -662,13 +708,6 @@ const createMarketDataService = (exchange, pair) => {
         console.log(`❌ [${exchange}] Failed to ingest synthetic fill for ${orderId}: ${err.message}`);
         return;
       }
-      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
-      return;
-    }
-
-    if (remainingSize <= 0) {
-      // Watermark already covered by real fills — nothing to synthesize,
-      // just settle.
       finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
       return;
     }
@@ -690,17 +729,19 @@ const createMarketDataService = (exchange, pair) => {
    */
   const handleOrderUpdate = (data) => {
     if (!productId) return;
+    if (timerTracker.isStopped()) return;
     const { orderId } = data;
     if (!orderId || !trackedOrders.has(orderId)) return;
     return enqueueOrderWork(orderId, () => processOrderUpdate(data));
   };
 
   const processOrderUpdate = async (data) => {
+    if (timerTracker.isStopped()) return;
     const { orderId, status, filledSize, averageFilledPrice, totalFees } = data;
     if (!trackedOrders.has(orderId)) return;
 
     const trackedOrder = trackedOrders.get(orderId);
-    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange };
+    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
 
     // Non-terminal partial-fill ingest. Coinbase keeps status='OPEN' while
     // delivering incremental filledSize updates; without this path, a
@@ -714,6 +755,7 @@ const createMarketDataService = (exchange, pair) => {
     if (status !== 'FILLED' && status !== 'CANCELLED' && status !== 'FAILED') {
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
         await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'partial fill');
+        if (timerTracker.isStopped()) return;
       }
       return;
     }
@@ -728,6 +770,7 @@ const createMarketDataService = (exchange, pair) => {
       // remaining fills.
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
         const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED');
+        if (timerTracker.isStopped()) return;
 
         // FILLED is terminal — Coinbase is not guaranteed to emit follow-
         // up WS events, so we cannot wait for "the next event" to retry.

@@ -211,6 +211,46 @@ describe('ingestNewFillsForOrder', () => {
       'watermark must NOT advance on empty response — caller relies on this to retry');
   });
 
+  it('on empty-fills early return, still persists to flush in-memory state from a prior failed persist', async () => {
+    // Scenario: a previous call ingested fills into memory but persist
+    // threw (memory ahead of disk). On the next call, adapter returns
+    // [] (Coinbase race). Without persisting on the empty-fills path,
+    // disk would never catch up to memory.
+    const adapter = makeAdapter([[]]);
+    let persistAttempts = 0;
+    const dirtyLedger = {
+      ingestFill: () => ({ ingested: false, fill: null }),
+      persist: () => { persistAttempts += 1; },
+    };
+
+    const result = await ingestNewFillsForOrder(
+      { adapter, fillLedger: dirtyLedger, exchange: 'coinbase' },
+      'order-1', trackedOrder, 0.5, 'FILLED'
+    );
+
+    assert.equal(result.fetched, true);
+    assert.equal(persistAttempts, 1, 'must attempt persist on empty-fills path to flush prior in-memory state');
+  });
+
+  it('returns fetched=false if isStopped() flips during the adapter fetch', async () => {
+    let stopped = false;
+    const adapter = {
+      getOrderFills: async () => {
+        stopped = true; // simulate service.stop() during await
+        return [makeFill('t1', 0.4)];
+      },
+    };
+
+    const result = await ingestNewFillsForOrder(
+      { adapter, fillLedger: ledger, exchange: 'coinbase', isStopped: () => stopped },
+      'order-1', trackedOrder, 0.4, 'partial fill'
+    );
+
+    assert.equal(result.fetched, false, 'must bail with fetched=false post-stop');
+    assert.equal(ledger.ingested.length, 0, 'must not write to fillLedger after stop');
+    assert.equal(trackedOrder.lastIngestedFilledSize ?? 0, 0, 'watermark must not advance');
+  });
+
   it('passes placedAt for buy orders (entry/ladder) so fill-time tracking works', async () => {
     const adapter = makeAdapter([[makeFill('t1', 0.4)]]);
     trackedOrder.type = 'ladder_entry';
