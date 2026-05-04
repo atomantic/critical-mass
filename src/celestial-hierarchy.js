@@ -477,6 +477,52 @@ const buildCoreTpOrder = (position) => ({
 });
 
 /**
+ * Build the dashboard `celestial` payload from a position + config. Single
+ * source of truth for the shape returned by getState (running engine), the
+ * stopped-engine IPC handler, the offline route fallback, and the market-
+ * data-service socket emit. The original bug this PR fixes came from those
+ * payloads drifting apart — keep them sharing this helper.
+ */
+const buildCelestialPayload = (position, config) => {
+  const bodies = position?.celestialBodies || [];
+  return {
+    enabled: config?.celestialEnabled !== false,
+    bodies: bodies.map(b => {
+      const tierCfg = getTierConfig(b.tier);
+      return {
+        id: b.id,
+        tier: b.tier,
+        emoji: tierCfg?.emoji,
+        assetQty: b.assetQty,
+        costBasis: b.costBasis,
+        avgPrice: b.avgPrice,
+        tpOrderId: b.tpOrderId,
+        tpPrice: b.tpPrice,
+        tpPercent: b.avgPrice > 0 && b.tpPrice > 0
+          ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2)
+          : null,
+        assetOnOrder: b.assetOnOrder,
+        createdAt: b.createdAt,
+        lastMergedAt: b.lastMergedAt,
+        mergeCount: b.mergeCount,
+        buyOrders: (b.buyOrders || []).map(bo => ({
+          orderId: bo.orderId,
+          price: bo.price,
+          assetQty: bo.assetQty,
+          sizeUsdc: bo.sizeUsdc,
+          filledAt: bo.filledAt,
+        })),
+      };
+    }),
+    bodiesActive: bodies.length,
+    bodiesCompleted: position?.celestialState?.bodiesCompleted || 0,
+    bodiesRealizedPnL: position?.celestialState?.bodiesRealizedPnL || 0,
+    bodiesRealizedAssetPnL: position?.celestialState?.bodiesRealizedAssetPnL || 0,
+    tierSummary: getTierSummary(bodies),
+  };
+};
+
+/**
  * Synthesize the pendingOrders array from a persisted position: all body TPs
  * plus the legacy core TP if present. Dedupes by orderId so migrated state
  * (where the core activeTpOrderId may also be a body's tpOrderId) doesn't
@@ -523,4 +569,5 @@ module.exports = {
   buildBodyTpOrder,
   buildCoreTpOrder,
   buildPersistedPendingOrders,
+  buildCelestialPayload,
 };

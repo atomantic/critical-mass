@@ -3697,39 +3697,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       pendingOrders: positionState.pendingLadderOrders?.length || 0,
       committedUsdc: (positionState.pendingLadderOrders || []).reduce((sum, o) => sum + (o.sizeUsdc || 0), 0),
     } : null,
-    celestial: {
-      enabled: config.celestialEnabled !== false,
-      bodies: (positionState.celestialBodies || []).map(b => {
-        const tierCfg = celestialHierarchy.getTierConfig(b.tier);
-        return {
-          id: b.id,
-          tier: b.tier,
-          emoji: tierCfg.emoji,
-          assetQty: b.assetQty,
-          costBasis: b.costBasis,
-          avgPrice: b.avgPrice,
-          tpOrderId: b.tpOrderId,
-          tpPrice: b.tpPrice,
-          tpPercent: b.avgPrice > 0 && b.tpPrice > 0 ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2) : null,
-          assetOnOrder: b.assetOnOrder,
-          createdAt: b.createdAt,
-          lastMergedAt: b.lastMergedAt,
-          mergeCount: b.mergeCount,
-          buyOrders: (b.buyOrders || []).map(bo => ({
-            orderId: bo.orderId,
-            price: bo.price,
-            assetQty: bo.assetQty,
-            sizeUsdc: bo.sizeUsdc,
-            filledAt: bo.filledAt,
-          })),
-        };
-      }),
-      bodiesActive: (positionState.celestialBodies || []).length,
-      bodiesCompleted: positionState.celestialState?.bodiesCompleted || 0,
-      bodiesRealizedPnL: positionState.celestialState?.bodiesRealizedPnL || 0,
-      bodiesRealizedAssetPnL: positionState.celestialState?.bodiesRealizedAssetPnL || 0,
-      tierSummary: celestialHierarchy.getTierSummary(positionState.celestialBodies || []),
-    },
+    celestial: celestialHierarchy.buildCelestialPayload(positionState, config),
     // Body TP aggregates (legacy key "satellites" kept for UI compat)
     satellites: {
       enabled: config.celestialEnabled !== false,
