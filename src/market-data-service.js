@@ -92,7 +92,8 @@ const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId
   return { fetched: true, fillsCount: fills.length, ingestedCount };
 };
 
-const MAX_CANCEL_RETRY_ATTEMPTS = 3;
+const CANCEL_RETRY_BASE_MS = 30000;
+const CANCEL_RETRY_MAX_MS = 300000; // 5 min cap on backoff
 
 /**
  * Settle a tracked order on a CANCELLED/FAILED WS event, catching up any
@@ -100,14 +101,21 @@ const MAX_CANCEL_RETRY_ATTEMPTS = 3;
  *
  * Unlike the FILLED path, a terminally-cancelled order will not produce
  * follow-up WS events, so a transient adapter failure or empty-fills race
- * during the catch-up has no future event to retry against. When the WS
- * event indicates unrecorded partials (filledSize > lastIngestedFilledSize)
- * but the catch-up didn't deliver them, this function schedules a delayed
- * retry (with exponential backoff up to MAX_CANCEL_RETRY_ATTEMPTS) before
- * settling. After the retry budget is exhausted the order is settled with
- * a loud warning — engine-restart reconciliation (regime-engine startup
- * partial-fill ingest) is the final fallback for fills that REST never
- * surfaced to us.
+ * during the catch-up has no future event to retry against. Engine-restart
+ * reconciliation does NOT recover cancelled-with-partials either — the
+ * regime engine's startup branch for cancelled TPs (regime-engine.js
+ * around line 1004) clears the saved orderId without ingesting fills. So
+ * if we don't catch the partials here, they're lost permanently.
+ *
+ * Behavior:
+ *   1. Synchronously flip trackedOrder.status to 'cancelled'/'failed' so
+ *      getOrderStatus()-based filters stop showing the order as a phantom
+ *      open row during any retry window.
+ *   2. Try the catch-up fetch. On success, mark settled + schedule untrack.
+ *   3. On failure or empty fills, schedule an exponential-backoff retry
+ *      (capped at retryDelayMaxMs). Retries are indefinite — the only
+ *      ways out are catch-up success or service stop (deps.scheduleTimeout
+ *      is wrapped by the factory so stop() can clearTimeout the retry).
  *
  * @param {Object} deps
  * @param {{getOrderFills: Function}} deps.adapter
@@ -115,68 +123,98 @@ const MAX_CANCEL_RETRY_ATTEMPTS = 3;
  * @param {string} deps.exchange
  * @param {(orderId: string) => void} deps.markSettled
  * @param {(orderId: string) => void} deps.untrackOrder
- * @param {number} [deps.retryDelayMs=30000] - Base delay; doubled per attempt
- * @param {number} [deps.untrackDelayMs=60000] - TTL on trackedOrders deletion
- * @param {number} [deps.maxAttempts=MAX_CANCEL_RETRY_ATTEMPTS]
+ * @param {number} [deps.retryDelayBaseMs=CANCEL_RETRY_BASE_MS]
+ * @param {number} [deps.retryDelayMaxMs=CANCEL_RETRY_MAX_MS]
+ * @param {number} [deps.untrackDelayMs=60000]
  * @param {Function} [deps.scheduleTimeout=setTimeout] - Injected for tests
+ *   AND so the factory can wrap it for cancellation on service stop
  * @param {string} orderId
- * @param {Object} trackedOrder - Mutated: status set on synchronous settlement path
+ * @param {Object} trackedOrder - Mutated: status flipped synchronously
  * @param {string} status - 'CANCELLED' | 'FAILED'
  * @param {number} filledSize - Cumulative filledSize from WS event
  * @param {number} [attempt=0] - Current attempt index (0 = initial call)
- * @returns {Promise<{settledNow: boolean, retryScheduled: boolean, exhausted?: boolean}>}
+ * @returns {Promise<{settledNow: boolean, retryScheduled: boolean}>}
  */
 const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledSize, attempt = 0) => {
   const {
     adapter, fillLedger, exchange, markSettled, untrackOrder,
-    retryDelayMs = 30000, untrackDelayMs = 60000,
-    maxAttempts = MAX_CANCEL_RETRY_ATTEMPTS, scheduleTimeout = setTimeout,
+    retryDelayBaseMs = CANCEL_RETRY_BASE_MS,
+    retryDelayMaxMs = CANCEL_RETRY_MAX_MS,
+    untrackDelayMs = 60000,
+    scheduleTimeout = setTimeout,
   } = deps;
 
   if (attempt === 0) {
     console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
+    // Flip status before the retry window so the offline pendingOrders
+    // synthesizer (which relies on getOrderStatus to drop non-open orders)
+    // doesn't keep emitting this order as a phantom open row.
+    trackedOrder.status = status.toLowerCase();
   }
 
   const hadUnrecorded = filledSize > (trackedOrder.lastIngestedFilledSize || 0);
   let catchup = { fetched: true, fillsCount: 0, ingestedCount: 0 };
   if (hadUnrecorded) {
-    const label = attempt === 0 ? status : `${status} (retry ${attempt}/${maxAttempts})`;
+    const label = attempt === 0 ? status : `${status} (retry ${attempt})`;
     catchup = await ingestNewFillsForOrder({ adapter, fillLedger, exchange }, orderId, trackedOrder, filledSize, label);
   }
 
   const stillNeedsCatchup = hadUnrecorded && (!catchup.fetched || catchup.fillsCount === 0);
-  const finalSettle = () => {
-    trackedOrder.status = status.toLowerCase();
+  if (!stillNeedsCatchup) {
     markSettled(orderId);
     scheduleTimeout(() => untrackOrder(orderId), untrackDelayMs);
-  };
-
-  if (!stillNeedsCatchup) {
-    finalSettle();
     return { settledNow: true, retryScheduled: false };
   }
 
-  // Catchup didn't deliver. Schedule a backed-off retry (recursive call
-  // with attempt+1) until the retry budget is spent. markSettled() is
-  // sticky, so settling now would block any future retry from re-tracking
-  // the order — defer settlement until the budget is exhausted.
-  if (attempt + 1 >= maxAttempts) {
-    console.log(`❌ [${exchange}] Cancel catch-up exhausted (${maxAttempts} attempts) for ${orderId} — settling without ingested partials. Engine-restart reconciliation will pick them up from persisted state.`);
-    finalSettle();
-    return { settledNow: true, retryScheduled: false, exhausted: true };
-  }
-
-  const nextDelay = retryDelayMs * Math.pow(2, attempt);
-  console.log(`⏳ [${exchange}] Scheduling cancel catch-up retry ${attempt + 1}/${maxAttempts} for ${orderId} in ${Math.round(nextDelay / 1000)}s`);
+  // Catchup didn't deliver. markSettled() is sticky and would block
+  // future retries from running, so defer it. Retry indefinitely with
+  // exponential backoff capped at retryDelayMaxMs — stop() in the factory
+  // clears these timers so they can't outlive the service instance and
+  // overwrite a replacement service's ledger.
+  const nextDelay = Math.min(retryDelayBaseMs * Math.pow(2, attempt), retryDelayMaxMs);
+  console.log(`⏳ [${exchange}] Scheduling cancel catch-up retry ${attempt + 1} for ${orderId} in ${Math.round(nextDelay / 1000)}s`);
   scheduleTimeout(async () => {
     try {
       await settleCancelledOrder(deps, orderId, trackedOrder, status, filledSize, attempt + 1);
     } catch (err) {
       console.log(`❌ [${exchange}] Cancel retry chain crashed for ${orderId}: ${err.message}`);
-      finalSettle();
     }
   }, nextDelay);
   return { settledNow: false, retryScheduled: true };
+};
+
+/**
+ * Returns a setTimeout wrapper that tracks scheduled timer IDs so they
+ * can all be cleared on service stop. Used by createMarketDataService to
+ * keep cancel-retry / untrack timers from firing against a stopped
+ * service's stale fillLedger after a replacement service has taken over.
+ *
+ * @returns {{ trackedSetTimeout: Function, cancelAll: () => number, size: () => number }}
+ *   trackedSetTimeout(fn, delay) — drop-in for setTimeout, returns the
+ *     timer ID for convenience.
+ *   cancelAll() — clearTimeout on every still-pending ID; returns count
+ *     cancelled.
+ *   size() — number of currently-pending tracked timers.
+ */
+const createTimerTracker = () => {
+  const pending = new Set();
+  const trackedSetTimeout = (fn, delay) => {
+    let id;
+    const wrapped = async () => {
+      pending.delete(id);
+      await fn();
+    };
+    id = setTimeout(wrapped, delay);
+    pending.add(id);
+    return id;
+  };
+  const cancelAll = () => {
+    const n = pending.size;
+    for (const id of pending) clearTimeout(id);
+    pending.clear();
+    return n;
+  };
+  return { trackedSetTimeout, cancelAll, size: () => pending.size };
 };
 
 const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(exchange) || 'default');
@@ -250,6 +288,14 @@ const createMarketDataService = (exchange, pair) => {
       settledOrderIds.delete(oldest);
     }
   };
+
+  // Pending background timers (cancel retries, untrack TTLs) tied to this
+  // service instance. stop() clears them so a stopped service can't fire
+  // delayed callbacks against a stale ledger / Map after a replacement
+  // service for the same exchange/pair has been started.
+  const timerTracker = createTimerTracker();
+  const trackedSetTimeout = timerTracker.trackedSetTimeout;
+
   let onOrderFillCallback = null; // External callback for when orders fill
 
   // Pre-populate trackedOrders from a position (called at startup and on
@@ -563,10 +609,15 @@ const createMarketDataService = (exchange, pair) => {
       // Mark settled and prune from trackedOrders (settledOrderIds outlives
       // the 60s TTL so cache reloads can't resurrect this order).
       markSettled(orderId);
-      setTimeout(() => trackedOrders.delete(orderId), 60000);
+      trackedSetTimeout(() => trackedOrders.delete(orderId), 60000);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       await settleCancelledOrder(
-        { ...ingestDeps, markSettled, untrackOrder: (id) => trackedOrders.delete(id) },
+        {
+          ...ingestDeps,
+          markSettled,
+          untrackOrder: (id) => trackedOrders.delete(id),
+          scheduleTimeout: trackedSetTimeout,
+        },
         orderId, trackedOrder, status, filledSize
       );
     }
@@ -620,6 +671,11 @@ const createMarketDataService = (exchange, pair) => {
       wsFeed.disconnect();
       wsFeed = null;
     }
+
+    // Cancel any pending cancel-retry / untrack timers so they can't fire
+    // against this service's now-stale fillLedger after a replacement
+    // service has taken over and overwrite its writes.
+    timerTracker.cancelAll();
 
     isConnected = false;
     console.log(`📊 [${exchange}] Market data service stopped`);
@@ -828,4 +884,5 @@ module.exports = {
   stopAllMarketDataServices,
   ingestNewFillsForOrder,
   settleCancelledOrder,
+  createTimerTracker,
 };

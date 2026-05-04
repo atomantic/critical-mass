@@ -2,7 +2,7 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { ingestNewFillsForOrder, settleCancelledOrder } = require('../src/market-data-service');
+const { ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker } = require('../src/market-data-service');
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -302,7 +302,8 @@ describe('settleCancelledOrder', () => {
     assert.deepEqual(result, { settledNow: false, retryScheduled: true });
     assert.equal(markSettledCalls.length, 0, 'must not settle yet — markSettled is sticky');
     assert.equal(untrackCalls.length, 0, 'must not untrack yet');
-    assert.equal(trackedOrder.status, 'open', 'status must not flip until retry resolves');
+    assert.equal(trackedOrder.status, 'cancelled',
+      'status must flip immediately so getOrderStatus filters out the phantom open row during retry window');
     assert.equal(scheduledTimeouts.length, 1, 'one retry scheduled');
     assert.equal(scheduledTimeouts[0].delay, 30000);
   });
@@ -341,32 +342,53 @@ describe('settleCancelledOrder', () => {
     assert.deepEqual(untrackCalls, ['order-1'], 'untrack TTL fires');
   });
 
-  it('settles after exhausting the retry budget so the order does not leak', async () => {
-    // Every attempt fails. After 3 attempts (initial + 2 retries) the order
-    // is settled with a loud warning rather than retried forever or leaked.
+  it('keeps retrying indefinitely with exponential backoff capped at retryDelayMaxMs', async () => {
+    // Every attempt fails. Engine-restart reconciliation does NOT recover
+    // cancelled-with-partials, so dropping fills after a budget would
+    // lose them permanently. Retries continue with exponential backoff
+    // up to a cap (here: 120s) and only stop on success or service stop.
     const adapter = makeAdapter([
-      new Error('boom 1'),
-      new Error('boom 2'),
-      new Error('boom 3'),
+      new Error('boom'), new Error('boom'), new Error('boom'),
+      new Error('boom'), new Error('boom'),
     ]);
 
-    const deps = { ...makeDeps(adapter), maxAttempts: 3 };
+    const deps = { ...makeDeps(adapter), retryDelayBaseMs: 30000, retryDelayMaxMs: 120000 };
     await settleCancelledOrder(deps, 'order-1', trackedOrder, 'CANCELLED', 0.3);
 
-    // First retry scheduled (delay = 30000 * 2^0 = 30000)
+    // attempt 0 -> next delay 30000 * 2^0 = 30000
     assert.equal(scheduledTimeouts[0].delay, 30000);
-    assert.equal(markSettledCalls.length, 0);
-
-    // Run retry attempt #1 — fails again, schedules attempt #2
     await scheduledTimeouts[0].fn();
-    assert.equal(scheduledTimeouts[1].delay, 60000, 'exponential backoff: 30000 * 2^1');
-    assert.equal(markSettledCalls.length, 0);
-
-    // Run retry attempt #2 — fails again, budget exhausted, settle now
+    // attempt 1 -> 30000 * 2 = 60000
+    assert.equal(scheduledTimeouts[1].delay, 60000);
     await scheduledTimeouts[1].fn();
-    assert.deepEqual(markSettledCalls, ['order-1'], 'settles after exhausting retries');
-    // Untrack still scheduled via finalSettle TTL
-    assert.equal(scheduledTimeouts.at(-1).delay, 60000);
+    // attempt 2 -> 30000 * 4 = 120000 (= cap)
+    assert.equal(scheduledTimeouts[2].delay, 120000);
+    await scheduledTimeouts[2].fn();
+    // attempt 3 -> 30000 * 8 = 240000, but capped at 120000
+    assert.equal(scheduledTimeouts[3].delay, 120000, 'backoff capped at retryDelayMaxMs');
+    await scheduledTimeouts[3].fn();
+    assert.equal(scheduledTimeouts[4].delay, 120000, 'still capped on subsequent attempts');
+
+    // markSettled never fires while retries continue — order is not leaked
+    // because the factory cancels these timers on stop().
+    assert.equal(markSettledCalls.length, 0, 'never settle while retries are pending');
+  });
+
+  it('eventual success during the retry chain ingests fills and settles', async () => {
+    // First three attempts fail, fourth succeeds.
+    const adapter = makeAdapter([
+      new Error('boom'), new Error('boom'), new Error('boom'),
+      [makeFill('t1', 0.3)],
+    ]);
+
+    const deps = makeDeps(adapter);
+    await settleCancelledOrder(deps, 'order-1', trackedOrder, 'CANCELLED', 0.3);
+    await scheduledTimeouts[0].fn();
+    await scheduledTimeouts[1].fn();
+    await scheduledTimeouts[2].fn();
+
+    assert.equal(ledger.ingested.length, 1, 'fill ingested on eventual success');
+    assert.deepEqual(markSettledCalls, ['order-1'], 'settles on success');
   });
 
   it('FAILED status follows the same path as CANCELLED', async () => {
@@ -378,5 +400,76 @@ describe('settleCancelledOrder', () => {
 
     assert.equal(result.retryScheduled, true);
     assert.equal(markSettledCalls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createTimerTracker: regression coverage for service-stop timer cancellation
+// (T8 — preventing post-stop callbacks from writing to a stale fillLedger)
+// ---------------------------------------------------------------------------
+
+describe('createTimerTracker', () => {
+  it('cancelAll prevents pending callbacks from firing', async () => {
+    const tracker = createTimerTracker();
+    let fired = 0;
+    tracker.trackedSetTimeout(() => { fired += 1; }, 25);
+    tracker.trackedSetTimeout(() => { fired += 1; }, 30);
+
+    assert.equal(tracker.size(), 2, 'two pending timers');
+    assert.equal(tracker.cancelAll(), 2, 'cancelAll returns count cancelled');
+
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(fired, 0, 'cancelled timers must not fire');
+    assert.equal(tracker.size(), 0, 'tracker is drained after cancelAll');
+  });
+
+  it('removes IDs from the pending set when callbacks fire normally', async () => {
+    const tracker = createTimerTracker();
+    let fired = 0;
+    tracker.trackedSetTimeout(() => { fired += 1; }, 5);
+
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(fired, 1, 'callback fired');
+    assert.equal(tracker.size(), 0, 'fired callback was removed from tracker');
+  });
+
+  it('integrates with settleCancelledOrder retry chain — cancelAll stops the chain', async () => {
+    // This exercises the full factory pattern: pass tracker.trackedSetTimeout
+    // as deps.scheduleTimeout. After cancelAll, the retry recursion stops.
+    const tracker = createTimerTracker();
+    let fillFetches = 0;
+    const adapter = {
+      getOrderFills: async () => { fillFetches += 1; throw new Error('boom'); },
+    };
+    const ledger = makeLedger();
+    const trackedOrder = { type: 'take_profit', placedAt: Date.now(), status: 'open' };
+
+    const deps = {
+      adapter,
+      fillLedger: ledger,
+      exchange: 'coinbase',
+      markSettled: () => {},
+      untrackOrder: () => {},
+      retryDelayBaseMs: 10,
+      retryDelayMaxMs: 20,
+      untrackDelayMs: 10,
+      scheduleTimeout: tracker.trackedSetTimeout,
+    };
+
+    await settleCancelledOrder(deps, 'order-1', trackedOrder, 'CANCELLED', 0.3);
+
+    // First synchronous attempt threw → 1 fetch, 1 retry scheduled.
+    assert.equal(fillFetches, 1);
+    assert.equal(tracker.size(), 1, 'one retry timer pending');
+
+    // Simulate service stop before the retry fires.
+    tracker.cancelAll();
+
+    // Wait long enough that an uncancelled retry would have fired and
+    // chained another adapter call.
+    await new Promise(resolve => setTimeout(resolve, 60));
+
+    assert.equal(fillFetches, 1, 'retry must NOT have fired after cancelAll');
+    assert.equal(trackedOrder.status, 'cancelled', 'status flip on initial call still applied');
   });
 });
