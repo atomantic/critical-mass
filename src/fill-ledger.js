@@ -70,6 +70,12 @@ const createFillLedger = (exchange, productId, pair) => {
   const load = () => {
     const filePath = getFillLedgerPath(exchange, pair);
     if (!fs.existsSync(filePath)) {
+      // load() may be called more than once on a live ledger instance
+      // (regime-engine SIGUSR1 reload). Clear the in-memory caches first
+      // so a missing file resets state correctly.
+      fills.clear();
+      cycleIndex.clear();
+      orderSizeIndex.clear();
       return;
     }
 
@@ -80,6 +86,15 @@ const createFillLedger = (exchange, productId, pair) => {
       console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — starting empty`);
       return;
     }
+    // Clear all in-memory caches before re-reading. Without this, fills
+    // that were removed from disk during manual reconciliation would
+    // remain in memory after a SIGUSR1 reload, inflating
+    // getRecordedSizeForOrder() and making the watermark logic believe
+    // orders are fully ingested when the ledger file no longer
+    // contains those fills.
+    fills.clear();
+    cycleIndex.clear();
+    orderSizeIndex.clear();
     for (const fill of data) {
       fills.set(fill.tradeId, fill);
       // Populate cycle index

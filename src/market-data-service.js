@@ -864,87 +864,80 @@ const createMarketDataService = (exchange, pair) => {
     );
   };
 
-  const retryFilledIngest = async (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt) => {
+  const retryFilledIngest = async (orderId, trackedOrder, target, attempt) => {
     if (!trackedOrders.has(orderId)) return; // already removed by another path
     if (timerTracker.isStopped()) return;
-    // Skip if a replayed terminal event finalized this order while the
-    // retry timer was queued. Without this the retry would hit the
-    // watermark early-out and re-fire onOrderFillCallback for a fill the
-    // engine has already booked (the order remains in trackedOrders for
-    // 60s post-settle to block cache-reload resurrection, so this window
-    // is real).
     if (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed') {
       return;
     }
-    // Record chain start time on first attempt for the time budget below.
     if (attempt === 1 && !trackedOrder._filledRetryStartedAt) {
       trackedOrder._filledRetryStartedAt = Date.now();
     }
-    // Time budget: see CANCEL_RETRY_TIME_BUDGET_MS comment. Gemini/
-    // Crypto.com partial-history adapters can never recover aged-out
-    // fills, so we settle with a warning rather than retry forever.
     const startedAt = trackedOrder._filledRetryStartedAt || Date.now();
     if (Date.now() - startedAt > FILLED_RETRY_TIME_BUDGET_MS) {
       console.log(`❌ [${exchange}] FILLED retry time budget (${Math.round(FILLED_RETRY_TIME_BUDGET_MS / 60000)}min) exhausted for ${orderId} — settling. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`);
-      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+      finalizeFilledOrder(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees);
       return;
     }
 
+    // Read the latest target values — handleOrderUpdate's synchronous
+    // prelude updates `target` in place when a replayed FILLED arrives,
+    // so a replay during this retry's await is reflected here.
     const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
-    const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `FILLED retry ${attempt}`);
+    const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, target.filledSize, `FILLED retry ${attempt}`);
     if (timerTracker.isStopped()) return;
 
-    // Watermark covers cumulative? settle. Watermark is derived from
-    // ledger (sum of getFillsForOrder), so this also catches the Gemini/
-    // Crypto.com case where the helper ingested SOME fills but the
-    // adapter's recent-trade query returned a partial subset — the
-    // watermark would still be < filledSize, the check below schedules
-    // another retry rather than incorrectly settling.
-    if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) {
-      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+    // Re-read target AFTER the await — replays during ingestion may have
+    // advanced the cumulative. If the watermark covers the latest target
+    // (not just the value we passed to ingest), settle.
+    if (target.filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) {
+      finalizeFilledOrder(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees);
       return;
     }
 
-    // Either fetch failed, or fills landed but ledger is still short of
-    // the WS-reported cumulative. Either way, retry.
     const reason = result.fetched ? 'ledger short of cumulative' : 'fetch/persist failed';
-    scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt + 1, reason);
+    scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, attempt + 1, reason);
   };
 
   const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt, reason) => {
-    // Dedupe: if a terminal retry chain is already pending for this
-    // orderId, a replayed FILLED WS event must not spawn a second
-    // parallel chain. Update the existing entry's target so a larger
-    // cumulative on the replay reaches the in-flight chain via the
-    // mutable target — without this the retry could settle against a
-    // stale smaller filledSize and stop short of the real terminal size.
-    const existingTarget = pendingTerminalRetries.get(orderId);
-    if (existingTarget) {
-      if (filledSize > existingTarget.filledSize) existingTarget.filledSize = filledSize;
-      return;
+    // Update or create the pending target entry. Replays advance the
+    // mutable filledSize / averageFilledPrice / totalFees so an in-flight
+    // retry settles with the latest aggregates — not the stale ones
+    // captured at original scheduling. The entry stays alive while the
+    // retry is in flight (timerFiring=true) so handleOrderUpdate's
+    // synchronous prelude can keep advancing it.
+    let target = pendingTerminalRetries.get(orderId);
+    if (target) {
+      if (filledSize > target.filledSize) {
+        target.filledSize = filledSize;
+        target.averageFilledPrice = averageFilledPrice;
+        target.totalFees = totalFees;
+      }
+      // If a timer is already pending for this entry, leave it.
+      if (target.timerScheduled) return;
+    } else {
+      // Preempt any pending partial retry — terminal owns catch-up.
+      pendingPartialRetries.delete(orderId);
+      target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
+      pendingTerminalRetries.set(orderId, target);
     }
-    // Preempt any pending partial retry — terminal owns catch-up.
-    pendingPartialRetries.delete(orderId);
-    const target = { filledSize };
-    pendingTerminalRetries.set(orderId, target);
+    target.timerScheduled = true;
 
     const delay = Math.min(FILLED_RETRY_BASE_MS * Math.pow(2, attempt - 1), FILLED_RETRY_MAX_MS);
     console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retry ${attempt} in ${Math.round(delay / 1000)}s`);
     trackedSetTimeout(
       () => enqueueOrderWork(orderId, async () => {
-        // The retry's work-queue slot is the canonical "retry running"
-        // window. Clear pending here so retryFilledIngest's reschedule
-        // (if it doesn't settle) can re-add it. Read the latest target
-        // from the entry — replays may have advanced it since scheduling.
-        const latestSize = target.filledSize;
-        pendingTerminalRetries.delete(orderId);
+        target.timerScheduled = false;
+        // Keep the entry alive during the retry so replayed FILLED
+        // events arriving via handleOrderUpdate's synchronous prelude
+        // can still update target.filledSize/averageFilledPrice/totalFees.
+        // retryFilledIngest reads the latest values from `target` rather
+        // than the stale captured arguments.
         try {
-          await retryFilledIngest(orderId, trackedOrder, latestSize, averageFilledPrice, totalFees, attempt);
+          await retryFilledIngest(orderId, trackedOrder, target, attempt);
         } catch (err) {
           console.log(`❌ [${exchange}] FILLED retry chain crashed for ${orderId}: ${err.message}`);
-          // Reschedule one more time so we don't leak the order. If the
-          // crash is persistent, the next attempt will hit the same path.
-          scheduleFilledRetry(orderId, trackedOrder, latestSize, averageFilledPrice, totalFees, attempt + 1, 'previous attempt threw');
+          scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, attempt + 1, 'previous attempt threw');
         }
       }),
       delay
@@ -958,8 +951,28 @@ const createMarketDataService = (exchange, pair) => {
   const handleOrderUpdate = (data) => {
     if (!productId) return;
     if (timerTracker.isStopped()) return;
-    const { orderId } = data;
+    const { orderId, status, filledSize, averageFilledPrice, totalFees } = data;
     if (!orderId || !trackedOrders.has(orderId)) return;
+
+    // Synchronously advance any pending terminal target BEFORE the replay
+    // enters the work queue. Otherwise a replay queued behind an in-flight
+    // retry would update the target only after that retry has already
+    // finalized the order with stale aggregates (the retry's await
+    // resolves before the queued processOrderUpdate gets to run). This
+    // window is the bug T63 flagged: between scheduleFilledRetry's timer
+    // fire and retryFilledIngest's await completing, replays must still
+    // be able to advance the in-flight target.
+    if (status === 'FILLED' || status === 'CANCELLED' || status === 'FAILED') {
+      const target = pendingTerminalRetries.get(orderId);
+      if (target && filledSize > target.filledSize) {
+        target.filledSize = filledSize;
+        if (status === 'FILLED') {
+          target.averageFilledPrice = averageFilledPrice;
+          target.totalFees = totalFees;
+        }
+      }
+    }
+
     return enqueueOrderWork(orderId, () => processOrderUpdate(data));
   };
 

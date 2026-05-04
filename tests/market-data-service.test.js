@@ -881,4 +881,76 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     // Cleanup so timers don't leak into other tests
     svc.stop();
   });
+
+  it('replayed FILLED during retry await updates target with new aggregates (price/fees)', async () => {
+    // First FILLED: filledSize=0.3, avgPrice=70000, fees=0.05.
+    //  - getOrderFills returns subset (0.3) → ledger short of (in
+    //    reality, also 0.3 — but we test the target replay path).
+    //  Wait, simpler: schedule a retry. Then a replayed FILLED arrives
+    //  with larger filledSize=0.7, avgPrice=70500, fees=0.10. The
+    //  in-flight retry's target must reflect those updated aggregates.
+    let callIdx = 0;
+    const responses = [
+      new Error('boom'),                                   // attempt 0 fails → retry
+      [{ tradeId: 't1', orderId: 'order-Y', side: 'sell', price: 70000, size: 0.3, totalCommission: 0.05 },
+       { tradeId: 't2', orderId: 'order-Y', side: 'sell', price: 70500, size: 0.4, totalCommission: 0.05 }],
+    ];
+    const fakeAdapter = {
+      getOrderFills: async () => {
+        const r = responses[Math.min(callIdx, responses.length - 1)];
+        callIdx += 1;
+        if (r instanceof Error) throw r;
+        return r;
+      },
+    };
+
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+
+    const ingestedTradeIds = new Set();
+    const fakeLedger = {
+      ingestFill: (fill) => {
+        if (ingestedTradeIds.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingestedTradeIds.add(fill.tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingestedTradeIds).map(id => ({ size: id === 't1' ? 0.3 : 0.4 })),
+      getRecordedSizeForOrder: () => Array.from(ingestedTradeIds).reduce((s, id) => s + (id === 't1' ? 0.3 : 0.4), 0),
+      persist: () => {},
+    };
+    svc._test.injectFillLedger(fakeLedger);
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-Y', { type: 'take_profit', price: 70000, size: 0.7, placedAt: Date.now() });
+
+    const fills = [];
+    svc.setOnOrderFill(f => fills.push(f));
+
+    // First FILLED at 0.3 with avg=70000 — fetch fails, retry scheduled.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-Y', status: 'FILLED',
+      filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0.05,
+    });
+
+    const target = svc._test.pendingTerminalRetries.get('order-Y');
+    assert.ok(target, 'retry should be pending');
+    assert.equal(target.filledSize, 0.3);
+    assert.equal(target.averageFilledPrice, 70000);
+
+    // Replayed FILLED at 0.7 with new aggregates — must update target
+    // synchronously (handleOrderUpdate prelude) before the retry can
+    // settle against stale 0.3/70000.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-Y', status: 'FILLED',
+      filledSize: 0.7, averageFilledPrice: 70500, totalFees: 0.10,
+    });
+
+    assert.equal(target.filledSize, 0.7,
+      'replay must advance target.filledSize synchronously');
+    assert.equal(target.averageFilledPrice, 70500,
+      'replay must update averageFilledPrice on FILLED');
+    assert.equal(target.totalFees, 0.10,
+      'replay must update totalFees on FILLED');
+
+    svc.stop();
+  });
 });
