@@ -516,6 +516,37 @@ describe('settleCancelledOrder', () => {
     assert.equal(scheduledTimeouts.length, 1, 'retry scheduled');
   });
 
+  it('cancel retry chain reads the mutable target so a replayed CANCELLED can advance filledSize mid-flight', async () => {
+    // First attempt fails (adapter throws); retry is scheduled.
+    // Meanwhile a replayed CANCELLED advances filledSize 0.3 -> 0.7.
+    // The retry must read the new target and ingest enough fills to
+    // cover 0.7 — not stop short at the captured 0.3.
+    const adapter = makeAdapter([
+      new Error('boom'),                                  // attempt 0
+      [makeFill('t1', 0.3), makeFill('t2', 0.4)],          // attempt 1 — full set covering 0.7
+    ]);
+
+    const target = { filledSize: 0.3 };
+    const deps = { ...makeDeps(adapter), getCurrentFilledSize: () => target.filledSize };
+
+    const r = await settleCancelledOrder(deps, 'order-1', trackedOrder, 'CANCELLED', 0.3);
+    assert.equal(r.retryScheduled, true);
+    assert.equal(ledger.ingested.length, 0);
+
+    // Replayed CANCELLED with larger cumulative — advance the target.
+    target.filledSize = 0.7;
+
+    // Run the queued retry. With the fix, the chain re-reads target=0.7,
+    // calls ingest with cumulativeFilledSize=0.7, and ingests both fills
+    // (covering the full 0.7). Without the fix, it would use the captured
+    // 0.3 and settle as soon as ledger covered 0.3 (stopping short).
+    await scheduledTimeouts[0].fn();
+
+    assert.equal(ledger.ingested.length, 2,
+      'retry must observe target=0.7 and ingest the full set, not stop at 0.3');
+    assert.deepEqual(markSettledCalls, ['order-1']);
+  });
+
   it('cancel retry routes through enqueueWork when provided so replays serialize', async () => {
     // Verifies T32 wiring: settleCancelledOrder's retry callback uses
     // deps.enqueueWork (when provided) so a replayed CANCELLED arriving

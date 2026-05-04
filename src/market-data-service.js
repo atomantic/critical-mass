@@ -199,9 +199,20 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
     untrackDelayMs = 60000,
     scheduleTimeout = setTimeout,
     isStopped = () => false,
+    getCurrentFilledSize,
   } = deps;
 
   if (isStopped()) return { settledNow: false, retryScheduled: false };
+
+  // On retry attempts, consult the mutable target if the factory provided
+  // one — replayed CANCELLED events with a larger cumulative filledSize
+  // can advance the target after this chain was scheduled. Without
+  // re-reading, the retry would catch up only to the stale captured
+  // filledSize and stop short of the real cancelled quantity.
+  if (attempt > 0 && typeof getCurrentFilledSize === 'function') {
+    const latest = getCurrentFilledSize();
+    if (typeof latest === 'number' && latest > filledSize) filledSize = latest;
+  }
 
   if (attempt === 0) {
     console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
@@ -684,20 +695,20 @@ const createMarketDataService = (exchange, pair) => {
   const orderWorkQueue = createWorkQueue();
   const enqueueOrderWork = (orderId, work) => orderWorkQueue.enqueue(orderId, work);
 
-  // Per-orderId pending-retry guards. Two separate caches because partial
-  // and terminal retries have different lifecycle semantics:
+  // Per-orderId pending-retry registries. Both are Maps storing a
+  // mutable target so replayed WS events for the same order can advance
+  // the cumulative filledSize a queued retry chain is targeting:
   //
-  // - pendingTerminalRetries (Set): replayed FILLED/CANCELLED for the
-  //   same order must not spawn parallel retry chains. The first chain
-  //   detects state on its next tick and settles.
+  // - pendingTerminalRetries: orderId -> { filledSize }. Dedupes
+  //   replayed FILLED/CANCELLED but lets a larger replayed cumulative
+  //   reach the in-flight retry chain via the mutable target object.
   //
-  // - pendingPartialRetries (Map<orderId, {filledSize, attempt}>):
-  //   partials need a *target* per order so newer OPEN updates can
-  //   advance filledSize without creating a parallel chain (the existing
-  //   timer reads the latest target when it fires). Terminal events
-  //   preempt by deleting the entry — the queued timer fires, sees no
-  //   entry, and bails.
-  const pendingTerminalRetries = new Set();
+  // - pendingPartialRetries: orderId -> { filledSize, attempt }. Same
+  //   pattern for OPEN-status partials.
+  //
+  // Terminal events preempt any pending partial entry — the queued
+  // partial timer fires, finds no entry, and bails.
+  const pendingTerminalRetries = new Map();
   const pendingPartialRetries = new Map();
 
   const clearPendingRetry = (orderId) => {
@@ -854,13 +865,19 @@ const createMarketDataService = (exchange, pair) => {
   const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt, reason) => {
     // Dedupe: if a terminal retry chain is already pending for this
     // orderId, a replayed FILLED WS event must not spawn a second
-    // parallel chain. The first retry will detect any new state via
-    // getOrderFills and settle the order — at which point clearPendingRetry
-    // runs and a future retry could be scheduled if needed.
-    if (pendingTerminalRetries.has(orderId)) return;
+    // parallel chain. Update the existing entry's target so a larger
+    // cumulative on the replay reaches the in-flight chain via the
+    // mutable target — without this the retry could settle against a
+    // stale smaller filledSize and stop short of the real terminal size.
+    const existingTarget = pendingTerminalRetries.get(orderId);
+    if (existingTarget) {
+      if (filledSize > existingTarget.filledSize) existingTarget.filledSize = filledSize;
+      return;
+    }
     // Preempt any pending partial retry — terminal owns catch-up.
     pendingPartialRetries.delete(orderId);
-    pendingTerminalRetries.add(orderId);
+    const target = { filledSize };
+    pendingTerminalRetries.set(orderId, target);
 
     const delay = Math.min(FILLED_RETRY_BASE_MS * Math.pow(2, attempt - 1), FILLED_RETRY_MAX_MS);
     console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retry ${attempt} in ${Math.round(delay / 1000)}s`);
@@ -868,19 +885,17 @@ const createMarketDataService = (exchange, pair) => {
       () => enqueueOrderWork(orderId, async () => {
         // The retry's work-queue slot is the canonical "retry running"
         // window. Clear pending here so retryFilledIngest's reschedule
-        // (if it doesn't settle) can re-add it.
+        // (if it doesn't settle) can re-add it. Read the latest target
+        // from the entry — replays may have advanced it since scheduling.
+        const latestSize = target.filledSize;
         pendingTerminalRetries.delete(orderId);
-        // Wrap in try/catch — without this a throw inside retryFilled
-        // Ingest (e.g. an onOrderFillCallback that fails downstream)
-        // would surface as an unhandled rejection and silently kill the
-        // retry chain without ever settling the order.
         try {
-          await retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt);
+          await retryFilledIngest(orderId, trackedOrder, latestSize, averageFilledPrice, totalFees, attempt);
         } catch (err) {
           console.log(`❌ [${exchange}] FILLED retry chain crashed for ${orderId}: ${err.message}`);
           // Reschedule one more time so we don't leak the order. If the
           // crash is persistent, the next attempt will hit the same path.
-          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt + 1, 'previous attempt threw');
+          scheduleFilledRetry(orderId, trackedOrder, latestSize, averageFilledPrice, totalFees, attempt + 1, 'previous attempt threw');
         }
       }),
       delay
@@ -931,14 +946,16 @@ const createMarketDataService = (exchange, pair) => {
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
         const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'partial fill');
         if (timerTracker.isStopped()) return;
-        // Schedule a bounded retry on partial-fill ingest failure. Open
-        // orders can stay open for hours without emitting another WS
-        // event, so a single transient adapter/persist error here would
-        // otherwise leave the executed partial unrecorded until the
-        // next fill / cancel / FILLED event — or forever if the process
-        // restarts first (cancelled-with-partials KNOWN LIMITATION).
-        if (!result.fetched && filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
-          schedulePartialRetry(orderId, trackedOrder, filledSize, 1, 'fetch/persist failed');
+        // Schedule a bounded retry whenever the ledger doesn't yet cover
+        // the WS cumulative. That includes both adapter/persist failures
+        // (fetched=false) and the Gemini/Crypto.com case where fetched=
+        // true but getOrderFills' recent-trade synthesis returned only
+        // a subset. Open orders can stay open for hours without emitting
+        // another WS event, so without this an executed partial would
+        // sit unrecorded until cancel/FILLED catch-up.
+        if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
+          const reason = result.fetched ? 'ledger short of cumulative' : 'fetch/persist failed';
+          schedulePartialRetry(orderId, trackedOrder, filledSize, 1, reason);
         }
       }
       return;
@@ -978,13 +995,19 @@ const createMarketDataService = (exchange, pair) => {
 
       finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
-      // Dedupe replayed CANCELLED/FAILED: if a cancel-retry chain is
-      // already pending for this order, the existing chain will pick up
-      // any new state on its next tick. Spawning a second settle here
-      // would create parallel retry chains.
-      if (pendingTerminalRetries.has(orderId)) return;
+      // Replayed CANCELLED/FAILED: if a cancel-retry chain is already
+      // pending, advance its target so the in-flight chain catches up
+      // to the larger cumulative filledSize on the next attempt. Without
+      // the target update the chain would settle against a stale smaller
+      // value and stop short of the real cancelled quantity.
+      const existingTarget = pendingTerminalRetries.get(orderId);
+      if (existingTarget) {
+        if (filledSize > existingTarget.filledSize) existingTarget.filledSize = filledSize;
+        return;
+      }
       // Preempt any pending partial retry — terminal owns catch-up.
       pendingPartialRetries.delete(orderId);
+      const target = { filledSize };
       const result = await settleCancelledOrder(
         {
           ...ingestDeps,
@@ -992,10 +1015,13 @@ const createMarketDataService = (exchange, pair) => {
           untrackOrder: (id) => { clearPendingRetry(id); trackedOrders.delete(id); },
           scheduleTimeout: trackedSetTimeout,
           enqueueWork: enqueueOrderWork,
+          // Mutable target: replayed events advance target.filledSize so
+          // the chain re-reads the latest value on each retry attempt.
+          getCurrentFilledSize: () => target.filledSize,
         },
         orderId, trackedOrder, status, filledSize
       );
-      if (result?.retryScheduled) pendingTerminalRetries.add(orderId);
+      if (result?.retryScheduled) pendingTerminalRetries.set(orderId, target);
     }
   };
 
