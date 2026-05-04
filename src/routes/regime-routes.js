@@ -6,11 +6,94 @@
  * process via IPC WebSocket. Config reads/writes stay local (file-based).
  */
 
+const fs = require('fs');
+const path = require('path');
 const { getRegimeConfig, updateRegimeConfig, validateRegimeConfig, getFundConfig, getDefaultPair } = require('../config-utils');
+const { loadRegimeState, LIFECYCLE } = require('../state-tracker');
+const { resolveFundDataDir } = require('../migration');
+const { calculateApyMetrics } = require('../apy-calculator');
+const celestialHierarchy = require('../celestial-hierarchy');
 const { log } = require('../logger');
+
+/**
+ * Best-effort last market price from disk for the offline route fallback.
+ * Reads the most recent fill from fill-ledger.json. Stale (engine has been
+ * down for some time) but better than 0 — without this, APY's BTC component
+ * shows zero until the engine restarts, and on a hard browser refresh
+ * (which uses fetch as full replacement) the APY/capital panels would be
+ * blank because the dashboard doesn't have a prior socket snapshot to merge.
+ */
+const lastPriceFromLedger = (dataDir) => {
+  const ledgerPath = path.join(dataDir, 'fill-ledger.json');
+  if (!fs.existsSync(ledgerPath)) return 0;
+  try {
+    const raw = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    const fills = Array.isArray(raw) ? raw : (raw.fills || []);
+    let latest = null;
+    for (const f of fills) {
+      if (!latest || (f.timestamp || 0) > (latest.timestamp || 0)) latest = f;
+    }
+    return Number(latest?.price) || 0;
+  } catch {
+    return 0;
+  }
+};
 
 /** Convert IPC connection errors to standard response */
 const engineError = (err) => ({ success: false, error: `Engine unavailable: ${err.message}` });
+
+/**
+ * Read-only status synthesized from disk for when the engine IPC is dead.
+ * Returns null when there's no persisted state to fall back on, so a true
+ * IPC outage (e.g., first-time fund or broken connection with no saved
+ * data) still surfaces as 503 rather than masking as a stopped engine.
+ */
+const buildOfflineStatus = (exchange, pair) => {
+  // loadRegimeState returns an initial empty state when no file exists, so
+  // checking the return value isn't enough — verify the file is on disk first.
+  const dataDir = resolveFundDataDir(exchange, pair);
+  const stateFile = path.join(dataDir, 'regime-state.json');
+  if (!fs.existsSync(stateFile)) return null;
+
+  let rs;
+  try {
+    rs = loadRegimeState(exchange, pair);
+  } catch {
+    return null;
+  }
+  const position = rs.position || {};
+  const bodies = position.celestialBodies || [];
+  const config = getRegimeConfig(exchange, pair);
+  // Use the most recent fill price as a stale-but-reasonable last price.
+  // A hard refresh uses fetch as full replacement (no socket snapshot to
+  // merge with), so omitting apy would leave capital/APY panels blank.
+  const lastPrice = lastPriceFromLedger(dataDir);
+
+  return {
+    isRunning: false,
+    // Distinguish a real IPC outage from a clean operator stop. The dashboard
+    // reads health.mode; ENGINE_DOWN signals "the gateway can't reach the
+    // engine process" so the operator doesn't think the engine is cleanly
+    // halted and take an unsafe control action.
+    health: { mode: 'ENGINE_DOWN' },
+    engineDown: true,
+    position,
+    regime: rs.regime || null,
+    // Surface the stale price as market.lastPrice too — the live-price
+    // banner and cost-basis page read status.market.lastPrice and would
+    // otherwise show $0 on a hard refresh during an IPC outage.
+    market: { lastPrice, stale: true },
+    pendingOrders: celestialHierarchy.buildPersistedPendingOrders(position),
+    apy: calculateApyMetrics(position, config, { lastPrice }),
+    lifecycle: {
+      lifecycle: position.lifecycle || LIFECYCLE.ACTIVE,
+      lifecycleChangedAt: position.lifecycleChangedAt || null,
+      lifecycleReason: position.lifecycleReason || null,
+      lifecycleClosedCycle: position.lifecycleClosedCycle || null,
+    },
+    celestial: celestialHierarchy.buildCelestialPayload(position, config),
+  };
+};
 
 /** HTTP status code for error responses */
 const errStatus = (result) => result.error?.includes('unavailable') ? 503 : 400;
@@ -75,7 +158,22 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const result = await getIPC(exchange).request('regime:status', {}, exchange, pair).catch(engineError);
-    if (!result.success) return res.status(errStatus(result)).json(result);
+    if (!result.success) {
+      // Engine unreachable: serve a read-only status from disk so the dashboard
+      // keeps showing persisted body TPs (and doesn't flag those bodies' buys
+      // as orphans just because pendingOrders is empty).
+      // Skip the fallback for request timeouts — the engine process is likely
+      // still alive but slow, and reporting it as "stopped" would mislead the
+      // operator. Only fall back when the IPC connection is actually broken.
+      const isTimeout = (result.error || '').toLowerCase().includes('request timeout');
+      if (!isTimeout) {
+        const offlineStatus = buildOfflineStatus(exchange, pair);
+        if (offlineStatus) {
+          return res.json({ success: true, status: offlineStatus, engineDown: true, engineError: result.error });
+        }
+      }
+      return res.status(errStatus(result)).json(result);
+    }
     res.json(result);
   });
 

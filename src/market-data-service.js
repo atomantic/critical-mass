@@ -16,9 +16,11 @@ const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
-const { loadRegimeState } = require('./state-tracker');
+const { loadRegimeState, LIFECYCLE } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
+const { calculateApyMetrics } = require('./apy-calculator');
+const celestialHierarchy = require('./celestial-hierarchy');
 
 // Store active market data services keyed by `${exchange}::${pair}`
 const marketDataServices = new Map();
@@ -82,7 +84,66 @@ const createMarketDataService = (exchange, pair) => {
 
   // Tracked open orders (from saved regime state)
   const trackedOrders = new Map(); // orderId -> { type, price, size, placedAt, status }
+  // Orders the WS feed has already confirmed settled (filled/cancelled).
+  // Kept in-memory so a cache reload can't resurrect a stale tpOrderId from
+  // disk after the 60s trackedOrders TTL fires. Bounded to prevent unbounded
+  // growth over long uptime — when full, the oldest entry is evicted (Map
+  // preserves insertion order). New body TPs created after eviction will be
+  // re-tracked from disk and the WS feed will re-detect any settlement.
+  const SETTLED_MAX = 5000;
+  const settledOrderIds = new Map(); // orderId -> 1 (Map for insertion-order eviction)
+  const markSettled = (orderId) => {
+    settledOrderIds.set(orderId, 1);
+    if (settledOrderIds.size > SETTLED_MAX) {
+      const oldest = settledOrderIds.keys().next().value;
+      settledOrderIds.delete(oldest);
+    }
+  };
   let onOrderFillCallback = null; // External callback for when orders fill
+
+  // Pre-populate trackedOrders from a position (called at startup and on
+  // every cache reload) so the WS feed can detect fills/cancels for every
+  // persisted live order — TPs (sell), pending entries (buy), and ladder
+  // entries (buy) — while the engine is stopped. Skips anything already
+  // seen settled.
+  const trackPersistedOrders = (pos) => {
+    if (pos?.activeTpOrderId && !trackedOrders.has(pos.activeTpOrderId) && !settledOrderIds.has(pos.activeTpOrderId)) {
+      trackedOrders.set(pos.activeTpOrderId, {
+        type: 'take_profit',
+        price: pos.lastTpPrice || 0,
+        size: pos.assetOnOrder || pos.totalAsset || 0,
+        placedAt: pos.lastEntryTime || Date.now(),
+        status: 'open',
+      });
+      console.log(`📋 [${exchange}] Market data service tracking core TP: ${pos.activeTpOrderId}`);
+    }
+    for (const body of (pos?.celestialBodies || [])) {
+      if (!body.tpOrderId || trackedOrders.has(body.tpOrderId) || settledOrderIds.has(body.tpOrderId)) continue;
+      trackedOrders.set(body.tpOrderId, {
+        type: 'body_tp',
+        price: body.tpPrice || 0,
+        size: body.assetOnOrder || body.assetQty || 0,
+        placedAt: body.lastMergedAt || body.createdAt || Date.now(),
+        status: 'open',
+        bodyId: body.id,
+      });
+    }
+    const trackEntries = (entries, type) => {
+      for (const e of (entries || [])) {
+        if (!e.orderId || trackedOrders.has(e.orderId) || settledOrderIds.has(e.orderId)) continue;
+        trackedOrders.set(e.orderId, {
+          type,
+          price: e.price || 0,
+          size: e.assetQty || 0,
+          sizeUsdc: e.sizeUsdc,
+          placedAt: e.placedAt || Date.now(),
+          status: 'open',
+        });
+      }
+    };
+    trackEntries(pos?.pendingEntryOrders, 'entry');
+    trackEntries(pos?.pendingLadderOrders, 'ladder_entry');
+  };
 
   // Price history for calculations
   const priceHistory = [];
@@ -115,18 +176,11 @@ const createMarketDataService = (exchange, pair) => {
     // Create regime detector for passive monitoring
     regimeDetector = createRegimeDetector(exchange, config);
 
-    // Load any tracked orders from saved regime state
+    // Load any tracked orders from saved regime state.
     const savedState = loadRegimeState(exchange, resolvedPair);
-    if (savedState.position?.activeTpOrderId) {
-      trackedOrders.set(savedState.position.activeTpOrderId, {
-        type: 'take_profit',
-        price: savedState.position.lastTpPrice || 0,
-        size: savedState.position.assetOnOrder || savedState.position.totalAsset || 0,
-        placedAt: savedState.position.lastEntryTime || Date.now(),
-        status: 'open',
-      });
-      console.log(`📋 [${exchange}] Market data service tracking TP order: ${savedState.position.activeTpOrderId}`);
-    }
+    trackPersistedOrders(savedState.position);
+    const bodyTpCount = (savedState.position?.celestialBodies || []).filter(b => b.tpOrderId).length;
+    if (bodyTpCount > 0) console.log(`📋 [${exchange}] Market data service tracking ${bodyTpCount} body TP(s)`);
 
     // Create fill ledger for order fill tracking
     fillLedger = createFillLedger(exchange, productId, resolvedPair);
@@ -181,13 +235,40 @@ const createMarketDataService = (exchange, pair) => {
     if (!cachedRegimeState || now - cachedRegimeStateTime > REGIME_STATE_CACHE_MS) {
       cachedRegimeState = loadRegimeState(exchange, resolvedPair);
       cachedRegimeStateTime = now;
+      // Pick up any new body TPs created since startup so the WS feed can
+      // detect their fills/cancels while the engine is stopped.
+      trackPersistedOrders(cachedRegimeState?.position);
     }
+
+    // Synthesize persisted TPs + the same enrichment fields the running
+    // engine emits (apy, lifecycle, celestial summary) so a hard refresh
+    // while the engine is stopped doesn't lose APY/capital sections or
+    // misreport celestial as off between cycles. Each tick from this
+    // service overwrites socketStatus, so the payload must be shape-
+    // compatible with the running-engine status.
+    const position = cachedRegimeState?.position || null;
+    const bodies = position?.celestialBodies || [];
+    const config = getRegimeConfig(exchange, resolvedPair);
+    const market = getMarketState();
+    // Drop persisted TPs the WS feed has already confirmed are no longer open
+    // (filled/cancelled while the engine was stopped) — the engine can't
+    // refresh state until it restarts, but we should not show phantom rows.
+    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(position, getOrderStatus);
 
     onStatusUpdateCallback({
       isRunning: false,
-      market: getMarketState(),
+      market,
       regime: getRegimeState(),
-      position: cachedRegimeState?.position || null,
+      position,
+      pendingOrders,
+      apy: position ? calculateApyMetrics(position, config, { lastPrice: market?.lastPrice || 0 }) : {},
+      lifecycle: {
+        lifecycle: position?.lifecycle || LIFECYCLE.ACTIVE,
+        lifecycleChangedAt: position?.lifecycleChangedAt || null,
+        lifecycleReason: position?.lifecycleReason || null,
+        lifecycleClosedCycle: position?.lifecycleClosedCycle || null,
+      },
+      celestial: celestialHierarchy.buildCelestialPayload(position, config),
       health: { mode: 'STOPPED' },
       isDryRun: cachedRegimeState?.isDryRun || false,
     });
@@ -275,12 +356,35 @@ const createMarketDataService = (exchange, pair) => {
       const baseCurr = getBaseCurrency(productId);
       console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
 
-      // Get fills for this order and ingest them
+      // Get fills for this order and ingest them. Track failure separately
+      // so we can avoid permanently marking the order settled when the
+      // adapter call failed — otherwise a transient API hiccup would drop
+      // the row from pendingOrders without ever updating the ledger
+      // linkage, recreating the orphaned-buy symptom until engine restart.
       const adapter = getAdapter(exchange);
-      const fills = await adapter.getOrderFills(orderId).catch(() => []);
+      let fillsFetched = false;
+      let fills = [];
+      try {
+        fills = await adapter.getOrderFills(orderId);
+        fillsFetched = true;
+      } catch (err) {
+        console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
+      }
 
-      // Pass placedAt for fill time tracking (only meaningful for buy orders)
-      const orderPlacedAt = trackedOrder.type === 'entry' ? trackedOrder.placedAt : null;
+      // On transient adapter failure or empty fills response (Coinbase
+      // briefly returns [] right after a FILLED event), do not flip the
+      // in-memory status to 'filled' — getOrderStatus() would report the
+      // order as no longer open, the offline synthesizer would drop it,
+      // and the ledger/linkage would never be written until engine
+      // restart. Leave status='open' so the WS gives us another shot on
+      // the next OrderUpdate event for this orderId.
+      if (!fillsFetched || fills.length === 0) return;
+
+      // Pass placedAt for fill time tracking on buy orders (entry +
+      // ladder). Without this for ladders, those fills disappear from
+      // the 7-day fill-time statistics.
+      const isBuyOrder = trackedOrder.type === 'entry' || trackedOrder.type === 'ladder_entry';
+      const orderPlacedAt = isBuyOrder ? trackedOrder.placedAt : null;
       for (const fill of fills) {
         fillLedger.ingestFill(fill, orderPlacedAt);
       }
@@ -305,11 +409,14 @@ const createMarketDataService = (exchange, pair) => {
         });
       }
 
-      // Remove from tracked orders (keep in Map temporarily for status queries)
+      // Mark settled and prune from trackedOrders (settledOrderIds outlives
+      // the 60s TTL so cache reloads can't resurrect this order).
+      markSettled(orderId);
       setTimeout(() => trackedOrders.delete(orderId), 60000);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
       trackedOrder.status = status.toLowerCase();
+      markSettled(orderId);
       setTimeout(() => trackedOrders.delete(orderId), 60000);
     }
   };
@@ -446,6 +553,21 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   /**
+   * Look up a tracked order's status without filtering on 'open'. Returns
+   * the status string ('open' / 'filled' / 'cancelled' / etc.) or null if
+   * the order isn't tracked at all. Used by stopped-engine status
+   * synthesizers to drop persisted TPs that the WS feed has already
+   * confirmed are no longer open. Consults settledOrderIds so the
+   * filter still works after the 60s trackedOrders cleanup fires.
+   */
+  const getOrderStatus = (orderId) => {
+    const o = trackedOrders.get(orderId);
+    if (o) return o.status;
+    if (settledOrderIds.has(orderId)) return 'settled';
+    return null;
+  };
+
+  /**
    * Add an order to track
    */
   const trackOrder = (orderId, orderInfo) => {
@@ -484,6 +606,7 @@ const createMarketDataService = (exchange, pair) => {
     getStatus,
     isConnected: () => isConnected,
     getOpenOrders,
+    getOrderStatus,
     trackOrder,
     untrackOrder,
     setOnOrderFill,

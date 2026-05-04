@@ -258,33 +258,20 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
     }
 
     const bodies = position?.celestialBodies || [];
-    const celestial = {
-      enabled: config.celestialEnabled !== false,
-      bodies: bodies.map((b) => {
-        const tierCfg = celestialHierarchy.getTierConfig(b.tier);
-        return {
-          id: b.id, tier: b.tier, emoji: tierCfg.emoji,
-          assetQty: b.assetQty, costBasis: b.costBasis, avgPrice: b.avgPrice,
-          tpOrderId: b.tpOrderId, tpPrice: b.tpPrice,
-          tpPercent: b.avgPrice > 0 && b.tpPrice > 0 ? ((b.tpPrice - b.avgPrice) / b.avgPrice * 100).toFixed(2) : null,
-          assetOnOrder: b.assetOnOrder, createdAt: b.createdAt,
-          lastMergedAt: b.lastMergedAt, mergeCount: b.mergeCount,
-          buyOrders: (b.buyOrders || []).map((bo) => ({
-            orderId: bo.orderId, price: bo.price, assetQty: bo.assetQty,
-            sizeUsdc: bo.sizeUsdc, filledAt: bo.filledAt,
-          })),
-        };
-      }),
-      bodiesActive: bodies.length,
-      bodiesCompleted: position?.celestialState?.bodiesCompleted || 0,
-      bodiesRealizedPnL: position?.celestialState?.bodiesRealizedPnL || 0,
-      bodiesRealizedAssetPnL: position?.celestialState?.bodiesRealizedAssetPnL || 0,
-      tierSummary: celestialHierarchy.getTierSummary(bodies),
-    };
+    const celestial = celestialHierarchy.buildCelestialPayload(position, config);
 
     const { calculateApyMetrics } = require('../src/apy-calculator');
     const lastPrice = serviceStatus?.market?.lastPrice || 0;
     const apy = position ? calculateApyMetrics(position, config, { lastPrice }) : {};
+
+    // Surface persisted TPs (bodies + legacy core) as pendingOrders so the
+    // dashboard keeps mapping buys to their open sells while the engine is
+    // stopped. Pass the market service's live tracker so any TP it's
+    // already seen filled/cancelled is dropped (no phantom open rows).
+    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(
+      position,
+      marketService?.getOrderStatus,
+    );
 
     return {
       success: true, exchange, pair: resolvedPair, running: false,
@@ -292,7 +279,7 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
         isRunning: false,
         market: serviceStatus?.market || null,
         regime: serviceStatus?.regime || null,
-        position, celestial, apy,
+        position, celestial, apy, pendingOrders,
         health: { mode: 'STOPPED' },
         isDryRun: savedState?.isDryRun || false,
         lifecycle: {
