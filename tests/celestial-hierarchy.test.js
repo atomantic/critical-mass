@@ -906,4 +906,33 @@ describe('buildPersistedPendingOrders', () => {
     assert.equal(orders[0].type, 'body_tp');  // body version wins (richer metadata)
     assert.equal(orders[0].orderId, sharedId);
   });
+
+  it('drops persisted TPs that the live tracker reports as filled or cancelled', () => {
+    const position = {
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-open', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+        { id: 'b2', tier: 'satellite', tpOrderId: 'tp-filled', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+      activeTpOrderId: 'tp-cancelled',
+      lastTpPrice: 105000,
+      assetOnOrder: 0.02,
+      avgCostBasis: 100000,
+    };
+    const liveStatus = (id) => ({ 'tp-open': 'open', 'tp-filled': 'filled', 'tp-cancelled': 'cancelled' })[id] ?? null;
+    const orders = buildPersistedPendingOrders(position, liveStatus);
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'tp-open');
+  });
+
+  it('keeps TPs the live tracker doesn\'t know about (returns null)', () => {
+    const position = {
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-untracked', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+    };
+    const liveStatus = () => null;  // tracker has no info — preserve persisted state
+    const orders = buildPersistedPendingOrders(position, liveStatus);
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'tp-untracked');
+  });
 });
