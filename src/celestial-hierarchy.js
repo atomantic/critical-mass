@@ -523,15 +523,32 @@ const buildCelestialPayload = (position, config) => {
 };
 
 /**
- * Synthesize the pendingOrders array from a persisted position: all body TPs
- * plus the legacy core TP if present. Dedupes by orderId so migrated state
- * (where the core activeTpOrderId may also be a body's tpOrderId) doesn't
- * emit the same exchange order twice.
+ * Build a pendingOrder-shaped object for a persisted entry buy (single
+ * order from pendingEntryOrders or pendingLadderOrders).
+ */
+const buildEntryOrder = (entry, type) => ({
+  orderId: entry.orderId,
+  side: 'buy',
+  type,
+  status: 'open',
+  price: entry.price,
+  size: entry.assetQty,
+  sizeUsdc: entry.sizeUsdc,
+  placedAt: entry.placedAt || null,
+});
+
+/**
+ * Synthesize the pendingOrders array from a persisted position: body TPs,
+ * the legacy core TP if present, and any persisted buy entry/ladder
+ * orders. Dedupes by orderId so migrated state (where the core
+ * activeTpOrderId may also be a body's tpOrderId) doesn't emit the same
+ * exchange order twice.
  *
- * Optional `getLiveStatus(orderId)`: when supplied, drops any persisted TP
- * whose live (WS-confirmed) status is not 'open' — prevents emitting
- * phantom 'open' rows for TPs that filled or were cancelled while the
- * engine was stopped. Returning null means "not tracked, can't tell" → keep.
+ * Optional `getLiveStatus(orderId)`: when supplied, drops any persisted
+ * order whose live (WS-confirmed) status is not 'open' — prevents
+ * emitting phantom 'open' rows for orders that filled or were cancelled
+ * while the engine was stopped. Returning null means "not tracked, can't
+ * tell" → keep.
  */
 const buildPersistedPendingOrders = (position, getLiveStatus = null) => {
   if (!position) return [];
@@ -540,6 +557,16 @@ const buildPersistedPendingOrders = (position, getLiveStatus = null) => {
     .map(buildBodyTpOrder);
   if (position.activeTpOrderId && !orders.some(o => o.orderId === position.activeTpOrderId)) {
     orders.push(buildCoreTpOrder(position));
+  }
+  for (const e of (position.pendingEntryOrders || [])) {
+    if (e.orderId && !orders.some(o => o.orderId === e.orderId)) {
+      orders.push(buildEntryOrder(e, 'entry'));
+    }
+  }
+  for (const e of (position.pendingLadderOrders || [])) {
+    if (e.orderId && !orders.some(o => o.orderId === e.orderId)) {
+      orders.push(buildEntryOrder(e, 'ladder_entry'));
+    }
   }
   if (typeof getLiveStatus === 'function') {
     return orders.filter(o => {
