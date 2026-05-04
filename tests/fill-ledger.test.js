@@ -958,6 +958,43 @@ describe('Fill Ledger', () => {
     assert.equal(recorded, 0.7, 'rounded sum must be exactly 0.7, not 0.7000000000000001');
   });
 
+  it('load() resets currentCycleId and nextCycleNumber to a clean state', () => {
+    const exchange = 'test-exchange-cycle-reset';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    // Ingest a fill so the ledger file actually exists on disk for the
+    // corruption test below.
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1' }));
+    const cycleBefore = ledger1.getCurrentCycleId();
+    assert.ok(cycleBefore, 'cycle exists after startNewCycle');
+
+    // Corrupt the file so load() takes the catch path
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+    fs.writeFileSync(filePath, '{ this is not valid json');
+
+    ledger1.load();
+    // After reload from corrupt file, currentCycleId should be cleared.
+    assert.equal(ledger1.getCurrentCycleId(), null,
+      'load() catch path must reset currentCycleId — without this, subsequent ingestFill keeps attributing fills to the prior cycle');
+  });
+
+  it('load() resets in-memory caches when the file is corrupt (not just on success)', () => {
+    const exchange = 'test-exchange-corrupt';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    // Corrupt the file
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+    fs.writeFileSync(filePath, '<<< not valid json >>>');
+
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), 0,
+      'fills cleared on corrupt-file reload — log says "starting empty", state must match');
+    assert.equal(ledger1.getRecordedSizeForOrder('o-1'), 0,
+      'orderSizeIndex cleared on corrupt-file reload');
+  });
+
   it('load() is idempotent for orderSizeIndex (no double-counting on re-load)', () => {
     const exchange = 'test-exchange-double-load';
     const ledger1 = createTestLedger(exchange);

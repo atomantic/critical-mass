@@ -1041,7 +1041,20 @@ const createMarketDataService = (exchange, pair) => {
       // everything is already in the ledger. Otherwise, ingest any
       // remaining fills.
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
-        const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED');
+        // Pre-populate the pending target BEFORE awaiting ingestion.
+        // Without this, a replayed FILLED arriving during the await
+        // would see no entry to update; if this call then finalizes
+        // (small target case), the queued replay hits the settled-
+        // status guard and is dropped along with its larger cumulative.
+        // If we don't end up scheduling a retry, drop the entry below.
+        let target = pendingTerminalRetries.get(orderId);
+        if (!target) {
+          pendingPartialRetries.delete(orderId);
+          target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
+          pendingTerminalRetries.set(orderId, target);
+        }
+
+        const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, target.filledSize, 'FILLED');
         if (timerTracker.isStopped()) return;
 
         // FILLED is terminal — Coinbase is not guaranteed to emit follow-
@@ -1054,14 +1067,27 @@ const createMarketDataService = (exchange, pair) => {
         // against any later updates for the same order. Service stop
         // cancels these timers via timerTracker.cancelAll().
         if (!result.fetched) {
-          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 1, 'fetch/persist failed');
+          scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, 'fetch/persist failed');
           return;
         }
-        if ((trackedOrder.lastIngestedFilledSize || 0) < filledSize) {
+        if ((trackedOrder.lastIngestedFilledSize || 0) < target.filledSize) {
           const reason = result.fillsCount === 0 ? 'has no fills yet' : 'ledger short of cumulative';
-          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 1, reason);
+          scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, reason);
           return;
         }
+        // Finalize with the target's latest aggregates — replays during
+        // the await may have advanced filledSize / averageFilledPrice /
+        // totalFees, and the engine callback must see those, not the
+        // stale captures from when this handler entered.
+        const finalSize = target.filledSize;
+        const finalPrice = target.averageFilledPrice;
+        const finalFees = target.totalFees;
+        // Drop the placeholder entry synchronously so a race-arriving
+        // replay can't see a stale entry. finalizeFilledOrder also
+        // clears via clearPendingRetry on its 60s untrack TTL.
+        pendingTerminalRetries.delete(orderId);
+        finalizeFilledOrder(orderId, trackedOrder, finalSize, finalPrice, finalFees);
+        return;
       }
 
       finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
@@ -1078,7 +1104,14 @@ const createMarketDataService = (exchange, pair) => {
       }
       // Preempt any pending partial retry — terminal owns catch-up.
       pendingPartialRetries.delete(orderId);
+      // Pre-populate the pending entry BEFORE awaiting settleCancelledOrder.
+      // settleCancelledOrder flips trackedOrder.status to 'cancelled' on
+      // attempt 0 before its first await, so a replayed CANCELLED arriving
+      // during that await would otherwise see status='cancelled' AND no
+      // pendingTerminalRetries entry, hit the settled-status guard, and
+      // be dropped — even if it carried a larger cumulative.
       const target = { filledSize };
+      pendingTerminalRetries.set(orderId, target);
       const result = await settleCancelledOrder(
         {
           ...ingestDeps,
@@ -1092,7 +1125,10 @@ const createMarketDataService = (exchange, pair) => {
         },
         orderId, trackedOrder, status, filledSize
       );
-      if (result?.retryScheduled) pendingTerminalRetries.set(orderId, target);
+      // If settleCancelledOrder finished synchronously (no retry), drop
+      // the entry — clearPendingRetry already fires via the wrapped
+      // untrackOrder, but only after the 60s untrack TTL.
+      if (!result?.retryScheduled) pendingTerminalRetries.delete(orderId);
     }
   };
 

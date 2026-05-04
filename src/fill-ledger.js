@@ -67,15 +67,26 @@ const createFillLedger = (exchange, productId, pair) => {
   /**
    * Load fill ledger from disk
    */
+  const resetCaches = () => {
+    // Reset all in-memory state to empty. load() may be called more than
+    // once on a live ledger instance (regime-engine SIGUSR1 reload), so
+    // every load path must start clean — otherwise stale fills from a
+    // prior load (or from before a manual reconciliation removed them
+    // from disk) would survive and inflate getRecordedSizeForOrder.
+    // currentCycleId/nextCycleNumber are part of that state — without
+    // resetting them, a reload to an empty ledger would keep attributing
+    // new fills to the prior cycle.
+    fills.clear();
+    cycleIndex.clear();
+    orderSizeIndex.clear();
+    currentCycleId = null;
+    nextCycleNumber = 1;
+  };
+
   const load = () => {
     const filePath = getFillLedgerPath(exchange, pair);
     if (!fs.existsSync(filePath)) {
-      // load() may be called more than once on a live ledger instance
-      // (regime-engine SIGUSR1 reload). Clear the in-memory caches first
-      // so a missing file resets state correctly.
-      fills.clear();
-      cycleIndex.clear();
-      orderSizeIndex.clear();
+      resetCaches();
       return;
     }
 
@@ -84,17 +95,15 @@ const createFillLedger = (exchange, productId, pair) => {
       data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (err) {
       console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — starting empty`);
+      // The "starting empty" log lied previously: we returned without
+      // resetting, leaving stale fills + watermarks intact. Reset here
+      // so the in-memory state actually matches the log message.
+      resetCaches();
       return;
     }
-    // Clear all in-memory caches before re-reading. Without this, fills
-    // that were removed from disk during manual reconciliation would
-    // remain in memory after a SIGUSR1 reload, inflating
-    // getRecordedSizeForOrder() and making the watermark logic believe
-    // orders are fully ingested when the ledger file no longer
-    // contains those fills.
-    fills.clear();
-    cycleIndex.clear();
-    orderSizeIndex.clear();
+    // Clean slate before re-reading. See resetCaches comment above for
+    // the SIGUSR1 reload + manual-reconciliation rationale.
+    resetCaches();
     for (const fill of data) {
       fills.set(fill.tradeId, fill);
       // Populate cycle index

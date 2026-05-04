@@ -882,6 +882,71 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('pre-populates pendingTerminalRetries before first CANCELLED await so race-arriving replays update target', async () => {
+    // Block getOrderFills until the test resolves the deferred — gives
+    // us a window between status flip and await resolution to fire a
+    // replayed CANCELLED. Without the pre-population fix, the replay
+    // would see status='cancelled' AND no pendingTerminalRetries entry,
+    // hit the settled-status guard, and be dropped.
+    let resolveFetch;
+    const firstFetch = new Promise((resolve) => { resolveFetch = resolve; });
+    let firstCallStarted = false;
+    const fakeAdapter = {
+      getOrderFills: async () => {
+        firstCallStarted = true;
+        await firstFetch;
+        throw new Error('boom');
+      },
+    };
+
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+
+    const fakeLedger = {
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    };
+    svc._test.injectFillLedger(fakeLedger);
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-Z', { type: 'take_profit', price: 70000, size: 0.7, placedAt: Date.now() });
+
+    // Fire-and-forget the first CANCELLED — its handler will await the
+    // deferred fetch.
+    const firstP = svc._test.handleOrderUpdate({
+      orderId: 'order-Z', status: 'CANCELLED', filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0,
+    });
+
+    // Wait until the first call has reached the await
+    await new Promise(r => setImmediate(r));
+    while (!firstCallStarted) await new Promise(r => setImmediate(r));
+
+    // Verify pre-population happened synchronously during the first call.
+    let target = svc._test.pendingTerminalRetries.get('order-Z');
+    assert.ok(target, 'pendingTerminalRetries must be populated synchronously, before the first await');
+    assert.equal(target.filledSize, 0.3, 'pre-populated with first call\'s filledSize');
+
+    // Replayed CANCELLED with larger filledSize. Don't await — the
+    // replay queues behind the first call (work-queue serialization),
+    // which is itself blocked on resolveFetch. We only need to verify
+    // the synchronous prelude advances the target.
+    svc._test.handleOrderUpdate({
+      orderId: 'order-Z', status: 'CANCELLED', filledSize: 0.7, averageFilledPrice: 70000, totalFees: 0,
+    });
+
+    target = svc._test.pendingTerminalRetries.get('order-Z');
+    assert.equal(target.filledSize, 0.7,
+      'replay during the first await must advance the pre-populated target via the synchronous prelude');
+
+    // Let the first call finish (it will throw + schedule retry, which
+    // serves as the resolution path for the queued replay too).
+    resolveFetch();
+    await firstP;
+
+    svc.stop();
+  });
+
   it('replayed FILLED during retry await updates target with new aggregates (price/fees)', async () => {
     // First FILLED: filledSize=0.3, avgPrice=70000, fees=0.05.
     //  - getOrderFills returns subset (0.3) → ledger short of (in
