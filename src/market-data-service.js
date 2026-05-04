@@ -81,7 +81,20 @@ const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId
     const result = fillLedger.ingestFill(fill, orderPlacedAt, { skipPersist: true });
     if (result?.ingested) ingestedCount++;
   }
-  if (ingestedCount > 0) fillLedger.persist();
+
+  // Always attempt persist at end-of-call. If a previous call's persist
+  // threw, in-memory fills are ahead of disk; ingestFill's tradeId dedup
+  // means a retry would return ingestedCount=0 with no chance to flush.
+  // Calling persist() unconditionally rewrites the full atomic snapshot
+  // and lets the next call catch up the disk. On failure we treat it the
+  // same as an adapter failure: do NOT advance the watermark, signal
+  // fetched=false so the caller retries.
+  try {
+    fillLedger.persist();
+  } catch (err) {
+    console.log(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`);
+    return { fetched: false, fillsCount: fills.length, ingestedCount: 0 };
+  }
 
   trackedOrder.lastIngestedFilledSize = cumulativeFilledSize;
 
@@ -185,23 +198,32 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
 
 /**
  * Returns a setTimeout wrapper that tracks scheduled timer IDs so they
- * can all be cleared on service stop. Used by createMarketDataService to
- * keep cancel-retry / untrack timers from firing against a stopped
+ * can all be cancelled on service stop. Used by createMarketDataService
+ * to keep cancel-retry / untrack timers from firing against a stopped
  * service's stale fillLedger after a replacement service has taken over.
  *
- * @returns {{ trackedSetTimeout: Function, cancelAll: () => number, size: () => number }}
- *   trackedSetTimeout(fn, delay) — drop-in for setTimeout, returns the
- *     timer ID for convenience.
- *   cancelAll() — clearTimeout on every still-pending ID; returns count
- *     cancelled.
- *   size() — number of currently-pending tracked timers.
+ * cancelAll() does two things:
+ *   1. clearTimeout() on every queued (not-yet-fired) timer ID.
+ *   2. Sets a "stopped" flag. Any in-flight wrapped callback that has
+ *      already begun executing checks the flag immediately on entry and
+ *      bails out before invoking the user fn — preventing post-stop
+ *      writes through the user callback (e.g. fillLedger.persist()
+ *      inside a retry that fired right before stop()).
+ *
+ * @returns {{ trackedSetTimeout: Function, cancelAll: () => number, size: () => number, isStopped: () => boolean }}
  */
 const createTimerTracker = () => {
   const pending = new Set();
+  let stopped = false;
   const trackedSetTimeout = (fn, delay) => {
     let id;
     const wrapped = async () => {
       pending.delete(id);
+      // After cancelAll(), an already-queued but not-yet-clearTimeout-able
+      // callback could still fire (race between setTimeout firing and
+      // cancelAll iterating). The stopped flag closes that window: the
+      // callback bails before touching any service-instance state.
+      if (stopped) return;
       await fn();
     };
     id = setTimeout(wrapped, delay);
@@ -210,11 +232,12 @@ const createTimerTracker = () => {
   };
   const cancelAll = () => {
     const n = pending.size;
+    stopped = true;
     for (const id of pending) clearTimeout(id);
     pending.clear();
     return n;
   };
-  return { trackedSetTimeout, cancelAll, size: () => pending.size };
+  return { trackedSetTimeout, cancelAll, size: () => pending.size, isStopped: () => stopped };
 };
 
 const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(exchange) || 'default');

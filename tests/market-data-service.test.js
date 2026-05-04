@@ -162,6 +162,40 @@ describe('ingestNewFillsForOrder', () => {
       'watermark must NOT advance — next WS update should retry the fetch');
   });
 
+  it('does not advance watermark when persist() throws (durability hole guard)', async () => {
+    // Fills land in the in-memory ledger but persist() fails. If we
+    // advanced the watermark, ingestFill's tradeId dedup would mean a
+    // retry sees no NEW fills (ingestedCount=0), and without an
+    // unconditional persist call the disk would never catch up. The
+    // helper must signal fetched=false so the caller retries, AND
+    // unconditionally call persist on retries to flush the queue.
+    const adapter = makeAdapter([[makeFill('t1', 0.4)]]);
+    let persistCalls = 0;
+    const failingLedger = {
+      ingestFill: (fill) => {
+        const tradeId = fill.tradeId;
+        if (ledger.seen.has(tradeId)) return { ingested: false, fill: null };
+        ledger.seen.add(tradeId);
+        ledger.ingested.push({ tradeId, orderPlacedAt: null });
+        return { ingested: true, fill };
+      },
+      persist: () => {
+        persistCalls += 1;
+        throw new Error('disk full');
+      },
+    };
+
+    const result = await ingestNewFillsForOrder(
+      { adapter, fillLedger: failingLedger, exchange: 'coinbase' },
+      'order-1', trackedOrder, 0.4, 'partial fill'
+    );
+
+    assert.equal(result.fetched, false, 'persist failure must surface as fetched=false');
+    assert.equal(persistCalls, 1, 'persist was attempted');
+    assert.equal(trackedOrder.lastIngestedFilledSize ?? 0, 0,
+      'watermark must NOT advance when persist failed — caller relies on this to retry');
+  });
+
   it('does not advance watermark when adapter returns empty fills (Coinbase post-FILLED race)', async () => {
     const adapter = makeAdapter([[]]);
 
@@ -431,6 +465,28 @@ describe('createTimerTracker', () => {
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(fired, 1, 'callback fired');
     assert.equal(tracker.size(), 0, 'fired callback was removed from tracker');
+  });
+
+  it('isStopped reflects state + post-stop already-queued callbacks bail before invoking fn', async () => {
+    // This guards against the race where setTimeout's callback is already
+    // queued (between firing and clearTimeout being called). The wrapped
+    // callback must check the stopped flag and skip fn() to prevent
+    // post-stop writes through user callbacks.
+    const tracker = createTimerTracker();
+    let fired = 0;
+
+    // Schedule a 0ms timer so the callback is queued immediately.
+    tracker.trackedSetTimeout(() => { fired += 1; }, 0);
+
+    assert.equal(tracker.isStopped(), false);
+    // Cancel synchronously before yielding to the event loop. Even if a
+    // 0ms timer fires before clearTimeout could reach it (in some races),
+    // the wrapped callback's stopped check prevents fn() from running.
+    tracker.cancelAll();
+    assert.equal(tracker.isStopped(), true);
+
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(fired, 0, 'cancelAll must prevent fn from running, even via the stopped flag');
   });
 
   it('integrates with settleCancelledOrder retry chain — cancelAll stops the chain', async () => {

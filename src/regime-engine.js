@@ -1002,7 +1002,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
           }
         } else {
-          // TP order no longer exists on exchange - clear tracking so a new one gets placed
+          // TP order is cancelled/failed on exchange. Ingest any partial
+          // fills BEFORE clearing tracking — otherwise a TP that
+          // partially filled then got cancelled (e.g. via market-data-
+          // service catch-up retry that didn't complete before engine
+          // start) would lose those fills permanently.
+          try {
+            const rawFills = await adapter.getOrderFills(positionState.activeTpOrderId);
+            if (rawFills.length > 0) {
+              console.log(`📦 [${exchange}] Cancelled TP ${positionState.activeTpOrderId} had ${rawFills.length} fill(s) — ingesting before clear`);
+              let newFills = 0;
+              for (const fill of rawFills) {
+                const result = fillLedger.ingestFill(fill);
+                if (result.ingested) newFills += 1;
+              }
+              if (newFills > 0) console.log(`📝 [${exchange}] Ingested ${newFills} new partial fill(s) from cancelled TP`);
+            }
+          } catch (err) {
+            console.log(`⚠️ [${exchange}] Failed to fetch fills for cancelled TP ${positionState.activeTpOrderId}: ${err.message}`);
+          }
           console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
           positionState.activeTpOrderId = null;
           positionState.lastTpPrice = 0;
@@ -1084,6 +1102,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             );
             restoredBodies++;
           } else {
+            // Body TP cancelled/failed on exchange. Ingest any partial
+            // fills before clearing the orderId, otherwise they'd be
+            // lost (same scenario as the core-TP branch above).
+            try {
+              const rawFills = await adapter.getOrderFills(body.tpOrderId);
+              if (rawFills.length > 0) {
+                console.log(`📦 [${exchange}] Cancelled body TP ${body.tpOrderId} had ${rawFills.length} fill(s) — ingesting before clear`);
+                let newFills = 0;
+                for (const fill of rawFills) {
+                  const result = fillLedger.ingestFill(fill);
+                  if (result.ingested) newFills += 1;
+                }
+                if (newFills > 0) console.log(`📝 [${exchange}] Ingested ${newFills} new partial fill(s) from cancelled body TP`);
+              }
+            } catch (err) {
+              console.log(`⚠️ [${exchange}] Failed to fetch fills for cancelled body TP ${body.tpOrderId}: ${err.message}`);
+            }
             // Body TP no longer on exchange — re-place TP
             body.tpOrderId = null;
             expiredBodies++;
