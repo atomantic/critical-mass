@@ -1009,11 +1009,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // the market-data-service WS path, those fills are not
           // recovered here. Properly recovering them requires not just
           // ingesting fills but also reducing positionState.totalAsset,
-          // recomputing avgCostBasis, and accounting for realized P&L
-          // — see https://github.com/atomantic/critical-mass/pull/66
-          // discussion (review threads on T12). The market-data-service
-          // catch-up retry covers the common case while the engine is
-          // stopped; engine-side recovery on startup is a follow-up.
+          // recomputing avgCostBasis, and accounting for realized P&L.
+          // The same gap applies if the API process restarted while a
+          // market-data-service cancel-retry was still pending — those
+          // retries are in-memory only, so a restart loses them. See
+          // PR #66 discussion (review threads on T12 / T30). The market-
+          // data-service catch-up retry covers the common case while
+          // the engine is stopped; engine-side recovery + persisted
+          // retry markers are follow-ups.
           console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
           positionState.activeTpOrderId = null;
           positionState.lastTpPrice = 0;

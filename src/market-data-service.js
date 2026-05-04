@@ -658,96 +658,50 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   // Eventual-consistency retry for FILLED orders whose getOrderFills came
-  // back empty. FILLED is terminal; Coinbase is not guaranteed to emit
-  // another WS update, so without this path the order would stay tracked
-  // forever. Mirror regime-engine.js:1857-1903's retry-then-synthesize
-  // pattern: retry once, then fall back to synthesizing a fill from the
-  // order-status data carried on the WS event.
-  const retryFilledIngest = async (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees) => {
+  // back empty (or whose adapter/persist threw). FILLED is terminal;
+  // Coinbase is not guaranteed to emit another WS update, so without
+  // this path the order would stay tracked forever.
+  //
+  // Earlier iterations of this PR fell back to synthesizing a fill from
+  // the WS order-status data after one retry. That created a hazard: if
+  // the engine later restarted before getOrderFills returned the real
+  // exchange fills, startup reconciliation would ingest them with their
+  // genuine tradeIds, leaving the ledger with both the synthetic and
+  // the real records for one execution (overstating size/P&L). Indefinite
+  // retry is safer — only real fills ever land in the ledger, and the
+  // exponential backoff bounds the load on the adapter.
+  const FILLED_RETRY_BASE_MS = 2000;
+  const FILLED_RETRY_MAX_MS = 300000; // 5 min cap
+
+  const retryFilledIngest = async (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt) => {
     if (!trackedOrders.has(orderId)) return; // already removed by another path
     if (timerTracker.isStopped()) return;
 
     const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
-    const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED retry');
+    const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `FILLED retry ${attempt}`);
     if (timerTracker.isStopped()) return;
+
+    // Watermark already covers (real fills landed via partial path) — settle.
+    if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) {
+      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+      return;
+    }
 
     if (result.fetched && result.fillsCount > 0) {
       finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
       return;
     }
 
-    // Use the in-memory ledger as the source of truth for what's already
-    // recorded — NOT trackedOrder.lastIngestedFilledSize. The watermark
-    // can lag the ledger if an earlier persist threw (in-memory ledger
-    // advanced but disk and watermark didn't). Reading from the ledger
-    // here ensures we synthesize on top of the actual recorded state and
-    // don't double-count fills that are already in memory.
-    const ledgerFills = fillLedger.getFillsForOrder(orderId) || [];
-    const inLedgerSize = ledgerFills.reduce((s, f) => s + (f.size || 0), 0);
-    const inLedgerQuote = ledgerFills.reduce((s, f) => s + (f.quoteAmount || 0), 0);
-    const inLedgerFees = ledgerFills.reduce((s, f) => s + (f.netFee || 0), 0);
-    const remainingSize = filledSize - inLedgerSize;
-
-    if (remainingSize <= 0) {
-      // Ledger already covers the cumulative filledSize (real fills came
-      // in via the partial path, or a previous synth recovered). Just
-      // settle.
-      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
-      return;
-    }
-
-    if (averageFilledPrice > 0) {
-      // Compute the delta's price from the gross quote difference, NOT
-      // the order-wide weighted-average price. Earlier partials may
-      // have priced at different levels; using averageFilledPrice for
-      // the tail would misprice the synthetic record (e.g. 0.4@100
-      // followed by 0.6@120 would synthesize the 0.6 tail at 112 — the
-      // weighted average — instead of 120).
-      const totalQuote = filledSize * averageFilledPrice;
-      const deltaQuote = Math.max(0, totalQuote - inLedgerQuote);
-      const deltaPrice = remainingSize > 0 ? deltaQuote / remainingSize : averageFilledPrice;
-      const remainingFees = Math.max(0, (totalFees || 0) - inLedgerFees);
-
-      const synthSide = (trackedOrder.type === 'entry' || trackedOrder.type === 'ladder_entry') ? 'buy' : 'sell';
-      const isBuyOrder = synthSide === 'buy';
-      const orderPlacedAt = isBuyOrder ? trackedOrder.placedAt : null;
-      const syntheticFill = {
-        // Include cumulative size so a re-ingest with the same delta is
-        // dedupe-safe — and a different cumulative size yields a
-        // different tradeId, which is also what we want.
-        tradeId: `synthetic-${orderId}-${filledSize.toFixed(8)}`,
-        orderId,
-        side: synthSide,
-        price: deltaPrice,
-        size: remainingSize,
-        quoteAmount: deltaQuote,
-        // ingestFill computes netFee from totalCommission/commission
-        // minus rebate (fill-ledger.js:166-169), not from a netFee
-        // field. Pass totalCommission so the fee actually lands.
-        totalCommission: remainingFees,
-        timestamp: Date.now(),
-      };
-      console.log(`⚠️ [${exchange}] Synthesizing fill from order-status for ${orderId}: delta=${remainingSize} @ $${deltaPrice.toFixed(2)} (cumulative=${filledSize})`);
-      if (timerTracker.isStopped()) return;
-      try {
-        fillLedger.ingestFill(syntheticFill, orderPlacedAt);
-        trackedOrder.lastIngestedFilledSize = filledSize;
-      } catch (err) {
-        console.log(`❌ [${exchange}] Failed to ingest synthetic fill for ${orderId}: ${err.message}`);
-        return;
-      }
-      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
-      return;
-    }
-
-    console.log(`❌ [${exchange}] FILLED ${orderId} has no fills and no usable status data — engine restart will reconcile`);
+    // Still empty / failed — schedule next retry.
+    scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt + 1, result.fetched ? 'still no fills' : 'fetch/persist failed');
   };
 
-  const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, reason) => {
-    console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retrying in 2s`);
+  const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt, reason) => {
+    const delay = Math.min(FILLED_RETRY_BASE_MS * Math.pow(2, attempt - 1), FILLED_RETRY_MAX_MS);
+    console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retry ${attempt} in ${Math.round(delay / 1000)}s`);
     trackedSetTimeout(
-      () => enqueueOrderWork(orderId, () => retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees)),
-      2000
+      () => enqueueOrderWork(orderId, () => retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt)),
+      delay
     );
   };
 
@@ -803,16 +757,17 @@ const createMarketDataService = (exchange, pair) => {
         // FILLED is terminal — Coinbase is not guaranteed to emit follow-
         // up WS events, so we cannot wait for "the next event" to retry.
         // Both fetched=false (adapter or persist throw) and fillsCount=0
-        // (eventual-consistency empty fills) need the retry/synthesize
-        // fallback, otherwise the order stays tracked forever. Re-enter
-        // via enqueueOrderWork so the retry serializes against any
-        // later updates for the same order.
+        // (eventual-consistency empty fills) need the retry path, which
+        // schedules indefinite exponential-backoff catch-up. The retry
+        // re-enters via enqueueOrderWork so it serializes against any
+        // later updates for the same order. Service stop cancels these
+        // timers via timerTracker.cancelAll().
         if (!result.fetched) {
-          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 'fetch/persist failed');
+          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 1, 'fetch/persist failed');
           return;
         }
         if (result.fillsCount === 0 && filledSize > 0) {
-          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 'has no fills yet');
+          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 1, 'has no fills yet');
           return;
         }
       }
