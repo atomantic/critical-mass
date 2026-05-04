@@ -329,12 +329,44 @@ describe('settleCancelledOrder', () => {
     );
 
     assert.equal(scheduledTimeouts.length, 1);
-    // Run the retry callback
+    // Run the retry callback (recursive settleCancelledOrder with attempt=1)
     await scheduledTimeouts[0].fn();
 
     assert.equal(ledger.ingested.length, 1, 'retry must ingest the previously-missed fill');
     assert.deepEqual(markSettledCalls, ['order-1'], 'retry must settle');
-    assert.deepEqual(untrackCalls, ['order-1'], 'retry must untrack');
+    // Untrack is scheduled via finalSettle (60s TTL), not synchronous
+    assert.equal(scheduledTimeouts.length, 2, 'retry then untrack-delay');
+    assert.equal(scheduledTimeouts[1].delay, 60000);
+    await scheduledTimeouts[1].fn();
+    assert.deepEqual(untrackCalls, ['order-1'], 'untrack TTL fires');
+  });
+
+  it('settles after exhausting the retry budget so the order does not leak', async () => {
+    // Every attempt fails. After 3 attempts (initial + 2 retries) the order
+    // is settled with a loud warning rather than retried forever or leaked.
+    const adapter = makeAdapter([
+      new Error('boom 1'),
+      new Error('boom 2'),
+      new Error('boom 3'),
+    ]);
+
+    const deps = { ...makeDeps(adapter), maxAttempts: 3 };
+    await settleCancelledOrder(deps, 'order-1', trackedOrder, 'CANCELLED', 0.3);
+
+    // First retry scheduled (delay = 30000 * 2^0 = 30000)
+    assert.equal(scheduledTimeouts[0].delay, 30000);
+    assert.equal(markSettledCalls.length, 0);
+
+    // Run retry attempt #1 — fails again, schedules attempt #2
+    await scheduledTimeouts[0].fn();
+    assert.equal(scheduledTimeouts[1].delay, 60000, 'exponential backoff: 30000 * 2^1');
+    assert.equal(markSettledCalls.length, 0);
+
+    // Run retry attempt #2 — fails again, budget exhausted, settle now
+    await scheduledTimeouts[1].fn();
+    assert.deepEqual(markSettledCalls, ['order-1'], 'settles after exhausting retries');
+    // Untrack still scheduled via finalSettle TTL
+    assert.equal(scheduledTimeouts.at(-1).delay, 60000);
   });
 
   it('FAILED status follows the same path as CANCELLED', async () => {

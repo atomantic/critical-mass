@@ -92,6 +92,8 @@ const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId
   return { fetched: true, fillsCount: fills.length, ingestedCount };
 };
 
+const MAX_CANCEL_RETRY_ATTEMPTS = 3;
+
 /**
  * Settle a tracked order on a CANCELLED/FAILED WS event, catching up any
  * unrecorded partial fills before marking it settled.
@@ -100,9 +102,12 @@ const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId
  * follow-up WS events, so a transient adapter failure or empty-fills race
  * during the catch-up has no future event to retry against. When the WS
  * event indicates unrecorded partials (filledSize > lastIngestedFilledSize)
- * but the catch-up didn't deliver them, this function schedules a single
- * delayed retry before settling — otherwise those partials would be lost
- * permanently.
+ * but the catch-up didn't deliver them, this function schedules a delayed
+ * retry (with exponential backoff up to MAX_CANCEL_RETRY_ATTEMPTS) before
+ * settling. After the retry budget is exhausted the order is settled with
+ * a loud warning — engine-restart reconciliation (regime-engine startup
+ * partial-fill ingest) is the final fallback for fills that REST never
+ * surfaced to us.
  *
  * @param {Object} deps
  * @param {{getOrderFills: Function}} deps.adapter
@@ -110,54 +115,68 @@ const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId
  * @param {string} deps.exchange
  * @param {(orderId: string) => void} deps.markSettled
  * @param {(orderId: string) => void} deps.untrackOrder
- * @param {number} [deps.retryDelayMs=30000] - Delay before the retry attempt
+ * @param {number} [deps.retryDelayMs=30000] - Base delay; doubled per attempt
  * @param {number} [deps.untrackDelayMs=60000] - TTL on trackedOrders deletion
+ * @param {number} [deps.maxAttempts=MAX_CANCEL_RETRY_ATTEMPTS]
  * @param {Function} [deps.scheduleTimeout=setTimeout] - Injected for tests
  * @param {string} orderId
  * @param {Object} trackedOrder - Mutated: status set on synchronous settlement path
  * @param {string} status - 'CANCELLED' | 'FAILED'
  * @param {number} filledSize - Cumulative filledSize from WS event
- * @returns {Promise<{settledNow: boolean, retryScheduled: boolean}>}
+ * @param {number} [attempt=0] - Current attempt index (0 = initial call)
+ * @returns {Promise<{settledNow: boolean, retryScheduled: boolean, exhausted?: boolean}>}
  */
-const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledSize) => {
+const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledSize, attempt = 0) => {
   const {
     adapter, fillLedger, exchange, markSettled, untrackOrder,
-    retryDelayMs = 30000, untrackDelayMs = 60000, scheduleTimeout = setTimeout,
+    retryDelayMs = 30000, untrackDelayMs = 60000,
+    maxAttempts = MAX_CANCEL_RETRY_ATTEMPTS, scheduleTimeout = setTimeout,
   } = deps;
 
-  console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
+  if (attempt === 0) {
+    console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
+  }
 
   const hadUnrecorded = filledSize > (trackedOrder.lastIngestedFilledSize || 0);
   let catchup = { fetched: true, fillsCount: 0, ingestedCount: 0 };
   if (hadUnrecorded) {
-    catchup = await ingestNewFillsForOrder({ adapter, fillLedger, exchange }, orderId, trackedOrder, filledSize, status);
+    const label = attempt === 0 ? status : `${status} (retry ${attempt}/${maxAttempts})`;
+    catchup = await ingestNewFillsForOrder({ adapter, fillLedger, exchange }, orderId, trackedOrder, filledSize, label);
   }
 
-  // Defer settlement when the cancel event implies unrecorded partials but
-  // the catch-up came back empty (adapter error, or the brief window where
-  // Coinbase returns [] right after the terminal event). markSettled() is
+  const stillNeedsCatchup = hadUnrecorded && (!catchup.fetched || catchup.fillsCount === 0);
+  const finalSettle = () => {
+    trackedOrder.status = status.toLowerCase();
+    markSettled(orderId);
+    scheduleTimeout(() => untrackOrder(orderId), untrackDelayMs);
+  };
+
+  if (!stillNeedsCatchup) {
+    finalSettle();
+    return { settledNow: true, retryScheduled: false };
+  }
+
+  // Catchup didn't deliver. Schedule a backed-off retry (recursive call
+  // with attempt+1) until the retry budget is spent. markSettled() is
   // sticky, so settling now would block any future retry from re-tracking
-  // the order.
-  const needsRetry = hadUnrecorded && (!catchup.fetched || catchup.fillsCount === 0);
-  if (needsRetry) {
-    console.log(`⏳ [${exchange}] Scheduling delayed fill catch-up for ${status} order ${orderId} in ${Math.round(retryDelayMs / 1000)}s`);
-    scheduleTimeout(async () => {
-      try {
-        await ingestNewFillsForOrder({ adapter, fillLedger, exchange }, orderId, trackedOrder, filledSize, `${status} (retry)`);
-      } catch (err) {
-        console.log(`❌ [${exchange}] Delayed catch-up failed for ${orderId}: ${err.message}`);
-      }
-      trackedOrder.status = status.toLowerCase();
-      markSettled(orderId);
-      untrackOrder(orderId);
-    }, retryDelayMs);
-    return { settledNow: false, retryScheduled: true };
+  // the order — defer settlement until the budget is exhausted.
+  if (attempt + 1 >= maxAttempts) {
+    console.log(`❌ [${exchange}] Cancel catch-up exhausted (${maxAttempts} attempts) for ${orderId} — settling without ingested partials. Engine-restart reconciliation will pick them up from persisted state.`);
+    finalSettle();
+    return { settledNow: true, retryScheduled: false, exhausted: true };
   }
 
-  trackedOrder.status = status.toLowerCase();
-  markSettled(orderId);
-  scheduleTimeout(() => untrackOrder(orderId), untrackDelayMs);
-  return { settledNow: true, retryScheduled: false };
+  const nextDelay = retryDelayMs * Math.pow(2, attempt);
+  console.log(`⏳ [${exchange}] Scheduling cancel catch-up retry ${attempt + 1}/${maxAttempts} for ${orderId} in ${Math.round(nextDelay / 1000)}s`);
+  scheduleTimeout(async () => {
+    try {
+      await settleCancelledOrder(deps, orderId, trackedOrder, status, filledSize, attempt + 1);
+    } catch (err) {
+      console.log(`❌ [${exchange}] Cancel retry chain crashed for ${orderId}: ${err.message}`);
+      finalSettle();
+    }
+  }, nextDelay);
+  return { settledNow: false, retryScheduled: true };
 };
 
 const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(exchange) || 'default');
@@ -505,6 +524,11 @@ const createMarketDataService = (exchange, pair) => {
       const baseCurr = getBaseCurrency(productId);
       console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
 
+      // If OPEN-status partial-fill ingestion already covered the full
+      // filledSize, skip the fetch entirely and proceed to settle —
+      // everything is already in the ledger. Otherwise, ingest any
+      // remaining fills.
+      //
       // On transient adapter failure or empty fills response (Coinbase
       // briefly returns [] right after a FILLED event), do not flip the
       // in-memory status to 'filled' — getOrderStatus() would report the
@@ -512,8 +536,10 @@ const createMarketDataService = (exchange, pair) => {
       // and the ledger/linkage would never be written until engine
       // restart. Leave status='open' so the WS gives us another shot on
       // the next OrderUpdate event for this orderId.
-      const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED');
-      if (!result.fetched || result.fillsCount === 0) return;
+      if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
+        const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED');
+        if (!result.fetched || result.fillsCount === 0) return;
+      }
 
       // Update tracked order status
       trackedOrder.status = 'filled';
