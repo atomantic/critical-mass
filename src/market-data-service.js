@@ -43,11 +43,15 @@ const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
  * @param {number} cumulativeFilledSize - From the WS event (always cumulative)
  * @param {string} label - Log label, e.g. 'partial fill', 'FILLED', 'CANCELLED'
  * @returns {Promise<{fetched: boolean, fillsCount: number, ingestedCount: number}>}
- *   fetched=false means the adapter call threw — caller should retry on
- *   the next WS update without advancing terminal state. fillsCount=0
- *   with fetched=true means the exchange has not yet exposed any fills
- *   (e.g. Coinbase returns [] briefly right after a FILLED event); the
- *   watermark is intentionally NOT advanced so the next update retries.
+ *   fetched=false means either adapter.getOrderFills() threw OR
+ *   fillLedger.persist() threw — in both cases the watermark is NOT
+ *   advanced and the caller should retry on the next WS update.
+ *   fillsCount=0 with fetched=true means either: (a) the watermark
+ *   already covered cumulativeFilledSize (early-out, no work needed),
+ *   or (b) the exchange has not yet exposed any fills (e.g. Coinbase
+ *   returns [] briefly right after a FILLED event). Callers that need
+ *   to distinguish (a) from (b) should check the watermark themselves
+ *   before calling — see handleOrderUpdate's FILLED branch.
  */
 const ingestNewFillsForOrder = async ({ adapter, fillLedger, exchange }, orderId, trackedOrder, cumulativeFilledSize, label) => {
   const lastSize = trackedOrder.lastIngestedFilledSize || 0;

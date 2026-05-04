@@ -1002,25 +1002,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
           }
         } else {
-          // TP order is cancelled/failed on exchange. Ingest any partial
-          // fills BEFORE clearing tracking — otherwise a TP that
-          // partially filled then got cancelled (e.g. via market-data-
-          // service catch-up retry that didn't complete before engine
-          // start) would lose those fills permanently.
-          try {
-            const rawFills = await adapter.getOrderFills(positionState.activeTpOrderId);
-            if (rawFills.length > 0) {
-              console.log(`📦 [${exchange}] Cancelled TP ${positionState.activeTpOrderId} had ${rawFills.length} fill(s) — ingesting before clear`);
-              let newFills = 0;
-              for (const fill of rawFills) {
-                const result = fillLedger.ingestFill(fill);
-                if (result.ingested) newFills += 1;
-              }
-              if (newFills > 0) console.log(`📝 [${exchange}] Ingested ${newFills} new partial fill(s) from cancelled TP`);
-            }
-          } catch (err) {
-            console.log(`⚠️ [${exchange}] Failed to fetch fills for cancelled TP ${positionState.activeTpOrderId}: ${err.message}`);
-          }
+          // TP order no longer exists on exchange - clear tracking so a new one gets placed.
+          //
+          // KNOWN LIMITATION: if this TP partially filled before being
+          // cancelled and the partial fills weren't already captured by
+          // the market-data-service WS path, those fills are not
+          // recovered here. Properly recovering them requires not just
+          // ingesting fills but also reducing positionState.totalAsset,
+          // recomputing avgCostBasis, and accounting for realized P&L
+          // — see https://github.com/atomantic/critical-mass/pull/66
+          // discussion (review threads on T12). The market-data-service
+          // catch-up retry covers the common case while the engine is
+          // stopped; engine-side recovery on startup is a follow-up.
           console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
           positionState.activeTpOrderId = null;
           positionState.lastTpPrice = 0;
@@ -1102,24 +1095,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             );
             restoredBodies++;
           } else {
-            // Body TP cancelled/failed on exchange. Ingest any partial
-            // fills before clearing the orderId, otherwise they'd be
-            // lost (same scenario as the core-TP branch above).
-            try {
-              const rawFills = await adapter.getOrderFills(body.tpOrderId);
-              if (rawFills.length > 0) {
-                console.log(`📦 [${exchange}] Cancelled body TP ${body.tpOrderId} had ${rawFills.length} fill(s) — ingesting before clear`);
-                let newFills = 0;
-                for (const fill of rawFills) {
-                  const result = fillLedger.ingestFill(fill);
-                  if (result.ingested) newFills += 1;
-                }
-                if (newFills > 0) console.log(`📝 [${exchange}] Ingested ${newFills} new partial fill(s) from cancelled body TP`);
-              }
-            } catch (err) {
-              console.log(`⚠️ [${exchange}] Failed to fetch fills for cancelled body TP ${body.tpOrderId}: ${err.message}`);
-            }
-            // Body TP no longer on exchange — re-place TP
+            // Body TP no longer on exchange — re-place TP.
+            // Same KNOWN LIMITATION as the core-TP branch above: a body
+            // TP that partially filled before being cancelled would
+            // need body.assetQty / body.costBasis updates plus realized-
+            // P&L bookkeeping, which is non-trivial and deferred.
             body.tpOrderId = null;
             expiredBodies++;
           }
