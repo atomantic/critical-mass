@@ -561,18 +561,105 @@ const createMarketDataService = (exchange, pair) => {
     }
   };
 
+  // Per-orderId update serialization. websocket-feed invokes onOrderUpdate
+  // without await (websocket-feed.js:335-336), so partial / FILLED /
+  // CANCELLED events for the same order can race. Without serialization
+  // a partial in-flight could ingest fills AFTER a later FILLED reads
+  // the watermark, causing FILLED to hit the empty-fills race and never
+  // settle. Chain updates per orderId so they process in arrival order.
+  const orderUpdateChains = new Map(); // orderId -> Promise
+
+  const enqueueOrderWork = (orderId, work) => {
+    const previous = orderUpdateChains.get(orderId) || Promise.resolve();
+    const next = previous.catch(() => {}).then(() => work());
+    orderUpdateChains.set(orderId, next);
+    next.finally(() => {
+      if (orderUpdateChains.get(orderId) === next) orderUpdateChains.delete(orderId);
+    });
+    return next;
+  };
+
+  const finalizeFilledOrder = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees) => {
+    trackedOrder.status = 'filled';
+    trackedOrder.filledSize = filledSize;
+    trackedOrder.filledPrice = averageFilledPrice;
+    trackedOrder.fees = totalFees;
+    trackedOrder.filledAt = Date.now();
+
+    if (onOrderFillCallback) {
+      onOrderFillCallback({
+        orderId,
+        type: trackedOrder.type,
+        size: filledSize,
+        price: averageFilledPrice,
+        fees: totalFees,
+        exchange,
+      });
+    }
+
+    // Mark settled and prune from trackedOrders (settledOrderIds outlives
+    // the 60s TTL so cache reloads can't resurrect this order).
+    markSettled(orderId);
+    trackedSetTimeout(() => trackedOrders.delete(orderId), 60000);
+  };
+
+  // Eventual-consistency retry for FILLED orders whose getOrderFills came
+  // back empty. FILLED is terminal; Coinbase is not guaranteed to emit
+  // another WS update, so without this path the order would stay tracked
+  // forever. Mirror regime-engine.js:1857-1903's retry-then-synthesize
+  // pattern: retry once, then fall back to synthesizing a fill from the
+  // order-status data carried on the WS event.
+  const retryFilledIngest = async (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees) => {
+    if (!trackedOrders.has(orderId)) return; // already removed by another path
+    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange };
+    const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED retry');
+
+    if (result.fetched && result.fillsCount > 0) {
+      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+      return;
+    }
+
+    if (filledSize > 0 && averageFilledPrice > 0) {
+      const synthSide = (trackedOrder.type === 'entry' || trackedOrder.type === 'ladder_entry') ? 'buy' : 'sell';
+      const syntheticFill = {
+        tradeId: `synthetic-${orderId}`,
+        orderId,
+        side: synthSide,
+        price: averageFilledPrice,
+        size: filledSize,
+        quoteAmount: filledSize * averageFilledPrice,
+        netFee: totalFees || 0,
+        timestamp: Date.now(),
+      };
+      console.log(`⚠️ [${exchange}] Synthesizing fill from order-status for ${orderId}: ${filledSize} @ $${averageFilledPrice}`);
+      try {
+        fillLedger.ingestFill(syntheticFill);
+        trackedOrder.lastIngestedFilledSize = filledSize;
+      } catch (err) {
+        console.log(`❌ [${exchange}] Failed to ingest synthetic fill for ${orderId}: ${err.message}`);
+        return;
+      }
+      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+      return;
+    }
+
+    console.log(`❌ [${exchange}] FILLED ${orderId} has no fills and no usable status data — engine restart will reconcile`);
+  };
+
   /**
    * Handle order updates from WebSocket
    * Detects when tracked orders fill while engine isn't running
    */
-  const handleOrderUpdate = async (data) => {
+  const handleOrderUpdate = (data) => {
     if (!productId) return;
-    const { orderId, status, filledSize, averageFilledPrice, totalFees } = data;
+    const { orderId } = data;
+    if (!orderId || !trackedOrders.has(orderId)) return;
+    return enqueueOrderWork(orderId, () => processOrderUpdate(data));
+  };
 
-    // Check if this is a tracked order
-    if (!trackedOrders.has(orderId)) {
-      return;
-    }
+  const processOrderUpdate = async (data) => {
+    const { orderId, status, filledSize, averageFilledPrice, totalFees } = data;
+    if (!trackedOrders.has(orderId)) return;
 
     const trackedOrder = trackedOrders.get(orderId);
     const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange };
@@ -601,42 +688,27 @@ const createMarketDataService = (exchange, pair) => {
       // filledSize, skip the fetch entirely and proceed to settle —
       // everything is already in the ledger. Otherwise, ingest any
       // remaining fills.
-      //
-      // On transient adapter failure or empty fills response (Coinbase
-      // briefly returns [] right after a FILLED event), do not flip the
-      // in-memory status to 'filled' — getOrderStatus() would report the
-      // order as no longer open, the offline synthesizer would drop it,
-      // and the ledger/linkage would never be written until engine
-      // restart. Leave status='open' so the WS gives us another shot on
-      // the next OrderUpdate event for this orderId.
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
         const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'FILLED');
-        if (!result.fetched || result.fillsCount === 0) return;
+        if (!result.fetched) return; // adapter/persist failure — wait for next event
+
+        if (result.fillsCount === 0 && filledSize > 0) {
+          // Coinbase eventual-consistency lag: the FILLED event arrived
+          // but getOrderFills hasn't caught up. FILLED is terminal so we
+          // can't rely on a follow-up WS event. Schedule a retry, then
+          // fall back to synthesizing a fill from the order-status data.
+          // Re-enter the per-orderId chain so the retry serializes
+          // against any later updates for the same order.
+          console.log(`⏳ [${exchange}] FILLED ${orderId} has no fills yet — retrying in 2s`);
+          trackedSetTimeout(
+            () => enqueueOrderWork(orderId, () => retryFilledIngest(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees)),
+            2000
+          );
+          return;
+        }
       }
 
-      // Update tracked order status
-      trackedOrder.status = 'filled';
-      trackedOrder.filledSize = filledSize;
-      trackedOrder.filledPrice = averageFilledPrice;
-      trackedOrder.fees = totalFees;
-      trackedOrder.filledAt = Date.now();
-
-      // Notify external callback if set
-      if (onOrderFillCallback) {
-        onOrderFillCallback({
-          orderId,
-          type: trackedOrder.type,
-          size: filledSize,
-          price: averageFilledPrice,
-          fees: totalFees,
-          exchange,
-        });
-      }
-
-      // Mark settled and prune from trackedOrders (settledOrderIds outlives
-      // the 60s TTL so cache reloads can't resurrect this order).
-      markSettled(orderId);
-      trackedSetTimeout(() => trackedOrders.delete(orderId), 60000);
+      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       await settleCancelledOrder(
         {
