@@ -332,16 +332,27 @@ const createMarketDataService = (exchange, pair) => {
       const baseCurr = getBaseCurrency(productId);
       console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
 
-      // Get fills for this order and ingest them
+      // Get fills for this order and ingest them. Track failure separately
+      // so we can avoid permanently marking the order settled when the
+      // adapter call failed — otherwise a transient API hiccup would drop
+      // the row from pendingOrders without ever updating the ledger
+      // linkage, recreating the orphaned-buy symptom until engine restart.
       const adapter = getAdapter(exchange);
-      const fills = await adapter.getOrderFills(orderId).catch(() => []);
+      let fillsFetched = false;
+      let fills = [];
+      try {
+        fills = await adapter.getOrderFills(orderId);
+        fillsFetched = true;
+      } catch (err) {
+        console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
+      }
 
       // Pass placedAt for fill time tracking (only meaningful for buy orders)
       const orderPlacedAt = trackedOrder.type === 'entry' ? trackedOrder.placedAt : null;
       for (const fill of fills) {
         fillLedger.ingestFill(fill, orderPlacedAt);
       }
-      fillLedger.persist();
+      if (fills.length > 0) fillLedger.persist();
 
       // Update tracked order status
       trackedOrder.status = 'filled';
@@ -362,11 +373,13 @@ const createMarketDataService = (exchange, pair) => {
         });
       }
 
-      // Remember this orderId is permanently settled so cache reloads from
-      // disk can't resurrect it as 'open' after the trackedOrders TTL fires.
-      settledOrderIds.add(orderId);
-      // Remove from tracked orders (keep in Map temporarily for status queries)
-      setTimeout(() => trackedOrders.delete(orderId), 60000);
+      // Only mark settled (and prune) once we've actually ingested the fills.
+      // Otherwise a transient fills-API failure would silently drop the row
+      // from pendingOrders without writing the ledger linkage.
+      if (fillsFetched) {
+        settledOrderIds.add(orderId);
+        setTimeout(() => trackedOrders.delete(orderId), 60000);
+      }
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
       trackedOrder.status = status.toLowerCase();

@@ -65,6 +65,7 @@ const HEALTH_COLORS = {
   SAFE: { bg: 'bg-yellow-900/50', text: 'text-yellow-400', icon: '◐' },
   PAUSED: { bg: 'bg-gray-700', text: 'text-gray-400', icon: '○' },
   STOPPED: { bg: 'bg-red-900/30', text: 'text-red-400', icon: '■' },
+  ENGINE_DOWN: { bg: 'bg-orange-900/40', text: 'text-orange-400', icon: '⚠' },
 }
 
 // Macro regime mode colors

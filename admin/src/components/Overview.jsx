@@ -31,6 +31,7 @@ const HEALTH_COLORS = {
   SAFE: 'text-yellow-400',
   PAUSED: 'text-gray-400',
   STOPPED: 'text-red-400',
+  ENGINE_DOWN: 'text-orange-400',
 }
 
 const getEngineStatus = (isRunning, isDryRun, lifecycle) => {

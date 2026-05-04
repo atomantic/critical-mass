@@ -936,6 +936,71 @@ describe('buildPersistedPendingOrders', () => {
     assert.equal(orders.length, 1);
     assert.equal(orders[0].orderId, 'tp-untracked');
   });
+
+  it('synthesizes pendingEntryOrders as live buy entries', () => {
+    const orders = buildPersistedPendingOrders({
+      pendingEntryOrders: [
+        { orderId: 'entry-1', price: 99000, assetQty: 0.0005, sizeUsdc: 49.50, placedAt: 1700000000000 },
+      ],
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'entry-1');
+    assert.equal(orders[0].side, 'buy');
+    assert.equal(orders[0].type, 'entry');
+    assert.equal(orders[0].status, 'open');
+    assert.equal(orders[0].price, 99000);
+    assert.equal(orders[0].size, 0.0005);
+    assert.equal(orders[0].sizeUsdc, 49.50);
+    assert.equal(orders[0].placedAt, 1700000000000);
+  });
+
+  it('synthesizes pendingLadderOrders with ladder_entry type', () => {
+    const orders = buildPersistedPendingOrders({
+      pendingLadderOrders: [
+        { orderId: 'ladder-1', price: 95000, assetQty: 0.001, sizeUsdc: 95, placedAt: 1700000000000 },
+        { orderId: 'ladder-2', price: 90000, assetQty: 0.002, sizeUsdc: 180, placedAt: 1700000000000 },
+      ],
+    });
+    assert.equal(orders.length, 2);
+    assert.equal(orders[0].type, 'ladder_entry');
+    assert.equal(orders[1].type, 'ladder_entry');
+    assert.equal(orders[0].side, 'buy');
+  });
+
+  it('combines TPs and entry orders in a single payload', () => {
+    const orders = buildPersistedPendingOrders({
+      celestialBodies: [
+        { id: 'b1', tier: 'satellite', tpOrderId: 'tp-1', tpPrice: 110000, avgPrice: 100000, assetQty: 0.05, costBasis: 5000 },
+      ],
+      pendingEntryOrders: [
+        { orderId: 'entry-1', price: 99000, assetQty: 0.0005, sizeUsdc: 49.50 },
+      ],
+    });
+    assert.equal(orders.length, 2);
+    assert.equal(orders.find(o => o.side === 'sell').orderId, 'tp-1');
+    assert.equal(orders.find(o => o.side === 'buy').orderId, 'entry-1');
+  });
+
+  it('dedupes entry orders by orderId across all sources', () => {
+    const orders = buildPersistedPendingOrders({
+      pendingEntryOrders: [{ orderId: 'shared-id', price: 99000, assetQty: 0.001 }],
+      pendingLadderOrders: [{ orderId: 'shared-id', price: 95000, assetQty: 0.002 }],
+    });
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].type, 'entry');  // entry wins (encountered first)
+  });
+
+  it('drops persisted entry orders the live tracker reports as filled', () => {
+    const orders = buildPersistedPendingOrders(
+      { pendingEntryOrders: [
+        { orderId: 'entry-open', price: 99000, assetQty: 0.001 },
+        { orderId: 'entry-filled', price: 99000, assetQty: 0.001 },
+      ]},
+      (id) => id === 'entry-filled' ? 'filled' : 'open',
+    );
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'entry-open');
+  });
 });
 
 describe('buildCelestialPayload', () => {
