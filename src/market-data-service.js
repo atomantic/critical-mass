@@ -728,19 +728,21 @@ const createMarketDataService = (exchange, pair) => {
     const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `FILLED retry ${attempt}`);
     if (timerTracker.isStopped()) return;
 
-    // Watermark already covers (real fills landed via partial path) — settle.
+    // Watermark covers cumulative? settle. Watermark is derived from
+    // ledger (sum of getFillsForOrder), so this also catches the Gemini/
+    // Crypto.com case where the helper ingested SOME fills but the
+    // adapter's recent-trade query returned a partial subset — the
+    // watermark would still be < filledSize, the check below schedules
+    // another retry rather than incorrectly settling.
     if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) {
       finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
       return;
     }
 
-    if (result.fetched && result.fillsCount > 0) {
-      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
-      return;
-    }
-
-    // Still empty / failed — schedule next retry.
-    scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt + 1, result.fetched ? 'still no fills' : 'fetch/persist failed');
+    // Either fetch failed, or fills landed but ledger is still short of
+    // the WS-reported cumulative. Either way, retry.
+    const reason = result.fetched ? 'ledger short of cumulative' : 'fetch/persist failed';
+    scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt + 1, reason);
   };
 
   const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt, reason) => {
@@ -828,18 +830,20 @@ const createMarketDataService = (exchange, pair) => {
 
         // FILLED is terminal — Coinbase is not guaranteed to emit follow-
         // up WS events, so we cannot wait for "the next event" to retry.
-        // Both fetched=false (adapter or persist throw) and fillsCount=0
-        // (eventual-consistency empty fills) need the retry path, which
-        // schedules indefinite exponential-backoff catch-up. The retry
-        // re-enters via enqueueOrderWork so it serializes against any
-        // later updates for the same order. Service stop cancels these
-        // timers via timerTracker.cancelAll().
+        // Schedule a retry chain whenever the ledger doesn't yet cover
+        // the WS-reported cumulative filledSize: that includes adapter/
+        // persist failures (fetched=false) and the Gemini/Crypto.com
+        // partial-history case where we ingested some fills but not all.
+        // The retry re-enters via enqueueOrderWork so it serializes
+        // against any later updates for the same order. Service stop
+        // cancels these timers via timerTracker.cancelAll().
         if (!result.fetched) {
           scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 1, 'fetch/persist failed');
           return;
         }
-        if (result.fillsCount === 0 && filledSize > 0) {
-          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 1, 'has no fills yet');
+        if ((trackedOrder.lastIngestedFilledSize || 0) < filledSize) {
+          const reason = result.fillsCount === 0 ? 'has no fills yet' : 'ledger short of cumulative';
+          scheduleFilledRetry(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, 1, reason);
           return;
         }
       }
