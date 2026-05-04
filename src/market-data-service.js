@@ -150,6 +150,13 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
 
 const CANCEL_RETRY_BASE_MS = 30000;
 const CANCEL_RETRY_MAX_MS = 300000; // 5 min cap on backoff
+// Time budget for a single cancel-retry chain. Gemini and Crypto.com's
+// getOrderFills are backed by recent-trade queries that age out, so a
+// chain can never recover fills that fell out of that window — without
+// a budget, those orders would loop forever. After this many ms of
+// failed catch-up, settle with a loud warning so the order isn't stuck
+// in retry indefinitely; an operator can manually reconcile if needed.
+const CANCEL_RETRY_TIME_BUDGET_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 /**
  * Settle a tracked order on a CANCELLED/FAILED WS event, catching up any
@@ -196,10 +203,12 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
     adapter, fillLedger, exchange, markSettled, untrackOrder,
     retryDelayBaseMs = CANCEL_RETRY_BASE_MS,
     retryDelayMaxMs = CANCEL_RETRY_MAX_MS,
+    retryTimeBudgetMs = CANCEL_RETRY_TIME_BUDGET_MS,
     untrackDelayMs = 60000,
     scheduleTimeout = setTimeout,
     isStopped = () => false,
     getCurrentFilledSize,
+    now = Date.now,
   } = deps;
 
   if (isStopped()) return { settledNow: false, retryScheduled: false };
@@ -220,6 +229,8 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
     // synthesizer (which relies on getOrderStatus to drop non-open orders)
     // doesn't keep emitting this order as a phantom open row.
     trackedOrder.status = status.toLowerCase();
+    // Record the chain's start time so retries can enforce a time budget.
+    trackedOrder._cancelRetryStartedAt = now();
   }
 
   const hadUnrecorded = filledSize > (trackedOrder.lastIngestedFilledSize || 0);
@@ -248,6 +259,21 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
     markSettled(orderId);
     scheduleTimeout(() => untrackOrder(orderId), untrackDelayMs);
     return { settledNow: true, retryScheduled: false };
+  }
+
+  // Time budget exhausted? Settle anyway. Gemini and Crypto.com's
+  // getOrderFills are backed by recent-trade queries that age fills
+  // out, so the chain can never recover once partials fall outside
+  // that window. Looping forever wastes adapter quota and never fires
+  // terminal bookkeeping. The order's missed-fill data is on the
+  // exchange and recoverable via manual reconciliation; we accept the
+  // loss in the local ledger after this many ms of trying.
+  const startedAt = trackedOrder._cancelRetryStartedAt || now();
+  if (now() - startedAt > retryTimeBudgetMs) {
+    console.log(`❌ [${exchange}] Cancel catch-up time budget (${Math.round(retryTimeBudgetMs / 60000)}min) exhausted for ${orderId} — settling without all partials. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`);
+    markSettled(orderId);
+    scheduleTimeout(() => untrackOrder(orderId), untrackDelayMs);
+    return { settledNow: true, retryScheduled: false, exhausted: true };
   }
 
   // Catchup didn't deliver. markSettled() is sticky and would block
@@ -695,6 +721,12 @@ const createMarketDataService = (exchange, pair) => {
   const orderWorkQueue = createWorkQueue();
   const enqueueOrderWork = (orderId, work) => orderWorkQueue.enqueue(orderId, work);
 
+  // Allows tests to substitute a fake adapter without monkey-patching
+  // the require cache (market-data-service destructures getAdapter at
+  // module load, so cache patches arrive too late).
+  let _adapterOverride = null;
+  const getActiveAdapter = () => _adapterOverride || getAdapter(exchange);
+
   // Per-orderId pending-retry registries. Both are Maps storing a
   // mutable target so replayed WS events for the same order can advance
   // the cumulative filledSize a queued retry chain is targeting:
@@ -756,6 +788,10 @@ const createMarketDataService = (exchange, pair) => {
   // exponential backoff bounds the load on the adapter.
   const FILLED_RETRY_BASE_MS = 2000;
   const FILLED_RETRY_MAX_MS = 300000; // 5 min cap
+  // Same Gemini/Crypto.com aged-out-fills concern as the cancel chain.
+  // After this many ms of failed catch-up, settle the FILLED order with
+  // a warning rather than retry forever.
+  const FILLED_RETRY_TIME_BUDGET_MS = 6 * 60 * 60 * 1000;
 
   // Bounded partial-fill ingest retry. Open orders are still active so
   // the next WS update will eventually trigger another attempt; this is
@@ -776,7 +812,7 @@ const createMarketDataService = (exchange, pair) => {
     }
     if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) return; // already covered
 
-    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
     const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `partial retry ${attempt}`);
     if (timerTracker.isStopped()) return;
 
@@ -840,8 +876,21 @@ const createMarketDataService = (exchange, pair) => {
     if (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed') {
       return;
     }
+    // Record chain start time on first attempt for the time budget below.
+    if (attempt === 1 && !trackedOrder._filledRetryStartedAt) {
+      trackedOrder._filledRetryStartedAt = Date.now();
+    }
+    // Time budget: see CANCEL_RETRY_TIME_BUDGET_MS comment. Gemini/
+    // Crypto.com partial-history adapters can never recover aged-out
+    // fills, so we settle with a warning rather than retry forever.
+    const startedAt = trackedOrder._filledRetryStartedAt || Date.now();
+    if (Date.now() - startedAt > FILLED_RETRY_TIME_BUDGET_MS) {
+      console.log(`❌ [${exchange}] FILLED retry time budget (${Math.round(FILLED_RETRY_TIME_BUDGET_MS / 60000)}min) exhausted for ${orderId} — settling. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`);
+      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+      return;
+    }
 
-    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
     const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `FILLED retry ${attempt}`);
     if (timerTracker.isStopped()) return;
 
@@ -940,7 +989,7 @@ const createMarketDataService = (exchange, pair) => {
       return;
     }
 
-    const ingestDeps = { adapter: getAdapter(exchange), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
 
     // Non-terminal partial-fill ingest. Coinbase keeps status='OPEN' while
     // delivering incremental filledSize updates; without this path, a
@@ -1235,6 +1284,7 @@ const createMarketDataService = (exchange, pair) => {
       handleOrderUpdate,
       injectFillLedger: (ledger) => { fillLedger = ledger; },
       injectProductId: (id) => { productId = id; },
+      injectAdapter: (a) => { _adapterOverride = a; },
       pendingTerminalRetries,
       pendingPartialRetries,
       timerTracker,

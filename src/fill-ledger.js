@@ -87,15 +87,19 @@ const createFillLedger = (exchange, productId, pair) => {
         if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
         cycleIndex.get(fill.cycleId).add(fill.tradeId);
       }
-      // Populate per-order size index for O(1) watermark lookups.
-      // Round to 8-decimal asset precision after each accumulation —
-      // raw float sums of common decimal sizes (e.g. 0.4 + 0.4) can
-      // produce 0.79999999... which compares strictly less than the
-      // WS-reported 0.8 cumulative. Without rounding the retry chain
-      // would loop forever even with all fills present.
-      if (fill.orderId) {
-        const next = (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0);
-        orderSizeIndex.set(fill.orderId, roundAsset(next));
+    }
+    // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
+    // load() can be called multiple times on a live ledger (regime-engine.js
+    // re-loads on state reload). If we accumulated inside the loop above,
+    // a second load() would double-count every persisted fill on top of
+    // the existing totals — making getRecordedSizeForOrder over-report
+    // and the market-data-service watermark believe orders are fully
+    // ingested when they're not. Rebuilding from `fills` is idempotent.
+    orderSizeIndex.clear();
+    for (const f of fills.values()) {
+      if (f.orderId) {
+        const next = (orderSizeIndex.get(f.orderId) || 0) + (f.size || 0);
+        orderSizeIndex.set(f.orderId, roundAsset(next));
       }
     }
 

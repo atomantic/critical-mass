@@ -958,6 +958,24 @@ describe('Fill Ledger', () => {
     assert.equal(recorded, 0.7, 'rounded sum must be exactly 0.7, not 0.7000000000000001');
   });
 
+  it('load() is idempotent for orderSizeIndex (no double-counting on re-load)', () => {
+    const exchange = 'test-exchange-double-load';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    // Re-load the live ledger instance — regime-engine.js does this on
+    // state reload. Without the index-rebuild fix, this would add 0.4
+    // on top of the existing 0.4 and report 0.8.
+    ledger1.load();
+    assert.equal(ledger1.getRecordedSizeForOrder('o-1'), 0.4,
+      're-load must not double-count');
+
+    ledger1.load();
+    assert.equal(ledger1.getRecordedSizeForOrder('o-1'), 0.4,
+      'a third load must still report 0.4');
+  });
+
   it('getRecordedSizeForOrder restores the per-order index from disk on load', () => {
     const exchange = 'test-exchange-load-idx';
     const ledger1 = createTestLedger(exchange);

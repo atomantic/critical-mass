@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService } = require('../src/market-data-service');
@@ -826,50 +826,27 @@ describe('createWorkQueue', () => {
 // ---------------------------------------------------------------------------
 
 describe('handleOrderUpdate integration: replayed CANCELLED reaches target update during retry chain', () => {
-  // Patch require cache for ./adapters so getAdapter returns our fake.
-  // Used only inside this describe block; restored afterwards.
-  const adaptersPath = require.resolve('../src/adapters');
-
-  let savedAdapters;
-  let fakeAdapter;
-  let getOrderFillsCalls;
-
-  beforeEach(() => {
-    savedAdapters = require.cache[adaptersPath];
-    getOrderFillsCalls = [];
-    fakeAdapter = {
-      getOrderFills: async (orderId) => {
-        const i = getOrderFillsCalls.length;
-        getOrderFillsCalls.push({ orderId });
-        return fakeAdapter.responses[i] instanceof Error
-          ? (function () { throw fakeAdapter.responses[i]; })()
-          : (fakeAdapter.responses[i] ?? []);
-      },
-      responses: [],
-      loadCredentials: () => ({ apiKey: 'k', apiSecret: 's' }),
-    };
-    require.cache[adaptersPath] = {
-      ...require.cache[adaptersPath],
-      exports: { getAdapter: () => fakeAdapter },
-    };
-  });
-
-  afterEach(() => {
-    if (savedAdapters) require.cache[adaptersPath] = savedAdapters;
-    else delete require.cache[adaptersPath];
-  });
-
   it('replayed CANCELLED with larger filledSize advances the in-flight retry target via processOrderUpdate', async () => {
     // First CANCELLED: filledSize=0.3, fetch fails → retry scheduled.
     // Replayed CANCELLED: filledSize=0.7 — must reach the cancel branch
     // and update the pending target so the retry catches up to 0.7.
-    fakeAdapter.responses = [
+    let callIdx = 0;
+    const responses = [
       new Error('boom'),                                   // attempt 0 fails
       [{ tradeId: 't1', orderId: 'order-X', side: 'sell', price: 70000, size: 0.3, totalCommission: 0.05 },
        { tradeId: 't2', orderId: 'order-X', side: 'sell', price: 70000, size: 0.4, totalCommission: 0.05 }], // retry: full set
     ];
+    const fakeAdapter = {
+      getOrderFills: async () => {
+        const r = responses[Math.min(callIdx, responses.length - 1)];
+        callIdx += 1;
+        if (r instanceof Error) throw r;
+        return r;
+      },
+    };
 
     const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
     const ingestedTradeIds = [];
     const fakeLedger = {
       ingestFill: (fill) => {
