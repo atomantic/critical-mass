@@ -684,14 +684,26 @@ const createMarketDataService = (exchange, pair) => {
   const orderWorkQueue = createWorkQueue();
   const enqueueOrderWork = (orderId, work) => orderWorkQueue.enqueue(orderId, work);
 
-  // Per-orderId pending-retry guard. WS feeds can replay events; without
-  // this dedupe a second FILLED or CANCELLED for the same order would
-  // start a parallel retry chain alongside the existing one, multiplying
-  // adapter traffic and racing on trackedOrder mutations. Entries are
-  // added when a retry is scheduled and removed on terminal settle.
-  const pendingRetries = new Set();
+  // Per-orderId pending-retry guards. Two separate caches because partial
+  // and terminal retries have different lifecycle semantics:
+  //
+  // - pendingTerminalRetries (Set): replayed FILLED/CANCELLED for the
+  //   same order must not spawn parallel retry chains. The first chain
+  //   detects state on its next tick and settles.
+  //
+  // - pendingPartialRetries (Map<orderId, {filledSize, attempt}>):
+  //   partials need a *target* per order so newer OPEN updates can
+  //   advance filledSize without creating a parallel chain (the existing
+  //   timer reads the latest target when it fires). Terminal events
+  //   preempt by deleting the entry — the queued timer fires, sees no
+  //   entry, and bails.
+  const pendingTerminalRetries = new Set();
+  const pendingPartialRetries = new Map();
 
-  const clearPendingRetry = (orderId) => { pendingRetries.delete(orderId); };
+  const clearPendingRetry = (orderId) => {
+    pendingTerminalRetries.delete(orderId);
+    pendingPartialRetries.delete(orderId);
+  };
 
   const finalizeFilledOrder = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees) => {
     trackedOrder.status = 'filled';
@@ -770,16 +782,33 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   const schedulePartialRetry = (orderId, trackedOrder, filledSize, attempt, reason) => {
-    if (pendingRetries.has(orderId)) return; // dedupe with FILLED retries too
-    pendingRetries.add(orderId);
+    // If a terminal retry is pending, terminal supersedes partial — let
+    // it own catch-up. (FILLED/CANCELLED handlers also preempt any
+    // pending partial entry when they arm.)
+    if (pendingTerminalRetries.has(orderId)) return;
 
+    // If a partial retry is already pending, just advance its target so
+    // the queued timer uses the latest filledSize when it fires. This
+    // prevents the "queued retry runs against stale 0.3 while order
+    // already advanced to 0.7" race.
+    const existing = pendingPartialRetries.get(orderId);
+    if (existing) {
+      if (filledSize > existing.filledSize) existing.filledSize = filledSize;
+      return;
+    }
+
+    pendingPartialRetries.set(orderId, { filledSize, attempt });
     const delay = Math.min(PARTIAL_RETRY_BASE_MS * Math.pow(2, attempt - 1), PARTIAL_RETRY_MAX_MS);
     console.log(`⏳ [${exchange}] partial ${orderId} ${reason} — retry ${attempt}/${PARTIAL_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`);
     trackedSetTimeout(
       () => enqueueOrderWork(orderId, async () => {
-        pendingRetries.delete(orderId);
+        // Read the (possibly updated) target out of the map; if the
+        // entry was preempted by a terminal handler, bail.
+        const entry = pendingPartialRetries.get(orderId);
+        if (!entry) return;
+        pendingPartialRetries.delete(orderId);
         try {
-          await retryPartialIngest(orderId, trackedOrder, filledSize, attempt);
+          await retryPartialIngest(orderId, trackedOrder, entry.filledSize, entry.attempt);
         } catch (err) {
           console.log(`❌ [${exchange}] partial retry chain crashed for ${orderId}: ${err.message}`);
         }
@@ -823,13 +852,15 @@ const createMarketDataService = (exchange, pair) => {
   };
 
   const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt, reason) => {
-    // Dedupe: if a retry chain is already pending for this orderId, a
-    // replayed FILLED WS event must not spawn a second parallel chain.
-    // The first retry will detect any new state via getOrderFills and
-    // settle the order — at which point clearPendingRetry runs and a
-    // future retry could be scheduled if needed.
-    if (pendingRetries.has(orderId)) return;
-    pendingRetries.add(orderId);
+    // Dedupe: if a terminal retry chain is already pending for this
+    // orderId, a replayed FILLED WS event must not spawn a second
+    // parallel chain. The first retry will detect any new state via
+    // getOrderFills and settle the order — at which point clearPendingRetry
+    // runs and a future retry could be scheduled if needed.
+    if (pendingTerminalRetries.has(orderId)) return;
+    // Preempt any pending partial retry — terminal owns catch-up.
+    pendingPartialRetries.delete(orderId);
+    pendingTerminalRetries.add(orderId);
 
     const delay = Math.min(FILLED_RETRY_BASE_MS * Math.pow(2, attempt - 1), FILLED_RETRY_MAX_MS);
     console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retry ${attempt} in ${Math.round(delay / 1000)}s`);
@@ -838,7 +869,7 @@ const createMarketDataService = (exchange, pair) => {
         // The retry's work-queue slot is the canonical "retry running"
         // window. Clear pending here so retryFilledIngest's reschedule
         // (if it doesn't settle) can re-add it.
-        pendingRetries.delete(orderId);
+        pendingTerminalRetries.delete(orderId);
         // Wrap in try/catch — without this a throw inside retryFilled
         // Ingest (e.g. an onOrderFillCallback that fails downstream)
         // would surface as an unhandled rejection and silently kill the
@@ -951,7 +982,9 @@ const createMarketDataService = (exchange, pair) => {
       // already pending for this order, the existing chain will pick up
       // any new state on its next tick. Spawning a second settle here
       // would create parallel retry chains.
-      if (pendingRetries.has(orderId)) return;
+      if (pendingTerminalRetries.has(orderId)) return;
+      // Preempt any pending partial retry — terminal owns catch-up.
+      pendingPartialRetries.delete(orderId);
       const result = await settleCancelledOrder(
         {
           ...ingestDeps,
@@ -962,7 +995,7 @@ const createMarketDataService = (exchange, pair) => {
         },
         orderId, trackedOrder, status, filledSize
       );
-      if (result?.retryScheduled) pendingRetries.add(orderId);
+      if (result?.retryScheduled) pendingTerminalRetries.add(orderId);
     }
   };
 
