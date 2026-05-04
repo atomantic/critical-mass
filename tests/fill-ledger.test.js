@@ -902,4 +902,50 @@ describe('Fill Ledger', () => {
     assert.equal(ledger2.getCurrentCycleId(), 'cycle-1');
     assert.equal(ledger2.getCurrentCycleBuysCount(), 1);
   });
+
+  // =======================================================================
+  // persist() is a no-op when nothing has changed since the last successful
+  // persist — lets defensive callers (e.g. unbounded retry loops) invoke
+  // persist() on every tick without churning the ledger file.
+  // =======================================================================
+  it('persist() is a no-op when ledger is clean (no mutations since last persist)', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1' })); // auto-persists, clears dirty
+
+    const filePath = path.join(tmpDir, 'test-exchange', 'default', 'fill-ledger.json');
+    const mtimeBefore = fs.statSync(filePath).mtimeMs;
+
+    // Sleep briefly so a no-op persist would still produce a different
+    // mtime if it actually wrote. Use a busy-wait via Date.now to avoid
+    // making this test async.
+    const wait = Date.now() + 25;
+    while (Date.now() < wait) { /* busy wait */ }
+
+    ledger.persist();
+    ledger.persist();
+    ledger.persist();
+
+    const mtimeAfter = fs.statSync(filePath).mtimeMs;
+    assert.equal(mtimeAfter, mtimeBefore, 'clean persists must NOT rewrite the ledger file');
+  });
+
+  it('persist() rewrites the file when mutations have happened since last persist', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1' }));
+
+    const filePath = path.join(tmpDir, 'test-exchange', 'default', 'fill-ledger.json');
+    const mtimeBefore = fs.statSync(filePath).mtimeMs;
+
+    const wait = Date.now() + 25;
+    while (Date.now() < wait) { /* busy wait */ }
+
+    // skipPersist mutates without writing — dirty flag should now be set
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-2' }), null, { skipPersist: true });
+    ledger.persist();
+
+    const mtimeAfter = fs.statSync(filePath).mtimeMs;
+    assert.ok(mtimeAfter > mtimeBefore, 'persist must rewrite when ledger is dirty');
+  });
 });

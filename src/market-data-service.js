@@ -76,16 +76,22 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
 
   if (fills.length === 0) {
     // Adapter has nothing to give us this round. Still attempt persist
-    // so any in-memory fills from a previous failed-persist call are
-    // flushed to disk — without this, the watermark stays unadvanced
-    // (correct) but disk falls permanently behind memory (durability
-    // hole T22 flagged). We also do NOT advance lastIngestedFilledSize
-    // since the adapter still hasn't confirmed the cumulative.
+    // (no-op when ledger is clean) so any in-memory fills from a
+    // previous failed-persist call are flushed to disk. Also recompute
+    // the watermark from the ledger: fills may already be present in
+    // memory/disk from a prior call or restart with a populated ledger,
+    // and without this update the retry chain would loop forever even
+    // though the order is fully recorded.
     try {
       fillLedger.persist();
     } catch (err) {
       console.log(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`);
       return { fetched: false, fillsCount: 0, ingestedCount: 0 };
+    }
+    const recordedSize = (fillLedger.getFillsForOrder(orderId) || [])
+      .reduce((s, f) => s + (f.size || 0), 0);
+    if (recordedSize > (trackedOrder.lastIngestedFilledSize || 0)) {
+      trackedOrder.lastIngestedFilledSize = recordedSize;
     }
     return { fetched: true, fillsCount: 0, ingestedCount: 0 };
   }

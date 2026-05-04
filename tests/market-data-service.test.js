@@ -232,6 +232,7 @@ describe('ingestNewFillsForOrder', () => {
     let persistAttempts = 0;
     const dirtyLedger = {
       ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
       persist: () => { persistAttempts += 1; },
     };
 

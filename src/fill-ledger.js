@@ -45,6 +45,12 @@ const createFillLedger = (exchange, productId, pair) => {
   const cycleIndex = new Map();
   let currentCycleId = null;
   let nextCycleNumber = 1;
+  // True when in-memory state has been mutated since the last successful
+  // persist. Lets persist() short-circuit when there's nothing new to
+  // write, so callers (e.g. unbounded retry loops in market-data-service)
+  // can call persist() defensively on every tick without churning the
+  // ledger file or blocking the event loop on every backoff.
+  let dirtySinceLastPersist = false;
   const baseCurrency = getBaseCurrency(productId);
   const fmtPrice = (p) => {
     if (p == null || isNaN(p)) return '-';
@@ -121,9 +127,13 @@ const createFillLedger = (exchange, productId, pair) => {
   };
 
   /**
-   * Persist fill ledger to disk
+   * Persist fill ledger to disk. No-op when nothing has changed since the
+   * last successful persist — callers can invoke this defensively on
+   * every retry tick without churning the ledger file.
    */
   const persist = () => {
+    if (!dirtySinceLastPersist) return;
+
     const filePath = getFillLedgerPath(exchange, pair);
     const dir = path.dirname(filePath);
 
@@ -135,6 +145,7 @@ const createFillLedger = (exchange, productId, pair) => {
       .sort((a, b) => a.timestamp - b.timestamp);
 
     atomicWriteSync(filePath, JSON.stringify(fillsArray, null, 2));
+    dirtySinceLastPersist = false;
   };
 
   /**
@@ -182,6 +193,7 @@ const createFillLedger = (exchange, productId, pair) => {
       if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
       cycleIndex.get(fill.cycleId).add(tradeId);
     }
+    dirtySinceLastPersist = true;
     if (!options.skipPersist) persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
@@ -638,6 +650,7 @@ const createFillLedger = (exchange, productId, pair) => {
           fills.set(fill.tradeId, fill);
           cycleIndex.get(cycleId).add(fill.tradeId);
           orphansFixed++;
+          dirtySinceLastPersist = true;
         }
 
         // Check if this is a completed cycle using BTC balance ratio
@@ -739,6 +752,7 @@ const createFillLedger = (exchange, productId, pair) => {
           if (fill.cycleId && idMap.has(fill.cycleId)) {
             fill.cycleId = idMap.get(fill.cycleId);
             fills.set(fill.tradeId, fill);
+            dirtySinceLastPersist = true;
           }
           if (fill.cycleId) {
             if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
@@ -772,6 +786,7 @@ const createFillLedger = (exchange, productId, pair) => {
         if (sellId) {
           fill.sellOrderId = sellId;
           linkedCount++;
+          dirtySinceLastPersist = true;
         }
       }
     }
@@ -809,6 +824,7 @@ const createFillLedger = (exchange, productId, pair) => {
       }
       fill.cycleId = cycleId;
       fills.set(tradeId, fill);
+      dirtySinceLastPersist = true;
       // Add to new cycle index
       if (cycleId) {
         if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
@@ -828,6 +844,7 @@ const createFillLedger = (exchange, productId, pair) => {
       if (fill.orderId === orderId) {
         Object.assign(fill, metadata);
         matched = true;
+        dirtySinceLastPersist = true;
       }
     }
     // Persist when sellOrderId is set to ensure it survives restarts
