@@ -299,23 +299,36 @@ const createFillLedger = (exchange, productId, pair) => {
   const persist = (options = {}) => {
     const { force = false } = options;
     const filePath = getFillLedgerPath(exchange, pair);
-    // Clean shutdowns must still write when the on-disk file has gone
-    // missing (operator rm, transient unmount, etc.) — otherwise
-    // regime-engine.stop()'s defensive persist() would no-op, the
-    // process exits, and the next boot's load() sees no file and treats
-    // it as a fresh deployment with empty history. Subsequent persists
-    // would then write a file containing only post-restart fills,
-    // silently destroying the recoverable in-memory ledger that the
-    // dirty-flag short-circuit refused to flush. fs.existsSync is cheap
-    // and the missing-file case is rare, so the extra check costs ~nothing.
-    //
-    // The `force: true` option also bypasses the short-circuit. Shutdown
-    // paths (regime-engine.stop's defensive flush) pass it so a healthy
-    // in-memory snapshot always lands on disk even if the file became
-    // unreadable / truncated externally while the process was running —
-    // existsSync alone wouldn't catch that case and the next cold start
-    // would fail in load() despite a recoverable in-memory ledger.
-    if (!force && !dirtySinceLastPersist && fs.existsSync(filePath)) return;
+    if (!dirtySinceLastPersist) {
+      // Clean shutdowns must still write when the on-disk file has gone
+      // missing (operator rm, transient unmount, etc.) — otherwise
+      // regime-engine.stop()'s defensive persist() would no-op, the
+      // process exits, and the next boot's load() sees no file and
+      // treats it as a fresh deployment with empty history. Subsequent
+      // persists would then write a file containing only post-restart
+      // fills, silently destroying the recoverable in-memory ledger
+      // that the dirty-flag short-circuit refused to flush.
+      if (!fs.existsSync(filePath)) {
+        // fall through to write
+      } else if (!force) {
+        return;
+      } else {
+        // `force: true` — used by shutdown paths to flush a healthy
+        // in-memory snapshot when the on-disk file became unreadable /
+        // truncated externally during the run. Honor force ONLY when
+        // the file is unparseable: if it's readable JSON, the operator
+        // may have made manual reconciliation edits that we should not
+        // clobber with our (potentially-staler) in-memory state. They
+        // can still SIGUSR1-reload before stop if they want their
+        // edits applied to the engine.
+        try {
+          JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          return;
+        } catch (_) {
+          // unreadable — fall through and rewrite from in-memory
+        }
+      }
+    }
 
     const dir = path.dirname(filePath);
 

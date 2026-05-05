@@ -244,7 +244,7 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
   if (mdsResult?.success) {
     wireMarketDataCallbacks(exchange, resolvedPair);
   } else {
-    log('WARN', `⚠️ [${label}] Standalone market-data-service did not start (${mdsResult?.error || 'unknown'}); proceeding with engine stop without WS handover`);
+    log('WARN', `⚠️ [${label}] Standalone market-data-service did not start (${mdsResult?.error || 'unknown'}); proceeding with engine stop, will retry handover after stop in case its persist repaired a corrupt ledger`);
   }
 
   const stopResult = await engine.stop().catch((err) => {
@@ -264,6 +264,23 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
       stopMarketDataService(exchange, resolvedPair);
     }
     return { success: false, error: stopResult.error };
+  }
+
+  // Retry the standalone WS handover if the initial start failed —
+  // engine.stop()'s force-persist may have replaced an unreadable
+  // ledger file with a healthy in-memory snapshot, so a second attempt
+  // can now read it. Without this retry, the fund would be left with
+  // no stopped-engine WS service even though the underlying corruption
+  // is now resolved, and any fills/cancels that arrive while the
+  // engine remains stopped would be missed until manual restart.
+  if (!mdsResult?.success) {
+    const retryResult = await startMarketDataService(exchange, resolvedPair);
+    if (retryResult?.success) {
+      wireMarketDataCallbacks(exchange, resolvedPair);
+      log('INFO', `✅ [${label}] Standalone market-data-service started after engine stop`);
+    } else {
+      log('WARN', `⚠️ [${label}] Standalone market-data-service still not available after engine stop (${retryResult?.error || 'unknown'}) — fund has no WS service while stopped`);
+    }
   }
 
   regimeEngines.delete(key);
