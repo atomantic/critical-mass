@@ -334,8 +334,19 @@ const mergeToRegime = (exchange) => {
   const orders = state.orders || [];
   const { pending, filled } = categorizeOrders(orders);
 
-  // 3. Load existing fill ledger and ingest fills
-  const fillLedger = createFillLedger(exchange);
+  // 3. Load existing fill ledger and ingest fills.
+  // Wrap createFillLedger so a cold-start corrupt ledger throw is rewritten
+  // with merge-specific context. mergeToRegime doesn't disable the engine
+  // (unlike executeConversion), so there's no rollback to do — but the
+  // surfaced error needs to reach the IPC handler so it can return a
+  // structured {success:false} response instead of leaking the raw
+  // filesystem-level message.
+  let fillLedger;
+  try {
+    fillLedger = createFillLedger(exchange);
+  } catch (err) {
+    throw new Error(`DCA merge: fill ledger init failed for ${exchange}: ${err.message}`);
+  }
 
   // Ingest filled (completed) DCA orders as completed cycle fills
   let filledIngested = 0;

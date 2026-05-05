@@ -73,7 +73,17 @@ const getStandaloneLedger = (exchange, pair) => {
   const key = fundKey(exchange, resolvedPair);
   if (!standaloneLedgers.has(key)) {
     const fundConfig = getFundConfig(exchange, resolvedPair);
-    const ledger = createFillLedger(exchange, fundConfig?.productId, resolvedPair);
+    // createFillLedger throws on cold-start corruption (refuses to boot
+    // empty so a subsequent persist can't overwrite a recoverable file).
+    // Wrap with a stable message prefix so the IPC framework's catch
+    // returns a useful error response to the client without leaking
+    // the raw filesystem-level message detail to the API surface.
+    let ledger;
+    try {
+      ledger = createFillLedger(exchange, fundConfig?.productId, resolvedPair);
+    } catch (err) {
+      throw new Error(`Fill ledger init failed for ${exchange}/${resolvedPair}: ${err.message}`);
+    }
     ledger.load();
     standaloneLedgers.set(key, ledger);
   }
@@ -576,7 +586,16 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
   const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
 
   invalidateStandaloneLedger(exchange, resolvedPair);
-  const fillLedger = getStandaloneLedger(exchange, resolvedPair);
+  // getStandaloneLedger throws on cold-start ledger corruption. Catch it
+  // and return the structured {success:false, error} shape that other
+  // handlers in this file return on failure, so the API client doesn't
+  // need a separate code path for thrown-vs-returned errors.
+  let fillLedger;
+  try {
+    fillLedger = getStandaloneLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
   const currentState = loadRegimeState(exchange, resolvedPair);
 
   // Use closed trades as authoritative P&L source
@@ -961,7 +980,15 @@ ipcServer.onRequest('regime:manual-trade-pair', async (payload, exchange, pair) 
   const { getAdapter } = require('../src/adapters');
   const adapter = getAdapter(exchange);
   const store = getManualTradeStore(exchange, resolvedPair);
-  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  // getActiveLedger → getStandaloneLedger → createFillLedger throws on
+  // cold-start corruption. Convert to the structured {success:false}
+  // shape this handler already returns for other failure modes.
+  let fillLedger;
+  try {
+    fillLedger = getActiveLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 
   // Fetch and ingest buy fills
   let buyFills;
@@ -1040,7 +1067,17 @@ ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
     return { success: true, preview: true, exchange, pair: resolvedPair, ...previewConversion(exchange) };
   }
 
-  const result = merge ? mergeToRegime(exchange) : executeConversion(exchange);
+  // executeConversion re-enables the DCA engine on its own throw path
+  // (handled inside dca-converter.js). mergeToRegime doesn't disable the
+  // engine so it has nothing to roll back — both paths surface a
+  // cold-start ledger corruption throw that we convert into the
+  // structured {success:false} response the rest of the IPC API uses.
+  let result;
+  try {
+    result = merge ? mergeToRegime(exchange) : executeConversion(exchange);
+  } catch (err) {
+    return { success: false, exchange, pair: resolvedPair, error: err.message };
+  }
   invalidateStandaloneLedger(exchange, resolvedPair);
   return { success: true, preview: false, exchange, pair: resolvedPair, ...result };
 });

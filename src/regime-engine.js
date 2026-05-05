@@ -606,9 +606,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Check if active TP order still exists on exchange
     if (positionState.activeTpOrderId && !openOrderIds.has(positionState.activeTpOrderId)) {
-      // TP order is gone - check if it filled
+      // TP order is gone - check if it filled. Mirror order-manager.js:29
+      // (status==='FILLED' OR completionPercentage>=100) — Coinbase can flip
+      // the percentage to 100 a tick before status flips to FILLED, and
+      // without that branch an offline fill in that brief window is missed
+      // and the TP is restored as open by the path further down.
       const orderStatus = await adapter.getOrder(positionState.activeTpOrderId);
-      if (orderStatus.status === 'FILLED') {
+      if (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100) {
         console.log(`✅ [${exchange}] TP order ${positionState.activeTpOrderId} filled while offline`);
         tpFilled = true;
 
@@ -675,7 +679,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     for (const body of [...offlineBodies]) {
       if (body.tpOrderId && !openOrderIds.has(body.tpOrderId)) {
         const orderStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
-        if (orderStatus && orderStatus.status === 'FILLED') {
+        // Same FILLED-or-completion=100 pattern as the core TP path above.
+        if (orderStatus && (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100)) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
           console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} filled while offline`);
 
@@ -975,10 +980,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         console.log(`📝 [${exchange}] Position exists but no TP order, will place after metrics update`);
       }
 
-      // Restore TP order tracking if we have an active TP order ID - but validate it exists first
+      // Restore TP order tracking if we have an active TP order ID - but validate it exists first.
+      // EXPIRED is a terminal cancellation per order-manager.js:49 — without
+      // excluding it here, an EXPIRED order would be restored as an open TP
+      // and block placement of a replacement. Same precedent across the
+      // codebase: order-manager / order-executor / market-data-service all
+      // treat EXPIRED as terminal-cancelled.
       if (positionState.activeTpOrderId) {
         const tpOrderStatus = await adapter.getOrder(positionState.activeTpOrderId).catch(() => null);
-        const tpOrderExists = tpOrderStatus && tpOrderStatus.status !== 'CANCELLED' && tpOrderStatus.status !== 'FAILED';
+        const tpOrderExists = tpOrderStatus
+          && tpOrderStatus.status !== 'CANCELLED'
+          && tpOrderStatus.status !== 'FAILED'
+          && tpOrderStatus.status !== 'EXPIRED';
 
         if (tpOrderExists && orderExecutor.restorePendingOrder) {
           // Check if a celestial body owns this TP — restore as body_tp if so
@@ -1085,9 +1098,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (!body.tpOrderId) continue;
 
           const bodyStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
-          const bodyExists = bodyStatus && bodyStatus.status !== 'CANCELLED' && bodyStatus.status !== 'FAILED';
+          // Mirror the core-TP exists check: EXPIRED is terminal cancellation.
+          const bodyExists = bodyStatus
+            && bodyStatus.status !== 'CANCELLED'
+            && bodyStatus.status !== 'FAILED'
+            && bodyStatus.status !== 'EXPIRED';
 
-          if (bodyExists && bodyStatus.status === 'FILLED') {
+          if (bodyExists && (bodyStatus.status === 'FILLED' || bodyStatus.completionPercentage >= 100)) {
             // Body filled while offline — handled in checkOfflineOrderFills above
             continue;
           }
