@@ -473,7 +473,15 @@ ipcServer.onRequest('regime:fills', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) {
-    const ledger = getStandaloneLedger(exchange, resolvedPair);
+    // getStandaloneLedger throws on cold-start ledger corruption — catch
+    // and return the structured shape clients expect, so a corrupt fund
+    // doesn't surface as an unstructured IPC exception.
+    let ledger;
+    try {
+      ledger = getStandaloneLedger(exchange, resolvedPair);
+    } catch (err) {
+      return { running: false, success: false, error: err.message };
+    }
     return { running: false, fills: ledger.getAllFills(), stats: ledger.getStats() };
   }
   return { running: true, fills: engine.getFills(), stats: engine.getFillStats() };
@@ -729,7 +737,15 @@ ipcServer.onRequest('regime:unaccounted-fills', async (payload, exchange, pair) 
   const { startDate } = payload || {};
   const { getUnaccountedFills } = require('../src/sync-fills');
 
-  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  // getActiveLedger → getStandaloneLedger throws on cold-start ledger
+  // corruption. Surface as a structured failure rather than letting it
+  // leak through the IPC framework.
+  let fillLedger;
+  try {
+    fillLedger = getActiveLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
   const manualTradeStore = getManualTradeStore(exchange, resolvedPair);
 
   const result = await getUnaccountedFills(exchange, fillLedger, manualTradeStore, { startDate });
@@ -765,7 +781,12 @@ ipcServer.onRequest('regime:manual-trade', async (payload, exchange, pair) => {
     return { success: false, error: `No fills found for order ${sellOrderId}` };
   }
 
-  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  let fillLedger;
+  try {
+    fillLedger = getActiveLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 
   const { tradeIds: sellFillTradeIds, totalSize: totalSellSize, totalQuote: totalSellQuote } =
     ingestAdapterFills(fillLedger, sellFills, sellOrderId, 'sell');
@@ -852,7 +873,12 @@ ipcServer.onRequest('regime:manual-trade-check', async (payload, exchange, pair)
       return { success: false, error: `Buy order filled but failed to fetch fills: ${err.message}` };
     }
 
-    const fillLedger = getActiveLedger(exchange, resolvedPair);
+    let fillLedger;
+    try {
+      fillLedger = getActiveLedger(exchange, resolvedPair);
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
 
     const { tradeIds: buyFillTradeIds, totalSize: totalBuySize, totalQuote: totalBuyQuote } =
       ingestAdapterFills(fillLedger, buyFills, trade.buyOrderId, 'buy');
@@ -925,7 +951,12 @@ ipcServer.onRequest('regime:manual-trade-buy', async (payload, exchange, pair) =
     return { success: false, error: `No fills found for order ${buyOrderId}` };
   }
 
-  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  let fillLedger;
+  try {
+    fillLedger = getActiveLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 
   const { tradeIds: buyFillTradeIds, totalSize: totalBuySize, totalQuote: totalBuyQuote } =
     ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');

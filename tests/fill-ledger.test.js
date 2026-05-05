@@ -1215,19 +1215,32 @@ describe('Fill Ledger', () => {
     // every required field, so a missing field on disk indicates
     // hand-editing or actual corruption.
     const cases = [
-      { fill: { tradeId: 't1', orderId: 'o1', /* no side */ size: 0.4, quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /side must be 'buy' or 'sell'/ },
-      { fill: { tradeId: 't1', orderId: 'o1', side: 'buy', /* no size */ quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /size must be a finite number/ },
-      { fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, /* no quoteAmount */ netFee: 0, timestamp: Date.now() }, expect: /quoteAmount must be a finite number/ },
-      { fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, quoteAmount: 40, /* no netFee */ timestamp: Date.now() }, expect: /netFee must be a finite number/ },
-      { fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, quoteAmount: 40, netFee: 0 /* no timestamp */ }, expect: /timestamp must be a finite number/ },
+      { tag: 'no-side', fill: { tradeId: 't1', orderId: 'o1', /* no side */ size: 0.4, price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /side must be 'buy' or 'sell'/ },
+      { tag: 'no-size', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', /* no size */ price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /size must be a finite number/ },
+      { tag: 'no-price', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, /* no price */ quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /price must be a finite number/ },
+      { tag: 'no-quoteAmount', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, /* no quoteAmount */ netFee: 0, timestamp: Date.now() }, expect: /quoteAmount must be a finite number/ },
+      { tag: 'no-netFee', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, /* no netFee */ timestamp: Date.now() }, expect: /netFee must be a finite number/ },
+      { tag: 'no-timestamp', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0 /* no timestamp */ }, expect: /timestamp must be a finite number/ },
     ];
-    for (const { fill, expect } of cases) {
-      const exchange = `test-cold-start-missing-${fill.side || 'no-side'}-${fill.size != null ? 'has-size' : 'no-size'}-${fill.quoteAmount != null ? 'qa' : 'noqa'}-${fill.netFee != null ? 'nf' : 'nonf'}-${fill.timestamp != null ? 'ts' : 'nots'}`;
+    for (const { tag, fill, expect } of cases) {
+      const exchange = `test-cold-start-missing-${tag}`;
       const dir = path.join(tmpDir, exchange, 'default');
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([fill]));
       assert.throws(() => createTestLedger(exchange), expect);
     }
+  });
+
+  it('createFillLedger throws on cold start when ledger contains duplicate tradeIds (Map dedup would silently undercount)', () => {
+    // load() stores entries in a Map keyed by tradeId, so a duplicate would
+    // silently overwrite the earlier row — undercount totalAsset / P&L
+    // without any indication of corruption. Pre-pass must reject duplicates.
+    const exchange = 'test-cold-start-duplicate-tradeId';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const fill = { tradeId: 'dup', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now() };
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([fill, { ...fill, size: 0.5, quoteAmount: 50 }]));
+    assert.throws(() => createTestLedger(exchange), /duplicate tradeId 'dup'/);
   });
 
   it('createFillLedger throws on cold start when an entry has a non-string cycleId (would crash .match() mid-load)', () => {

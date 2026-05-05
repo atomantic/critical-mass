@@ -1174,19 +1174,22 @@ const createMarketDataService = (exchange, pair) => {
   // Terminal status detection. websocket-feed normalizes most order events
   // to one of: FILLED, OPEN, CANCELLED, FAILED, EXPIRED. We treat:
   //   - 'filled'    : status==='FILLED', OR completionPercentage>=100
-  //                   AND averageFilledPrice>0. Coinbase can flip the
-  //                   percentage to 100 a tick before status flips to
-  //                   FILLED; without the percentage path, that brief
-  //                   window keeps the order in the partial branch and
-  //                   it never reaches the FILLED retry/finalize path.
-  //                   The averageFilledPrice>0 guard avoids finalizing
-  //                   from an early OPEN+completion=100 event where
-  //                   Coinbase has not yet populated the WS aggregates
-  //                   (avgPrice/totalFees can be 0 on that event).
-  //                   Finalizing with stale zeros locks in bad
-  //                   execution metadata and the later FILLED replay
-  //                   carrying real aggregates is dropped by the
-  //                   settled-order guard.
+  //                   AND averageFilledPrice>0 AND totalFees>0. Coinbase
+  //                   can flip the percentage to 100 a tick before status
+  //                   flips to FILLED; without the percentage path, that
+  //                   brief window keeps the order in the partial branch
+  //                   and it never reaches the FILLED retry/finalize
+  //                   path. Both populated-aggregate guards avoid
+  //                   finalizing from an early OPEN+completion=100 event
+  //                   where Coinbase has not yet populated the WS
+  //                   aggregates (avgPrice/totalFees can each independently
+  //                   be 0 on that event — websocket-feed normalizes a
+  //                   missing total_fees to 0). Finalizing with stale
+  //                   zeros locks in bad execution metadata and the later
+  //                   FILLED replay carrying real aggregates is dropped
+  //                   by the settled-order guard. The FILLED status path
+  //                   above doesn't need this gate because by then the
+  //                   exchange guarantees the aggregates are populated.
   //   - 'cancelled' : status in {CANCELLED, FAILED, EXPIRED}. EXPIRED is
   //                   the exchange's "this order timed out / aged out"
   //                   terminal state — order-manager.js:49 already treats
@@ -1202,9 +1205,10 @@ const createMarketDataService = (exchange, pair) => {
   // in order-manager.js:29 (checks FILLED/completionPercentage>=100
   // BEFORE CANCELLED/EXPIRED) and order-executor.js:101,119.
   const classifyTerminal = (data) => {
-    const { status, completionPercentage, averageFilledPrice } = data;
+    const { status, completionPercentage, averageFilledPrice, totalFees } = data;
     if (status === 'FILLED') return 'filled';
-    if (typeof completionPercentage === 'number' && completionPercentage >= 100 && averageFilledPrice > 0) return 'filled';
+    if (typeof completionPercentage === 'number' && completionPercentage >= 100
+        && averageFilledPrice > 0 && totalFees > 0) return 'filled';
     if (status === 'CANCELLED' || status === 'FAILED' || status === 'EXPIRED') return 'cancelled';
     return null;
   };

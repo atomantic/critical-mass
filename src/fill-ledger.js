@@ -162,22 +162,34 @@ const createFillLedger = (exchange, productId, pair) => {
     // mode the pre-validation is meant to prevent.
     // Fields required by aggregateFills/rebuildPositionFromFills are
     // validated as REQUIRED (not "when present"): a row missing side, size,
-    // quoteAmount, netFee, or timestamp would otherwise produce NaN totals
-    // downstream and silently corrupt position / P&L state, defeating the
-    // purpose of this guard. ingestFill always populates every required
-    // field, so a missing field on disk indicates hand-editing or actual
-    // corruption — exactly what we want to reject.
+    // price, quoteAmount, netFee, or timestamp would otherwise produce NaN
+    // totals downstream and silently corrupt position / P&L state,
+    // defeating the purpose of this guard. ingestFill always populates
+    // every required field, so a missing field on disk indicates
+    // hand-editing or actual corruption — exactly what we want to reject.
+    // tradeIds are also checked for uniqueness: load() stores entries in a
+    // Map keyed by tradeId, so a duplicate would silently overwrite the
+    // earlier row and undercount position/P&L.
     const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
+    const seenTradeIds = new Set();
     for (const fill of data) {
       let invalidReason = null;
       if (!fill || typeof fill !== 'object') {
         invalidReason = 'non-object entry';
       } else if (typeof fill.tradeId !== 'string' || !fill.tradeId) {
         invalidReason = 'missing or non-string tradeId';
+      } else if (seenTradeIds.has(fill.tradeId)) {
+        invalidReason = `duplicate tradeId '${fill.tradeId}'`;
       } else if (fill.side !== 'buy' && fill.side !== 'sell') {
         invalidReason = "side must be 'buy' or 'sell'";
       } else if (!isFiniteNumber(fill.size)) {
         invalidReason = 'size must be a finite number';
+      } else if (!isFiniteNumber(fill.price)) {
+        // rebuildPositionFromFills restores lastEntryPrice / anchorPrice
+        // directly from fill.price; a NaN/null price would poison entry
+        // tracking and slip through aggregateFills (which uses quoteAmount,
+        // not price, so an inconsistent pair would also escape there).
+        invalidReason = 'price must be a finite number';
       } else if (!isFiniteNumber(fill.quoteAmount)) {
         invalidReason = 'quoteAmount must be a finite number';
       } else if (!isFiniteNumber(fill.netFee)) {
@@ -190,6 +202,8 @@ const createFillLedger = (exchange, productId, pair) => {
         invalidReason = 'orderId must be a string when present';
       } else if (fill.cycleId != null && typeof fill.cycleId !== 'string') {
         invalidReason = 'cycleId must be a string when present';
+      } else {
+        seenTradeIds.add(fill.tradeId);
       }
       if (invalidReason) {
         if (!isReload) {
