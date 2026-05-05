@@ -791,7 +791,15 @@ const createMarketDataService = (exchange, pair) => {
   // Same Gemini/Crypto.com aged-out-fills concern as the cancel chain.
   // After this many ms of failed catch-up, settle the FILLED order with
   // a warning rather than retry forever.
+  //
+  // Coinbase's getOrderFills does not age fills out — a long outage that
+  // outlasts the default budget can still recover later, so giving up
+  // would silently drop recoverable fills. Use Infinity for Coinbase and
+  // rely on service stop (timerTracker.cancelAll) to bound the chain.
+  // Gemini and Crypto.com synthesize getOrderFills from recent-trade
+  // queries that age out, so the bounded budget still applies.
   const FILLED_RETRY_TIME_BUDGET_MS = 6 * 60 * 60 * 1000;
+  const filledRetryTimeBudgetMs = exchange === 'coinbase' ? Infinity : FILLED_RETRY_TIME_BUDGET_MS;
 
   // Bounded partial-fill ingest retry. Open orders are still active so
   // the next WS update will eventually trigger another attempt; this is
@@ -874,8 +882,8 @@ const createMarketDataService = (exchange, pair) => {
       trackedOrder._filledRetryStartedAt = Date.now();
     }
     const startedAt = trackedOrder._filledRetryStartedAt || Date.now();
-    if (Date.now() - startedAt > FILLED_RETRY_TIME_BUDGET_MS) {
-      console.log(`❌ [${exchange}] FILLED retry time budget (${Math.round(FILLED_RETRY_TIME_BUDGET_MS / 60000)}min) exhausted for ${orderId} — settling. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`);
+    if (Date.now() - startedAt > filledRetryTimeBudgetMs) {
+      console.log(`❌ [${exchange}] FILLED retry time budget (${Math.round(filledRetryTimeBudgetMs / 60000)}min) exhausted for ${orderId} — settling. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`);
       finalizeFilledOrder(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees);
       return;
     }
@@ -944,11 +952,50 @@ const createMarketDataService = (exchange, pair) => {
     );
   };
 
+  // Drive a cancel/fail catch-up chain against settleCancelledOrder, with
+  // the deps wiring needed to (a) keep the chain serialized through the
+  // work queue, (b) feed the latest cumulative filledSize back into each
+  // retry, and (c) flag the target as settled when the chain finishes so
+  // replays with a larger cumulative can detect the gap and restart.
+  //
+  // markSettled is wrapped: settleCancelledOrder calls it on both the
+  // synchronous-success path and on retry-success/budget-exhaust paths,
+  // and the wrapper flips target.settled on the same Map entry that the
+  // initial path stored. The wrapper propagates through the recursive
+  // settleCancelledOrder retry (it passes its own deps through), so even
+  // a chain that settles on attempt N still flips target.settled.
+  const startCancelCatchup = (orderId, trackedOrder, status, filledSize, target) => {
+    const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    return settleCancelledOrder(
+      {
+        ...ingestDeps,
+        markSettled: (id) => { markSettled(id); target.settled = true; },
+        untrackOrder: (id) => { clearPendingRetry(id); trackedOrders.delete(id); },
+        scheduleTimeout: trackedSetTimeout,
+        enqueueWork: enqueueOrderWork,
+        // Coinbase's getOrderFills is the source of truth and never ages
+        // out; capping the chain at 6h would silently drop fills the
+        // adapter would still return after a long outage. Gemini and
+        // Crypto.com synthesize fills from recent-trade queries that age
+        // out, so the bounded budget still applies there.
+        retryTimeBudgetMs: exchange === 'coinbase' ? Infinity : CANCEL_RETRY_TIME_BUDGET_MS,
+        // Mutable target: replayed CANCELLED events advance target.filledSize
+        // so each retry attempt re-reads the latest cumulative.
+        getCurrentFilledSize: () => target.filledSize,
+      },
+      orderId, trackedOrder, status, filledSize
+    );
+  };
+
   /**
    * Handle order updates from WebSocket
-   * Detects when tracked orders fill while engine isn't running
+   * Detects when tracked orders fill while engine isn't running.
+   * Always returns a Promise so callers can chain .catch() — every early
+   * return resolves to undefined rather than synchronously returning it,
+   * which would break `handleOrderUpdate(data).catch(...)` at the regime
+   * engine call site.
    */
-  const handleOrderUpdate = (data) => {
+  const handleOrderUpdate = async (data) => {
     if (!productId) return;
     if (timerTracker.isStopped()) return;
     const { orderId, status, filledSize, averageFilledPrice, totalFees } = data;
@@ -1092,14 +1139,37 @@ const createMarketDataService = (exchange, pair) => {
 
       finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
-      // Replayed CANCELLED/FAILED: if a cancel-retry chain is already
-      // pending, advance its target so the in-flight chain catches up
-      // to the larger cumulative filledSize on the next attempt. Without
-      // the target update the chain would settle against a stale smaller
-      // value and stop short of the real cancelled quantity.
+      // Two replay scenarios for CANCELLED/FAILED on an order with an
+      // existing pendingTerminalRetries entry:
+      //
+      //   (a) chain in flight (target.settled !== true): handleOrderUpdate's
+      //       synchronous prelude already advanced target.filledSize so the
+      //       in-flight retry reads the latest cumulative on its next attempt.
+      //       Nothing more to do here.
+      //
+      //   (b) chain finished (target.settled === true): the prior chain
+      //       settled at a smaller cumulative, but a later replay reports
+      //       more fills. Adapters that synthesize getOrderFills from
+      //       recent-trade queries (Gemini, Crypto.com) can return only a
+      //       partial fill set on the first cancel and the rest later.
+      //       Restart the catch-up chain to fetch the missing partials
+      //       before the 60s untrack TTL clears the entry.
+      //
+      // Compare filledSize against trackedOrder.lastIngestedFilledSize
+      // (the actual ledger watermark) — NOT existingTarget.filledSize.
+      // The prelude may have advanced target.filledSize during a prior
+      // in-flight chain that ended up settling at a smaller cumulative
+      // (the chain's attempt-0 path uses the call-time parameter, not
+      // target.filledSize). Comparing against the watermark detects the
+      // ledger gap that a restart needs to fill, which is what we
+      // ultimately care about.
       const existingTarget = pendingTerminalRetries.get(orderId);
       if (existingTarget) {
-        if (filledSize > existingTarget.filledSize) existingTarget.filledSize = filledSize;
+        if (existingTarget.settled && filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
+          existingTarget.filledSize = filledSize;
+          existingTarget.settled = false;
+          await startCancelCatchup(orderId, trackedOrder, status, filledSize, existingTarget);
+        }
         return;
       }
       // Preempt any pending partial retry — terminal owns catch-up.
@@ -1112,23 +1182,12 @@ const createMarketDataService = (exchange, pair) => {
       // be dropped — even if it carried a larger cumulative.
       const target = { filledSize };
       pendingTerminalRetries.set(orderId, target);
-      const result = await settleCancelledOrder(
-        {
-          ...ingestDeps,
-          markSettled,
-          untrackOrder: (id) => { clearPendingRetry(id); trackedOrders.delete(id); },
-          scheduleTimeout: trackedSetTimeout,
-          enqueueWork: enqueueOrderWork,
-          // Mutable target: replayed events advance target.filledSize so
-          // the chain re-reads the latest value on each retry attempt.
-          getCurrentFilledSize: () => target.filledSize,
-        },
-        orderId, trackedOrder, status, filledSize
-      );
-      // If settleCancelledOrder finished synchronously (no retry), drop
-      // the entry — clearPendingRetry already fires via the wrapped
-      // untrackOrder, but only after the 60s untrack TTL.
-      if (!result?.retryScheduled) pendingTerminalRetries.delete(orderId);
+      await startCancelCatchup(orderId, trackedOrder, status, filledSize, target);
+      // Don't delete the entry here. startCancelCatchup wraps markSettled
+      // to flip target.settled when the chain finishes (synchronous or via
+      // a scheduleTimeout retry). The entry stays alive so a later replay
+      // with a larger cumulative can detect the gap above and restart
+      // catch-up. The 60s untrack TTL fires clearPendingRetry to drop it.
     }
   };
 

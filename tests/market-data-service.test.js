@@ -1018,4 +1018,145 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
 
     svc.stop();
   });
+
+  it('replayed CANCELLED with larger cumulative restarts catchup after the prior chain has settled', async () => {
+    // Adapters that synthesize getOrderFills from recent-trade queries
+    // (Gemini, Crypto.com) can return only a partial history on the first
+    // cancel and the rest later. Without keeping the pendingTerminalRetries
+    // entry alive after the first synchronous settle, the replay would hit
+    // the settled-status guard and the missing fills would be lost.
+    //
+    // First CANCELLED at 0.3 — getOrderFills returns [t1=0.3] → settles cleanly.
+    // Replayed CANCELLED at 0.7 — getOrderFills now returns [t1=0.3, t2=0.4]
+    // (the adapter's recent-trade window has expanded). The cancel branch
+    // must detect target.settled=true + larger filledSize, restart catchup,
+    // and ingest the missing 0.4.
+    let callIdx = 0;
+    const responses = [
+      [{ tradeId: 't1', orderId: 'order-W', side: 'sell', price: 70000, size: 0.3, totalCommission: 0.05 }],
+      [{ tradeId: 't1', orderId: 'order-W', side: 'sell', price: 70000, size: 0.3, totalCommission: 0.05 },
+       { tradeId: 't2', orderId: 'order-W', side: 'sell', price: 70000, size: 0.4, totalCommission: 0.05 }],
+    ];
+    const fakeAdapter = {
+      getOrderFills: async () => {
+        const r = responses[Math.min(callIdx, responses.length - 1)];
+        callIdx += 1;
+        return r;
+      },
+    };
+
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Map(); // tradeId -> size
+    const fakeLedger = {
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.set(fill.tradeId, fill.size);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested.values()).map(size => ({ size })),
+      getRecordedSizeForOrder: () => Array.from(ingested.values()).reduce((s, sz) => s + sz, 0),
+      persist: () => {},
+    };
+    svc._test.injectFillLedger(fakeLedger);
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-W', { type: 'take_profit', price: 70000, size: 0.7, placedAt: Date.now() });
+
+    // First CANCELLED at 0.3 — settles cleanly with [t1].
+    await svc._test.handleOrderUpdate({ orderId: 'order-W', status: 'CANCELLED', filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0 });
+
+    const afterFirst = svc._test.pendingTerminalRetries.get('order-W');
+    assert.ok(afterFirst, 'entry must stay alive after first settle (do not delete)');
+    assert.equal(afterFirst.settled, true, 'wrapped markSettled must flip target.settled');
+    assert.equal(afterFirst.filledSize, 0.3, 'target tracks the prior settle\'s cumulative');
+    assert.equal(ingested.size, 1, 'first settle ingested t1 only');
+
+    // Replayed CANCELLED at 0.7 — must restart catchup and ingest t2.
+    await svc._test.handleOrderUpdate({ orderId: 'order-W', status: 'CANCELLED', filledSize: 0.7, averageFilledPrice: 70000, totalFees: 0 });
+
+    assert.equal(ingested.size, 2, 'restart catchup must ingest the missing t2');
+    assert.ok(ingested.has('t2'), 't2 must be in the ledger');
+    const afterReplay = svc._test.pendingTerminalRetries.get('order-W');
+    assert.equal(afterReplay.filledSize, 0.7, 'target.filledSize advanced to replay\'s cumulative');
+    assert.equal(afterReplay.settled, true, 'restarted chain settled cleanly');
+
+    svc.stop();
+  });
+
+  it('CANCELLED replay arriving DURING the prior chain still triggers a restart when the chain settled at the smaller value', async () => {
+    // Race: handleOrderUpdate's synchronous prelude advances target.filledSize
+    // for the in-flight retry to read on its next attempt — but the chain's
+    // attempt-0 path uses the parameter passed at call time, not the target.
+    // If the chain happens to settle on attempt 0 (adapter returned just
+    // enough on the first try), the prelude-advanced target.filledSize is
+    // then "ahead" of what the ledger actually covers. The cancel branch
+    // must compare against trackedOrder.lastIngestedFilledSize (the real
+    // watermark), not target.filledSize, so the gap is still detected and
+    // restart catch-up runs.
+    let resolveFirstFetch;
+    const firstFetch = new Promise((resolve) => { resolveFirstFetch = resolve; });
+    let callIdx = 0;
+    const fakeAdapter = {
+      getOrderFills: async () => {
+        const idx = callIdx;
+        callIdx += 1;
+        if (idx === 0) {
+          // First call: block until the test fires the replay, then return
+          // just enough to settle attempt 0 at filledSize=0.3.
+          await firstFetch;
+          return [{ tradeId: 't1', orderId: 'order-V', side: 'sell', price: 70000, size: 0.3, totalCommission: 0.05 }];
+        }
+        // Second call (restart catchup): full set covering 0.7.
+        return [
+          { tradeId: 't1', orderId: 'order-V', side: 'sell', price: 70000, size: 0.3, totalCommission: 0.05 },
+          { tradeId: 't2', orderId: 'order-V', side: 'sell', price: 70000, size: 0.4, totalCommission: 0.05 },
+        ];
+      },
+    };
+
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Map();
+    const fakeLedger = {
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.set(fill.tradeId, fill.size);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested.values()).map(size => ({ size })),
+      getRecordedSizeForOrder: () => Array.from(ingested.values()).reduce((s, sz) => s + sz, 0),
+      persist: () => {},
+    };
+    svc._test.injectFillLedger(fakeLedger);
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-V', { type: 'take_profit', price: 70000, size: 0.7, placedAt: Date.now() });
+
+    // Fire-and-forget the first CANCELLED — chain is blocked on resolveFirstFetch.
+    const firstP = svc._test.handleOrderUpdate({ orderId: 'order-V', status: 'CANCELLED', filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0 });
+
+    // Wait until the chain has reached the await.
+    while (callIdx === 0) await new Promise(r => setImmediate(r));
+
+    // Replayed CANCELLED at 0.7 — synchronous prelude advances target.filledSize
+    // to 0.7 immediately. The replay's processOrderUpdate queues behind the
+    // first call's still-running settleCancelledOrder.
+    const secondP = svc._test.handleOrderUpdate({ orderId: 'order-V', status: 'CANCELLED', filledSize: 0.7, averageFilledPrice: 70000, totalFees: 0 });
+
+    const targetMidFlight = svc._test.pendingTerminalRetries.get('order-V');
+    assert.equal(targetMidFlight.filledSize, 0.7, 'prelude advanced target.filledSize to 0.7 synchronously');
+
+    // Let the first chain's fetch resolve. Attempt 0 settles at filledSize=0.3
+    // (the call-time parameter), even though target.filledSize is now 0.7.
+    resolveFirstFetch();
+    await firstP;
+    await secondP;
+
+    // The replay's processOrderUpdate ran after the first chain settled.
+    // It must have detected the ledger gap (lastIngestedFilledSize=0.3 < 0.7)
+    // and restarted catch-up to fetch t2.
+    assert.equal(ingested.size, 2, 'restart catchup must run despite target.filledSize being equal to replay filledSize');
+    assert.ok(ingested.has('t2'), 't2 must be ingested by the restart');
+
+    svc.stop();
+  });
 });
