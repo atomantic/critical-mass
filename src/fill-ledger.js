@@ -54,7 +54,8 @@ const createFillLedger = (exchange, productId, pair) => {
   // ledger file or blocking the event loop on every backoff. External
   // callers that mutate fill objects directly (via getAllFills /
   // getFillsForOrder) MUST call markDirty() so the next persist actually
-  // flushes their changes — see dca-converter.js for the pattern.
+  // flushes their changes — and per its contract may only mutate
+  // metadata fields that do not feed orderSizeIndex / cycleIndex.
   let dirtySinceLastPersist = false;
   // Tracks whether load() has ever completed (file present or absent) so
   // corruption-recovery branches can distinguish a live SIGUSR1 reload
@@ -295,7 +296,8 @@ const createFillLedger = (exchange, productId, pair) => {
    * last successful persist — callers can invoke this defensively on
    * every retry tick without churning the ledger file.
    */
-  const persist = () => {
+  const persist = (options = {}) => {
+    const { force = false } = options;
     const filePath = getFillLedgerPath(exchange, pair);
     // Clean shutdowns must still write when the on-disk file has gone
     // missing (operator rm, transient unmount, etc.) — otherwise
@@ -306,7 +308,14 @@ const createFillLedger = (exchange, productId, pair) => {
     // silently destroying the recoverable in-memory ledger that the
     // dirty-flag short-circuit refused to flush. fs.existsSync is cheap
     // and the missing-file case is rare, so the extra check costs ~nothing.
-    if (!dirtySinceLastPersist && fs.existsSync(filePath)) return;
+    //
+    // The `force: true` option also bypasses the short-circuit. Shutdown
+    // paths (regime-engine.stop's defensive flush) pass it so a healthy
+    // in-memory snapshot always lands on disk even if the file became
+    // unreadable / truncated externally while the process was running —
+    // existsSync alone wouldn't catch that case and the next cold start
+    // would fail in load() despite a recoverable in-memory ledger.
+    if (!force && !dirtySinceLastPersist && fs.existsSync(filePath)) return;
 
     const dir = path.dirname(filePath);
 
@@ -1075,9 +1084,17 @@ const createFillLedger = (exchange, productId, pair) => {
     updateFillCycleId,
     annotateFillsByOrderId,
     persist,
-    /** External callers that mutate fill objects directly (via getAllFills /
-     * getFillsForOrder) MUST call this so the next persist() actually
-     * flushes their changes — persist no-ops on a clean dirty flag. */
+    /** Mark the in-memory ledger as dirty so the next persist() actually
+     * writes to disk. Restricted contract: callers MUST limit mutations
+     * to METADATA-ONLY fields that do not feed any derived index — i.e.
+     * NOT tradeId, orderId, cycleId, or size. The orderSizeIndex (keyed
+     * by orderId, summed by size) and cycleIndex (keyed by cycleId) are
+     * not refreshed here; mutating an indexed field via this path would
+     * persist new values to disk while in-memory lookups continued to
+     * return stale results until the next reload. dca-converter.js uses
+     * this only for the sellOrderId annotation, which is metadata. For
+     * indexed-field changes use the dedicated mutators
+     * (annotateFillsByOrderId, updateFillCycleId). */
     markDirty: () => { dirtySinceLastPersist = true; },
     load,
     // Test-only handle: returns the number of times persist() actually

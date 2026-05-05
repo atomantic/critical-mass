@@ -1264,8 +1264,23 @@ const createMarketDataService = (exchange, pair) => {
       if (target) {
         if (filledSize > target.filledSize) target.filledSize = filledSize;
         if (terminalKind === 'filled') {
+          // averageFilledPrice truthy check: a zero avg-fill-price is
+          // impossible for a real fill, so 0 always means placeholder
+          // and must not overwrite a populated value.
           if (averageFilledPrice) target.averageFilledPrice = averageFilledPrice;
-          if (totalFees) target.totalFees = totalFees;
+          // totalFees handling distinguishes legitimate zero (rebated
+          // maker fills) from placeholder zero (websocket-feed normalizes
+          // missing total_fees to 0). Always accept a > 0 value (real,
+          // authoritative). For 0, only populate when target.totalFees is
+          // unset — the cancel path's startCancelCatchup creates targets
+          // with only filledSize, so a later FILLED replay with legit
+          // totalFees=0 would otherwise leave finalizeFilledOrder emitting
+          // undefined fees. Don't downgrade an already-populated > 0 value.
+          if (totalFees > 0) {
+            target.totalFees = totalFees;
+          } else if (totalFees === 0 && target.totalFees == null) {
+            target.totalFees = 0;
+          }
         }
       } else if (terminalKind === 'filled') {
         // Skip eager creation for orders that have already been settled
@@ -1352,6 +1367,19 @@ const createMarketDataService = (exchange, pair) => {
     if (terminalKind === 'filled') {
       const baseCurr = getBaseCurrency(productId);
       console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
+
+      // Cancel-after-fill reclassification reset: a prior CANCELLED event
+      // may have routed through settleCancelledOrder, which flips
+      // trackedOrder.status to 'cancelled' on attempt 0 to suppress the
+      // phantom open row. If the order then re-arrives reclassified as
+      // 'filled' (CANCELLED+completion=100+price>0 race), retryFilledIngest
+      // would otherwise short-circuit on its 'cancelled' guard every tick,
+      // leaving the FILLED retry chain stuck and onOrderFillCallback
+      // never firing. The status field is the engine-facing display state
+      // and finalizeFilledOrder will set it to 'filled' on success.
+      if (trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed' || trackedOrder.status === 'expired') {
+        trackedOrder.status = 'open';
+      }
 
       // Always go through the catch-up path. If partial-fill ingestion
       // already covered the watermark, ingestNewFillsForOrder early-returns

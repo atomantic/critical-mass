@@ -1710,8 +1710,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     } else {
       // Save live state on shutdown
       saveLiveState();
-      // Also persist fill ledger
-      fillLedger.persist();
+      // Force-persist the fill ledger: if the on-disk file became
+      // unreadable mid-run (truncation, partial write by another tool,
+      // etc.), the dirty-flag short-circuit + existsSync check would
+      // skip the write, and the next cold start's load() would fail on
+      // the corrupt file even though a recoverable in-memory ledger
+      // existed. force=true rewrites the healthy snapshot unconditionally.
+      fillLedger.persist({ force: true });
       console.log(`💾 [${exchange}] Saved live state and fill ledger`);
       // Remove SIGUSR1 handler
       if (positionState._sigusr1Handler) {
