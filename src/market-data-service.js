@@ -1156,6 +1156,27 @@ const createMarketDataService = (exchange, pair) => {
     );
   };
 
+  // Terminal status detection. websocket-feed normalizes most order events
+  // to one of: FILLED, OPEN, CANCELLED, FAILED, EXPIRED. We treat:
+  //   - 'filled'    : status==='FILLED' OR completionPercentage>=100.
+  //                   Coinbase can flip the percentage to 100 a tick before
+  //                   status flips to FILLED; without this, that brief
+  //                   window keeps the order in the partial branch and it
+  //                   never reaches the FILLED retry/finalize path.
+  //   - 'cancelled' : status in {CANCELLED, FAILED, EXPIRED}. EXPIRED is
+  //                   the exchange's "this order timed out / aged out"
+  //                   terminal state — order-manager.js:49 already treats
+  //                   it as a cancellation; without this, EXPIRED falls
+  //                   into the partial branch and stays tracked forever.
+  //   - null        : non-terminal (still OPEN with partial fills).
+  // Mirrors order-manager.js:29/49 and order-executor.js:101/119/410.
+  const classifyTerminal = (data) => {
+    const { status, completionPercentage } = data;
+    if (status === 'CANCELLED' || status === 'FAILED' || status === 'EXPIRED') return 'cancelled';
+    if (status === 'FILLED' || (typeof completionPercentage === 'number' && completionPercentage >= 100)) return 'filled';
+    return null;
+  };
+
   /**
    * Handle order updates from WebSocket
    * Detects when tracked orders fill while engine isn't running.
@@ -1179,19 +1200,20 @@ const createMarketDataService = (exchange, pair) => {
     // fire and retryFilledIngest's await completing, replays must still
     // be able to advance the in-flight target.
     //
-    // For FILLED, also update averageFilledPrice/totalFees on equal-size
-    // replays — the cumulative may match the original event but the
-    // aggregates can be more complete on a post-reconnect replay (the
-    // original may have arrived before the WS-side aggregation finalized).
-    // Truthy guard on both fields: websocket-feed normalizes a missing
-    // total_fees to 0, so a `!= null` check would let placeholder zeros
-    // overwrite a previously-correct nonzero fee total. Real terminal
-    // events for executed fills always carry positive aggregates.
-    if (status === 'FILLED' || status === 'CANCELLED' || status === 'FAILED') {
+    // For 'filled' terminal kind, also update averageFilledPrice/totalFees
+    // on equal-size replays — the cumulative may match the original event
+    // but the aggregates can be more complete on a post-reconnect replay
+    // (the original may have arrived before the WS-side aggregation
+    // finalized). Truthy guard on both fields: websocket-feed normalizes a
+    // missing total_fees to 0, so a `!= null` check would let placeholder
+    // zeros overwrite a previously-correct nonzero fee total. Real
+    // terminal events for executed fills always carry positive aggregates.
+    const terminalKind = classifyTerminal(data);
+    if (terminalKind) {
       const target = pendingTerminalRetries.get(orderId);
       if (target) {
         if (filledSize > target.filledSize) target.filledSize = filledSize;
-        if (status === 'FILLED') {
+        if (terminalKind === 'filled') {
           if (averageFilledPrice) target.averageFilledPrice = averageFilledPrice;
           if (totalFees) target.totalFees = totalFees;
         }
@@ -1223,11 +1245,13 @@ const createMarketDataService = (exchange, pair) => {
     // settle short of the real cancelled quantity. Same for FILLED via
     // the partial-retry pendingPartialRetries.
     const inRetryChain = pendingTerminalRetries.has(orderId) || pendingPartialRetries.has(orderId);
-    if (!inRetryChain && (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed')) {
+    if (!inRetryChain && (trackedOrder.status === 'filled' || trackedOrder.status === 'cancelled' || trackedOrder.status === 'failed' || trackedOrder.status === 'expired')) {
       return;
     }
 
     const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
+
+    const terminalKind = classifyTerminal(data);
 
     // Non-terminal partial-fill ingest. Coinbase keeps status='OPEN' while
     // delivering incremental filledSize updates; without this path, a
@@ -1238,7 +1262,7 @@ const createMarketDataService = (exchange, pair) => {
     // responsibility (we don't fire onOrderFillCallback here); we only
     // patch the ledger gap. ingestFill is idempotent on tradeId, so the
     // FILLED branch re-running this work is safe.
-    if (status !== 'FILLED' && status !== 'CANCELLED' && status !== 'FAILED') {
+    if (!terminalKind) {
       if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
         const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, 'partial fill');
         if (timerTracker.isStopped()) return;
@@ -1257,7 +1281,7 @@ const createMarketDataService = (exchange, pair) => {
       return;
     }
 
-    if (status === 'FILLED') {
+    if (terminalKind === 'filled') {
       const baseCurr = getBaseCurrency(productId);
       console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
 
@@ -1311,7 +1335,8 @@ const createMarketDataService = (exchange, pair) => {
       // this order's lifecycle — that timer would then fire later against
       // an already-finalized order and no-op uselessly.
       finalizeFilledOrder(orderId, trackedOrder, finalSize, finalPrice, finalFees);
-    } else if (status === 'CANCELLED' || status === 'FAILED') {
+    } else {
+      // terminalKind === 'cancelled' (status in {CANCELLED, FAILED, EXPIRED})
       // CANCELLED/FAILED replay on an order with an existing
       // pendingTerminalRetries entry. Restart the chain via
       // startCancelCatchup whenever the WS-reported cumulative is ahead

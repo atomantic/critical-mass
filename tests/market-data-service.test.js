@@ -1354,6 +1354,90 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('EXPIRED status is treated as terminal cancellation (not partial)', async () => {
+    // order-manager.js:49 already treats EXPIRED as a cancellation; the
+    // market-data-service must too, otherwise an EXPIRED order falls into
+    // the partial branch and stays tracked indefinitely.
+    let getOrderFillsCalls = 0;
+    const fakeAdapter = {
+      getOrderFills: async () => {
+        getOrderFillsCalls += 1;
+        return [{ tradeId: 't1', orderId: 'order-Exp', side: 'sell', price: 70000, size: 0.3, totalCommission: 0.05 }];
+      },
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Set();
+    svc._test.injectFillLedger({
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.add(fill.tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.3 })),
+      getRecordedSizeForOrder: () => ingested.size * 0.3,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-Exp', { type: 'take_profit', price: 70000, size: 0.3, placedAt: Date.now() });
+
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-Exp', status: 'EXPIRED',
+      filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0,
+    });
+
+    assert.equal(getOrderFillsCalls, 1, 'EXPIRED must trigger the cancel catch-up fetch (terminal path)');
+    assert.equal(ingested.size, 1, 'partials from EXPIRED order must be ingested');
+    const target = svc._test.pendingTerminalRetries.get('order-Exp');
+    assert.ok(target?.settled, 'EXPIRED chain must settle and flip target.settled=true');
+
+    svc.stop();
+  });
+
+  it('completionPercentage >= 100 is treated as FILLED even when status is OPEN', async () => {
+    // Coinbase can flip completionPercentage to 100 a tick before status
+    // flips to FILLED. order-manager.js:29 / order-executor.js:101 already
+    // treat completionPercentage>=100 as filled; the market-data-service
+    // must too, otherwise the brief window where status=OPEN but
+    // completion=100 keeps the order in the partial branch and it never
+    // reaches the FILLED retry/finalize path while the engine is stopped.
+    const fakeAdapter = {
+      getOrderFills: async () => [
+        { tradeId: 't1', orderId: 'order-Pct', side: 'sell', price: 70000, size: 0.5, totalCommission: 0.05 },
+      ],
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Set();
+    svc._test.injectFillLedger({
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.add(fill.tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.5 })),
+      getRecordedSizeForOrder: () => ingested.size * 0.5,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-Pct', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    const fills = [];
+    svc.setOnOrderFill(f => fills.push(f));
+
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-Pct', status: 'OPEN',
+      filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05,
+      completionPercentage: 100,
+    });
+
+    assert.equal(ingested.size, 1, 'completion=100 must trigger the FILLED catch-up (terminal path)');
+    assert.equal(fills.length, 1, 'onOrderFillCallback must fire for completion>=100');
+    assert.equal(fills[0].size, 0.5);
+
+    svc.stop();
+  });
+
   it('FILLED retry replay during in-flight chain re-arms the timer instead of waiting on stale backoff', async () => {
     // Same concern as the cancel-side re-arm: an in-flight FILLED retry
     // may be sitting on a long stale backoff (5-min cap after many failed
