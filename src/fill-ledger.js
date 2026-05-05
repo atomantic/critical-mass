@@ -153,12 +153,35 @@ const createFillLedger = (exchange, productId, pair) => {
     // entries like `[null]` or `[{}]` that would crash on `fill.tradeId`
     // mid-loop, leaving the live ledger half-populated after the
     // already-run resetCaches. Pre-pass guarantees a clean reload-or-bail.
+    //
+    // Field-type validation is required, not just presence: the load-body
+    // below calls `fill.cycleId.match(/^cycle-(\d+)$/)` which throws on
+    // non-string cycleId (e.g. an object). A presence-only pre-pass would
+    // accept `{tradeId:"t1", cycleId:{}}` and we'd crash mid-load AFTER
+    // resetCaches has wiped the live ledger — re-introducing the data-loss
+    // mode the pre-validation is meant to prevent.
     for (const fill of data) {
-      if (!fill || typeof fill !== 'object' || !fill.tradeId) {
+      let invalidReason = null;
+      if (!fill || typeof fill !== 'object') {
+        invalidReason = 'non-object entry';
+      } else if (typeof fill.tradeId !== 'string' || !fill.tradeId) {
+        invalidReason = 'missing or non-string tradeId';
+      } else if (fill.cycleId != null && typeof fill.cycleId !== 'string') {
+        invalidReason = 'cycleId must be a string when present';
+      } else if (fill.orderId != null && typeof fill.orderId !== 'string') {
+        invalidReason = 'orderId must be a string when present';
+      } else if (fill.side != null && fill.side !== 'buy' && fill.side !== 'sell') {
+        invalidReason = "side must be 'buy' or 'sell' when present";
+      } else if (fill.size != null && (typeof fill.size !== 'number' || !Number.isFinite(fill.size))) {
+        invalidReason = 'size must be a finite number when present';
+      } else if (fill.timestamp != null && (typeof fill.timestamp !== 'number' || !Number.isFinite(fill.timestamp))) {
+        invalidReason = 'timestamp must be a finite number when present';
+      }
+      if (invalidReason) {
         if (!isReload) {
-          throw new Error(`fill-ledger at ${filePath} contains an invalid entry (missing tradeId or non-object) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
+          throw new Error(`fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
         }
-        console.log(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (missing tradeId or non-object) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+        console.log(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
         return;
       }
     }

@@ -1207,6 +1207,47 @@ describe('Fill Ledger', () => {
     assert.throws(() => createTestLedger(exchange), /invalid entry .* on cold start/);
   });
 
+  it('createFillLedger throws on cold start when an entry has a non-string cycleId (would crash .match() mid-load)', () => {
+    // The load body calls `fill.cycleId.match(/^cycle-(\d+)$/)` — if
+    // cycleId is an object/non-string, that throws AFTER resetCaches has
+    // wiped the in-memory ledger. The presence-only pre-pass missed
+    // this; field-type validation must catch it before resetCaches runs.
+    const exchange = 'test-cold-start-bad-cycleId';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([
+      { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, timestamp: Date.now(), cycleId: {} },
+    ]));
+
+    assert.throws(() => createTestLedger(exchange), /cycleId must be a string/);
+  });
+
+  it('reload preserves in-memory state when file gains a non-string cycleId entry (no half-load on bad reload)', () => {
+    // The same shape that breaks cold-start must also be rejected before
+    // resetCaches on a SIGUSR1 reload — otherwise we'd wipe the live
+    // ledger and then crash mid-load on the offending entry's
+    // cycleId.match() call, losing recoverable data.
+    const exchange = 'test-reload-bad-cycleId';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    fs.writeFileSync(filePath, '[]');
+
+    const ledger = createTestLedger(exchange);
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    const fillsBefore = ledger.getFillCount();
+
+    // Operator edits in a malformed entry mid-run. SIGUSR1 reload must NOT
+    // wipe the live ledger — must log and preserve.
+    fs.writeFileSync(filePath, JSON.stringify([
+      { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, timestamp: Date.now(), cycleId: {} },
+    ]));
+    assert.doesNotThrow(() => ledger.load());
+    assert.equal(ledger.getFillCount(), fillsBefore,
+      'reload with malformed cycleId must preserve in-memory state');
+  });
+
   it('createFillLedger succeeds on cold start when file is missing (legitimate first run)', () => {
     // No file at all is the legitimate "fresh deployment, no fills yet"
     // case — must NOT throw, must boot with empty caches.

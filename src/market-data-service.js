@@ -588,7 +588,24 @@ const createMarketDataService = (exchange, pair) => {
    * Start the market data service
    */
   const start = async () => {
-    const adapter = getAdapter(exchange);
+    // Initialize the fill ledger BEFORE credentials/config — createFillLedger
+    // auto-loads from disk and throws on cold-start corruption (refuses to
+    // boot empty so a subsequent persist can't overwrite a recoverable file
+    // with only post-start fills). Surfacing that as {success:false} early
+    // lets callers like the regime:stop IPC handler decide whether to
+    // proceed without WS handover. There is no point authenticating if we
+    // can't read the ledger anyway, and front-loading the throw makes the
+    // failure path testable without mocking credentials.
+    const fundConfig = getFundConfig(exchange, resolvedPair);
+    productId = fundConfig.productId || resolvedPair || 'BTC-USDC';
+    try {
+      fillLedger = createFillLedger(exchange, productId, resolvedPair);
+    } catch (err) {
+      console.log(`⚠️ [${exchange}] Market data service: Fill ledger init failed: ${err.message}`);
+      return { success: false, error: `Fill ledger init failed: ${err.message}` };
+    }
+
+    const adapter = getActiveAdapter();
 
     // Try to load credentials with error handling
     let credentials;
@@ -605,8 +622,6 @@ const createMarketDataService = (exchange, pair) => {
     }
 
     const config = getRegimeConfig(exchange, resolvedPair);
-    const fundConfig = getFundConfig(exchange, resolvedPair);
-    productId = fundConfig.productId || resolvedPair || 'BTC-USDC';
 
     // Create regime detector for passive monitoring
     regimeDetector = createRegimeDetector(exchange, config);
@@ -616,9 +631,6 @@ const createMarketDataService = (exchange, pair) => {
     trackPersistedOrders(savedState.position);
     const bodyTpCount = (savedState.position?.celestialBodies || []).filter(b => b.tpOrderId).length;
     if (bodyTpCount > 0) console.log(`📋 [${exchange}] Market data service tracking ${bodyTpCount} body TP(s)`);
-
-    // Create fill ledger for order fill tracking
-    fillLedger = createFillLedger(exchange, productId, resolvedPair);
 
     // Create WebSocket feed
     wsFeed = createWebSocketFeed(exchange, {
@@ -1659,17 +1671,14 @@ const startMarketDataService = async (exchange, pair) => {
     return { success: true, message: 'Already running' };
   }
 
-  // createMarketDataService → createFillLedger → load() can throw on
-  // cold-start corruption. Callers (notably the regime:stop IPC handler
-  // that starts a standalone service for handover) must still be able
-  // to make progress when the file is corrupt — surface the failure as
-  // a returned result instead of letting it bubble and abort their flow.
-  let service;
-  try {
-    service = createMarketDataService(exchange, pair);
-  } catch (err) {
-    return { success: false, error: `Fill ledger init failed: ${err.message}` };
-  }
+  // service.start() → createFillLedger → load() can throw on cold-start
+  // corruption. The throw happens inside start(), not the factory — so
+  // the wrap inside start() converts it to a {success:false} return
+  // (see "Create fill ledger" in start()). Callers (notably the
+  // regime:stop IPC handler that starts a standalone service for
+  // handover) get a graceful failure they can decide on instead of an
+  // unhandled rejection that aborts their flow.
+  const service = createMarketDataService(exchange, pair);
   const result = await service.start();
 
   if (result.success) {

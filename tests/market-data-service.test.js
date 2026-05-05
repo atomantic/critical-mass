@@ -1775,3 +1775,61 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// startMarketDataService cold-start corruption handling
+// ---------------------------------------------------------------------------
+// Verifies that a corrupt on-disk fill-ledger surfaces as a {success:false}
+// return from service.start() rather than an unhandled rejection. The
+// regime:stop IPC handler depends on this contract — without it, an
+// operator can't shut a fund down via the API when the ledger file is
+// corrupt, and a partial migration can leave callers in an inconsistent
+// state.
+describe('service.start() cold-start fill-ledger corruption', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const migration = require('../src/migration');
+  const originalGetExchangeDataDir = migration.getExchangeDataDir;
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mds-corrupt-test-'));
+    migration.getExchangeDataDir = (exchange) => {
+      const dir = path.join(tmpDir, exchange);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+  });
+
+  // Cleanup runs after each test via Node's test runner closure.
+  // (no afterEach hook — tmpdir is harmless to leak in a single run, and
+  // the migration patch is restored at the end of the describe block.)
+
+  it('service.start() returns {success:false} on corrupt cold-start ledger instead of throwing', async () => {
+    // Use a non-real exchange name so getDefaultPair() returns null and
+    // the fill-ledger path resolution falls through to 'default' — which
+    // is where we write the corrupt file. A real exchange name like
+    // 'coinbase' would have getDefaultPair return e.g. 'BTC-USDC' from
+    // real config and miss our corruption injection.
+    const exchange = 'test-mds-corrupt';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '<<< not valid json >>>');
+
+    // createMarketDataService doesn't auto-load — start() does. Without the
+    // try/catch around createFillLedger inside start(), this would reject
+    // with the cold-start throw and abort callers like the regime:stop
+    // IPC handler.
+    const svc = createMarketDataService(exchange);
+    let result;
+    await assert.doesNotReject(async () => { result = await svc.start(); });
+    assert.equal(result?.success, false);
+    assert.match(result?.error || '', /Fill ledger init failed/);
+
+    svc.stop();
+
+    // Restore the migration patch for downstream tests.
+    migration.getExchangeDataDir = originalGetExchangeDataDir;
+  });
+});
