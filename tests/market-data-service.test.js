@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it, beforeEach } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService } = require('../src/market-data-service');
@@ -1600,6 +1600,62 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('duplicate FILLED replay arriving after finalize does NOT re-fire onOrderFillCallback', async () => {
+    // After finalizeFilledOrder runs, the trackedOrders entry stays for 60s
+    // (untrack TTL) and pendingTerminalRetries gets cleared. Without the
+    // settled-status guard in handleOrderUpdate's prelude, a duplicate
+    // FILLED replay in that window would recreate pendingTerminalRetries;
+    // processOrderUpdate would then see inRetryChain=true and bypass the
+    // settled-status guard, calling finalizeFilledOrder a second time and
+    // re-firing onOrderFillCallback for the same execution.
+    const fakeAdapter = {
+      getOrderFills: async () => [
+        { tradeId: 't-dup-1', orderId: 'order-Dup', side: 'sell', price: 70000, size: 0.5, totalCommission: 0.05 },
+      ],
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Set();
+    svc._test.injectFillLedger({
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.add(fill.tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.5 })),
+      getRecordedSizeForOrder: () => ingested.size * 0.5,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-Dup', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    const fills = [];
+    svc.setOnOrderFill(f => fills.push(f));
+
+    // First FILLED — finalize fires callback, marks settled, schedules untrack.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-Dup', status: 'FILLED',
+      filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05,
+    });
+    assert.equal(fills.length, 1, 'first FILLED fires callback');
+    assert.equal(svc._test.pendingTerminalRetries.has('order-Dup'), false,
+      'pendingTerminalRetries cleared by clearPendingRetry after finalize');
+
+    // Duplicate FILLED replay arrives in the 60s window before untrack TTL
+    // deletes the trackedOrders entry. Must be dropped by the settled-status
+    // guard, NOT re-finalized.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-Dup', status: 'FILLED',
+      filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05,
+    });
+    assert.equal(fills.length, 1,
+      'duplicate FILLED replay must NOT re-fire onOrderFillCallback');
+    assert.equal(svc._test.pendingTerminalRetries.has('order-Dup'), false,
+      'prelude must not eagerly recreate pendingTerminalRetries for an already-settled order');
+
+    svc.stop();
+  });
+
   it('FILLED retry replay during in-flight chain re-arms the timer instead of waiting on stale backoff', async () => {
     // Same concern as the cancel-side re-arm: an in-flight FILLED retry
     // may be sitting on a long stale backoff (5-min cap after many failed
@@ -1802,9 +1858,11 @@ describe('service.start() cold-start fill-ledger corruption', () => {
     };
   });
 
-  // Cleanup runs after each test via Node's test runner closure.
-  // (no afterEach hook — tmpdir is harmless to leak in a single run, and
-  // the migration patch is restored at the end of the describe block.)
+  afterEach(() => {
+    // Restore in afterEach so a failed assertion mid-test can't leak the
+    // module-level patch into later tests in this file/run.
+    migration.getExchangeDataDir = originalGetExchangeDataDir;
+  });
 
   it('service.start() returns {success:false} on corrupt cold-start ledger instead of throwing', async () => {
     // Use a non-real exchange name so getDefaultPair() returns null and
@@ -1828,8 +1886,5 @@ describe('service.start() cold-start fill-ledger corruption', () => {
     assert.match(result?.error || '', /Fill ledger init failed/);
 
     svc.stop();
-
-    // Restore the migration patch for downstream tests.
-    migration.getExchangeDataDir = originalGetExchangeDataDir;
   });
 });

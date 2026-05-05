@@ -182,7 +182,17 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
     return { success: false, error: 'API keys not configured for this exchange' };
   }
 
-  const engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
+  // createRegimeEngine builds its fill ledger eagerly in the constructor
+  // (regime-engine.js:226). createFillLedger refuses to boot on cold-start
+  // corruption, so a corrupt ledger file would otherwise bubble up through
+  // the IPC framework. Catch it and return a per-fund failure so other
+  // funds in this engine process stay usable.
+  let engine;
+  try {
+    engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
+  } catch (err) {
+    return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair}: ${err.message}` };
+  }
   regimeEngines.set(key, engine);
 
   const startResult = await engine.start();
@@ -1128,7 +1138,19 @@ const startup = async () => {
       const adapter = getAdapter(exchange);
 
       if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-        const engine = createRegimeEngine(exchange, fundPair, fundConfig, createEngineCallbacks(exchange, fundPair));
+        // createRegimeEngine eagerly creates its fill ledger
+        // (regime-engine.js:226), which refuses to boot on cold-start
+        // corruption. Without this catch, a single corrupt fund ledger
+        // would abort the entire engine process on startup; instead we
+        // log per-fund and continue with the rest.
+        let engine;
+        try {
+          engine = createRegimeEngine(exchange, fundPair, fundConfig, createEngineCallbacks(exchange, fundPair));
+        } catch (err) {
+          log('ERROR', `❌ [${label}] Failed to auto-resume: Fill ledger init failed: ${err.message}`);
+          saveRegimeRunningFlag(exchange, fundPair, false);
+          continue;
+        }
         regimeEngines.set(key, engine);
 
         const startResult = await engine.start();

@@ -1263,8 +1263,23 @@ const createMarketDataService = (exchange, pair) => {
           if (totalFees) target.totalFees = totalFees;
         }
       } else if (terminalKind === 'filled') {
-        target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
-        pendingTerminalRetries.set(orderId, target);
+        // Skip eager creation for orders that have already been settled
+        // (finalizeFilledOrder / settleCancelledOrder set status before the
+        // 60s untrack TTL deletes the trackedOrders entry). Without this
+        // guard, a duplicate FILLED replay arriving in that window would
+        // recreate pendingTerminalRetries; processOrderUpdate would then
+        // see inRetryChain=true (line 1295) and bypass the settled-status
+        // guard, re-running finalizeFilledOrder and re-firing
+        // onOrderFillCallback for the same execution.
+        const tracked = trackedOrders.get(orderId);
+        const alreadySettled = tracked && (
+          tracked.status === 'filled' || tracked.status === 'cancelled'
+          || tracked.status === 'failed' || tracked.status === 'expired'
+        );
+        if (!alreadySettled) {
+          target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
+          pendingTerminalRetries.set(orderId, target);
+        }
       }
     }
 
