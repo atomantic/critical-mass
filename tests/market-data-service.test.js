@@ -1354,6 +1354,54 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('cancel-retry replay during in-flight chain re-arms the timer instead of waiting on stale backoff', async () => {
+    // First CANCELLED at 0.3 fails repeatedly; chain backs off. A replay
+    // at 0.7 arrives while a long-delay retry timer is pending. The
+    // cancel branch must restart the chain (which cancels the stale
+    // timer in startCancelCatchup's prelude) so the fresh exchange data
+    // is processed promptly rather than waiting on the stale backoff.
+    // Without this, on Gemini/Crypto.com the missing fills could age
+    // out of the adapter's recent-trade window before the next retry.
+    const fakeAdapter = {
+      getOrderFills: async () => { throw new Error('boom'); },
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-N', { type: 'take_profit', price: 70000, size: 0.7, placedAt: Date.now() });
+
+    // First CANCELLED at 0.3 — chain starts, fails, schedules retry timer.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-N', status: 'CANCELLED',
+      filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0,
+    });
+    const target = svc._test.pendingTerminalRetries.get('order-N');
+    assert.ok(target, 'retry must be pending');
+    const firstTimerId = target.timerId;
+    assert.ok(firstTimerId != null, 'retry timer id captured on target');
+
+    // Replay at 0.7 — must restart the chain. The prior timer should be
+    // cancelled, a new one armed.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-N', status: 'CANCELLED',
+      filledSize: 0.7, averageFilledPrice: 70000, totalFees: 0,
+    });
+
+    const targetAfter = svc._test.pendingTerminalRetries.get('order-N');
+    assert.ok(targetAfter.timerId != null, 'a new retry timer was armed');
+    assert.notEqual(targetAfter.timerId, firstTimerId,
+      'retry timer was re-armed after replay (id changed)');
+    assert.equal(targetAfter.filledSize, 0.7, 'target advanced to replay\'s cumulative');
+
+    svc.stop();
+  });
+
   it('partial retry timer cancels the previously-armed timer when re-arming on a fresh WS update', async () => {
     // Without cancelling the prior timer, a sustained adapter outage with
     // many WS updates would accumulate one pending timer per update in
