@@ -60,11 +60,49 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
     return { fetched: true, fillsCount: 0, ingestedCount: 0 };
   }
 
+  // Sync trackedOrder.lastIngestedFilledSize from the actual ledger.
+  // After a restart, trackedOrder is recreated with watermark=0 even
+  // though fills may already be on disk; on adapter/persist failure
+  // the caller would otherwise schedule a retry chain for an order
+  // that's already fully recorded. Returns the reconciled size so the
+  // failure paths can signal fetched=true (no work needed) when the
+  // ledger already covers the WS-reported cumulative.
+  const reconcileWatermarkFromLedger = () => {
+    const recordedSize = fillLedger.getRecordedSizeForOrder
+      ? fillLedger.getRecordedSizeForOrder(orderId)
+      : (fillLedger.getFillsForOrder(orderId) || []).reduce((s, f) => s + (f.size || 0), 0);
+    if (recordedSize > (trackedOrder.lastIngestedFilledSize || 0)) {
+      trackedOrder.lastIngestedFilledSize = recordedSize;
+    }
+    return recordedSize;
+  };
+
   let fills = [];
   try {
     fills = await adapter.getOrderFills(orderId);
   } catch (err) {
     console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
+    // Try to flush any in-memory ledger state from a prior failed-persist
+    // call before reading the ledger. If persist succeeds, in-memory is
+    // in sync with disk and we can safely reconcile the watermark — covers
+    // the post-restart case where fills are already on disk and the
+    // adapter is just transiently unavailable, so the caller doesn't
+    // schedule an unnecessary retry chain. If persist fails, the in-memory
+    // ledger may be ahead of disk, so don't advance the watermark and
+    // signal fetched=false so the caller retries (which will re-attempt
+    // persist).
+    let persistOk = true;
+    try {
+      fillLedger.persist();
+    } catch (_persistErr) {
+      persistOk = false;
+    }
+    if (persistOk) {
+      const recordedSize = reconcileWatermarkFromLedger();
+      if (recordedSize >= cumulativeFilledSize) {
+        return { fetched: true, fillsCount: 0, ingestedCount: 0 };
+      }
+    }
     return { fetched: false, fillsCount: 0, ingestedCount: 0 };
   }
 
@@ -86,14 +124,14 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
       fillLedger.persist();
     } catch (err) {
       console.log(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`);
+      // Don't reconcile from ledger here: persist failed, so the in-memory
+      // ledger may be ahead of disk. Reading it would advance the
+      // watermark past what's durably recorded — a subsequent crash
+      // would lose those fills. Caller retries; the next persist attempt
+      // will sync disk before we trust the ledger again.
       return { fetched: false, fillsCount: 0, ingestedCount: 0 };
     }
-    const recordedSize = fillLedger.getRecordedSizeForOrder
-      ? fillLedger.getRecordedSizeForOrder(orderId)
-      : (fillLedger.getFillsForOrder(orderId) || []).reduce((s, f) => s + (f.size || 0), 0);
-    if (recordedSize > (trackedOrder.lastIngestedFilledSize || 0)) {
-      trackedOrder.lastIngestedFilledSize = recordedSize;
-    }
+    reconcileWatermarkFromLedger();
     return { fetched: true, fillsCount: 0, ingestedCount: 0 };
   }
 
@@ -846,9 +884,19 @@ const createMarketDataService = (exchange, pair) => {
     // the queued timer uses the latest filledSize when it fires. This
     // prevents the "queued retry runs against stale 0.3 while order
     // already advanced to 0.7" race.
+    //
+    // A fresh WS update with a larger cumulative is new work — reset the
+    // attempt counter so the new partial gets a fresh PARTIAL_MAX_ATTEMPTS
+    // budget. Without this, an entry that's already burned through most
+    // of its retries would inherit the near-exhausted count and could
+    // give up after one or two tries on the new larger value, leaving it
+    // unrecorded until a terminal event arrives.
     const existing = pendingPartialRetries.get(orderId);
     if (existing) {
-      if (filledSize > existing.filledSize) existing.filledSize = filledSize;
+      if (filledSize > existing.filledSize) {
+        existing.filledSize = filledSize;
+        existing.attempt = attempt;
+      }
       return;
     }
 
@@ -1009,13 +1057,20 @@ const createMarketDataService = (exchange, pair) => {
     // window is the bug T63 flagged: between scheduleFilledRetry's timer
     // fire and retryFilledIngest's await completing, replays must still
     // be able to advance the in-flight target.
+    //
+    // For FILLED, also update averageFilledPrice/totalFees on equal-size
+    // replays — the cumulative may match the original event but the
+    // aggregates can be more complete on a post-reconnect replay (the
+    // original may have arrived before the WS-side aggregation finalized).
+    // Guarded against zero/null so a placeholder replay doesn't clobber
+    // valid existing values.
     if (status === 'FILLED' || status === 'CANCELLED' || status === 'FAILED') {
       const target = pendingTerminalRetries.get(orderId);
-      if (target && filledSize > target.filledSize) {
-        target.filledSize = filledSize;
+      if (target) {
+        if (filledSize > target.filledSize) target.filledSize = filledSize;
         if (status === 'FILLED') {
-          target.averageFilledPrice = averageFilledPrice;
-          target.totalFees = totalFees;
+          if (averageFilledPrice) target.averageFilledPrice = averageFilledPrice;
+          if (totalFees != null) target.totalFees = totalFees;
         }
       }
     }

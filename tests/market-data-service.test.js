@@ -174,6 +174,28 @@ describe('ingestNewFillsForOrder', () => {
       'watermark must NOT advance — next WS update should retry the fetch');
   });
 
+  it('on adapter failure, reconciles watermark from ledger so post-restart with already-recorded fills does not trigger retry', async () => {
+    // Scenario: an order was fully ingested before a process restart.
+    // After restart, trackedOrder is recreated with lastIngestedFilledSize=0
+    // even though fills are on disk. A WS event arrives, adapter is
+    // transiently down. Without reconciliation, the caller would schedule
+    // a retry chain for an order that's already fully recorded.
+    const adapter = makeAdapter([new Error('network down')]);
+    // Pre-populate the ledger to mimic disk-loaded state from a prior run.
+    ledger.ingestFill({ tradeId: 't1', orderId: 'order-1', side: 'sell', price: 70000, size: 0.5, totalCommission: 0.05 }, null, { skipPersist: true });
+
+    // trackedOrder.lastIngestedFilledSize is unset (post-restart).
+    const result = await ingestNewFillsForOrder(
+      { adapter, fillLedger: ledger, exchange: 'coinbase' },
+      'order-1', trackedOrder, 0.5, 'FILLED'
+    );
+
+    assert.equal(result.fetched, true,
+      'ledger already covers WS cumulative — fetched=true so caller does not retry');
+    assert.equal(trackedOrder.lastIngestedFilledSize, 0.5,
+      'watermark reconciled from ledger after adapter failure');
+  });
+
   it('does not advance watermark when persist() throws (durability hole guard)', async () => {
     // Fills land in the in-memory ledger but persist() fails. If we
     // advanced the watermark, ingestFill's tradeId dedup would mean a
@@ -1156,6 +1178,93 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     // and restarted catch-up to fetch t2.
     assert.equal(ingested.size, 2, 'restart catchup must run despite target.filledSize being equal to replay filledSize');
     assert.ok(ingested.has('t2'), 't2 must be ingested by the restart');
+
+    svc.stop();
+  });
+
+  it('replayed FILLED with same filledSize but improved aggregates updates target.averageFilledPrice/totalFees', async () => {
+    // On reconnect, Coinbase may replay a terminal FILLED event with the
+    // same cumulative filledSize but more complete averageFilledPrice/
+    // totalFees (the original may have arrived before WS-side aggregation
+    // finalized). The synchronous prelude must update aggregates even
+    // when filledSize is unchanged, otherwise finalize/callback fires
+    // with stale values.
+    const fakeAdapter = {
+      getOrderFills: async () => { throw new Error('keep retry pending'); },
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-U', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    // First FILLED at 0.5 with placeholder aggregates — fetch fails, retry pending.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-U', status: 'FILLED',
+      filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05,
+    });
+
+    const target = svc._test.pendingTerminalRetries.get('order-U');
+    assert.ok(target, 'retry must be pending');
+    assert.equal(target.averageFilledPrice, 70000, 'initial aggregates captured');
+    assert.equal(target.totalFees, 0.05);
+
+    // Replayed FILLED with SAME filledSize=0.5 but updated aggregates —
+    // the prelude must overwrite the prior values so a settle in the
+    // retry chain finalizes with the corrected price/fees.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-U', status: 'FILLED',
+      filledSize: 0.5, averageFilledPrice: 70500, totalFees: 0.10,
+    });
+
+    assert.equal(target.filledSize, 0.5, 'filledSize unchanged');
+    assert.equal(target.averageFilledPrice, 70500,
+      'replay must update averageFilledPrice even when filledSize is unchanged');
+    assert.equal(target.totalFees, 0.10,
+      'replay must update totalFees even when filledSize is unchanged');
+
+    svc.stop();
+  });
+
+  it('partial retry attempt counter resets when a fresh WS update reports a larger cumulative', async () => {
+    // Without resetting attempt, an entry that's burned through most of
+    // its 5-attempt budget would inherit the near-exhausted count when a
+    // larger partial arrives, giving up after one or two tries on the
+    // new larger value.
+    const svc = createMarketDataService('coinbase');
+    // Fail every fetch so retries stay scheduled (we only inspect the entry).
+    svc._test.injectAdapter({ getOrderFills: async () => { throw new Error('boom'); } });
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-T', { type: 'take_profit', price: 70000, size: 1.0, placedAt: Date.now() });
+
+    // Manually pre-populate the partial-retry entry to mimic a chain
+    // that's already burned 4 attempts. (Easier than driving 4 timers.)
+    svc._test.pendingPartialRetries.set('order-T', { filledSize: 0.3, attempt: 4 });
+
+    // Fresh WS partial at 0.7 — adapter fails, schedulePartialRetry is
+    // invoked with attempt=1. The existing-entry branch must reset
+    // attempt to 1 (fresh budget for the new larger cumulative).
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-T', status: 'OPEN',
+      filledSize: 0.7, averageFilledPrice: 70000, totalFees: 0,
+    });
+
+    const entry = svc._test.pendingPartialRetries.get('order-T');
+    assert.ok(entry, 'partial retry entry must remain');
+    assert.equal(entry.filledSize, 0.7, 'filledSize advanced to fresh cumulative');
+    assert.equal(entry.attempt, 1,
+      'attempt counter reset so the new larger partial gets a fresh budget');
 
     svc.stop();
   });
