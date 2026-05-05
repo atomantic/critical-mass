@@ -1304,6 +1304,56 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('partial retry timer reschedules to the fresh attempt delay when a larger WS update arrives', async () => {
+    // A pending partial retry that's already backed off to a long delay
+    // (e.g. attempt=5 → 32s+) shouldn't sit on that stale delay when a
+    // fresh exchange WS update arrives reporting a larger cumulative —
+    // the entry must re-arm with the new (smaller) attempt's delay so
+    // the new partial gets ingested promptly. The stale timer is left to
+    // fire and no-op (the freshly armed timer fires first, consuming the
+    // entry; the stale callback bails on the missing-entry check).
+    const svc = createMarketDataService('coinbase');
+    let scheduledDelays = [];
+    // Wrap timerTracker.trackedSetTimeout via the module's _test pattern is
+    // not exposed; instead, observe the `console.log` line which includes
+    // the delay. Easier: just check that an extra timer is pending after
+    // re-arm by counting tracker.size before and after.
+    svc._test.injectAdapter({ getOrderFills: async () => { throw new Error('keep retry pending'); } });
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-R', { type: 'take_profit', price: 70000, size: 1.0, placedAt: Date.now() });
+
+    // Pre-populate an entry simulating a chain that's burned 5 attempts
+    // and is sitting on a long-delay timer. We don't actually schedule
+    // the timer here (the entry alone is enough to verify re-arm logic
+    // pre-existing-timer count).
+    svc._test.pendingPartialRetries.set('order-R', { filledSize: 0.3, attempt: 5 });
+    const baselineTimers = svc._test.timerTracker.size();
+
+    // Fresh WS update at 0.7. Adapter fails so schedulePartialRetry runs
+    // with attempt=1. The existing-entry branch must:
+    //   1. Reset entry.attempt to 1.
+    //   2. Re-arm the timer (so the new attempt=1's smaller delay is
+    //      what gets honored, not the stale long delay).
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-R', status: 'OPEN',
+      filledSize: 0.7, averageFilledPrice: 70000, totalFees: 0,
+    });
+
+    const entry = svc._test.pendingPartialRetries.get('order-R');
+    assert.equal(entry.attempt, 1, 'attempt reset to fresh budget');
+    assert.equal(entry.filledSize, 0.7);
+    assert.ok(svc._test.timerTracker.size() > baselineTimers,
+      'a new timer was armed for the fresh attempt — old timer left to fire and no-op on missing entry');
+
+    svc.stop();
+  });
+
   it('partial retry attempt counter resets when a fresh WS update reports a larger cumulative', async () => {
     // Without resetting attempt, an entry that's burned through most of
     // its 5-attempt budget would inherit the near-exhausted count when a

@@ -878,39 +878,14 @@ const createMarketDataService = (exchange, pair) => {
     }
   };
 
-  const schedulePartialRetry = (orderId, trackedOrder, filledSize, attempt, reason) => {
-    // If a terminal retry is pending, terminal supersedes partial — let
-    // it own catch-up. (FILLED/CANCELLED handlers also preempt any
-    // pending partial entry when they arm.)
-    if (pendingTerminalRetries.has(orderId)) return;
-
-    // If a partial retry is already pending, just advance its target so
-    // the queued timer uses the latest filledSize when it fires. This
-    // prevents the "queued retry runs against stale 0.3 while order
-    // already advanced to 0.7" race.
-    //
-    // A fresh WS update with a larger cumulative is new work — reset the
-    // attempt counter so the new partial gets a fresh PARTIAL_MAX_ATTEMPTS
-    // budget. Without this, an entry that's already burned through most
-    // of its retries would inherit the near-exhausted count and could
-    // give up after one or two tries on the new larger value, leaving it
-    // unrecorded until a terminal event arrives.
-    const existing = pendingPartialRetries.get(orderId);
-    if (existing) {
-      if (filledSize > existing.filledSize) {
-        existing.filledSize = filledSize;
-        existing.attempt = attempt;
-      }
-      return;
-    }
-
-    pendingPartialRetries.set(orderId, { filledSize, attempt });
+  const armPartialTimer = (orderId, trackedOrder, attempt, reason) => {
     const delay = Math.min(PARTIAL_RETRY_BASE_MS * Math.pow(2, attempt - 1), PARTIAL_RETRY_MAX_MS);
     console.log(`⏳ [${exchange}] partial ${orderId} ${reason} — retry ${attempt}/${PARTIAL_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`);
     trackedSetTimeout(
       () => enqueueOrderWork(orderId, async () => {
         // Read the (possibly updated) target out of the map; if the
-        // entry was preempted by a terminal handler, bail.
+        // entry was preempted by a terminal handler OR consumed by an
+        // earlier-fired re-armed timer, bail.
         const entry = pendingPartialRetries.get(orderId);
         if (!entry) return;
         pendingPartialRetries.delete(orderId);
@@ -922,6 +897,40 @@ const createMarketDataService = (exchange, pair) => {
       }),
       delay
     );
+  };
+
+  const schedulePartialRetry = (orderId, trackedOrder, filledSize, attempt, reason) => {
+    // If a terminal retry is pending, terminal supersedes partial — let
+    // it own catch-up. (FILLED/CANCELLED handlers also preempt any
+    // pending partial entry when they arm.)
+    if (pendingTerminalRetries.has(orderId)) return;
+
+    // If a partial retry is already pending and a fresh WS update
+    // reports a larger cumulative, treat it as new work:
+    //   - Reset the attempt counter so the new partial gets a fresh
+    //     PARTIAL_MAX_ATTEMPTS budget. Without this, an entry that has
+    //     burned through most of its retries would give up after one or
+    //     two tries on the new larger value.
+    //   - Re-arm the timer with the new attempt's (smaller) delay. The
+    //     previously scheduled timer is left to fire and no-op (its
+    //     callback bails on the missing-entry check, since the new
+    //     timer's earlier fire will have consumed the entry first).
+    //     Without this re-arm, an entry that has already backed off to
+    //     a long delay (e.g. 60s) would sit on that stale delay despite
+    //     the fresh exchange activity, leaving the new partial
+    //     unrecorded until the stale timer fires.
+    const existing = pendingPartialRetries.get(orderId);
+    if (existing) {
+      if (filledSize > existing.filledSize) {
+        existing.filledSize = filledSize;
+        existing.attempt = attempt;
+        armPartialTimer(orderId, trackedOrder, attempt, reason);
+      }
+      return;
+    }
+
+    pendingPartialRetries.set(orderId, { filledSize, attempt });
+    armPartialTimer(orderId, trackedOrder, attempt, reason);
   };
 
   const retryFilledIngest = async (orderId, trackedOrder, target, attempt) => {
@@ -1022,7 +1031,18 @@ const createMarketDataService = (exchange, pair) => {
       {
         ...ingestDeps,
         markSettled: (id) => { markSettled(id); target.settled = true; },
-        untrackOrder: (id) => { clearPendingRetry(id); trackedOrders.delete(id); },
+        untrackOrder: (id) => {
+          // Skip if the chain has been re-armed (target.settled flipped
+          // back to false by a replay-driven restart). A restart's new
+          // settle will schedule its own untrack TTL when it completes;
+          // letting this stale timer run would clear pendingTerminalRetries
+          // and trackedOrders mid-flight, causing the restarted chain's
+          // retries to bail out and the newly reported partials to be
+          // dropped.
+          if (!target.settled) return;
+          clearPendingRetry(id);
+          trackedOrders.delete(id);
+        },
         scheduleTimeout: trackedSetTimeout,
         enqueueWork: enqueueOrderWork,
         // Coinbase's getOrderFills is the source of truth and never ages
