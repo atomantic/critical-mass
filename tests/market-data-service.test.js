@@ -1354,6 +1354,55 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('FILLED retry replay during in-flight chain re-arms the timer instead of waiting on stale backoff', async () => {
+    // Same concern as the cancel-side re-arm: an in-flight FILLED retry
+    // may be sitting on a long stale backoff (5-min cap after many failed
+    // attempts). When a fresh WS replay arrives, scheduleFilledRetry
+    // (called from processOrderUpdate's FILLED branch via the !result.fetched
+    // path) must cancel the prior timer and arm a new one with the fresh
+    // attempt's smaller delay. On Gemini/Crypto.com, waiting on the stale
+    // timer can let missing fills age out of the recent-trade window.
+    const fakeAdapter = {
+      getOrderFills: async () => { throw new Error('boom'); },
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-M', { type: 'take_profit', price: 70000, size: 0.7, placedAt: Date.now() });
+
+    // First FILLED at 0.3 — fetch fails, retry timer scheduled.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-M', status: 'FILLED',
+      filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0.05,
+    });
+    const target = svc._test.pendingTerminalRetries.get('order-M');
+    assert.ok(target, 'retry pending');
+    const firstTimerId = target.timerId;
+    assert.ok(firstTimerId != null, 'first timer id captured on target');
+
+    // Replay at 0.7 — must cancel prior timer and arm a fresh one.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-M', status: 'FILLED',
+      filledSize: 0.7, averageFilledPrice: 70500, totalFees: 0.10,
+    });
+
+    const targetAfter = svc._test.pendingTerminalRetries.get('order-M');
+    assert.ok(targetAfter.timerId != null, 'a new retry timer was armed');
+    assert.notEqual(targetAfter.timerId, firstTimerId,
+      'retry timer was re-armed after replay (id changed)');
+    assert.equal(targetAfter.filledSize, 0.7);
+    assert.equal(targetAfter.averageFilledPrice, 70500);
+    assert.equal(targetAfter.totalFees, 0.10);
+
+    svc.stop();
+  });
+
   it('cancel-retry replay during in-flight chain re-arms the timer instead of waiting on stale backoff', async () => {
     // First CANCELLED at 0.3 fails repeatedly; chain backs off. A replay
     // at 0.7 arrives while a long-delay retry timer is pending. The

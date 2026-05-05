@@ -913,21 +913,12 @@ describe('Fill Ledger', () => {
     ledger.startNewCycle();
     ledger.ingestFill(makeBuyFill({ tradeId: 'b-1' })); // auto-persists, clears dirty
 
-    const filePath = path.join(tmpDir, 'test-exchange', 'default', 'fill-ledger.json');
-    const mtimeBefore = fs.statSync(filePath).mtimeMs;
-
-    // Sleep briefly so a no-op persist would still produce a different
-    // mtime if it actually wrote. Use a busy-wait via Date.now to avoid
-    // making this test async.
-    const wait = Date.now() + 25;
-    while (Date.now() < wait) { /* busy wait */ }
-
+    const writesBefore = ledger._test.getWriteCount();
     ledger.persist();
     ledger.persist();
     ledger.persist();
-
-    const mtimeAfter = fs.statSync(filePath).mtimeMs;
-    assert.equal(mtimeAfter, mtimeBefore, 'clean persists must NOT rewrite the ledger file');
+    assert.equal(ledger._test.getWriteCount(), writesBefore,
+      'clean persists must NOT rewrite the ledger file');
   });
 
   it('load() on a dirty live instance clears the dirty flag so subsequent persist() is a no-op', () => {
@@ -948,17 +939,9 @@ describe('Fill Ledger', () => {
     // only b-1, not b-2 — but the dirty flag should still be cleared).
     ledger.load();
 
-    const filePath = path.join(tmpDir, 'test-exchange', 'default', 'fill-ledger.json');
-    const mtimeBefore = fs.statSync(filePath).mtimeMs;
-
-    // Busy-wait so any actual write would change the mtime.
-    const wait = Date.now() + 25;
-    while (Date.now() < wait) { /* busy wait */ }
-
+    const writesBefore = ledger._test.getWriteCount();
     ledger.persist();
-
-    const mtimeAfter = fs.statSync(filePath).mtimeMs;
-    assert.equal(mtimeAfter, mtimeBefore,
+    assert.equal(ledger._test.getWriteCount(), writesBefore,
       'persist() after load() must be a no-op — load resets the dirty flag');
   });
 
@@ -990,41 +973,74 @@ describe('Fill Ledger', () => {
     assert.equal(recorded, 0.7, 'rounded sum must be exactly 0.7, not 0.7000000000000001');
   });
 
-  it('load() resets currentCycleId and nextCycleNumber to a clean state', () => {
+  it('load() resets currentCycleId and nextCycleNumber on a successful reload', () => {
+    // The successful-load path still mirrors disk authoritatively: if the
+    // operator manually edits the file to remove fills, those removals
+    // must take effect on reload. This test verifies that path resets
+    // cycle state. (The corrupt/missing-file paths preserve in-memory
+    // state instead — see the SIGUSR1 reload safety tests below.)
     const exchange = 'test-exchange-cycle-reset';
     const ledger1 = createTestLedger(exchange);
     ledger1.startNewCycle();
-    // Ingest a fill so the ledger file actually exists on disk for the
-    // corruption test below.
     ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1' }));
     const cycleBefore = ledger1.getCurrentCycleId();
     assert.ok(cycleBefore, 'cycle exists after startNewCycle');
 
-    // Corrupt the file so load() takes the catch path
+    // Overwrite the file with a valid empty array so the load() success
+    // path runs and resets cycle state.
     const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
-    fs.writeFileSync(filePath, '{ this is not valid json');
+    fs.writeFileSync(filePath, '[]');
 
     ledger1.load();
-    // After reload from corrupt file, currentCycleId should be cleared.
     assert.equal(ledger1.getCurrentCycleId(), null,
-      'load() catch path must reset currentCycleId — without this, subsequent ingestFill keeps attributing fills to the prior cycle');
+      'successful load() of an empty ledger must reset currentCycleId — without this, subsequent ingestFill keeps attributing fills to the prior cycle');
   });
 
-  it('load() resets in-memory caches when the file is corrupt (not just on success)', () => {
+  it('load() preserves in-memory state when the file is corrupt (SIGUSR1 reload safety)', () => {
+    // SIGUSR1 reload runs load() on the live ledger. If the file is
+    // momentarily corrupt (operator's mid-edit window, partial write,
+    // disk hiccup), wiping in-memory state would turn that into live
+    // data loss — the running engine would forget its last known-good
+    // ledger and the next persist would rewrite the file with only the
+    // fills that arrive after the reload. Instead, load() logs and
+    // returns, keeping the existing in-memory state intact.
     const exchange = 'test-exchange-corrupt';
     const ledger1 = createTestLedger(exchange);
     ledger1.startNewCycle();
     ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    const fillsBefore = ledger1.getFillCount();
+    const recordedBefore = ledger1.getRecordedSizeForOrder('o-1');
 
     // Corrupt the file
     const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
     fs.writeFileSync(filePath, '<<< not valid json >>>');
 
     ledger1.load();
-    assert.equal(ledger1.getFillCount(), 0,
-      'fills cleared on corrupt-file reload — log says "starting empty", state must match');
-    assert.equal(ledger1.getRecordedSizeForOrder('o-1'), 0,
-      'orderSizeIndex cleared on corrupt-file reload');
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills must be preserved on corrupt-file reload (live SIGUSR1 safety)');
+    assert.equal(ledger1.getRecordedSizeForOrder('o-1'), recordedBefore,
+      'orderSizeIndex must be preserved on corrupt-file reload');
+  });
+
+  it('load() preserves in-memory state when the file is missing (SIGUSR1 reload safety)', () => {
+    // Same SIGUSR1 reload concern as the corrupt-file test. An operator
+    // who deletes the file mid-edit, or a temporary unavailability of
+    // the storage medium, must not wipe live data.
+    const exchange = 'test-exchange-missing-on-reload';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    const fillsBefore = ledger1.getFillCount();
+
+    // Remove the file
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+    fs.rmSync(filePath);
+
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills must be preserved when file goes missing during reload');
   });
 
   it('load() is idempotent for orderSizeIndex (no double-counting on re-load)', () => {
@@ -1083,17 +1099,13 @@ describe('Fill Ledger', () => {
     ledger.startNewCycle();
     ledger.ingestFill(makeBuyFill({ tradeId: 'b-1' }));
 
-    const filePath = path.join(tmpDir, 'test-exchange', 'default', 'fill-ledger.json');
-    const mtimeBefore = fs.statSync(filePath).mtimeMs;
-
-    const wait = Date.now() + 25;
-    while (Date.now() < wait) { /* busy wait */ }
+    const writesBefore = ledger._test.getWriteCount();
 
     // skipPersist mutates without writing — dirty flag should now be set
     ledger.ingestFill(makeBuyFill({ tradeId: 'b-2' }), null, { skipPersist: true });
     ledger.persist();
 
-    const mtimeAfter = fs.statSync(filePath).mtimeMs;
-    assert.ok(mtimeAfter > mtimeBefore, 'persist must rewrite when ledger is dirty');
+    assert.ok(ledger._test.getWriteCount() > writesBefore,
+      'persist must rewrite when ledger is dirty');
   });
 });

@@ -92,7 +92,13 @@ const createFillLedger = (exchange, productId, pair) => {
   const load = () => {
     const filePath = getFillLedgerPath(exchange, pair);
     if (!fs.existsSync(filePath)) {
-      resetCaches();
+      // Initial load (no file yet) leaves the freshly-constructed empty
+      // caches in place. SIGUSR1 reload (regime-engine.js calls load()
+      // on the live ledger) preserves whatever is in memory so a
+      // momentarily-missing file (e.g., operator's edit/rename window)
+      // doesn't wipe live data. To intentionally clear, write `[]` to
+      // the file — that loads cleanly to empty state.
+      console.log(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`);
       return;
     }
 
@@ -100,15 +106,18 @@ const createFillLedger = (exchange, productId, pair) => {
     try {
       data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (err) {
-      console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — starting empty`);
-      // The "starting empty" log lied previously: we returned without
-      // resetting, leaving stale fills + watermarks intact. Reset here
-      // so the in-memory state actually matches the log message.
-      resetCaches();
+      // Corrupt/unreadable file: don't reset in-memory state. SIGUSR1
+      // reload on a live ledger could otherwise turn a bad manual edit
+      // or partial write into live data loss — the running process
+      // would forget its last known-good state and the next persist
+      // would rewrite the file with only the fills that arrive after
+      // the reload. Operator can fix the file and re-fire SIGUSR1.
+      console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
       return;
     }
-    // Clean slate before re-reading. See resetCaches comment above for
-    // the SIGUSR1 reload + manual-reconciliation rationale.
+    // Clean slate before re-reading. The successful-read path mirrors
+    // disk authoritatively (handles "operator removed fills via manual
+    // reconciliation, then reloaded" — those removals must take effect).
     resetCaches();
     for (const fill of data) {
       fills.set(fill.tradeId, fill);
@@ -175,6 +184,13 @@ const createFillLedger = (exchange, productId, pair) => {
     console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
   };
 
+  // Counter for tests: increments only when persist() actually writes to
+  // disk (after the dirty-flag short-circuit). Tests assert the no-op
+  // contract of persist() against this counter rather than filesystem
+  // mtime, since mtime granularity varies across CI filesystems and
+  // produces flaky assertions.
+  let writeCount = 0;
+
   /**
    * Persist fill ledger to disk. No-op when nothing has changed since the
    * last successful persist — callers can invoke this defensively on
@@ -195,6 +211,7 @@ const createFillLedger = (exchange, productId, pair) => {
 
     atomicWriteSync(filePath, JSON.stringify(fillsArray, null, 2));
     dirtySinceLastPersist = false;
+    writeCount += 1;
   };
 
   /**
@@ -955,6 +972,11 @@ const createFillLedger = (exchange, productId, pair) => {
      * flushes their changes — persist no-ops on a clean dirty flag. */
     markDirty: () => { dirtySinceLastPersist = true; },
     load,
+    // Test-only handle: returns the number of times persist() actually
+    // wrote to disk (skipping the no-op short-circuit). Lets tests
+    // assert "no-op when clean" without relying on filesystem mtime,
+    // which has variable granularity across CI runners.
+    _test: { getWriteCount: () => writeCount },
   };
 };
 

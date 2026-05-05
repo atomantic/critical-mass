@@ -986,35 +986,26 @@ const createMarketDataService = (exchange, pair) => {
     scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, attempt + 1, reason);
   };
 
-  const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt, reason) => {
-    // Update or create the pending target entry. Replays advance the
-    // mutable filledSize / averageFilledPrice / totalFees so an in-flight
-    // retry settles with the latest aggregates — not the stale ones
-    // captured at original scheduling. The entry stays alive while the
-    // retry is in flight (timerFiring=true) so handleOrderUpdate's
-    // synchronous prelude can keep advancing it.
-    let target = pendingTerminalRetries.get(orderId);
-    if (target) {
-      if (filledSize > target.filledSize) {
-        target.filledSize = filledSize;
-        target.averageFilledPrice = averageFilledPrice;
-        target.totalFees = totalFees;
-      }
-      // If a timer is already pending for this entry, leave it.
-      if (target.timerScheduled) return;
-    } else {
-      // Preempt any pending partial retry — terminal owns catch-up.
-      pendingPartialRetries.delete(orderId);
-      target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
-      pendingTerminalRetries.set(orderId, target);
+  const armFilledTimer = (orderId, trackedOrder, target, attempt, reason) => {
+    // Cancel any previously-armed timer for this target before scheduling
+    // the fresh one. Without this, a replay-driven scheduleFilledRetry
+    // (e.g., processOrderUpdate calling with attempt=1 while the chain
+    // is sitting on a 5-min cap from many failed attempts) would leave
+    // the stale long-delay timer pending alongside the fresh one. On
+    // adapters that age fills out of recent-trade queries (Gemini,
+    // Crypto.com), waiting on the stale timer can let the missing fills
+    // age out before the next retry runs.
+    if (target.timerId != null) {
+      timerTracker.cancel(target.timerId);
+      target.timerId = null;
     }
     target.timerScheduled = true;
-
     const delay = Math.min(FILLED_RETRY_BASE_MS * Math.pow(2, attempt - 1), FILLED_RETRY_MAX_MS);
     console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retry ${attempt} in ${Math.round(delay / 1000)}s`);
-    trackedSetTimeout(
+    target.timerId = trackedSetTimeout(
       () => enqueueOrderWork(orderId, async () => {
         target.timerScheduled = false;
+        target.timerId = null;
         // Keep the entry alive during the retry so replayed FILLED
         // events arriving via handleOrderUpdate's synchronous prelude
         // can still update target.filledSize/averageFilledPrice/totalFees.
@@ -1029,6 +1020,35 @@ const createMarketDataService = (exchange, pair) => {
       }),
       delay
     );
+  };
+
+  const scheduleFilledRetry = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees, attempt, reason) => {
+    // Update or create the pending target entry. Replays advance the
+    // mutable filledSize / averageFilledPrice / totalFees so an in-flight
+    // retry settles with the latest aggregates — not the stale ones
+    // captured at original scheduling. The entry stays alive while the
+    // retry is in flight so handleOrderUpdate's synchronous prelude can
+    // keep advancing it.
+    //
+    // The previous in-flight timer is cancelled inside armFilledTimer so
+    // this call can re-arm with the fresh attempt's delay. Without that
+    // re-arm, an entry already backed off to the 5-min cap would wait the
+    // full stale delay even though fresh exchange data just arrived
+    // (replay-driven scheduleFilledRetry from processOrderUpdate).
+    let target = pendingTerminalRetries.get(orderId);
+    if (target) {
+      if (filledSize > target.filledSize) {
+        target.filledSize = filledSize;
+        target.averageFilledPrice = averageFilledPrice;
+        target.totalFees = totalFees;
+      }
+    } else {
+      // Preempt any pending partial retry — terminal owns catch-up.
+      pendingPartialRetries.delete(orderId);
+      target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false, timerId: null };
+      pendingTerminalRetries.set(orderId, target);
+    }
+    armFilledTimer(orderId, trackedOrder, target, attempt, reason);
   };
 
   // Drive a cancel/fail catch-up chain against settleCancelledOrder, with
