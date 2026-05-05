@@ -606,9 +606,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Check if active TP order still exists on exchange
     if (positionState.activeTpOrderId && !openOrderIds.has(positionState.activeTpOrderId)) {
-      // TP order is gone - check if it filled
+      // TP order is gone - check if it filled. Mirror order-manager.js:29
+      // (status==='FILLED' OR completionPercentage>=100) — Coinbase can flip
+      // the percentage to 100 a tick before status flips to FILLED, and
+      // without that branch an offline fill in that brief window is missed
+      // and the TP is restored as open by the path further down.
       const orderStatus = await adapter.getOrder(positionState.activeTpOrderId);
-      if (orderStatus.status === 'FILLED') {
+      if (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100) {
         console.log(`✅ [${exchange}] TP order ${positionState.activeTpOrderId} filled while offline`);
         tpFilled = true;
 
@@ -675,7 +679,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     for (const body of [...offlineBodies]) {
       if (body.tpOrderId && !openOrderIds.has(body.tpOrderId)) {
         const orderStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
-        if (orderStatus && orderStatus.status === 'FILLED') {
+        // Same FILLED-or-completion=100 pattern as the core TP path above.
+        if (orderStatus && (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100)) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
           console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} filled while offline`);
 
@@ -975,10 +980,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         console.log(`📝 [${exchange}] Position exists but no TP order, will place after metrics update`);
       }
 
-      // Restore TP order tracking if we have an active TP order ID - but validate it exists first
+      // Restore TP order tracking if we have an active TP order ID - but validate it exists first.
+      // EXPIRED is a terminal cancellation per order-manager.js:49 — without
+      // excluding it here, an EXPIRED order would be restored as an open TP
+      // and block placement of a replacement. Same precedent across the
+      // codebase: order-manager / order-executor / market-data-service all
+      // treat EXPIRED as terminal-cancelled.
       if (positionState.activeTpOrderId) {
         const tpOrderStatus = await adapter.getOrder(positionState.activeTpOrderId).catch(() => null);
-        const tpOrderExists = tpOrderStatus && tpOrderStatus.status !== 'CANCELLED' && tpOrderStatus.status !== 'FAILED';
+        const tpOrderExists = tpOrderStatus
+          && tpOrderStatus.status !== 'CANCELLED'
+          && tpOrderStatus.status !== 'FAILED'
+          && tpOrderStatus.status !== 'EXPIRED';
 
         if (tpOrderExists && orderExecutor.restorePendingOrder) {
           // Check if a celestial body owns this TP — restore as body_tp if so
@@ -1002,7 +1015,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
           }
         } else {
-          // TP order no longer exists on exchange - clear tracking so a new one gets placed
+          // TP order no longer exists on exchange - clear tracking so a new one gets placed.
+          //
+          // KNOWN LIMITATION: cancelled-with-fills recovery is incomplete here.
+          // The exchange may report status=CANCELLED with completionPercentage
+          // anywhere in (0, 100] — both the partial case (cancel won the race
+          // before all the asset filled) AND the full case (completion=100,
+          // cancel-after-fill: the order completed in full before the cancel
+          // was processed) land in this branch. checkOfflineOrderFills (which
+          // ran earlier in startup) is the canonical fill-ingest path; if it
+          // succeeded, positionState.totalAsset already reflects the sale and
+          // clearing activeTpOrderId here is correct (no replacement TP gets
+          // placed because totalAsset is 0). If it MISSED fills (REST call
+          // failed, recent-trade window aged out, etc.), this branch will
+          // clear the tracking and a subsequent regime tick can place a
+          // replacement TP for an already-(partially-)sold position — even
+          // ingesting fills here is insufficient on its own, because a
+          // correct fix must also reduce positionState.totalAsset, recompute
+          // avgCostBasis, and account for realized P&L from the sell.
+          //
+          // The same gap applies if the API process restarted while a market-
+          // data-service cancel-retry was still pending — those retries live
+          // in-memory only, so a restart loses them.
+          //
+          // The market-data-service catch-up retry covers the common case
+          // while the engine is stopped. Engine-side recovery on startup +
+          // disk-persisted retry markers are deferred; do not extend this
+          // branch to ingest fills until that bookkeeping is in place.
           console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
           positionState.activeTpOrderId = null;
           positionState.lastTpPrice = 0;
@@ -1066,9 +1105,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (!body.tpOrderId) continue;
 
           const bodyStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
-          const bodyExists = bodyStatus && bodyStatus.status !== 'CANCELLED' && bodyStatus.status !== 'FAILED';
+          // Mirror the core-TP exists check: EXPIRED is terminal cancellation.
+          const bodyExists = bodyStatus
+            && bodyStatus.status !== 'CANCELLED'
+            && bodyStatus.status !== 'FAILED'
+            && bodyStatus.status !== 'EXPIRED';
 
-          if (bodyExists && bodyStatus.status === 'FILLED') {
+          if (bodyExists && (bodyStatus.status === 'FILLED' || bodyStatus.completionPercentage >= 100)) {
             // Body filled while offline — handled in checkOfflineOrderFills above
             continue;
           }
@@ -1084,7 +1127,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             );
             restoredBodies++;
           } else {
-            // Body TP no longer on exchange — re-place TP
+            // Body TP no longer on exchange — re-place TP.
+            // Same KNOWN LIMITATION as the core-TP branch above: cancelled-
+            // with-fills recovery is incomplete. Both the partial case
+            // (completion in (0,100)) and the full case (completion=100,
+            // cancel-after-fill where the order finished before the cancel
+            // was processed) land here — bodyExists filters out CANCELLED/
+            // FAILED/EXPIRED before the FILLED-or-completion=100 short-
+            // circuit at the top of this if. A body TP that filled before
+            // cancellation needs body.assetQty / body.costBasis proration
+            // and realized-P&L accounting; without it the replacement TP
+            // would be sized incorrectly. checkOfflineOrderFills handles the
+            // happy path; engine-side recovery is deferred.
             body.tpOrderId = null;
             expiredBodies++;
           }
@@ -1656,8 +1710,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     } else {
       // Save live state on shutdown
       saveLiveState();
-      // Also persist fill ledger
-      fillLedger.persist();
+      // Force-persist the fill ledger: if the on-disk file became
+      // unreadable mid-run (truncation, partial write by another tool,
+      // etc.), the dirty-flag short-circuit + existsSync check would
+      // skip the write, and the next cold start's load() would fail on
+      // the corrupt file even though a recoverable in-memory ledger
+      // existed. force=true rewrites the healthy snapshot unconditionally.
+      fillLedger.persist({ force: true });
       console.log(`💾 [${exchange}] Saved live state and fill ledger`);
       // Remove SIGUSR1 handler
       if (positionState._sigusr1Handler) {

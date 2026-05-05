@@ -73,7 +73,18 @@ const getStandaloneLedger = (exchange, pair) => {
   const key = fundKey(exchange, resolvedPair);
   if (!standaloneLedgers.has(key)) {
     const fundConfig = getFundConfig(exchange, resolvedPair);
-    const ledger = createFillLedger(exchange, fundConfig?.productId, resolvedPair);
+    // createFillLedger throws on cold-start corruption (refuses to boot
+    // empty so a subsequent persist can't overwrite a recoverable file).
+    // Log full detail (absolute path + parser error) server-side and throw
+    // a sanitized message — the IPC framework propagates this back to
+    // clients, so we keep filesystem internals out of the API surface.
+    let ledger;
+    try {
+      ledger = createFillLedger(exchange, fundConfig?.productId, resolvedPair);
+    } catch (err) {
+      log('ERROR', `❌ [${exchange}/${resolvedPair}] Fill ledger init failed: ${err.message}`);
+      throw new Error(`Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details`);
+    }
     ledger.load();
     standaloneLedgers.set(key, ledger);
   }
@@ -172,7 +183,20 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
     return { success: false, error: 'API keys not configured for this exchange' };
   }
 
-  const engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
+  // createRegimeEngine builds its fill ledger eagerly in the constructor
+  // (regime-engine.js:226). createFillLedger refuses to boot on cold-start
+  // corruption, so a corrupt ledger file would otherwise bubble up through
+  // the IPC framework. Catch it and return a per-fund failure so other
+  // funds in this engine process stay usable. Log full detail server-side
+  // and return a sanitized message to the client so we don't leak the
+  // absolute ledger path / parser internals across the IPC boundary.
+  let engine;
+  try {
+    engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
+  } catch (err) {
+    log('ERROR', `❌ [${label}] Fill ledger init failed on regime:start: ${err.message}`);
+    return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
+  }
   regimeEngines.set(key, engine);
 
   const startResult = await engine.start();
@@ -209,8 +233,19 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
 
   log('INFO', `🛑 [${label}] Stopping regime engine...`);
 
-  await startMarketDataService(exchange, resolvedPair);
-  wireMarketDataCallbacks(exchange, resolvedPair);
+  // Spin up the standalone market-data-service for fill-handover during
+  // shutdown. If the on-disk fill-ledger is corrupt, createFillLedger
+  // throws on cold start (refuses to boot empty); startMarketDataService
+  // surfaces that as { success: false, error }. Skip wiring callbacks
+  // and proceed to engine.stop() anyway — the operator's stop intent
+  // takes precedence over the handover, and the running engine still
+  // has its own (good) in-memory ledger to flush.
+  const mdsResult = await startMarketDataService(exchange, resolvedPair);
+  if (mdsResult?.success) {
+    wireMarketDataCallbacks(exchange, resolvedPair);
+  } else {
+    log('WARN', `⚠️ [${label}] Standalone market-data-service did not start (${mdsResult?.error || 'unknown'}); proceeding with engine stop, will retry handover after stop in case its persist repaired a corrupt ledger`);
+  }
 
   const stopResult = await engine.stop().catch((err) => {
     log('ERROR', `❌ [${label}] Error stopping engine: ${err.message}`);
@@ -218,7 +253,34 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
   });
 
   if (stopResult?.error) {
+    // Engine stop failed but the standalone market-data-service we just
+    // started is now running independently. Without tearing it down, the
+    // engine remains registered AND the WS service is also processing
+    // events for the same fund — two live processors that can double-
+    // ingest fills and emit conflicting status until the process is
+    // restarted. Stop the standalone service before returning so the
+    // operator can retry from a single-processor state.
+    if (mdsResult?.success) {
+      stopMarketDataService(exchange, resolvedPair);
+    }
     return { success: false, error: stopResult.error };
+  }
+
+  // Retry the standalone WS handover if the initial start failed —
+  // engine.stop()'s force-persist may have replaced an unreadable
+  // ledger file with a healthy in-memory snapshot, so a second attempt
+  // can now read it. Without this retry, the fund would be left with
+  // no stopped-engine WS service even though the underlying corruption
+  // is now resolved, and any fills/cancels that arrive while the
+  // engine remains stopped would be missed until manual restart.
+  if (!mdsResult?.success) {
+    const retryResult = await startMarketDataService(exchange, resolvedPair);
+    if (retryResult?.success) {
+      wireMarketDataCallbacks(exchange, resolvedPair);
+      log('INFO', `✅ [${label}] Standalone market-data-service started after engine stop`);
+    } else {
+      log('WARN', `⚠️ [${label}] Standalone market-data-service still not available after engine stop (${retryResult?.error || 'unknown'}) — fund has no WS service while stopped`);
+    }
   }
 
   regimeEngines.delete(key);
@@ -438,7 +500,15 @@ ipcServer.onRequest('regime:fills', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
   if (!engine) {
-    const ledger = getStandaloneLedger(exchange, resolvedPair);
+    // getStandaloneLedger throws on cold-start ledger corruption — catch
+    // and return the structured shape clients expect, so a corrupt fund
+    // doesn't surface as an unstructured IPC exception.
+    let ledger;
+    try {
+      ledger = getStandaloneLedger(exchange, resolvedPair);
+    } catch (err) {
+      return { running: false, success: false, error: err.message };
+    }
     return { running: false, fills: ledger.getAllFills(), stats: ledger.getStats() };
   }
   return { running: true, fills: engine.getFills(), stats: engine.getFillStats() };
@@ -565,7 +635,16 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
   const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
 
   invalidateStandaloneLedger(exchange, resolvedPair);
-  const fillLedger = getStandaloneLedger(exchange, resolvedPair);
+  // getStandaloneLedger throws on cold-start ledger corruption. Catch it
+  // and return the structured {success:false, error} shape that other
+  // handlers in this file return on failure, so the API client doesn't
+  // need a separate code path for thrown-vs-returned errors.
+  let fillLedger;
+  try {
+    fillLedger = getStandaloneLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
   const currentState = loadRegimeState(exchange, resolvedPair);
 
   // Use closed trades as authoritative P&L source
@@ -685,7 +764,15 @@ ipcServer.onRequest('regime:unaccounted-fills', async (payload, exchange, pair) 
   const { startDate } = payload || {};
   const { getUnaccountedFills } = require('../src/sync-fills');
 
-  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  // getActiveLedger → getStandaloneLedger throws on cold-start ledger
+  // corruption. Surface as a structured failure rather than letting it
+  // leak through the IPC framework.
+  let fillLedger;
+  try {
+    fillLedger = getActiveLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
   const manualTradeStore = getManualTradeStore(exchange, resolvedPair);
 
   const result = await getUnaccountedFills(exchange, fillLedger, manualTradeStore, { startDate });
@@ -721,7 +808,12 @@ ipcServer.onRequest('regime:manual-trade', async (payload, exchange, pair) => {
     return { success: false, error: `No fills found for order ${sellOrderId}` };
   }
 
-  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  let fillLedger;
+  try {
+    fillLedger = getActiveLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 
   const { tradeIds: sellFillTradeIds, totalSize: totalSellSize, totalQuote: totalSellQuote } =
     ingestAdapterFills(fillLedger, sellFills, sellOrderId, 'sell');
@@ -808,7 +900,12 @@ ipcServer.onRequest('regime:manual-trade-check', async (payload, exchange, pair)
       return { success: false, error: `Buy order filled but failed to fetch fills: ${err.message}` };
     }
 
-    const fillLedger = getActiveLedger(exchange, resolvedPair);
+    let fillLedger;
+    try {
+      fillLedger = getActiveLedger(exchange, resolvedPair);
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
 
     const { tradeIds: buyFillTradeIds, totalSize: totalBuySize, totalQuote: totalBuyQuote } =
       ingestAdapterFills(fillLedger, buyFills, trade.buyOrderId, 'buy');
@@ -881,7 +978,12 @@ ipcServer.onRequest('regime:manual-trade-buy', async (payload, exchange, pair) =
     return { success: false, error: `No fills found for order ${buyOrderId}` };
   }
 
-  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  let fillLedger;
+  try {
+    fillLedger = getActiveLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 
   const { tradeIds: buyFillTradeIds, totalSize: totalBuySize, totalQuote: totalBuyQuote } =
     ingestAdapterFills(fillLedger, buyFills, buyOrderId, 'buy');
@@ -950,7 +1052,15 @@ ipcServer.onRequest('regime:manual-trade-pair', async (payload, exchange, pair) 
   const { getAdapter } = require('../src/adapters');
   const adapter = getAdapter(exchange);
   const store = getManualTradeStore(exchange, resolvedPair);
-  const fillLedger = getActiveLedger(exchange, resolvedPair);
+  // getActiveLedger → getStandaloneLedger → createFillLedger throws on
+  // cold-start corruption. Convert to the structured {success:false}
+  // shape this handler already returns for other failure modes.
+  let fillLedger;
+  try {
+    fillLedger = getActiveLedger(exchange, resolvedPair);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 
   // Fetch and ingest buy fills
   let buyFills;
@@ -1029,7 +1139,17 @@ ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
     return { success: true, preview: true, exchange, pair: resolvedPair, ...previewConversion(exchange) };
   }
 
-  const result = merge ? mergeToRegime(exchange) : executeConversion(exchange);
+  // executeConversion re-enables the DCA engine on its own throw path
+  // (handled inside dca-converter.js). mergeToRegime doesn't disable the
+  // engine so it has nothing to roll back — both paths surface a
+  // cold-start ledger corruption throw that we convert into the
+  // structured {success:false} response the rest of the IPC API uses.
+  let result;
+  try {
+    result = merge ? mergeToRegime(exchange) : executeConversion(exchange);
+  } catch (err) {
+    return { success: false, exchange, pair: resolvedPair, error: err.message };
+  }
   invalidateStandaloneLedger(exchange, resolvedPair);
   return { success: true, preview: false, exchange, pair: resolvedPair, ...result };
 });
@@ -1080,7 +1200,22 @@ const startup = async () => {
       const adapter = getAdapter(exchange);
 
       if (adapter.hasValidKeys && adapter.hasValidKeys()) {
-        const engine = createRegimeEngine(exchange, fundPair, fundConfig, createEngineCallbacks(exchange, fundPair));
+        // createRegimeEngine eagerly creates its fill ledger
+        // (regime-engine.js:226), which refuses to boot on cold-start
+        // corruption. Without this catch, a single corrupt fund ledger
+        // would abort the entire engine process on startup; instead we
+        // log per-fund (with full detail) and continue with the rest.
+        // Server-side log is the right destination for the absolute
+        // ledger path + parser detail — there's no IPC client here, so
+        // a sanitized message would just lose information.
+        let engine;
+        try {
+          engine = createRegimeEngine(exchange, fundPair, fundConfig, createEngineCallbacks(exchange, fundPair));
+        } catch (err) {
+          log('ERROR', `❌ [${label}] Failed to auto-resume: Fill ledger init failed: ${err.message}`);
+          saveRegimeRunningFlag(exchange, fundPair, false);
+          continue;
+        }
         regimeEngines.set(key, engine);
 
         const startResult = await engine.start();

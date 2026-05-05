@@ -32,6 +32,58 @@ const getFillLedgerPath = (exchange, pair) => {
 };
 
 /**
+ * Validate a parsed-from-JSON ledger payload against the same shape rules
+ * load() applies before resetCaches. Returns null when the payload is
+ * acceptable, or a human-readable reason string for the first invalid
+ * entry. Shared between load()'s pre-pass and persist({force:true})'s
+ * "preserve operator edits" short-circuit so they agree on what counts
+ * as repairable vs preservable.
+ *
+ * Fields required by aggregateFills/rebuildPositionFromFills are
+ * validated as REQUIRED (not "when present"): a row missing side, size,
+ * price, quoteAmount, netFee/fee, or timestamp would otherwise produce
+ * NaN totals downstream and silently corrupt position / P&L state.
+ * tradeIds are also checked for uniqueness because load() stores
+ * entries in a Map keyed by tradeId and a duplicate would silently
+ * overwrite the earlier row.
+ *
+ * @param {unknown} data - JSON-parsed file content
+ * @returns {string | null} reason if invalid, else null
+ */
+const findInvalidLedgerReason = (data) => {
+  if (!Array.isArray(data)) return 'top-level value is not an array';
+  const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
+  const seenTradeIds = new Set();
+  for (const fill of data) {
+    if (!fill || typeof fill !== 'object') return 'non-object entry';
+    if (typeof fill.tradeId !== 'string' || !fill.tradeId) return 'missing or non-string tradeId';
+    if (seenTradeIds.has(fill.tradeId)) return `duplicate tradeId '${fill.tradeId}'`;
+    if (fill.side !== 'buy' && fill.side !== 'sell') return "side must be 'buy' or 'sell'";
+    if (!isFiniteNumber(fill.size)) return 'size must be a finite number';
+    // rebuildPositionFromFills restores lastEntryPrice / anchorPrice
+    // directly from fill.price; a NaN/null price would poison entry
+    // tracking and slip through aggregateFills (which uses quoteAmount,
+    // not price, so an inconsistent pair would also escape there).
+    if (!isFiniteNumber(fill.price)) return 'price must be a finite number';
+    if (!isFiniteNumber(fill.quoteAmount)) return 'quoteAmount must be a finite number';
+    // Legacy ledgers (pre-rebate-split) wrote `fee` only without
+    // `netFee`. Downstream regime-engine.js:1259-1260 already reads
+    // via `fill.netFee || fill.fee`, so accept either; load()
+    // backfills `netFee` from `fee` for the in-memory copy so the
+    // many other call sites that read `fill.netFee` directly never
+    // see undefined.
+    if (!isFiniteNumber(fill.netFee) && !isFiniteNumber(fill.fee)) return 'netFee or fee must be a finite number';
+    if (!isFiniteNumber(fill.timestamp)) return 'timestamp must be a finite number';
+    // orderId is optional (legacy/manual entries may omit it; downstream
+    // truthiness-guards every read), but MUST be a string when present.
+    if (fill.orderId != null && typeof fill.orderId !== 'string') return 'orderId must be a string when present';
+    if (fill.cycleId != null && typeof fill.cycleId !== 'string') return 'cycleId must be a string when present';
+    seenTradeIds.add(fill.tradeId);
+  }
+  return null;
+};
+
+/**
  * Create fill ledger instance
  * @param {string} exchange - Exchange name
  * @param {string} [productId] - Product ID (e.g. 'BTC-USDC') used to derive base currency for logs
@@ -43,8 +95,28 @@ const createFillLedger = (exchange, productId, pair) => {
   const fills = new Map();
   /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
   const cycleIndex = new Map();
+  /** @type {Map<string, number>} orderId -> total recorded size for O(1) watermark lookups in hot retry loops */
+  const orderSizeIndex = new Map();
   let currentCycleId = null;
   let nextCycleNumber = 1;
+  // True when in-memory state has been mutated since the last successful
+  // persist. Lets persist() short-circuit when there's nothing new to
+  // write, so callers (e.g. unbounded retry loops in market-data-service)
+  // can call persist() defensively on every tick without churning the
+  // ledger file or blocking the event loop on every backoff. External
+  // callers that mutate fill objects directly (via getAllFills /
+  // getFillsForOrder) MUST call markDirty() so the next persist actually
+  // flushes their changes — and per its contract may only mutate
+  // metadata fields that do not feed orderSizeIndex / cycleIndex.
+  let dirtySinceLastPersist = false;
+  // Tracks whether load() has ever completed (file present or absent) so
+  // corruption-recovery branches can distinguish a live SIGUSR1 reload
+  // (preserve in-memory) from a cold-start boot (throw, force operator
+  // intervention). Without this, a cold start with a corrupt file would
+  // boot with an empty ledger and the next successful persist would
+  // overwrite the recoverable file with only post-start fills, silently
+  // discarding history.
+  let hasLoadedSuccessfully = false;
   const baseCurrency = getBaseCurrency(productId);
   const fmtPrice = (p) => {
     if (p == null || isNaN(p)) return '-';
@@ -56,9 +128,46 @@ const createFillLedger = (exchange, productId, pair) => {
   /**
    * Load fill ledger from disk
    */
+  const resetCaches = () => {
+    // Reset all in-memory state to empty. load() may be called more than
+    // once on a live ledger instance (regime-engine SIGUSR1 reload), so
+    // every load path must start clean — otherwise stale fills from a
+    // prior load (or from before a manual reconciliation removed them
+    // from disk) would survive and inflate getRecordedSizeForOrder.
+    // currentCycleId/nextCycleNumber are part of that state — without
+    // resetting them, a reload to an empty ledger would keep attributing
+    // new fills to the prior cycle.
+    fills.clear();
+    cycleIndex.clear();
+    orderSizeIndex.clear();
+    currentCycleId = null;
+    nextCycleNumber = 1;
+    // Clear the dirty flag too. After a reload, in-memory matches disk,
+    // so a defensive persist() on the next tick must be a no-op rather
+    // than rewriting the just-loaded snapshot — preserves the "clean
+    // persists are a no-op" contract that avoids file churn on every
+    // retry-loop call to persist().
+    dirtySinceLastPersist = false;
+  };
+
   const load = () => {
     const filePath = getFillLedgerPath(exchange, pair);
+    // Reload-vs-cold-start signal. Either a prior successful load OR any
+    // already-ingested fills means there is in-memory state worth
+    // preserving. Without this distinction, a cold-start boot against a
+    // corrupt file would silently start with an empty ledger and the
+    // next persist would overwrite the recoverable file with only
+    // post-start fills — destroying the historical record.
+    const isReload = hasLoadedSuccessfully || fills.size > 0;
     if (!fs.existsSync(filePath)) {
+      // Initial load (no file yet) leaves the freshly-constructed empty
+      // caches in place. SIGUSR1 reload (regime-engine.js calls load()
+      // on the live ledger) preserves whatever is in memory so a
+      // momentarily-missing file (e.g., operator's edit/rename window)
+      // doesn't wipe live data. To intentionally clear, write `[]` to
+      // the file — that loads cleanly to empty state.
+      console.log(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`);
+      hasLoadedSuccessfully = true;
       return;
     }
 
@@ -66,15 +175,86 @@ const createFillLedger = (exchange, productId, pair) => {
     try {
       data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (err) {
-      console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — starting empty`);
+      if (!isReload) {
+        // Cold-start corruption: throwing forces the operator to repair
+        // (or move aside) the file before the engine boots, so a
+        // post-start persist can't overwrite the recoverable contents.
+        throw new Error(`fill-ledger at ${filePath} is corrupted or unreadable on cold start: ${err.message}. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
+      }
+      // Corrupt/unreadable file: don't reset in-memory state. SIGUSR1
+      // reload on a live ledger could otherwise turn a bad manual edit
+      // or partial write into live data loss — the running process
+      // would forget its last known-good state and the next persist
+      // would rewrite the file with only the fills that arrive after
+      // the reload. Operator can fix the file and re-fire SIGUSR1.
+      console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
       return;
     }
+    // Validate shape BEFORE resetCaches. Valid JSON like `{}` or `null`
+    // would parse without throwing but the for-of below would crash —
+    // resetCaches() would have already wiped the live ledger by then,
+    // so the reload-on-malformed-payload would fall into the same data-
+    // loss mode that the catch-block above guards against.
+    if (!Array.isArray(data)) {
+      if (!isReload) {
+        throw new Error(`fill-ledger at ${filePath} is not an array on cold start (got ${data === null ? 'null' : typeof data}). Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
+      }
+      console.log(`❌ [${exchange}] fill-ledger at ${filePath} is not an array (got ${data === null ? 'null' : typeof data}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+      return;
+    }
+    // Element-level validation: even an array can contain malformed
+    // entries like `[null]` or `[{}]` that would crash on `fill.tradeId`
+    // mid-loop, leaving the live ledger half-populated after the
+    // already-run resetCaches. Pre-pass guarantees a clean reload-or-bail.
+    //
+    // Field-type validation is required, not just presence: the load-body
+    // below calls `fill.cycleId.match(/^cycle-(\d+)$/)` which throws on
+    // non-string cycleId (e.g. an object). A presence-only pre-pass would
+    // accept `{tradeId:"t1", cycleId:{}}` and we'd crash mid-load AFTER
+    // resetCaches has wiped the live ledger — re-introducing the data-loss
+    // mode the pre-validation is meant to prevent.
+    const invalidReason = findInvalidLedgerReason(data);
+    if (invalidReason) {
+      if (!isReload) {
+        throw new Error(`fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
+      }
+      console.log(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+      return;
+    }
+    // Clean slate before re-reading. The successful-read path mirrors
+    // disk authoritatively (handles "operator removed fills via manual
+    // reconciliation, then reloaded" — those removals must take effect).
+    resetCaches();
     for (const fill of data) {
+      // Legacy-ledger backfill: pre-rebate-split fills only had `fee`,
+      // not `netFee`. The pre-pass validator accepts either; here we
+      // synthesize netFee from fee so the many downstream consumers
+      // that read fill.netFee directly (aggregateFills,
+      // rebuildPositionFromFills, recalculateCycles, etc.) never see
+      // undefined. The on-disk file isn't auto-rewritten — the next
+      // dirtying mutation will trigger the upgraded shape via persist.
+      if (typeof fill.netFee !== 'number' && typeof fill.fee === 'number') {
+        fill.netFee = fill.fee;
+      }
       fills.set(fill.tradeId, fill);
       // Populate cycle index
       if (fill.cycleId) {
         if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
         cycleIndex.get(fill.cycleId).add(fill.tradeId);
+      }
+    }
+    // Rebuild orderSizeIndex from the canonical fills Map AFTER population.
+    // load() can be called multiple times on a live ledger (regime-engine.js
+    // re-loads on state reload). If we accumulated inside the loop above,
+    // a second load() would double-count every persisted fill on top of
+    // the existing totals — making getRecordedSizeForOrder over-report
+    // and the market-data-service watermark believe orders are fully
+    // ingested when they're not. Rebuilding from `fills` is idempotent.
+    orderSizeIndex.clear();
+    for (const f of fills.values()) {
+      if (f.orderId) {
+        const next = (orderSizeIndex.get(f.orderId) || 0) + (f.size || 0);
+        orderSizeIndex.set(f.orderId, roundAsset(next));
       }
     }
 
@@ -117,14 +297,62 @@ const createFillLedger = (exchange, productId, pair) => {
     }
     nextCycleNumber = maxCycleNum + 1;
 
+    hasLoadedSuccessfully = true;
     console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
   };
 
+  // Counter for tests: increments only when persist() actually writes to
+  // disk (after the dirty-flag short-circuit). Tests assert the no-op
+  // contract of persist() against this counter rather than filesystem
+  // mtime, since mtime granularity varies across CI filesystems and
+  // produces flaky assertions.
+  let writeCount = 0;
+
   /**
-   * Persist fill ledger to disk
+   * Persist fill ledger to disk. No-op when nothing has changed since the
+   * last successful persist — callers can invoke this defensively on
+   * every retry tick without churning the ledger file.
    */
-  const persist = () => {
+  const persist = (options = {}) => {
+    const { force = false } = options;
     const filePath = getFillLedgerPath(exchange, pair);
+    if (!dirtySinceLastPersist) {
+      // Clean shutdowns must still write when the on-disk file has gone
+      // missing (operator rm, transient unmount, etc.) — otherwise
+      // regime-engine.stop()'s defensive persist() would no-op, the
+      // process exits, and the next boot's load() sees no file and
+      // treats it as a fresh deployment with empty history. Subsequent
+      // persists would then write a file containing only post-restart
+      // fills, silently destroying the recoverable in-memory ledger
+      // that the dirty-flag short-circuit refused to flush.
+      if (!fs.existsSync(filePath)) {
+        // fall through to write
+      } else if (!force) {
+        return;
+      } else {
+        // `force: true` — used by shutdown paths to flush a healthy
+        // in-memory snapshot when the on-disk file became unreadable /
+        // truncated externally during the run. Honor force ONLY when
+        // the on-disk content would survive load()'s pre-pass: if the
+        // file is a valid array of well-shaped fill rows, the operator
+        // may have made manual reconciliation edits that we should not
+        // clobber with our (potentially-staler) in-memory state.
+        // findInvalidLedgerReason runs the same per-row checks load()
+        // does, so partial corruption modes (`[validFill, null]`,
+        // duplicates, missing required fields on a later row) are
+        // detected and rewritten — not silently preserved as the next
+        // boot's load() would reject them, defeating the repair-on-stop
+        // path. Operators can still SIGUSR1-reload before stop if they
+        // want on-disk edits applied to the engine before shutdown.
+        try {
+          const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          if (findInvalidLedgerReason(parsed) === null) return;
+        } catch (_) {
+          // unparseable — fall through and rewrite from in-memory
+        }
+      }
+    }
+
     const dir = path.dirname(filePath);
 
     if (!fs.existsSync(dir)) {
@@ -135,6 +363,8 @@ const createFillLedger = (exchange, productId, pair) => {
       .sort((a, b) => a.timestamp - b.timestamp);
 
     atomicWriteSync(filePath, JSON.stringify(fillsArray, null, 2));
+    dirtySinceLastPersist = false;
+    writeCount += 1;
   };
 
   /**
@@ -182,6 +412,14 @@ const createFillLedger = (exchange, productId, pair) => {
       if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
       cycleIndex.get(fill.cycleId).add(tradeId);
     }
+    // Maintain per-order size index for O(1) watermark lookups in retry loops.
+    // Round to asset precision so accumulated float error can't keep the
+    // retry chain running on a fully-recorded order (see load() for context).
+    if (fill.orderId) {
+      const next = (orderSizeIndex.get(fill.orderId) || 0) + (fill.size || 0);
+      orderSizeIndex.set(fill.orderId, roundAsset(next));
+    }
+    dirtySinceLastPersist = true;
     if (!options.skipPersist) persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
@@ -638,6 +876,7 @@ const createFillLedger = (exchange, productId, pair) => {
           fills.set(fill.tradeId, fill);
           cycleIndex.get(cycleId).add(fill.tradeId);
           orphansFixed++;
+          dirtySinceLastPersist = true;
         }
 
         // Check if this is a completed cycle using BTC balance ratio
@@ -739,6 +978,7 @@ const createFillLedger = (exchange, productId, pair) => {
           if (fill.cycleId && idMap.has(fill.cycleId)) {
             fill.cycleId = idMap.get(fill.cycleId);
             fills.set(fill.tradeId, fill);
+            dirtySinceLastPersist = true;
           }
           if (fill.cycleId) {
             if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
@@ -772,6 +1012,7 @@ const createFillLedger = (exchange, productId, pair) => {
         if (sellId) {
           fill.sellOrderId = sellId;
           linkedCount++;
+          dirtySinceLastPersist = true;
         }
       }
     }
@@ -809,6 +1050,7 @@ const createFillLedger = (exchange, productId, pair) => {
       }
       fill.cycleId = cycleId;
       fills.set(tradeId, fill);
+      dirtySinceLastPersist = true;
       // Add to new cycle index
       if (cycleId) {
         if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
@@ -828,6 +1070,7 @@ const createFillLedger = (exchange, productId, pair) => {
       if (fill.orderId === orderId) {
         Object.assign(fill, metadata);
         matched = true;
+        dirtySinceLastPersist = true;
       }
     }
     // Persist when sellOrderId is set to ensure it survives restarts
@@ -858,6 +1101,8 @@ const createFillLedger = (exchange, productId, pair) => {
   return {
     ingestFill,
     getFillsForOrder,
+    /** O(1) watermark lookup. Use this in hot paths instead of getFillsForOrder + reduce. */
+    getRecordedSizeForOrder: (orderId) => orderSizeIndex.get(orderId) || 0,
     getCurrentCycleFills,
     getCurrentCycleBuysCount,
     rebuildPositionFromFills,
@@ -875,7 +1120,24 @@ const createFillLedger = (exchange, productId, pair) => {
     updateFillCycleId,
     annotateFillsByOrderId,
     persist,
+    /** Mark the in-memory ledger as dirty so the next persist() actually
+     * writes to disk. Restricted contract: callers MUST limit mutations
+     * to METADATA-ONLY fields that do not feed any derived index — i.e.
+     * NOT tradeId, orderId, cycleId, or size. The orderSizeIndex (keyed
+     * by orderId, summed by size) and cycleIndex (keyed by cycleId) are
+     * not refreshed here; mutating an indexed field via this path would
+     * persist new values to disk while in-memory lookups continued to
+     * return stale results until the next reload. dca-converter.js uses
+     * this only for the sellOrderId annotation, which is metadata. For
+     * indexed-field changes use the dedicated mutators
+     * (annotateFillsByOrderId, updateFillCycleId). */
+    markDirty: () => { dirtySinceLastPersist = true; },
     load,
+    // Test-only handle: returns the number of times persist() actually
+    // wrote to disk (skipping the no-op short-circuit). Lets tests
+    // assert "no-op when clean" without relying on filesystem mtime,
+    // which has variable granularity across CI runners.
+    _test: { getWriteCount: () => writeCount },
   };
 };
 

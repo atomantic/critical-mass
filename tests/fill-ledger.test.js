@@ -902,4 +902,459 @@ describe('Fill Ledger', () => {
     assert.equal(ledger2.getCurrentCycleId(), 'cycle-1');
     assert.equal(ledger2.getCurrentCycleBuysCount(), 1);
   });
+
+  // =======================================================================
+  // persist() is a no-op when nothing has changed since the last successful
+  // persist — lets defensive callers (e.g. unbounded retry loops) invoke
+  // persist() on every tick without churning the ledger file.
+  // =======================================================================
+  it('persist() is a no-op when ledger is clean (no mutations since last persist)', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1' })); // auto-persists, clears dirty
+
+    const writesBefore = ledger._test.getWriteCount();
+    ledger.persist();
+    ledger.persist();
+    ledger.persist();
+    assert.equal(ledger._test.getWriteCount(), writesBefore,
+      'clean persists must NOT rewrite the ledger file');
+  });
+
+  it('load() on a dirty live instance clears the dirty flag so subsequent persist() is a no-op', () => {
+    // SIGUSR1 reload path: load() may be called while the in-memory ledger
+    // has unflushed mutations. resetCaches must clear dirtySinceLastPersist
+    // alongside the in-memory state — after load(), in-memory matches disk,
+    // and a defensive persist() on the next tick should be a no-op rather
+    // than rewriting the just-loaded snapshot (which would churn the file
+    // on every retry-loop call to persist()).
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1' })); // auto-persists; dirty cleared
+
+    // Mutate without persist to set the dirty flag.
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-2' }), null, { skipPersist: true });
+
+    // Reload from disk. After load(), in-memory matches disk (which has
+    // only b-1, not b-2 — but the dirty flag should still be cleared).
+    ledger.load();
+
+    const writesBefore = ledger._test.getWriteCount();
+    ledger.persist();
+    assert.equal(ledger._test.getWriteCount(), writesBefore,
+      'persist() after load() must be a no-op — load resets the dirty flag');
+  });
+
+  it('getRecordedSizeForOrder returns the per-order total in O(1)', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-2', orderId: 'o-1', size: '0.3' }));
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-3', orderId: 'o-2', size: '1.0' }));
+
+    assert.equal(ledger.getRecordedSizeForOrder('o-1'), 0.4 + 0.3);
+    assert.equal(ledger.getRecordedSizeForOrder('o-2'), 1.0);
+    assert.equal(ledger.getRecordedSizeForOrder('unknown'), 0);
+  });
+
+  it('getRecordedSizeForOrder rounds accumulated float sums to asset precision', () => {
+    // Raw float sum of 0.1 + 0.2 + 0.4 produces 0.7000000000000001.
+    // Without rounding, recordedSize < filledSize=0.7 would be false-but-
+    // also-not-equal, and the retry chain would loop forever even though
+    // all fills are present. The index must round to 8-decimal asset
+    // precision after each accumulation.
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.1' }));
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-2', orderId: 'o-1', size: '0.2' }));
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-3', orderId: 'o-1', size: '0.4' }));
+
+    const recorded = ledger.getRecordedSizeForOrder('o-1');
+    assert.equal(recorded, 0.7, 'rounded sum must be exactly 0.7, not 0.7000000000000001');
+  });
+
+  it('load() resets currentCycleId and nextCycleNumber on a successful reload', () => {
+    // The successful-load path still mirrors disk authoritatively: if the
+    // operator manually edits the file to remove fills, those removals
+    // must take effect on reload. This test verifies that path resets
+    // cycle state. (The corrupt/missing-file paths preserve in-memory
+    // state instead — see the SIGUSR1 reload safety tests below.)
+    const exchange = 'test-exchange-cycle-reset';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1' }));
+    const cycleBefore = ledger1.getCurrentCycleId();
+    assert.ok(cycleBefore, 'cycle exists after startNewCycle');
+
+    // Overwrite the file with a valid empty array so the load() success
+    // path runs and resets cycle state.
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+    fs.writeFileSync(filePath, '[]');
+
+    ledger1.load();
+    assert.equal(ledger1.getCurrentCycleId(), null,
+      'successful load() of an empty ledger must reset currentCycleId — without this, subsequent ingestFill keeps attributing fills to the prior cycle');
+  });
+
+  it('load() preserves in-memory state when the file is corrupt (SIGUSR1 reload safety)', () => {
+    // SIGUSR1 reload runs load() on the live ledger. If the file is
+    // momentarily corrupt (operator's mid-edit window, partial write,
+    // disk hiccup), wiping in-memory state would turn that into live
+    // data loss — the running engine would forget its last known-good
+    // ledger and the next persist would rewrite the file with only the
+    // fills that arrive after the reload. Instead, load() logs and
+    // returns, keeping the existing in-memory state intact.
+    const exchange = 'test-exchange-corrupt';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    const fillsBefore = ledger1.getFillCount();
+    const recordedBefore = ledger1.getRecordedSizeForOrder('o-1');
+
+    // Corrupt the file
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+    fs.writeFileSync(filePath, '<<< not valid json >>>');
+
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills must be preserved on corrupt-file reload (live SIGUSR1 safety)');
+    assert.equal(ledger1.getRecordedSizeForOrder('o-1'), recordedBefore,
+      'orderSizeIndex must be preserved on corrupt-file reload');
+  });
+
+  it('load() preserves in-memory state when the file is valid JSON but not an array (SIGUSR1 reload safety)', () => {
+    // Valid JSON like `{}`, `null`, or `42` parses without throwing but
+    // can't be iterated. resetCaches() must NOT run before this is
+    // detected — otherwise a malformed-but-parseable manual edit during
+    // SIGUSR1 reload would crash mid-way and leave the live ledger
+    // permanently empty.
+    const exchange = 'test-exchange-malformed';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    const fillsBefore = ledger1.getFillCount();
+
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+    fs.writeFileSync(filePath, '{}');
+
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills must be preserved when file is valid JSON but not an array');
+
+    // Also test null and primitive values
+    fs.writeFileSync(filePath, 'null');
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills preserved when file is null');
+
+    fs.writeFileSync(filePath, '42');
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills preserved when file is a number primitive');
+  });
+
+  it('load() preserves in-memory state when the file is missing (SIGUSR1 reload safety)', () => {
+    // Same SIGUSR1 reload concern as the corrupt-file test. An operator
+    // who deletes the file mid-edit, or a temporary unavailability of
+    // the storage medium, must not wipe live data.
+    const exchange = 'test-exchange-missing-on-reload';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    const fillsBefore = ledger1.getFillCount();
+
+    // Remove the file
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+    fs.rmSync(filePath);
+
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills must be preserved when file goes missing during reload');
+  });
+
+  it('load() is idempotent for orderSizeIndex (no double-counting on re-load)', () => {
+    const exchange = 'test-exchange-double-load';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    // Re-load the live ledger instance — regime-engine.js does this on
+    // state reload. Without the index-rebuild fix, this would add 0.4
+    // on top of the existing 0.4 and report 0.8.
+    ledger1.load();
+    assert.equal(ledger1.getRecordedSizeForOrder('o-1'), 0.4,
+      're-load must not double-count');
+
+    ledger1.load();
+    assert.equal(ledger1.getRecordedSizeForOrder('o-1'), 0.4,
+      'a third load must still report 0.4');
+  });
+
+  it('getRecordedSizeForOrder restores the per-order index from disk on load', () => {
+    const exchange = 'test-exchange-load-idx';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-2', orderId: 'o-1', size: '0.3' }));
+
+    const ledger2 = createTestLedger(exchange);
+    assert.equal(ledger2.getRecordedSizeForOrder('o-1'), 0.4 + 0.3,
+      'index must be rebuilt on load — production retry loops depend on it');
+  });
+
+  it('markDirty + persist flushes external mutations to disk', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    const result = ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1' }));
+
+    // External mutation directly on the fill object (the dca-converter
+    // pattern). Without markDirty, the trailing persist would no-op.
+    result.fill.sellOrderId = 'sell-XYZ';
+    ledger.markDirty();
+    ledger.persist();
+
+    // Reload and verify the mutation survived.
+    delete require.cache[fillLedgerPath];
+    const { createFillLedger: fresh } = require('../src/fill-ledger');
+    const reloaded = fresh('test-exchange');
+    const fills = reloaded.getFillsForOrder('o-1');
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].sellOrderId, 'sell-XYZ',
+      'markDirty + persist must flush direct field mutations to disk');
+  });
+
+  it('persist() recreates the file when on-disk file is missing even if ledger is clean', () => {
+    // Defensive write on missing-file. Without this, regime-engine.stop()'s
+    // unconditional persist() would no-op when the file was unlinked
+    // mid-run (operator rm, transient unmount), and the next boot's
+    // load() would treat the missing file as a fresh deployment with
+    // empty history. Subsequent persists would write a file containing
+    // only post-restart fills, silently overwriting recoverable history.
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    // First persist wrote the file; ledger is now clean.
+
+    // Simulate transient file disappearance.
+    const filePath = path.join(tmpDir, 'test-exchange', 'default', 'fill-ledger.json');
+    assert.ok(fs.existsSync(filePath), 'file should exist after first persist');
+    fs.rmSync(filePath);
+    assert.ok(!fs.existsSync(filePath), 'file removed for missing-file test');
+
+    const writesBefore = ledger._test.getWriteCount();
+    ledger.persist(); // clean BUT file missing — must still write
+    assert.ok(ledger._test.getWriteCount() > writesBefore,
+      'clean persist must still write when on-disk file is missing');
+    assert.ok(fs.existsSync(filePath),
+      'persist must recreate the missing file');
+
+    // Verify the recreated file has the in-memory contents.
+    const restored = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    assert.equal(restored.length, 1);
+    assert.equal(restored[0].tradeId, 'b-1');
+  });
+
+  it('persist() rewrites the file when mutations have happened since last persist', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1' }));
+
+    const writesBefore = ledger._test.getWriteCount();
+
+    // skipPersist mutates without writing — dirty flag should now be set
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-2' }), null, { skipPersist: true });
+    ledger.persist();
+
+    assert.ok(ledger._test.getWriteCount() > writesBefore,
+      'persist must rewrite when ledger is dirty');
+  });
+
+  it('createFillLedger throws on cold start when file is corrupt JSON (refuses to boot empty)', () => {
+    // Cold start = fresh ledger instance, no prior successful load, no
+    // ingested fills. createFillLedger auto-loads in its constructor —
+    // if the file is corrupt, the prior behavior (preserve empty
+    // in-memory state) would let the engine boot with zero fills and
+    // the next persist would overwrite the recoverable file with only
+    // post-start fills, silently destroying historical data. Throwing
+    // from the constructor forces operator intervention.
+    const exchange = 'test-cold-start-corrupt-json';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '<<< not valid json >>>');
+
+    assert.throws(() => createTestLedger(exchange), /corrupted or unreadable on cold start/);
+  });
+
+  it('createFillLedger throws on cold start when file is valid JSON but not an array', () => {
+    const exchange = 'test-cold-start-not-array';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '{"unexpected":"shape"}');
+
+    assert.throws(() => createTestLedger(exchange), /not an array on cold start/);
+  });
+
+  it('createFillLedger throws on cold start when file contains an invalid fill entry', () => {
+    const exchange = 'test-cold-start-bad-entry';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    // Array with a single null entry — passes Array.isArray but fails per-fill validation.
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '[null]');
+
+    assert.throws(() => createTestLedger(exchange), /invalid entry .* on cold start/);
+  });
+
+  it('createFillLedger throws on cold start when entries are missing fields required by aggregateFills (would silently NaN downstream)', () => {
+    // aggregateFills/rebuildPositionFromFills consume side, size,
+    // quoteAmount, netFee, timestamp directly. A row missing any of those
+    // would silently produce NaN totals after boot — exactly the corruption
+    // mode this guard is meant to prevent. ingestFill always populates
+    // every required field, so a missing field on disk indicates
+    // hand-editing or actual corruption.
+    const cases = [
+      { tag: 'no-side', fill: { tradeId: 't1', orderId: 'o1', /* no side */ size: 0.4, price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /side must be 'buy' or 'sell'/ },
+      { tag: 'no-size', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', /* no size */ price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /size must be a finite number/ },
+      { tag: 'no-price', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, /* no price */ quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /price must be a finite number/ },
+      { tag: 'no-quoteAmount', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, /* no quoteAmount */ netFee: 0, timestamp: Date.now() }, expect: /quoteAmount must be a finite number/ },
+      { tag: 'no-netFee', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, /* no netFee, no fee */ timestamp: Date.now() }, expect: /netFee or fee must be a finite number/ },
+      { tag: 'no-timestamp', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0 /* no timestamp */ }, expect: /timestamp must be a finite number/ },
+    ];
+    for (const { tag, fill, expect } of cases) {
+      const exchange = `test-cold-start-missing-${tag}`;
+      const dir = path.join(tmpDir, exchange, 'default');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([fill]));
+      assert.throws(() => createTestLedger(exchange), expect);
+    }
+  });
+
+  it('createFillLedger accepts legacy fee-only entries (pre-rebate-split) and backfills netFee on load', () => {
+    // Pre-rebate-split fills had `fee` only, no `netFee`. The validator
+    // accepts either; load() backfills netFee=fee for the in-memory copy
+    // so downstream consumers (aggregateFills etc.) that read fill.netFee
+    // directly never see undefined. Without this compat path, upgrading
+    // a fund with older ledger entries would refuse to start.
+    const exchange = 'test-cold-start-legacy-fee-only';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const legacyFill = {
+      tradeId: 'legacy-1',
+      orderId: 'o-1',
+      side: 'buy',
+      size: 0.4,
+      price: 100,
+      quoteAmount: 40,
+      fee: 0.05, // legacy: fee only, no netFee
+      timestamp: Date.now(),
+    };
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([legacyFill]));
+
+    let ledger;
+    assert.doesNotThrow(() => { ledger = createTestLedger(exchange); });
+    const fills = ledger.getFillsForOrder('o-1');
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].netFee, 0.05,
+      'load() must backfill netFee from legacy fee field so direct fill.netFee reads work');
+  });
+
+  it('createFillLedger throws on cold start when ledger contains duplicate tradeIds (Map dedup would silently undercount)', () => {
+    // load() stores entries in a Map keyed by tradeId, so a duplicate would
+    // silently overwrite the earlier row — undercount totalAsset / P&L
+    // without any indication of corruption. Pre-pass must reject duplicates.
+    const exchange = 'test-cold-start-duplicate-tradeId';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const fill = { tradeId: 'dup', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now() };
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([fill, { ...fill, size: 0.5, quoteAmount: 50 }]));
+    assert.throws(() => createTestLedger(exchange), /duplicate tradeId 'dup'/);
+  });
+
+  it('createFillLedger throws on cold start when an entry has a non-string cycleId (would crash .match() mid-load)', () => {
+    // The load body calls `fill.cycleId.match(/^cycle-(\d+)$/)` — if
+    // cycleId is an object/non-string, that throws AFTER resetCaches has
+    // wiped the in-memory ledger. The presence-only pre-pass missed
+    // this; field-type validation must catch it before resetCaches runs.
+    const exchange = 'test-cold-start-bad-cycleId';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([
+      { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now(), cycleId: {} },
+    ]));
+
+    assert.throws(() => createTestLedger(exchange), /cycleId must be a string/);
+  });
+
+  it('reload preserves in-memory state when file gains a non-string cycleId entry (no half-load on bad reload)', () => {
+    // The same shape that breaks cold-start must also be rejected before
+    // resetCaches on a SIGUSR1 reload — otherwise we'd wipe the live
+    // ledger and then crash mid-load on the offending entry's
+    // cycleId.match() call, losing recoverable data.
+    const exchange = 'test-reload-bad-cycleId';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    fs.writeFileSync(filePath, '[]');
+
+    const ledger = createTestLedger(exchange);
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    const fillsBefore = ledger.getFillCount();
+
+    // Operator edits in a malformed entry mid-run. SIGUSR1 reload must NOT
+    // wipe the live ledger — must log and preserve.
+    fs.writeFileSync(filePath, JSON.stringify([
+      { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now(), cycleId: {} },
+    ]));
+    assert.doesNotThrow(() => ledger.load());
+    assert.equal(ledger.getFillCount(), fillsBefore,
+      'reload with malformed cycleId must preserve in-memory state');
+  });
+
+  it('createFillLedger succeeds on cold start when file is missing (legitimate first run)', () => {
+    // No file at all is the legitimate "fresh deployment, no fills yet"
+    // case — must NOT throw, must boot with empty caches.
+    const exchange = 'test-cold-start-no-file';
+    let ledger;
+    assert.doesNotThrow(() => { ledger = createTestLedger(exchange); });
+    assert.equal(ledger.getFillCount(), 0);
+  });
+
+  it('createFillLedger succeeds on cold start when file is an empty array', () => {
+    const exchange = 'test-cold-start-empty-array';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '[]');
+
+    let ledger;
+    assert.doesNotThrow(() => { ledger = createTestLedger(exchange); });
+    assert.equal(ledger.getFillCount(), 0);
+  });
+
+  it('load() preserves in-memory state on subsequent corrupt-file loads after a successful initial load (SIGUSR1 reload after boot)', () => {
+    // After a successful cold-start load (file empty array → boot OK),
+    // a SIGUSR1 reload that hits a corrupt file must NOT throw and must
+    // preserve in-memory state. This covers the real flow where the
+    // engine boots cleanly, accumulates fills, then operator does an
+    // edit-corrupt-then-fix workflow.
+    const exchange = 'test-warm-reload-after-boot';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    fs.writeFileSync(filePath, '[]');
+
+    const ledger = createTestLedger(exchange);
+    ledger.load(); // cold-start success establishes the baseline
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    const fillsBefore = ledger.getFillCount();
+
+    // Corrupt the file and reload — must preserve, not throw.
+    fs.writeFileSync(filePath, '<<< corrupt >>>');
+    assert.doesNotThrow(() => ledger.load());
+    assert.equal(ledger.getFillCount(), fillsBefore,
+      'post-boot reload must preserve in-memory state on corruption');
+  });
 });

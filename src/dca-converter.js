@@ -116,8 +116,24 @@ const executeConversion = (exchange) => {
   const orders = state.orders || [];
   const { pending, filled } = categorizeOrders(orders);
 
-  // 4. Create fill ledger and ingest synthetic fills
-  const fillLedger = createFillLedger(exchange);
+  // 4. Create fill ledger and ingest synthetic fills.
+  // Re-enable the DCA engine on createFillLedger failure (cold-start
+  // throw against a corrupt fill-ledger.json) so a partial migration
+  // doesn't leave the exchange permanently disabled. The operator can
+  // repair the file and re-run the conversion.
+  let fillLedger;
+  try {
+    fillLedger = createFillLedger(exchange);
+  } catch (err) {
+    setExchangeEnabled(exchange, true);
+    log('ERROR', `❌ [${exchange}] Fill ledger init failed during conversion: ${err.message} — DCA engine re-enabled, conversion aborted`);
+    // Throw a sanitized message: the IPC handler at coinbase-engine.js:
+    // regime:convert-dca surfaces this back to the client. Keeping the
+    // absolute ledger path / parser internals out of the API surface
+    // mirrors the regime:start sanitization. Full detail stays in the
+    // ERROR log above for the operator to investigate.
+    throw new Error(`Fill ledger init failed for ${exchange} during DCA conversion — see engine logs for details`);
+  }
 
   // Ingest filled (completed) DCA orders as completed cycles
   let filledIngested = 0;
@@ -174,9 +190,13 @@ const executeConversion = (exchange) => {
       tradeTime: order.createdAt,
     });
 
-    // Link the buy fill to its existing sell order on exchange
+    // Link the buy fill to its existing sell order on exchange.
+    // markDirty after direct field mutation: ingestFill auto-persisted
+    // and cleared the dirty flag, so the trailing persist() below would
+    // otherwise no-op and lose this sellOrderId on restart.
     if (buyResult.ingested && buyResult.fill) {
       buyResult.fill.sellOrderId = order.orderId;
+      fillLedger.markDirty();
     }
 
     if (buyResult.ingested) pendingIngested++;
@@ -319,8 +339,21 @@ const mergeToRegime = (exchange) => {
   const orders = state.orders || [];
   const { pending, filled } = categorizeOrders(orders);
 
-  // 3. Load existing fill ledger and ingest fills
-  const fillLedger = createFillLedger(exchange);
+  // 3. Load existing fill ledger and ingest fills.
+  // Wrap createFillLedger so a cold-start corrupt ledger throw is rewritten
+  // with merge-specific context. mergeToRegime doesn't disable the engine
+  // (unlike executeConversion), so there's no rollback to do — but the
+  // surfaced error needs to reach the IPC handler so it can return a
+  // structured {success:false} response instead of leaking the raw
+  // filesystem-level message.
+  let fillLedger;
+  try {
+    fillLedger = createFillLedger(exchange);
+  } catch (err) {
+    log('ERROR', `❌ [${exchange}] Fill ledger init failed during DCA merge: ${err.message}`);
+    // Sanitized message — see executeConversion's catch above for rationale.
+    throw new Error(`Fill ledger init failed for ${exchange} during DCA merge — see engine logs for details`);
+  }
 
   // Ingest filled (completed) DCA orders as completed cycle fills
   let filledIngested = 0;
@@ -372,9 +405,13 @@ const mergeToRegime = (exchange) => {
       tradeTime: order.createdAt,
     });
 
-    // Mark as body-owned so these fills don't conflict with core position tracking
+    // Mark as body-owned so these fills don't conflict with core position tracking.
+    // markDirty: ingestFill auto-persisted and cleared the dirty flag,
+    // so the trailing persist() below would otherwise no-op and lose
+    // this isBodyOwned flag on restart.
     if (buyResult.ingested && buyResult.fill) {
       buyResult.fill.isBodyOwned = true;
+      fillLedger.markDirty();
     }
 
     if (buyResult.ingested) pendingIngested++;
