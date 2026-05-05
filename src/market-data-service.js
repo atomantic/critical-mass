@@ -218,9 +218,17 @@ const CANCEL_RETRY_TIME_BUDGET_MS = 6 * 60 * 60 * 1000; // 6 hours
  *      open row during any retry window.
  *   2. Try the catch-up fetch. On success, mark settled + schedule untrack.
  *   3. On failure or empty fills, schedule an exponential-backoff retry
- *      (capped at retryDelayMaxMs). Retries are indefinite — the only
- *      ways out are catch-up success or service stop (deps.scheduleTimeout
- *      is wrapped by the factory so stop() can clearTimeout the retry).
+ *      (capped at retryDelayMaxMs). The chain exits on:
+ *        - catch-up success (markSettled + untrack TTL),
+ *        - retryTimeBudgetMs exhaustion (markSettled with a loud warning
+ *          — Gemini/Crypto.com partials may have aged out of the
+ *          adapter's recent-trade window, manual reconciliation may be
+ *          required), or
+ *        - service stop (deps.scheduleTimeout is wrapped by the factory
+ *          so stop() can clearTimeout the retry).
+ *      The factory passes Infinity for retryTimeBudgetMs on Coinbase
+ *      since its getOrderFills is the source of truth and never ages
+ *      fills out, so the budget only applies to synthesized adapters.
  *
  * @param {Object} deps
  * @param {{getOrderFills: Function}} deps.adapter
@@ -796,6 +804,16 @@ const createMarketDataService = (exchange, pair) => {
   const pendingPartialRetries = new Map();
 
   const clearPendingRetry = (orderId) => {
+    // Cancel any armed retry timers before dropping the entries. Without
+    // this, finalizeFilledOrder / startCancelCatchup settling an order
+    // would leave the previously-armed retry timer pending in
+    // timerTracker until it fires later (no-op, since the entry is gone)
+    // — during reconnect bursts that's a stale timer per order hanging
+    // around for up to the full backoff window.
+    const terminal = pendingTerminalRetries.get(orderId);
+    if (terminal?.timerId != null) timerTracker.cancel(terminal.timerId);
+    const partial = pendingPartialRetries.get(orderId);
+    if (partial?.timerId != null) timerTracker.cancel(partial.timerId);
     pendingTerminalRetries.delete(orderId);
     pendingPartialRetries.delete(orderId);
   };

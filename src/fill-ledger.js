@@ -115,6 +115,15 @@ const createFillLedger = (exchange, productId, pair) => {
       console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
       return;
     }
+    // Validate shape BEFORE resetCaches. Valid JSON like `{}` or `null`
+    // would parse without throwing but the for-of below would crash —
+    // resetCaches() would have already wiped the live ledger by then,
+    // so the reload-on-malformed-payload would fall into the same data-
+    // loss mode that the catch-block above guards against.
+    if (!Array.isArray(data)) {
+      console.log(`❌ [${exchange}] fill-ledger at ${filePath} is not an array (got ${data === null ? 'null' : typeof data}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+      return;
+    }
     // Clean slate before re-reading. The successful-read path mirrors
     // disk authoritatively (handles "operator removed fills via manual
     // reconciliation, then reloaded" — those removals must take effect).

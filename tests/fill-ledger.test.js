@@ -1023,6 +1023,38 @@ describe('Fill Ledger', () => {
       'orderSizeIndex must be preserved on corrupt-file reload');
   });
 
+  it('load() preserves in-memory state when the file is valid JSON but not an array (SIGUSR1 reload safety)', () => {
+    // Valid JSON like `{}`, `null`, or `42` parses without throwing but
+    // can't be iterated. resetCaches() must NOT run before this is
+    // detected — otherwise a malformed-but-parseable manual edit during
+    // SIGUSR1 reload would crash mid-way and leave the live ledger
+    // permanently empty.
+    const exchange = 'test-exchange-malformed';
+    const ledger1 = createTestLedger(exchange);
+    ledger1.startNewCycle();
+    ledger1.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+
+    const fillsBefore = ledger1.getFillCount();
+
+    const filePath = path.join(tmpDir, exchange, 'default', 'fill-ledger.json');
+    fs.writeFileSync(filePath, '{}');
+
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills must be preserved when file is valid JSON but not an array');
+
+    // Also test null and primitive values
+    fs.writeFileSync(filePath, 'null');
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills preserved when file is null');
+
+    fs.writeFileSync(filePath, '42');
+    ledger1.load();
+    assert.equal(ledger1.getFillCount(), fillsBefore,
+      'fills preserved when file is a number primitive');
+  });
+
   it('load() preserves in-memory state when the file is missing (SIGUSR1 reload safety)', () => {
     // Same SIGUSR1 reload concern as the corrupt-file test. An operator
     // who deletes the file mid-edit, or a temporary unavailability of
