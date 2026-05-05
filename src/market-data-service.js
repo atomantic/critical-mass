@@ -1268,18 +1268,20 @@ const createMarketDataService = (exchange, pair) => {
           // impossible for a real fill, so 0 always means placeholder
           // and must not overwrite a populated value.
           if (averageFilledPrice) target.averageFilledPrice = averageFilledPrice;
-          // totalFees handling distinguishes legitimate zero (rebated
-          // maker fills) from placeholder zero (websocket-feed normalizes
-          // missing total_fees to 0). Always accept a > 0 value (real,
-          // authoritative). For 0, only populate when target.totalFees is
-          // unset — the cancel path's startCancelCatchup creates targets
-          // with only filledSize, so a later FILLED replay with legit
-          // totalFees=0 would otherwise leave finalizeFilledOrder emitting
-          // undefined fees. Don't downgrade an already-populated > 0 value.
-          if (totalFees > 0) {
-            target.totalFees = totalFees;
-          } else if (totalFees === 0 && target.totalFees == null) {
-            target.totalFees = 0;
+          // totalFees can be positive (taker), zero (rebated 100% / fee-
+          // free tier), or negative (maker rebates net to a negative fee).
+          // websocket-feed normalizes missing total_fees to 0, so a 0 can
+          // be either placeholder OR legitimate. Heuristic: any non-zero
+          // value (positive or negative) is real and authoritative — set
+          // it. A 0 only populates when target.totalFees is unset (covers
+          // cancel-path-created targets that only carry filledSize, so a
+          // later FILLED replay with legit totalFees=0 doesn't leave
+          // finalizeFilledOrder emitting undefined). Don't downgrade an
+          // already-populated non-zero value with a placeholder 0.
+          if (typeof totalFees === 'number' && Number.isFinite(totalFees)) {
+            if (totalFees !== 0 || target.totalFees == null) {
+              target.totalFees = totalFees;
+            }
           }
         }
       } else if (terminalKind === 'filled') {

@@ -32,6 +32,58 @@ const getFillLedgerPath = (exchange, pair) => {
 };
 
 /**
+ * Validate a parsed-from-JSON ledger payload against the same shape rules
+ * load() applies before resetCaches. Returns null when the payload is
+ * acceptable, or a human-readable reason string for the first invalid
+ * entry. Shared between load()'s pre-pass and persist({force:true})'s
+ * "preserve operator edits" short-circuit so they agree on what counts
+ * as repairable vs preservable.
+ *
+ * Fields required by aggregateFills/rebuildPositionFromFills are
+ * validated as REQUIRED (not "when present"): a row missing side, size,
+ * price, quoteAmount, netFee/fee, or timestamp would otherwise produce
+ * NaN totals downstream and silently corrupt position / P&L state.
+ * tradeIds are also checked for uniqueness because load() stores
+ * entries in a Map keyed by tradeId and a duplicate would silently
+ * overwrite the earlier row.
+ *
+ * @param {unknown} data - JSON-parsed file content
+ * @returns {string | null} reason if invalid, else null
+ */
+const findInvalidLedgerReason = (data) => {
+  if (!Array.isArray(data)) return 'top-level value is not an array';
+  const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
+  const seenTradeIds = new Set();
+  for (const fill of data) {
+    if (!fill || typeof fill !== 'object') return 'non-object entry';
+    if (typeof fill.tradeId !== 'string' || !fill.tradeId) return 'missing or non-string tradeId';
+    if (seenTradeIds.has(fill.tradeId)) return `duplicate tradeId '${fill.tradeId}'`;
+    if (fill.side !== 'buy' && fill.side !== 'sell') return "side must be 'buy' or 'sell'";
+    if (!isFiniteNumber(fill.size)) return 'size must be a finite number';
+    // rebuildPositionFromFills restores lastEntryPrice / anchorPrice
+    // directly from fill.price; a NaN/null price would poison entry
+    // tracking and slip through aggregateFills (which uses quoteAmount,
+    // not price, so an inconsistent pair would also escape there).
+    if (!isFiniteNumber(fill.price)) return 'price must be a finite number';
+    if (!isFiniteNumber(fill.quoteAmount)) return 'quoteAmount must be a finite number';
+    // Legacy ledgers (pre-rebate-split) wrote `fee` only without
+    // `netFee`. Downstream regime-engine.js:1259-1260 already reads
+    // via `fill.netFee || fill.fee`, so accept either; load()
+    // backfills `netFee` from `fee` for the in-memory copy so the
+    // many other call sites that read `fill.netFee` directly never
+    // see undefined.
+    if (!isFiniteNumber(fill.netFee) && !isFiniteNumber(fill.fee)) return 'netFee or fee must be a finite number';
+    if (!isFiniteNumber(fill.timestamp)) return 'timestamp must be a finite number';
+    // orderId is optional (legacy/manual entries may omit it; downstream
+    // truthiness-guards every read), but MUST be a string when present.
+    if (fill.orderId != null && typeof fill.orderId !== 'string') return 'orderId must be a string when present';
+    if (fill.cycleId != null && typeof fill.cycleId !== 'string') return 'cycleId must be a string when present';
+    seenTradeIds.add(fill.tradeId);
+  }
+  return null;
+};
+
+/**
  * Create fill ledger instance
  * @param {string} exchange - Exchange name
  * @param {string} [productId] - Product ID (e.g. 'BTC-USDC') used to derive base currency for logs
@@ -161,64 +213,13 @@ const createFillLedger = (exchange, productId, pair) => {
     // accept `{tradeId:"t1", cycleId:{}}` and we'd crash mid-load AFTER
     // resetCaches has wiped the live ledger — re-introducing the data-loss
     // mode the pre-validation is meant to prevent.
-    // Fields required by aggregateFills/rebuildPositionFromFills are
-    // validated as REQUIRED (not "when present"): a row missing side, size,
-    // price, quoteAmount, netFee, or timestamp would otherwise produce NaN
-    // totals downstream and silently corrupt position / P&L state,
-    // defeating the purpose of this guard. ingestFill always populates
-    // every required field, so a missing field on disk indicates
-    // hand-editing or actual corruption — exactly what we want to reject.
-    // tradeIds are also checked for uniqueness: load() stores entries in a
-    // Map keyed by tradeId, so a duplicate would silently overwrite the
-    // earlier row and undercount position/P&L.
-    const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
-    const seenTradeIds = new Set();
-    for (const fill of data) {
-      let invalidReason = null;
-      if (!fill || typeof fill !== 'object') {
-        invalidReason = 'non-object entry';
-      } else if (typeof fill.tradeId !== 'string' || !fill.tradeId) {
-        invalidReason = 'missing or non-string tradeId';
-      } else if (seenTradeIds.has(fill.tradeId)) {
-        invalidReason = `duplicate tradeId '${fill.tradeId}'`;
-      } else if (fill.side !== 'buy' && fill.side !== 'sell') {
-        invalidReason = "side must be 'buy' or 'sell'";
-      } else if (!isFiniteNumber(fill.size)) {
-        invalidReason = 'size must be a finite number';
-      } else if (!isFiniteNumber(fill.price)) {
-        // rebuildPositionFromFills restores lastEntryPrice / anchorPrice
-        // directly from fill.price; a NaN/null price would poison entry
-        // tracking and slip through aggregateFills (which uses quoteAmount,
-        // not price, so an inconsistent pair would also escape there).
-        invalidReason = 'price must be a finite number';
-      } else if (!isFiniteNumber(fill.quoteAmount)) {
-        invalidReason = 'quoteAmount must be a finite number';
-      } else if (!isFiniteNumber(fill.netFee) && !isFiniteNumber(fill.fee)) {
-        // Legacy ledgers (pre-rebate-split) wrote `fee` only without
-        // `netFee`. Downstream regime-engine.js:1259-1260 already reads
-        // via `fill.netFee || fill.fee`, so accept either; load()
-        // backfills `netFee` from `fee` for the in-memory copy so the
-        // many other call sites that read `fill.netFee` directly never
-        // see undefined.
-        invalidReason = 'netFee or fee must be a finite number';
-      } else if (!isFiniteNumber(fill.timestamp)) {
-        invalidReason = 'timestamp must be a finite number';
-      } else if (fill.orderId != null && typeof fill.orderId !== 'string') {
-        // orderId is optional (legacy/manual entries may omit it; downstream
-        // truthiness-guards every read), but MUST be a string when present.
-        invalidReason = 'orderId must be a string when present';
-      } else if (fill.cycleId != null && typeof fill.cycleId !== 'string') {
-        invalidReason = 'cycleId must be a string when present';
-      } else {
-        seenTradeIds.add(fill.tradeId);
+    const invalidReason = findInvalidLedgerReason(data);
+    if (invalidReason) {
+      if (!isReload) {
+        throw new Error(`fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
       }
-      if (invalidReason) {
-        if (!isReload) {
-          throw new Error(`fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
-        }
-        console.log(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
-        return;
-      }
+      console.log(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+      return;
     }
     // Clean slate before re-reading. The successful-read path mirrors
     // disk authoritatively (handles "operator removed fills via manual
@@ -332,26 +333,20 @@ const createFillLedger = (exchange, productId, pair) => {
         // `force: true` — used by shutdown paths to flush a healthy
         // in-memory snapshot when the on-disk file became unreadable /
         // truncated externally during the run. Honor force ONLY when
-        // the on-disk content would NOT survive load()'s pre-pass: if
-        // the file is a valid JSON array of well-shaped fill objects,
-        // the operator may have made manual reconciliation edits that
-        // we should not clobber with our (potentially-staler) in-memory
-        // state. JSON.parse alone is too permissive — files like `{}`,
-        // `null`, or arrays of malformed entries parse successfully but
-        // load() rejects them, leaving the next boot unrepairable. The
-        // shape check here mirrors load()'s pre-pass spot-checks (array
-        // structure + first entry's tradeId) — it doesn't replicate the
-        // full per-row validation, but covers the common corruption
-        // modes that bare JSON.parse misses. Operators can still
-        // SIGUSR1-reload before stop if they want their on-disk edits
-        // applied to the engine before this shutdown rewrites.
+        // the on-disk content would survive load()'s pre-pass: if the
+        // file is a valid array of well-shaped fill rows, the operator
+        // may have made manual reconciliation edits that we should not
+        // clobber with our (potentially-staler) in-memory state.
+        // findInvalidLedgerReason runs the same per-row checks load()
+        // does, so partial corruption modes (`[validFill, null]`,
+        // duplicates, missing required fields on a later row) are
+        // detected and rewritten — not silently preserved as the next
+        // boot's load() would reject them, defeating the repair-on-stop
+        // path. Operators can still SIGUSR1-reload before stop if they
+        // want on-disk edits applied to the engine before shutdown.
         try {
           const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-          const looksReadable = Array.isArray(parsed)
-            && (parsed.length === 0
-                || (parsed[0] && typeof parsed[0] === 'object'
-                    && typeof parsed[0].tradeId === 'string' && parsed[0].tradeId));
-          if (looksReadable) return;
+          if (findInvalidLedgerReason(parsed) === null) return;
         } catch (_) {
           // unparseable — fall through and rewrite from in-memory
         }
