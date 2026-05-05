@@ -1179,20 +1179,16 @@ const createMarketDataService = (exchange, pair) => {
   //                   FILLED; without the percentage path, that brief
   //                   window keeps the order in the partial branch and
   //                   it never reaches the FILLED retry/finalize path.
-  //                   The completion-percentage shortcut is gated
-  //                   STATUS-AWARELY: for status==='OPEN' we additionally
-  //                   require totalFees>0 because websocket-feed
-  //                   normalizes a missing total_fees to 0 — an early
-  //                   OPEN replay with populated price but unpopulated
-  //                   fees would otherwise finalize with placeholder
-  //                   zeros, locking in bad execution metadata. For
-  //                   terminal-status events (CANCELLED/FAILED/EXPIRED)
-  //                   the exchange has finalized: averageFilledPrice>0
-  //                   alone is sufficient evidence of a fill, and
-  //                   requiring totalFees>0 there would mis-route the
-  //                   cancel-after-fill race (CANCELLED+completion=100+
-  //                   placeholder fees) into the cancel branch and drop
-  //                   onOrderFillCallback for a real fill.
+  //                   averageFilledPrice>0 alone is sufficient — the
+  //                   rest of the codebase (order-manager.js:29,
+  //                   order-executor.js:101/119) treats completion>=100
+  //                   as terminal without gating on fees, and Coinbase
+  //                   legitimately reports zero/negative net fees for
+  //                   rebated maker fills, so a totalFees>0 gate would
+  //                   leave such orders stuck in the partial branch.
+  //                   Authoritative fee data is fetched via REST in
+  //                   ingestNewFillsForOrder anyway; the WS event's
+  //                   totalFees is informational.
   //   - 'cancelled' : status in {CANCELLED, FAILED, EXPIRED}. EXPIRED is
   //                   the exchange's "this order timed out / aged out"
   //                   terminal state — order-manager.js:49 already treats
@@ -1208,19 +1204,9 @@ const createMarketDataService = (exchange, pair) => {
   // in order-manager.js:29 (checks FILLED/completionPercentage>=100
   // BEFORE CANCELLED/EXPIRED) and order-executor.js:101,119.
   const classifyTerminal = (data) => {
-    const { status, completionPercentage, averageFilledPrice, totalFees } = data;
+    const { status, completionPercentage, averageFilledPrice } = data;
     if (status === 'FILLED') return 'filled';
-    if (typeof completionPercentage === 'number' && completionPercentage >= 100 && averageFilledPrice > 0) {
-      // OPEN with populated aggregates can only finalize once fees are
-      // also populated (placeholder-zero protection). Cancel-after-fill
-      // statuses are exempt from the totalFees gate — see the comment
-      // above for why.
-      if (status === 'OPEN') {
-        if (totalFees > 0) return 'filled';
-      } else {
-        return 'filled';
-      }
-    }
+    if (typeof completionPercentage === 'number' && completionPercentage >= 100 && averageFilledPrice > 0) return 'filled';
     if (status === 'CANCELLED' || status === 'FAILED' || status === 'EXPIRED') return 'cancelled';
     return null;
   };

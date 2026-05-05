@@ -1502,64 +1502,6 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
-  it('OPEN+completionPercentage=100 with avgPrice populated but totalFees=0 is NOT classified as terminal (waits for FILLED)', async () => {
-    // websocket-feed.js:330 normalizes a missing total_fees to 0, so a 0
-    // value is ambiguous (placeholder vs genuinely-zero rebated fill).
-    // Without the totalFees>0 gate on the completion-percentage shortcut,
-    // an early OPEN+completion=100 replay carrying populated price but
-    // not-yet-populated fees would finalize with totalFees=0; the later
-    // FILLED replay carrying the real fees would then be dropped by the
-    // settled-order guard. Erring on the side of waiting for status=FILLED
-    // (which guarantees populated aggregates) is strictly safer.
-    const fakeAdapter = {
-      getOrderFills: async () => [
-        { tradeId: 't-fee', orderId: 'order-FeePending', side: 'sell', price: 70000, size: 0.4, totalCommission: 0.04 },
-      ],
-    };
-    const svc = createMarketDataService('coinbase');
-    svc._test.injectAdapter(fakeAdapter);
-    const ingested = new Set();
-    svc._test.injectFillLedger({
-      ingestFill: (fill) => {
-        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
-        ingested.add(fill.tradeId);
-        return { ingested: true, fill };
-      },
-      getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.4 })),
-      getRecordedSizeForOrder: () => ingested.size * 0.4,
-      persist: () => {},
-    });
-    svc._test.injectProductId('BTC-USDC');
-    svc.trackOrder('order-FeePending', { type: 'take_profit', price: 70000, size: 0.4, placedAt: Date.now() });
-
-    const fills = [];
-    svc.setOnOrderFill(f => fills.push(f));
-
-    // Early WS event: OPEN+completion=100, price populated but fees still 0.
-    await svc._test.handleOrderUpdate({
-      orderId: 'order-FeePending', status: 'OPEN',
-      filledSize: 0.4, averageFilledPrice: 70000, totalFees: 0,
-      completionPercentage: 100,
-    });
-
-    assert.equal(fills.length, 0,
-      'must NOT finalize with placeholder totalFees=0 — would lock in zero-fee execution metadata');
-    assert.equal(svc._test.pendingTerminalRetries.has('order-FeePending'), false,
-      'must NOT eagerly create a terminal target while fees are unpopulated');
-
-    // Real FILLED arrives with populated fees.
-    await svc._test.handleOrderUpdate({
-      orderId: 'order-FeePending', status: 'FILLED',
-      filledSize: 0.4, averageFilledPrice: 70000, totalFees: 0.04,
-      completionPercentage: 100,
-    });
-
-    assert.equal(fills.length, 1, 'FILLED with real fees must finalize');
-    assert.equal(fills[0].fees, 0.04, 'finalize must use the real totalFees, not the placeholder zero');
-
-    svc.stop();
-  });
-
   it('CANCELLED status with completionPercentage>=100 is classified as FILLED (cancel-after-fill race)', async () => {
     // Mirror of order-manager.js:29 / order-executor.js:101,119 ordering.
     // When a cancel races with a fill that has just completed, the

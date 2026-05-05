@@ -253,6 +253,16 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
   });
 
   if (stopResult?.error) {
+    // Engine stop failed but the standalone market-data-service we just
+    // started is now running independently. Without tearing it down, the
+    // engine remains registered AND the WS service is also processing
+    // events for the same fund — two live processors that can double-
+    // ingest fills and emit conflicting status until the process is
+    // restarted. Stop the standalone service before returning so the
+    // operator can retry from a single-processor state.
+    if (mdsResult?.success) {
+      stopMarketDataService(exchange, resolvedPair);
+    }
     return { success: false, error: stopResult.error };
   }
 
