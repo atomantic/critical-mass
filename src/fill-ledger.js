@@ -193,8 +193,14 @@ const createFillLedger = (exchange, productId, pair) => {
         invalidReason = 'price must be a finite number';
       } else if (!isFiniteNumber(fill.quoteAmount)) {
         invalidReason = 'quoteAmount must be a finite number';
-      } else if (!isFiniteNumber(fill.netFee)) {
-        invalidReason = 'netFee must be a finite number';
+      } else if (!isFiniteNumber(fill.netFee) && !isFiniteNumber(fill.fee)) {
+        // Legacy ledgers (pre-rebate-split) wrote `fee` only without
+        // `netFee`. Downstream regime-engine.js:1259-1260 already reads
+        // via `fill.netFee || fill.fee`, so accept either; load()
+        // backfills `netFee` from `fee` for the in-memory copy so the
+        // many other call sites that read `fill.netFee` directly never
+        // see undefined.
+        invalidReason = 'netFee or fee must be a finite number';
       } else if (!isFiniteNumber(fill.timestamp)) {
         invalidReason = 'timestamp must be a finite number';
       } else if (fill.orderId != null && typeof fill.orderId !== 'string') {
@@ -219,6 +225,16 @@ const createFillLedger = (exchange, productId, pair) => {
     // reconciliation, then reloaded" — those removals must take effect).
     resetCaches();
     for (const fill of data) {
+      // Legacy-ledger backfill: pre-rebate-split fills only had `fee`,
+      // not `netFee`. The pre-pass validator accepts either; here we
+      // synthesize netFee from fee so the many downstream consumers
+      // that read fill.netFee directly (aggregateFills,
+      // rebuildPositionFromFills, recalculateCycles, etc.) never see
+      // undefined. The on-disk file isn't auto-rewritten — the next
+      // dirtying mutation will trigger the upgraded shape via persist.
+      if (typeof fill.netFee !== 'number' && typeof fill.fee === 'number') {
+        fill.netFee = fill.fee;
+      }
       fills.set(fill.tradeId, fill);
       // Populate cycle index
       if (fill.cycleId) {
@@ -316,16 +332,28 @@ const createFillLedger = (exchange, productId, pair) => {
         // `force: true` — used by shutdown paths to flush a healthy
         // in-memory snapshot when the on-disk file became unreadable /
         // truncated externally during the run. Honor force ONLY when
-        // the file is unparseable: if it's readable JSON, the operator
-        // may have made manual reconciliation edits that we should not
-        // clobber with our (potentially-staler) in-memory state. They
-        // can still SIGUSR1-reload before stop if they want their
-        // edits applied to the engine.
+        // the on-disk content would NOT survive load()'s pre-pass: if
+        // the file is a valid JSON array of well-shaped fill objects,
+        // the operator may have made manual reconciliation edits that
+        // we should not clobber with our (potentially-staler) in-memory
+        // state. JSON.parse alone is too permissive — files like `{}`,
+        // `null`, or arrays of malformed entries parse successfully but
+        // load() rejects them, leaving the next boot unrepairable. The
+        // shape check here mirrors load()'s pre-pass spot-checks (array
+        // structure + first entry's tradeId) — it doesn't replicate the
+        // full per-row validation, but covers the common corruption
+        // modes that bare JSON.parse misses. Operators can still
+        // SIGUSR1-reload before stop if they want their on-disk edits
+        // applied to the engine before this shutdown rewrites.
         try {
-          JSON.parse(fs.readFileSync(filePath, 'utf8'));
-          return;
+          const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          const looksReadable = Array.isArray(parsed)
+            && (parsed.length === 0
+                || (parsed[0] && typeof parsed[0] === 'object'
+                    && typeof parsed[0].tradeId === 'string' && parsed[0].tradeId));
+          if (looksReadable) return;
         } catch (_) {
-          // unreadable — fall through and rewrite from in-memory
+          // unparseable — fall through and rewrite from in-memory
         }
       }
     }

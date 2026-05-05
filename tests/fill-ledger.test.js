@@ -1219,7 +1219,7 @@ describe('Fill Ledger', () => {
       { tag: 'no-size', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', /* no size */ price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /size must be a finite number/ },
       { tag: 'no-price', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, /* no price */ quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /price must be a finite number/ },
       { tag: 'no-quoteAmount', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, /* no quoteAmount */ netFee: 0, timestamp: Date.now() }, expect: /quoteAmount must be a finite number/ },
-      { tag: 'no-netFee', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, /* no netFee */ timestamp: Date.now() }, expect: /netFee must be a finite number/ },
+      { tag: 'no-netFee', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, /* no netFee, no fee */ timestamp: Date.now() }, expect: /netFee or fee must be a finite number/ },
       { tag: 'no-timestamp', fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0 /* no timestamp */ }, expect: /timestamp must be a finite number/ },
     ];
     for (const { tag, fill, expect } of cases) {
@@ -1229,6 +1229,35 @@ describe('Fill Ledger', () => {
       fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([fill]));
       assert.throws(() => createTestLedger(exchange), expect);
     }
+  });
+
+  it('createFillLedger accepts legacy fee-only entries (pre-rebate-split) and backfills netFee on load', () => {
+    // Pre-rebate-split fills had `fee` only, no `netFee`. The validator
+    // accepts either; load() backfills netFee=fee for the in-memory copy
+    // so downstream consumers (aggregateFills etc.) that read fill.netFee
+    // directly never see undefined. Without this compat path, upgrading
+    // a fund with older ledger entries would refuse to start.
+    const exchange = 'test-cold-start-legacy-fee-only';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const legacyFill = {
+      tradeId: 'legacy-1',
+      orderId: 'o-1',
+      side: 'buy',
+      size: 0.4,
+      price: 100,
+      quoteAmount: 40,
+      fee: 0.05, // legacy: fee only, no netFee
+      timestamp: Date.now(),
+    };
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([legacyFill]));
+
+    let ledger;
+    assert.doesNotThrow(() => { ledger = createTestLedger(exchange); });
+    const fills = ledger.getFillsForOrder('o-1');
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].netFee, 0.05,
+      'load() must backfill netFee from legacy fee field so direct fill.netFee reads work');
   });
 
   it('createFillLedger throws on cold start when ledger contains duplicate tradeIds (Map dedup would silently undercount)', () => {
