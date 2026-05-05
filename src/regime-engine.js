@@ -1017,15 +1017,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         } else {
           // TP order no longer exists on exchange - clear tracking so a new one gets placed.
           //
-          // KNOWN LIMITATION: cancelled-with-partials recovery is incomplete here.
-          // If this TP partially filled before being cancelled and the partial
-          // fills weren't already captured by the market-data-service WS path,
-          // they are NOT ingested by this branch — and even ingesting them is
-          // insufficient on its own, because a correct fix must also reduce
-          // positionState.totalAsset, recompute avgCostBasis, and account for
-          // realized P&L from the partial sell. Without that accounting the
-          // replacement TP would be placed for too much asset and could
-          // oversell the account.
+          // KNOWN LIMITATION: cancelled-with-fills recovery is incomplete here.
+          // The exchange may report status=CANCELLED with completionPercentage
+          // anywhere in (0, 100] — both the partial case (cancel won the race
+          // before all the asset filled) AND the full case (completion=100,
+          // cancel-after-fill: the order completed in full before the cancel
+          // was processed) land in this branch. checkOfflineOrderFills (which
+          // ran earlier in startup) is the canonical fill-ingest path; if it
+          // succeeded, positionState.totalAsset already reflects the sale and
+          // clearing activeTpOrderId here is correct (no replacement TP gets
+          // placed because totalAsset is 0). If it MISSED fills (REST call
+          // failed, recent-trade window aged out, etc.), this branch will
+          // clear the tracking and a subsequent regime tick can place a
+          // replacement TP for an already-(partially-)sold position — even
+          // ingesting fills here is insufficient on its own, because a
+          // correct fix must also reduce positionState.totalAsset, recompute
+          // avgCostBasis, and account for realized P&L from the sell.
           //
           // The same gap applies if the API process restarted while a market-
           // data-service cancel-retry was still pending — those retries live
@@ -1122,10 +1129,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           } else {
             // Body TP no longer on exchange — re-place TP.
             // Same KNOWN LIMITATION as the core-TP branch above: cancelled-
-            // with-partials recovery is incomplete. A body TP that partially
-            // filled before cancellation needs body.assetQty / body.costBasis
-            // proration and realized-P&L accounting; without it the
-            // replacement TP would be sized incorrectly. Deferred.
+            // with-fills recovery is incomplete. Both the partial case
+            // (completion in (0,100)) and the full case (completion=100,
+            // cancel-after-fill where the order finished before the cancel
+            // was processed) land here — bodyExists filters out CANCELLED/
+            // FAILED/EXPIRED before the FILLED-or-completion=100 short-
+            // circuit at the top of this if. A body TP that filled before
+            // cancellation needs body.assetQty / body.costBasis proration
+            // and realized-P&L accounting; without it the replacement TP
+            // would be sized incorrectly. checkOfflineOrderFills handles the
+            // happy path; engine-side recovery is deferred.
             body.tpOrderId = null;
             expiredBodies++;
           }

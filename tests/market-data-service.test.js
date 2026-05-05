@@ -1604,6 +1604,54 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('CANCELLED+completionPercentage=100 with totalFees=0 still routes to FILLED branch (cancel-after-fill, no placeholder-fee gate)', async () => {
+    // Status-aware totalFees gate: the OPEN+completion=100 placeholder-fee
+    // protection must NOT extend to terminal-status events. A cancel-after-
+    // fill replay with status='CANCELLED', completionPercentage=100,
+    // averageFilledPrice>0, totalFees=0 is genuinely terminal (the
+    // exchange has finalized) — gating it on totalFees>0 would mis-route
+    // it into the cancel branch and suppress onOrderFillCallback for a
+    // real fill.
+    const fakeAdapter = {
+      getOrderFills: async () => [
+        { tradeId: 't-caf', orderId: 'order-CAF', side: 'sell', price: 70000, size: 0.4, totalCommission: 0 },
+      ],
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Set();
+    svc._test.injectFillLedger({
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.add(fill.tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.4 })),
+      getRecordedSizeForOrder: () => ingested.size * 0.4,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-CAF', { type: 'take_profit', price: 70000, size: 0.4, placedAt: Date.now() });
+
+    const fills = [];
+    svc.setOnOrderFill(f => fills.push(f));
+
+    // Cancel-after-fill: terminal status with completion=100 and price
+    // populated, but fees came through as the websocket-feed placeholder 0.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-CAF', status: 'CANCELLED',
+      filledSize: 0.4, averageFilledPrice: 70000, totalFees: 0,
+      completionPercentage: 100,
+    });
+
+    assert.equal(fills.length, 1,
+      'cancel-after-fill must finalize as a fill regardless of placeholder totalFees=0');
+    assert.equal(fills[0].size, 0.4);
+    assert.equal(ingested.size, 1, 'fill must reach the ledger via the FILLED branch');
+
+    svc.stop();
+  });
+
   it('two synchronous FILLED events for the same order merge aggregates instead of dropping the larger one', async () => {
     // websocket-feed.js:316-336 iterates event.orders synchronously without
     // awaiting onOrderUpdate, so two terminal events for the same order can
