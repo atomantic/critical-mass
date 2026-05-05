@@ -124,6 +124,16 @@ const createFillLedger = (exchange, productId, pair) => {
       console.log(`❌ [${exchange}] fill-ledger at ${filePath} is not an array (got ${data === null ? 'null' : typeof data}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
       return;
     }
+    // Element-level validation: even an array can contain malformed
+    // entries like `[null]` or `[{}]` that would crash on `fill.tradeId`
+    // mid-loop, leaving the live ledger half-populated after the
+    // already-run resetCaches. Pre-pass guarantees a clean reload-or-bail.
+    for (const fill of data) {
+      if (!fill || typeof fill !== 'object' || !fill.tradeId) {
+        console.log(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (missing tradeId or non-object) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+        return;
+      }
+    }
     // Clean slate before re-reading. The successful-read path mirrors
     // disk authoritatively (handles "operator removed fills via manual
     // reconciliation, then reloaded" — those removals must take effect).

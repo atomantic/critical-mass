@@ -818,6 +818,17 @@ const createMarketDataService = (exchange, pair) => {
     pendingPartialRetries.delete(orderId);
   };
 
+  // Drop any pending partial-retry entry for orderId, cancelling its
+  // armed timer first. Used by terminal handlers (FILLED/CANCELLED/FAILED)
+  // when they preempt the partial path so a stale partial timer doesn't
+  // sit in timerTracker until it wakes up and no-ops against a missing
+  // entry — accumulating one per order during reconnect bursts.
+  const cancelPartialRetry = (orderId) => {
+    const entry = pendingPartialRetries.get(orderId);
+    if (entry?.timerId != null) timerTracker.cancel(entry.timerId);
+    pendingPartialRetries.delete(orderId);
+  };
+
   const finalizeFilledOrder = (orderId, trackedOrder, filledSize, averageFilledPrice, totalFees) => {
     trackedOrder.status = 'filled';
     trackedOrder.filledSize = filledSize;
@@ -1062,7 +1073,7 @@ const createMarketDataService = (exchange, pair) => {
       }
     } else {
       // Preempt any pending partial retry — terminal owns catch-up.
-      pendingPartialRetries.delete(orderId);
+      cancelPartialRetry(orderId);
       target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false, timerId: null };
       pendingTerminalRetries.set(orderId, target);
     }
@@ -1260,7 +1271,7 @@ const createMarketDataService = (exchange, pair) => {
       // guard.
       let target = pendingTerminalRetries.get(orderId);
       if (!target) {
-        pendingPartialRetries.delete(orderId);
+        cancelPartialRetry(orderId);
         target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
         pendingTerminalRetries.set(orderId, target);
       }
@@ -1293,10 +1304,12 @@ const createMarketDataService = (exchange, pair) => {
       const finalSize = target.filledSize;
       const finalPrice = target.averageFilledPrice;
       const finalFees = target.totalFees;
-      // Drop the placeholder entry synchronously so a race-arriving replay
-      // can't see a stale entry. finalizeFilledOrder also clears via
-      // clearPendingRetry on its 60s untrack TTL.
-      pendingTerminalRetries.delete(orderId);
+      // Let finalizeFilledOrder's clearPendingRetry call handle both the
+      // entry deletion AND the timer cancellation. An explicit pre-finalize
+      // delete here would drop the entry before clearPendingRetry could
+      // see (and cancel) any FILLED retry timer that was armed earlier in
+      // this order's lifecycle — that timer would then fire later against
+      // an already-finalized order and no-op uselessly.
       finalizeFilledOrder(orderId, trackedOrder, finalSize, finalPrice, finalFees);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       // CANCELLED/FAILED replay on an order with an existing
@@ -1335,7 +1348,7 @@ const createMarketDataService = (exchange, pair) => {
         return;
       }
       // Preempt any pending partial retry — terminal owns catch-up.
-      pendingPartialRetries.delete(orderId);
+      cancelPartialRetry(orderId);
       // Pre-populate the pending entry BEFORE awaiting settleCancelledOrder.
       // settleCancelledOrder flips trackedOrder.status to 'cancelled' on
       // attempt 0 before its first await, so a replayed CANCELLED arriving
@@ -1349,7 +1362,8 @@ const createMarketDataService = (exchange, pair) => {
       // to flip target.settled when the chain finishes (synchronous or via
       // a scheduleTimeout retry). The entry stays alive so a later replay
       // with a larger cumulative can detect the gap above and restart
-      // catch-up. The 60s untrack TTL fires clearPendingRetry to drop it.
+      // catch-up. After CANCEL_UNTRACK_DELAY_MS (10 min) the wrapped
+      // untrack timer fires clearPendingRetry to drop it.
     }
   };
 
