@@ -930,6 +930,38 @@ describe('Fill Ledger', () => {
     assert.equal(mtimeAfter, mtimeBefore, 'clean persists must NOT rewrite the ledger file');
   });
 
+  it('load() on a dirty live instance clears the dirty flag so subsequent persist() is a no-op', () => {
+    // SIGUSR1 reload path: load() may be called while the in-memory ledger
+    // has unflushed mutations. resetCaches must clear dirtySinceLastPersist
+    // alongside the in-memory state — after load(), in-memory matches disk,
+    // and a defensive persist() on the next tick should be a no-op rather
+    // than rewriting the just-loaded snapshot (which would churn the file
+    // on every retry-loop call to persist()).
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1' })); // auto-persists; dirty cleared
+
+    // Mutate without persist to set the dirty flag.
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-2' }), null, { skipPersist: true });
+
+    // Reload from disk. After load(), in-memory matches disk (which has
+    // only b-1, not b-2 — but the dirty flag should still be cleared).
+    ledger.load();
+
+    const filePath = path.join(tmpDir, 'test-exchange', 'default', 'fill-ledger.json');
+    const mtimeBefore = fs.statSync(filePath).mtimeMs;
+
+    // Busy-wait so any actual write would change the mtime.
+    const wait = Date.now() + 25;
+    while (Date.now() < wait) { /* busy wait */ }
+
+    ledger.persist();
+
+    const mtimeAfter = fs.statSync(filePath).mtimeMs;
+    assert.equal(mtimeAfter, mtimeBefore,
+      'persist() after load() must be a no-op — load resets the dirty flag');
+  });
+
   it('getRecordedSizeForOrder returns the per-order total in O(1)', () => {
     const ledger = createTestLedger();
     ledger.startNewCycle();

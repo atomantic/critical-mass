@@ -81,6 +81,12 @@ const createFillLedger = (exchange, productId, pair) => {
     orderSizeIndex.clear();
     currentCycleId = null;
     nextCycleNumber = 1;
+    // Clear the dirty flag too. After a reload, in-memory matches disk,
+    // so a defensive persist() on the next tick must be a no-op rather
+    // than rewriting the just-loaded snapshot — preserves the "clean
+    // persists are a no-op" contract that avoids file churn on every
+    // retry-loop call to persist().
+    dirtySinceLastPersist = false;
   };
 
   const load = () => {

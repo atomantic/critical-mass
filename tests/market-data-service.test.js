@@ -196,6 +196,37 @@ describe('ingestNewFillsForOrder', () => {
       'watermark reconciled from ledger after adapter failure');
   });
 
+  it('on adapter failure, bails post-stop without writing to ledger or trackedOrder', async () => {
+    // Service stops while getOrderFills is in flight and rejects. The
+    // catch block must not call persist() or mutate lastIngestedFilledSize
+    // — those would corrupt a replacement service that has taken over the
+    // exchange/pair after stop.
+    let stopped = false;
+    const adapter = {
+      getOrderFills: async () => {
+        stopped = true; // simulate service.stop() during await
+        throw new Error('network down');
+      },
+    };
+    let persistCalls = 0;
+    const guardLedger = {
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [{ size: 0.5 }],
+      getRecordedSizeForOrder: () => 0.5,
+      persist: () => { persistCalls += 1; },
+    };
+
+    const result = await ingestNewFillsForOrder(
+      { adapter, fillLedger: guardLedger, exchange: 'coinbase', isStopped: () => stopped },
+      'order-1', trackedOrder, 0.5, 'FILLED'
+    );
+
+    assert.equal(result.fetched, false, 'must bail with fetched=false post-stop');
+    assert.equal(persistCalls, 0, 'must not persist post-stop (could clobber replacement service)');
+    assert.equal(trackedOrder.lastIngestedFilledSize ?? 0, 0,
+      'must not advance watermark on a stopped service');
+  });
+
   it('does not advance watermark when persist() throws (durability hole guard)', async () => {
     // Fills land in the in-memory ledger but persist() fails. If we
     // advanced the watermark, ingestFill's tradeId dedup would mean a
@@ -1227,6 +1258,48 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
       'replay must update averageFilledPrice even when filledSize is unchanged');
     assert.equal(target.totalFees, 0.10,
       'replay must update totalFees even when filledSize is unchanged');
+
+    svc.stop();
+  });
+
+  it('replayed FILLED with placeholder totalFees=0 does NOT clobber a previously-correct nonzero fee total', async () => {
+    // websocket-feed normalizes a missing total_fees field to 0. Without
+    // a truthy guard, the prelude would overwrite a valid existing fee
+    // with the placeholder zero on the replay, causing finalize/callback
+    // to report fees=0 even though the original event had the correct
+    // value.
+    const fakeAdapter = {
+      getOrderFills: async () => { throw new Error('keep retry pending'); },
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-S', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    // First FILLED with valid totalFees=0.05 — fetch fails, retry pending.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-S', status: 'FILLED',
+      filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05,
+    });
+
+    const target = svc._test.pendingTerminalRetries.get('order-S');
+    assert.ok(target);
+    assert.equal(target.totalFees, 0.05);
+
+    // Replayed FILLED with placeholder totalFees=0 — must NOT overwrite.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-S', status: 'FILLED',
+      filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0,
+    });
+
+    assert.equal(target.totalFees, 0.05,
+      'placeholder totalFees=0 must not clobber valid existing nonzero fees');
 
     svc.stop();
   });

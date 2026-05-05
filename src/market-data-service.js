@@ -82,6 +82,10 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
     fills = await adapter.getOrderFills(orderId);
   } catch (err) {
     console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
+    // Bail post-stop: the service may have been replaced during the await,
+    // and writing to its now-stale fillLedger or trackedOrder via persist
+    // / reconcile would corrupt the replacement service's state.
+    if (isStopped()) return { fetched: false, fillsCount: 0, ingestedCount: 0 };
     // Try to flush any in-memory ledger state from a prior failed-persist
     // call before reading the ledger. If persist succeeds, in-memory is
     // in sync with disk and we can safely reconcile the watermark — covers
@@ -1062,15 +1066,17 @@ const createMarketDataService = (exchange, pair) => {
     // replays — the cumulative may match the original event but the
     // aggregates can be more complete on a post-reconnect replay (the
     // original may have arrived before the WS-side aggregation finalized).
-    // Guarded against zero/null so a placeholder replay doesn't clobber
-    // valid existing values.
+    // Truthy guard on both fields: websocket-feed normalizes a missing
+    // total_fees to 0, so a `!= null` check would let placeholder zeros
+    // overwrite a previously-correct nonzero fee total. Real terminal
+    // events for executed fills always carry positive aggregates.
     if (status === 'FILLED' || status === 'CANCELLED' || status === 'FAILED') {
       const target = pendingTerminalRetries.get(orderId);
       if (target) {
         if (filledSize > target.filledSize) target.filledSize = filledSize;
         if (status === 'FILLED') {
           if (averageFilledPrice) target.averageFilledPrice = averageFilledPrice;
-          if (totalFees != null) target.totalFees = totalFees;
+          if (totalFees) target.totalFees = totalFees;
         }
       }
     }
@@ -1138,61 +1144,54 @@ const createMarketDataService = (exchange, pair) => {
       const baseCurr = getBaseCurrency(productId);
       console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
 
-      // If OPEN-status partial-fill ingestion already covered the full
-      // filledSize, skip the fetch entirely and proceed to settle —
-      // everything is already in the ledger. Otherwise, ingest any
-      // remaining fills.
-      if (filledSize > (trackedOrder.lastIngestedFilledSize || 0)) {
-        // Pre-populate the pending target BEFORE awaiting ingestion.
-        // Without this, a replayed FILLED arriving during the await
-        // would see no entry to update; if this call then finalizes
-        // (small target case), the queued replay hits the settled-
-        // status guard and is dropped along with its larger cumulative.
-        // If we don't end up scheduling a retry, drop the entry below.
-        let target = pendingTerminalRetries.get(orderId);
-        if (!target) {
-          pendingPartialRetries.delete(orderId);
-          target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
-          pendingTerminalRetries.set(orderId, target);
-        }
-
-        const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, target.filledSize, 'FILLED');
-        if (timerTracker.isStopped()) return;
-
-        // FILLED is terminal — Coinbase is not guaranteed to emit follow-
-        // up WS events, so we cannot wait for "the next event" to retry.
-        // Schedule a retry chain whenever the ledger doesn't yet cover
-        // the WS-reported cumulative filledSize: that includes adapter/
-        // persist failures (fetched=false) and the Gemini/Crypto.com
-        // partial-history case where we ingested some fills but not all.
-        // The retry re-enters via enqueueOrderWork so it serializes
-        // against any later updates for the same order. Service stop
-        // cancels these timers via timerTracker.cancelAll().
-        if (!result.fetched) {
-          scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, 'fetch/persist failed');
-          return;
-        }
-        if ((trackedOrder.lastIngestedFilledSize || 0) < target.filledSize) {
-          const reason = result.fillsCount === 0 ? 'has no fills yet' : 'ledger short of cumulative';
-          scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, reason);
-          return;
-        }
-        // Finalize with the target's latest aggregates — replays during
-        // the await may have advanced filledSize / averageFilledPrice /
-        // totalFees, and the engine callback must see those, not the
-        // stale captures from when this handler entered.
-        const finalSize = target.filledSize;
-        const finalPrice = target.averageFilledPrice;
-        const finalFees = target.totalFees;
-        // Drop the placeholder entry synchronously so a race-arriving
-        // replay can't see a stale entry. finalizeFilledOrder also
-        // clears via clearPendingRetry on its 60s untrack TTL.
-        pendingTerminalRetries.delete(orderId);
-        finalizeFilledOrder(orderId, trackedOrder, finalSize, finalPrice, finalFees);
-        return;
+      // Always go through the catch-up path. If partial-fill ingestion
+      // already covered the watermark, ingestNewFillsForOrder early-returns
+      // without an adapter call (no wasted I/O) — but pre-populating the
+      // target gives the synchronous prelude a place to update aggregates
+      // when a post-reconnect replay arrives with corrected price/fees.
+      // Without this unification, the watermark-covered case would skip
+      // target creation entirely and drop replays via the settled-status
+      // guard.
+      let target = pendingTerminalRetries.get(orderId);
+      if (!target) {
+        pendingPartialRetries.delete(orderId);
+        target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
+        pendingTerminalRetries.set(orderId, target);
       }
 
-      finalizeFilledOrder(orderId, trackedOrder, filledSize, averageFilledPrice, totalFees);
+      const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, target.filledSize, 'FILLED');
+      if (timerTracker.isStopped()) return;
+
+      // FILLED is terminal — Coinbase is not guaranteed to emit follow-
+      // up WS events, so we cannot wait for "the next event" to retry.
+      // Schedule a retry chain whenever the ledger doesn't yet cover
+      // the WS-reported cumulative filledSize: that includes adapter/
+      // persist failures (fetched=false) and the Gemini/Crypto.com
+      // partial-history case where we ingested some fills but not all.
+      // The retry re-enters via enqueueOrderWork so it serializes
+      // against any later updates for the same order. Service stop
+      // cancels these timers via timerTracker.cancelAll().
+      if (!result.fetched) {
+        scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, 'fetch/persist failed');
+        return;
+      }
+      if ((trackedOrder.lastIngestedFilledSize || 0) < target.filledSize) {
+        const reason = result.fillsCount === 0 ? 'has no fills yet' : 'ledger short of cumulative';
+        scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, 1, reason);
+        return;
+      }
+      // Finalize with the target's latest aggregates — replays during the
+      // await may have advanced filledSize / averageFilledPrice / totalFees,
+      // and the engine callback must see those, not the stale captures
+      // from when this handler entered.
+      const finalSize = target.filledSize;
+      const finalPrice = target.averageFilledPrice;
+      const finalFees = target.totalFees;
+      // Drop the placeholder entry synchronously so a race-arriving replay
+      // can't see a stale entry. finalizeFilledOrder also clears via
+      // clearPendingRetry on its 60s untrack TTL.
+      pendingTerminalRetries.delete(orderId);
+      finalizeFilledOrder(orderId, trackedOrder, finalSize, finalPrice, finalFees);
     } else if (status === 'CANCELLED' || status === 'FAILED') {
       // Two replay scenarios for CANCELLED/FAILED on an order with an
       // existing pendingTerminalRetries entry:
