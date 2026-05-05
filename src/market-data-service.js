@@ -404,7 +404,17 @@ const createTimerTracker = () => {
     pending.clear();
     return n;
   };
-  return { trackedSetTimeout, cancelAll, size: () => pending.size, isStopped: () => stopped };
+  // Cancel a single pending timer by the id returned from trackedSetTimeout.
+  // No-op if id is null/undefined or the timer has already fired/been cancelled.
+  // Used by callers that need to re-arm a timer with a fresher delay (e.g.,
+  // partial-retry rescheduling on a fresh WS update) without leaking the
+  // stale timer into the pending set.
+  const cancel = (id) => {
+    if (id == null || !pending.has(id)) return;
+    clearTimeout(id);
+    pending.delete(id);
+  };
+  return { trackedSetTimeout, cancel, cancelAll, size: () => pending.size, isStopped: () => stopped };
 };
 
 /**
@@ -878,19 +888,27 @@ const createMarketDataService = (exchange, pair) => {
     }
   };
 
-  const armPartialTimer = (orderId, trackedOrder, attempt, reason) => {
-    const delay = Math.min(PARTIAL_RETRY_BASE_MS * Math.pow(2, attempt - 1), PARTIAL_RETRY_MAX_MS);
-    console.log(`⏳ [${exchange}] partial ${orderId} ${reason} — retry ${attempt}/${PARTIAL_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`);
-    trackedSetTimeout(
+  const armPartialTimer = (orderId, trackedOrder, entry, reason) => {
+    // Cancel any previously-armed timer for this entry before scheduling
+    // the fresh one. Without this, a sustained adapter outage with many
+    // WS updates would accumulate one pending timer per update in
+    // timerTracker, growing the pending set unboundedly and later flooding
+    // the queue with stale no-op callbacks.
+    if (entry.timerId != null) {
+      timerTracker.cancel(entry.timerId);
+      entry.timerId = null;
+    }
+    const delay = Math.min(PARTIAL_RETRY_BASE_MS * Math.pow(2, entry.attempt - 1), PARTIAL_RETRY_MAX_MS);
+    console.log(`⏳ [${exchange}] partial ${orderId} ${reason} — retry ${entry.attempt}/${PARTIAL_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`);
+    entry.timerId = trackedSetTimeout(
       () => enqueueOrderWork(orderId, async () => {
         // Read the (possibly updated) target out of the map; if the
-        // entry was preempted by a terminal handler OR consumed by an
-        // earlier-fired re-armed timer, bail.
-        const entry = pendingPartialRetries.get(orderId);
-        if (!entry) return;
+        // entry was preempted by a terminal handler, bail.
+        const cur = pendingPartialRetries.get(orderId);
+        if (!cur) return;
         pendingPartialRetries.delete(orderId);
         try {
-          await retryPartialIngest(orderId, trackedOrder, entry.filledSize, entry.attempt);
+          await retryPartialIngest(orderId, trackedOrder, cur.filledSize, cur.attempt);
         } catch (err) {
           console.log(`❌ [${exchange}] partial retry chain crashed for ${orderId}: ${err.message}`);
         }
@@ -912,25 +930,25 @@ const createMarketDataService = (exchange, pair) => {
     //     burned through most of its retries would give up after one or
     //     two tries on the new larger value.
     //   - Re-arm the timer with the new attempt's (smaller) delay. The
-    //     previously scheduled timer is left to fire and no-op (its
-    //     callback bails on the missing-entry check, since the new
-    //     timer's earlier fire will have consumed the entry first).
-    //     Without this re-arm, an entry that has already backed off to
+    //     previous timer is cancelled inside armPartialTimer so the
+    //     pending set doesn't grow unboundedly under sustained outage.
+    //     Without rescheduling, an entry that has already backed off to
     //     a long delay (e.g. 60s) would sit on that stale delay despite
     //     the fresh exchange activity, leaving the new partial
     //     unrecorded until the stale timer fires.
-    const existing = pendingPartialRetries.get(orderId);
-    if (existing) {
-      if (filledSize > existing.filledSize) {
-        existing.filledSize = filledSize;
-        existing.attempt = attempt;
-        armPartialTimer(orderId, trackedOrder, attempt, reason);
+    let entry = pendingPartialRetries.get(orderId);
+    if (entry) {
+      if (filledSize > entry.filledSize) {
+        entry.filledSize = filledSize;
+        entry.attempt = attempt;
+        armPartialTimer(orderId, trackedOrder, entry, reason);
       }
       return;
     }
 
-    pendingPartialRetries.set(orderId, { filledSize, attempt });
-    armPartialTimer(orderId, trackedOrder, attempt, reason);
+    entry = { filledSize, attempt, timerId: null };
+    pendingPartialRetries.set(orderId, entry);
+    armPartialTimer(orderId, trackedOrder, entry, reason);
   };
 
   const retryFilledIngest = async (orderId, trackedOrder, target, attempt) => {
@@ -1025,6 +1043,16 @@ const createMarketDataService = (exchange, pair) => {
   // initial path stored. The wrapper propagates through the recursive
   // settleCancelledOrder retry (it passes its own deps through), so even
   // a chain that settles on attempt N still flips target.settled.
+  //
+  // Cancel-side untrack TTL is intentionally longer than the FILLED side
+  // (60s). After a delayed WS reconnect a replayed CANCELLED with a
+  // larger cumulative may arrive minutes after the initial settle —
+  // 10 minutes covers most realistic reconnect windows so the restart
+  // logic in processOrderUpdate can pick up the late partials. (Past
+  // this window, partials are still recoverable on Coinbase via manual
+  // reconciliation; on Gemini/Crypto.com the recent-trade window may
+  // have aged them out anyway, which is the documented limitation.)
+  const CANCEL_UNTRACK_DELAY_MS = 10 * 60 * 1000;
   const startCancelCatchup = (orderId, trackedOrder, status, filledSize, target) => {
     const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
     return settleCancelledOrder(
@@ -1043,6 +1071,7 @@ const createMarketDataService = (exchange, pair) => {
           clearPendingRetry(id);
           trackedOrders.delete(id);
         },
+        untrackDelayMs: CANCEL_UNTRACK_DELAY_MS,
         scheduleTimeout: trackedSetTimeout,
         enqueueWork: enqueueOrderWork,
         // Coinbase's getOrderFills is the source of truth and never ages

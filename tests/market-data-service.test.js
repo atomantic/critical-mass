@@ -1349,7 +1349,47 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     assert.equal(entry.attempt, 1, 'attempt reset to fresh budget');
     assert.equal(entry.filledSize, 0.7);
     assert.ok(svc._test.timerTracker.size() > baselineTimers,
-      'a new timer was armed for the fresh attempt — old timer left to fire and no-op on missing entry');
+      'a new timer was armed for the fresh attempt');
+
+    svc.stop();
+  });
+
+  it('partial retry timer cancels the previously-armed timer when re-arming on a fresh WS update', async () => {
+    // Without cancelling the prior timer, a sustained adapter outage with
+    // many WS updates would accumulate one pending timer per update in
+    // timerTracker, growing the pending set unboundedly and later flooding
+    // the queue with stale no-op callbacks.
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter({ getOrderFills: async () => { throw new Error('keep retry pending'); } });
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-P', { type: 'take_profit', price: 70000, size: 1.0, placedAt: Date.now() });
+
+    // First WS partial — schedules a timer.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-P', status: 'OPEN',
+      filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0,
+    });
+    const afterFirst = svc._test.timerTracker.size();
+    const firstTimerId = svc._test.pendingPartialRetries.get('order-P').timerId;
+    assert.ok(firstTimerId != null, 'first timer id stored on entry');
+
+    // Several more partials with growing cumulative — each must re-arm
+    // and cancel the prior timer, NOT pile up new timers in the tracker.
+    for (const fs of [0.4, 0.5, 0.6, 0.7]) {
+      await svc._test.handleOrderUpdate({
+        orderId: 'order-P', status: 'OPEN',
+        filledSize: fs, averageFilledPrice: 70000, totalFees: 0,
+      });
+    }
+
+    assert.equal(svc._test.timerTracker.size(), afterFirst,
+      'timerTracker size must not grow on each fresh WS update — old timer cancelled before new one armed');
 
     svc.stop();
   });
