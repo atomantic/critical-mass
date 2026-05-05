@@ -1169,11 +1169,17 @@ const createMarketDataService = (exchange, pair) => {
   //                   it as a cancellation; without this, EXPIRED falls
   //                   into the partial branch and stays tracked forever.
   //   - null        : non-terminal (still OPEN with partial fills).
-  // Mirrors order-manager.js:29/49 and order-executor.js:101/119/410.
+  // Fill detection MUST win over cancel detection: a CANCELLED status that
+  // arrives with completionPercentage>=100 is a cancel-after-fill race —
+  // the order had already filled when the cancel was issued. Routing it
+  // to the cancel branch would suppress onOrderFillCallback and miss a
+  // real fill. Mirrors the same ordering in order-manager.js:29 (checks
+  // FILLED/completionPercentage>=100 BEFORE CANCELLED/EXPIRED) and
+  // order-executor.js:101,119 (same precedence in cancel-with-status).
   const classifyTerminal = (data) => {
     const { status, completionPercentage } = data;
-    if (status === 'CANCELLED' || status === 'FAILED' || status === 'EXPIRED') return 'cancelled';
     if (status === 'FILLED' || (typeof completionPercentage === 'number' && completionPercentage >= 100)) return 'filled';
+    if (status === 'CANCELLED' || status === 'FAILED' || status === 'EXPIRED') return 'cancelled';
     return null;
   };
 
@@ -1208,15 +1214,34 @@ const createMarketDataService = (exchange, pair) => {
     // missing total_fees to 0, so a `!= null` check would let placeholder
     // zeros overwrite a previously-correct nonzero fee total. Real
     // terminal events for executed fills always carry positive aggregates.
+    //
+    // Eagerly CREATE the target for first-seen 'filled' terminals. Without
+    // this, two FILLED events delivered in the same WS batch race:
+    // websocket-feed.js:316-336 iterates `event.orders` synchronously
+    // without awaiting, so both handleOrderUpdate calls run before any
+    // queued processOrderUpdate executes. Both find no target in the
+    // prelude, and the first processOrderUpdate to dequeue creates the
+    // target with event-1 aggregates and finalizes (clearing the entry).
+    // Event 2 then hits the settled-status guard and is dropped, losing
+    // its (potentially larger) filledSize / corrected price-fee
+    // aggregates. Eager creation here lets event 2's prelude advance the
+    // target before processOrderUpdate runs. We don't eagerly create for
+    // 'cancelled' — settleCancelledOrder needs to run cancelPartialRetry
+    // and own the initial pendingTerminalRetries set inside the queued
+    // processOrderUpdate (line 1376+), and the cancel branch already
+    // handles re-arrival via the existingTarget restart path.
     const terminalKind = classifyTerminal(data);
     if (terminalKind) {
-      const target = pendingTerminalRetries.get(orderId);
+      let target = pendingTerminalRetries.get(orderId);
       if (target) {
         if (filledSize > target.filledSize) target.filledSize = filledSize;
         if (terminalKind === 'filled') {
           if (averageFilledPrice) target.averageFilledPrice = averageFilledPrice;
           if (totalFees) target.totalFees = totalFees;
         }
+      } else if (terminalKind === 'filled') {
+        target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
+        pendingTerminalRetries.set(orderId, target);
       }
     }
 
@@ -1293,9 +1318,15 @@ const createMarketDataService = (exchange, pair) => {
       // Without this unification, the watermark-covered case would skip
       // target creation entirely and drop replays via the settled-status
       // guard.
+      //
+      // cancelPartialRetry runs unconditionally: handleOrderUpdate's
+      // prelude may have already eagerly created the target on the first
+      // FILLED event in a synchronous batch (race fix above), so the
+      // !target branch can no longer be relied on to fire it. It's
+      // idempotent (no-op when no partial retry is pending).
+      cancelPartialRetry(orderId);
       let target = pendingTerminalRetries.get(orderId);
       if (!target) {
-        cancelPartialRetry(orderId);
         target = { filledSize, averageFilledPrice, totalFees, timerScheduled: false };
         pendingTerminalRetries.set(orderId, target);
       }

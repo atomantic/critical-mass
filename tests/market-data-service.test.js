@@ -1438,6 +1438,104 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('CANCELLED status with completionPercentage>=100 is classified as FILLED (cancel-after-fill race)', async () => {
+    // Mirror of order-manager.js:29 / order-executor.js:101,119 ordering.
+    // When a cancel races with a fill that has just completed, the
+    // exchange may report status=CANCELLED with completionPercentage=100.
+    // Routing this to the cancel branch would suppress onOrderFillCallback
+    // and miss a real fill — the fill detection must win over cancel
+    // detection in classifyTerminal.
+    const fakeAdapter = {
+      getOrderFills: async () => [
+        { tradeId: 't1', orderId: 'order-CF', side: 'sell', price: 70000, size: 0.4, totalCommission: 0.04 },
+      ],
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Set();
+    svc._test.injectFillLedger({
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.add(fill.tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.4 })),
+      getRecordedSizeForOrder: () => ingested.size * 0.4,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-CF', { type: 'take_profit', price: 70000, size: 0.4, placedAt: Date.now() });
+
+    const fills = [];
+    svc.setOnOrderFill(f => fills.push(f));
+
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-CF', status: 'CANCELLED',
+      filledSize: 0.4, averageFilledPrice: 70000, totalFees: 0.04,
+      completionPercentage: 100,
+    });
+
+    assert.equal(fills.length, 1, 'CANCELLED+completion=100 must fire onOrderFillCallback (cancel-after-fill race)');
+    assert.equal(fills[0].size, 0.4);
+    assert.equal(ingested.size, 1, 'fill from cancel-after-fill race must be ingested via FILLED branch');
+
+    svc.stop();
+  });
+
+  it('two synchronous FILLED events for the same order merge aggregates instead of dropping the larger one', async () => {
+    // websocket-feed.js:316-336 iterates event.orders synchronously without
+    // awaiting onOrderUpdate, so two terminal events for the same order can
+    // arrive in the same WS batch — both handleOrderUpdate prelude calls
+    // run before any queued processOrderUpdate executes. Without eager
+    // target creation in the prelude, the first processOrderUpdate creates
+    // the target with event-1 aggregates and finalizes (clearing the
+    // entry); event 2 then hits the settled-status guard and is dropped,
+    // losing its larger filledSize / corrected price-fee aggregates.
+    const fakeAdapter = {
+      getOrderFills: async () => [
+        { tradeId: 't-merge-1', orderId: 'order-Race', side: 'sell', price: 70500, size: 0.6, totalCommission: 0.06 },
+      ],
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Set();
+    svc._test.injectFillLedger({
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.add(fill.tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.6 })),
+      getRecordedSizeForOrder: () => ingested.size * 0.6,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-Race', { type: 'take_profit', price: 70000, size: 0.6, placedAt: Date.now() });
+
+    const fills = [];
+    svc.setOnOrderFill(f => fills.push(f));
+
+    // Fire BOTH events synchronously (no await between them) — mirrors the
+    // websocket-feed iteration. Event 2 carries the larger cumulative and
+    // corrected price/fees that a post-reconnect replay would deliver.
+    const p1 = svc._test.handleOrderUpdate({
+      orderId: 'order-Race', status: 'FILLED',
+      filledSize: 0.3, averageFilledPrice: 70000, totalFees: 0.03,
+    });
+    const p2 = svc._test.handleOrderUpdate({
+      orderId: 'order-Race', status: 'FILLED',
+      filledSize: 0.6, averageFilledPrice: 70500, totalFees: 0.06,
+    });
+    await Promise.all([p1, p2]);
+
+    assert.equal(fills.length, 1, 'exactly one onOrderFillCallback fires for the merged terminal');
+    assert.equal(fills[0].size, 0.6, 'finalize must use the LARGER filledSize from event 2, not 0.3 from event 1');
+    assert.equal(fills[0].price, 70500, 'finalize must use event 2\'s corrected averageFilledPrice');
+    assert.equal(fills[0].fees, 0.06, 'finalize must use event 2\'s corrected totalFees');
+
+    svc.stop();
+  });
+
   it('FILLED retry replay during in-flight chain re-arms the timer instead of waiting on stale backoff', async () => {
     // Same concern as the cancel-side re-arm: an in-flight FILLED retry
     // may be sitting on a long stale backoff (5-min cap after many failed

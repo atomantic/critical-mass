@@ -1140,4 +1140,84 @@ describe('Fill Ledger', () => {
     assert.ok(ledger._test.getWriteCount() > writesBefore,
       'persist must rewrite when ledger is dirty');
   });
+
+  it('createFillLedger throws on cold start when file is corrupt JSON (refuses to boot empty)', () => {
+    // Cold start = fresh ledger instance, no prior successful load, no
+    // ingested fills. createFillLedger auto-loads in its constructor —
+    // if the file is corrupt, the prior behavior (preserve empty
+    // in-memory state) would let the engine boot with zero fills and
+    // the next persist would overwrite the recoverable file with only
+    // post-start fills, silently destroying historical data. Throwing
+    // from the constructor forces operator intervention.
+    const exchange = 'test-cold-start-corrupt-json';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '<<< not valid json >>>');
+
+    assert.throws(() => createTestLedger(exchange), /corrupted or unreadable on cold start/);
+  });
+
+  it('createFillLedger throws on cold start when file is valid JSON but not an array', () => {
+    const exchange = 'test-cold-start-not-array';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '{"unexpected":"shape"}');
+
+    assert.throws(() => createTestLedger(exchange), /not an array on cold start/);
+  });
+
+  it('createFillLedger throws on cold start when file contains an invalid fill entry', () => {
+    const exchange = 'test-cold-start-bad-entry';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    // Array with a single null entry — passes Array.isArray but fails per-fill validation.
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '[null]');
+
+    assert.throws(() => createTestLedger(exchange), /invalid entry .* on cold start/);
+  });
+
+  it('createFillLedger succeeds on cold start when file is missing (legitimate first run)', () => {
+    // No file at all is the legitimate "fresh deployment, no fills yet"
+    // case — must NOT throw, must boot with empty caches.
+    const exchange = 'test-cold-start-no-file';
+    let ledger;
+    assert.doesNotThrow(() => { ledger = createTestLedger(exchange); });
+    assert.equal(ledger.getFillCount(), 0);
+  });
+
+  it('createFillLedger succeeds on cold start when file is an empty array', () => {
+    const exchange = 'test-cold-start-empty-array';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fill-ledger.json'), '[]');
+
+    let ledger;
+    assert.doesNotThrow(() => { ledger = createTestLedger(exchange); });
+    assert.equal(ledger.getFillCount(), 0);
+  });
+
+  it('load() preserves in-memory state on subsequent corrupt-file loads after a successful initial load (SIGUSR1 reload after boot)', () => {
+    // After a successful cold-start load (file empty array → boot OK),
+    // a SIGUSR1 reload that hits a corrupt file must NOT throw and must
+    // preserve in-memory state. This covers the real flow where the
+    // engine boots cleanly, accumulates fills, then operator does an
+    // edit-corrupt-then-fix workflow.
+    const exchange = 'test-warm-reload-after-boot';
+    const dir = path.join(tmpDir, exchange, 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'fill-ledger.json');
+    fs.writeFileSync(filePath, '[]');
+
+    const ledger = createTestLedger(exchange);
+    ledger.load(); // cold-start success establishes the baseline
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    const fillsBefore = ledger.getFillCount();
+
+    // Corrupt the file and reload — must preserve, not throw.
+    fs.writeFileSync(filePath, '<<< corrupt >>>');
+    assert.doesNotThrow(() => ledger.load());
+    assert.equal(ledger.getFillCount(), fillsBefore,
+      'post-boot reload must preserve in-memory state on corruption');
+  });
 });

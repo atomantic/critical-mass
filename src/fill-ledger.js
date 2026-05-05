@@ -56,6 +56,14 @@ const createFillLedger = (exchange, productId, pair) => {
   // getFillsForOrder) MUST call markDirty() so the next persist actually
   // flushes their changes — see dca-converter.js for the pattern.
   let dirtySinceLastPersist = false;
+  // Tracks whether load() has ever completed (file present or absent) so
+  // corruption-recovery branches can distinguish a live SIGUSR1 reload
+  // (preserve in-memory) from a cold-start boot (throw, force operator
+  // intervention). Without this, a cold start with a corrupt file would
+  // boot with an empty ledger and the next successful persist would
+  // overwrite the recoverable file with only post-start fills, silently
+  // discarding history.
+  let hasLoadedSuccessfully = false;
   const baseCurrency = getBaseCurrency(productId);
   const fmtPrice = (p) => {
     if (p == null || isNaN(p)) return '-';
@@ -91,6 +99,13 @@ const createFillLedger = (exchange, productId, pair) => {
 
   const load = () => {
     const filePath = getFillLedgerPath(exchange, pair);
+    // Reload-vs-cold-start signal. Either a prior successful load OR any
+    // already-ingested fills means there is in-memory state worth
+    // preserving. Without this distinction, a cold-start boot against a
+    // corrupt file would silently start with an empty ledger and the
+    // next persist would overwrite the recoverable file with only
+    // post-start fills — destroying the historical record.
+    const isReload = hasLoadedSuccessfully || fills.size > 0;
     if (!fs.existsSync(filePath)) {
       // Initial load (no file yet) leaves the freshly-constructed empty
       // caches in place. SIGUSR1 reload (regime-engine.js calls load()
@@ -99,6 +114,7 @@ const createFillLedger = (exchange, productId, pair) => {
       // doesn't wipe live data. To intentionally clear, write `[]` to
       // the file — that loads cleanly to empty state.
       console.log(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`);
+      hasLoadedSuccessfully = true;
       return;
     }
 
@@ -106,6 +122,12 @@ const createFillLedger = (exchange, productId, pair) => {
     try {
       data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (err) {
+      if (!isReload) {
+        // Cold-start corruption: throwing forces the operator to repair
+        // (or move aside) the file before the engine boots, so a
+        // post-start persist can't overwrite the recoverable contents.
+        throw new Error(`fill-ledger at ${filePath} is corrupted or unreadable on cold start: ${err.message}. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
+      }
       // Corrupt/unreadable file: don't reset in-memory state. SIGUSR1
       // reload on a live ledger could otherwise turn a bad manual edit
       // or partial write into live data loss — the running process
@@ -121,6 +143,9 @@ const createFillLedger = (exchange, productId, pair) => {
     // so the reload-on-malformed-payload would fall into the same data-
     // loss mode that the catch-block above guards against.
     if (!Array.isArray(data)) {
+      if (!isReload) {
+        throw new Error(`fill-ledger at ${filePath} is not an array on cold start (got ${data === null ? 'null' : typeof data}). Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
+      }
       console.log(`❌ [${exchange}] fill-ledger at ${filePath} is not an array (got ${data === null ? 'null' : typeof data}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
       return;
     }
@@ -130,6 +155,9 @@ const createFillLedger = (exchange, productId, pair) => {
     // already-run resetCaches. Pre-pass guarantees a clean reload-or-bail.
     for (const fill of data) {
       if (!fill || typeof fill !== 'object' || !fill.tradeId) {
+        if (!isReload) {
+          throw new Error(`fill-ledger at ${filePath} contains an invalid entry (missing tradeId or non-object) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
+        }
         console.log(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (missing tradeId or non-object) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
         return;
       }
@@ -200,6 +228,7 @@ const createFillLedger = (exchange, productId, pair) => {
     }
     nextCycleNumber = maxCycleNum + 1;
 
+    hasLoadedSuccessfully = true;
     console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
   };
 
