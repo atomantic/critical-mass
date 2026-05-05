@@ -245,9 +245,18 @@ const createFillLedger = (exchange, productId, pair) => {
    * every retry tick without churning the ledger file.
    */
   const persist = () => {
-    if (!dirtySinceLastPersist) return;
-
     const filePath = getFillLedgerPath(exchange, pair);
+    // Clean shutdowns must still write when the on-disk file has gone
+    // missing (operator rm, transient unmount, etc.) — otherwise
+    // regime-engine.stop()'s defensive persist() would no-op, the
+    // process exits, and the next boot's load() sees no file and treats
+    // it as a fresh deployment with empty history. Subsequent persists
+    // would then write a file containing only post-restart fills,
+    // silently destroying the recoverable in-memory ledger that the
+    // dirty-flag short-circuit refused to flush. fs.existsSync is cheap
+    // and the missing-file case is rare, so the extra check costs ~nothing.
+    if (!dirtySinceLastPersist && fs.existsSync(filePath)) return;
+
     const dir = path.dirname(filePath);
 
     if (!fs.existsSync(dir)) {

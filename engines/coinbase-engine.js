@@ -209,8 +209,19 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
 
   log('INFO', `🛑 [${label}] Stopping regime engine...`);
 
-  await startMarketDataService(exchange, resolvedPair);
-  wireMarketDataCallbacks(exchange, resolvedPair);
+  // Spin up the standalone market-data-service for fill-handover during
+  // shutdown. If the on-disk fill-ledger is corrupt, createFillLedger
+  // throws on cold start (refuses to boot empty); startMarketDataService
+  // surfaces that as { success: false, error }. Skip wiring callbacks
+  // and proceed to engine.stop() anyway — the operator's stop intent
+  // takes precedence over the handover, and the running engine still
+  // has its own (good) in-memory ledger to flush.
+  const mdsResult = await startMarketDataService(exchange, resolvedPair);
+  if (mdsResult?.success) {
+    wireMarketDataCallbacks(exchange, resolvedPair);
+  } else {
+    log('WARN', `⚠️ [${label}] Standalone market-data-service did not start (${mdsResult?.error || 'unknown'}); proceeding with engine stop without WS handover`);
+  }
 
   const stopResult = await engine.stop().catch((err) => {
     log('ERROR', `❌ [${label}] Error stopping engine: ${err.message}`);

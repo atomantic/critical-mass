@@ -1158,27 +1158,38 @@ const createMarketDataService = (exchange, pair) => {
 
   // Terminal status detection. websocket-feed normalizes most order events
   // to one of: FILLED, OPEN, CANCELLED, FAILED, EXPIRED. We treat:
-  //   - 'filled'    : status==='FILLED' OR completionPercentage>=100.
-  //                   Coinbase can flip the percentage to 100 a tick before
-  //                   status flips to FILLED; without this, that brief
-  //                   window keeps the order in the partial branch and it
-  //                   never reaches the FILLED retry/finalize path.
+  //   - 'filled'    : status==='FILLED', OR completionPercentage>=100
+  //                   AND averageFilledPrice>0. Coinbase can flip the
+  //                   percentage to 100 a tick before status flips to
+  //                   FILLED; without the percentage path, that brief
+  //                   window keeps the order in the partial branch and
+  //                   it never reaches the FILLED retry/finalize path.
+  //                   The averageFilledPrice>0 guard avoids finalizing
+  //                   from an early OPEN+completion=100 event where
+  //                   Coinbase has not yet populated the WS aggregates
+  //                   (avgPrice/totalFees can be 0 on that event).
+  //                   Finalizing with stale zeros locks in bad
+  //                   execution metadata and the later FILLED replay
+  //                   carrying real aggregates is dropped by the
+  //                   settled-order guard.
   //   - 'cancelled' : status in {CANCELLED, FAILED, EXPIRED}. EXPIRED is
   //                   the exchange's "this order timed out / aged out"
   //                   terminal state — order-manager.js:49 already treats
   //                   it as a cancellation; without this, EXPIRED falls
   //                   into the partial branch and stays tracked forever.
-  //   - null        : non-terminal (still OPEN with partial fills).
+  //   - null        : non-terminal (still OPEN with partial fills, or
+  //                   completion=100 without populated aggregates).
   // Fill detection MUST win over cancel detection: a CANCELLED status that
-  // arrives with completionPercentage>=100 is a cancel-after-fill race —
-  // the order had already filled when the cancel was issued. Routing it
-  // to the cancel branch would suppress onOrderFillCallback and miss a
-  // real fill. Mirrors the same ordering in order-manager.js:29 (checks
-  // FILLED/completionPercentage>=100 BEFORE CANCELLED/EXPIRED) and
-  // order-executor.js:101,119 (same precedence in cancel-with-status).
+  // arrives with completionPercentage>=100 AND populated aggregates is a
+  // cancel-after-fill race — the order had already filled when the cancel
+  // was issued. Routing it to the cancel branch would suppress
+  // onOrderFillCallback and miss a real fill. Mirrors the same ordering
+  // in order-manager.js:29 (checks FILLED/completionPercentage>=100
+  // BEFORE CANCELLED/EXPIRED) and order-executor.js:101,119.
   const classifyTerminal = (data) => {
-    const { status, completionPercentage } = data;
-    if (status === 'FILLED' || (typeof completionPercentage === 'number' && completionPercentage >= 100)) return 'filled';
+    const { status, completionPercentage, averageFilledPrice } = data;
+    if (status === 'FILLED') return 'filled';
+    if (typeof completionPercentage === 'number' && completionPercentage >= 100 && averageFilledPrice > 0) return 'filled';
     if (status === 'CANCELLED' || status === 'FAILED' || status === 'EXPIRED') return 'cancelled';
     return null;
   };
@@ -1648,7 +1659,17 @@ const startMarketDataService = async (exchange, pair) => {
     return { success: true, message: 'Already running' };
   }
 
-  const service = createMarketDataService(exchange, pair);
+  // createMarketDataService → createFillLedger → load() can throw on
+  // cold-start corruption. Callers (notably the regime:stop IPC handler
+  // that starts a standalone service for handover) must still be able
+  // to make progress when the file is corrupt — surface the failure as
+  // a returned result instead of letting it bubble and abort their flow.
+  let service;
+  try {
+    service = createMarketDataService(exchange, pair);
+  } catch (err) {
+    return { success: false, error: `Fill ledger init failed: ${err.message}` };
+  }
   const result = await service.start();
 
   if (result.success) {

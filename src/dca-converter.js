@@ -116,8 +116,19 @@ const executeConversion = (exchange) => {
   const orders = state.orders || [];
   const { pending, filled } = categorizeOrders(orders);
 
-  // 4. Create fill ledger and ingest synthetic fills
-  const fillLedger = createFillLedger(exchange);
+  // 4. Create fill ledger and ingest synthetic fills.
+  // Re-enable the DCA engine on createFillLedger failure (cold-start
+  // throw against a corrupt fill-ledger.json) so a partial migration
+  // doesn't leave the exchange permanently disabled. The operator can
+  // repair the file and re-run the conversion.
+  let fillLedger;
+  try {
+    fillLedger = createFillLedger(exchange);
+  } catch (err) {
+    setExchangeEnabled(exchange, true);
+    log('ERROR', `❌ [${exchange}] Fill ledger init failed during conversion: ${err.message} — DCA engine re-enabled, conversion aborted`);
+    throw err;
+  }
 
   // Ingest filled (completed) DCA orders as completed cycles
   let filledIngested = 0;

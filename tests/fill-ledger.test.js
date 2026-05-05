@@ -1126,6 +1126,37 @@ describe('Fill Ledger', () => {
       'markDirty + persist must flush direct field mutations to disk');
   });
 
+  it('persist() recreates the file when on-disk file is missing even if ledger is clean', () => {
+    // Defensive write on missing-file. Without this, regime-engine.stop()'s
+    // unconditional persist() would no-op when the file was unlinked
+    // mid-run (operator rm, transient unmount), and the next boot's
+    // load() would treat the missing file as a fresh deployment with
+    // empty history. Subsequent persists would write a file containing
+    // only post-restart fills, silently overwriting recoverable history.
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(makeBuyFill({ tradeId: 'b-1', orderId: 'o-1', size: '0.4' }));
+    // First persist wrote the file; ledger is now clean.
+
+    // Simulate transient file disappearance.
+    const filePath = path.join(tmpDir, 'test-exchange', 'default', 'fill-ledger.json');
+    assert.ok(fs.existsSync(filePath), 'file should exist after first persist');
+    fs.rmSync(filePath);
+    assert.ok(!fs.existsSync(filePath), 'file removed for missing-file test');
+
+    const writesBefore = ledger._test.getWriteCount();
+    ledger.persist(); // clean BUT file missing — must still write
+    assert.ok(ledger._test.getWriteCount() > writesBefore,
+      'clean persist must still write when on-disk file is missing');
+    assert.ok(fs.existsSync(filePath),
+      'persist must recreate the missing file');
+
+    // Verify the recreated file has the in-memory contents.
+    const restored = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    assert.equal(restored.length, 1);
+    assert.equal(restored[0].tradeId, 'b-1');
+  });
+
   it('persist() rewrites the file when mutations have happened since last persist', () => {
     const ledger = createTestLedger();
     ledger.startNewCycle();

@@ -1438,6 +1438,70 @@ describe('handleOrderUpdate integration: replayed CANCELLED reaches target updat
     svc.stop();
   });
 
+  it('OPEN+completionPercentage=100 with zero aggregates is NOT classified as terminal (waits for FILLED with real data)', async () => {
+    // Coinbase's WS can briefly emit an OPEN event with completion=100
+    // before averageFilledPrice / totalFees are populated on that
+    // message. Treating it as terminal would finalize with stale zeros
+    // (avgPrice=0, fees=0) and the later FILLED replay carrying the
+    // real aggregates would be dropped by the settled-order guard.
+    // classifyTerminal must require averageFilledPrice>0 alongside
+    // completion=100 so the partial branch holds the order until the
+    // proper FILLED event arrives.
+    const fakeAdapter = {
+      // If we erroneously treated the OPEN+100 event as terminal, the
+      // FILLED branch would call ingestNewFillsForOrder and then
+      // finalize. With the fix in place, the partial branch does not
+      // schedule any FILLED retry, so the adapter should not be hit
+      // for the FILLED path — but partial-fill ingestion still fetches.
+      getOrderFills: async () => [
+        { tradeId: 't-pre', orderId: 'order-Early', side: 'sell', price: 70000, size: 0.5, totalCommission: 0.05 },
+      ],
+    };
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectAdapter(fakeAdapter);
+    const ingested = new Set();
+    svc._test.injectFillLedger({
+      ingestFill: (fill) => {
+        if (ingested.has(fill.tradeId)) return { ingested: false, fill: null };
+        ingested.add(fill.tradeId);
+        return { ingested: true, fill };
+      },
+      getFillsForOrder: () => Array.from(ingested).map(() => ({ size: 0.5 })),
+      getRecordedSizeForOrder: () => ingested.size * 0.5,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-Early', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    const fills = [];
+    svc.setOnOrderFill(f => fills.push(f));
+
+    // Early WS event: OPEN with completion=100 but aggregates not yet populated.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-Early', status: 'OPEN',
+      filledSize: 0.5, averageFilledPrice: 0, totalFees: 0,
+      completionPercentage: 100,
+    });
+
+    assert.equal(fills.length, 0,
+      'must NOT fire onOrderFillCallback while aggregates are unpopulated — would lock in stale zero price/fees');
+    assert.equal(svc._test.pendingTerminalRetries.has('order-Early'), false,
+      'must NOT eagerly create a terminal target — order stays in partial branch');
+
+    // Now the proper FILLED event arrives with real aggregates.
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-Early', status: 'FILLED',
+      filledSize: 0.5, averageFilledPrice: 70000, totalFees: 0.05,
+      completionPercentage: 100,
+    });
+
+    assert.equal(fills.length, 1, 'FILLED with real aggregates must finalize');
+    assert.equal(fills[0].price, 70000, 'finalize uses the real averageFilledPrice');
+    assert.equal(fills[0].fees, 0.05, 'finalize uses the real totalFees');
+
+    svc.stop();
+  });
+
   it('CANCELLED status with completionPercentage>=100 is classified as FILLED (cancel-after-fill race)', async () => {
     // Mirror of order-manager.js:29 / order-executor.js:101,119 ordering.
     // When a cancel races with a fill that has just completed, the
