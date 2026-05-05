@@ -75,14 +75,15 @@ const getStandaloneLedger = (exchange, pair) => {
     const fundConfig = getFundConfig(exchange, resolvedPair);
     // createFillLedger throws on cold-start corruption (refuses to boot
     // empty so a subsequent persist can't overwrite a recoverable file).
-    // Wrap with a stable message prefix so the IPC framework's catch
-    // returns a useful error response to the client without leaking
-    // the raw filesystem-level message detail to the API surface.
+    // Log full detail (absolute path + parser error) server-side and throw
+    // a sanitized message — the IPC framework propagates this back to
+    // clients, so we keep filesystem internals out of the API surface.
     let ledger;
     try {
       ledger = createFillLedger(exchange, fundConfig?.productId, resolvedPair);
     } catch (err) {
-      throw new Error(`Fill ledger init failed for ${exchange}/${resolvedPair}: ${err.message}`);
+      log('ERROR', `❌ [${exchange}/${resolvedPair}] Fill ledger init failed: ${err.message}`);
+      throw new Error(`Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details`);
     }
     ledger.load();
     standaloneLedgers.set(key, ledger);
@@ -186,12 +187,15 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
   // (regime-engine.js:226). createFillLedger refuses to boot on cold-start
   // corruption, so a corrupt ledger file would otherwise bubble up through
   // the IPC framework. Catch it and return a per-fund failure so other
-  // funds in this engine process stay usable.
+  // funds in this engine process stay usable. Log full detail server-side
+  // and return a sanitized message to the client so we don't leak the
+  // absolute ledger path / parser internals across the IPC boundary.
   let engine;
   try {
     engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
   } catch (err) {
-    return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair}: ${err.message}` };
+    log('ERROR', `❌ [${label}] Fill ledger init failed on regime:start: ${err.message}`);
+    return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
   }
   regimeEngines.set(key, engine);
 
@@ -1142,7 +1146,10 @@ const startup = async () => {
         // (regime-engine.js:226), which refuses to boot on cold-start
         // corruption. Without this catch, a single corrupt fund ledger
         // would abort the entire engine process on startup; instead we
-        // log per-fund and continue with the rest.
+        // log per-fund (with full detail) and continue with the rest.
+        // Server-side log is the right destination for the absolute
+        // ledger path + parser detail — there's no IPC client here, so
+        // a sanitized message would just lose information.
         let engine;
         try {
           engine = createRegimeEngine(exchange, fundPair, fundConfig, createEngineCallbacks(exchange, fundPair));

@@ -601,8 +601,11 @@ const createMarketDataService = (exchange, pair) => {
     try {
       fillLedger = createFillLedger(exchange, productId, resolvedPair);
     } catch (err) {
+      // Log full detail (absolute path + parser error) server-side; return
+      // a sanitized message to the IPC client (regime:stop relays this
+      // back to the operator) so filesystem internals stay in engine logs.
       console.log(`⚠️ [${exchange}] Market data service: Fill ledger init failed: ${err.message}`);
-      return { success: false, error: `Fill ledger init failed: ${err.message}` };
+      return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
     }
 
     const adapter = getActiveAdapter();

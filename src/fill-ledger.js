@@ -160,22 +160,36 @@ const createFillLedger = (exchange, productId, pair) => {
     // accept `{tradeId:"t1", cycleId:{}}` and we'd crash mid-load AFTER
     // resetCaches has wiped the live ledger — re-introducing the data-loss
     // mode the pre-validation is meant to prevent.
+    // Fields required by aggregateFills/rebuildPositionFromFills are
+    // validated as REQUIRED (not "when present"): a row missing side, size,
+    // quoteAmount, netFee, or timestamp would otherwise produce NaN totals
+    // downstream and silently corrupt position / P&L state, defeating the
+    // purpose of this guard. ingestFill always populates every required
+    // field, so a missing field on disk indicates hand-editing or actual
+    // corruption — exactly what we want to reject.
+    const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
     for (const fill of data) {
       let invalidReason = null;
       if (!fill || typeof fill !== 'object') {
         invalidReason = 'non-object entry';
       } else if (typeof fill.tradeId !== 'string' || !fill.tradeId) {
         invalidReason = 'missing or non-string tradeId';
+      } else if (fill.side !== 'buy' && fill.side !== 'sell') {
+        invalidReason = "side must be 'buy' or 'sell'";
+      } else if (!isFiniteNumber(fill.size)) {
+        invalidReason = 'size must be a finite number';
+      } else if (!isFiniteNumber(fill.quoteAmount)) {
+        invalidReason = 'quoteAmount must be a finite number';
+      } else if (!isFiniteNumber(fill.netFee)) {
+        invalidReason = 'netFee must be a finite number';
+      } else if (!isFiniteNumber(fill.timestamp)) {
+        invalidReason = 'timestamp must be a finite number';
+      } else if (fill.orderId != null && typeof fill.orderId !== 'string') {
+        // orderId is optional (legacy/manual entries may omit it; downstream
+        // truthiness-guards every read), but MUST be a string when present.
+        invalidReason = 'orderId must be a string when present';
       } else if (fill.cycleId != null && typeof fill.cycleId !== 'string') {
         invalidReason = 'cycleId must be a string when present';
-      } else if (fill.orderId != null && typeof fill.orderId !== 'string') {
-        invalidReason = 'orderId must be a string when present';
-      } else if (fill.side != null && fill.side !== 'buy' && fill.side !== 'sell') {
-        invalidReason = "side must be 'buy' or 'sell' when present";
-      } else if (fill.size != null && (typeof fill.size !== 'number' || !Number.isFinite(fill.size))) {
-        invalidReason = 'size must be a finite number when present';
-      } else if (fill.timestamp != null && (typeof fill.timestamp !== 'number' || !Number.isFinite(fill.timestamp))) {
-        invalidReason = 'timestamp must be a finite number when present';
       }
       if (invalidReason) {
         if (!isReload) {

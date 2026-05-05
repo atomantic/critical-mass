@@ -1207,6 +1207,29 @@ describe('Fill Ledger', () => {
     assert.throws(() => createTestLedger(exchange), /invalid entry .* on cold start/);
   });
 
+  it('createFillLedger throws on cold start when entries are missing fields required by aggregateFills (would silently NaN downstream)', () => {
+    // aggregateFills/rebuildPositionFromFills consume side, size,
+    // quoteAmount, netFee, timestamp directly. A row missing any of those
+    // would silently produce NaN totals after boot — exactly the corruption
+    // mode this guard is meant to prevent. ingestFill always populates
+    // every required field, so a missing field on disk indicates
+    // hand-editing or actual corruption.
+    const cases = [
+      { fill: { tradeId: 't1', orderId: 'o1', /* no side */ size: 0.4, quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /side must be 'buy' or 'sell'/ },
+      { fill: { tradeId: 't1', orderId: 'o1', side: 'buy', /* no size */ quoteAmount: 40, netFee: 0, timestamp: Date.now() }, expect: /size must be a finite number/ },
+      { fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, /* no quoteAmount */ netFee: 0, timestamp: Date.now() }, expect: /quoteAmount must be a finite number/ },
+      { fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, quoteAmount: 40, /* no netFee */ timestamp: Date.now() }, expect: /netFee must be a finite number/ },
+      { fill: { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, quoteAmount: 40, netFee: 0 /* no timestamp */ }, expect: /timestamp must be a finite number/ },
+    ];
+    for (const { fill, expect } of cases) {
+      const exchange = `test-cold-start-missing-${fill.side || 'no-side'}-${fill.size != null ? 'has-size' : 'no-size'}-${fill.quoteAmount != null ? 'qa' : 'noqa'}-${fill.netFee != null ? 'nf' : 'nonf'}-${fill.timestamp != null ? 'ts' : 'nots'}`;
+      const dir = path.join(tmpDir, exchange, 'default');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([fill]));
+      assert.throws(() => createTestLedger(exchange), expect);
+    }
+  });
+
   it('createFillLedger throws on cold start when an entry has a non-string cycleId (would crash .match() mid-load)', () => {
     // The load body calls `fill.cycleId.match(/^cycle-(\d+)$/)` — if
     // cycleId is an object/non-string, that throws AFTER resetCaches has
@@ -1216,7 +1239,7 @@ describe('Fill Ledger', () => {
     const dir = path.join(tmpDir, exchange, 'default');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'fill-ledger.json'), JSON.stringify([
-      { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, timestamp: Date.now(), cycleId: {} },
+      { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now(), cycleId: {} },
     ]));
 
     assert.throws(() => createTestLedger(exchange), /cycleId must be a string/);
@@ -1241,7 +1264,7 @@ describe('Fill Ledger', () => {
     // Operator edits in a malformed entry mid-run. SIGUSR1 reload must NOT
     // wipe the live ledger — must log and preserve.
     fs.writeFileSync(filePath, JSON.stringify([
-      { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, timestamp: Date.now(), cycleId: {} },
+      { tradeId: 't1', orderId: 'o1', side: 'buy', size: 0.4, price: 100, quoteAmount: 40, netFee: 0, timestamp: Date.now(), cycleId: {} },
     ]));
     assert.doesNotThrow(() => ledger.load());
     assert.equal(ledger.getFillCount(), fillsBefore,

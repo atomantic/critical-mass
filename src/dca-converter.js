@@ -127,7 +127,12 @@ const executeConversion = (exchange) => {
   } catch (err) {
     setExchangeEnabled(exchange, true);
     log('ERROR', `❌ [${exchange}] Fill ledger init failed during conversion: ${err.message} — DCA engine re-enabled, conversion aborted`);
-    throw err;
+    // Throw a sanitized message: the IPC handler at coinbase-engine.js:
+    // regime:convert-dca surfaces this back to the client. Keeping the
+    // absolute ledger path / parser internals out of the API surface
+    // mirrors the regime:start sanitization. Full detail stays in the
+    // ERROR log above for the operator to investigate.
+    throw new Error(`Fill ledger init failed for ${exchange} during DCA conversion — see engine logs for details`);
   }
 
   // Ingest filled (completed) DCA orders as completed cycles
@@ -345,7 +350,9 @@ const mergeToRegime = (exchange) => {
   try {
     fillLedger = createFillLedger(exchange);
   } catch (err) {
-    throw new Error(`DCA merge: fill ledger init failed for ${exchange}: ${err.message}`);
+    log('ERROR', `❌ [${exchange}] Fill ledger init failed during DCA merge: ${err.message}`);
+    // Sanitized message — see executeConversion's catch above for rationale.
+    throw new Error(`Fill ledger init failed for ${exchange} during DCA merge — see engine logs for details`);
   }
 
   // Ingest filled (completed) DCA orders as completed cycle fills
