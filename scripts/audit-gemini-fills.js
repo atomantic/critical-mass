@@ -18,17 +18,14 @@ const fs = require('fs');
 const path = require('path');
 const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { resolveFundDataDir } = require('../src/migration');
+const { getBaseCurrency, getQuoteCurrency } = require('../src/config-utils');
 
 const { roundAsset, roundUSDC } = require('../src/volatility-utils');
 
-// ── Parse pair argument ────────────────────────────────────────
-
 const PAIR = (process.argv[2] || 'BTCUSD').toUpperCase();
 const SYMBOL = PAIR.toLowerCase();
-// Gemini pair format is always BASE+QUOTE concatenated (BTCUSD, ETHUSD, etc.)
-// Quote is always 3 chars on Gemini (USD); base is whatever remains.
-const QUOTE_CURRENCY = PAIR.slice(-3);
-const BASE_CURRENCY = PAIR.slice(0, PAIR.length - 3);
+const BASE_CURRENCY = getBaseCurrency(PAIR);
+const QUOTE_CURRENCY = getQuoteCurrency(PAIR);
 
 const adapter = createGeminiAdapter();
 
@@ -262,8 +259,10 @@ async function main() {
 
   // Exchange balance check
   try {
-    const assetBalance = await adapter.getAccountBalance(BASE_CURRENCY);
-    const quoteBalance = await adapter.getAccountBalance(QUOTE_CURRENCY);
+    const [assetBalance, quoteBalance] = await Promise.all([
+      adapter.getAccountBalance(BASE_CURRENCY),
+      adapter.getAccountBalance(QUOTE_CURRENCY),
+    ]);
     console.log(`\n  Exchange ${BASE_CURRENCY} balance: ${assetBalance.total} (available: ${assetBalance.available}, hold: ${assetBalance.hold})`);
     console.log(`  Exchange ${QUOTE_CURRENCY} balance: ${quoteBalance.total} (available: ${quoteBalance.available}, hold: ${quoteBalance.hold})`);
     // Tracked includes both body assetQty and reserves (realizedAssetPnL holdback)
