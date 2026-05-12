@@ -38,7 +38,7 @@
   "type": "commonjs",
   "dependencies": {
     "express": "5.2.1",
-    "fast-xml-parser": "5.7.1",
+    "fast-xml-parser": "5.7.3",
     "jsonwebtoken": "9.0.3",
     "portos-ai-toolkit": "0.8.1",
     "socket.io": "4.8.3",
