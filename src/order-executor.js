@@ -391,6 +391,29 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
+   * Settle a cancelled order detected via polling. If it had any partial
+   * fills, route them through onFillDetected so the regime engine ingests
+   * them before we drop the order from tracking (Gemini has no order-events
+   * WS backstop). Uses partialFillTracker's high-water mark when the
+   * cancel-status response doesn't carry cumulative filledSize.
+   * @param {string} orderId
+   * @param {Object} order Pending order entry (provides type, placedAt)
+   * @param {Object} status Adapter getOrder result
+   * @param {string} context Log prefix label ('Stale check', 'Refresh', 'Fill check')
+   */
+  const handleCancelledOrder = (orderId, order, status, context) => {
+    const trackedPartial = partialFillTracker.get(orderId) || 0;
+    const filledSize = status.filledSize || trackedPartial;
+    console.log(`⏰ [${exchange}] ${context} found cancelled ${order.type} order ${orderId}${filledSize > 0 ? ` (with ${filledSize} partial fill)` : ''}`);
+    if (filledSize > 0 && callbacks.onFillDetected) {
+      callbacks.onFillDetected(orderId, { ...status, filledSize, placedAt: order.placedAt, isPartialFill: true });
+    }
+    pendingOrders.delete(orderId);
+    partialFillTracker.delete(orderId);
+    if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
+  };
+
+  /**
    * Schedule stale order timeout for entry order
    * Uses orderStaleMs * staleTimeoutMultiplier for regime-aware timeout
    * @param {string} orderId - Order ID to check
@@ -417,16 +440,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
               callbacks.onFillDetected(orderId, { ...status, placedAt });
             }
           } else if (normalizedStatus === 'CANCELLED') {
-            // Order was cancelled. If it had partial fills, route them through
-            // onFillDetected so the regime engine ingests them via handleOrderFill
-            // (Gemini has no order-events WS to provide a backstop).
-            console.log(`⏰ [${exchange}] Stale check found cancelled order ${orderId}${status.filledSize > 0 ? ` (with ${status.filledSize} partial fill)` : ''}`);
-            if (status.filledSize > 0 && callbacks.onFillDetected) {
-              const placedAt = order.placedAt;
-              callbacks.onFillDetected(orderId, { ...status, placedAt, isPartialFill: true });
-            }
-            pendingOrders.delete(orderId);
-            callbacks.onEntryCancelled?.(orderId);
+            handleCancelledOrder(orderId, order, status, 'Stale check');
           } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
             // Not filled at all, cancel
             console.log(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`);
@@ -474,15 +488,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           }
           refreshed++;
         } else if (normalizedStatus === 'CANCELLED') {
-          console.log(`⏰ [${exchange}] Refresh found cancelled ${order.type} order ${orderId}${status.filledSize > 0 ? ` (with ${status.filledSize} partial fill)` : ''}`);
-          // If the cancelled order had partial fills, route them through
-          // onFillDetected so the regime engine catches them up before clearing.
-          if (status.filledSize > 0 && callbacks.onFillDetected) {
-            const placedAt = order.placedAt;
-            callbacks.onFillDetected(orderId, { ...status, placedAt, isPartialFill: true });
-          }
-          pendingOrders.delete(orderId);
-          if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
+          handleCancelledOrder(orderId, order, status, 'Refresh');
           refreshed++;
         } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0 && !isPersistentType(order.type)) {
           // Only cancel stale reactive ENTRY orders — TP and ladder orders should persist until filled
@@ -536,20 +542,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           }
         }
       } else if (normalizedStatus === 'CANCELLED') {
-        console.log(`⏰ [${exchange}] Fill check found cancelled ${order.type} order ${orderId}${status.filledSize > 0 ? ` (with ${status.filledSize} partial fill)` : ''}`);
-        // If the cancelled order had partial fills (either tracked in
-        // partialFillTracker from a prior poll OR newly visible from status),
-        // route them through onFillDetected so the regime engine ingests them
-        // via handleOrderFill (Gemini has no order-events WS backstop).
-        const knownPartial = partialFillTracker.get(orderId) || 0;
-        const filledNow = status.filledSize || knownPartial;
-        if (filledNow > 0 && callbacks.onFillDetected) {
-          const placedAt = order.placedAt;
-          callbacks.onFillDetected(orderId, { ...status, filledSize: filledNow, placedAt, isPartialFill: true });
-        }
-        pendingOrders.delete(orderId);
-        partialFillTracker.delete(orderId);
-        if (order.type === 'entry' || order.type === 'ladder_entry') callbacks.onEntryCancelled?.(orderId);
+        handleCancelledOrder(orderId, order, status, 'Fill check');
         cancelled++;
       }
     }
