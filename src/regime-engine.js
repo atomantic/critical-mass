@@ -2735,15 +2735,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 };
                 await handleOrderFill(fillData);
               } else if (bodyStatus.status === 'CANCELLED' || bodyStatus.status === 'FAILED') {
-                // TP was cancelled/failed externally — clear and immediately re-place
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`);
-                orderExecutor.removeBodyTracking(body.tpOrderId);
-                body.tpOrderId = null;
-                body.tpPrice = 0;
-                body.assetOnOrder = 0;
-                saveLiveState();
-                await placeBodyTp(body);
+                // If the cancelled TP had partial fills, route through handleOrderFill
+                // to ingest them and resize the body before placing a replacement.
+                // Without this, those fills are silently lost (Gemini has no order-events
+                // WS backstop, and the polling loop drops the order from pendingOrders
+                // once it sees CANCELLED).
+                if (bodyStatus.filledSize > 0) {
+                  console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} with ${bodyStatus.filledSize} partial fill — routing through handleOrderFill`);
+                  const fillData = {
+                    orderId: body.tpOrderId,
+                    side: 'sell',
+                    status: bodyStatus.status,
+                    filledSize: parseFloat(bodyStatus.filledSize || 0),
+                    filledValue: parseFloat(bodyStatus.filledValue || 0),
+                    averageFilledPrice: parseFloat(bodyStatus.averageFilledPrice || 0),
+                    isPartialFill: true,
+                  };
+                  await handleOrderFill(fillData);
+                } else {
+                  // No partials, simple clear-and-replace
+                  console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`);
+                  orderExecutor.removeBodyTracking(body.tpOrderId);
+                  body.tpOrderId = null;
+                  body.tpPrice = 0;
+                  body.assetOnOrder = 0;
+                  saveLiveState();
+                  await placeBodyTp(body);
+                }
               } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING') {
                 // Check if TP covers adequate portion of body (stale-size detection)
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
@@ -3697,24 +3716,35 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // Set up live mode fill detection callback (backup for when WebSocket misses fills)
   if (!isDryRun) {
     liveCallbacks.onFillDetected = async (orderId, status) => {
-      if (recentlyProcessedFills.has(orderId)) {
-        console.log(`⚠️ [${exchange}] Duplicate fill callback for ${orderId}, skipping`);
+      // Partial-fill detection from polling reuses this callback. Dedup
+      // on the (orderId, filledSize) tuple so a partial fill that grows
+      // (e.g. 0.02 → 0.05 → 0.08) is processed once per advance instead
+      // of being swallowed by orderId-only dedup. Terminal full-fill
+      // callbacks keep orderId-only dedup since filledSize is final.
+      const dedupKey = status.isPartialFill
+        ? `${orderId}:${(status.filledSize || 0).toFixed(8)}`
+        : orderId;
+      if (recentlyProcessedFills.has(dedupKey)) {
+        console.log(`⚠️ [${exchange}] Duplicate fill callback for ${dedupKey}, skipping`);
         return;
       }
-      recentlyProcessedFills.add(orderId);
-      const t2 = setTimeout(() => { recentlyProcessedFills.delete(orderId); ttlTimers.delete(t2); }, 60000);
+      recentlyProcessedFills.add(dedupKey);
+      const t2 = setTimeout(() => { recentlyProcessedFills.delete(dedupKey); ttlTimers.delete(t2); }, 60000);
       ttlTimers.add(t2);
-      console.log(`🔄 [${exchange}] Processing fill detected via polling: ${orderId} side=${status.side}`);
-      // Convert status to the format handleOrderFill expects
+      console.log(`🔄 [${exchange}] Processing fill detected via polling: ${orderId} side=${status.side}${status.isPartialFill ? ' [PARTIAL]' : ''}`);
+      // Convert status to the format handleOrderFill expects. isPartialFill
+      // must propagate so handleOrderFill's cancelPartialFillOrder guard
+      // (and partial-fill branch dedup) fires for polling-detected partials.
       const fillData = {
         orderId,
         side: status.side,
-        status: 'FILLED',
+        status: status.status || 'FILLED',
         filledSize: status.filledSize,
         filledValue: status.filledValue,
         averageFilledPrice: status.averageFilledPrice,
         totalFees: status.totalFees,
         placedAt: status.placedAt, // Passed from order executor for fill time tracking
+        isPartialFill: status.isPartialFill === true,
       };
       await handleOrderFill(fillData);
     };
