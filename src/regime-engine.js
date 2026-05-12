@@ -47,6 +47,41 @@ const fmtPrice = (p) => {
 };
 
 /**
+ * Cancel a sell TP order that was detected as partially filled by polling.
+ *
+ * The partial-fill branch in handleOrderFill reduces the body and places a
+ * replacement TP, but removeBodyTracking() also drops the orderId from
+ * pendingOrders so polling no longer watches it. Without cancelling the
+ * original order on the exchange first, additional fills can land on it
+ * and are silently lost from the ledger: Gemini has no order-events WS
+ * backstop, and on Coinbase the WS would still ingest fills but the body
+ * record no longer references that orderId so body-level accounting
+ * drifts.
+ *
+ * Idempotent on already-terminal orders: if the order fully-filled in the
+ * race between poll and cancel, adapter.cancelOrder returns success=false
+ * and we log a notice; the caller then proceeds with fill ingestion via
+ * getOrderFills, which will see the additional fills now that the order
+ * is frozen.
+ *
+ * @param {{adapter: {cancelOrder: Function}, exchange: string, log?: Function}} deps
+ * @param {string} orderId
+ * @returns {Promise<{cancelled: boolean, error?: Error}>}
+ */
+const cancelPartialFillOrder = async (deps, orderId) => {
+  const { adapter, exchange, log = console.log } = deps;
+  try {
+    const result = await adapter.cancelOrder(orderId);
+    if (result?.success) return { cancelled: true };
+    log(`⚠️ [${exchange}] cancelOrder did not confirm for partial TP ${orderId} — likely already terminal; proceeding with fill ingest`);
+    return { cancelled: false };
+  } catch (err) {
+    log(`⚠️ [${exchange}] cancelOrder failed for partial TP ${orderId}: ${err.message} — proceeding; old order may keep filling on exchange`);
+    return { cancelled: false, error: err };
+  }
+};
+
+/**
  * Build the dashboard pendingOrders payload: enrich the executor's tracked
  * orders with body/cost-basis metadata, then union any body TPs the executor
  * doesn't track in-memory (after engine stop, or pre-reconcile after start).
@@ -1898,6 +1933,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {Object} fillData - Fill data
    */
   const handleOrderFill = async (fillData) => {
+    // Cancel the original order when polling detected a partial fill, so
+    // additional fills can't leak onto the exchange while we resize the
+    // body and place a replacement TP. See cancelPartialFillOrder doc.
+    // The subsequent getOrderFills call sees the final frozen set of
+    // fills (ingestFill is idempotent by tradeId); if the order fully
+    // filled in the cancel race, soldRatio reflects that and the code
+    // falls through to the full-fill branch.
+    if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
+      await cancelPartialFillOrder({ adapter, exchange }, fillData.orderId);
+    }
+
     // Get detailed fills
     let rawFills = await adapter.getOrderFills(fillData.orderId);
 
@@ -4470,4 +4516,6 @@ module.exports = {
   createRegimeEngine,
   createInitialMarketState,
   createInitialPositionState,
+  // Exported for unit testing
+  cancelPartialFillOrder,
 };
