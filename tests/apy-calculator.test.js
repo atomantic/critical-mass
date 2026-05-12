@@ -103,7 +103,7 @@ describe('calculateApyMetrics', () => {
     pos.engineStartTime = Date.now() - 5 * MS_PER_DAY;
     pos.realizedPnL = 50;        // $50 USDC
     pos.realizedAssetPnL = 0.001;  // 0.001 BTC
-    pos.initialCapital = 10000;
+    pos.depositedCapital = 10000;  // explicit principal so denom is deterministic
     pos.cyclesCompleted = 10;
 
     const market = baseMarketState();
@@ -116,7 +116,7 @@ describe('calculateApyMetrics', () => {
     // Total liquid: $50 + $100 = $150
     assert.equal(result.totalLiquidValue, 150);
     assert.equal(result.totalReturn, 150);
-    // Percent of initial capital
+    // Percent of principal
     assert.equal(result.totalLiquidValuePercent, 1.5); // 150/10000 * 100 = 1.5%
     assert.equal(result.totalReturnPercent, 1.5);
   });
@@ -256,32 +256,32 @@ describe('calculateApyMetrics', () => {
   // --------------------------------------------------------------------------
   // Compound APY calculation
   // --------------------------------------------------------------------------
-  it('calculates compound APY correctly for known daily return', () => {
-    // 1% daily return over 10 days on $10000 capital
+  it('calculates compound APY correctly for known total return', () => {
+    // 10% total return over 10 days on $10000 principal
     const pos = basePositionState();
     pos.engineStartTime = Date.now() - 10 * MS_PER_DAY;
-    pos.realizedPnL = 1000; // 10% total = 1% per day
-    pos.initialCapital = 10000;
+    pos.realizedPnL = 1000;
+    pos.depositedCapital = 10000;  // explicit principal so denom is deterministic
     pos.cyclesCompleted = 100;
 
     const result = calculateApyMetrics(pos, baseConfig(), baseMarketState());
 
-    // dailyReturn ~1%, compound APY = (1.01^365 - 1) * 100 = ~3678%
+    // Period-compound: APY = (1 + r)^(1/t) − 1 = (1.10)^(365/10) − 1 ≈ 3143%
     assert.ok(result.estimatedApy > 3000, `APY should be > 3000%: ${result.estimatedApy}`);
     assert.ok(result.estimatedApy < 4000, `APY should be < 4000%: ${result.estimatedApy}`);
   });
 
   it('caps daily return decimal at 10% to prevent extreme APY', () => {
-    // 50% daily return (extreme) - dailyReturnDecimal is capped at 0.1
+    // 50% return in 1 day — period compound of (1.50)^365 dwarfs the 99999 cap
     const pos = basePositionState();
     pos.engineStartTime = Date.now() - 1 * MS_PER_DAY;
-    pos.realizedPnL = 5000; // 50% return in 1 day
-    pos.initialCapital = 10000;
+    pos.realizedPnL = 5000;
+    pos.depositedCapital = 10000;
     pos.cyclesCompleted = 10;
 
     const result = calculateApyMetrics(pos, baseConfig(), baseMarketState());
 
-    // dailyReturnDecimal capped at 0.1, APY = (1.1^365 - 1) * 100, also capped at 99999
+    // APY is clamped at 99999
     assert.ok(result.estimatedApy <= 99999, `APY should be capped at 99999: ${result.estimatedApy}`);
   });
 
