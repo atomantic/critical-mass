@@ -603,6 +603,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [presets, setPresets] = useState(null)
   const [rollUpConfirm, setRollUpConfirm] = useState(null)
   const [rollingUp, setRollingUp] = useState(false)
+  const [collapseAllConfirm, setCollapseAllConfirm] = useState(false)
+  const [collapsingAll, setCollapsingAll] = useState(false)
   const [tpEditModal, setTpEditModal] = useState(null) // { bodyId, currentTpPct, currentPrice, avgPrice, bodyLabel, inputValue, priceValue, mode: 'pct'|'price' }
   const [settingTp, setSettingTp] = useState(false)
   const [fillSearchId, setFillSearchId] = useState('')
@@ -856,6 +858,26 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       setSocketStatus(data.status)
       // Re-fetch fills so buy order annotations (bodyId, sellOrderId) reflect the merge
       fetchFills()
+    }
+  }
+
+  // Collapse every celestial body into one (cancels all TPs, places one combined TP)
+  const handleCollapseAll = async () => {
+    setCollapsingAll(true)
+    const res = await fetch(`/api/${exchange}/regime/rollup-all${pairQuery}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
+    setCollapsingAll(false)
+    setCollapseAllConfirm(false)
+    if (data.success) {
+      addToast({ type: 'success', title: 'Collapse complete', message: data.message || 'Bodies merged' })
+      if (data.status) setSocketStatus(data.status)
+      fetchFills()
+    } else {
+      addToast({ type: 'error', title: 'Collapse failed', message: data.message || data.error || 'Unknown error' })
+      if (data.status) setSocketStatus(data.status)
     }
   }
 
@@ -2102,6 +2124,16 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder → Reactive'}
                   </button>
                 )}
+                {status?.isRunning && (status?.celestial?.bodies?.length || 0) >= 2 && (
+                  <button
+                    onClick={() => setCollapseAllConfirm(true)}
+                    disabled={collapsingAll}
+                    title="Cancel all body TP orders, combine into one body, place a single TP"
+                    className="px-2 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded transition-colors disabled:opacity-50"
+                  >
+                    {collapsingAll ? 'Collapsing…' : `Collapse All (${status.celestial.bodies.length})`}
+                  </button>
+                )}
                 {pendingOrdersList.length > 0 && (
                   <input
                     type="text"
@@ -3194,6 +3226,37 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
           </div>
         </div>
         </>
+      )}
+
+      {/* Collapse-all confirmation dialog */}
+      {collapseAllConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !collapsingAll && setCollapseAllConfirm(false)}>
+          <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white text-lg font-medium mb-3">Collapse All Bodies</h3>
+            <p className="text-gray-300 text-sm mb-4">
+              Cancel <span className="text-amber-300 font-medium">{status?.celestial?.bodies?.length || 0}</span> body TP orders, combine all buys into a single body, and place one new TP order.
+            </p>
+            <p className="text-gray-500 text-xs mb-4">
+              Aborts if any TP has a partial fill. Final TP% is capped at the highest body's pre-merge TP%, so the combined sell price can only move down.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                onClick={() => setCollapseAllConfirm(false)}
+                disabled={collapsingAll}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-amber-600 hover:bg-amber-500 rounded transition-colors disabled:opacity-50"
+                onClick={handleCollapseAll}
+                disabled={collapsingAll}
+              >
+                {collapsingAll ? 'Collapsing…' : 'Collapse All'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Roll-up confirmation dialog */}

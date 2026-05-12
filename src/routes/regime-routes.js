@@ -309,6 +309,14 @@ module.exports = (app, deps) => {
     res.json(result);
   });
 
+  app.post('/api/:exchange/regime/rollup-all', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getPair(req);
+    const result = await getIPC(exchange).request('regime:rollup-all', {}, exchange, pair).catch(engineError);
+    if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
   app.post('/api/:exchange/regime/set-body-tp', async (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);

@@ -4303,6 +4303,48 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Collapse every celestial body into a single body with one TP order.
+   * Iteratively rolls up the lowest-TP body into the next-highest using
+   * manualMergeBody until only one body remains.
+   * @returns {Promise<{success: boolean, message: string, mergedCount?: number, finalBody?: Object}>}
+   */
+  const rollupAllBodies = async () => {
+    if (!isRunning) return { success: false, message: 'Engine not running' };
+    const startCount = (positionState.celestialBodies || []).length;
+    if (startCount < 2) {
+      return { success: false, message: `Need at least 2 bodies to collapse, found ${startCount}` };
+    }
+
+    console.log(`🔗 [${exchange}] Collapse-all triggered: ${startCount} bodies → 1`);
+
+    let mergedCount = 0;
+    let lastResult = null;
+    // Safety bound: each iteration removes one body, so we can't need more than startCount-1
+    for (let i = 0; i < startCount - 1; i++) {
+      const bodies = positionState.celestialBodies || [];
+      if (bodies.length < 2) break;
+      const lowest = [...bodies].sort((a, b) => (a.tpPrice || 0) - (b.tpPrice || 0))[0];
+      const result = await manualMergeBody(lowest.id);
+      if (!result.success) {
+        return {
+          success: false,
+          message: `Collapse aborted after ${mergedCount} merges: ${result.message}`,
+          mergedCount,
+        };
+      }
+      mergedCount++;
+      lastResult = result;
+    }
+
+    return {
+      success: true,
+      message: `Collapsed ${startCount} bodies into 1 (${mergedCount} merges)`,
+      mergedCount,
+      finalBody: lastResult?.mergedBody || null,
+    };
+  };
+
+  /**
    * Manually set the TP% for a specific celestial body.
    * Cancels the existing TP, then re-places it at the specified percentage above avgPrice.
    * The override is subject to the fee floor (cannot be set so low it loses money).
@@ -4610,6 +4652,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     getFillStats,
     forceResumeDrawdown,
     manualMergeBody,
+    rollupAllBodies,
     setBodyTpPercent,
     setBodyTpPrice,
     rebuildTP,
