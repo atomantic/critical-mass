@@ -175,6 +175,11 @@ describe('createLongTermCandleStore', () => {
   });
 
   it('getStats() reports cache health buckets', async () => {
+    // Each sub-stage clears the disk cache so the next store starts fresh.
+    // Without this, dedupe-by-timestamp can't merge candles across stages
+    // because dailyCandle() calls Date.now() at invocation time, so
+    // timestamps shift by milliseconds between adapter arrays.
+
     const adapter = { getCandles: async () => [] };
     const store = createLongTermCandleStore(TEST_EXCHANGE, adapter, TEST_PRODUCT, { lookbackDays: 100 });
 
@@ -184,6 +189,7 @@ describe('createLongTermCandleStore', () => {
     assert.equal(stats.coveragePct, 0);
 
     // sparse: <30%
+    cleanup();
     const sparse = Array.from({ length: 20 }, (_, i) => dailyCandle(19 - i, 100));
     const adapter2 = { getCandles: async () => sparse };
     const store2 = createLongTermCandleStore(TEST_EXCHANGE, adapter2, TEST_PRODUCT, { lookbackDays: 100 });
@@ -191,6 +197,7 @@ describe('createLongTermCandleStore', () => {
     assert.equal(store2.getStats().health, 'sparse');
 
     // partial: 30%-80%
+    cleanup();
     const partial = Array.from({ length: 60 }, (_, i) => dailyCandle(59 - i, 100));
     const adapter3 = { getCandles: async () => partial };
     const store3 = createLongTermCandleStore(TEST_EXCHANGE, adapter3, TEST_PRODUCT, { lookbackDays: 100 });
@@ -198,6 +205,7 @@ describe('createLongTermCandleStore', () => {
     assert.equal(store3.getStats().health, 'partial');
 
     // full: ≥80%
+    cleanup();
     const full = Array.from({ length: 100 }, (_, i) => dailyCandle(99 - i, 100));
     const adapter4 = { getCandles: async () => full };
     const store4 = createLongTermCandleStore(TEST_EXCHANGE, adapter4, TEST_PRODUCT, { lookbackDays: 100 });
