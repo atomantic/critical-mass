@@ -2,6 +2,14 @@
 
 ## Added
 
+- `docs/pnl-architecture.md` — comprehensive P&L architecture reference: single source of truth, regression catalog R1–R7 with cause/fix/don't, recovery playbook, and 11-item review-checklist invariants. Read this before changing anything that touches `realizedPnL`/`realizedAssetPnL`/`closed-trades.json`/`fill-ledger.json`.
+- `position.heldAssetCostBasis` — FIFO cost basis of currently-held BTC, persisted on regime-state and re-derived in offline-status paths. Enables accurate `unrealizedReturn = held_qty × current_price − heldAssetCostBasis` in APY metrics.
+- APY return decomposition — `realizedReturn`, `unrealizedReturn`, `totalReturn` (+ matching percentages) split out from the old conflated `totalLiquidValue` field.
+- `computeFifoRealized()` now returns `uncoveredSellQty` (diagnostic) and `remainingLotCost`/`remainingLotQty` (for unrealized cost basis).
+- Exchange trade history fetchers: `scripts/fetch-coinbase-trades.js` and `scripts/fetch-cryptocom-trades.js` — paginated full-history pulls with cursor/time-window pagination.
+- Cryptocom rectification toolkit: `cryptocom-rectify-from-exchange.js` (rebuild ledger + state from exchange truth), `diff-cryptocom-ledger.js`, `cryptocom-resolve-orphans.js` (FIFO-pair orphan buys/sells), `cryptocom-link-buys-to-sells.js`, `cryptocom-flag-orphan-sells.js`.
+- Coinbase manual-order cleanup: `scripts/coinbase-remove-manual-1btc.js` — drops the 1 BTC manual triplet (1d90f021/ccbca736/d2147728) that wasn't bot-managed and was inflating FIFO reserves by 0.432 BTC.
+
 - Fill sync API (`POST /api/:exchange/regime/sync-fills`) — fetches all trades from exchange, compares with local fill ledger, and ingests any missing fills; supports Gemini and Coinbase
 - Sync Fills button on Open Orders card — always-visible UI control to trigger exchange-to-ledger reconciliation with result banner
 - `adapter.getAllTrades(symbol, sinceTimestampMs)` method on Gemini adapter — paginated trade history fetch
@@ -45,6 +53,16 @@
 
 ## Changed
 
+- `position.realizedPnL` and `position.realizedAssetPnL` are now ALWAYS derived from FIFO over the fill ledger via `getDerivedRealizedPnL()`. The old `closedCount > 0 ? closedTrades.getTotalPnL() : fifo` branch is removed — closed-trades is an audit log only. This is the single-source-of-truth invariant from `docs/pnl-architecture.md` R3.
+- `closedTrades.migrateFromFills()` runs unconditionally at engine startup (no `trades.length === 0` gate); idempotent via `record()` dedup. Self-heals when `closed-trades.json` is cleared to `[]` or partially-repopulated post-rectification.
+- APY return percentages use `depositedCapital` as denominator (not `initialCapital`/`maxUsdcDeployed`). For coinbase that's $110K vs $157K — fixes a 30% under-statement of true return rate.
+- APY uses time-weighted compounding `(1 + totalReturn)^(1/years) − 1`, not the old `(1 + dailyRate)^365` form which ballooned at any high local rate (coinbase APY 1397% → 134%, cryptocom 1397% → 38%).
+- `totalReturn = realizedReturn + unrealizedReturn`, where unrealized is `held_qty × current_price − heldAssetCostBasis` (FIFO cost). Replaces the old `totalLiquidValue = realizedPnL + asset_market_value` which double-counted reserves' market value as return.
+- DCA dashboard summary endpoint (`/api/:exchange/summary`) now reads from `regime-state.json` + `fill-ledger.json` instead of frozen DCA-era `state.json` (3+ months stale post-migration) and `transactions.tsv` (9 lines total). Maps regime fields onto the legacy DCA response shape so `Dashboard.jsx` keeps rendering unchanged.
+- Stopped-engine regime status path (`buildOfflineStatus` + `coinbase-engine.js` IPC handler) re-derives FIFO from the ledger so dashboards show fresh numbers even when the regime engine isn't actively refreshing state.
+- DCA→regime migration (`src/dca-converter.js`) no longer seeds `realizedPnL`/`realizedAssetPnL` from cycle recalc + assetReserves — let FIFO derive them from the migrated fills (aligns with `docs/pnl-architecture.md` invariants 1 & 2).
+- RegimeDashboard "Reserves" line displays `position.realizedAssetPnL` (accumulated holdback) instead of `totalAsset − assetOnOrder` (in-body dust). Filled Orders summary reads `position.realizedPnL` instead of summing per-cycle PnL — cycle-local PnL diverges from FIFO when sells span cycles.
+
 - All npm dependencies version-pinned (no `^` ranges) to prevent supply chain attacks from auto-upgrading
 - `.npmrc` added with `ignore-scripts=true` to block postinstall/lifecycle scripts from dependencies by default
 - Celestial visuals — removed tron-style wireframe/geometric rings from black hole, galaxy, and nebula; enhanced galaxy with denser spiral arms (3×800 particles), Gaussian spread, diffuse dust layer, and layered disc glows
@@ -80,6 +98,11 @@
 - Engine IPC ports reassigned in `ecosystem.config.cjs` (Coinbase 5570→5565, Gemini 5571→5566, Crypto.com 5574→5567) to consolidate into a contiguous 5563–5567 range
 
 ## Fixed
+
+- **R6 — FIFO inflation from uncovered sells.** `computeFifoRealized()` silently inflated `remainingAssetQty` when a sell had no prior buy lots to consume (manual orders mixed with bot orders, restored-from-recovery sells, etc). The lot queue stayed intact and the full proceeds counted as profit. Fix: derive `remainingAssetQty` from `totalBuyQty − totalSellQty`, prorate `realizedPnL` by covered fraction. Coinbase BTC reserves dropped from 2.486 → 2.054 BTC (then 1.054 after removing the manual triplet); the 0.432 BTC inflation came from a single 1 BTC manual sell on 2026-02-08 that consumed only 0.568 BTC of bot-tracked buys.
+- **R7 — APY math errors.** Return % used `initialCapital` (budget cap) not `depositedCapital` (deposit). `totalLiquidValue` double-counted held assets at market value as "return" instead of subtracting cost basis. APY compounded linearly-extrapolated daily rate via `(1 + dailyPct)^365`. All three fixed in `src/apy-calculator.js`; numbers are now defensible (coinbase 76.7% APY at 158d, cryptocom 38% APY at 108d).
+- **R3 — closed-trades preferred over FIFO after clear.** `refreshRealizedFromFifo()` had `closedCount > 0 ? closedTrades.getTotalPnL() : fifo`. After a rectification cleared `closed-trades.json` to `[]`, new sells repopulated it partially, and the engine started using the partial sum as `realizedPnL` — the historical FIFO baseline silently vanished from displays. Now always FIFO.
+- Dead `updateRegimeStateAfterTP` function and its export removed — had a `state.realizedPnL += pnl` accumulator pattern (the same shape that caused R1) and was exported but never called. Removing it eliminates the latent regression risk.
 
 - `scripts/backfill-scorecard.js` was carrying stale 6-key indicator weights (`rsi: 0.25, stochastic: 0.20, macd: 0.20, bollinger: 0.15, vwap: 0.10, momentum: 0.10`), so re-running the backfill would have produced wrong adaptive-weight outputs once OBV / Williams %R / CCI were added. Script now imports the same `INDICATOR_WEIGHTS` constant as the live engine.
 

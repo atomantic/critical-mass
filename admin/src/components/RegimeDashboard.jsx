@@ -1699,18 +1699,19 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     const usdPnL = position.realizedPnL || 0
                     const assetPnL = position.realizedAssetPnL || 0
                     const assetUsd = assetPnL * (market.lastPrice || 0)
-                    const totalPnL = usdPnL + assetUsd
-                    const pct = apy.totalLiquidValuePercent
+                    // Percent should match the displayed USD figure: realized USD over what was actually deposited.
+                    // Don't conflate with held-asset value at current price (volatile, grows with BTC price).
+                    const denom = apy.depositedCapital || apy.originalCapital || apy.initialCapital || 0
+                    const pct = denom > 0 ? (usdPnL / denom) * 100 : 0
                     return <>
                       <div className="text-gray-500 truncate">Realized P&L {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
-                      <div className={`font-mono text-base ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {formatCurrency(totalPnL)}
+                      <div className={`font-mono text-base ${usdPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {formatCurrency(usdPnL)}
                       </div>
-                      <div className="text-white text-xs font-mono truncate">{formatCurrency(usdPnL)} USD</div>
                       {assetPnL > 0 && (
                         <div className="text-orange-400 text-xs font-mono">
-                          +{assetPnL.toFixed(8)} {asset}
-                          {assetUsd > 0 && ` (${formatCurrency(assetUsd)})`}
+                          <div className="truncate">Holdback: +{assetPnL.toFixed(8)} {asset}</div>
+                          {assetUsd > 0 && <div className="truncate">{formatCurrency(assetUsd)}</div>}
                         </div>
                       )}
                     </>
@@ -2852,12 +2853,17 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     return <div className="text-gray-500 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
                   }
 
-                  // Prefer closed trades summary for grand total (authoritative, matches Position card).
-                  // Fall back to client-side pnlMap, then sell group sum.
+                  // Prefer the position card's realizedPnL — that's the single source of truth
+                  // (FIFO over the full ledger, or closed-trades sum when populated). Per-cycle
+                  // sums from sellGroups can diverge because the in-cycle buy↔sell pairing
+                  // doesn't track the global FIFO cost basis (sells may consume buys from earlier
+                  // cycles). Fall back to sellGroups only if realizedPnL is unavailable.
                   const closedTradesSummary = status?.closedTradesSummary
-                  const totalPnl = closedTradesSummary?.totalPnl != null
-                    ? closedTradesSummary.totalPnl
-                    : (pnlMapTotal != null ? pnlMapTotal : sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0))
+                  const totalPnl = position.realizedPnL != null
+                    ? position.realizedPnL
+                    : (closedTradesSummary?.count > 0
+                        ? closedTradesSummary.totalPnl
+                        : (pnlMapTotal != null ? pnlMapTotal : sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)))
                   let totalHoldback = 0
 
                   // Shared sell + buy row renderer

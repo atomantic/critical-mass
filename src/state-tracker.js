@@ -812,35 +812,6 @@ const updateRegimeStateAfterEntry = (state, entryDetails) => {
   return state;
 };
 
-/**
- * Update regime position state after TP fill
- * @param {RegimePositionState} state - Current state
- * @param {Object} fillDetails - Fill details
- * @param {number} fillDetails.assetAmount - BTC sold
- * @param {number} fillDetails.proceeds - Net proceeds
- * @param {number} fillDetails.pnl - Realized P&L
- * @returns {RegimePositionState} Updated state
- */
-const updateRegimeStateAfterTP = (state, fillDetails) => {
-  const { pnl } = fillDetails;
-
-  state.realizedPnL += pnl;
-  state.cyclesCompleted += 1;
-
-  // Reset cycle
-  state.totalAsset = 0;
-  state.totalCostBasis = 0;
-  state.avgCostBasis = 0;
-  state.cycleBuys = 0;
-  state.activeTpOrderId = null;
-  state.lastTpPrice = 0;
-  state.anchorPrice = 0;
-  state.scalingDisabled = false;
-  state.scalingDisabledReason = null;
-
-  return state;
-};
-
 module.exports = {
   LIFECYCLE,
   loadState,
@@ -861,13 +832,15 @@ module.exports = {
   updateAfterFibSellFill,
   getFibonacciCycleInfo,
   // Regime state management
+  // (updateRegimeStateAfterTP was removed — used a `realizedPnL += pnl`
+  // accumulator pattern that's been replaced by FIFO derivation in
+  // refreshRealizedFromFifo. See docs/pnl-architecture.md R1.)
   getRegimeStateFile,
   createInitialRegimePositionState,
   createInitialRegimeState,
   loadRegimeState,
   saveRegimeState,
   updateRegimeStateAfterEntry,
-  updateRegimeStateAfterTP,
   // Atomic write utility (exposed for fill-ledger and testing)
   atomicWriteSync,
 };

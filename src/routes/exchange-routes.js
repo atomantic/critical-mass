@@ -361,62 +361,103 @@ module.exports = (app, deps) => {
     });
   });
 
-  // Get summary for an exchange/fund (?pair= optional)
+  // Get summary for an exchange/fund (?pair= optional).
+  // Reads from regime data (regime-state.json + fill-ledger.json) and exposes
+  // it in the legacy DCA shape so the main Dashboard.jsx keeps rendering. The
+  // legacy DCA state.json was frozen at the DCA→regime migration (Feb 2026)
+  // and has been silently 3+ months stale; everything below is rebuilt fresh.
   app.get('/api/:exchange/summary', (req, res) => {
     const { exchange } = req.params;
     const { pair, error } = validatePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
-    const state = stateTracker.loadState(config, exchange, pair);
-    const logFile = getLogFile(exchange);
-    const transactions = parseTSV(logFile);
 
-    const buys = transactions.filter(t => t.Type === 'BUY');
-    const sells = transactions.filter(t => t.Type === 'SELL_FILLED');
+    const { loadRegimeState } = require('../state-tracker');
+    const { createFillLedger } = require('../fill-ledger');
+    const regimeState = loadRegimeState(exchange, pair);
+    const position = regimeState.position || {};
+    const fillLedger = createFillLedger(exchange, config.productId, pair);
+    const allFills = fillLedger.getAllFills();
 
-    const totalBought = buys.reduce((sum, t) => sum + Math.abs(t['USDC Amount'] || 0), 0);
-    const totalSold = sells.reduce((sum, t) => sum + (t['USDC Amount'] || 0), 0);
-    const totalBTCBought = buys.reduce((sum, t) => sum + (t['BTC Amount'] || 0), 0);
-    const totalBTCSold = sells.reduce((sum, t) => sum + Math.abs(t['BTC Amount'] || 0), 0);
+    const buyFills = allFills.filter(f => f.side === 'buy');
+    const sellFills = allFills.filter(f => f.side === 'sell');
+    const totalBought = buyFills.reduce((s, f) => s + (f.quoteAmount || 0), 0);
+    const totalSold = sellFills.reduce((s, f) => s + (f.quoteAmount || 0), 0);
+    const totalAssetBought = buyFills.reduce((s, f) => s + (f.size || 0), 0);
+    const totalAssetSold = sellFills.reduce((s, f) => s + (f.size || 0), 0);
+    const totalFees = allFills.reduce((s, f) => s + (f.netFee || 0), 0);
 
-    const filledOrders = (state.orders || []).filter(o => o.status === 'filled');
-    const realizedProfit = filledOrders.reduce((sum, o) => {
-      const proceeds = o.netProceeds || (o.sellQuantity * (o.filledPrice || o.sellPrice));
-      const cost = o.buyCostBasis || (o.buyQuantity * o.buyPrice);
-      const costForSold = o.buyQuantity > 0 ? cost * (o.sellQuantity / o.buyQuantity) : 0;
-      return sum + (proceeds - costForSold);
-    }, 0);
+    // FIFO derivation matches the engine's source of truth.
+    const bodyAssetSum = (position.celestialBodies || []).reduce((s, b) => s + (b.assetQty || 0), 0);
+    const fifo = fillLedger.getDerivedRealizedPnL(bodyAssetSum);
 
-    const costBasis = calculateCostBasis(state, transactions);
-    const nextTrade = getNextTradeInfo(config, state);
+    // Cost basis breakdown derived from regime bodies (pending = on TP orders;
+    // reserves = accumulated holdback not currently in a body).
+    const bodies = position.celestialBodies || [];
+    const pendingCostBasis = bodies.reduce((s, b) => s + (b.costBasis || 0), 0);
+    const pendingAsset = bodies.reduce((s, b) => s + (b.assetQty || 0), 0);
+    const totalCostBasis = totalBought; // gross capital ever deployed on buys
+    const avgCostPerAsset = totalAssetBought > 0 ? totalCostBasis / totalAssetBought : 0;
+    // Reserves cost basis: their unit cost is approximately the FIFO avg of
+    // the remaining lots, but a simpler & robust value is the running avg cost
+    // applied to reserve qty. Acceptable for the dashboard's display purposes.
+    const reservesAsset = fifo.realizedAssetPnL;
+    const reservesCostBasis = reservesAsset * avgCostPerAsset;
+
+    // Map regime shape onto the legacy `state` shape Dashboard.jsx expects.
+    const state = {
+      usdcFundSize: position.depositedCapital || 0,
+      assetReserves: reservesAsset,
+      outstandingOrdersUSDC: bodies.reduce((s, b) => s + (b.assetQty || 0) * (b.tpPrice || 0), 0),
+      outstandingOrdersAsset: position.assetOnOrder || 0,
+      totalAllocated: position.depositedCapital || 0,
+      totalFees,
+      totalRebates: 0,
+      netFees: totalFees,
+      totalIntervalsRun: position.cyclesCompleted || 0,
+      orders: [], // legacy DCA-style orders; regime engine doesn't use this shape
+    };
 
     res.json({
       exchange,
       config,
       state,
       stats: {
-        totalBuys: buys.length,
-        totalSells: sells.length,
-        pendingOrders: (state.orders || []).filter(o => o.status === 'pending').length,
+        totalBuys: buyFills.length,
+        totalSells: sellFills.length,
+        pendingOrders: (position.pendingEntryOrders || []).length,
         totalBought,
         totalSold,
-        totalBTCBought,
-        totalBTCSold,
-        totalFees: state.totalFees || 0,
-        totalRebates: state.totalRebates || 0,
-        netFees: state.netFees || 0,
-        assetReserves: state.assetReserves || 0,
-        usdcFundSize: state.usdcFundSize || 0,
-        outstandingOrdersUSDC: state.outstandingOrdersUSDC || 0,
-        outstandingOrdersAsset: state.outstandingOrdersAsset || 0,
-        allocationUsed: state.totalAllocated || 0,
-        allocationRemaining: (config.totalAllocation || 0) - (state.totalAllocated || 0),
-        intervalsRun: state.totalIntervalsRun || 0,
-        realizedProfit,
+        totalBTCBought: totalAssetBought,
+        totalBTCSold: totalAssetSold,
+        totalFees,
+        totalRebates: 0,
+        netFees: totalFees,
+        assetReserves: state.assetReserves,
+        usdcFundSize: state.usdcFundSize,
+        outstandingOrdersUSDC: state.outstandingOrdersUSDC,
+        outstandingOrdersAsset: state.outstandingOrdersAsset,
+        allocationUsed: state.totalAllocated,
+        allocationRemaining: (config.totalAllocation || state.totalAllocated || 0) - state.totalAllocated,
+        intervalsRun: state.totalIntervalsRun,
+        realizedProfit: fifo.realizedPnL,
+        // Diagnostic surface for the FIFO replay (see docs/pnl-architecture.md R6).
+        uncoveredSellQty: fifo.uncoveredSellQty || 0,
       },
-      costBasis,
-      nextTrade,
-      transactions: transactions.slice(-50),
+      costBasis: {
+        totalCostBasis,
+        totalAssetBought,
+        avgCostPerAsset,
+        reservesAsset,
+        reservesCostBasis,
+        reservesAvgCost: reservesAsset > 0 ? reservesCostBasis / reservesAsset : 0,
+        pendingAsset,
+        pendingCostBasis,
+        pendingAvgCost: pendingAsset > 0 ? pendingCostBasis / pendingAsset : 0,
+        orderBreakdown: [],
+      },
+      nextTrade: { nextRunTime: null, intervalsRemaining: 0, allocationRemaining: 0 },
+      transactions: [], // legacy DCA transaction log no longer maintained
     });
   });
 

@@ -98,14 +98,20 @@ const createClosedTrades = (exchange, pair) => {
   const getByCycleId = (cycleId) => trades.filter(t => t.cycleId === cycleId);
 
   /**
-   * One-time migration: build closed trades from existing fill ledger data.
-   * Groups buys and sells by bodyId, prorates buy cost to sell quantity.
-   * Only runs if no closed-trades.json exists.
+   * Backfill closed-trades from fill ledger.
+   *
+   * Idempotent: each generated entry is keyed by sellOrderId+qtySold and
+   * dedup'd via record(). Safe to call on every engine startup — it'll only
+   * add missing entries, leaving live engine-recorded entries untouched.
+   *
+   * This was originally a one-time migration gated on `trades.length === 0`,
+   * but that gate failed to self-heal post-rectification scenarios where
+   * closed-trades.json was cleared (or partially repopulated by post-rectify
+   * sells) while the ledger had a fuller history. Now we always run and rely
+   * on record()'s dedup.
    * @param {Object} fillLedger
    */
   const migrateFromFills = (fillLedger) => {
-    if (trades.length > 0) return; // Already have data
-
     const allFills = fillLedger.getAllFills();
     if (allFills.length === 0) return;
 

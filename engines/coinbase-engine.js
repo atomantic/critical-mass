@@ -322,6 +322,25 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
     const bodies = position?.celestialBodies || [];
     const celestial = celestialHierarchy.buildCelestialPayload(position, config);
 
+    // Re-derive FIFO over the ledger so realizedPnL / realizedAssetPnL /
+    // heldAssetCostBasis reflect the current ledger state — the persisted
+    // values can be stale (engine was stopped before bugfixes landed, or
+    // operator edits to the ledger happened between runs).
+    if (position) {
+      try {
+        const { createFillLedger } = require('../src/fill-ledger');
+        const productId = config.productId || resolvedPair;
+        const fl = createFillLedger(exchange, productId, resolvedPair);
+        const bodyAssetSum = bodies.reduce((s, b) => s + (b.assetQty || 0), 0);
+        const fifo = fl.getDerivedRealizedPnL(bodyAssetSum);
+        position.realizedPnL = fifo.realizedPnL;
+        position.realizedAssetPnL = fifo.realizedAssetPnL;
+        position.heldAssetCostBasis = fifo.remainingLotCost;
+      } catch (e) {
+        log('WARN', `[${fundLabel(exchange, resolvedPair)}] offline FIFO derivation failed: ${e.message}`);
+      }
+    }
+
     const { calculateApyMetrics } = require('../src/apy-calculator');
     const lastPrice = serviceStatus?.market?.lastPrice || 0;
     const apy = position ? calculateApyMetrics(position, config, { lastPrice }) : {};

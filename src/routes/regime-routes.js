@@ -69,6 +69,26 @@ const buildOfflineStatus = (exchange, pair) => {
   // merge with), so omitting apy would leave capital/APY panels blank.
   const lastPrice = lastPriceFromLedger(dataDir);
 
+  // Recompute FIFO-derived fields from the ledger so the dashboard shows
+  // correct numbers even when the engine is stopped (the engine refreshes
+  // these on every state save, but a stopped engine leaves stale values on
+  // disk — including pre-bugfix realizedPnL/realizedAssetPnL from before
+  // R3/R6 fixes landed).
+  try {
+    const { createFillLedger } = require('../fill-ledger');
+    const productId = config.productId || pair;
+    const fl = createFillLedger(exchange, productId, pair);
+    const bodyAssetSum = bodies.reduce((s, b) => s + (b.assetQty || 0), 0);
+    const fifo = fl.getDerivedRealizedPnL(bodyAssetSum);
+    position.realizedPnL = fifo.realizedPnL;
+    position.realizedAssetPnL = fifo.realizedAssetPnL;
+    position.heldAssetCostBasis = fifo.remainingLotCost;
+  } catch (e) {
+    // FIFO derivation is best-effort offline; if the ledger is missing or
+    // unreadable, fall back to whatever was persisted to regime-state.
+    log.warn(`[${exchange}/${pair}] offline FIFO derivation failed: ${e.message}`);
+  }
+
   return {
     isRunning: false,
     // Distinguish a real IPC outage from a clean operator stop. The dashboard
