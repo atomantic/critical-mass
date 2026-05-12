@@ -474,6 +474,14 @@ ipcServer.onRequest('regime:rollup-body', async (payload, exchange, pair) => {
   return { success: result.success, exchange, pair: resolvedPair, message: result.message, mergedBody: result.mergedBody || null, status: engine.getStatus() };
 });
 
+ipcServer.onRequest('regime:rollup-all', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
+  if (!engine) return { success: false, error: 'Regime engine not running' };
+  const result = await engine.rollupAllBodies();
+  return { success: result.success, exchange, pair: resolvedPair, message: result.message, mergedCount: result.mergedCount || 0, finalBody: result.finalBody || null, status: engine.getStatus() };
+});
+
 ipcServer.onRequest('regime:set-body-tp', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
