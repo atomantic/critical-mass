@@ -723,11 +723,49 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     }
 
-    // Check for celestial body TP orders that filled while offline
+    // Check for celestial body TP orders that filled or were cancelled while offline
     const offlineBodies = positionState.celestialBodies || [];
     for (const body of [...offlineBodies]) {
       if (body.tpOrderId && !openOrderIds.has(body.tpOrderId)) {
         const orderStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
+
+        // Cancelled-with-partials: Gemini's heartbeat timeout auto-cancels
+        // open orders when no engine is running. If our TP had partial fills
+        // before the auto-cancel, those fills must be ingested or the body
+        // state diverges from the exchange. Reconcile-on-interval (line ~2737)
+        // would eventually catch this, but only after reconcileIntervalMs;
+        // catching it here means it's caught up before any user-facing UI
+        // reads stale data.
+        if (orderStatus && (orderStatus.status === 'CANCELLED' || orderStatus.status === 'FAILED') && orderStatus.filledSize > 0) {
+          const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+          console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} ${orderStatus.status} while offline with ${orderStatus.filledSize} partial fill — routing through handleOrderFill`);
+          const fillData = {
+            orderId: body.tpOrderId,
+            side: 'sell',
+            status: orderStatus.status,
+            filledSize: parseFloat(orderStatus.filledSize || 0),
+            filledValue: parseFloat(orderStatus.filledValue || 0),
+            averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
+            isPartialFill: true,
+          };
+          await handleOrderFill(fillData);
+          continue;
+        }
+
+        // Cancelled-without-partials: clear the stale tpOrderId so the engine
+        // places a fresh TP on first tick. Without this, body.tpOrderId points
+        // at a dead order and placeBodyTp would skip (it gates on !tpOrderId).
+        if (orderStatus && (orderStatus.status === 'CANCELLED' || orderStatus.status === 'FAILED')) {
+          console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${orderStatus.status} while offline (no partials) — clearing for re-placement`);
+          if (orderExecutor.removeBodyTracking) {
+            orderExecutor.removeBodyTracking(body.tpOrderId);
+          }
+          body.tpOrderId = null;
+          body.tpPrice = 0;
+          body.assetOnOrder = 0;
+          continue;
+        }
+
         // Same FILLED-or-completion=100 pattern as the core TP path above.
         if (orderStatus && (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100)) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
@@ -2764,21 +2802,42 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   await placeBodyTp(body);
                 }
               } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING') {
-                // Check if TP covers adequate portion of body (stale-size detection)
-                const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                const { sellQty } = positionSizer.calculateTakeProfitSize(
-                  body.assetQty, body.avgPrice, body.tpPrice, tierCfg.holdbackScale
-                );
-                if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
-                  console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
-                  const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
-                  if (cancelResult.cancelled) {
-                    orderExecutor.removeBodyTracking(body.tpOrderId);
-                    body.tpOrderId = null;
-                    body.tpPrice = 0;
-                    body.assetOnOrder = 0;
-                    saveLiveState();
-                    await placeBodyTp(body);
+                // If the order has partial fills, route through handleOrderFill
+                // so PR #70's cancelPartialFillOrder catches them up and the
+                // partial-fill branch resizes the body to the actual sold
+                // amount. This handles the stale-size case implicitly (the
+                // replacement TP is sized to the new body.assetQty).
+                if (bodyStatus.filledSize > 0) {
+                  console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} has ${bodyStatus.filledSize} partial fill while OPEN — routing through handleOrderFill`);
+                  const fillData = {
+                    orderId: body.tpOrderId,
+                    side: 'sell',
+                    status: bodyStatus.status,
+                    filledSize: parseFloat(bodyStatus.filledSize || 0),
+                    filledValue: parseFloat(bodyStatus.filledValue || 0),
+                    averageFilledPrice: parseFloat(bodyStatus.averageFilledPrice || 0),
+                    isPartialFill: true,
+                  };
+                  await handleOrderFill(fillData);
+                } else {
+                  // No partials — pure stale-size detection (body was merged/modified
+                  // after the TP was placed, so the TP's tracked size no longer
+                  // matches what sellQty wants).
+                  const tierCfg = celestialHierarchy.getTierConfig(body.tier);
+                  const { sellQty } = positionSizer.calculateTakeProfitSize(
+                    body.assetQty, body.avgPrice, body.tpPrice, tierCfg.holdbackScale
+                  );
+                  if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
+                    console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
+                    const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
+                    if (cancelResult.cancelled) {
+                      orderExecutor.removeBodyTracking(body.tpOrderId);
+                      body.tpOrderId = null;
+                      body.tpPrice = 0;
+                      body.assetOnOrder = 0;
+                      saveLiveState();
+                      await placeBodyTp(body);
+                    }
                   }
                 }
               }
