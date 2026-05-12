@@ -1574,9 +1574,50 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         console.log(`🧹 [${exchange}] Cancelled ${orphanedEntries} orphan entry orders`);
       }
 
-      // Remove saved pending entries that are no longer open on the exchange
-      // (filled or cancelled while engine was offline)
       const allOpenIds = new Set(exchangeOpenOrders.map(o => o.orderId));
+
+      // Catch up fills for saved entries that became terminal during downtime.
+      // Without this, the purge below silently drops them and their fills
+      // never reach the ledger — the regime engine ends up unaware of buys
+      // that actually happened on the exchange. This is the failure mode
+      // that produced the 51-orphan-buy incident on Gemini ETHUSD (recovered
+      // 2026-05-12 via scripts/recover-gemini-ethusd-orphans.js).
+      //
+      // The for-loop above only iterates exchangeOpenOrders, so saved entries
+      // that already cleared (filled or cancelled-with-partials) on the
+      // exchange skip its partial-fill ingest paths.
+      const terminalSavedEntries = savedPendingEntries.filter(e => !allOpenIds.has(e.orderId));
+      let caughtUpEntries = 0;
+      for (const savedEntry of terminalSavedEntries) {
+        try {
+          const orderStatus = await adapter.getOrder(savedEntry.orderId).catch(() => null);
+          if (!orderStatus) continue;
+          const isFullFilled = orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100;
+          const partialSize = parseFloat(orderStatus.filledSize || 0);
+          if (!isFullFilled && partialSize <= 0) continue; // truly empty cancel, ok to purge
+          console.log(`📥 [${exchange}] Catching up offline entry ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`);
+          const fillData = {
+            orderId: savedEntry.orderId,
+            side: 'buy',
+            status: isFullFilled ? 'FILLED' : orderStatus.status,
+            filledSize: partialSize,
+            filledValue: parseFloat(orderStatus.filledValue || 0),
+            averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
+            placedAt: savedEntry.placedAt,
+            isPartialFill: !isFullFilled,
+          };
+          await handleOrderFill(fillData);
+          caughtUpEntries++;
+        } catch (err) {
+          console.log(`⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${err.message}`);
+        }
+      }
+      if (caughtUpEntries > 0) {
+        console.log(`📥 [${exchange}] Caught up ${caughtUpEntries} offline-terminal entries before purge`);
+      }
+
+      // Remove saved pending entries that are no longer open on the exchange
+      // (filled or cancelled while engine was offline — fills already ingested above)
       if (savedPendingEntries.length > 0) {
         positionState.pendingEntryOrders = savedPendingEntries.filter(e => allOpenIds.has(e.orderId));
         const purged = savedPendingEntries.length - positionState.pendingEntryOrders.length;
