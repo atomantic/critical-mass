@@ -1080,6 +1080,93 @@ const createFillLedger = (exchange, productId, pair) => {
   };
 
   /**
+   * FIFO replay over the entire fill ledger. Returns realized USD profit and
+   * the total qty of (buy − sell) remaining position.
+   *
+   * Uncovered-sell handling: if a sell qty exceeds what FIFO lots can cover
+   * at that moment (e.g. a manual sell of 1 BTC when bot only had 0.568 BTC
+   * tracked), we count only the COVERED portion in realizedPnL. The uncovered
+   * portion's proceeds are ignored — the bot can't claim profit on BTC it
+   * never bought. `remainingAssetQty` is derived from simple subtraction
+   * (total_buys − total_sells), making it robust to ordering artifacts: a
+   * physically-impossible "sell before buy" pattern (from manual orders mixed
+   * with bot orders) cannot inflate the apparent reserves any longer.
+   *
+   * See docs/pnl-architecture.md R6 for the incident this prevents.
+   * Side-effect-free — safe to call on every status emit and state save.
+   * @returns {{realizedPnL: number, remainingAssetQty: number, uncoveredSellQty: number}}
+   */
+  const computeFifoRealized = () => {
+    const allFills = Array.from(fills.values()).sort((a, b) => a.timestamp - b.timestamp);
+    let realizedPnL = 0;
+    let totalBuyQty = 0;
+    let totalSellQty = 0;
+    let uncoveredSellQty = 0;
+    const costLots = [];
+    for (const fill of allFills) {
+      if (fill.side === 'buy') {
+        totalBuyQty += fill.size || 0;
+        const cost = fill.quoteAmount + (fill.netFee || 0);
+        costLots.push({ qty: fill.size, unitCost: fill.size > 0 ? cost / fill.size : 0 });
+      } else if (fill.side === 'sell') {
+        const sellQty = fill.size || 0;
+        totalSellQty += sellQty;
+        const proceeds = fill.quoteAmount - (fill.netFee || 0);
+        let remain = sellQty;
+        let costBasis = 0;
+        while (remain > 1e-12 && costLots.length > 0) {
+          const lot = costLots[0];
+          const use = Math.min(remain, lot.qty);
+          costBasis += use * lot.unitCost;
+          lot.qty -= use;
+          remain -= use;
+          if (lot.qty <= 1e-12) costLots.shift();
+        }
+        // Count only the covered portion's proceeds — uncovered means the bot
+        // didn't own that asset at sell time, so no profit to claim.
+        const coveredQty = sellQty - remain;
+        const adjustedProceeds = sellQty > 0 ? proceeds * (coveredQty / sellQty) : 0;
+        realizedPnL += adjustedProceeds - costBasis;
+        if (remain > 1e-9) uncoveredSellQty += remain;
+      }
+    }
+    const remainingLotCost = costLots.reduce((s, l) => s + (l.qty * l.unitCost), 0);
+    const remainingLotQty = costLots.reduce((s, l) => s + l.qty, 0);
+    return {
+      realizedPnL: roundUSDC(realizedPnL),
+      remainingAssetQty: roundAsset(totalBuyQty - totalSellQty),
+      uncoveredSellQty: roundAsset(uncoveredSellQty),
+      // FIFO cost basis of the remaining (unsold) buy lots. Useful for
+      // unrealized P&L: held_qty × current_price − remainingLotCost.
+      // Note: when uncoveredSellQty > 0, remainingLotQty > true held qty
+      // because uncovered sells didn't reduce lots. Callers should prefer
+      // remainingAssetQty (the conservative buys−sells number) for qty.
+      remainingLotCost: roundUSDC(remainingLotCost),
+      remainingLotQty: roundAsset(remainingLotQty),
+    };
+  };
+
+  /**
+   * Source-of-truth derivation for position.realizedPnL and position.realizedAssetPnL.
+   * Caller passes the current active-position asset quantity (sum of body.assetQty);
+   * realizedAssetPnL returns the reserves portion only (remaining FIFO lots minus
+   * active position), so it doesn't double-count asset that's still in active bodies.
+   * @param {number} activePositionAsset Sum of active body.assetQty
+   * @returns {{realizedPnL: number, realizedAssetPnL: number}}
+   */
+  const getDerivedRealizedPnL = (activePositionAsset = 0) => {
+    const { realizedPnL, remainingAssetQty, uncoveredSellQty, remainingLotCost, remainingLotQty } = computeFifoRealized();
+    const reserves = Math.max(0, remainingAssetQty - (activePositionAsset || 0));
+    return {
+      realizedPnL,
+      realizedAssetPnL: roundAsset(reserves),
+      uncoveredSellQty,
+      remainingLotCost,
+      remainingLotQty,
+    };
+  };
+
+  /**
    * Get the count of unique buy orders in the current cycle
    * @returns {number} Unique buy order count
    */
@@ -1117,6 +1204,8 @@ const createFillLedger = (exchange, productId, pair) => {
     getFillsSince,
     aggregateFills,
     recalculateCycles,
+    computeFifoRealized,
+    getDerivedRealizedPnL,
     updateFillCycleId,
     annotateFillsByOrderId,
     persist,

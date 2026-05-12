@@ -248,11 +248,15 @@ const executeConversion = (exchange) => {
     return t && t < min ? t : min;
   }, Date.now());
 
+  // realizedPnL / realizedAssetPnL are derived from FIFO replay over the fill ledger
+  // by the regime engine itself (refreshRealizedFromFifo). Don't seed them here —
+  // and don't fold DCA assetReserves into realizedAssetPnL: the migrated DCA fills
+  // already feed the FIFO computation, which yields true reserves at runtime.
   const position = {
     ...currentPosition,
     cyclesCompleted: recalcResult.cyclesCompleted,
-    realizedPnL: recalcResult.globalRealizedPnL || 0,
-    realizedAssetPnL: (recalcResult.globalRealizedAssetPnL || 0) + (state.assetReserves || 0),
+    realizedPnL: 0,
+    realizedAssetPnL: 0,
     celestialBodies,
     celestialState: {
       totalBodiesCreated: celestialBodies.length,
@@ -471,8 +475,8 @@ const mergeToRegime = (exchange) => {
   cs.totalBodiesCreated = (cs.totalBodiesCreated || 0) + newBodies.length;
   position.celestialState = cs;
 
-  // 8. Add DCA assetReserves to position.realizedAssetPnL
-  position.realizedAssetPnL = (position.realizedAssetPnL || 0) + (state.assetReserves || 0);
+  // realizedAssetPnL is derived from FIFO replay; the migrated DCA fills already
+  // feed that computation, so do not fold state.assetReserves in here.
 
   // 9. Add DCA totalAllocated to position.depositedCapital
   position.depositedCapital = (position.depositedCapital || 0) + (state.totalAllocated || 0);
