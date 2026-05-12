@@ -1,26 +1,39 @@
 #!/usr/bin/env node
 /**
- * Audit Coinbase fills against the local fill-ledger.
+ * Audit Coinbase fills against the local fill-ledger for a given pair.
  *
- * Pulls all BTC-USDC fills from Coinbase since the engine's first order,
- * compares with the fill-ledger, and reports:
+ * Pulls all fills for the pair from Coinbase since the engine's first
+ * order, compares with the fill-ledger, and reports:
  *   - Fills on exchange missing from ledger
  *   - Fills in ledger missing from exchange (stale/phantom)
  *   - Aggregate buy/sell totals from each source
- *   - Per-sell order P&L using actual cost basis from linked buys
+ *   - State delta vs actual exchange balance (catches orphan fills)
  *
- * Usage:  node scripts/audit-fills.js
+ * Usage:
+ *   node scripts/audit-fills.js              # defaults to BTC-USDC
+ *   node scripts/audit-fills.js ETH-USDC
  */
 
 const fs = require('fs');
 const path = require('path');
-
-const { roundAsset: roundBTC, roundUSDC } = require('../src/volatility-utils');
 const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
+const { resolveFundDataDir } = require('../src/migration');
 const { DATA_DIR } = require('../src/paths');
+const { roundAsset, roundUSDC } = require('../src/volatility-utils');
+const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
+
+// ── Parse pair argument ────────────────────────────────────────
+
+const PAIR = (process.argv[2] || 'BTC-USDC').toUpperCase();
+// Coinbase pairs use BASE-QUOTE (dash-separated): BTC-USDC, ETH-USDC, etc.
+const [BASE_CURRENCY, QUOTE_CURRENCY] = PAIR.split('-');
+if (!BASE_CURRENCY || !QUOTE_CURRENCY) {
+  console.error(`Invalid pair: ${PAIR} — expected BASE-QUOTE (e.g. BTC-USDC)`);
+  process.exit(1);
+}
 
 const API_URL = 'https://api.coinbase.com';
-const PRODUCT_ID = 'BTC-USDC';
+const fundDir = resolveFundDataDir('coinbase', PAIR);
 
 // ── Auth ────────────────────────────────────────────────────────
 
@@ -50,14 +63,12 @@ const fetchAllFills = async (startTimestamp) => {
   const allFills = [];
   let cursor = null;
   let page = 0;
-
   const startISO = new Date(startTimestamp).toISOString();
 
   do {
     page++;
-    let apiPath = `/api/v3/brokerage/orders/historical/fills?product_id=${PRODUCT_ID}&start_sequence_timestamp=${startISO}&limit=500`;
+    let apiPath = `/api/v3/brokerage/orders/historical/fills?product_id=${PAIR}&start_sequence_timestamp=${startISO}&limit=500`;
     if (cursor) apiPath += `&cursor=${cursor}`;
-
     process.stdout.write(`📡 Fetching fills page ${page}${cursor ? ' (cursor)' : ''}...`);
     const data = await makeRequest('GET', apiPath);
     const fills = data.fills || [];
@@ -69,67 +80,53 @@ const fetchAllFills = async (startTimestamp) => {
   return allFills;
 };
 
-// ── Load local fill-ledger ─────────────────────────────────────
-
-const loadLedger = () => {
-  const ledgerPath = path.join(DATA_DIR, 'coinbase/fill-ledger.json');
-  return JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-};
-
 // ── Main ───────────────────────────────────────────────────────
 
 async function main() {
-  // Engine start timestamp from regime-state
-  const statePath = path.join(DATA_DIR, 'coinbase/regime-state.json');
+  const statePath = path.join(fundDir, 'regime-state.json');
+  const ledgerPath = path.join(fundDir, 'fill-ledger.json');
+
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
   const engineStart = state.position.engineStartTime;
 
-  console.log(`\n🔍 Auditing Coinbase fills since engine start: ${new Date(engineStart).toISOString()}\n`);
+  console.log(`\n🔍 Auditing Coinbase ${PAIR} fills since engine start: ${new Date(engineStart).toISOString()}`);
+  console.log(`  Data dir: ${fundDir}`);
+  console.log(`  Pair:     ${PAIR} (base=${BASE_CURRENCY}, quote=${QUOTE_CURRENCY})\n`);
 
-  // 1. Fetch exchange fills
   const rawFills = await fetchAllFills(engineStart);
   console.log(`\n📊 Total fills from exchange: ${rawFills.length}\n`);
 
-  // Manual order IDs to exclude (large manual trades that predate or are outside the system)
-  const MANUAL_ORDER_IDS = new Set([
-    'b9f57446', 'c01cd924', 'd2147728', 'ccbca736', '1d90f021', // 1+ BTC manual buys/sells
-  ]);
-  const isManualOrder = (orderId) => {
-    for (const prefix of MANUAL_ORDER_IDS) {
-      if (orderId.startsWith(prefix)) return true;
-    }
-    return false;
-  };
-
-  // Parse exchange fills into a Map keyed by trade_id
+  // Parse exchange fills into a Map keyed by trade_id.
+  // Coinbase's market-buy-by-quote fills set size_in_quote=true and put the
+  // quote-currency amount in `size`. Convert to base size by dividing by price
+  // so all downstream math is consistent.
   const exchangeFills = new Map();
-  let manualSkipped = 0;
   for (const f of rawFills) {
-    if (isManualOrder(f.order_id)) { manualSkipped++; continue; }
     const price = parseFloat(f.price);
-    const size = parseFloat(f.size);
+    const rawSize = parseFloat(f.size);
+    const sizeInQuote = f.size_in_quote === true;
+    const baseSize = sizeInQuote && price > 0 ? rawSize / price : rawSize;
+    const quoteSize = sizeInQuote ? rawSize : price * rawSize;
     exchangeFills.set(f.trade_id, {
       tradeId: f.trade_id,
       orderId: f.order_id,
       side: f.side.toLowerCase(),
       price,
-      size,
-      sizeInQuote: price * size, // compute since API doesn't return it
+      size: baseSize,
+      sizeInQuote: quoteSize,
       fee: parseFloat(f.commission || 0),
       tradeTime: f.trade_time,
-      liquidityIndicator: f.liquidity_indicator,
     });
   }
-  console.log(`(Excluded ${manualSkipped} fills from ${MANUAL_ORDER_IDS.size} manual orders)\n`);
+  console.log(`Unique exchange fills: ${exchangeFills.size}\n`);
 
-  // 2. Load local ledger
-  const ledger = loadLedger();
+  // Build ledger lookups
   const ledgerMap = new Map();
-  for (const f of ledger) {
-    ledgerMap.set(f.tradeId, f);
-  }
+  for (const f of ledger) ledgerMap.set(f.tradeId, f);
 
-  // 3. Diff
+  // Diff: missing from ledger / missing from exchange.
+  // Tolerate legacy "fill-<orderId>" prefix on some old ledger entries.
   const missingFromLedger = [];
   const missingFromExchange = [];
 
@@ -138,116 +135,93 @@ async function main() {
       missingFromLedger.push(exFill);
     }
   }
-
   for (const [tradeId, lFill] of ledgerMap) {
-    // Ledger tradeIds may be prefixed with "fill-" for older entries
+    if (tradeId.startsWith('dca-convert-')) continue;
     const rawId = tradeId.startsWith('fill-') ? tradeId.slice(5) : tradeId;
     if (!exchangeFills.has(tradeId) && !exchangeFills.has(rawId)) {
       missingFromExchange.push(lFill);
     }
   }
 
-  // 4. Aggregate exchange totals
-  let exBuyBtc = 0, exBuyUsdc = 0, exBuyFees = 0;
-  let exSellBtc = 0, exSellUsdc = 0, exSellFees = 0;
-  const exOrderMap = new Map(); // orderId → { side, fills[], totalBtc, totalUsdc }
+  // Aggregate exchange totals
+  let exBuyAsset = 0, exBuyQuote = 0, exBuyFees = 0;
+  let exSellAsset = 0, exSellQuote = 0, exSellFees = 0;
+  const exOrderMap = new Map();
 
   for (const f of exchangeFills.values()) {
     if (f.side === 'buy') {
-      exBuyBtc += f.size;
-      exBuyUsdc += f.sizeInQuote;
-      exBuyFees += f.fee;
+      exBuyAsset += f.size; exBuyQuote += f.sizeInQuote; exBuyFees += f.fee;
     } else {
-      exSellBtc += f.size;
-      exSellUsdc += f.sizeInQuote;
-      exSellFees += f.fee;
+      exSellAsset += f.size; exSellQuote += f.sizeInQuote; exSellFees += f.fee;
     }
-
     if (!exOrderMap.has(f.orderId)) {
-      exOrderMap.set(f.orderId, { side: f.side, fills: [], totalBtc: 0, totalUsdc: 0, totalFee: 0 });
+      exOrderMap.set(f.orderId, { side: f.side, fills: [], totalAsset: 0, totalQuote: 0, totalFee: 0 });
     }
     const o = exOrderMap.get(f.orderId);
-    o.fills.push(f);
-    o.totalBtc += f.size;
-    o.totalUsdc += f.sizeInQuote;
-    o.totalFee += f.fee;
+    o.fills.push(f); o.totalAsset += f.size; o.totalQuote += f.sizeInQuote; o.totalFee += f.fee;
   }
 
-  // 5. Aggregate ledger totals
-  let ldBuyBtc = 0, ldBuyUsdc = 0, ldBuyFees = 0;
-  let ldSellBtc = 0, ldSellUsdc = 0, ldSellFees = 0;
+  // Aggregate ledger totals
+  let ldBuyAsset = 0, ldBuyQuote = 0, ldBuyFees = 0;
+  let ldSellAsset = 0, ldSellQuote = 0, ldSellFees = 0;
 
   for (const f of ledger) {
-    const usdc = f.quoteAmount || (f.price * f.size);
+    const quote = f.quoteAmount || (f.price * f.size);
     const fee = f.netFee || f.fee || 0;
     if (f.side === 'buy') {
-      ldBuyBtc += f.size;
-      ldBuyUsdc += usdc;
-      ldBuyFees += fee;
+      ldBuyAsset += f.size; ldBuyQuote += quote; ldBuyFees += fee;
     } else {
-      ldSellBtc += f.size;
-      ldSellUsdc += usdc;
-      ldSellFees += fee;
+      ldSellAsset += f.size; ldSellQuote += quote; ldSellFees += fee;
     }
   }
 
   // ── Report ─────────────────────────────────────────────────
 
-  console.log('═══════════════════════════════════════════════════');
-  console.log('  EXCHANGE TOTALS (Coinbase)');
-  console.log('═══════════════════════════════════════════════════');
-  console.log(`  Buys:  ${roundBTC(exBuyBtc)} BTC | $${roundUSDC(exBuyUsdc)} USDC | fees $${roundUSDC(exBuyFees)}`);
-  console.log(`  Sells: ${roundBTC(exSellBtc)} BTC | $${roundUSDC(exSellUsdc)} USDC | fees $${roundUSDC(exSellFees)}`);
-  console.log(`  Net BTC: ${roundBTC(exBuyBtc - exSellBtc)}`);
-  console.log(`  Net USDC (sells - buys - fees): $${roundUSDC(exSellUsdc - exBuyUsdc - exBuyFees - exSellFees)}`);
+  const hr = '═══════════════════════════════════════════════════';
 
-  console.log('\n═══════════════════════════════════════════════════');
-  console.log('  LEDGER TOTALS (fill-ledger.json)');
-  console.log('═══════════════════════════════════════════════════');
-  console.log(`  Buys:  ${roundBTC(ldBuyBtc)} BTC | $${roundUSDC(ldBuyUsdc)} USDC | fees $${roundUSDC(ldBuyFees)}`);
-  console.log(`  Sells: ${roundBTC(ldSellBtc)} BTC | $${roundUSDC(ldSellUsdc)} USDC | fees $${roundUSDC(ldSellFees)}`);
-  console.log(`  Net BTC: ${roundBTC(ldBuyBtc - ldSellBtc)}`);
-  console.log(`  Net USDC (sells - buys - fees): $${roundUSDC(ldSellUsdc - ldBuyUsdc - ldBuyFees - ldSellFees)}`);
+  console.log(hr);
+  console.log(`  EXCHANGE TOTALS (Coinbase ${PAIR})`);
+  console.log(hr);
+  console.log(`  Buys:  ${roundAsset(exBuyAsset)} ${BASE_CURRENCY} | $${roundUSDC(exBuyQuote)} ${QUOTE_CURRENCY} | fees $${roundUSDC(exBuyFees)}`);
+  console.log(`  Sells: ${roundAsset(exSellAsset)} ${BASE_CURRENCY} | $${roundUSDC(exSellQuote)} ${QUOTE_CURRENCY} | fees $${roundUSDC(exSellFees)}`);
+  console.log(`  Net ${BASE_CURRENCY}: ${roundAsset(exBuyAsset - exSellAsset)}`);
+  console.log(`  Net ${QUOTE_CURRENCY} (sells - buys - fees): $${roundUSDC(exSellQuote - exBuyQuote - exBuyFees - exSellFees)}`);
 
-  // ── Deltas ────────────────────────────────────────────────
+  console.log(`\n${hr}\n  LEDGER TOTALS (fill-ledger.json)\n${hr}`);
+  console.log(`  Buys:  ${roundAsset(ldBuyAsset)} ${BASE_CURRENCY} | $${roundUSDC(ldBuyQuote)} ${QUOTE_CURRENCY} | fees $${roundUSDC(ldBuyFees)}`);
+  console.log(`  Sells: ${roundAsset(ldSellAsset)} ${BASE_CURRENCY} | $${roundUSDC(ldSellQuote)} ${QUOTE_CURRENCY} | fees $${roundUSDC(ldSellFees)}`);
+  console.log(`  Net ${BASE_CURRENCY}: ${roundAsset(ldBuyAsset - ldSellAsset)}`);
+  console.log(`  Net ${QUOTE_CURRENCY} (sells - buys - fees): $${roundUSDC(ldSellQuote - ldBuyQuote - ldBuyFees - ldSellFees)}`);
 
-  console.log('\n═══════════════════════════════════════════════════');
-  console.log('  DELTAS (Exchange - Ledger)');
-  console.log('═══════════════════════════════════════════════════');
-  console.log(`  Buy BTC:  ${roundBTC(exBuyBtc - ldBuyBtc)}`);
-  console.log(`  Buy USDC: $${roundUSDC(exBuyUsdc - ldBuyUsdc)}`);
-  console.log(`  Sell BTC: ${roundBTC(exSellBtc - ldSellBtc)}`);
-  console.log(`  Sell USDC: $${roundUSDC(exSellUsdc - ldSellUsdc)}`);
+  console.log(`\n${hr}\n  DELTAS (Exchange - Ledger)\n${hr}`);
+  console.log(`  Buy ${BASE_CURRENCY}:  ${roundAsset(exBuyAsset - ldBuyAsset)}`);
+  console.log(`  Buy ${QUOTE_CURRENCY}:  $${roundUSDC(exBuyQuote - ldBuyQuote)}`);
+  console.log(`  Sell ${BASE_CURRENCY}: ${roundAsset(exSellAsset - ldSellAsset)}`);
+  console.log(`  Sell ${QUOTE_CURRENCY}: $${roundUSDC(exSellQuote - ldSellQuote)}`);
 
-  // ── Missing fills ─────────────────────────────────────────
-
+  // Missing fills
   if (missingFromLedger.length > 0) {
-    console.log('\n═══════════════════════════════════════════════════');
-    console.log(`  ⚠️  FILLS ON EXCHANGE MISSING FROM LEDGER (${missingFromLedger.length})`);
-    console.log('═══════════════════════════════════════════════════');
-    // Group by orderId
+    console.log(`\n${hr}\n  ⚠️  FILLS ON EXCHANGE MISSING FROM LEDGER (${missingFromLedger.length})\n${hr}`);
     const byOrder = new Map();
     for (const f of missingFromLedger) {
       if (!byOrder.has(f.orderId)) byOrder.set(f.orderId, []);
       byOrder.get(f.orderId).push(f);
     }
     for (const [orderId, fills] of byOrder) {
-      const totalBtc = fills.reduce((s, f) => s + f.size, 0);
-      const totalUsdc = fills.reduce((s, f) => s + f.sizeInQuote, 0);
+      const totalAsset = fills.reduce((s, f) => s + f.size, 0);
+      const totalQuote = fills.reduce((s, f) => s + f.sizeInQuote, 0);
       const side = fills[0].side;
       const time = fills[0].tradeTime;
-      console.log(`  ${side.toUpperCase()} ${orderId.slice(0, 8)}: ${roundBTC(totalBtc)} BTC @ ~$${totalBtc > 0 ? roundUSDC(totalUsdc / totalBtc) : 0} ($${roundUSDC(totalUsdc)}) [${time}] [${fills.length} fill(s)]`);
+      console.log(`  ${side.toUpperCase()} ${orderId.slice(0, 8)}: ${roundAsset(totalAsset)} ${BASE_CURRENCY} @ ~$${totalAsset > 0 ? roundUSDC(totalQuote / totalAsset) : 0} ($${roundUSDC(totalQuote)}) [${time}] [${fills.length} fill(s)]`);
     }
   } else {
     console.log('\n✅ No fills missing from ledger');
   }
 
   if (missingFromExchange.length > 0) {
-    console.log('\n═══════════════════════════════════════════════════');
-    console.log(`  ⚠️  FILLS IN LEDGER MISSING FROM EXCHANGE (${missingFromExchange.length})`);
-    console.log('═══════════════════════════════════════════════════');
+    console.log(`\n${hr}\n  ⚠️  FILLS IN LEDGER MISSING FROM EXCHANGE (${missingFromExchange.length})\n${hr}`);
     for (const f of missingFromExchange.slice(0, 20)) {
-      console.log(`  ${f.side.toUpperCase()} ${f.orderId.slice(0, 8)}: ${f.size} BTC @ $${f.price} [tradeId=${f.tradeId.slice(0, 12)}]`);
+      console.log(`  ${f.side.toUpperCase()} ${f.orderId.slice(0, 8)}: ${f.size} ${BASE_CURRENCY} @ $${f.price} [tradeId=${(f.tradeId || '').slice(0, 12)}]`);
     }
     if (missingFromExchange.length > 20) {
       console.log(`  ... and ${missingFromExchange.length - 20} more`);
@@ -256,59 +230,33 @@ async function main() {
     console.log('✅ No phantom fills in ledger');
   }
 
-  // ── Sell order summary ────────────────────────────────────
+  // Position state vs exchange reality
+  console.log(`\n${hr}\n  POSITION STATE vs EXCHANGE REALITY\n${hr}`);
+  console.log(`  Exchange net ${BASE_CURRENCY} (buys-sells): ${roundAsset(exBuyAsset - exSellAsset)}`);
+  console.log(`  State totalAsset:              ${state.position.totalAsset}`);
+  console.log(`  State realizedPnL:             $${state.position.realizedPnL}`);
+  console.log(`  State realizedAssetPnL:        ${state.position.realizedAssetPnL}`);
+  console.log(`  State cyclesCompleted:         ${state.position.cyclesCompleted}`);
+  console.log(`  State cycleBuys:               ${state.position.cycleBuys}`);
 
-  console.log('\n═══════════════════════════════════════════════════');
-  console.log('  SELL ORDERS (Exchange)');
-  console.log('═══════════════════════════════════════════════════');
-  const sellOrders = [...exOrderMap.entries()]
-    .filter(([, o]) => o.side === 'sell')
-    .sort((a, b) => new Date(a[1].fills[0].tradeTime) - new Date(b[1].fills[0].tradeTime));
-
-  for (const [orderId, o] of sellOrders) {
-    const avgPrice = o.totalBtc > 0 ? o.totalUsdc / o.totalBtc : 0;
-    const time = o.fills[0].tradeTime;
-    // Check if in ledger
-    const inLedger = ledger.some(f => f.orderId === orderId && f.side === 'sell');
-    const ledgerMark = inLedger ? '✅' : '❌';
-    console.log(`  ${ledgerMark} ${orderId.slice(0, 8)}: ${roundBTC(o.totalBtc)} BTC @ $${roundUSDC(avgPrice)} = $${roundUSDC(o.totalUsdc)} (fees $${roundUSDC(o.totalFee)}) [${time}]`);
+  // Live balance check (best-effort — adapter call may fail if keys lack permissions)
+  try {
+    const adapter = createCoinbaseAdapter();
+    const assetBalance = await adapter.getAccountBalance(BASE_CURRENCY);
+    const quoteBalance = await adapter.getAccountBalance(QUOTE_CURRENCY);
+    console.log(`\n  Exchange ${BASE_CURRENCY} balance: ${assetBalance.total} (available: ${assetBalance.available}, hold: ${assetBalance.hold})`);
+    console.log(`  Exchange ${QUOTE_CURRENCY} balance: ${quoteBalance.total} (available: ${quoteBalance.available}, hold: ${quoteBalance.hold})`);
+    const trackedAsset = state.position.totalAsset + (state.position.realizedAssetPnL || 0);
+    console.log(`  Tracked ${BASE_CURRENCY} vs exchange: tracked=${roundAsset(trackedAsset)} (bodies+reserves), delta=${roundAsset(trackedAsset - assetBalance.total)}`);
+  } catch (e) {
+    console.log(`  (Could not fetch balance: ${e.message})`);
   }
-
-  // ── ec8b7bcb annotation check ─────────────────────────────
-
-  const ec8bAnnotated = ledger.filter(f => f.sellOrderId === 'ec8b7bcb-325a-4bad-a38e-3f76762e3494');
-  if (ec8bAnnotated.length > 0) {
-    console.log(`\n⚠️  ${ec8bAnnotated.length} fills still incorrectly annotated with sellOrderId=ec8b7bcb (needs cleanup)`);
-  }
-
-  // ── cycle-12 check ────────────────────────────────────────
-
-  const cycle12Fills = ledger.filter(f => f.cycleId === 'cycle-12');
-  if (cycle12Fills.length > 0) {
-    console.log(`⚠️  ${cycle12Fills.length} fills with cycleId=cycle-12 (should be cycle-11)`);
-  }
-
-  // ── Current position state vs exchange ────────────────────
-
-  console.log('\n═══════════════════════════════════════════════════');
-  console.log('  POSITION STATE vs EXCHANGE REALITY');
-  console.log('═══════════════════════════════════════════════════');
-  const netBtcExchange = roundBTC(exBuyBtc - exSellBtc);
-  const netBtcState = state.position.totalBTC;
-  console.log(`  Exchange net BTC held: ${netBtcExchange}`);
-  console.log(`  State totalBTC:        ${netBtcState}`);
-  console.log(`  Delta:                 ${roundBTC(netBtcExchange - netBtcState)}`);
-
-  console.log(`\n  Config maxUsdcDeployed: $${JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'config.json'), 'utf8')).exchanges.coinbase.regime.maxUsdcDeployed}`);
-  console.log(`  State realizedPnL:     $${state.position.realizedPnL}`);
-  console.log(`  State realizedBtcPnL:  ${state.position.realizedBtcPnL}`);
-  console.log(`  State cyclesCompleted: ${state.position.cyclesCompleted}`);
-  console.log(`  State cycleBuys:       ${state.position.cycleBuys}`);
 
   console.log('\n✅ Audit complete\n');
 }
 
 main().catch(err => {
   console.error('❌ Audit failed:', err.message);
+  console.error(err.stack);
   process.exit(1);
 });
