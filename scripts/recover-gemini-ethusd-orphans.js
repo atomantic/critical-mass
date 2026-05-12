@@ -255,7 +255,9 @@ async function main() {
     }
 
     // Fix cost basis for body-59257145 (the one whose buy we're adding)
-    if (c.sellOrderId === ALREADY_SOLD_SELL_ORDER) {
+    // Only applies when ALREADY_SOLD_ORDER is in the current orphan set (first recovery run).
+    // On subsequent runs the buy is already in the ledger so it's not orphaned anymore.
+    if (c.sellOrderId === ALREADY_SOLD_SELL_ORDER && orphanedByOrder.has(ALREADY_SOLD_ORDER)) {
       const buyFills = orphanedByOrder.get(ALREADY_SOLD_ORDER);
       const buyEth = buyFills.reduce((s, f) => s + f.size, 0);
       const buyQuote = buyFills.reduce((s, f) => s + f.price * f.size, 0);
@@ -296,19 +298,51 @@ async function main() {
   console.log(`  New body ETH:        ${roundAsset(totalNewBodyEth)}`);
   console.log(`  New body cost:       $${roundUSDC(totalNewBodyCost)}`);
 
-  // Compute correct totals
+  // Reserves and realized PnL from existing ledger/closed-trade data
+  const allSells = ledger.filter(f => f.side === 'sell');
+  const correctReserves = roundAsset(allSells.reduce((s, f) => s + (f.bodyHoldbackAsset || 0), 0));
+  let correctRealizedPnL = roundUSDC(closed.reduce((s, c) => s + c.pnl, 0));
+
+  // Reconcile to actual exchange ETH balance:
+  // Some orphan inventory was consumed by ledger-incomplete sells (partial fills not captured).
+  // Scale all new bodies down proportionally so totals match the exchange.
+  const targetBodyEth = roundAsset(ethBalance.total - correctReserves - pos.assetOnOrder);
+  const currentBodyEth = newBodies.reduce((s, b) => s + b.assetQty, 0)
+    + pos.celestialBodies.filter(b => b.id !== PLACEHOLDER_BODY_ID).reduce((s, b) => s + b.assetQty, 0);
+
+  if (currentBodyEth > 0 && Math.abs(currentBodyEth - targetBodyEth) > 0.0001) {
+    const scale = targetBodyEth / currentBodyEth;
+    let trimmedCost = 0;
+    let trimmedEth = 0;
+    for (const b of newBodies) {
+      const origEth = b.assetQty;
+      const origCost = b.costBasis;
+      b.assetQty = roundAsset(origEth * scale);
+      b.costBasis = roundUSDC(origCost * scale);
+      // avgPrice stays the same; trim buyOrders proportionally for accounting clarity
+      for (const bo of (b.buyOrders || [])) {
+        bo.assetQty = roundAsset(bo.assetQty * scale);
+        bo.sizeUsdc = roundUSDC(bo.sizeUsdc * scale);
+      }
+      trimmedEth += origEth - b.assetQty;
+      trimmedCost += origCost - b.costBasis;
+    }
+    // The trimmed inventory was historically sold via partial-fill leakage at the
+    // last known TP price (~$2316). Estimate proceeds and roll the net into realizedPnL.
+    const estimatedSellPrice = 2316.13;
+    const estimatedProceeds = trimmedEth * estimatedSellPrice;
+    const leakedPnL = roundUSDC(estimatedProceeds - trimmedCost);
+    correctRealizedPnL = roundUSDC(correctRealizedPnL + leakedPnL);
+    console.log(`\n  Reconciliation trim: scaled bodies by ${scale.toFixed(6)}`);
+    console.log(`    trimmed ${roundAsset(trimmedEth)} ETH from new bodies (cost $${roundUSDC(trimmedCost)})`);
+    console.log(`    rolled into realizedPnL: +$${leakedPnL} (proceeds $${roundUSDC(estimatedProceeds)} @ ~$${estimatedSellPrice})`);
+  }
+
+  // Compute final totals after any trim
   const activeBodies = [...pos.celestialBodies.filter(b => b.id !== PLACEHOLDER_BODY_ID), ...newBodies];
   const newTotalAsset = roundAsset(activeBodies.reduce((s, b) => s + b.assetQty, 0));
   const newTotalCostBasis = roundUSDC(activeBodies.reduce((s, b) => s + b.costBasis, 0));
   const newAvgCostBasis = newTotalAsset > 0 ? newTotalCostBasis / newTotalAsset : 0;
-
-  // Correct reserves = sum of all sell holdbacks (from fill annotations)
-  // We need to include the updated annotations too
-  const allSells = ledger.filter(f => f.side === 'sell');
-  const correctReserves = roundAsset(allSells.reduce((s, f) => s + (f.bodyHoldbackAsset || 0), 0));
-
-  // Correct realizedPnL = sum of all closed-trade PnLs (after fixes)
-  const correctRealizedPnL = roundUSDC(closed.reduce((s, c) => s + c.pnl, 0));
 
   console.log('\n  State changes:');
   console.log(`    totalAsset:        ${pos.totalAsset} -> ${newTotalAsset}`);
