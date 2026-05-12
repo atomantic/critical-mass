@@ -18,16 +18,14 @@ const fs = require('fs');
 const path = require('path');
 const { getAuthHeaders } = require('../src/adapters/coinbase/auth');
 const { resolveFundDataDir } = require('../src/migration');
+const { getBaseCurrency, getQuoteCurrency } = require('../src/config-utils');
 const { DATA_DIR } = require('../src/paths');
 const { roundAsset, roundUSDC } = require('../src/volatility-utils');
-const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
-
-// ── Parse pair argument ────────────────────────────────────────
 
 const PAIR = (process.argv[2] || 'BTC-USDC').toUpperCase();
-// Coinbase pairs use BASE-QUOTE (dash-separated): BTC-USDC, ETH-USDC, etc.
-const [BASE_CURRENCY, QUOTE_CURRENCY] = PAIR.split('-');
-if (!BASE_CURRENCY || !QUOTE_CURRENCY) {
+const BASE_CURRENCY = getBaseCurrency(PAIR);
+const QUOTE_CURRENCY = getQuoteCurrency(PAIR);
+if (!PAIR.includes('-')) {
   console.error(`Invalid pair: ${PAIR} — expected BASE-QUOTE (e.g. BTC-USDC)`);
   process.exit(1);
 }
@@ -241,9 +239,12 @@ async function main() {
 
   // Live balance check (best-effort — adapter call may fail if keys lack permissions)
   try {
+    const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
     const adapter = createCoinbaseAdapter();
-    const assetBalance = await adapter.getAccountBalance(BASE_CURRENCY);
-    const quoteBalance = await adapter.getAccountBalance(QUOTE_CURRENCY);
+    const [assetBalance, quoteBalance] = await Promise.all([
+      adapter.getAccountBalance(BASE_CURRENCY),
+      adapter.getAccountBalance(QUOTE_CURRENCY),
+    ]);
     console.log(`\n  Exchange ${BASE_CURRENCY} balance: ${assetBalance.total} (available: ${assetBalance.available}, hold: ${assetBalance.hold})`);
     console.log(`  Exchange ${QUOTE_CURRENCY} balance: ${quoteBalance.total} (available: ${quoteBalance.available}, hold: ${quoteBalance.hold})`);
     const trackedAsset = state.position.totalAsset + (state.position.realizedAssetPnL || 0);

@@ -82,6 +82,30 @@ const cancelPartialFillOrder = async (deps, orderId) => {
 };
 
 /**
+ * Shape an adapter `getOrder` result into the `fillData` payload that
+ * `handleOrderFill` consumes. Centralizes parseFloat coercion of numeric
+ * fields so every catch-up site treats missing/string values identically.
+ * Defaults `isPartialFill: true` since every caller in this file uses it
+ * for catch-up routes; pass `{ isPartialFill: false }` (or `placedAt`,
+ * `status`) via extras to override.
+ * @param {string} orderId
+ * @param {'buy'|'sell'} side
+ * @param {{status: string, filledSize?: number|string, filledValue?: number|string, averageFilledPrice?: number|string}} orderStatus
+ * @param {Object} [extras] Field overrides merged onto the result
+ * @returns {Object} fillData for handleOrderFill
+ */
+const buildPartialFillData = (orderId, side, orderStatus, extras = {}) => ({
+  orderId,
+  side,
+  status: orderStatus.status,
+  filledSize: parseFloat(orderStatus.filledSize || 0),
+  filledValue: parseFloat(orderStatus.filledValue || 0),
+  averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
+  isPartialFill: true,
+  ...extras,
+});
+
+/**
  * Build the dashboard pendingOrders payload: enrich the executor's tracked
  * orders with body/cost-basis metadata, then union any body TPs the executor
  * doesn't track in-memory (after engine stop, or pre-reconcile after start).
@@ -724,31 +748,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     // Check for celestial body TP orders that filled or were cancelled while offline
+    // Prefetch order statuses for all body TPs no longer in openOrderIds in
+    // parallel — sequential awaits made startup O(N) round-trips on a fund
+    // with many bodies (the 51-orphan ETHUSD case took ~25s on Gemini).
     const offlineBodies = positionState.celestialBodies || [];
+    const bodiesToCheck = offlineBodies.filter(b => b.tpOrderId && !openOrderIds.has(b.tpOrderId));
+    const bodyStatuses = await Promise.all(
+      bodiesToCheck.map(b => adapter.getOrder(b.tpOrderId).catch(() => null))
+    );
+    const bodyStatusByOrderId = new Map(
+      bodiesToCheck.map((b, i) => [b.tpOrderId, bodyStatuses[i]])
+    );
+
     for (const body of [...offlineBodies]) {
       if (body.tpOrderId && !openOrderIds.has(body.tpOrderId)) {
-        const orderStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
+        const orderStatus = bodyStatusByOrderId.get(body.tpOrderId);
 
-        // Cancelled-with-partials: Gemini's heartbeat timeout auto-cancels
-        // open orders when no engine is running. If our TP had partial fills
-        // before the auto-cancel, those fills must be ingested or the body
-        // state diverges from the exchange. Reconcile-on-interval (line ~2737)
-        // would eventually catch this, but only after reconcileIntervalMs;
-        // catching it here means it's caught up before any user-facing UI
-        // reads stale data.
+        // Catch CANCELLED-with-partials at startup (Gemini heartbeat-cancels
+        // open orders during downtime). The interval reconciler would catch
+        // this too, but only after reconcileIntervalMs.
         if (orderStatus && (orderStatus.status === 'CANCELLED' || orderStatus.status === 'FAILED') && orderStatus.filledSize > 0) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
           console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} ${orderStatus.status} while offline with ${orderStatus.filledSize} partial fill — routing through handleOrderFill`);
-          const fillData = {
-            orderId: body.tpOrderId,
-            side: 'sell',
-            status: orderStatus.status,
-            filledSize: parseFloat(orderStatus.filledSize || 0),
-            filledValue: parseFloat(orderStatus.filledValue || 0),
-            averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
-            isPartialFill: true,
-          };
-          await handleOrderFill(fillData);
+          await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', orderStatus));
           continue;
         }
 
@@ -1577,36 +1599,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const allOpenIds = new Set(exchangeOpenOrders.map(o => o.orderId));
 
       // Catch up fills for saved entries that became terminal during downtime.
-      // Without this, the purge below silently drops them and their fills
-      // never reach the ledger — the regime engine ends up unaware of buys
-      // that actually happened on the exchange. This is the failure mode
-      // that produced the 51-orphan-buy incident on Gemini ETHUSD (recovered
-      // 2026-05-12 via scripts/recover-gemini-ethusd-orphans.js).
-      //
       // The for-loop above only iterates exchangeOpenOrders, so saved entries
-      // that already cleared (filled or cancelled-with-partials) on the
-      // exchange skip its partial-fill ingest paths.
+      // that already cleared on the exchange skip its partial-fill ingest path;
+      // without this catch-up they would be purged below with no ledger record.
       const terminalSavedEntries = savedPendingEntries.filter(e => !allOpenIds.has(e.orderId));
+      // Prefetch statuses in parallel; handleOrderFill is still sequential
+      // since it mutates positionState.
+      const entryStatuses = await Promise.all(
+        terminalSavedEntries.map(e => adapter.getOrder(e.orderId).catch(err => ({ __err: err })))
+      );
       let caughtUpEntries = 0;
-      for (const savedEntry of terminalSavedEntries) {
+      for (let i = 0; i < terminalSavedEntries.length; i++) {
+        const savedEntry = terminalSavedEntries[i];
+        const orderStatus = entryStatuses[i];
+        if (!orderStatus || orderStatus.__err) {
+          if (orderStatus?.__err) console.log(`⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${orderStatus.__err.message}`);
+          continue;
+        }
         try {
-          const orderStatus = await adapter.getOrder(savedEntry.orderId).catch(() => null);
-          if (!orderStatus) continue;
           const isFullFilled = orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100;
           const partialSize = parseFloat(orderStatus.filledSize || 0);
           if (!isFullFilled && partialSize <= 0) continue; // truly empty cancel, ok to purge
           console.log(`📥 [${exchange}] Catching up offline entry ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`);
-          const fillData = {
-            orderId: savedEntry.orderId,
-            side: 'buy',
+          await handleOrderFill(buildPartialFillData(savedEntry.orderId, 'buy', orderStatus, {
             status: isFullFilled ? 'FILLED' : orderStatus.status,
-            filledSize: partialSize,
-            filledValue: parseFloat(orderStatus.filledValue || 0),
-            averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
-            placedAt: savedEntry.placedAt,
             isPartialFill: !isFullFilled,
-          };
-          await handleOrderFill(fillData);
+            placedAt: savedEntry.placedAt,
+          }));
           caughtUpEntries++;
         } catch (err) {
           console.log(`⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${err.message}`);
@@ -2012,18 +2031,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {Object} fillData - Fill data
    */
   const handleOrderFill = async (fillData) => {
-    // Cancel the original order when polling detected a partial fill, so
-    // additional fills can't leak onto the exchange while we resize the
-    // body and place a replacement TP. See cancelPartialFillOrder doc.
-    // The subsequent getOrderFills call sees the final frozen set of
-    // fills (ingestFill is idempotent by tradeId); if the order fully
-    // filled in the cancel race, soldRatio reflects that and the code
-    // falls through to the full-fill branch.
+    // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
     if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
       await cancelPartialFillOrder({ adapter, exchange }, fillData.orderId);
     }
 
-    // Get detailed fills
     let rawFills = await adapter.getOrderFills(fillData.orderId);
 
     // If getOrderFills returns empty but we have fill data from order status (polling detection),
@@ -2815,25 +2827,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 await handleOrderFill(fillData);
               } else if (bodyStatus.status === 'CANCELLED' || bodyStatus.status === 'FAILED') {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                // If the cancelled TP had partial fills, route through handleOrderFill
-                // to ingest them and resize the body before placing a replacement.
-                // Without this, those fills are silently lost (Gemini has no order-events
-                // WS backstop, and the polling loop drops the order from pendingOrders
-                // once it sees CANCELLED).
                 if (bodyStatus.filledSize > 0) {
+                  // Route partials through handleOrderFill before re-placing — otherwise
+                  // they're lost (Gemini has no order-events WS, and polling drops the
+                  // order from pendingOrders once it sees CANCELLED).
                   console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} with ${bodyStatus.filledSize} partial fill — routing through handleOrderFill`);
-                  const fillData = {
-                    orderId: body.tpOrderId,
-                    side: 'sell',
-                    status: bodyStatus.status,
-                    filledSize: parseFloat(bodyStatus.filledSize || 0),
-                    filledValue: parseFloat(bodyStatus.filledValue || 0),
-                    averageFilledPrice: parseFloat(bodyStatus.averageFilledPrice || 0),
-                    isPartialFill: true,
-                  };
-                  await handleOrderFill(fillData);
+                  await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
                 } else {
-                  // No partials, simple clear-and-replace
                   console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`);
                   orderExecutor.removeBodyTracking(body.tpOrderId);
                   body.tpOrderId = null;
@@ -2843,27 +2843,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   await placeBodyTp(body);
                 }
               } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING') {
-                // If the order has partial fills, route through handleOrderFill
-                // so PR #70's cancelPartialFillOrder catches them up and the
-                // partial-fill branch resizes the body to the actual sold
-                // amount. This handles the stale-size case implicitly (the
-                // replacement TP is sized to the new body.assetQty).
                 if (bodyStatus.filledSize > 0) {
+                  // Route partials through handleOrderFill — cancelPartialFillOrder
+                  // freezes the order and the partial-fill branch resizes the body,
+                  // which also handles the stale-size case implicitly.
                   console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} has ${bodyStatus.filledSize} partial fill while OPEN — routing through handleOrderFill`);
-                  const fillData = {
-                    orderId: body.tpOrderId,
-                    side: 'sell',
-                    status: bodyStatus.status,
-                    filledSize: parseFloat(bodyStatus.filledSize || 0),
-                    filledValue: parseFloat(bodyStatus.filledValue || 0),
-                    averageFilledPrice: parseFloat(bodyStatus.averageFilledPrice || 0),
-                    isPartialFill: true,
-                  };
-                  await handleOrderFill(fillData);
+                  await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
                 } else {
-                  // No partials — pure stale-size detection (body was merged/modified
-                  // after the TP was placed, so the TP's tracked size no longer
-                  // matches what sellQty wants).
+                  // Pure stale-size detection (body merged/modified, TP placed for old size).
                   const tierCfg = celestialHierarchy.getTierConfig(body.tier);
                   const { sellQty } = positionSizer.calculateTakeProfitSize(
                     body.assetQty, body.avgPrice, body.tpPrice, tierCfg.holdbackScale
@@ -4646,6 +4633,6 @@ module.exports = {
   createRegimeEngine,
   createInitialMarketState,
   createInitialPositionState,
-  // Exported for unit testing
   cancelPartialFillOrder,
+  buildPartialFillData,
 };
