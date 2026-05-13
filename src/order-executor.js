@@ -85,18 +85,30 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Safe cancel: cancel order, then check status on failure to detect fills
+   *
+   * Once the exchange ack's the cancel (success=true), we POLL the order
+   * status — we do NOT re-issue the cancel. Re-issuing causes false-negatives
+   * on exchanges with eventually-consistent status reads (notably Gemini):
+   * the first cancel succeeds server-side, but `getOrder` lags showing OPEN,
+   * and a second cancel returns is_cancelled=false because the order is
+   * already cancelling — which we'd then misclassify as failure.
+   *
+   * Total wait budget when ack'd: ~5.5s (verifyDelayMs + 5 × pollDelayMs).
+   *
    * @param {string} orderId - Order ID to cancel
    * @returns {Promise<{cancelled: boolean, filled: boolean}>}
    */
   const safeCancelOrder = async (orderId) => {
-    const maxRetries = 2;
+    const maxAckRetries = 2;
     const verifyDelayMs = 500;
+    const pollDelayMs = 1000;
+    const maxPollAttempts = 6;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxAckRetries; attempt++) {
       const result = await adapter.cancelOrder(orderId);
 
       if (!result.success) {
-        // Cancel call itself failed — check if already filled or cancelled
+        // Cancel call rejected — check terminal state before deciding to retry
         const status = await adapter.getOrder(orderId).catch(() => null);
         if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
           console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
@@ -105,44 +117,31 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         if (status && status.status === 'CANCELLED') {
           return { cancelled: true, filled: false };
         }
-        console.log(`⚠️ [${exchange}] Cancel failed for ${orderId.slice(0, 8)}, status=${status?.status || 'unknown'}`);
-        return { cancelled: false, filled: false };
-      }
-
-      // Cancel reported success — verify the order is actually cancelled
-      await new Promise(r => setTimeout(r, verifyDelayMs));
-      const verified = await adapter.getOrder(orderId).catch(() => null);
-
-      if (verified?.status === 'CANCELLED') {
-        return { cancelled: true, filled: false };
-      }
-      if (verified?.status === 'FILLED' || verified?.completionPercentage >= 100) {
-        console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
-        return { cancelled: false, filled: true };
-      }
-      if ((verified?.status === 'OPEN' || verified?.status === 'PENDING_CANCEL') && attempt < maxRetries) {
-        console.log(`⚠️ [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} still ${verified.status} — retrying (${attempt + 1}/${maxRetries})`);
-        continue;
-      }
-
-      // Retries exhausted and order is still live on exchange
-      if (verified?.status === 'OPEN' || verified?.status === 'PENDING_CANCEL') {
-        console.log(`🚨 [${exchange}] Cancel verification failed for ${orderId.slice(0, 8)} — still ${verified.status} after ${maxRetries} retries`);
-        return { cancelled: false, filled: false };
-      }
-
-      // Verify call failed (null) — do NOT trust the cancel, retry or fail safe
-      if (!verified) {
-        if (attempt < maxRetries) {
-          console.log(`⚠️ [${exchange}] Cancel verify fetch failed for ${orderId.slice(0, 8)} — retrying (${attempt + 1}/${maxRetries})`);
+        if (attempt < maxAckRetries) {
+          console.log(`⚠️ [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} (status=${status?.status || 'unknown'}) — retrying (${attempt + 1}/${maxAckRetries})`);
+          await new Promise(r => setTimeout(r, pollDelayMs));
           continue;
         }
-        console.log(`🚨 [${exchange}] Cancel verify fetch failed for ${orderId.slice(0, 8)} after ${maxRetries} retries — reporting unverified`);
+        console.log(`🚨 [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} after ${maxAckRetries} retries, status=${status?.status || 'unknown'}`);
         return { cancelled: false, filled: false };
       }
 
-      // Verified with an unexpected status we don't recognize — fail safe
-      console.log(`⚠️ [${exchange}] Cancel verify returned unexpected status '${verified.status}' for ${orderId.slice(0, 8)} — reporting unverified`);
+      // Cancel ack'd — poll for the status to actually settle. Do NOT re-cancel.
+      for (let poll = 0; poll < maxPollAttempts; poll++) {
+        await new Promise(r => setTimeout(r, poll === 0 ? verifyDelayMs : pollDelayMs));
+        const verified = await adapter.getOrder(orderId).catch(() => null);
+
+        if (verified?.status === 'CANCELLED') {
+          return { cancelled: true, filled: false };
+        }
+        if (verified?.status === 'FILLED' || verified?.completionPercentage >= 100) {
+          console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
+          return { cancelled: false, filled: true };
+        }
+        // status OPEN, PENDING_CANCEL, null (fetch error), or unknown — keep polling
+      }
+
+      console.log(`🚨 [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} never reported CANCELLED after ${maxPollAttempts} polls`);
       return { cancelled: false, filled: false };
     }
 
