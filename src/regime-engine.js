@@ -1311,6 +1311,86 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const coreTpOrderId = positionState.activeTpOrderId;
         let annotatedCount = 0;
 
+        // 0. Recover orphan buys: ledger fills from current cycle that have no
+        // bodyId AND aren't referenced by any body. These come from
+        // handleOrderFill being interrupted (e.g. SIGINT during pm2 restart)
+        // between fillLedger.ingestFill and the body-merge/annotation step.
+        // Merge each orphan order into the historically-eligible body whose TP
+        // is closest to where the orphan's TP would have landed. The body's
+        // reconcile loop will then detect the assetQty/assetOnOrder mismatch
+        // on the next tick and cancel-replace the TP at the new size.
+        const knownBuyOrderIds = new Set();
+        for (const body of (positionState.celestialBodies || [])) {
+          for (const oid of (body.sourceOrderIds || [])) knownBuyOrderIds.add(oid);
+          for (const buy of (body.buyOrders || [])) if (buy.orderId) knownBuyOrderIds.add(buy.orderId);
+        }
+        const orphanBuyFills = cycleFills.filter(f =>
+          f.side === 'buy' && !f.bodyId
+          && !String(f.tradeId).startsWith('dca-convert')
+          && !knownBuyOrderIds.has(f.orderId)
+        );
+        const orphansByOrderId = new Map();
+        for (const f of orphanBuyFills) {
+          if (!orphansByOrderId.has(f.orderId)) orphansByOrderId.set(f.orderId, []);
+          orphansByOrderId.get(f.orderId).push(f);
+        }
+
+        let recoveredCount = 0;
+        for (const [orderId, fills] of orphansByOrderId) {
+          const summary = fillLedger.aggregateFills(fills);
+          const fillTime = Math.max(...fills.map(f => f.timestamp));
+          const newBuy = {
+            assetQty: summary.totalSize,
+            costBasis: summary.totalValue + (summary.totalFees || 0),
+            avgPrice: summary.avgPrice,
+            buyOrderId: orderId,
+          };
+          const candidateTpPrice = roundPrice(summary.avgPrice * (1 + calculateDynamicTpPercent() / 100), priceIncrement);
+
+          // Restrict to bodies that existed at the orphan's fill time
+          const eligibleBodies = (positionState.celestialBodies || []).filter(b => !b.createdAt || b.createdAt <= fillTime);
+          let target = celestialHierarchy.findMergeTarget(
+            eligibleBodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
+            config.maxCelestialBodies || 10, 0, config.maxOpenOrders,
+            config.mergeProximityScale ?? 1.0
+          );
+          // Fallback: closest tpPrice among historical-eligible bodies
+          if (!target) {
+            let bestDist = Infinity;
+            for (const b of eligibleBodies) {
+              if (!b.tpPrice || b.tpPrice <= 0) continue;
+              const d = Math.abs(b.tpPrice - candidateTpPrice);
+              if (d < bestDist) { bestDist = d; target = b; }
+            }
+          }
+          if (!target) {
+            console.log(`⚠️ [${exchange}] Orphan buy ${orderId.slice(0, 8)} (${summary.totalSize.toFixed(8)} ${baseCurrency}): no eligible body to merge into, leaving unattributed`);
+            continue;
+          }
+
+          const merged = celestialHierarchy.mergeIntoBody(target, newBuy, config.maxUsdcDeployed, orderId);
+          // Overwrite mergeIntoBody's Date.now() lastMergedAt with the orphan's
+          // actual fill time, and the appended buyOrder's filledAt likewise.
+          merged.lastMergedAt = fillTime;
+          if (merged.buyOrders && merged.buyOrders.length > 0) {
+            merged.buyOrders[merged.buyOrders.length - 1].filledAt = fillTime;
+          }
+
+          const annotation = { isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier };
+          if (merged.tpOrderId) annotation.sellOrderId = merged.tpOrderId;
+          fillLedger.annotateFillsByOrderId(orderId, annotation);
+
+          const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
+          console.log(`🔧 [${exchange}] Recovered orphan buy ${orderId.slice(0, 8)} (${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}) → body ${merged.id.slice(-8)} ${tierCfg.emoji} ${merged.tier}`);
+          recoveredCount++;
+        }
+
+        if (recoveredCount > 0) {
+          celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
+          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+          console.log(`🔧 [${exchange}] Recovered ${recoveredCount} orphan buy order(s) into bodies; reconcile loop will re-place affected TPs`);
+        }
+
         // 1. Annotate buy fills for active celestial bodies (use both sourceOrderIds and buyOrders)
         // Also fix fills that have isBodyOwned but are missing bodyId (e.g. from DCA merge converter)
         for (const body of (positionState.celestialBodies || [])) {
