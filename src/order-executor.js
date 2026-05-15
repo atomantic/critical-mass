@@ -66,6 +66,23 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   // Track stale order timeouts for cleanup on shutdown
   const staleTimers = new Set();
 
+  /** @type {Map<string, number>} orderId -> settlement timestamp.
+   * Distinguishes "we removed this from pendingOrders intentionally" from
+   * "this fill is for an order we never tracked." Without this, every
+   * polling-backstop fill (which deletes from pendingOrders before routing
+   * the fill through the engine, which then runs orderExecutor.handleOrderFill
+   * at the end of its chain) fires a misleading "untracked order" warning. */
+  const recentlySettled = new Map();
+  const SETTLED_TTL_MS = 5 * 60 * 1000;
+  const markSettled = (orderId) => {
+    if (!orderId) return;
+    recentlySettled.set(orderId, Date.now());
+    if (recentlySettled.size > 256) {
+      const cutoff = Date.now() - SETTLED_TTL_MS;
+      for (const [id, ts] of recentlySettled) if (ts < cutoff) recentlySettled.delete(id);
+    }
+  };
+
   // Mutex to serialize concurrent TP updates (prevents duplicate TP sells)
   const tpMutex = createMutex();
 
@@ -411,6 +428,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const filledSize = status.filledSize || trackedPartial;
     console.log(`⏰ [${exchange}] ${context} found cancelled ${order.type} order ${orderId}${filledSize > 0 ? ` (with ${filledSize} partial fill)` : ''}`);
     if (filledSize > 0 && callbacks.onFillDetected) {
+      markSettled(orderId);
       callbacks.onFillDetected(orderId, { ...status, filledSize, placedAt: order.placedAt, isPartialFill: true });
     }
     pendingOrders.delete(orderId);
@@ -441,6 +459,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             // Capture placedAt BEFORE deleting from pendingOrders
             const placedAt = order.placedAt;
             pendingOrders.delete(orderId);
+            markSettled(orderId);
             if (callbacks.onFillDetected) {
               callbacks.onFillDetected(orderId, { ...status, placedAt });
             }
@@ -488,6 +507,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           console.log(`✅ [${exchange}] Refresh detected filled ${order.type} order ${orderId}`);
           const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
+          markSettled(orderId);
           if (callbacks.onFillDetected) {
             callbacks.onFillDetected(orderId, { ...status, placedAt });
           }
@@ -529,6 +549,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         console.log(`✅ [${exchange}] Fill check detected filled ${order.type} order ${orderId}`);
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
+        markSettled(orderId);
         partialFillTracker.delete(orderId);
         if (callbacks.onFillDetected) {
           callbacks.onFillDetected(orderId, { ...status, placedAt });
@@ -677,6 +698,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const order = pendingOrders.get(orderId);
     if (order) {
       pendingOrders.delete(orderId);
+      markSettled(orderId);
 
       if (order.type === 'take_profit') {
         activeTpOrderId = null;
@@ -685,7 +707,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       } else if (order.type === 'body_tp') {
         removeBodyTracking(orderId);
       }
-    } else {
+    } else if (!recentlySettled.has(orderId)) {
+      // Genuine orphan: the order isn't in pendingOrders AND we have no
+      // record of recently settling it (polling backstop, stale-cancel,
+      // or engine restart paths all stamp `recentlySettled`).
       console.log(`🚨 [${exchange}] WS fill for untracked order ${orderId} — likely orphan (check audit-fills.js)`);
     }
   };
