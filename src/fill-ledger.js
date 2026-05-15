@@ -1080,21 +1080,128 @@ const createFillLedger = (exchange, productId, pair) => {
   };
 
   /**
-   * FIFO replay over the entire fill ledger. Returns realized USD profit and
-   * the total qty of (buy − sell) remaining position.
+   * Source-of-truth derivation: walk the ledger by buy↔sell pairing and sum
+   * per-cycle outcomes. The engine's contract is buy(n)→sell(1) per cycle:
+   * every buy gets a sellOrderId stamp when its TP fills.
    *
-   * Uncovered-sell handling: if a sell qty exceeds what FIFO lots can cover
-   * at that moment (e.g. a manual sell of 1 BTC when bot only had 0.568 BTC
-   * tracked), we count only the COVERED portion in realizedPnL. The uncovered
-   * portion's proceeds are ignored — the bot can't claim profit on BTC it
-   * never bought. `remainingAssetQty` is derived from simple subtraction
-   * (total_buys − total_sells), making it robust to ordering artifacts: a
-   * physically-impossible "sell before buy" pattern (from manual orders mixed
-   * with bot orders) cannot inflate the apparent reserves any longer.
+   * Per-sell pnl rules (mirrors RegimeDashboard.jsx):
+   *   - Body/satellite sells: use server-annotated bodyPnl/satellitePnl. The
+   *     engine prorates body cost basis when a TP sells less than full body
+   *     content (regime-engine.js:803-806), so the linked buys' total cost
+   *     would over-attribute cost. The annotation reflects the prorated calc.
+   *   - Other sells: pnl = proceeds − Σ paired buy cost.
    *
-   * See docs/pnl-architecture.md R6 for the incident this prevents.
+   *   realizedPnL          = Σ per-sell pnl
+   *   realizedAssetPnL     = Σ holdback per sell (server annotation when present,
+   *                          else max(0, Σ paired_buy_size − sell_size))
+   *   heldOpenBuyCostBasis = Σ cost over buys with no sellOrderId (active bodies)
+   *
+   * Reserves (realizedAssetPnL) are treated as zero-cost: the cost was already
+   * attributed to the paired sell's basis.
+   *
    * Side-effect-free — safe to call on every status emit and state save.
-   * @returns {{realizedPnL: number, remainingAssetQty: number, uncoveredSellQty: number}}
+   * @returns {{realizedPnL: number, realizedAssetPnL: number, heldOpenBuyCostBasis: number, unpairedSellQty: number}}
+   */
+  const computeRealizedFromCyclePairs = () => {
+    // bodyPnl/satellitePnl annotations are written by annotateFillsByOrderId
+    // to ALL partial fill rows of the same orderId (same value on each), so
+    // we take ONE value per orderId — not summed.
+    const buyAggByOrderId = new Map();
+    const sellAggByOrderId = new Map();
+    for (const f of fills.values()) {
+      if (f.side === 'buy') {
+        const ex = buyAggByOrderId.get(f.orderId);
+        if (ex) {
+          ex.size += f.size || 0;
+          ex.cost += (f.quoteAmount || 0) + (f.netFee || 0);
+          if (f.sellOrderId && !ex.sellOrderId) ex.sellOrderId = f.sellOrderId;
+        } else {
+          buyAggByOrderId.set(f.orderId, {
+            size: f.size || 0,
+            cost: (f.quoteAmount || 0) + (f.netFee || 0),
+            sellOrderId: f.sellOrderId || null,
+          });
+        }
+      } else if (f.side === 'sell') {
+        const annotatedPnl = f.bodyPnl ?? f.satellitePnl;
+        const annotatedHoldback = f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset;
+        const ex = sellAggByOrderId.get(f.orderId);
+        if (ex) {
+          ex.size += f.size || 0;
+          ex.proceeds += (f.quoteAmount || 0) - (f.netFee || 0);
+          if (!ex.hasPnlAnnotation && annotatedPnl != null) {
+            ex.annotatedPnl = annotatedPnl;
+            ex.hasPnlAnnotation = true;
+          }
+          if (!ex.hasHoldbackAnnotation && annotatedHoldback != null) {
+            ex.annotatedHoldback = annotatedHoldback;
+            ex.hasHoldbackAnnotation = true;
+          }
+        } else {
+          sellAggByOrderId.set(f.orderId, {
+            size: f.size || 0,
+            proceeds: (f.quoteAmount || 0) - (f.netFee || 0),
+            annotatedPnl: annotatedPnl ?? 0,
+            hasPnlAnnotation: annotatedPnl != null,
+            annotatedHoldback: annotatedHoldback ?? 0,
+            hasHoldbackAnnotation: annotatedHoldback != null,
+          });
+        }
+      }
+    }
+
+    // Index buys by sellOrderId, pre-summing cost+size to keep the per-sell
+    // loop O(1) instead of re-reducing each paired buy list.
+    const pairedBySellOrderId = new Map();
+    let heldOpenBuyCostBasis = 0;
+    for (const buy of buyAggByOrderId.values()) {
+      if (!buy.sellOrderId) {
+        heldOpenBuyCostBasis += buy.cost;
+        continue;
+      }
+      const ex = pairedBySellOrderId.get(buy.sellOrderId);
+      if (ex) { ex.cost += buy.cost; ex.size += buy.size; }
+      else pairedBySellOrderId.set(buy.sellOrderId, { cost: buy.cost, size: buy.size });
+    }
+
+    let realizedPnL = 0;
+    let realizedAssetPnL = 0;
+    let unpairedSellQty = 0;
+    for (const [sellOrderId, sell] of sellAggByOrderId) {
+      const paired = pairedBySellOrderId.get(sellOrderId);
+
+      // Pnl: prefer server annotation (handles body proration). Fall back to
+      // proceeds − linked buy cost for sells without annotation.
+      if (sell.hasPnlAnnotation) {
+        realizedPnL += sell.annotatedPnl;
+      } else if (paired) {
+        realizedPnL += sell.proceeds - paired.cost;
+      } else {
+        unpairedSellQty += sell.size;
+      }
+
+      // Holdback: prefer server annotation; else derive from buy/sell size diff.
+      if (sell.hasHoldbackAnnotation) {
+        if (sell.annotatedHoldback > 0) realizedAssetPnL += sell.annotatedHoldback;
+      } else if (paired) {
+        const holdback = paired.size - sell.size;
+        if (holdback > 0) realizedAssetPnL += holdback;
+      }
+    }
+
+    return {
+      realizedPnL: roundUSDC(realizedPnL),
+      realizedAssetPnL: roundAsset(realizedAssetPnL),
+      heldOpenBuyCostBasis: roundUSDC(heldOpenBuyCostBasis),
+      unpairedSellQty: roundAsset(unpairedSellQty),
+    };
+  };
+
+  /**
+   * FIFO replay. Diagnostic only — not the source of truth.
+   * Uncovered-sell handling: only the covered portion contributes to
+   * realizedPnL; `remainingAssetQty` uses `total_buys − total_sells`.
+   * @returns {{realizedPnL: number, remainingAssetQty: number, uncoveredSellQty: number, remainingLotCost: number, remainingLotQty: number}}
    */
   const computeFifoRealized = () => {
     const allFills = Array.from(fills.values()).sort((a, b) => a.timestamp - b.timestamp);
@@ -1147,24 +1254,10 @@ const createFillLedger = (exchange, productId, pair) => {
   };
 
   /**
-   * Source-of-truth derivation for position.realizedPnL and position.realizedAssetPnL.
-   * Caller passes the current active-position asset quantity (sum of body.assetQty);
-   * realizedAssetPnL returns the reserves portion only (remaining FIFO lots minus
-   * active position), so it doesn't double-count asset that's still in active bodies.
-   * @param {number} activePositionAsset Sum of active body.assetQty
-   * @returns {{realizedPnL: number, realizedAssetPnL: number}}
+   * Source-of-truth derivation for position.realizedPnL and realizedAssetPnL.
+   * @returns {{realizedPnL: number, realizedAssetPnL: number, unpairedSellQty: number, heldOpenBuyCostBasis: number}}
    */
-  const getDerivedRealizedPnL = (activePositionAsset = 0) => {
-    const { realizedPnL, remainingAssetQty, uncoveredSellQty, remainingLotCost, remainingLotQty } = computeFifoRealized();
-    const reserves = Math.max(0, remainingAssetQty - (activePositionAsset || 0));
-    return {
-      realizedPnL,
-      realizedAssetPnL: roundAsset(reserves),
-      uncoveredSellQty,
-      remainingLotCost,
-      remainingLotQty,
-    };
-  };
+  const getDerivedRealizedPnL = () => computeRealizedFromCyclePairs();
 
   /**
    * Get the count of unique buy orders in the current cycle
@@ -1205,6 +1298,7 @@ const createFillLedger = (exchange, productId, pair) => {
     aggregateFills,
     recalculateCycles,
     computeFifoRealized,
+    computeRealizedFromCyclePairs,
     getDerivedRealizedPnL,
     updateFillCycleId,
     annotateFillsByOrderId,

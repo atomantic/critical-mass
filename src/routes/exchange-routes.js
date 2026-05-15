@@ -387,9 +387,7 @@ module.exports = (app, deps) => {
     const totalAssetSold = sellFills.reduce((s, f) => s + (f.size || 0), 0);
     const totalFees = allFills.reduce((s, f) => s + (f.netFee || 0), 0);
 
-    // FIFO derivation matches the engine's source of truth.
-    const bodyAssetSum = (position.celestialBodies || []).reduce((s, b) => s + (b.assetQty || 0), 0);
-    const fifo = fillLedger.getDerivedRealizedPnL(bodyAssetSum);
+    const derived = fillLedger.getDerivedRealizedPnL();
 
     // Cost basis breakdown derived from regime bodies (pending = on TP orders;
     // reserves = accumulated holdback not currently in a body).
@@ -398,10 +396,10 @@ module.exports = (app, deps) => {
     const pendingAsset = bodies.reduce((s, b) => s + (b.assetQty || 0), 0);
     const totalCostBasis = totalBought; // gross capital ever deployed on buys
     const avgCostPerAsset = totalAssetBought > 0 ? totalCostBasis / totalAssetBought : 0;
-    // Reserves cost basis: their unit cost is approximately the FIFO avg of
-    // the remaining lots, but a simpler & robust value is the running avg cost
-    // applied to reserve qty. Acceptable for the dashboard's display purposes.
-    const reservesAsset = fifo.realizedAssetPnL;
+    // Reserves are zero-cost in the cycle-pair model (their cost was attributed
+    // to the paired sell), but the dashboard's "reserves cost basis" panel
+    // expects an avg-cost figure for display only. Use running avg.
+    const reservesAsset = derived.realizedAssetPnL;
     const reservesCostBasis = reservesAsset * avgCostPerAsset;
 
     // Map regime shape onto the legacy `state` shape Dashboard.jsx expects.
@@ -440,9 +438,10 @@ module.exports = (app, deps) => {
         allocationUsed: state.totalAllocated,
         allocationRemaining: (config.totalAllocation || state.totalAllocated || 0) - state.totalAllocated,
         intervalsRun: state.totalIntervalsRun,
-        realizedProfit: fifo.realizedPnL,
-        // Diagnostic surface for the FIFO replay (see docs/pnl-architecture.md R6).
-        uncoveredSellQty: fifo.uncoveredSellQty || 0,
+        realizedProfit: derived.realizedPnL,
+        // Diagnostic: sells with no paired buys (e.g. manual sells, recovery
+        // sells with no linkage). Their proceeds are not counted in realizedPnL.
+        unpairedSellQty: derived.unpairedSellQty || 0,
       },
       costBasis: {
         totalCostBasis,

@@ -177,14 +177,29 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     if (result.success) {
       console.log(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)}`);
-      // Verify order is actually open on exchange (post-only orders can be immediately cancelled)
+
+      // Track first so WS fills/cancels can match even if the verify check below races
+      // exchange propagation. Without this, getOrder returning 404 (eventual consistency)
+      // or a stale CANCELLED would drop tracking and orphan any later fill.
+      pendingOrders.set(result.orderId, {
+        type: 'entry',
+        price: bidPrice,
+        size: assetQty,
+        sizeUsdc,
+        placedAt: Date.now(),
+      });
+      scheduleStaleOrderTimeout(result.orderId);
+
+      // Verify order is actually open on exchange (post-only orders can be immediately cancelled).
+      // Brief delay lets the order propagate; only treat as cancelled when Coinbase explicitly
+      // says so with zero filledSize — a thrown error / null response means "unknown", keep tracking.
+      await new Promise(r => setTimeout(r, 750));
       const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
 
-      if (!orderStatus || orderStatus.status === 'CANCELLED') {
-        // Order was immediately cancelled (likely post-only crossed spread)
+      if (orderStatus && orderStatus.status === 'CANCELLED' && orderStatus.filledSize === 0) {
         console.log(`⚠️ [${exchange}] Order ${result.orderId} was immediately cancelled by exchange`);
+        pendingOrders.delete(result.orderId);
 
-        // Retry with fresh prices if we have retries remaining
         const maxRetries = config.entryMaxRetries || 3;
         if (retryCount < maxRetries) {
           console.log(`🔄 [${exchange}] Retrying with fresh prices (retry ${retryCount + 1}/${maxRetries})`);
@@ -197,17 +212,6 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           errorMessage: 'Order immediately cancelled by exchange (post-only)',
         };
       }
-
-      pendingOrders.set(result.orderId, {
-        type: 'entry',
-        price: bidPrice,
-        size: assetQty,
-        sizeUsdc,
-        placedAt: Date.now(),
-      });
-
-      // Schedule stale order timeout check
-      scheduleStaleOrderTimeout(result.orderId);
 
       return {
         success: true,
@@ -225,6 +229,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const freshPrices = await adapter.getBidAsk(productId);
       return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1);
     }
+
+    console.log(`❌ [${exchange}] Entry bid failed: ${result.errorMessage || 'unknown error'} (${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)})`);
 
     return {
       success: false,
@@ -679,6 +685,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       } else if (order.type === 'body_tp') {
         removeBodyTracking(orderId);
       }
+    } else {
+      console.log(`🚨 [${exchange}] WS fill for untracked order ${orderId} — likely orphan (check audit-fills.js)`);
     }
   };
 

@@ -83,11 +83,11 @@ const calculateApyMetrics = (positionState, config, marketState) => {
   const assetValueUsd = reservesQty * currentPrice;  // legacy field — "what reserves are worth now"
   const heldAssetMarketValue = totalHeldQty * currentPrice;
 
-  // Cost basis of held BTC: bodies' tracked cost + reserves' approximate cost.
-  // Reserves cost is derived from running avg of all buys so far (not exact
-  // FIFO — that would require returning per-lot cost from getDerivedRealizedPnL,
-  // which we can add later if needed for sub-1% accuracy).
-  const heldAssetCostBasis = positionState.heldAssetCostBasis ?? bodyCost; // body cost is the conservative known piece
+  // Cost basis of currently-held position. In the cycle-pair model, reserves
+  // are zero-cost (their cost was attributed to the paired sell), so this
+  // tracks active body cost only — set by refreshRealizedFromCyclePairs as
+  // Σ cost over buys with no sellOrderId. Falls back to bodyCost for stale state.
+  const heldAssetCostBasis = positionState.heldAssetCostBasis ?? bodyCost;
   const unrealizedReturn = heldAssetMarketValue - heldAssetCostBasis;
 
   // Total economic return over principal: realized + unrealized.
