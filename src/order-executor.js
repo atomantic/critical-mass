@@ -1142,6 +1142,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     cancelAllEntries,
     handleOrderFill,
     handleOrderCancel,
+    /** Mark an orderId as intentionally settled so a subsequent
+     * `handleOrderFill(orderId)` no-op cleanup doesn't fire the
+     * "untracked order — likely orphan" warning. Use from offline-recovery
+     * paths in regime-engine.js where pendingOrders never had the order
+     * (engine restart cleared it; the saved order filled while offline). */
+    markSettled,
     getPendingCounts,
     getPendingEntries,
     getPendingOrdersList,

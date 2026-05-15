@@ -764,6 +764,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (orderStatus && (orderStatus.status === 'CANCELLED' || orderStatus.status === 'FAILED') && orderStatus.filledSize > 0) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
           console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} ${orderStatus.status} while offline with ${orderStatus.filledSize} partial fill — routing through handleOrderFill`);
+          orderExecutor.markSettled(body.tpOrderId);
           await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', orderStatus));
           continue;
         }
@@ -1692,6 +1693,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const partialSize = parseFloat(orderStatus.filledSize || 0);
           if (!isFullFilled && partialSize <= 0) continue; // truly empty cancel, ok to purge
           console.log(`📥 [${exchange}] Catching up offline entry ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`);
+          orderExecutor.markSettled(savedEntry.orderId);
           await handleOrderFill(buildPartialFillData(savedEntry.orderId, 'buy', orderStatus, {
             status: isFullFilled ? 'FILLED' : orderStatus.status,
             isPartialFill: !isFullFilled,
@@ -2857,6 +2859,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 filledValue: parseFloat(orderStatus.filledValue || 0),
                 averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
               };
+              orderExecutor.markSettled(positionState.activeTpOrderId);
               await handleOrderFill(fillData);
             }
           })
@@ -2892,6 +2895,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   filledValue: parseFloat(bodyStatus.filledValue || 0),
                   averageFilledPrice: parseFloat(bodyStatus.averageFilledPrice || 0),
                 };
+                orderExecutor.markSettled(body.tpOrderId);
                 await handleOrderFill(fillData);
               } else if (bodyStatus.status === 'CANCELLED' || bodyStatus.status === 'FAILED') {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
@@ -2900,6 +2904,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   // they're lost (Gemini has no order-events WS, and polling drops the
                   // order from pendingOrders once it sees CANCELLED).
                   console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} with ${bodyStatus.filledSize} partial fill — routing through handleOrderFill`);
+                  orderExecutor.markSettled(body.tpOrderId);
                   await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
                 } else {
                   console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`);
@@ -2916,6 +2921,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   // freezes the order and the partial-fill branch resizes the body,
                   // which also handles the stale-size case implicitly.
                   console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} has ${bodyStatus.filledSize} partial fill while OPEN — routing through handleOrderFill`);
+                  orderExecutor.markSettled(body.tpOrderId);
                   await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
                 } else {
                   // Pure stale-size detection (body merged/modified, TP placed for old size).
@@ -3614,10 +3620,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const result = await orderExecutor.placeTakeProfitOrder(sellQty, tpPrice, options);
 
     if (result.filledDuringCancel && result.filledOrderId) {
-      // Old TP filled while we were trying to cancel-and-replace — route to fill handler
+      // Old TP filled while we were trying to cancel-and-replace — route to fill handler.
+      // The cancel-replace path already removed the order from pendingOrders, so the
+      // engine's terminal handleOrderFill cleanup would log a spurious "orphan" warning
+      // without this markSettled.
       console.log(`📋 [${exchange}] TP filled during cancel-and-replace, routing to fill handler: ${result.filledOrderId}`);
       const orderStatus = await adapter.getOrder(result.filledOrderId).catch(() => null);
       if (orderStatus) {
+        orderExecutor.markSettled(result.filledOrderId);
         await handleOrderFill({
           orderId: result.filledOrderId,
           side: 'sell',
