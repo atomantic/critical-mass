@@ -564,40 +564,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   /**
    * Refresh positionState.realizedPnL and positionState.realizedAssetPnL.
    *
-   * SINGLE SOURCE OF TRUTH: both fields are derived from FIFO replay over
-   * the fill ledger. closed-trades.json is an audit log only — it is NOT
-   * consulted here. This makes both values:
-   *   - deterministic from the ledger alone
-   *   - self-healing after rectifications that clear closed-trades
-   *   - immune to body-consolidation inflation (no `+=` accumulators)
+   * SINGLE SOURCE OF TRUTH: both fields are derived from buy↔sell pairing
+   * in the fill ledger. Each buy carries the orderId of the sell that
+   * consumed it; each sell sums its paired buys' cost. closed-trades.json
+   * is an audit log only — it is NOT consulted here.
    *
-   * Methodology:
-   *   - FIFO consumes oldest buy lots first, allocating each lot's unit cost
-   *     to sells in arrival order.
-   *   - realizedPnL = Σ (sell proceeds − FIFO-allocated cost) across all sells.
-   *   - realizedAssetPnL = FIFO remainingAssetQty − active body asset =
-   *     "reserves" CRO that the bot bought but isn't currently in a body.
+   *   realizedPnL      = Σ (sell_proceeds − Σ paired_buy_cost)
+   *   realizedAssetPnL = Σ max(0, Σ paired_buy_size − sell_size)  (holdback)
    *
-   * Per-cycle and per-sell PnL displays elsewhere (closed-trades.json,
-   * UI sellGroups) are LOCAL APPROXIMATIONS that may diverge from this total
-   * when sells consume buys from earlier cycles (e.g. the black_hole TP
-   * draining 3 cycles' worth of accumulation). Treat position.realizedPnL
-   * as the authoritative number for "how much have we made overall".
+   * Held-back asset (reserves) is treated as zero-cost: the cost of the
+   * un-sold portion was attributed to the paired sell's cost basis. This
+   * matches the engine's design contract — buy(n)→sell(1) per cycle — and
+   * the per-cycle UI sums in RegimeDashboard.jsx are derived the same way,
+   * so the dashboard total always agrees with the cycle row sums.
    *
    * Safe to call on every state save and status emit (side-effect-free).
    */
-  const refreshRealizedFromFifo = () => {
-    const bodyAssetSum = (positionState.celestialBodies || []).reduce((s, b) => s + (b.assetQty || 0), 0);
-    const activeAsset = bodyAssetSum > 0 ? bodyAssetSum : (positionState.totalAsset || 0);
-    const fifo = fillLedger.getDerivedRealizedPnL(activeAsset);
-    positionState.realizedPnL = fifo.realizedPnL;
-    positionState.realizedAssetPnL = fifo.realizedAssetPnL;
-    // FIFO cost basis of held BTC (bodies + reserves). Used by APY calc for
-    // unrealized P&L = held_qty × current_price − heldAssetCostBasis.
-    positionState.heldAssetCostBasis = fifo.remainingLotCost;
+  const refreshRealizedFromCyclePairs = () => {
+    const derived = fillLedger.getDerivedRealizedPnL();
+    positionState.realizedPnL = derived.realizedPnL;
+    positionState.realizedAssetPnL = derived.realizedAssetPnL;
+    // Cost basis of currently-held bot position (open buys not yet linked to
+    // a fired TP). Used by APY calc for unrealized P&L of body assets:
+    //   unrealizedReturn = body_qty × current_price − heldAssetCostBasis.
+    // Reserves are zero-cost; their full mark-to-market value is profit.
+    positionState.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
     if (positionState.celestialState) {
-      positionState.celestialState.bodiesRealizedPnL = fifo.realizedPnL;
-      positionState.celestialState.bodiesRealizedAssetPnL = fifo.realizedAssetPnL;
+      positionState.celestialState.bodiesRealizedPnL = derived.realizedPnL;
+      positionState.celestialState.bodiesRealizedAssetPnL = derived.realizedAssetPnL;
     }
   };
 
@@ -612,8 +606,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.macroRegime = macroRegime.getState();
     }
 
-    // Refresh realized P&L (USD + asset reserves) from FIFO before persisting
-    refreshRealizedFromFifo();
+    // Refresh realized P&L (USD + asset reserves) from cycle pairs before persisting
+    refreshRealizedFromCyclePairs();
 
     const regimeState = regimeDetector.getState();
     const tpOptimizerState = tpOptimizer.exportState();
@@ -709,8 +703,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const pnl = proceeds - soldCostBasis;
         const holdbackAsset = roundAsset(positionState.totalAsset - summary.totalSize);
 
-        // realizedPnL/realizedAssetPnL are derived from FIFO replay over the fill ledger;
-        // refreshed in saveLiveState/getState. Don't accumulate them here.
+        // realizedPnL/realizedAssetPnL are refreshed in saveLiveState/getState;
+        // accumulating here would double-count.
         positionState.cyclesCompleted += 1;
 
         console.log(`💰 [${exchange}] Offline TP fill: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}`);
@@ -816,7 +810,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           cs.bodiesCompleted += 1;
           positionState.celestialState = cs;
           // realizedPnL / realizedAssetPnL (and their bodies* mirrors) are derived
-          // from FIFO replay; refreshRealizedFromFifo() repopulates them.
+          // from buy↔sell cycle pairing; refreshRealizedFromCyclePairs() repopulates them.
 
           const prevMaxUsdc = config.maxUsdcDeployed;
           config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
@@ -1506,14 +1500,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       closedTrades.migrateFromFills(fillLedger);
 
       // Recalculate cycles from fill ledger for cycle counting and per-cycle details.
-      // realizedPnL / realizedAssetPnL are derived directly from FIFO replay via
-      // refreshRealizedFromFifo (called in saveLiveState/getState); no need to seed
-      // them from closedTrades or recalcResult here.
       const recalcResult = fillLedger.recalculateCycles();
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
-        refreshRealizedFromFifo();
-        console.log(`📋 [${exchange}] FIFO realized: $${positionState.realizedPnL.toFixed(2)} USD, ${positionState.realizedAssetPnL.toFixed(6)} ${baseCurrency} reserves (${recalcResult.cyclesCompleted} cycles)`);
+        refreshRealizedFromCyclePairs();
+        console.log(`📋 [${exchange}] Cycle-pair realized: $${positionState.realizedPnL.toFixed(2)} USD, ${positionState.realizedAssetPnL.toFixed(6)} ${baseCurrency} reserves (${recalcResult.cyclesCompleted} cycles)`);
       }
 
       // Backfill APY tracking start time from earliest fill in ledger
@@ -1851,8 +1842,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Start reconciliation and state saving
     if (!isDryRun) {
       startReconciliation();
-      // Refresh realized P&L from FIFO replay over the fill ledger on startup
-      refreshRealizedFromFifo();
+      // Refresh realized P&L from buy↔sell cycle pairing on startup
+      refreshRealizedFromCyclePairs();
       // Start periodic state saving for live mode (every 5 minutes)
       stateSaveInterval = setInterval(saveLiveState, 300000);
     } else {
@@ -2365,7 +2356,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
         cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
-        // realizedPnL / realizedAssetPnL derived from FIFO replay (refreshRealizedFromFifo).
 
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
@@ -2429,7 +2419,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
         if (!isPartial) cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
-        // realizedPnL / realizedAssetPnL derived from FIFO replay (refreshRealizedFromFifo).
         // Partial fills are handled naturally — FIFO sees only the actual sold qty.
 
         // Grow capital
@@ -2590,8 +2579,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const pnl = proceeds - soldCostBasis;
           const holdbackAsset = roundAsset(positionState.totalAsset - summary2.totalSize);
 
-          // realizedPnL / realizedAssetPnL derived from FIFO replay (refreshRealizedFromFifo).
-          positionState.assetOnOrder = 0;
+            positionState.assetOnOrder = 0;
           positionState.cyclesCompleted += 1;
 
           const prevMaxUsdc = config.maxUsdcDeployed;
@@ -3291,17 +3279,32 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Place entry with dynamic offset
     let result;
+    const isInsufficientFundsMessage = (msg) =>
+      typeof msg === 'string' && (
+        msg.includes('InsufficientFunds') ||
+        msg.includes('INSUFFICIENT_AVAILABLE_BALANCE') ||
+        msg.includes('INSUFFICIENT_FUND') // Coinbase: INSUFFICIENT_FUND / PREVIEW_INSUFFICIENT_FUND
+      );
+
     try {
       result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps);
     } catch (err) {
-      // Catch InsufficientFunds (Gemini 406), INSUFFICIENT_AVAILABLE_BALANCE (Crypto.com 500), and similar balance errors
-      if (err.message?.includes('InsufficientFunds') || err.message?.includes('INSUFFICIENT_AVAILABLE_BALANCE') || err.status === 406) {
+      if (isInsufficientFundsMessage(err.message) || err.status === 406) {
         const cooldownMs = config.insufficientFundsCooldownMs || 60000;
         insufficientFundsCooldownUntil = Date.now() + cooldownMs;
         console.log(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
         return;
       }
       throw err; // Re-throw other errors
+    }
+
+    // Coinbase returns insufficient-funds as {success:false, errorMessage:"INSUFFICIENT_FUND"}
+    // rather than throwing — apply the same cooldown so we don't hot-loop on a drained wallet.
+    if (result && result.success === false && isInsufficientFundsMessage(result.errorMessage)) {
+      const cooldownMs = config.insufficientFundsCooldownMs || 60000;
+      insufficientFundsCooldownUntil = Date.now() + cooldownMs;
+      console.log(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
+      return;
     }
 
     if (result.success) {
@@ -3813,7 +3816,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
         cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
-        // realizedPnL / realizedAssetPnL derived from FIFO replay (refreshRealizedFromFifo).
 
         const prevMaxUsdc = config.maxUsdcDeployed;
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
@@ -3851,7 +3853,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       } else {
         // Fallback: untracked sell (legacy core TP or unknown)
         const holdbackAsset = roundAsset(positionState.totalAsset - assetQty);
-        // realizedPnL / realizedAssetPnL derived from FIFO replay (refreshRealizedFromFifo).
         positionState.assetOnOrder = 0;
         positionState.cyclesCompleted += 1;
 
@@ -3922,7 +3923,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {Object}
    */
   const getState = () => {
-    refreshRealizedFromFifo();
+    refreshRealizedFromCyclePairs();
     return ({
     isRunning,
     isDryRun,

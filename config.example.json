@@ -49,7 +49,7 @@
         "maxRateLimits": 3,
         "maxLatencyMs": 5000,
         "safeRecoveryMs": 60000,
-        "reconcileIntervalMs": 300000,
+        "reconcileIntervalMs": 60000,
         "maxOpenOrders": 50,
         "maxSpreadBps": 50,
         "spreadPauseMs": 300000,

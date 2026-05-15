@@ -1,95 +1,122 @@
 # P&L Calculation Architecture
 
-This doc describes how realized and unrealized P&L are computed across the
-system, what regressions we've hit, and the invariants that prevent them
-from happening again. **Read this before changing anything that touches
-`realizedPnL`, `realizedAssetPnL`, `closed-trades.json`, or
-`fill-ledger.json`.**
+This doc describes how realized and unrealized P&L are computed, the
+historical regressions we've hit, and the invariants that prevent them from
+recurring. **Read this before changing anything that touches `realizedPnL`,
+`realizedAssetPnL`, `closed-trades.json`, or `fill-ledger.json`.**
+
+See `CLAUDE.md` for the short version. This doc is the long form.
+
+## The model
+
+The engine flips buy orders profitably. The accounting unit is the **cycle**:
+
+```
+buy(n) → sell(1)
+```
+
+Many buys accumulate inside a body; one TP sell closes them. **Cycles are
+atomic** — a sell only consumes its own cycle's buys. The one designed
+exception is the operator-triggered "Collapse All" merge, which deliberately
+spans cycles.
+
+### Holdback is intentional
+
+A body buys `body.assetQty` of asset, then places a TP for
+`body.assetOnOrder = body.assetQty − planned_holdback`. When the TP fills:
+
+- `summary.totalSize` (filled qty) **equals `body.assetOnOrder`** on a
+  healthy 100% fill — NEVER `body.assetQty`.
+- The remainder, `body.assetQty − summary.totalSize`, is intentionally
+  retained as asset-side profit (reserves).
+- Cost basis attributed to this sell is prorated:
+  `proratedCostBasis = body.costBasis × (summary.totalSize / body.assetQty)`.
+
+The unattributed cost (the cost basis of the held-back portion) is
+implicitly written off — reserves carry forward as zero-cost. This is the
+design: the bot takes profit in BOTH dollars and asset.
+
+The "partial fill" case worth defending against is
+`summary.totalSize < body.assetOnOrder` (TP placed for X, exchange filled <X
+before something interrupted) — distinct from designed holdback.
 
 ## Single source of truth
 
 ```
-position.realizedPnL       ← FIFO replay over fill-ledger.json
-position.realizedAssetPnL  ← FIFO remainingAssetQty − Σ body.assetQty
+position.realizedPnL       ← Σ per-sell bodyPnl across the fill ledger
+position.realizedAssetPnL  ← Σ per-sell bodyHoldbackAsset
+position.heldAssetCostBasis ← Σ cost over buys with no sellOrderId
 ```
 
-Both are derived **only** from the fill ledger. The derivation is in
-`src/fill-ledger.js:getDerivedRealizedPnL()`, invoked by
-`src/regime-engine.js:refreshRealizedFromFifo()` on every state save and
-status emit.
+All three are derived in `src/fill-ledger.js:computeRealizedFromCyclePairs()`,
+invoked by `src/regime-engine.js:refreshRealizedFromCyclePairs()` on every
+state save and status emit. closed-trades.json is an audit log only.
 
-### Why FIFO
+### Why per-sell annotations
 
-- **Deterministic**: same ledger → same numbers, every time.
-- **Atomic**: a single function with no side effects.
-- **Cycle-agnostic**: it doesn't matter which "cycle" a buy or sell is
-  tagged with; FIFO consumes lots in arrival order regardless.
-- **Body-consolidation safe**: bodies merging/splitting don't change
-  the lot queue, so consolidation can't inflate or deflate the total.
+`bodyPnl` and `bodyHoldbackAsset` are written by the engine when a TP fills,
+using the body's prorated cost basis at sell time. They reflect the engine's
+own ledger of "what this cycle netted." Reading them back is a true cycle-pair
+derivation.
 
-### Methodology
+**Crucial detail:** `annotateFillsByOrderId` writes the same metadata to
+**every partial-fill row** of the same `orderId`. The cycle-pair derivation
+takes ONE bodyPnl value per orderId — summing across partials would multiply
+the pnl by N. See the dedup logic in `computeRealizedFromCyclePairs`.
 
-For each sell in chronological order:
-1. Consume buy lots from the front of the FIFO queue (oldest first).
-2. Cost basis = Σ (consumed_qty × lot_unit_cost) including the consumed
-   slice of the lot the sell partially exhausts.
-3. Sell's realized contribution = `proceeds − cost_basis` (proceeds =
-   `quoteAmount − netFee`).
+### Total P&L display
 
-`realizedPnL` = Σ all sells' contributions.
-`realizedAssetPnL` = `Σ remaining_lot.qty − Σ active_body.assetQty`
-(remainder of buys that haven't been consumed by sells, minus what's
-currently allocated to an active body = "reserves" CRO/BTC).
+```
+total = realizedPnL + (realizedAssetPnL × current_price)
+```
+
+Realized USD profit + reserves marked-to-market. Reserves are zero-cost; their
+full mark-to-market value is profit. The UI's per-cycle rows and the grand
+total header are derived from the same pairing, so they always agree.
 
 ## Subordinate display sources
 
-These all exist for UI/audit purposes. They may briefly diverge from the
-source-of-truth values — **that's expected**. Don't "fix" the source of
-truth to match them.
+These exist for UI/audit purposes. They may briefly diverge from the
+source-of-truth values — that's expected. Don't "fix" the source of truth
+to match them.
 
 | Source | What it is | When it diverges |
 |---|---|---|
-| `closed-trades.json` | Append-only audit log: one entry per sell, recorded at sell time using `body.avgPrice × qtySold` as cost basis | Body-prorated cost differs from FIFO unit cost when consolidation has run; per-sell pnl is a snapshot of "what the engine thought at sell time" |
-| `closedTradesSummary.totalPnl` in API | Σ over `closed-trades.json` entries | Methodology gap above; also may be incomplete during recovery (see "Self-healing") |
-| UI per-cycle PnL (sum of `g.sell.pnl`) | Buys grouped under sells via `buy.sellOrderId`, then `proceeds − Σ paired buy cost` | Can wildly diverge when sells span cycles (the canonical case: the black_hole TP draining 3 cycles' worth of buys) — a sell in cycle N may consume buys from cycle N-2. Per-cycle locality breaks |
+| `closed-trades.json` | Append-only audit log: one entry per closed body | Recorded at close time using body.costBasis snapshot; should match cycle-pair sum within rounding when data is clean |
+| `closedTradesSummary.totalPnl` API field | Σ over closed-trades entries | May lag if recovery scripts inserted bodies but didn't backfill closed-trades |
 | `body.avgPrice` | Weighted average of body's recorded buys | Drifts when bodies consolidate; only meaningful for the current snapshot |
-
-**Display rule:** the dashboard shows `position.realizedPnL` as the
-authoritative number. Per-cycle and per-sell numbers are presented for
-detail, not totals.
-(`admin/src/components/RegimeDashboard.jsx` Summary line at line ~2862.)
+| FIFO replay (`computeFifoRealized`) | Lot-consumption over the entire ledger by timestamp, ignoring cycle boundaries | RETAINED for diagnostics only. Disagrees with cycle pairing when sells span cycles or when a single body's TP retains designed holdback |
 
 ## What is NOT a source of truth
 
-These all have memory entries documenting incidents — don't relearn them
-the hard way.
+These all have memory entries documenting incidents — don't relearn the hard
+way.
 
 - **Exchange balance** (`adapter.getAccountBalance()`): includes non-bot
-  assets (personal holdings, other bots). Never derive bot metrics from
-  it. See `feedback_exchange_balance_danger.md`.
-- **State `totalAsset` as an accumulator**: it's a snapshot, sum of
-  current body `assetQty`. Mutating it via `+=` during consolidation has
-  caused the realizedAssetPnL inflation bug. See
-  `project_realizedassetpnl_inflation.md`.
-- **Closed-trades sum**: was used as `realizedPnL` source until a
-  rectification cleared the file; engine then used a partial sum. Now
-  always FIFO. The check `closedCount > 0 ? closedTrades.sum : fifo` is
-  removed — `getDerivedRealizedPnL` is the only path.
+  assets. Never derive bot metrics from it. See
+  `feedback_exchange_balance_danger.md`.
+- **State `totalAsset` as an accumulator**: it's a snapshot, sum of current
+  body `assetQty`. Mutating via `+=` during consolidation has caused the
+  realizedAssetPnL inflation bug. See `project_realizedassetpnl_inflation.md`.
+- **Closed-trades sum as `realizedPnL`**: was the source until rectification
+  cleared the file; engine then used a partial sum. Now always cycle-pair.
+- **FIFO replay**: ignores cycle boundaries; over-counts when designed
+  holdback exists. Diagnostic only.
 
 ## Self-healing properties
 
-A correctly-built system survives operator interventions (clearing
-files, rebuilding state, manual order placement) without P&L drift.
+A correctly-built system survives operator interventions (clearing files,
+rebuilding state, manual orders) without P&L drift.
 
 | Action | Self-heal? | Mechanism |
 |---|---|---|
-| Delete `closed-trades.json` | ✅ | `closedTrades.load()` returns false → `migrateFromFills()` rebuilds from ledger |
-| Truncate to `[]` | ✅ | `load()` returns true but `migrateFromFills()` is **always** called now (gate removed); record() dedups |
-| Clear ledger and rebuild from exchange truth | ✅ | `cryptocom-rectify-from-exchange.js` ingests exchange fills; FIFO re-derives realizedPnL on next engine refresh |
-| Bodies removed/added | ✅ | FIFO doesn't care; `realizedAssetPnL` re-derives from `remainingAssetQty − bodyAssetSum` |
-| WS drops fills | ❌ until ingested | This is the underlying data integrity problem. Rectification scripts pull from exchange API to fix |
+| Delete `closed-trades.json` | ✅ | `migrateFromFills()` rebuilds from ledger |
+| Truncate to `[]` | ✅ | `migrateFromFills()` runs unconditionally; `record()` dedups |
+| Clear ledger and rebuild from exchange truth | ✅ | Rectification ingests exchange fills; cycle-pair re-derives on next refresh |
+| Bodies removed/added | ✅ | Cycle-pair derivation reads ledger annotations, not body state |
+| WS drops fills | ❌ until ingested | Underlying data integrity problem; rectification scripts pull from exchange API |
 
-## Regression catalog (lessons from incidents)
+## Regression catalog
 
 These all happened. If you're tempted to undo one of these fixes, read the
 linked memory or commit first.
@@ -98,8 +125,8 @@ linked memory or commit first.
 - **Symptom**: reserves CRO grew to 66,534 when exchange held 38k total.
 - **Cause**: body consolidation rolled holdback into a `+=` accumulator
   without deducting the recycled portion.
-- **Fix**: derive `realizedAssetPnL` from FIFO (`remainingAssetQty −
-  bodyAssetSum`), never from running totals.
+- **Fix**: derive `realizedAssetPnL` from per-sell `bodyHoldbackAsset`
+  annotations summed across the ledger. Never from running totals.
 - **Don't**: re-introduce any `position.realizedAssetPnL +=` pattern.
 
 ### R2: Auto-orphan startup recovery sold $242K of BTC
@@ -107,57 +134,75 @@ linked memory or commit first.
   assets" and placed an immediate-fill sell.
 - **Cause**: "non-body asset" detection counted actively-managed BTC as
   orphaned.
-- **Fix**: removed auto-recovery; engine only logs untracked positions
-  now.
+- **Fix**: removed auto-recovery; engine only logs untracked positions now.
 - **Don't**: re-introduce automatic order placement based on
   balance-vs-state diffs. Manual review + UI button only.
 
-### R3: Closed-trades preferred over FIFO after clear
-- **Symptom**: realizedPnL fell from $2,582 to $120.37 after a
-  rectification cleared `closed-trades.json` to `[]`.
-- **Cause**: `refreshRealizedFromFifo()` had `closedCount > 0 ?
-  closedTrades.sum : fifo`. Once new sells got logged post-rectify, the
-  partial closed-trades sum became preferred over FIFO.
-- **Fix**: always use FIFO; closed-trades is audit-only.
-  `migrateFromFills()` now runs unconditionally (idempotent dedup).
+### R3: Closed-trades preferred over derived realizedPnL after clear
+- **Symptom**: realizedPnL fell from $2,582 to $120.37 after a rectification
+  cleared `closed-trades.json` to `[]`.
+- **Cause**: refresh logic had `closedCount > 0 ? closedTrades.sum : derived`.
+  Once new sells got logged post-rectify, the partial closed-trades sum became
+  preferred.
+- **Fix**: always use the ledger-derived value; closed-trades is audit-only.
+  `migrateFromFills()` runs unconditionally (idempotent dedup).
 - **Don't**: re-introduce closed-trades as the realizedPnL source.
 
-### R4: UI per-cycle PnL sum shown as totals
-- **Symptom**: cycles 6–9 showed negative thousands after over-broad buy
-  re-linking; the visible "total" diverged from FIFO.
-- **Cause**: per-cycle PnL is a local approximation; in-cycle buys ↔
-  sells don't reflect cross-cycle FIFO allocation.
-- **Fix**: UI Summary row reads `position.realizedPnL` directly.
-  Per-cycle PnL displays remain as informational rows.
-- **Don't**: change the Summary calc to sum per-cycle PnL.
-
-### R7: APY math and return-decomposition errors
-- **Symptom**: coinbase showed `estimatedApy: 1397%` and `totalLiquidValuePercent: 117%`. CRO showed similarly inflated values.
-- **Cause(s)**, all in `src/apy-calculator.js`:
-  - Return percentages used `initialCapital` (= `config.maxUsdcDeployed`, the budget cap) as denominator instead of `depositedCapital` (actual user deposit). For coinbase, $157K budget vs $110K deposit = 30% understatement.
-  - `totalLiquidValue = realizedPnL + reserves_value_at_current_price` double-counted: it treated the full market value of held BTC as "return" instead of subtracting the cost the bot paid for it. For coinbase, that single mistake added ~$200K of phantom return.
-  - APY math compounded a linearly-extrapolated daily rate: `(1 + dailyPct)^365`. The right formula for "return r over y years" is `(1 + r)^(1/y) − 1`. The old form ballooned whenever a short measurement window had a high local rate.
-- **Fix**: switch denominator to `depositedCapital`. Decompose into `realizedReturn` (FIFO USD profit), `unrealizedReturn` (held_qty × current_price − FIFO cost basis of held lots), `totalReturn = realized + unrealized`. Use time-weighted APY formula. Persist `heldAssetCostBasis` on `positionState` from `refreshRealizedFromFifo` so APY can correctly compute unrealized even when the engine is stopped (offline-status path re-derives FIFO from the ledger).
-- **Don't**: re-introduce `totalLiquidValue = realizedPnL + assetValueUsd` as a return metric (it's still exposed as a legacy alias but is wrong by construction).
-
-### R6: FIFO inflation from uncovered sells
-- **Symptom**: coinbase `realizedAssetPnL` showed 2.486 BTC; correct value was 2.054 BTC. Inflation of exactly 0.432 BTC across the fund's lifetime.
-- **Cause**: a 1 BTC manual sell on 2026-02-08 happened before bot ledger had 1 BTC of buys (only 0.568 BTC tracked at that moment). The old `computeFifoRealized()` silently:
-  - Added full proceeds to `realizedPnL` (without cost basis for the uncovered portion)
-  - Kept the lot queue intact (didn't reduce remaining qty)
-- This happens any time a ledger contains manual orders, restored-from-recovery sells, or any sell timestamped before its matching buys.
-- **Fix**: `computeFifoRealized()` now (a) derives `remainingAssetQty` from `totalBuyQty − totalSellQty` (simple subtraction, robust to chronology), (b) prorates each sell's `realizedPnL` contribution by the covered fraction. Also returns `uncoveredSellQty` for diagnostics.
-- **Don't**: re-introduce `lots.reduce(...)` as the source for `remainingAssetQty`. The lot queue is for cost-basis tracking; quantity conservation needs a separate, simpler accumulator.
+### R4 (SUPERSEDED): UI per-cycle PnL sum shown as totals
+- **Original symptom**: cycles 6–9 showed negative thousands after over-broad
+  buy re-linking; the visible "total" diverged from FIFO.
+- **Original fix**: UI Summary read `position.realizedPnL` (FIFO) directly.
+- **Why superseded**: the rationale was "sells span cycles; FIFO is the only
+  honest answer." The engine actually enforces atomic cycles (verified
+  2026-05-14: 99.8% atomicity across all live ledgers; the one cross-cycle
+  case is the operator-triggered Collapse All). FIFO actively diverges from
+  the cycle-pair sum because of designed holdback, so it's wrong as a
+  summary.
+- **Current rule**: UI summary sums per-cycle pnl. Engine summary derives
+  the same way. They agree by construction.
 
 ### R5: Synthetic DCA-convert buys double-counted
 - **Symptom**: ledger net +515K CRO when exchange held 38K.
-- **Cause**: DCA→regime migration emitted `dca-convert-*` synthetic
-  buy fills representing pre-migration position, but the actual exchange
-  fills that built that position were ALSO in the ledger.
+- **Cause**: DCA→regime migration emitted `dca-convert-*` synthetic buy fills
+  representing pre-migration position, but the actual exchange fills that
+  built that position were ALSO in the ledger.
 - **Fix**: rectification rebuilds ledger purely from exchange truth;
   synthetics get dropped.
-- **Don't**: insert synthetic position-snapshot fills into the ledger.
-  Use a separate state field if you need a starting balance.
+- **Don't**: insert synthetic position-snapshot fills into the ledger. Use a
+  separate state field if you need a starting balance.
+
+### R6: FIFO inflation from uncovered sells (diagnostic-only after R4)
+- **Symptom**: coinbase `realizedAssetPnL` showed 2.486 BTC; correct value
+  was 2.054 BTC. Inflation of exactly 0.432 BTC.
+- **Cause**: a 1 BTC manual sell on 2026-02-08 happened before bot ledger had
+  1 BTC of buys. The old `computeFifoRealized()` silently added full
+  proceeds without cost basis for the uncovered portion.
+- **Fix**: `computeFifoRealized()` now derives `remainingAssetQty` from
+  `totalBuyQty − totalSellQty` and prorates each sell's `realizedPnL`
+  contribution by the covered fraction.
+- **Note**: cycle-pair derivation is immune to this bug because it relies on
+  the explicit `sellOrderId` linkage, not chronological ordering. R6 only
+  matters for the diagnostic FIFO function.
+
+### R7: APY math and return-decomposition errors
+- **Symptom**: coinbase showed `estimatedApy: 1397%` and
+  `totalLiquidValuePercent: 117%`.
+- **Cause(s)**, all in `src/apy-calculator.js`:
+  - Return percentages used `initialCapital` (= `config.maxUsdcDeployed`,
+    the budget cap) as denominator instead of `depositedCapital` (actual
+    user deposit).
+  - `totalLiquidValue = realizedPnL + reserves_value_at_current_price`
+    double-counted: it treated the full market value of held BTC as
+    "return" instead of subtracting cost.
+  - APY math compounded a linearly-extrapolated daily rate:
+    `(1 + dailyPct)^365`. Right formula for "return r over y years" is
+    `(1 + r)^(1/y) − 1`.
+- **Fix**: switch denominator to `depositedCapital`. Decompose into
+  `realizedReturn` (USD profit), `unrealizedReturn`
+  (`held_qty × current_price − heldAssetCostBasis`), and
+  `totalReturn = realized + unrealized`. Use time-weighted APY formula.
+- **Don't**: re-introduce
+  `totalLiquidValue = realizedPnL + assetValueUsd` as a return metric.
 
 ## Recovery playbook
 
@@ -169,12 +214,12 @@ When P&L looks wrong, work through these in order:
 curl -s 'http://localhost:5563/api/<exchange>/regime/status?pair=<PAIR>' \
   | jq '.status.position | {realizedPnL, realizedAssetPnL, totalAsset}'
 
-# What FIFO over the ledger says (should match)
+# What cycle-pair derivation says (should match)
 node -e '
 const fl = require("./src/fill-ledger").createFillLedger("<exchange>","<PAIR>","<PAIR>");
-console.log(fl.getDerivedRealizedPnL(/* bodyAssetSum from state */));'
+console.log(fl.computeRealizedFromCyclePairs());'
 ```
-If these disagree → bug in `refreshRealizedFromFifo` or state staleness.
+If these disagree → bug in `refreshRealizedFromCyclePairs` or state staleness.
 
 ### Step 2: Check exchange truth
 ```bash
@@ -200,35 +245,36 @@ node scripts/cryptocom-rectify-from-exchange.js --apply
 pm2 restart critical-mass-<exchange>
 ```
 Rebuilds the ledger purely from exchange truth, drains drained bodies,
-re-derives all P&L via FIFO.
+re-derives all P&L from cycle pairs.
 
 ## Invariants — code review checklist
 
 When reviewing changes that touch P&L code, verify:
 
-1. **`position.realizedPnL` is set only from FIFO** (`getDerivedRealizedPnL()`).
+1. **`position.realizedPnL` is set only from `computeRealizedFromCyclePairs`**.
    No other source. No `closedCount > 0` branching back to it.
 2. **`position.realizedAssetPnL` has no `+=` mutations.** It's a derived
-   value, reset every `refreshRealizedFromFifo()` call.
-3. **Exchange balance is never used to compute bot metrics.** Only used
-   for reality-check logging or by manual rectification scripts.
-4. **`closed-trades.json` writes are append-only at sell time** (in
-   `regime-engine.js:handleOrderFill`-style paths). It's an audit log,
-   not a state mutator.
-5. **`migrateFromFills()` is callable at every startup** (no
-   `trades.length > 0` gate). Dedup happens in `record()`.
-6. **UI summary totals don't sum per-cycle PnL**; they read
-   `position.realizedPnL` directly.
-7. **No synthetic fills in the ledger** (DCA-convert, consolidated,
-   dry-run-buy were all sources of bugs). If you need a baseline, store
-   it in regime-state, not as ledger entries.
-8. **`remainingAssetQty` uses `totalBuys − totalSells`, not `lots.reduce(qty)`.**
-   The lot queue is for cost-basis tracking only; quantity conservation
-   needs a separate accumulator (R6).
+   value, reset every refresh.
+3. **bodyPnl/bodyHoldbackAsset are read ONCE per orderId**, not summed across
+   partial-fill rows of the same order. Summing multiplies the value by N.
+4. **Exchange balance is never used to compute bot metrics.** Only for
+   reality-check logging or by rectification scripts.
+5. **`closed-trades.json` writes are append-only at sell time** (in the
+   `handleOrderFill` path). Audit log, not state mutator.
+6. **`migrateFromFills()` is callable at every startup** (no `length > 0`
+   gate). Dedup happens in `record()`.
+7. **UI summary totals are summed from per-cycle pnl**, not sourced
+   independently. Cycle rows and grand total agree by construction.
+8. **No synthetic fills in the ledger** (DCA-convert, consolidated, dry-run-buy
+   were all sources of bugs). Use a separate state field for baselines.
 9. **Return percentages use `depositedCapital` as denominator**, not
-   `initialCapital`/`maxUsdcDeployed`/`currentCapital` (R7).
+   `initialCapital`/`maxUsdcDeployed`/`currentCapital`.
 10. **`totalReturn = realizedReturn + unrealizedReturn`**, where
     `unrealizedReturn = held_qty × current_price − heldAssetCostBasis`.
-    Never `realizedReturn + asset_market_value` (R7).
+    Never `realizedReturn + asset_market_value`.
 11. **APY uses time-weighted compounding**: `(1 + totalReturn)^(1/years) − 1`,
-    not `(1 + daily_rate)^365` (R7).
+    not `(1 + daily_rate)^365`.
+12. **Don't conflate `body.assetQty` with the planned TP size.** The TP is
+    placed for `body.assetOnOrder = body.assetQty − planned_holdback`. A
+    healthy 100% fill has `summary.totalSize === body.assetOnOrder`, never
+    equal to `body.assetQty`.

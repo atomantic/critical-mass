@@ -2723,8 +2723,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       return Array.from(m.values())
                     }
 
-                    // P&L: per-sell computation from bodyPnl annotations (sum across all
-                    // fills per order) with linked-buy fallback. Only counts realized P&L.
+                    // P&L: per-sell computation from bodyPnl annotations. The annotation
+                    // is written to EVERY partial-fill row of the same orderId — take it
+                    // ONCE per orderId, not summed (summing multiplies pnl by N partials).
+                    // Mirrors fill-ledger.js:computeRealizedFromCyclePairs.
                     const pnlMap = new Map()
                     const buysBySellId = new Map()
                     filteredFills.forEach(fill => {
@@ -2738,7 +2740,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                         if (prev) {
                           prev.proceeds += (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
                           prev.totalSold += fill.size
-                          if (bodyPnl != null) { prev.pnl += bodyPnl; prev.holdback += holdback; prev.hasAnnotation = true }
+                          if (!prev.hasAnnotation && bodyPnl != null) { prev.pnl = bodyPnl; prev.holdback = holdback; prev.hasAnnotation = true }
                         } else {
                           pnlMap.set(fill.orderId, {
                             pnl: bodyPnl ?? 0,
@@ -2751,10 +2753,17 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       }
                     })
 
-                    // Compute authoritative total: prefer linked-buy cost (FIFO capped
-                    // to sell qty to handle over-linked buys), fall back to annotations
+                    // Authoritative total: trust the bodyPnl annotation (engine's prorated
+                    // cost basis at sell time). Buy linkage in the ledger is often partial —
+                    // not every body buy gets sellOrderId stamped — so "proceeds − linked
+                    // cost" inflates pnl by the missing-linkage cost. Only fall back to
+                    // proceeds − linked when the sell has no annotation at all.
                     pnlMapTotal = 0
                     for (const [orderId, data] of pnlMap) {
+                      if (data.hasAnnotation) {
+                        pnlMapTotal += data.pnl
+                        continue
+                      }
                       const linked = buysBySellId.get(orderId)
                       if (linked && linked.length > 0) {
                         linked.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
@@ -2768,8 +2777,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           remain -= use
                         }
                         data.pnl = data.proceeds - buyCost
-                        pnlMapTotal += data.pnl
-                      } else if (data.hasAnnotation) {
                         pnlMapTotal += data.pnl
                       }
                     }
@@ -2885,17 +2892,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     return <div className="text-gray-500 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
                   }
 
-                  // Prefer the position card's realizedPnL — that's the single source of truth
-                  // (FIFO over the full ledger, or closed-trades sum when populated). Per-cycle
-                  // sums from sellGroups can diverge because the in-cycle buy↔sell pairing
-                  // doesn't track the global FIFO cost basis (sells may consume buys from earlier
-                  // cycles). Fall back to sellGroups only if realizedPnL is unavailable.
-                  const closedTradesSummary = status?.closedTradesSummary
-                  const totalPnl = position.realizedPnL != null
-                    ? position.realizedPnL
-                    : (closedTradesSummary?.count > 0
-                        ? closedTradesSummary.totalPnl
-                        : (pnlMapTotal != null ? pnlMapTotal : sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)))
+                  // Source of truth: sum of per-sell pnl across all cycles. The engine's
+                  // contract is buy(n)→sell(1) per cycle, so each sell's pnl reflects its
+                  // paired buys' cost basis. Summing across cycles gives total realized USD.
+                  const totalPnl = sellGroups.reduce((s, g) => s + (g.sell.pnl || 0), 0)
                   let totalHoldback = 0
 
                   // Shared sell + buy row renderer
@@ -3049,13 +3049,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       if (buyTs > 0) { entry.minTs = Math.min(entry.minTs, buyTs); entry.maxTs = Math.max(entry.maxTs, buyTs) }
                     })
                   })
-                  // Use position reserves as authoritative holdback (capped by exchange balance).
-                  // Per-cycle annotation sums are inflated by CRO body consolidation bug.
-                  if (position.realizedAssetPnL > 0) {
-                    totalHoldback = position.realizedAssetPnL
-                  } else {
-                    cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
-                  }
+                  // Reserves = sum of per-cycle holdback (asset bought but not included in
+                  // the paired sell). Derived from cycle pairs, same source as totalPnl.
+                  cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
                   const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => {
                     if (a.cycleId === 'unknown') return 1
                     if (b.cycleId === 'unknown') return -1
@@ -3067,15 +3063,34 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   return (
                     <div className="overflow-x-auto space-y-2">
                       {/* Grand totals bar */}
-                      {cycleGroups.length > 0 && (
-                        <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
-                          <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
-                          <span className={`font-mono ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
-                            {totalHoldback > 0 && <span className="ml-1 text-cyan-400">+{totalHoldback.toFixed(8)}</span>}
-                          </span>
-                        </div>
-                      )}
+                      {cycleGroups.length > 0 && (() => {
+                        const reservesUsd = (totalHoldback || 0) * (market.lastPrice || 0)
+                        const grandTotal = totalPnl + reservesUsd
+                        const showReserves = totalHoldback > 0
+                        return (
+                          <div className="flex items-center justify-between px-2 py-1.5 bg-gray-700/30 rounded text-xs">
+                            <span className="text-gray-400">{sellGroups.length} sells across {cycleGroups.length} {cycleGroups.length === 1 ? 'cycle' : 'cycles'}</span>
+                            <span className="font-mono">
+                              <span className={totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                {totalPnl !== 0 ? `${totalPnl >= 0 ? '+' : ''}${formatCurrency(totalPnl)}` : '—'}
+                              </span>
+                              {showReserves && (
+                                <>
+                                  <span className="ml-1 text-cyan-400">+{totalHoldback.toFixed(8)} {asset}</span>
+                                  {reservesUsd > 0 && (
+                                    <>
+                                      <span className="ml-1 text-cyan-400/70">({formatCurrency(reservesUsd)})</span>
+                                      <span className={`ml-2 font-bold ${grandTotal >= 0 ? 'text-green-300' : 'text-red-300'}`}>
+                                        = {grandTotal >= 0 ? '+' : ''}{formatCurrency(grandTotal)}
+                                      </span>
+                                    </>
+                                  )}
+                                </>
+                              )}
+                            </span>
+                          </div>
+                        )
+                      })()}
                       {/* Orphaned buys (not linked to any sell) */}
                       {!isDryRun && orphanedBuys && orphanedBuys.length > 0 && (
                         <div className="border border-yellow-700/40 rounded-lg overflow-hidden">

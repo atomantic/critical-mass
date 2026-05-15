@@ -186,7 +186,7 @@ const REGIME_DEFAULTS = {
 
   // Invariants
   maxOpenOrders: 100,
-  reconcileIntervalMs: 300000,
+  reconcileIntervalMs: 60000,
 
   // Tail Events
   maxSpreadBps: 50,
