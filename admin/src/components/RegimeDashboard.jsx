@@ -172,22 +172,56 @@ const CACHE_HEALTH_STYLES = {
 const LONG_TERM_BIAS_TOOLTIP = (
   <>
     <div className="font-semibold text-gray-200 mb-1">Long-Term Bias (Depression Score)</div>
-    <div className="mb-1">Composite signal of how cheap an asset is relative to its trailing window. <strong>Phase 1 — observe only.</strong> Does not affect sizing yet.</div>
+    <div className="mb-1">Composite signal of how cheap an asset is relative to its trailing window. <strong>Phase 2 — advisory.</strong> Sizing is unchanged until you click <em>Apply Suggested</em>.</div>
     <div>• <strong>Percentile of range</strong> (60% weight): position in trailing high/low. 1.0 = at the period low.</div>
     <div>• <strong>Drawdown</strong> (30%): % below trailing high. Maps 80% drawdown → 1.0.</div>
     <div>• <strong>Z-score</strong> (10%): standard deviations below the trailing mean.</div>
-    <div className="mt-1">The &quot;Suggested&quot; level is what the bot would auto-pick if Phase 3 were enabled. See PLAN.md → Auto-Aggressiveness Roadmap.</div>
+    <div className="mt-1">When &quot;Suggested&quot; diverges from &quot;Current&quot;, an <em>Apply Suggested</em> button appears so you can adopt the recommendation with one click. See PLAN.md → Auto-Aggressiveness Roadmap.</div>
   </>
 )
 
-// Long-term bias / depression score panel (Phase 1: observe-only)
-function LongTermBiasPanel({ bias, config, presets }) {
+// Long-term bias / depression score panel (Phase 2: advisory)
+function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfigUpdate, addToast }) {
+  const [applying, setApplying] = useState(false)
   if (!bias) return null
 
   const currentLevel = detectAggressivenessLevel(config, presets)
   const suggested = bias.suggestedLevel || 'conservative'
   const suggestedStyle = SUGGESTED_LEVEL_STYLES[suggested] || SUGGESTED_LEVEL_STYLES.conservative
   const divergent = currentLevel && currentLevel !== 'custom' && suggested !== currentLevel
+  const canApply = !!(exchange && presets?.[suggested] && onConfigUpdate)
+  const suggestedLabel = SUGGESTED_LEVEL_STYLES[suggested]?.label || suggested
+  const currentLabel = currentLevel === 'custom'
+    ? 'Custom'
+    : (AGGRESSIVENESS_LEVEL_META[currentLevel]?.label || currentLevel)
+
+  const handleApplySuggested = async () => {
+    if (applying || !canApply) return
+    setApplying(true)
+    const params = computeAggressivenessParams(suggested, presets)
+    const updates = { aggressiveness: suggested, ...params }
+    const res = await fetch(`/api/${exchange}/regime/config${pairQuery || ''}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    })
+    setApplying(false)
+    if (res.ok) {
+      addToast?.({
+        type: 'success',
+        title: 'Aggressiveness applied',
+        message: `${currentLabel} → ${suggestedLabel} (suggested by long-term bias)`,
+      })
+      onConfigUpdate()
+    } else {
+      const err = await res.json().catch(() => ({}))
+      addToast?.({
+        type: 'error',
+        title: 'Could not apply suggested level',
+        message: (err.errors && err.errors[0]) || err.error || `HTTP ${res.status}`,
+      })
+    }
+  }
 
   const cacheHealth = bias.cache?.health || 'empty'
   const healthStyle = CACHE_HEALTH_STYLES[cacheHealth] || CACHE_HEALTH_STYLES.empty
@@ -226,7 +260,7 @@ function LongTermBiasPanel({ bias, config, presets }) {
             {healthStyle.label}
           </span>
           <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-900 text-gray-500 border border-gray-700">
-            Observe-only
+            Advisory
           </span>
         </div>
       </div>
@@ -255,10 +289,21 @@ function LongTermBiasPanel({ bias, config, presets }) {
           <div className="flex items-center justify-between text-[10px] text-gray-500 mt-0.5">
             <span>Current</span>
             <span>
-              {currentLevel === 'custom' ? 'Custom' : (AGGRESSIVENESS_LEVEL_META[currentLevel]?.label || currentLevel)}
+              {currentLabel}
               {divergent && <span className="ml-1 text-yellow-400">⚠ diverges</span>}
             </span>
           </div>
+        )}
+        {divergent && canApply && (
+          <button
+            type="button"
+            onClick={handleApplySuggested}
+            disabled={applying}
+            title={`Apply ${suggestedLabel} preset to ${exchange}`}
+            className={`mt-2 w-full px-2 py-1 text-[11px] font-medium rounded border transition-all ${suggestedStyle.border} ${suggestedStyle.text} hover:bg-gray-900/60 ${applying ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+          >
+            {applying ? 'Applying…' : `Apply Suggested (${suggestedLabel})`}
+          </button>
         )}
       </div>
 
@@ -1991,12 +2036,16 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               )
             })()}
 
-            {/* Long-Term Bias Panel (Phase 1: observe-only depression score) */}
+            {/* Long-Term Bias Panel (Phase 2: advisory depression score + one-click apply) */}
             {status?.macro?.longTermBias && (
               <LongTermBiasPanel
                 bias={status.macro.longTermBias}
                 config={config}
                 presets={presets}
+                exchange={exchange}
+                pairQuery={pairQuery}
+                onConfigUpdate={fetchConfig}
+                addToast={addToast}
               />
             )}
 

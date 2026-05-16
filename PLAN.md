@@ -45,10 +45,10 @@ Goal: extend the bot's lookback beyond the current ~20-day macro window so it ca
 - [x] Zero impact on sizing — purely advisory until Phase 2
 - **Risks to watch in this phase:** signal correlation across assets (does it actually agree with what you'd manually pick?), candle-fetch reliability (Gemini caps at ~500 candles, no pagination), restart behavior (cache must survive PM2 restarts cleanly)
 
-### Phase 2 — Advisory (next)
-- One-click "Apply suggested aggressiveness" button on the panel — user stays in the loop
-- Toast notification when suggested level diverges from current by ≥1 step for >N hours
-- Optional Telegram alert for level-change suggestions
+### Phase 2 — Advisory (in progress)
+- [x] One-click "Apply suggested aggressiveness" button on the panel — user stays in the loop
+- [ ] Toast notification when suggested level diverges from current by ≥1 step for >N hours
+- [ ] Optional Telegram alert for level-change suggestions
 
 ### Phase 3 — Auto (gated on Phase 2 confidence)
 - `autoAggressivenessEnabled: true` — bot multiplies sizing/scales by the depression-score curve
