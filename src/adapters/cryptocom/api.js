@@ -582,46 +582,105 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
-   * Get fills for an order
+   * Get fills for an order.
+   *
+   * Crypto.com has no per-order trades endpoint. `private/get-trades` returns
+   * at most 100 trades and applies an implicit ~24h window when no time range
+   * is set — so the naive "fetch recent trades and filter" approach silently
+   * drops fills for orders whose partial fills span longer than the window or
+   * happen after >100 other trades. That's how the May 2026 CRO partial-fill
+   * leak happened (28k CRO across 32 fills on 14 orders went unrecorded).
+   *
+   * Fix: look up the order to bound the trade scan to its actual lifetime
+   * (create_time → update_time, padded), scope by instrument_name, and walk
+   * the window in 24h buckets with halving if a bucket hits the 100-trade cap.
+   *
    * @param {string} orderId - Order ID
    * @returns {Promise<OrderFill[]>} List of fills
    */
   adapter.getOrderFills = async (orderId) => {
-    // Crypto.com doesn't have a direct order fills endpoint
-    // We need to use get-trades and filter by order_id, or use order detail
-    const result = await makePrivateRequest('private/get-trades', {
-      // Get recent trades and filter
+    // Step 1: locate the order so we can bound the scan
+    let orderInfo = {};
+    try {
+      const detail = await makePrivateRequest('private/get-order-detail', { order_id: orderId });
+      orderInfo = detail?.order_info || detail || {};
+    } catch (err) {
+      console.log(`⚠️ Crypto.com getOrderFills: order-detail lookup failed for ${orderId}: ${err.message}`);
+    }
+    const instrument = orderInfo.instrument_name;
+    const createTime = Number(orderInfo.create_time || 0);
+    const updateTime = Number(orderInfo.update_time || 0);
+
+    // Pad the window to absorb clock skew + late-arriving cancel/fill events.
+    // Cap historical lookback at 7d so an old orderId can't fan out into an
+    // unbounded scan.
+    const MAX_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    let windowEnd, windowStart;
+    if (createTime > 0) {
+      windowStart = Math.max(createTime - 60_000, now - MAX_LOOKBACK_MS);
+      windowEnd = Math.min(Math.max(updateTime, createTime) + 5 * 60_000, now);
+    } else {
+      // Order-detail unavailable — fall back to last hour, instrument-agnostic.
+      windowStart = now - 60 * 60 * 1000;
+      windowEnd = now;
+    }
+
+    // Step 2: walk the window in 24h buckets, halving on 100-cap hits.
+    const baseParams = instrument ? { instrument_name: instrument } : {};
+    const seen = new Set();
+    const matching = [];
+    let cursor = windowEnd;
+    let pages = 0;
+    while (cursor > windowStart && pages < 50) {
+      pages++;
+      let span = Math.min(24 * 60 * 60 * 1000, cursor - windowStart);
+      let trades = [];
+      let halvings = 0;
+      while (true) {
+        const ws = cursor - span;
+        const result = await makePrivateRequest('private/get-trades', {
+          ...baseParams,
+          start_time: String(ws),
+          end_time: String(cursor),
+        });
+        trades = result?.data || [];
+        if (trades.length < 100 || span <= 60_000 || halvings >= 10) break;
+        span = Math.floor(span / 2);
+        halvings++;
+      }
+      for (const t of trades) {
+        const tid = String(t.trade_id);
+        if (seen.has(tid)) continue;
+        seen.add(tid);
+        if (String(t.order_id) === String(orderId)) matching.push(t);
+      }
+      cursor -= span;
+    }
+
+    return matching.map(trade => {
+      const price = parseFloat(trade.traded_price || trade.price || 0);
+      const size = parseFloat(trade.traded_quantity || trade.quantity || 0);
+      const feeAmount = parseFloat(trade.fee || 0);
+
+      return {
+        tradeId: trade.trade_id?.toString(),
+        orderId: trade.order_id?.toString(),
+        productId: trade.instrument_name,
+        side: (trade.side || '').toUpperCase(),
+        price,
+        size,
+        sizeInQuote: price * size,
+        commission: feeAmount,
+        totalCommission: feeAmount,
+        rebate: 0,
+        netFee: feeAmount,
+        tradeTime: (trade.create_time || trade.trade_time)
+          ? new Date(trade.create_time || trade.trade_time).toISOString()
+          : new Date().toISOString(),
+        liquidityIndicator: trade.liquidity_indicator || 'TAKER',
+      };
     });
-
-    const trades = result.data || [];
-
-    const fills = trades
-      .filter(trade => trade.order_id?.toString() === orderId.toString())
-      .map(trade => {
-        const price = parseFloat(trade.traded_price || trade.price || 0);
-        const size = parseFloat(trade.traded_quantity || trade.quantity || 0);
-        const feeAmount = parseFloat(trade.fee || 0);
-
-        return {
-          tradeId: trade.trade_id?.toString(),
-          orderId: trade.order_id?.toString(),
-          productId: trade.instrument_name,
-          side: (trade.side || '').toUpperCase(),
-          price,
-          size,
-          sizeInQuote: price * size,
-          commission: feeAmount,
-          totalCommission: feeAmount,
-          rebate: 0,
-          netFee: feeAmount,
-          tradeTime: (trade.create_time || trade.trade_time)
-            ? new Date(trade.create_time || trade.trade_time).toISOString()
-            : new Date().toISOString(),
-          liquidityIndicator: trade.liquidity_indicator || 'TAKER',
-        };
-      });
-
-    return fills;
   };
 
   /**
