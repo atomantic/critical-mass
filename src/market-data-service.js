@@ -190,6 +190,9 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
   return { fetched: true, fillsCount: fills.length, ingestedCount };
 };
 
+/** Interval between periodic REST metrics updates (ms) */
+const METRICS_INTERVAL_MS = 60000;
+
 const CANCEL_RETRY_BASE_MS = 30000;
 const CANCEL_RETRY_MAX_MS = 300000; // 5 min cap on backoff
 // Time budget for a single cancel-retry chain. Gemini and Crypto.com's
@@ -663,7 +666,15 @@ const createMarketDataService = (exchange, pair) => {
     if (metricsUpdateInterval) {
       clearInterval(metricsUpdateInterval);
     }
-    metricsUpdateInterval = setInterval(() => updateMetrics(adapter, productId), 60000);
+    // updateMetrics is async; guard the interval callback so an unhandled
+    // rejection (e.g. a throw inside calculateAllMetrics) can't crash the process.
+    metricsUpdateInterval = setInterval(
+      () =>
+        updateMetrics(adapter, productId).catch((err) =>
+          console.log(`❌ [${exchange}] Metrics update failed: ${err.message}`)
+        ),
+      METRICS_INTERVAL_MS
+    );
 
     // Initial metrics fetch
     await updateMetrics(adapter, productId);
