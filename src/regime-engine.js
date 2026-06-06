@@ -37,14 +37,10 @@ const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
 const celestialHierarchy = require('./celestial-hierarchy');
+const { fmtCurrency: fmtPrice } = require('./shared-utils');
 
-/** Format price with appropriate decimal places for the asset */
-const fmtPrice = (p) => {
-  if (p == null || isNaN(p)) return '-';
-  if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
-  if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
-  return `$${p.toFixed(5)}`;
-};
+/** Interval between periodic metrics/regime-classification updates (ms) */
+const METRICS_INTERVAL_MS = 60000;
 
 /**
  * Cancel a sell TP order that was detected as partially filled by polling.
@@ -2658,10 +2654,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Start periodic metrics updater
    */
   const startMetricsUpdater = () => {
-    // Update metrics every 60 seconds
-    metricsInterval = setInterval(updateMetrics, 60000);
+    // updateMetrics is async and awaits exchange/order calls that can reject;
+    // an unhandled rejection in a bare interval callback would crash the
+    // process, so guard every invocation.
+    const runMetrics = () =>
+      updateMetrics().catch((err) =>
+        console.log(`❌ [${exchange}] Metrics update crashed: ${err.message}`)
+      );
+    metricsInterval = setInterval(runMetrics, METRICS_INTERVAL_MS);
     // Initial update
-    updateMetrics();
+    runMetrics();
   };
 
   /**

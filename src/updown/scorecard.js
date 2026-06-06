@@ -366,7 +366,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     for (const windowMs of EVAL_WINDOWS) {
       const timeout = setTimeout(() => {
         pendingTimeouts.delete(timeout)
-        evaluateOutcome(prediction, windowMs)
+        // evaluateOutcome is synchronous; a throw here would crash the
+        // process from the timer callback.
+        try {
+          evaluateOutcome(prediction, windowMs)
+        } catch (err) {
+          log('WARN', `📊 Scorecard eval failed predId=${prediction.id} err=${err.message}`)
+        }
       }, windowMs)
       pendingTimeouts.add(timeout)
     }
@@ -614,8 +620,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       // De-dup: if a signal_change was recorded within DEDUP_WINDOW_MS, skip this sample
       if (now - lastSampleTs < DEDUP_WINDOW_MS) return
       lastSampleTs = now
-      const result = computeSignalsFn()
-      recordPrediction(result, 'interval')
+      // computeSignalsFn/recordPrediction are synchronous; a throw here would
+      // crash the process from the interval callback.
+      try {
+        recordPrediction(computeSignalsFn(), 'interval')
+      } catch (err) {
+        log('WARN', `📊 Scorecard sample failed err=${err.message}`)
+      }
     }, SAMPLE_INTERVAL_MS)
 
     // Daily prune of old scorecard files (every 24h)

@@ -14,6 +14,7 @@
 
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { getBaseCurrency } = require('./config-utils');
+const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR } = require('./shared-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -42,18 +43,6 @@ const { getBaseCurrency } = require('./config-utils');
  * @property {number} price - Market price at decision
  * @property {Object} details - Additional details
  */
-
-/**
- * Format a price for display
- * @param {number} p - Price value
- * @returns {string}
- */
-const fmtPrice = (p) => {
-  if (p == null || isNaN(p)) return '-';
-  if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
-  if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
-  return `$${p.toFixed(5)}`;
-};
 
 let orderIdCounter = 0;
 
@@ -161,7 +150,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null) => {
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
     const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
-    const offsetMultiplier = 1 - (offsetBps / 10000);
+    const offsetMultiplier = 1 - (offsetBps / BASIS_POINTS_DIVISOR);
     let bidPrice = currentBid * offsetMultiplier;
 
     // Ensure post-only by checking against ask

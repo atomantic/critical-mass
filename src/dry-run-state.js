@@ -81,8 +81,19 @@ const loadAllState = () => {
     return { exchanges: {}, version: STATE_VERSION };
   }
 
-  const raw = fs.readFileSync(STATE_FILE, 'utf8');
-  const state = JSON.parse(raw);
+  let state;
+  // A corrupt state file must not crash the process — this runs from a
+  // debounced setTimeout flush as well as on load. But returning empty would
+  // let the next save overwrite the file, silently dropping every other fund's
+  // dry-run state — so quarantine the bad file aside for manual recovery first.
+  try {
+    state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  } catch (err) {
+    const quarantinePath = `${STATE_FILE}.corrupt-${Date.now()}`;
+    fs.renameSync(STATE_FILE, quarantinePath);
+    console.log(`⚠️ Dry-run state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)}, starting fresh`);
+    return { exchanges: {}, version: STATE_VERSION };
+  }
 
   // Version check for future migrations
   if (state.version !== STATE_VERSION) {
