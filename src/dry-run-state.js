@@ -83,11 +83,15 @@ const loadAllState = () => {
 
   let state;
   // A corrupt state file must not crash the process — this runs from a
-  // debounced setTimeout flush as well as on load. Start fresh on failure.
+  // debounced setTimeout flush as well as on load. But returning empty would
+  // let the next save overwrite the file, silently dropping every other fund's
+  // dry-run state — so quarantine the bad file aside for manual recovery first.
   try {
     state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
   } catch (err) {
-    console.log(`⚠️ Dry-run state unreadable (${err.message}), starting fresh`);
+    const quarantinePath = `${STATE_FILE}.corrupt-${Date.now()}`;
+    fs.renameSync(STATE_FILE, quarantinePath);
+    console.log(`⚠️ Dry-run state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)}, starting fresh`);
     return { exchanges: {}, version: STATE_VERSION };
   }
 
