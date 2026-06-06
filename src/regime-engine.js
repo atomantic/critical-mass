@@ -106,6 +106,37 @@ const buildPartialFillData = (orderId, side, orderStatus, extras = {}) => ({
 });
 
 /**
+ * Decide how much USDC an entry can actually spend, given the requested size,
+ * the real available wallet balance, and the minimum order size.
+ *
+ * The risk-manager usdc-cap check only compares deployed cost basis against
+ * maxUsdcDeployed — it does NOT know the real wallet balance. Without this,
+ * a cap set far above funded capital makes the engine keep firing entries the
+ * exchange rejects with "Insufficient balance in source account" every cycle.
+ *
+ * Pure function (no I/O) so the trim/skip/cooldown branches are unit-testable.
+ *
+ * @param {number} requestedUsdc - Desired order size in USDC
+ * @param {number|null} availableQuote - Real available quote balance, or null if it couldn't be fetched
+ * @param {number} minSize - Minimum order size in USDC
+ * @returns {{action: 'place'|'skip'|'cooldown', sizeUsdc?: number}}
+ *   - 'place': proceed with sizeUsdc (possibly trimmed to the wallet balance)
+ *   - 'skip': balance unverifiable — skip this entry without arming the cooldown
+ *   - 'cooldown': wallet can't fund even the minimum — arm the insufficient-funds cooldown
+ */
+const resolveEntryBudget = (requestedUsdc, availableQuote, minSize) => {
+  if (availableQuote == null) return { action: 'skip' };
+  if (availableQuote >= requestedUsdc) return { action: 'place', sizeUsdc: requestedUsdc };
+  if (availableQuote >= minSize) {
+    // Floor (don't round) to the cent so the trimmed size never exceeds the real
+    // balance — Math.round could push it back above the wallet and re-trigger the
+    // very rejection this trim prevents.
+    return { action: 'place', sizeUsdc: Math.floor(availableQuote * 100) / 100 };
+  }
+  return { action: 'cooldown' };
+};
+
+/**
  * Build the dashboard pendingOrders payload: enrich the executor's tracked
  * orders with body/cost-basis metadata, then union any body TPs the executor
  * doesn't track in-memory (after engine stop, or pre-reconcile after start).
@@ -3266,32 +3297,24 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return;
     }
 
-    // Real-balance preflight: the usdc-cap check above only compares deployed
-    // cost basis against maxUsdcDeployed — it does NOT know the actual wallet
-    // balance. Without this, a cap set far above funded capital makes the engine
-    // keep firing entries the exchange will reject with "Insufficient balance in
-    // source account" on every cycle. Mirror the ladder path: cap entries at the
-    // real available quote balance and arm the insufficient-funds cooldown when
-    // the wallet can't fund the smallest order.
+    // Real-balance preflight (see resolveEntryBudget): cap entries at the real
+    // available quote balance so a maxUsdcDeployed cap above funded capital can't
+    // make the engine hot-loop on unfundable orders. Mirror the ladder path.
     const quoteCurrency = getQuoteCurrency(productId);
     const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
-    if (!quoteBalance) {
-      // Can't verify balance — skip this entry rather than risk an unfundable order.
+    const availableQuote = quoteBalance ? (quoteBalance.available || 0) : null;
+    const budget = resolveEntryBudget(sizing.sizeUsdc, availableQuote, minSize);
+    if (budget.action === 'skip') {
+      // Balance unverifiable — skip this entry rather than risk an unfundable order.
       return;
     }
-    const availableQuote = parseFloat(quoteBalance.available) || 0;
-    if (availableQuote < sizing.sizeUsdc) {
-      // Trim to what the wallet can actually fund; if even the minimum won't fit,
-      // pause entries (cooldown) so we don't hot-loop on a drained wallet.
-      if (availableQuote >= minSize) {
-        sizing.sizeUsdc = roundUSDC(availableQuote);
-      } else {
-        const cooldownMs = config.insufficientFundsCooldownMs || 60000;
-        insufficientFundsCooldownUntil = Date.now() + cooldownMs;
-        console.log(`⏸️ [${exchange}] Wallet ${quoteCurrency} balance $${availableQuote.toFixed(2)} below min order $${minSize} — pausing entries for ${cooldownMs / 1000}s`);
-        return;
-      }
+    if (budget.action === 'cooldown') {
+      const cooldownMs = config.insufficientFundsCooldownMs || 60000;
+      insufficientFundsCooldownUntil = Date.now() + cooldownMs;
+      console.log(`⏸️ [${exchange}] Wallet ${quoteCurrency} balance $${(availableQuote || 0).toFixed(2)} below min order $${minSize} — pausing entries for ${cooldownMs / 1000}s`);
+      return;
     }
+    sizing.sizeUsdc = budget.sizeUsdc;
 
     // Calculate dynamic offset based on momentum direction
     // UP momentum: smaller offset to get fills before price rises further
@@ -4801,4 +4824,5 @@ module.exports = {
   createInitialPositionState,
   cancelPartialFillOrder,
   buildPartialFillData,
+  resolveEntryBudget,
 };
