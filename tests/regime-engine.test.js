@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget } = require('../src/regime-engine');
 
 describe('cancelPartialFillOrder', () => {
   const makeDeps = ({ cancelOrder, exchange = 'gemini' } = {}) => {
@@ -93,5 +93,40 @@ describe('cancelPartialFillOrder', () => {
       'order-default-log'
     );
     assert.equal(result.cancelled, true);
+  });
+});
+
+describe('resolveEntryBudget', () => {
+  const MIN = 10;
+
+  it('places the full requested size when the wallet can cover it', () => {
+    assert.deepEqual(resolveEntryBudget(100, 250, MIN), { action: 'place', sizeUsdc: 100 });
+  });
+
+  it('places at exactly the requested size when balance equals it', () => {
+    assert.deepEqual(resolveEntryBudget(100, 100, MIN), { action: 'place', sizeUsdc: 100 });
+  });
+
+  it('skips (no cooldown) when the balance is unverifiable', () => {
+    assert.deepEqual(resolveEntryBudget(100, null, MIN), { action: 'skip' });
+  });
+
+  it('trims to the available balance when it is below the requested size but above the minimum', () => {
+    assert.deepEqual(resolveEntryBudget(100, 67.056, MIN), { action: 'place', sizeUsdc: 67.05 });
+  });
+
+  it('floors the trimmed size so it never rounds above the real balance', () => {
+    // 67.059 must not become 67.06 (which exceeds the wallet) — Math.round would.
+    const { sizeUsdc } = resolveEntryBudget(100, 67.059, MIN);
+    assert.ok(sizeUsdc <= 67.059, `trimmed size ${sizeUsdc} must not exceed balance 67.059`);
+    assert.equal(sizeUsdc, 67.05);
+  });
+
+  it('signals cooldown when the wallet cannot fund even the minimum order', () => {
+    assert.deepEqual(resolveEntryBudget(100, 5, MIN), { action: 'cooldown' });
+  });
+
+  it('signals cooldown on a fully drained wallet', () => {
+    assert.deepEqual(resolveEntryBudget(100, 0, MIN), { action: 'cooldown' });
   });
 });
