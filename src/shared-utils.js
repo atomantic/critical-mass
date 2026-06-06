@@ -18,6 +18,14 @@ const {
   getTimeUntilNext,
 } = require('./interval-utils');
 
+// ============ Numeric Constants ============
+
+/**
+ * Divisor for converting basis points to a fractional multiplier
+ * (e.g. offsetBps / BASIS_POINTS_DIVISOR). 1 bps = 0.01% = 1/10000.
+ */
+const BASIS_POINTS_DIVISOR = 10000;
+
 // ============ JSON / TSV Helpers ============
 
 /**
@@ -316,7 +324,22 @@ const fmtPrice = (p) => {
   return parseFloat(s).toString();
 };
 
+/**
+ * Format a price as a currency string with magnitude-scaled precision.
+ * Used by the order executors for log lines: large prices show 2 decimals,
+ * sub-dollar prices show more digits. Returns '-' for missing/NaN values.
+ * @param {number} p - Price value
+ * @returns {string} e.g. "$1234.56", "$0.04321", or "-"
+ */
+const fmtCurrency = (p) => {
+  if (p == null || isNaN(p)) return '-';
+  if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
+  if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
+  return `$${p.toFixed(5)}`;
+};
+
 module.exports = {
+  BASIS_POINTS_DIVISOR,
   readJSON,
   writeJSON,
   parseTSV,
@@ -329,4 +352,5 @@ module.exports = {
   shouldAutoResumeRegime,
   incrementToDecimals,
   fmtPrice,
+  fmtCurrency,
 };

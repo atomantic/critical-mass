@@ -13,6 +13,7 @@ const { resolveFundDataDir } = require('./migration');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { atomicWriteSync } = require('./state-tracker');
 const { getBaseCurrency } = require('./config-utils');
+const { fmtCurrency } = require('./shared-utils');
 
 /**
  * @typedef {import('./types').Fill} Fill
@@ -118,12 +119,7 @@ const createFillLedger = (exchange, productId, pair) => {
   // discarding history.
   let hasLoadedSuccessfully = false;
   const baseCurrency = getBaseCurrency(productId);
-  const fmtPrice = (p) => {
-    if (p == null || isNaN(p)) return '-';
-    if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
-    if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
-    return `$${p.toFixed(5)}`;
-  };
+  const fmtPrice = fmtCurrency;
 
   /**
    * Load fill ledger from disk

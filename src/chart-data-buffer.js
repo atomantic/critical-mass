@@ -65,17 +65,23 @@ const createChartDataBuffer = (exchange, pair) => {
    */
   const saveToDisk = () => {
     if (!dirty) return;
-    const filePath = getFilePath(exchange, pair);
-    const dir = path.dirname(filePath);
-    fs.mkdirSync(dir, { recursive: true });
-    const data = {
-      priceHistory: trimOldData(priceHistory),
-      atrHistory: trimOldData(atrHistory),
-      regimeHistory: trimOldData(regimeHistory),
-      savedAt: Date.now(),
-    };
-    fs.writeFileSync(filePath, JSON.stringify(data));
-    dirty = false;
+    // Runs from a setInterval — a thrown fs error here would crash the
+    // process, so catch and log instead (leaving dirty=true to retry).
+    try {
+      const filePath = getFilePath(exchange, pair);
+      const dir = path.dirname(filePath);
+      fs.mkdirSync(dir, { recursive: true });
+      const data = {
+        priceHistory: trimOldData(priceHistory),
+        atrHistory: trimOldData(atrHistory),
+        regimeHistory: trimOldData(regimeHistory),
+        savedAt: Date.now(),
+      };
+      fs.writeFileSync(filePath, JSON.stringify(data));
+      dirty = false;
+    } catch (err) {
+      console.log(`⚠️ chart buffer save failed for ${exchange}: ${err.message}`);
+    }
   };
 
   /**
@@ -84,8 +90,15 @@ const createChartDataBuffer = (exchange, pair) => {
   const loadFromDisk = () => {
     const filePath = getFilePath(exchange, pair);
     if (!fs.existsSync(filePath)) return;
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const data = JSON.parse(raw);
+    let data;
+    // A corrupt/truncated persisted buffer must not crash engine startup;
+    // fall back to an empty buffer on parse failure.
+    try {
+      data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (err) {
+      console.log(`⚠️ chart buffer load failed for ${exchange} (starting empty): ${err.message}`);
+      return;
+    }
     if (data.priceHistory) priceHistory = trimOldData(data.priceHistory);
     if (data.atrHistory) atrHistory = trimOldData(data.atrHistory);
     if (data.regimeHistory) regimeHistory = trimOldData(data.regimeHistory);

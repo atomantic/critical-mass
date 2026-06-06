@@ -248,7 +248,14 @@ const createNotifier = () => {
 
     const delay = target.getTime() - now.getTime();
     dailySummaryTimer = setTimeout(() => {
-      sendDailySummary();
+      // setTimeout callback: a throw in sendDailySummary would crash the
+      // process and skip the reschedule, silently killing all future
+      // summaries. Guard so the daily cadence always continues.
+      try {
+        sendDailySummary();
+      } catch (err) {
+        log('ERROR', `📨 Daily summary failed: ${err.message}`);
+      }
       // Reschedule for next day
       scheduleDailySummary();
     }, delay);
