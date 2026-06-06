@@ -759,15 +759,19 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   fs.mkdirSync(dir, { recursive: true });
 
   // Optimistic version locking: detect external edits. A corrupt/unreadable
-  // disk file must not crash background savers (this runs from timer paths) —
-  // skip the merge and let the fresh write below repair the file.
+  // disk file must not crash background savers (this runs from timer paths).
+  // But silently overwriting it would discard the operator's protected fields
+  // (regime state holds live financial position) — so quarantine the bad file
+  // aside for manual recovery before the fresh write below replaces it.
   const myVersion = saveVersions.get(stateFile) || 0;
   if (fs.existsSync(stateFile)) {
     let diskData = null;
     try {
       diskData = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     } catch (err) {
-      console.log(`⚠️ Regime state unreadable for version check, overwriting: ${err.message}`);
+      const quarantinePath = `${stateFile}.corrupt-${Date.now()}`;
+      fs.renameSync(stateFile, quarantinePath);
+      console.log(`⚠️ Regime state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)} before overwrite`);
     }
     const diskVersion = (diskData?.position && diskData.position._saveVersion) || 0;
     if (diskData && diskVersion > myVersion) {
