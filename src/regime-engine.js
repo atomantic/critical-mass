@@ -3266,6 +3266,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return;
     }
 
+    // Real-balance preflight: the usdc-cap check above only compares deployed
+    // cost basis against maxUsdcDeployed — it does NOT know the actual wallet
+    // balance. Without this, a cap set far above funded capital makes the engine
+    // keep firing entries the exchange will reject with "Insufficient balance in
+    // source account" on every cycle. Mirror the ladder path: cap entries at the
+    // real available quote balance and arm the insufficient-funds cooldown when
+    // the wallet can't fund the smallest order.
+    const quoteCurrency = getQuoteCurrency(productId);
+    const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+    if (!quoteBalance) {
+      // Can't verify balance — skip this entry rather than risk an unfundable order.
+      return;
+    }
+    const availableQuote = parseFloat(quoteBalance.available) || 0;
+    if (availableQuote < sizing.sizeUsdc) {
+      // Trim to what the wallet can actually fund; if even the minimum won't fit,
+      // pause entries (cooldown) so we don't hot-loop on a drained wallet.
+      if (availableQuote >= minSize) {
+        sizing.sizeUsdc = roundUSDC(availableQuote);
+      } else {
+        const cooldownMs = config.insufficientFundsCooldownMs || 60000;
+        insufficientFundsCooldownUntil = Date.now() + cooldownMs;
+        console.log(`⏸️ [${exchange}] Wallet ${quoteCurrency} balance $${availableQuote.toFixed(2)} below min order $${minSize} — pausing entries for ${cooldownMs / 1000}s`);
+        return;
+      }
+    }
+
     // Calculate dynamic offset based on momentum direction
     // UP momentum: smaller offset to get fills before price rises further
     // DOWN momentum: larger offset to catch the falling price
@@ -3285,12 +3312,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Place entry with dynamic offset
     let result;
-    const isInsufficientFundsMessage = (msg) =>
-      typeof msg === 'string' && (
-        msg.includes('InsufficientFunds') ||
-        msg.includes('INSUFFICIENT_AVAILABLE_BALANCE') ||
-        msg.includes('INSUFFICIENT_FUND') // Coinbase: INSUFFICIENT_FUND / PREVIEW_INSUFFICIENT_FUND
+    const isInsufficientFundsMessage = (msg) => {
+      if (typeof msg !== 'string') return false;
+      const m = msg.toLowerCase();
+      return (
+        m.includes('insufficientfunds') ||
+        m.includes('insufficient_available_balance') ||
+        m.includes('insufficient_fund') || // Coinbase enum: INSUFFICIENT_FUND / PREVIEW_INSUFFICIENT_FUND
+        m.includes('insufficient balance') || // Coinbase human msg: "Insufficient balance in source account"
+        m.includes('insufficient fund')
       );
+    };
 
     try {
       result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps);
