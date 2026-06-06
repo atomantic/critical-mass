@@ -81,8 +81,15 @@ const loadAllState = () => {
     return { exchanges: {}, version: STATE_VERSION };
   }
 
-  const raw = fs.readFileSync(STATE_FILE, 'utf8');
-  const state = JSON.parse(raw);
+  let state;
+  // A corrupt state file must not crash the process — this runs from a
+  // debounced setTimeout flush as well as on load. Start fresh on failure.
+  try {
+    state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  } catch (err) {
+    console.log(`⚠️ Dry-run state unreadable (${err.message}), starting fresh`);
+    return { exchanges: {}, version: STATE_VERSION };
+  }
 
   // Version check for future migrations
   if (state.version !== STATE_VERSION) {

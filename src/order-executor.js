@@ -12,24 +12,13 @@
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
+const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR } = require('./shared-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
  * @typedef {import('./types').PendingOrder} PendingOrder
  * @typedef {import('./types').ExchangeAdapter} ExchangeAdapter
  */
-
-/**
- * Format a price with appropriate decimal places
- * @param {number} p - Price value
- * @returns {string} Formatted price string
- */
-const fmtPrice = (p) => {
-  if (p == null || isNaN(p)) return '-';
-  if (Math.abs(p) >= 100) return `$${p.toFixed(2)}`;
-  if (Math.abs(p) >= 1) return `$${p.toFixed(4)}`;
-  return `$${p.toFixed(5)}`;
-};
 
 /**
  * Create order executor instance
@@ -177,7 +166,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null) => {
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
     const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
-    const offsetMultiplier = 1 - (offsetBps / 10000);
+    const offsetMultiplier = 1 - (offsetBps / BASIS_POINTS_DIVISOR);
     let bidPrice = currentBid * offsetMultiplier;
 
     // Ensure post-only by checking against ask

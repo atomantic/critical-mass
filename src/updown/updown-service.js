@@ -278,7 +278,15 @@ const createUpDownService = (io, deps) => {
     loadState();
 
     running = true;
-    signalInterval = setInterval(runSignalCycle, SIGNAL_INTERVAL_MS);
+    // runSignalCycle is synchronous; a throw inside it would crash the process
+    // from the interval callback, so guard every tick.
+    signalInterval = setInterval(() => {
+      try {
+        runSignalCycle();
+      } catch (err) {
+        log('WARN', `📊 UpDown signal cycle failed err=${err.message}`);
+      }
+    }, SIGNAL_INTERVAL_MS);
 
     // Set lastPrice from most recent candle if available
     const candles1m = candleCache.getCandles('coinbase', '1m');
