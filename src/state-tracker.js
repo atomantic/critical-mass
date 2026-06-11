@@ -299,7 +299,10 @@ const findAwaitingSellOrder = (state, buyOrderId) =>
  */
 const attachSellOrder = (state, buyOrderId, sellOrder) => {
   const order = findAwaitingSellOrder(state, buyOrderId);
-  if (!order) return state;
+  if (!order) {
+    console.log(`⚠️ attachSellOrder: no awaiting_sell order for buy ${buyOrderId} — sell ${sellOrder?.orderId} not linked`);
+    return state;
+  }
 
   order.orderId = sellOrder.orderId;
   order.sellPrice = sellOrder.limitPrice;
@@ -321,7 +324,10 @@ const attachSellOrder = (state, buyOrderId, sellOrder) => {
  */
 const markSellPlacementFailed = (state, buyOrderId, reason) => {
   const order = findAwaitingSellOrder(state, buyOrderId);
-  if (!order) return state;
+  if (!order) {
+    console.log(`⚠️ markSellPlacementFailed: no awaiting_sell order for buy ${buyOrderId} — failure not recorded (reason: ${reason})`);
+    return state;
+  }
 
   order.status = 'sell_failed';
   order.sellFailedReason = reason;
