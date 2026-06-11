@@ -1484,4 +1484,51 @@ describe('Fill Ledger', () => {
         'the open no-orderId buy is held; the linked one is not');
     });
   });
+
+  describe('previewRecalculateCycles read-only (issue #132)', () => {
+    it('reports orphan-fix count and cycle detail WITHOUT mutating the ledger', () => {
+      const ledger = createTestLedger();
+      // Ingest orphan fills (cycleId: null) forming one completed orphan cycle:
+      // a buy followed by a covering sell.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'o-b1', orderId: 'ob-1', price: '100000', size: '0.001' }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'o-s1', orderId: 'os-1', price: '105000', size: '0.001' }), null, { cycleId: null });
+
+      // Snapshot ledger state before preview
+      const before = ledger.getAllFills().map(f => ({ tradeId: f.tradeId, cycleId: f.cycleId, sellOrderId: f.sellOrderId }));
+
+      const preview = ledger.previewRecalculateCycles();
+
+      // It surfaces the orphan-fix count and the completed cycle detail
+      assert.equal(preview.orphansFixed, 2, 'counts both orphan fills it would place');
+      assert.equal(preview.cyclesCompleted, 1, 'the buy+covering-sell forms one completed cycle');
+      assert.equal(preview.cycleDetails.length, 1);
+
+      // CRITICAL: no fill was mutated — cycleId stays null, no sellOrderId stamped
+      const after = ledger.getAllFills().map(f => ({ tradeId: f.tradeId, cycleId: f.cycleId, sellOrderId: f.sellOrderId }));
+      assert.deepStrictEqual(after, before, 'previewRecalculateCycles must not mutate any fill');
+      assert.equal(ledger.getCurrentCycleId(), null, 'currentCycleId unchanged by preview');
+    });
+
+    it('matches recalculateCycles cycleDetails/orphansFixed on the same ledger', () => {
+      // Build two ledgers with identical fills; compare preview vs real recalc.
+      const seed = (ledger) => {
+        ledger.ingestFill(makeBuyFill({ tradeId: 'm-b1', orderId: 'mb-1', price: '100000', size: '0.001' }), null, { cycleId: null });
+        ledger.ingestFill(makeSellFill({ tradeId: 'm-s1', orderId: 'ms-1', price: '105000', size: '0.001' }), null, { cycleId: null });
+      };
+      const a = createTestLedger('preview-a');
+      const b = createTestLedger('preview-b');
+      seed(a);
+      seed(b);
+
+      const preview = a.previewRecalculateCycles();
+      const real = b.recalculateCycles();
+
+      assert.equal(preview.orphansFixed, real.orphansFixed);
+      assert.equal(preview.cyclesCompleted, real.cyclesCompleted);
+      assert.equal(preview.cycleDetails.length, real.cycleDetails.length);
+      // Compare the P&L-bearing fields of the single completed cycle detail
+      assert.equal(preview.cycleDetails[0].pnl, real.cycleDetails[0].pnl);
+      assert.equal(preview.cycleDetails[0].holdbackAsset, real.cycleDetails[0].holdbackAsset);
+    });
+  });
 });

@@ -1052,6 +1052,116 @@ const createFillLedger = (exchange, productId, pair) => {
   };
 
   /**
+   * Read-only sibling of recalculateCycles (issue #132). Computes the SAME
+   * cycleDetails / orphansFixed / activeCycleId WITHOUT mutating any ledger
+   * state — it never assigns cycleIds to fills, touches cycleIndex /
+   * currentCycleId / nextCycleNumber, sets the dirty flag, or persists. This
+   * lets the running-engine recalculate PREVIEW show full per-cycle detail and
+   * the orphan-fix count without risking the engine's periodic save persisting
+   * a recalc the operator may cancel.
+   *
+   * The P&L numbers (realizedPnL/realizedAssetPnL) intentionally come from the
+   * cycle-pair source of truth (getDerivedRealizedPnL), same as the live
+   * preview — recalculateCycles' own avgCost-prorated totals are diagnostic.
+   * Here we surface cycleDetails (which the apply-time recalc would produce) and
+   * the orphan-fix count so the UI can render them.
+   *
+   * @returns {{cyclesCompleted: number, cycleDetails: Array, orphansFixed: number, activeCycleId: string|null}}
+   */
+  const previewRecalculateCycles = () => {
+    const allFills = Array.from(fills.values()).sort((a, b) => a.timestamp - b.timestamp);
+
+    // Group by cycleId; collect orphans (cycleId: null) separately.
+    const cycleMap = new Map();
+    const orphanFills = [];
+    for (const fill of allFills) {
+      if (!fill.cycleId) orphanFills.push(fill);
+      else {
+        if (!cycleMap.has(fill.cycleId)) cycleMap.set(fill.cycleId, []);
+        cycleMap.get(fill.cycleId).push(fill);
+      }
+    }
+
+    // Pure helper: derive a completed-cycle detail row from a fill list. Mirrors
+    // the body-owned/satellite filter used by recalculateCycles (issue #108).
+    const detailFor = (cycleId, cycleFills) => {
+      let totalAsset = 0, totalCost = 0, sellProceeds = 0, assetSold = 0;
+      for (const fill of cycleFills) {
+        if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+        if (fill.side === 'buy') {
+          totalAsset += fill.size;
+          totalCost += fill.quoteAmount + fill.netFee;
+        } else if (fill.side === 'sell') {
+          sellProceeds += fill.quoteAmount - fill.netFee;
+          assetSold += fill.size;
+        }
+      }
+      const avgCost = totalAsset > 0 ? totalCost / totalAsset : 0;
+      return {
+        cycleId,
+        buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
+        sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
+        totalAssetBought: roundAsset(totalAsset),
+        assetSold: roundAsset(assetSold),
+        holdbackAsset: roundAsset(totalAsset - assetSold),
+        avgCost: roundUSDC(avgCost),
+        sellPrice: assetSold > 0 ? roundUSDC(sellProceeds / assetSold) : 0,
+        pnl: roundUSDC(sellProceeds - avgCost * assetSold),
+      };
+    };
+
+    // Sell-ratio completion heuristic over ALL fills (matches recalculateCycles).
+    const isCompletedCycle = (cycleFills) => {
+      let buys = 0, sells = 0;
+      for (const fill of cycleFills) {
+        if (fill.side === 'buy') buys += fill.size;
+        else if (fill.side === 'sell') sells += fill.size;
+      }
+      return buys > 0 && sells / buys >= 0.5;
+    };
+
+    const cycleDetails = [];
+    for (const [cycleId, cycleFills] of cycleMap) {
+      if (isCompletedCycle(cycleFills)) cycleDetails.push(detailFor(cycleId, cycleFills));
+    }
+
+    // Replay orphan placement WITHOUT mutating fills — count how many would be
+    // assigned and which would-be cycles complete vs become the active cycle.
+    let orphansFixed = 0;
+    let previewActiveCycleId = currentCycleId;
+    if (orphanFills.length > 0) {
+      const sorted = [...orphanFills].sort((a, b) => a.timestamp - b.timestamp);
+      const orphanCycles = [];
+      let current = [];
+      let lastWasSell = false;
+      for (const fill of sorted) {
+        if (lastWasSell && fill.side === 'buy') {
+          if (current.length > 0) orphanCycles.push(current);
+          current = [];
+        }
+        current.push(fill);
+        lastWasSell = fill.side === 'sell';
+      }
+      if (current.length > 0) orphanCycles.push(current);
+
+      for (let i = 0; i < orphanCycles.length; i++) {
+        const cycleFills = orphanCycles[i];
+        const cycleId = `cycle-${cycleFills[0].timestamp}-recovered-${i + 1}`;
+        orphansFixed += cycleFills.length;
+        if (isCompletedCycle(cycleFills)) cycleDetails.push(detailFor(cycleId, cycleFills));
+        else previewActiveCycleId = cycleId;
+      }
+    }
+
+    return {
+      cyclesCompleted: cycleDetails.length,
+      cycleDetails,
+      orphansFixed,
+      activeCycleId: previewActiveCycleId,
+    };
+  };
+
+  /**
    * Update a fill's cycleId
    * @param {string} tradeId - Trade ID
    * @param {string} cycleId - New cycle ID
@@ -1329,6 +1439,7 @@ const createFillLedger = (exchange, productId, pair) => {
     getFillsSince,
     aggregateFills,
     recalculateCycles,
+    previewRecalculateCycles,
     computeFifoRealized,
     computeRealizedFromCyclePairs,
     getDerivedRealizedPnL,
