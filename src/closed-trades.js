@@ -14,6 +14,26 @@ const { atomicWriteSync } = require('./state-tracker');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /**
+ * Dedup key for a closed trade. Keyed on sellOrderId ALONE — each sell order
+ * closes exactly one cycle's worth of buys and is recorded once. (A true
+ * partial body-TP fill re-places its residual under a NEW orderId, so a single
+ * sellOrderId never legitimately yields two records.) Keying on
+ * `sellOrderId:qtySold` instead let the live path (qtySold = size over the
+ * newly-ingested fills) and migrateFromFills (qtySold = size over ALL rows for
+ * the orderId) compute different qtys for the same sell → different keys →
+ * the same trade recorded twice, double-counting totalPnl (issue #108).
+ *
+ * Fallback to `sellOrderId:qtySold:timestamp` only when sellOrderId is missing
+ * (legacy/manual rows) so distinct unlinked trades aren't collapsed into one.
+ * @param {{sellOrderId?: string|null, qtySold?: number, timestamp?: number}} trade
+ * @returns {string}
+ */
+const dedupKeyFor = (trade) =>
+  trade.sellOrderId
+    ? `${trade.sellOrderId}`
+    : `${trade.sellOrderId}:${trade.qtySold?.toFixed(8)}:${trade.timestamp}`;
+
+/**
  * @typedef {Object} ClosedTrade
  * @property {string} sellOrderId
  * @property {number} timestamp
@@ -46,7 +66,7 @@ const getClosedTradesPath = (exchange, pair) => {
 const createClosedTrades = (exchange, pair) => {
   /** @type {ClosedTrade[]} */
   const trades = [];
-  /** @type {Set<string>} Dedup keys: sellOrderId:qtySold */
+  /** @type {Set<string>} Dedup keys (see dedupKeyFor — keyed on sellOrderId) */
   const dedupKeys = new Set();
 
   const load = () => {
@@ -60,7 +80,7 @@ const createClosedTrades = (exchange, pair) => {
       dedupKeys.clear();
       for (const t of arr) {
         trades.push(t);
-        dedupKeys.add(`${t.sellOrderId}:${t.qtySold?.toFixed(8)}`);
+        dedupKeys.add(dedupKeyFor(t));
       }
       console.log(`📋 [${exchange}] Loaded ${trades.length} closed trades`);
       return true;
@@ -83,7 +103,7 @@ const createClosedTrades = (exchange, pair) => {
    * @returns {boolean} Whether the trade was added (false if duplicate)
    */
   const record = (trade) => {
-    const key = `${trade.sellOrderId}:${trade.qtySold?.toFixed(8)}`;
+    const key = dedupKeyFor(trade);
     if (dedupKeys.has(key)) return false;
     dedupKeys.add(key);
     trades.push(trade);

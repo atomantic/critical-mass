@@ -133,6 +133,37 @@ const resolveEntryBudget = (requestedUsdc, availableQuote, minSize) => {
 };
 
 /**
+ * True when some celestial body already lists `orderId` among its constituent
+ * buy orders — i.e. a prior handleOrderFill attempt already committed this buy
+ * (issue #131). Used to make the buy-fill branch idempotent against a retry
+ * that re-enters after the dedup key was cleared on a post-commit throw.
+ * @param {Array<{sourceOrderIds?: string[], buyOrders?: Array<{orderId: string}>}>} bodies
+ * @param {string} orderId
+ * @returns {boolean}
+ */
+const isBuyAlreadyCommitted = (bodies, orderId) =>
+  (bodies || []).some(b =>
+    (b.sourceOrderIds || []).includes(orderId) ||
+    (b.buyOrders || []).some(bo => bo.orderId === orderId)
+  );
+
+/**
+ * Decide whether a buy-fill handling pass is a RETRY that must be skipped to
+ * avoid double-counting (issue #131), vs. a legitimate new tranche (including an
+ * advancing partial) that must process. The distinguishing signal is whether
+ * any NEW fill rows were ingested this pass: ingestFill dedups by tradeId, so a
+ * pure retry ingests nothing (ingestedCount === 0) and re-aggregates the full
+ * order, whereas a real new/advancing fill brings new rows (ingestedCount > 0)
+ * and must NOT be dropped even though a body already owns the orderId.
+ * @param {number} ingestedCount - number of NEW fills ingested this pass
+ * @param {Array} bodies - positionState.celestialBodies
+ * @param {string} orderId
+ * @returns {boolean} true → skip (retry after a body already committed)
+ */
+const shouldSkipBuyRecommit = (ingestedCount, bodies, orderId) =>
+  ingestedCount === 0 && isBuyAlreadyCommitted(bodies, orderId);
+
+/**
  * Build the dashboard pendingOrders payload: enrich the executor's tracked
  * orders with body/cost-basis metadata, then union any body TPs the executor
  * doesn't track in-memory (after engine stop, or pre-reconcile after start).
@@ -2265,6 +2296,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const tb = setTimeout(() => { recentlyProcessedBuyFills.delete(buyDedupKey); ttlTimers.delete(tb); }, 5 * 60 * 1000);
       ttlTimers.add(tb);
 
+      // Idempotency guard against a RETRY that already committed this buy
+      // (issue #131). The dedup key above is CLEARED when handleOrderFill throws
+      // (so a transient failure on the early getOrderFills fetch can retry), but
+      // cycleBuys++ and celestialBodies.push() below mutate in-memory state that
+      // ingestFill's tradeId dedup does NOT protect. If a prior attempt threw
+      // AFTER committing the body (e.g. placeBodyTp rejected), the next reconcile/
+      // poll re-runs this branch and would double-count: a second cycleBuys and a
+      // duplicate body for the same buyOrderId (→ duplicate TP).
+      //
+      // CRITICAL: gate on ingestedFills.length === 0. A retry brings NO new
+      // fills (ingestFill is idempotent by tradeId, so the re-fetch dedups and
+      // fillsToAggregate falls back to the full getFillsForOrder set) — that is
+      // the only case we must skip. An ADVANCING PARTIAL buy fill, by contrast,
+      // brings new trade rows (ingestedFills.length > 0) and MUST process even
+      // though a body already owns the orderId — otherwise the later tranche is
+      // dropped from the body / TP sizing and computeRealizedFromCyclePairs
+      // (which aggregates buys by orderId) under-reports its cost. Without this
+      // gate the orderId-only guard would swallow every advancing partial.
+      if (shouldSkipBuyRecommit(ingestedFills.length, positionState.celestialBodies, fillData.orderId)) {
+        console.log(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body and no new fills ingested — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
+        return;
+      }
+
       // Check if this is a ladder order fill (use positionState since polling may delete from pendingOrders before callback)
       const isLadderFill =
         (positionState.pendingLadderOrders &&
@@ -2272,6 +2326,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         (orderExecutor.isLadderOrder && orderExecutor.isLadderOrder(fillData.orderId));
 
       const summary = fillLedger.aggregateFills(fillsToAggregate);
+
+      // Was this exchange order ALREADY represented by a body before this pass?
+      // An advancing partial (orderId already owned, new fills this pass) must
+      // process its new tranche but must NOT consume a second cycleBuys step —
+      // cycleBuys counts buy ORDERS filled in the cycle, and one order that
+      // fills across multiple events is a single buy (codex P2). A brand-new
+      // order increments; an advancing partial only refreshes entry tracking.
+      const orderAlreadyOwned = isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId);
+
+      // Commit the cycleBuys/lastEntry counter exactly once, at the point the
+      // body that owns this orderId is committed (issue #131). Idempotent within
+      // a single handleOrderFill call via committedBuyCounter; the gated guard
+      // above prevents a separate retry from re-entering after a body exists.
+      let committedBuyCounter = false;
+      const commitBuyCounter = () => {
+        if (committedBuyCounter) return;
+        committedBuyCounter = true;
+        // Only a genuinely new buy order advances the cycle-buy count; an
+        // advancing partial of an already-owned order refreshes entry tracking
+        // without re-counting the order (codex P2).
+        if (!orderAlreadyOwned) positionState.cycleBuys += 1;
+        positionState.lastEntryPrice = summary.avgPrice;
+        positionState.lastEntryTime = Date.now();
+      };
 
       // Celestial hierarchy: create new buy descriptor
       const newBuy = {
@@ -2292,9 +2370,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         config.mergeProximityScale ?? 1.0
       );
 
-      positionState.cycleBuys += 1;
-      positionState.lastEntryPrice = summary.avgPrice;
-      positionState.lastEntryTime = Date.now();
+      // NOTE: cycleBuys / lastEntry* are committed AFTER the body is created or
+      // merged below (issue #131). Incrementing here — before the merge-cancel
+      // await (cancelBodyTpOrder) — meant a reject there left a stranded
+      // cycleBuys++ with no body owning the orderId, which the
+      // buyAlreadyCommitted guard above could not detect on retry, so the next
+      // reconcile re-incremented. Deferring the counter to post-commit keeps the
+      // increment and the body atomic with respect to a retry.
 
       const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
 
@@ -2343,6 +2425,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Sync aggregate fields for backward compatibility
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
+        // Commit the buy counter NOW — atomic with the body merge, BEFORE the TP
+        // await below (issue #131/#132 P3). If placeBodyTpWithRetry rejects after
+        // this, the body already owns the orderId so the gated guard skips the
+        // retry; the increment is preserved (not stranded). ingestedFills>0 here
+        // means this is a real new tranche, not a retry.
+        commitBuyCounter();
+
         await placeBodyTpWithRetry(merged, 'Merge');
 
         // Defense-in-depth: verify TP covers updated body size after merge
@@ -2384,6 +2473,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Sync aggregate fields
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
+        // Commit the buy counter NOW — atomic with the body push, BEFORE the TP
+        // await below (issue #131/#132 P3). A placeBodyTp rejection after this
+        // leaves the body owning the orderId so the gated guard skips the retry
+        // and the increment is preserved.
+        commitBuyCounter();
+
         const bodyTpPlaced = await placeBodyTp(body);
 
         if (!bodyTpPlaced) {
@@ -2404,6 +2499,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           isLadderFill,
         });
       }
+
+      // Safety net: commitBuyCounter is normally called inside the merge/new-body
+      // branch (atomic with the body commit). This call is a no-op if already
+      // committed; it only fires if some future path reached here without
+      // committing a body — keeping cycleBuys consistent.
+      commitBuyCounter();
 
       // Remove filled entry from persisted pending orders
       if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
@@ -2548,6 +2649,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
           const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
           const remainingCostBasis = roundUSDC(body.costBasis * (1 - soldRatio));
+
+          // Track the cumulative fraction of the body's ORIGINAL cost basis that
+          // has now been realized via partial sells (issue #128). This partial
+          // consumed `soldRatio` of the CURRENT (remaining) body; compose it
+          // with any prior consumption so the fraction is relative to the
+          // original: consumed = 1 − Π(1 − soldRatioᵢ). Annotating the source
+          // buys with it lets computeRealizedFromCyclePairs subtract the
+          // already-realized portion from heldOpenBuyCostBasis while the residual
+          // TP rests — otherwise the sold tranche's cost is double-counted (once
+          // realized via bodyPnl, once held), transiently understating return.
+          const prevConsumed = body.consumedCostFraction || 0;
+          body.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - soldRatio);
+          for (const srcId of new Set([
+            ...(body.sourceOrderIds || []),
+            ...((body.buyOrders || []).map(b => b.orderId)),
+          ])) {
+            if (srcId && srcId !== 'core-migration') {
+              fillLedger.annotateFillsByOrderId(srcId, { consumedCostFraction: body.consumedCostFraction });
+            }
+          }
+
           body.assetQty = remainingAsset;
           body.costBasis = remainingCostBasis;
           // avgPrice stays the same (weighted average of buys doesn't change)
@@ -5040,4 +5162,6 @@ module.exports = {
   cancelPartialFillOrder,
   buildPartialFillData,
   resolveEntryBudget,
+  isBuyAlreadyCommitted,
+  shouldSkipBuyRecommit,
 };

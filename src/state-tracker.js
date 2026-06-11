@@ -171,17 +171,35 @@ const loadState = (config = null, exchange = 'coinbase', pair) => {
   }
 
   const data = fs.readFileSync(stateFile, 'utf8');
-  let state = JSON.parse(data);
+  let state;
+  try {
+    state = JSON.parse(data);
+  } catch (err) {
+    // A corrupt state file must not surface as a raw SyntaxError (opaque at
+    // boot, a bare 500 from the gateway). Throw a descriptive error naming the
+    // file so the operator can repair/move it. We do NOT silently fall back to
+    // initial state — that would zero a live fund's accounting on next save
+    // (issue #108).
+    throw new Error(`state file at ${stateFile} is corrupted or unreadable: ${err.message}. Repair or move the file aside before starting.`);
+  }
+  if (!state || typeof state !== 'object' || Array.isArray(state)) {
+    throw new Error(`state file at ${stateFile} did not parse to an object (got ${state === null ? 'null' : Array.isArray(state) ? 'array' : typeof state}). Repair or move the file aside before starting.`);
+  }
 
   // Migrate old state format if needed
   state = migrateState(state);
 
-  // Sync usdcFundSize if totalAllocation changed in config
+  // Sync usdcFundSize if totalAllocation changed in config. Apply IN MEMORY
+  // only — do NOT persist from this read path. loadState is called from the
+  // gateway's GET/status handlers, and a write here races the DCA engine's own
+  // save (two processes writing state.json), which can clobber concurrent
+  // accounting updates. The adjustment is idempotent across loads (it derives
+  // from config.totalAllocation − disk initialAllocation each time), and the
+  // engine's next legitimate save persists the corrected values (issue #108).
   if (config.totalAllocation !== state.initialAllocation) {
     const delta = config.totalAllocation - state.initialAllocation;
     state.usdcFundSize += delta;
     state.initialAllocation = config.totalAllocation;
-    saveState(state, exchange, pair);
   }
 
   return state;
@@ -695,7 +713,19 @@ const loadRegimeState = (exchange = 'coinbase', pair) => {
     };
   }
 
-  const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  } catch (err) {
+    // Corrupt regime-state.json holds live financial position — a raw
+    // SyntaxError here crashes the engine boot / gateway status path opaquely.
+    // Throw a descriptive error so the operator repairs or moves the file
+    // aside rather than booting with zeroed position (issue #108).
+    throw new Error(`regime-state file at ${stateFile} is corrupted or unreadable: ${err.message}. Repair or move the file aside before starting.`);
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error(`regime-state file at ${stateFile} did not parse to an object (got ${data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data}). Repair or move the file aside before starting.`);
+  }
 
   // Migrate ladderStep -> cycleBuys if needed
   if (data.position && data.position.ladderStep !== undefined && data.position.cycleBuys === undefined) {
@@ -834,16 +864,26 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   // (regime state holds live financial position) — so quarantine the bad file
   // aside for manual recovery before the fresh write below replaces it.
   const myVersion = saveVersions.get(stateFile) || 0;
+  let diskVersion = 0;
   if (fs.existsSync(stateFile)) {
     let diskData = null;
     try {
       diskData = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     } catch (err) {
+      // Quarantine the unreadable file before overwriting so the operator can
+      // recover protected fields. renameSync can itself throw (file vanished,
+      // permissions) on this timer-driven save path — guard it so a failed
+      // quarantine doesn't crash the background saver; fall through to the
+      // fresh write either way.
       const quarantinePath = `${stateFile}.corrupt-${Date.now()}`;
-      fs.renameSync(stateFile, quarantinePath);
-      console.log(`⚠️ Regime state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)} before overwrite`);
+      try {
+        fs.renameSync(stateFile, quarantinePath);
+        console.log(`⚠️ Regime state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)} before overwrite`);
+      } catch (renameErr) {
+        console.log(`⚠️ Regime state unreadable (${err.message}) and quarantine failed (${renameErr.message}) — overwriting in place`);
+      }
     }
-    const diskVersion = (diskData?.position && diskData.position._saveVersion) || 0;
+    diskVersion = (diskData?.position && diskData.position._saveVersion) || 0;
     if (diskData && diskVersion > myVersion) {
       // External edit detected — merge protected fields from disk
       console.log(`🔀 Merge: disk version ${diskVersion} > memory ${myVersion}, preserving external edits on [${PROTECTED_FIELDS.join(', ')}]`);
@@ -855,7 +895,12 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
     }
   }
 
-  const nextVersion = myVersion + 1;
+  // Stamp a version STRICTLY greater than both our in-memory version and the
+  // version we observed on disk. Using `myVersion + 1` alone could regress
+  // below diskVersion after a merge (disk ahead of memory) — a lower stamp
+  // would make the next save think ITS state is the newer one and silently
+  // clobber these just-merged protected fields (issue #108).
+  const nextVersion = Math.max(myVersion, diskVersion) + 1;
   position._saveVersion = nextVersion;
   saveVersions.set(stateFile, nextVersion);
 

@@ -1406,22 +1406,144 @@ describe('Fill Ledger', () => {
       assert.equal(derived.realizedAssetPnL, 0.0001, 'holdback taken once per orderId');
     });
 
-    it('keeps full original cost held after a partial fill re-links buys to a re-placed TP', () => {
+    it('holds only the un-consumed remainder after a partial fill re-links buys to a re-placed TP (issue #128)', () => {
       const ledger = createTestLedger();
       ledger.startNewCycle();
       ledger.ingestFill(makeBuyFill({ tradeId: 'h-b4', orderId: 'buy-4', price: '100000', size: '0.002' }));
       ledger.annotateFillsByOrderId('buy-4', { sellOrderId: 'tp-old', bodyId: 'body-2' });
 
-      // Partial fill of tp-old, annotated by the engine
+      // Partial fill of tp-old: half the body sold. Engine annotates the sell
+      // with the realized bodyPnl and stamps the source buys with the consumed
+      // fraction (0.5 of the original cost now realized).
       ledger.ingestFill(makeSellFill({ tradeId: 'h-s3', orderId: 'tp-old', price: '105000', size: '0.001' }));
       ledger.annotateFillsByOrderId('tp-old', { bodyPnl: 2.5, bodyHoldbackAsset: 0, isBodyOwned: true, partialFill: true });
-      // placeBodyTp re-links the buys to the re-placed TP for the remainder
-      ledger.annotateFillsByOrderId('buy-4', { sellOrderId: 'tp-new' });
+      // placeBodyTp re-links the buys to the re-placed TP for the remainder,
+      // and the partial-fill handler stamps consumedCostFraction.
+      ledger.annotateFillsByOrderId('buy-4', { sellOrderId: 'tp-new', consumedCostFraction: 0.5 });
 
       const derived = ledger.getDerivedRealizedPnL();
-      // tp-new has no fills yet → buy cost stays held (conservative until residual TP fills)
-      assert.equal(derived.heldOpenBuyCostBasis, 200.10);
+      // tp-new has no fills yet, BUT half the cost was already realized via the
+      // partial — only the un-consumed half (100.05) is genuinely held.
+      assert.equal(derived.heldOpenBuyCostBasis, 100.05,
+        'held cost excludes the already-realized partial tranche');
       assert.equal(derived.realizedPnL, 2.5, 'first tranche realized via annotation');
+    });
+
+    it('holds full cost when no partial has been consumed (consumedCostFraction absent)', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'h-b5', orderId: 'buy-5', price: '100000', size: '0.002' }));
+      ledger.annotateFillsByOrderId('buy-5', { sellOrderId: 'tp-resting', bodyId: 'body-3' });
+      // Resting TP, no fills, no partial consumed → full cost held (unchanged behavior).
+      const derived = ledger.getDerivedRealizedPnL();
+      assert.equal(derived.heldOpenBuyCostBasis, 200.10);
+    });
+  });
+
+  describe('historical-fill cycle assignment (issue #108)', () => {
+    it('stamps the live cycle by default', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle(); // cycle-1
+      const { fill } = ledger.ingestFill(makeBuyFill({ tradeId: 'live-1', orderId: 'o-live' }));
+      assert.equal(fill.cycleId, 'cycle-1');
+    });
+
+    it('routes a fill to orphan (null) cycle when caller passes cycleId: null', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle(); // cycle-1 is live
+      const { fill } = ledger.ingestFill(
+        makeBuyFill({ tradeId: 'hist-1', orderId: 'o-hist' }),
+        null,
+        { cycleId: null }
+      );
+      assert.equal(fill.cycleId, null,
+        'a historical fill must not inherit the live cycle');
+      // It is not counted in the current cycle's fills
+      assert.equal(ledger.getCurrentCycleFills().some(f => f.tradeId === 'hist-1'), false);
+    });
+
+    it('an absent cycleId key still uses the live-cycle default (only explicit null overrides)', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle(); // cycle-1
+      const { fill } = ledger.ingestFill(
+        makeBuyFill({ tradeId: 'live-2', orderId: 'o-live2' }),
+        null,
+        { skipPersist: true } // no cycleId key
+      );
+      assert.equal(fill.cycleId, 'cycle-1');
+    });
+  });
+
+  describe('computeRealizedFromCyclePairs no-orderId buys (issue #108)', () => {
+    it('does not merge distinct no-orderId buys under a single undefined key', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      // Two legacy/manual buys with NO orderId. One is linked to a filled sell,
+      // the other is open. Under the old `undefined`-key merge, the first row's
+      // sellOrderId would win for the combined cost — mis-classifying both.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'no-b1', orderId: undefined, price: '100000', size: '0.001' }));
+      ledger.ingestFill(makeBuyFill({ tradeId: 'no-b2', orderId: undefined, price: '100000', size: '0.001' }));
+      // Link only the first buy to a sell that actually fills
+      ledger.annotateFillsByOrderId(undefined, {}); // no-op safety
+      // Manually link no-b1 to a sell via updateFill-like annotation path:
+      // annotateFillsByOrderId keys on orderId, so set sellOrderId directly.
+      for (const f of ledger.getAllFills()) {
+        if (f.tradeId === 'no-b1') { f.sellOrderId = 'sell-x'; }
+      }
+      ledger.markDirty();
+      ledger.ingestFill(makeSellFill({ tradeId: 'no-s1', orderId: 'sell-x', price: '105000', size: '0.001' }));
+
+      const derived = ledger.getDerivedRealizedPnL();
+      // Only no-b2's cost (100.10) remains held; no-b1 is paired/closed.
+      assert.equal(derived.heldOpenBuyCostBasis, 100.10,
+        'the open no-orderId buy is held; the linked one is not');
+    });
+  });
+
+  describe('previewRecalculateCycles read-only (issue #132)', () => {
+    it('reports orphan-fix count and cycle detail WITHOUT mutating the ledger', () => {
+      const ledger = createTestLedger();
+      // Ingest orphan fills (cycleId: null) forming one completed orphan cycle:
+      // a buy followed by a covering sell.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'o-b1', orderId: 'ob-1', price: '100000', size: '0.001' }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'o-s1', orderId: 'os-1', price: '105000', size: '0.001' }), null, { cycleId: null });
+
+      // Snapshot ledger state before preview
+      const before = ledger.getAllFills().map(f => ({ tradeId: f.tradeId, cycleId: f.cycleId, sellOrderId: f.sellOrderId }));
+
+      const preview = ledger.previewRecalculateCycles();
+
+      // It surfaces the orphan-fix count and the completed cycle detail
+      assert.equal(preview.orphansFixed, 2, 'counts both orphan fills it would place');
+      assert.equal(preview.cyclesCompleted, 1, 'the buy+covering-sell forms one completed cycle');
+      assert.equal(preview.cycleDetails.length, 1);
+
+      // CRITICAL: no fill was mutated — cycleId stays null, no sellOrderId stamped
+      const after = ledger.getAllFills().map(f => ({ tradeId: f.tradeId, cycleId: f.cycleId, sellOrderId: f.sellOrderId }));
+      assert.deepStrictEqual(after, before, 'previewRecalculateCycles must not mutate any fill');
+      assert.equal(ledger.getCurrentCycleId(), null, 'currentCycleId unchanged by preview');
+    });
+
+    it('matches recalculateCycles cycleDetails/orphansFixed on the same ledger', () => {
+      // Build two ledgers with identical fills; compare preview vs real recalc.
+      const seed = (ledger) => {
+        ledger.ingestFill(makeBuyFill({ tradeId: 'm-b1', orderId: 'mb-1', price: '100000', size: '0.001' }), null, { cycleId: null });
+        ledger.ingestFill(makeSellFill({ tradeId: 'm-s1', orderId: 'ms-1', price: '105000', size: '0.001' }), null, { cycleId: null });
+      };
+      const a = createTestLedger('preview-a');
+      const b = createTestLedger('preview-b');
+      seed(a);
+      seed(b);
+
+      const preview = a.previewRecalculateCycles();
+      const real = b.recalculateCycles();
+
+      assert.equal(preview.orphansFixed, real.orphansFixed);
+      assert.equal(preview.cyclesCompleted, real.cyclesCompleted);
+      assert.equal(preview.cycleDetails.length, real.cycleDetails.length);
+      // Compare the P&L-bearing fields of the single completed cycle detail
+      assert.equal(preview.cycleDetails[0].pnl, real.cycleDetails[0].pnl);
+      assert.equal(preview.cycleDetails[0].holdbackAsset, real.cycleDetails[0].holdbackAsset);
     });
   });
 });
