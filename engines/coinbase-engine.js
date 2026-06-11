@@ -659,79 +659,99 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
   const { apply = false } = payload || {};
   const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
 
-  invalidateStandaloneLedger(exchange, resolvedPair);
-  // getStandaloneLedger throws on cold-start ledger corruption. Catch it
-  // and return the structured {success:false, error} shape that other
-  // handlers in this file return on failure, so the API client doesn't
-  // need a separate code path for thrown-vs-returned errors.
-  let fillLedger;
-  try {
-    fillLedger = getStandaloneLedger(exchange, resolvedPair);
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
   const currentState = loadRegimeState(exchange, resolvedPair);
-
-  // Use closed trades as authoritative P&L source
-  const { createClosedTrades } = require('../src/closed-trades');
-  const closedTrades = createClosedTrades(exchange, resolvedPair);
-  const hasClosedTrades = closedTrades.load();
-  if (!hasClosedTrades) closedTrades.migrateFromFills(fillLedger);
-
-  const recalcResult = fillLedger.recalculateCycles();
-  const currentCycleFills = fillLedger.getCurrentCycleFills();
-  const currentPosition = fillLedger.rebuildPositionFromFills(currentCycleFills);
-
-  const totalRealizedPnL = closedTrades.getCount() > 0 ? closedTrades.getTotalPnL() : recalcResult.globalRealizedPnL;
-  const totalRealizedAssetPnL = recalcResult.globalRealizedAssetPnL;
-
-  const changes = {
-    cyclesCompleted: { before: currentState.position?.cyclesCompleted || 0, after: recalcResult.cyclesCompleted },
-    realizedPnL: { before: currentState.position?.realizedPnL || 0, after: totalRealizedPnL },
-    realizedAssetPnL: { before: currentState.position?.realizedAssetPnL || 0, after: totalRealizedAssetPnL },
-    ladderStep: { before: currentState.position?.ladderStep || 0, after: currentPosition.ladderStep },
-    totalAsset: { before: currentState.position?.totalAsset || 0, after: currentPosition.totalAsset },
-    totalCostBasis: { before: currentState.position?.totalCostBasis || 0, after: currentPosition.totalCostBasis },
+  const before = {
+    cyclesCompleted: currentState.position?.cyclesCompleted || 0,
+    realizedPnL: currentState.position?.realizedPnL || 0,
+    realizedAssetPnL: currentState.position?.realizedAssetPnL || 0,
   };
 
-  if (apply) {
-    const bodyOnlyPnL = totalRealizedPnL - recalcResult.realizedPnL;
-    const bodyOnlyBtcPnL = totalRealizedAssetPnL - recalcResult.realizedAssetPnL;
-    const celestialState = currentState.position?.celestialState || {};
-    const updatedPosition = {
-      ...currentState.position,
-      ...currentPosition,
-      cyclesCompleted: recalcResult.cyclesCompleted,
-      realizedPnL: totalRealizedPnL,
-      realizedAssetPnL: totalRealizedAssetPnL,
-      celestialState: {
-        ...celestialState,
-        bodiesRealizedPnL: Math.round(bodyOnlyPnL * 100) / 100,
-        bodiesRealizedAssetPnL: Math.round(bodyOnlyBtcPnL * 1e8) / 1e8,
-      },
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
+
+  // P&L source of truth is the cycle-pair derivation (realizedPnL = Σ per-sell
+  // bodyPnl; realizedAssetPnL = Σ bodyHoldbackAsset). NOT FIFO globals and NOT
+  // closed-trades — both over-count (closed-trades prorates buy cost by sold
+  // qty, leaving holdback cost unattributed; FIFO ignores cycle boundaries).
+  // When the engine is running, recompute on ITS ledger and re-derive in place
+  // so we never (a) open a second ledger on the same file, (b) write a
+  // FIFO/closed-trades number to disk, or (c) blind-merge a rebuilt position
+  // that nulls activeTpOrderId / resurrects stale bodies (issue #96).
+  let result;
+  if (engine?.recalculateAndRefresh) {
+    if (!apply) {
+      // Preview only: derive without mutating engine/disk state.
+      const fillLedger = engine.getFillLedger();
+      const derived = fillLedger.getDerivedRealizedPnL();
+      const cycleFills = fillLedger.getCurrentCycleFills();
+      result = {
+        cyclesCompleted: before.cyclesCompleted,
+        realizedPnL: derived.realizedPnL,
+        realizedAssetPnL: derived.realizedAssetPnL,
+        cycleDetails: [],
+        orphansFixed: 0,
+        activeCycleId: fillLedger.getCurrentCycleId(),
+        currentCycleFills: cycleFills.length,
+      };
+    } else {
+      const r = engine.recalculateAndRefresh();
+      result = { ...r, currentCycleFills: engine.getFillLedger().getCurrentCycleFills().length };
+    }
+  } else {
+    // Engine not running — operate on the standalone ledger directly.
+    invalidateStandaloneLedger(exchange, resolvedPair);
+    let fillLedger;
+    try {
+      fillLedger = getStandaloneLedger(exchange, resolvedPair);
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+    const recalc = fillLedger.recalculateCycles();
+    const derived = fillLedger.getDerivedRealizedPnL();
+    const cycleFills = fillLedger.getCurrentCycleFills();
+    result = {
+      cyclesCompleted: recalc.cyclesCompleted,
+      realizedPnL: derived.realizedPnL,
+      realizedAssetPnL: derived.realizedAssetPnL,
+      cycleDetails: recalc.cycleDetails,
+      orphansFixed: recalc.orphansFixed,
+      activeCycleId: recalc.activeCycleId,
+      currentCycleFills: cycleFills.length,
     };
 
-    const bodies = updatedPosition.celestialBodies || [];
-    if (bodies.length > 0) {
-      const { syncPositionState } = require('../src/celestial-hierarchy');
-      syncPositionState(updatedPosition, bodies);
-    }
-
-    saveRegimeState(updatedPosition, currentState.regime, exchange, currentState.tpOptimizer, currentState.sizeOptimizer, resolvedPair);
-    fillLedger.persist();
-
-    const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
-    if (engine?.updatePosition) {
-      engine.updatePosition(updatedPosition);
+    if (apply) {
+      // Persist ONLY the cycle-derived P&L fields onto the existing position —
+      // do not rebuild/overwrite order tracking, lifecycle, or bodies.
+      const position = {
+        ...currentState.position,
+        cyclesCompleted: recalc.cyclesCompleted,
+        realizedPnL: derived.realizedPnL,
+        realizedAssetPnL: derived.realizedAssetPnL,
+        heldAssetCostBasis: derived.heldOpenBuyCostBasis,
+      };
+      if (position.celestialState) {
+        position.celestialState = {
+          ...position.celestialState,
+          bodiesRealizedPnL: derived.realizedPnL,
+          bodiesRealizedAssetPnL: derived.realizedAssetPnL,
+        };
+      }
+      saveRegimeState(position, currentState.regime, exchange, currentState.tpOptimizer, currentState.sizeOptimizer, resolvedPair);
+      fillLedger.persist();
     }
   }
+
+  const changes = {
+    cyclesCompleted: { before: before.cyclesCompleted, after: result.cyclesCompleted },
+    realizedPnL: { before: before.realizedPnL, after: result.realizedPnL },
+    realizedAssetPnL: { before: before.realizedAssetPnL, after: result.realizedAssetPnL },
+  };
 
   return {
     success: true, exchange, pair: resolvedPair, applied: apply, changes,
-    cycleDetails: recalcResult.cycleDetails,
-    orphansFixed: recalcResult.orphansFixed,
-    activeCycleId: recalcResult.activeCycleId,
-    currentCycleFills: currentCycleFills.length,
+    cycleDetails: result.cycleDetails,
+    orphansFixed: result.orphansFixed,
+    activeCycleId: result.activeCycleId,
+    currentCycleFills: result.currentCycleFills,
   };
 });
 

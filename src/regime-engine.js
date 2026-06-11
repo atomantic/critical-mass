@@ -2990,6 +2990,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 saveLiveState();
                 await placeBodyTp(body);
               }
+            })
+            // Terminal guard: this getOrder chain is fire-and-forget inside the
+            // loop, and both the .then and .catch handlers above await
+            // handleOrderFill / placeBodyTp, which can themselves reject. Without
+            // this, such a rejection escapes as an unhandled rejection and
+            // crashes the process (Node ≥15) — the reconcile loop re-checks this
+            // body on the next tick anyway (issue #99).
+            .catch(err => {
+              console.log(`❌ [${exchange}] Body ${body.id.slice(-8)} TP reconcile handler error: ${err.message}`);
             });
         }
       }
@@ -2997,30 +3006,32 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       recoveryModule.reconcile(positionState, fillLedger)
         .then(result => {
           if (result.updated) {
-            // Preserve fields that rebuildPositionFromFills doesn't return
-            const savedBodies = positionState.celestialBodies;
-            const savedCelestialState = positionState.celestialState;
-            const savedRealizedPnL = positionState.realizedPnL;
-            const savedRealizedAssetPnL = positionState.realizedAssetPnL;
-            const savedEngineStartTime = positionState.engineStartTime;
-            const savedInitialCapital = positionState.initialCapital;
-            const savedOriginalCapital = positionState.originalCapital;
-            const savedDepositedCapital = positionState.depositedCapital;
-            positionState = result.position;
-            if (savedBodies) positionState.celestialBodies = savedBodies;
-            if (savedCelestialState) positionState.celestialState = savedCelestialState;
-            if (savedRealizedPnL) positionState.realizedPnL = savedRealizedPnL;
-            if (savedRealizedAssetPnL) positionState.realizedAssetPnL = savedRealizedAssetPnL;
-            if (savedEngineStartTime) positionState.engineStartTime = savedEngineStartTime;
-            if (savedInitialCapital) positionState.initialCapital = savedInitialCapital;
-            if (savedOriginalCapital) positionState.originalCapital = savedOriginalCapital;
-            if (savedDepositedCapital) positionState.depositedCapital = savedDepositedCapital;
-            // Re-sync totals from bodies
+            // MERGE the recomputed balance/qty fields into the EXISTING state —
+            // do NOT wholesale-replace. rebuildPositionFromFills returns a
+            // minimal object (activeTpOrderId:null, cyclesCompleted:0, no
+            // lifecycle / ladder / pending-order / macroRegime fields), so a
+            // wholesale swap would: flip a DRAINING fund back to ACTIVE, null
+            // activeTpOrderId while the core TP still rests (→ duplicate sell),
+            // drop ladderActive/pendingLadderOrders/pendingEntryOrders (→ double
+            // ladders + orphaned orders), and reset cyclesCompleted. Only the
+            // fields rebuildPositionFromFills authoritatively recomputes from
+            // the ledger are copied over (issue #97).
+            const rebuilt = result.position;
+            const RECONCILED_FIELDS = [
+              'totalAsset', 'totalCostBasis', 'avgCostBasis', 'cycleBuys',
+              'lastEntryPrice', 'lastEntryTime', 'anchorPrice',
+            ];
+            for (const field of RECONCILED_FIELDS) {
+              if (rebuilt[field] !== undefined) positionState[field] = rebuilt[field];
+            }
+            // Re-sync totals from bodies (celestial mode): rebuildPositionFromFills
+            // skips body-owned fills, so when bodies exist the body-derived
+            // aggregate is authoritative and overrides the core-only totals above.
             const bodies = positionState.celestialBodies || [];
             if (bodies.length > 0) {
               celestialHierarchy.syncPositionState(positionState, bodies);
             }
-            console.log(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies preserved)`);
+            console.log(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies, lifecycle=${positionState.lifecycle || 'n/a'} preserved)`);
           }
         })
         .catch(err => {
@@ -3146,91 +3157,101 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Check regime allows entries
     if (!regimeDetector.allowsEntries()) return;
 
-    // Calculate remaining budget, capped at actual available balance
-    let remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
-    const quoteCurrency = getQuoteCurrency(productId);
-    const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
-    if (!quoteBalance) {
-      // Can't verify balance — skip ladder to avoid placing orders we can't fund
-      return;
-    }
-    const availableQuote = parseFloat(quoteBalance.available) || 0;
-    if (availableQuote < remainingBudget) {
-      remainingBudget = availableQuote;
-    }
-
-    // Quick sanity check - need at least 1 order worth of budget
-    if (remainingBudget < config.baseSizeUsdc) {
-      if (!budgetExhaustedWarningLogged) {
-        console.log(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} available (${quoteCurrency}=${availableQuote.toFixed(2)}) < $${config.baseSizeUsdc}`);
-        budgetExhaustedWarningLogged = true;
-      }
-      return;
-    }
-
+    // Claim the entry lock BEFORE the first await. Ticker events fire many
+    // times per second; the balance fetch below is an async gap, and the
+    // evaluateEntryTrigger guard (`if (entryInProgress) return`) only blocks
+    // re-entry once this flag is set. Setting it after the await (the old
+    // bug) let every tick that landed during the balance round-trip place its
+    // own full-budget ladder — multi-x budget over-commitment, with only the
+    // last ladder's orders tracked (issue #98). All early-returns from here
+    // must clear it, so the rest of the function runs under try/finally.
+    if (entryInProgress) return;
     entryInProgress = true;
+    try {
+      // Calculate remaining budget, capped at actual available balance
+      let remainingBudget = config.maxUsdcDeployed - positionState.totalCostBasis;
+      const quoteCurrency = getQuoteCurrency(productId);
+      const quoteBalance = await adapter.getAccountBalance(quoteCurrency).catch(() => null);
+      if (!quoteBalance) {
+        // Can't verify balance — skip ladder to avoid placing orders we can't fund
+        return;
+      }
+      const availableQuote = parseFloat(quoteBalance.available) || 0;
+      if (availableQuote < remainingBudget) {
+        remainingBudget = availableQuote;
+      }
 
-    const placeLadder = async () => {
-      // Build ladder first to determine actual level count (may be fewer than config due to min-size filtering)
-      const ladder = ladderCalculator.buildLadder(
-        marketState.lastPrice,
-        remainingBudget,
-        {
-          atr: marketState.atr1m,
-          volBaseline: marketState.volBaseline,
-          realizedVol: marketState.realizedVol,
-          athDistance: marketState.athDistance || 0,
-          ath: marketState.ath || 0,
-          priceIncrement,
-        }
-      );
-
-      if (ladder.levels.length === 0) {
+      // Quick sanity check - need at least 1 order worth of budget
+      if (remainingBudget < config.baseSizeUsdc) {
         if (!budgetExhaustedWarningLogged) {
-          console.log(`ℹ️ [${exchange}] Ladder build produced 0 levels for budget $${remainingBudget.toFixed(2)}`);
+          console.log(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} available (${quoteCurrency}=${availableQuote.toFixed(2)}) < $${config.baseSizeUsdc}`);
           budgetExhaustedWarningLogged = true;
         }
         return;
       }
 
-      // Check order limit using actual built level count
-      const pendingCounts = orderExecutor.getPendingCounts();
-      const requiredSlots = ladder.levels.length + 1; // +1 for TP order
+      const placeLadder = async () => {
+        // Build ladder first to determine actual level count (may be fewer than config due to min-size filtering)
+        const ladder = ladderCalculator.buildLadder(
+          marketState.lastPrice,
+          remainingBudget,
+          {
+            atr: marketState.atr1m,
+            volBaseline: marketState.volBaseline,
+            realizedVol: marketState.realizedVol,
+            athDistance: marketState.athDistance || 0,
+            ath: marketState.ath || 0,
+            priceIncrement,
+          }
+        );
 
-      if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
-        console.log(`⚠️ [${exchange}] Insufficient order slots for ladder: need ${requiredSlots}, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
-        return;
-      }
+        if (ladder.levels.length === 0) {
+          if (!budgetExhaustedWarningLogged) {
+            console.log(`ℹ️ [${exchange}] Ladder build produced 0 levels for budget $${remainingBudget.toFixed(2)}`);
+            budgetExhaustedWarningLogged = true;
+          }
+          return;
+        }
 
-      console.log(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
+        // Check order limit using actual built level count
+        const pendingCounts = orderExecutor.getPendingCounts();
+        const requiredSlots = ladder.levels.length + 1; // +1 for TP order
 
-      // Place ladder orders
-      const result = await orderExecutor.placeLadderOrders(ladder.levels);
+        if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
+          console.log(`⚠️ [${exchange}] Insufficient order slots for ladder: need ${requiredSlots}, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
+          return;
+        }
 
-      // Update position state
-      positionState.ladderActive = true;
-      positionState.ladderPlacedAt = Date.now();
-      positionState.ladderLowerBound = ladder.lowerBound;
-      positionState.pendingLadderOrders = result.orders;
+        console.log(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
 
-      console.log(`📊 [${exchange}] Ladder placed: ${result.orders.length} levels from ${fmtPrice(marketState.lastPrice)} to ${fmtPrice(ladder.lowerBound)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`);
+        // Place ladder orders
+        const result = await orderExecutor.placeLadderOrders(ladder.levels);
 
-      tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to ${fmtPrice(ladder.lowerBound)}`, {
-        levels: result.orders.length,
-        topPrice: marketState.lastPrice,
-        bottomPrice: ladder.lowerBound,
-        lowerBoundPct: ladder.lowerBoundPct,
-        totalBudget: ladder.totalBudget,
-        failedCount: result.failedCount,
-      });
+        // Update position state
+        positionState.ladderActive = true;
+        positionState.ladderPlacedAt = Date.now();
+        positionState.ladderLowerBound = ladder.lowerBound;
+        positionState.pendingLadderOrders = result.orders;
 
-      // Persist state
-      saveLiveState();
-    };
+        console.log(`📊 [${exchange}] Ladder placed: ${result.orders.length} levels from ${fmtPrice(marketState.lastPrice)} to ${fmtPrice(ladder.lowerBound)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`);
 
-    await placeLadder().finally(() => {
+        tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to ${fmtPrice(ladder.lowerBound)}`, {
+          levels: result.orders.length,
+          topPrice: marketState.lastPrice,
+          bottomPrice: ladder.lowerBound,
+          lowerBoundPct: ladder.lowerBoundPct,
+          totalBudget: ladder.totalBudget,
+          failedCount: result.failedCount,
+        });
+
+        // Persist state
+        saveLiveState();
+      };
+
+      await placeLadder();
+    } finally {
       entryInProgress = false;
-    });
+    }
   };
 
   /**
@@ -3981,7 +4002,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         placedAt: status.placedAt, // Passed from order executor for fill time tracking
         isPartialFill: status.isPartialFill === true,
       };
-      await handleOrderFill(fillData);
+      // order-executor invokes this callback fire-and-forget (no await/catch),
+      // and handleOrderFill awaits network + fs work that can reject on a
+      // routine API blip. An unhandled rejection here crashes the process
+      // (Node ≥15) mid-fill, leaving state partially mutated. Contain it —
+      // the orderId stays in recentlyProcessedFills, so the next reconcile
+      // poll re-detects and re-processes the fill cleanly (issue #99).
+      try {
+        await handleOrderFill(fillData);
+      } catch (err) {
+        recentlyProcessedFills.delete(dedupKey);
+        console.log(`❌ [${exchange}] Error processing polled fill ${orderId} (side=${status.side}): ${err.message} — will retry on next reconcile`);
+      }
     };
   }
 
@@ -4288,6 +4320,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     };
     saveLiveState();
     console.log(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, ${baseCurrency} reserves=${positionState.realizedAssetPnL}`);
+  };
+
+  /**
+   * Recompute cycle boundaries on the engine's OWN ledger and re-derive P&L
+   * from the cycle-pair source of truth. Used by the regime:recalculate
+   * handler so it never has to (a) instantiate a second ledger on the same
+   * file (lost-update race), (b) write FIFO/closed-trades totals as
+   * realizedPnL, or (c) blind-merge a rebuilt position into the live engine
+   * (which would null activeTpOrderId and resurrect stale bodies). It mutates
+   * only realizedPnL / realizedAssetPnL / heldAssetCostBasis / cyclesCompleted
+   * — never order tracking, lifecycle, or ladder state (issue #96).
+   * @returns {{cyclesCompleted:number, realizedPnL:number, realizedAssetPnL:number, cycleDetails:any[], orphansFixed:number, activeCycleId:string|null}}
+   */
+  const recalculateAndRefresh = () => {
+    const recalc = fillLedger.recalculateCycles();
+    positionState.cyclesCompleted = recalc.cyclesCompleted;
+    // Source of truth — cycle pairs, NOT FIFO/closed-trades. Also updates
+    // realizedAssetPnL and heldAssetCostBasis and persists.
+    refreshRealizedFromCyclePairs();
+    saveLiveState();
+    return {
+      cyclesCompleted: recalc.cyclesCompleted,
+      realizedPnL: positionState.realizedPnL,
+      realizedAssetPnL: positionState.realizedAssetPnL,
+      cycleDetails: recalc.cycleDetails,
+      orphansFixed: recalc.orphansFixed,
+      activeCycleId: recalc.activeCycleId,
+    };
   };
 
   /**
@@ -4797,6 +4857,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     updatePosition,
     getFills,
     getFillLedger: () => fillLedger,
+    recalculateAndRefresh,
     getFillStats,
     forceResumeDrawdown,
     manualMergeBody,
