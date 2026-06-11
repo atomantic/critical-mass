@@ -334,15 +334,30 @@ const incrementToDecimals = (increment) => {
  */
 const floorToIncrement = (value, increment) => {
   if (!(increment > 0)) return value;
-  const quotient = value / increment;
-  // Strip pure double-rounding dust by re-rounding the quotient to 12
-  // significant digits BEFORE flooring: 0.29/0.01 = 28.999999999999996 →
-  // "29.0000000000" → 29 (the dust we must absorb is ~1e-13 relative, far
-  // inside 12 sig-figs). A genuinely sub-tick value keeps its remainder —
-  // 1.99999999999/0.01 = 199.999999999 stays 199.999999999 → floors to 199 —
-  // so we never round a real value UP past a tick on a sell-size / price path.
-  const cleaned = parseFloat(quotient.toPrecision(12));
-  return Math.floor(cleaned) * increment;
+  // Floor the quotient, then candidate the NEXT tick up and snap to it ONLY
+  // when `value` is within a tiny RELATIVE tolerance below that next tick —
+  // i.e. the gap is pure double-rounding dust, not a real sub-tick remainder.
+  //   0.29/0.01 = 28.9999999996 → floor 28 → next tick 0.29; |0.29-0.29|≈4e-18
+  //     ≤ tol → snap up to 0.29 (the dust we must absorb).
+  //   1.99999999999/0.01 = 199.999999999 → floor 199 → next tick 2.00;
+  //     2.00-1.99999999999 = 1e-11, tol ≈ 2e-9 → NOT within tol → stays 1.99
+  //     (a genuine sub-tick value is never rounded up on a sell/price path).
+  // Comparing in VALUE space with a value-relative tolerance keeps this correct
+  // across magnitudes AND fine increments (price ~1e5, 1e-8 BTC ticks) where a
+  // quotient-space toPrecision/epsilon breaks (e.g. 99999.99999999 / 1e-8).
+  const flooredUnits = Math.floor(value / increment);
+  const nextTick = (flooredUnits + 1) * increment;
+  // Snap to the next tick ONLY when `value` sits below it by no more than a few
+  // ULPs of `value` — i.e. the gap is genuine IEEE-754 rounding error from the
+  // value/increment*increment round-trip, never a real sub-tick remainder.
+  // Float dust is ≈ value·2.2e-16; we use 8·EPSILON (~1.8e-15 relative) as a
+  // safe ceiling. This GUARANTEES the result never exceeds the input by more
+  // than a few ULPs (critical for a sell-size / limit-price floor): a value a
+  // genuine fraction-of-a-tick below the next tick (1.99999999999 @ 0.01, gap
+  // 1e-11 ≫ ULP) floors down; only true dust (0.29 @ 0.01, gap ~4e-18) snaps up.
+  const tol = Math.max(Math.abs(value), increment) * Number.EPSILON * 8;
+  if (nextTick - value >= 0 && nextTick - value <= tol) return nextTick;
+  return flooredUnits * increment;
 };
 
 /**
