@@ -35,6 +35,7 @@ const { preparePrivateKey } = require('./adapters/coinbase/auth');
 
 const COINBASE_WS_URL = 'wss://advanced-trade-ws.coinbase.com';
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
+const MAX_MISSED_PONGS = 2; // terminate after this many unanswered pings
 const RECONNECT_BASE_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 60000;
 
@@ -96,6 +97,7 @@ const createWebSocketFeed = (exchange, config) => {
   let reconnectAttempts = 0;
   let heartbeatInterval = null;
   let reconnectTimeout = null;
+  let missedPongs = 0;
 
   /**
    * Connect to WebSocket
@@ -126,6 +128,7 @@ const createWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('message', (data) => {
+      missedPongs = 0; // Any inbound data proves the connection is alive
       handleMessage(data.toString());
     });
 
@@ -142,7 +145,7 @@ const createWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('pong', () => {
-      // Connection is alive
+      missedPongs = 0; // Connection is alive
     });
   };
 
@@ -377,15 +380,26 @@ const createWebSocketFeed = (exchange, config) => {
   };
 
   /**
-   * Start heartbeat ping
+   * Start heartbeat ping with pong-timeout watchdog.
+   * If MAX_MISSED_PONGS pings go unanswered (no pong, no messages),
+   * the connection is silently dead — terminate() forces the 'close'
+   * event so the existing reconnect/backoff path runs.
    */
   const startHeartbeat = () => {
     stopHeartbeat();
+    missedPongs = 0;
 
     heartbeatInterval = setInterval(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.ping();
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      if (missedPongs >= MAX_MISSED_PONGS) {
+        console.log(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`);
+        ws.terminate();
+        return;
       }
+
+      missedPongs++;
+      ws.ping();
     }, HEARTBEAT_INTERVAL);
   };
 

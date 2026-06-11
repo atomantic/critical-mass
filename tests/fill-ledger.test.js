@@ -1357,4 +1357,71 @@ describe('Fill Ledger', () => {
     assert.equal(ledger.getFillCount(), fillsBefore,
       'post-boot reload must preserve in-memory state on corruption');
   });
+
+  // =======================================================================
+  // heldOpenBuyCostBasis derivation (issue #95)
+  // sellOrderId is stamped at TP *placement* — a buy only closes once its
+  // linked sell order has actual sell fills in the ledger.
+  // =======================================================================
+  describe('getDerivedRealizedPnL heldOpenBuyCostBasis (issue #95)', () => {
+    it('counts buys with no sellOrderId as held-open cost', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'h-b1', orderId: 'buy-1', price: '100000', size: '0.001' }));
+
+      const derived = ledger.getDerivedRealizedPnL();
+      // cost = quoteAmount (100) + netFee (0.10)
+      assert.equal(derived.heldOpenBuyCostBasis, 100.10);
+      assert.equal(derived.realizedPnL, 0);
+    });
+
+    it('still counts a buy as held when its sellOrderId points at a resting (unfilled) TP', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'h-b2', orderId: 'buy-2', price: '100000', size: '0.001' }));
+      // Engine stamps sellOrderId at TP placement time — no sell fills exist yet
+      ledger.annotateFillsByOrderId('buy-2', { sellOrderId: 'tp-resting-1', bodyId: 'body-1' });
+
+      const derived = ledger.getDerivedRealizedPnL();
+      assert.equal(derived.heldOpenBuyCostBasis, 100.10,
+        'a placement-time sellOrderId stamp must not zero out held cost basis');
+      assert.equal(derived.realizedPnL, 0);
+    });
+
+    it('releases held cost once the linked sell order has fills, using the bodyPnl annotation once per orderId', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'h-b3', orderId: 'buy-3', price: '100000', size: '0.001' }));
+      ledger.annotateFillsByOrderId('buy-3', { sellOrderId: 'tp-1', bodyId: 'body-1' });
+
+      // TP fills in two partial rows of the same orderId (sells 0.0009, holdback 0.0001)
+      ledger.ingestFill(makeSellFill({ tradeId: 'h-s1', orderId: 'tp-1', price: '105000', size: '0.0005' }));
+      ledger.ingestFill(makeSellFill({ tradeId: 'h-s2', orderId: 'tp-1', price: '105000', size: '0.0004' }));
+      // Engine annotates every partial row with the same per-sell values
+      ledger.annotateFillsByOrderId('tp-1', { bodyPnl: 4.2, bodyHoldbackAsset: 0.0001, isBodyOwned: true });
+
+      const derived = ledger.getDerivedRealizedPnL();
+      assert.equal(derived.heldOpenBuyCostBasis, 0, 'filled sell releases the buy cost');
+      assert.equal(derived.realizedPnL, 4.2, 'bodyPnl taken once per orderId, not per partial row');
+      assert.equal(derived.realizedAssetPnL, 0.0001, 'holdback taken once per orderId');
+    });
+
+    it('keeps full original cost held after a partial fill re-links buys to a re-placed TP', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'h-b4', orderId: 'buy-4', price: '100000', size: '0.002' }));
+      ledger.annotateFillsByOrderId('buy-4', { sellOrderId: 'tp-old', bodyId: 'body-2' });
+
+      // Partial fill of tp-old, annotated by the engine
+      ledger.ingestFill(makeSellFill({ tradeId: 'h-s3', orderId: 'tp-old', price: '105000', size: '0.001' }));
+      ledger.annotateFillsByOrderId('tp-old', { bodyPnl: 2.5, bodyHoldbackAsset: 0, isBodyOwned: true, partialFill: true });
+      // placeBodyTp re-links the buys to the re-placed TP for the remainder
+      ledger.annotateFillsByOrderId('buy-4', { sellOrderId: 'tp-new' });
+
+      const derived = ledger.getDerivedRealizedPnL();
+      // tp-new has no fills yet → buy cost stays held (conservative until residual TP fills)
+      assert.equal(derived.heldOpenBuyCostBasis, 200.10);
+      assert.equal(derived.realizedPnL, 2.5, 'first tranche realized via annotation');
+    });
+  });
 });

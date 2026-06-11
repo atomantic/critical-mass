@@ -4,7 +4,7 @@
  */
 
 const fs = require('fs');
-const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig } = require('../config-utils');
+const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret } = require('../config-utils');
 const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('../backup-service');
 const { log } = require('../logger');
 const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA } = require('../config-validator');
@@ -59,16 +59,22 @@ module.exports = (app, deps) => {
       ...config,
       telegram: {
         ...config.telegram,
-        botToken: config.telegram.botToken
-          ? config.telegram.botToken.slice(0, 6) + '...' + config.telegram.botToken.slice(-4)
-          : '',
+        botToken: maskSecret(config.telegram.botToken),
       },
     };
     res.json(masked);
   });
 
   app.put('/api/notifications/config', (req, res) => {
-    const updates = req.body;
+    const updates = { ...req.body };
+    // Round-trip guard: GET /api/notifications/config masks the bot token.
+    // If a client echoes the masked value back, drop it so the stored token
+    // is preserved instead of being overwritten with the mask.
+    if (updates.telegram && isMaskedSecret(updates.telegram.botToken)) {
+      const telegram = { ...updates.telegram };
+      delete telegram.botToken;
+      updates.telegram = telegram;
+    }
     updateNotificationConfig(updates);
     notifier.updateConfig(updates);
     res.json({ success: true });
