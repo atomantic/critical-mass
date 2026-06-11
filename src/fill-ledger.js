@@ -1078,7 +1078,9 @@ const createFillLedger = (exchange, productId, pair) => {
   /**
    * Source-of-truth derivation: walk the ledger by buy↔sell pairing and sum
    * per-cycle outcomes. The engine's contract is buy(n)→sell(1) per cycle:
-   * every buy gets a sellOrderId stamp when its TP fills.
+   * every buy gets a sellOrderId stamp when its TP is *placed* (for
+   * crash-resilient linkage); the buy only counts as closed once that sell
+   * order has fills in this ledger.
    *
    * Per-sell pnl rules (mirrors RegimeDashboard.jsx):
    *   - Body/satellite sells: use server-annotated bodyPnl/satellitePnl. The
@@ -1090,7 +1092,9 @@ const createFillLedger = (exchange, productId, pair) => {
    *   realizedPnL          = Σ per-sell pnl
    *   realizedAssetPnL     = Σ holdback per sell (server annotation when present,
    *                          else max(0, Σ paired_buy_size − sell_size))
-   *   heldOpenBuyCostBasis = Σ cost over buys with no sellOrderId (active bodies)
+   *   heldOpenBuyCostBasis = Σ cost over buys whose sellOrderId is absent or
+   *                          has no sell fills yet (open positions in active
+   *                          bodies whose TP is resting or was cancelled)
    *
    * Reserves (realizedAssetPnL) are treated as zero-cost: the cost was already
    * attributed to the paired sell's basis.
@@ -1148,10 +1152,16 @@ const createFillLedger = (exchange, productId, pair) => {
 
     // Index buys by sellOrderId, pre-summing cost+size to keep the per-sell
     // loop O(1) instead of re-reducing each paired buy list.
+    //
+    // sellOrderId is stamped at TP *placement* (crash-resilient buy→sell
+    // linkage), not at fill — so a stamp alone doesn't mean the buy closed.
+    // A buy is still open until its linked sell order has actual sell fills
+    // in this ledger. Without this check every buy in an active body counts
+    // as closed the moment its TP rests, zeroing heldOpenBuyCostBasis.
     const pairedBySellOrderId = new Map();
     let heldOpenBuyCostBasis = 0;
     for (const buy of buyAggByOrderId.values()) {
-      if (!buy.sellOrderId) {
+      if (!buy.sellOrderId || !sellAggByOrderId.has(buy.sellOrderId)) {
         heldOpenBuyCostBasis += buy.cost;
         continue;
       }
