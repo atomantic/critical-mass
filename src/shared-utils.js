@@ -313,6 +313,28 @@ const incrementToDecimals = (increment) => {
 };
 
 /**
+ * Floor a value to an exchange increment, guarding against float dust.
+ *
+ * `Math.floor(value / increment) * increment` steps a FULL increment down for
+ * many exactly-representable inputs — e.g. Math.floor(0.29/0.01)*0.01 === 0.28,
+ * Math.floor(8.2/0.1)*0.1 === 8.1 — because 0.29/0.01 computes to 28.999…. That
+ * costs a tick on every TP (selling cheaper) and shaves a full increment off
+ * order sizes (dust that never gets swept). A relative epsilon before flooring
+ * absorbs the representation error without ever rounding UP past a real tick.
+ *
+ * @param {number} value - Value to floor
+ * @param {number} increment - Exchange increment / tick size (must be > 0)
+ * @returns {number} Floored value (NOT precision-formatted — callers toFixed via incrementToDecimals)
+ */
+const floorToIncrement = (value, increment) => {
+  if (!(increment > 0)) return value;
+  const quotient = value / increment;
+  // Epsilon scaled to the quotient magnitude; 1e-9 relative is far below any
+  // real tick yet comfortably above double-rounding error for these ranges.
+  return Math.floor(quotient + 1e-9) * increment;
+};
+
+/**
  * Format a price for display: >= $1 shows 2 decimals, < $1 shows up to 6 significant digits
  * @param {number} p
  * @returns {string}
@@ -351,6 +373,7 @@ module.exports = {
   saveRegimeRunningFlag,
   shouldAutoResumeRegime,
   incrementToDecimals,
+  floorToIncrement,
   fmtPrice,
   fmtCurrency,
 };

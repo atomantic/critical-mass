@@ -340,7 +340,7 @@ const createCryptocomAdapter = (keysPath = null) => {
 
     // Calculate quantity from notional, round down to tick size
     const rawQuantity = quoteAmount / price;
-    const roundedQuantity = Math.floor(rawQuantity / qtyTickSize) * qtyTickSize;
+    const roundedQuantity = floorToIncrement(rawQuantity, qtyTickSize);
 
     // Use quantity for more control over rounding
     const orderParams = {
@@ -386,8 +386,8 @@ const createCryptocomAdapter = (keysPath = null) => {
     const priceDecimals = incrementToDecimals(details.quoteIncrement);
     const qtyDecimals = incrementToDecimals(details.baseIncrement);
 
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedPrice = Math.floor(price / priceTickSize) * priceTickSize;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
+    const roundedPrice = floorToIncrement(price, priceTickSize);
 
     const orderParams = {
       instrument_name: instrument,
@@ -438,8 +438,8 @@ const createCryptocomAdapter = (keysPath = null) => {
     const priceDecimals = incrementToDecimals(details.quoteIncrement);
     const qtyDecimals = incrementToDecimals(details.baseIncrement);
 
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedPrice = Math.floor(price / priceTickSize) * priceTickSize;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
+    const roundedPrice = floorToIncrement(price, priceTickSize);
 
     // Validate quantity is non-zero and meets minimum
     const minQty = parseFloat(details.baseMinSize) || baseIncrement;
