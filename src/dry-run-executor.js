@@ -552,6 +552,13 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * Get average entry price from filled buy orders
    * @returns {number}
    */
+  // Average gross fill PRICE (not fee-inclusive). Used for the state-export
+  // avgEntryPrice display and the legacy-TP/body-TP cost-basis estimate. The
+  // legacy-TP P&L derived from this still omits the buy-side fee, so dry-run
+  // realized P&L over-counts capital by the entry fee — part of the broader
+  // dry-run cost-basis modeling gap tracked in issue #133 (dry-run-only, no
+  // real-money impact). Not changed here to avoid shifting this shared helper's
+  // semantics under the avgEntryPrice display consumer.
   const getAverageEntryPrice = () => {
     const buyFills = filledOrders.filter(o => o.type === 'entry' && o.side === 'buy');
     if (buyFills.length === 0) return 0;
