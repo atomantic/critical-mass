@@ -414,6 +414,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     : null;
 
   let isRunning = false;
+  let isStarting = false; // reentrancy guard for start() (#113)
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
@@ -1018,12 +1019,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
    */
-  const start = async () => {
-    if (isRunning) {
-      console.log(`⚠️ [${exchange}] ${modeLabel}Regime engine already running`);
-      return { success: false, error: 'Engine already running' };
-    }
-
+  const startImpl = async () => {
     console.log(`🚀 [${exchange}] ${modeLabel}Starting regime engine for ${productId}`);
 
     // Fetch product details for price tick size (affects TP price rounding)
@@ -1930,6 +1926,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Public start(): reentrancy-guarded wrapper around startImpl.
+   *
+   * isRunning is only set true near the END of startImpl (after recovery +
+   * order checks), so two near-simultaneous start() calls (API double-tap)
+   * could both pass an isRunning-only guard and spin up duplicate intervals /
+   * WS feeds / SIGUSR1 handlers / TPs. The isStarting flag closes that window
+   * without disturbing the recovery path that relies on isRunning being false
+   * until ready. The try/finally is essential: startImpl awaits unguarded work
+   * (recoverState, getCurrentPrice, connectWebSocket) that can reject on a
+   * transient exchange error — clearing isStarting in finally keeps a failed
+   * start RETRYABLE instead of permanently bricking the engine instance (#113).
+   * @returns {Promise<{success: boolean, error?: string}>}
+   */
+  const start = async () => {
+    if (isRunning || isStarting) {
+      console.log(`⚠️ [${exchange}] ${modeLabel}Regime engine already ${isRunning ? 'running' : 'starting'}`);
+      return { success: false, error: 'Engine already running' };
+    }
+    isStarting = true;
+    try {
+      return await startImpl();
+    } finally {
+      isStarting = false;
+    }
+  };
+
+  /**
    * Stop the regime engine
    */
   const stop = async () => {
@@ -1947,6 +1970,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
         position: { ...positionState },
         tpOptimizer: tpOptimizer.exportState(),
+        // Include sizeOptimizer so dry-run restarts don't lose sizing
+        // adjustments (saveDryRunState persists it; forceSave omitted it) (#113).
+        sizeOptimizer: sizeOptimizer.exportState(),
       }, pair);
     } else {
       // Save live state on shutdown
