@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
-const { incrementToDecimals } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -340,14 +340,20 @@ const createCryptocomAdapter = (keysPath = null) => {
 
     // Calculate quantity from notional, round down to tick size
     const rawQuantity = quoteAmount / price;
-    const roundedQuantity = Math.floor(rawQuantity / qtyTickSize) * qtyTickSize;
+    const roundedQuantity = floorToIncrement(rawQuantity, qtyTickSize);
+    // Format to the instrument's decimal precision: floorToIncrement returns a
+    // mathematically-correct tick but can carry binary float artifacts
+    // (e.g. 8.200000000000001), and raw toString() would send over-precision
+    // digits that Crypto.com rejects. The limit paths already toFixed; match them.
+    const qtyDecimals = incrementToDecimals(details.baseIncrement);
+    const quantityStr = roundedQuantity.toFixed(qtyDecimals);
 
     // Use quantity for more control over rounding
     const orderParams = {
       instrument_name: instrument,
       side: 'BUY',
       type: 'MARKET',
-      quantity: roundedQuantity.toString(),
+      quantity: quantityStr,
       client_oid: clientOrderId,
       spot_margin: 'SPOT',
     };
@@ -386,8 +392,8 @@ const createCryptocomAdapter = (keysPath = null) => {
     const priceDecimals = incrementToDecimals(details.quoteIncrement);
     const qtyDecimals = incrementToDecimals(details.baseIncrement);
 
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedPrice = Math.floor(price / priceTickSize) * priceTickSize;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
+    const roundedPrice = floorToIncrement(price, priceTickSize);
 
     const orderParams = {
       instrument_name: instrument,
@@ -438,8 +444,8 @@ const createCryptocomAdapter = (keysPath = null) => {
     const priceDecimals = incrementToDecimals(details.quoteIncrement);
     const qtyDecimals = incrementToDecimals(details.baseIncrement);
 
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedPrice = Math.floor(price / priceTickSize) * priceTickSize;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
+    const roundedPrice = floorToIncrement(price, priceTickSize);
 
     // Validate quantity is non-zero and meets minimum
     const minQty = parseFloat(details.baseMinSize) || baseIncrement;

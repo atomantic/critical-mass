@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const crypto = require('crypto');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
-const { incrementToDecimals } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -300,8 +300,8 @@ const createGeminiAdapter = (keysPath = null) => {
     const baseDecimals = incrementToDecimals(product.baseIncrement);
     const quoteDecimals = incrementToDecimals(product.quoteIncrement);
 
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
+    const roundedPrice = floorToIncrement(price, quoteIncrement);
 
     const baseMinSize = parseFloat(product.baseMinSize) || baseIncrement;
     if (roundedAmount < baseMinSize) {
@@ -360,8 +360,8 @@ const createGeminiAdapter = (keysPath = null) => {
     const baseDecimals = incrementToDecimals(product.baseIncrement);
     const quoteDecimals = incrementToDecimals(product.quoteIncrement);
 
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
+    const roundedPrice = floorToIncrement(price, quoteIncrement);
 
     const baseMinSize = parseFloat(product.baseMinSize) || baseIncrement;
     if (roundedAmount < baseMinSize) {
