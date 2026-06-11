@@ -1936,3 +1936,153 @@ describe('service.start() cold-start fill-ledger corruption', () => {
     svc.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// updateMetrics + regime classification pipeline (issue #102)
+// ---------------------------------------------------------------------------
+// Three bugs fixed together:
+//  1. adapters return bare Candle[] arrays — the old code read
+//     result.value?.candles and never assigned anything, so metrics stayed 0.
+//  2. regimeDetector.update() does not exist — the correct call is
+//     classify(marketState), which needs a vwap field.
+//  3. calculateAllMetrics was passed lastPrice as prevBaseline (poisoning the
+//     vol EMA with a ~$100k price) with config omitted, and the code read
+//     metrics.vwapDistance — a key calculateAllMetrics never returns.
+describe('updateMetrics + regime classification (issue #102)', () => {
+  const { createRegimeDetector } = require('../src/regime-detector');
+
+  /**
+   * Build a bare Candle[] array the way all three adapters return them
+   * (coinbase/gemini/cryptocom): { timestamp, open, high, low, close, volume }.
+   * Slight zig-zag around basePrice so ATR / realizedVol are non-zero.
+   */
+  const makeCandles = (count, intervalSec, basePrice = 100) => {
+    const nowMs = Date.now();
+    const candles = [];
+    for (let i = 0; i < count; i++) {
+      const drift = (i % 2 === 0 ? 1 : -1) * 0.5;
+      const close = basePrice + drift;
+      candles.push({
+        timestamp: nowMs - (count - i) * intervalSec * 1000,
+        open: basePrice,
+        high: close + 0.5,
+        low: basePrice - 1,
+        close,
+        volume: 10,
+      });
+    }
+    return candles;
+  };
+
+  const makeCandleAdapter = (candles1m, candles5m) => ({
+    getCandles: async (_productId, _start, _end, granularity) =>
+      granularity === 'ONE_MINUTE' ? candles1m : candles5m,
+  });
+
+  it('populates marketState metrics from bare candle arrays (no .candles wrapper)', async () => {
+    const svc = createMarketDataService('coinbase');
+    const adapter = makeCandleAdapter(makeCandles(60, 60), makeCandles(48, 300));
+
+    await svc._test.updateMetrics(adapter, 'BTC-USDC');
+
+    const ms = svc._test.marketState;
+    assert.ok(ms.atr1m > 0, `atr1m must populate from bare arrays, got ${ms.atr1m}`);
+    assert.ok(ms.atr5m > 0, `atr5m must populate, got ${ms.atr5m}`);
+    assert.ok(ms.realizedVol > 0, `realizedVol must populate, got ${ms.realizedVol}`);
+    assert.ok(ms.volBaseline > 0, `volBaseline must populate, got ${ms.volBaseline}`);
+    assert.ok(ms.vwap > 0, `vwap must populate, got ${ms.vwap}`);
+    assert.ok(ms.momentum && typeof ms.momentum.magnitude === 'number', 'momentum must populate');
+  });
+
+  it('seeds the vol EMA from previous volBaseline, not lastPrice (baseline poisoning)', async () => {
+    const svc = createMarketDataService('coinbase');
+    const adapter = makeCandleAdapter(makeCandles(60, 60), makeCandles(48, 300));
+
+    // Old bug: lastPrice (~100k) was passed as prevBaseline, so the EMA
+    // produced ~0.9 * 100000 and volExpansion collapsed to ~0 forever.
+    svc._test.marketState.lastPrice = 100000;
+
+    await svc._test.updateMetrics(adapter, 'BTC-USDC');
+    const first = svc._test.marketState.volBaseline;
+    assert.ok(first > 0 && first < 100, `first volBaseline must equal realizedVol scale, got ${first}`);
+    assert.equal(first, svc._test.marketState.realizedVol, 'first run seeds baseline with realizedVol');
+
+    await svc._test.updateMetrics(adapter, 'BTC-USDC');
+    const second = svc._test.marketState.volBaseline;
+    assert.ok(second > 0 && second < 100, `EMA must stay on vol scale, got ${second}`);
+  });
+
+  it('derives vwapDistance locally as (lastPrice - vwap) / atr1m', async () => {
+    const svc = createMarketDataService('coinbase');
+    const adapter = makeCandleAdapter(makeCandles(60, 60), makeCandles(48, 300));
+    svc._test.marketState.lastPrice = 105;
+
+    await svc._test.updateMetrics(adapter, 'BTC-USDC');
+
+    const ms = svc._test.marketState;
+    assert.notEqual(ms.vwapDistance, undefined, 'vwapDistance must not be undefined');
+    const expected = (ms.lastPrice - ms.vwap) / ms.atr1m;
+    assert.ok(Math.abs(ms.vwapDistance - expected) < 1e-12,
+      `vwapDistance ${ms.vwapDistance} must equal (lastPrice - vwap)/atr1m = ${expected}`);
+  });
+
+  it('handleTicker classifies via the REAL regime detector without throwing (no .update())', async () => {
+    const svc = createMarketDataService('coinbase');
+    const adapter = makeCandleAdapter(makeCandles(60, 60), makeCandles(48, 300));
+
+    // Real detector — exposes classify/getMode but NOT update(). The old
+    // code called regimeDetector.update(...) which would TypeError inside
+    // the ws 'message' listener and crash the process once atr1m > 0.
+    svc._test.injectRegimeDetector(createRegimeDetector('coinbase', {
+      volExpansionMult: 1.5,
+      volContractionMult: 1.0,
+      momentumMult: 1.0,
+      trendConfirmationPeriods: 3,
+      harvestScale: 1.0,
+      cautionScale: 0.5,
+      trendScale: 0.0,
+    }));
+
+    await svc._test.updateMetrics(adapter, 'BTC-USDC');
+    assert.ok(svc._test.marketState.atr1m > 0, 'precondition: metrics populated so the classify branch runs');
+
+    assert.doesNotThrow(() => {
+      svc._test.handleTicker({ price: 100.5, bid: 100.4, ask: 100.6 });
+    });
+    assert.ok(['HARVEST', 'CAUTION', 'TREND'].includes(svc._test.regimeState.mode),
+      `regimeState.mode must be a valid mode, got ${svc._test.regimeState.mode}`);
+  });
+
+  it('handleTicker passes the full marketState (with vwap) to classify', async () => {
+    const svc = createMarketDataService('coinbase');
+    const adapter = makeCandleAdapter(makeCandles(60, 60), makeCandles(48, 300));
+    await svc._test.updateMetrics(adapter, 'BTC-USDC');
+
+    let captured = null;
+    svc._test.injectRegimeDetector({
+      classify: (ms) => { captured = ms; return 'HARVEST'; },
+      getMode: () => 'HARVEST',
+    });
+
+    svc._test.handleTicker({ price: 101, bid: 100.9, ask: 101.1 });
+
+    assert.ok(captured, 'classify must be invoked once atr1m > 0');
+    assert.equal(captured.lastPrice, 101, 'classify sees the fresh tick price');
+    assert.ok(captured.vwap > 0, 'classify input must carry vwap (not vwapDistance-only)');
+    assert.ok(captured.volBaseline > 0, 'classify input must carry volBaseline');
+  });
+
+  it('skips classification while atr1m is 0 (metrics not yet populated)', () => {
+    const svc = createMarketDataService('coinbase');
+    let classifyCalls = 0;
+    svc._test.injectRegimeDetector({
+      classify: () => { classifyCalls += 1; return 'HARVEST'; },
+      getMode: () => 'HARVEST',
+    });
+
+    svc._test.handleTicker({ price: 100, bid: 99.9, ask: 100.1 });
+
+    assert.equal(classifyCalls, 0, 'no classification before metrics populate');
+    assert.equal(svc._test.marketState.lastPrice, 100, 'ticker still updates price');
+  });
+});
