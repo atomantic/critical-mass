@@ -2121,16 +2121,23 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (data.status === 'FILLED') {
       await handleOrderFill(data);
     } else if (data.status === 'CANCELLED') {
-      // A cancelled order with a partial fill still bought/sold that filled
-      // portion. Route it through handleOrderFill BEFORE dropping tracking so
-      // the partial isn't lost — otherwise the asset sits untracked (the
-      // polling path's handleCancelledOrder already does this; the WS path
-      // previously didn't, losing partials on exchanges with no order-events
-      // WS fallback) (issue #107 M3).
+      // A cancelled order with a fill still bought/sold that filled portion.
+      // Route it through handleOrderFill BEFORE dropping tracking so the fill
+      // isn't lost — otherwise the asset sits untracked (the polling path's
+      // handleCancelledOrder already does this; the WS path previously didn't,
+      // losing fills on exchanges with no order-events WS fallback) (issue #107 M3).
       if (data.filledSize > 0) {
-        console.log(`⚠️ [${exchange}] WS CANCELLED ${data.orderId} with ${data.filledSize} partial fill — routing through handleOrderFill before dropping tracking`);
+        // A cancel-AFTER-FULL-fill (completionPercentage >= 100) is a TERMINAL
+        // fill, not a partial — route it as FILLED so a fully-filled body TP
+        // completes instead of being relisted as a residual body. Only treat it
+        // as partial when it's genuinely under-filled. Mirrors the polling path,
+        // which checks completionPercentage >= 100 before CANCELLED (issue #107).
+        const fullyFilled = (data.completionPercentage || 0) >= 100;
+        console.log(`⚠️ [${exchange}] WS CANCELLED ${data.orderId} with ${data.filledSize} ${fullyFilled ? 'full' : 'partial'} fill — routing through handleOrderFill before dropping tracking`);
         orderExecutor.markSettled?.(data.orderId);
-        await handleOrderFill(buildPartialFillData(data.orderId, data.side, data));
+        await handleOrderFill(fullyFilled
+          ? { ...data, status: 'FILLED', isPartialFill: false }
+          : buildPartialFillData(data.orderId, data.side, data));
       }
       orderExecutor.handleOrderCancel(data.orderId);
       // Remove cancelled entry from persisted pending orders
