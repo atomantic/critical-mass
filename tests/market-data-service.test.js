@@ -2026,6 +2026,29 @@ describe('updateMetrics + regime classification (issue #102)', () => {
       `vwapDistance ${ms.vwapDistance} must equal (lastPrice - vwap)/atr1m = ${expected}`);
   });
 
+  it('does NOT update metrics when the 5m candle fetch fails (would zero vwap and misclassify)', async () => {
+    const svc = createMarketDataService('coinbase');
+    // First, a healthy run to populate metrics.
+    const healthy = makeCandleAdapter(makeCandles(60, 60), makeCandles(48, 300));
+    svc._test.marketState.lastPrice = 105;
+    await svc._test.updateMetrics(healthy, 'BTC-USDC');
+    const goodVwap = svc._test.marketState.vwap;
+    const goodAtr5m = svc._test.marketState.atr5m;
+    assert.ok(goodVwap > 0 && goodAtr5m > 0, 'precondition: healthy run populated vwap/atr5m');
+
+    // Now a run where only the 5m fetch fails (returns empty). vwap/atr5m derive
+    // from candles5m — proceeding would zero them while atr1m stays positive,
+    // and the next ticker would classify with vwap=0. The guard must keep the
+    // prior metrics instead (issue #102 / codex review).
+    const partial = {
+      getCandles: async (_p, _s, _e, granularity) =>
+        granularity === 'ONE_MINUTE' ? makeCandles(60, 60) : [],
+    };
+    await svc._test.updateMetrics(partial, 'BTC-USDC');
+    assert.equal(svc._test.marketState.vwap, goodVwap, 'vwap must be preserved, not zeroed, on 5m fetch failure');
+    assert.equal(svc._test.marketState.atr5m, goodAtr5m, 'atr5m must be preserved on 5m fetch failure');
+  });
+
   it('handleTicker classifies via the REAL regime detector without throwing (no .update())', async () => {
     const svc = createMarketDataService('coinbase');
     const adapter = makeCandleAdapter(makeCandles(60, 60), makeCandles(48, 300));

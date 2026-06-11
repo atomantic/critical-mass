@@ -1528,7 +1528,14 @@ const createMarketDataService = (exchange, pair) => {
       candles5m = result5m.value;
     }
 
-    if (candles1m?.length > 0 || candles5m?.length > 0) {
+    // Require BOTH candle sets before updating — vwap/atr5m/recentSwing all
+    // derive from candles5m, so proceeding with an empty 5m set (transient
+    // fetch failure) would zero vwap while atr1m stays positive, and the next
+    // ticker would classify with vwap=0 (price reads as massively above VWAP)
+    // → false CAUTION/TREND transitions. The live engine path bails entirely
+    // when either fetch fails; mirror that all-or-nothing semantics here and
+    // keep the prior metrics until the full window is available.
+    if (candles1m?.length > 0 && candles5m?.length > 0) {
       // Mirror the live engine path (regime-engine.js updateMetrics): seed
       // the EMA with the previous volBaseline (NOT lastPrice) and pass the
       // regime config so atrPeriod/vwapPeriodHours overrides apply.
