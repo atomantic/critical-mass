@@ -531,10 +531,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   const checkPendingOrderFills = async () => {
     let filled = 0;
     let cancelled = 0;
+    let polled = 0; // count of order-status round-trips that actually succeeded
 
     for (const [orderId, order] of pendingOrders) {
       const status = await adapter.getOrder(orderId).catch(() => null);
       if (!status) continue;
+      polled++; // a non-null status proves the order-status REST path is alive
 
       const normalizedStatus = (status.status || '').toUpperCase();
 
@@ -566,7 +568,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
     }
 
-    return { filled, cancelled };
+    return { filled, cancelled, polled };
   };
 
   /**

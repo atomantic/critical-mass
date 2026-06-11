@@ -2970,14 +2970,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (!isDryRun && orderExecutor.checkPendingOrderFills) {
         orderExecutor.checkPendingOrderFills()
           .then(result => {
-            // A successful poll proves order-status visibility is alive even
-            // when no WS order event has arrived. lastOrderUpdateMs was
-            // otherwise refreshed ONLY by WS order events, so a resting TP that
-            // legitimately goes quiet for >staleOrdersMs (default 60s, equal to
-            // reconcileIntervalMs) tripped stale_orders → SAFE during normal
-            // operation. Recording liveness here keeps the signal honest — it
-            // still fires if BOTH the WS feed and polling stop (issue #110 M6).
-            healthMonitor.recordOrderUpdate();
+            // A SUCCESSFUL order-status poll proves the order-status REST path
+            // is alive even when no WS order event has arrived. lastOrderUpdateMs
+            // was otherwise refreshed ONLY by WS order events, so a resting TP
+            // that legitimately goes quiet for >staleOrdersMs (default 60s, equal
+            // to reconcileIntervalMs) tripped stale_orders → SAFE during normal
+            // operation. Gate on result.polled > 0 (at least one getOrder
+            // round-trip actually returned) — NOT on mere promise resolution:
+            // getOrder failures are swallowed to null, so resolving with zero
+            // successful polls (REST down, or no pending orders) must NOT stamp
+            // liveness, or the stale-orders net couldn't detect a simultaneously
+            // dead WS feed + dead REST poll (issue #110 M6).
+            if (result.polled > 0) healthMonitor.recordOrderUpdate();
             if (result.filled > 0 || result.cancelled > 0) {
               console.log(`🔄 [${exchange}] Reconcile fill check: ${result.filled} filled, ${result.cancelled} cancelled`);
             }

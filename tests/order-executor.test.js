@@ -51,6 +51,34 @@ describe('checkPendingOrderFills — CANCELLED with partial fills', () => {
     assert.ok(captured[0].status.placedAt > 0, 'placedAt should be propagated');
   });
 
+  it('reports polled>0 when a status round-trip succeeds, and polled=0 when getOrder fails (issue #110 M6)', async () => {
+    // The engine gates healthMonitor.recordOrderUpdate() on result.polled so a
+    // dead order-status REST path can't masquerade as a live order feed.
+    const okAdapter = makeAdapter({ status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'SELL' });
+    const okExec = createOrderExecutor('gemini', baseConfig(), okAdapter, 'ETH-USD', {});
+    okExec.restorePendingOrder('o1', { type: 'body_tp', price: 2400, size: 0.1, sizeUsdc: 240, placedAt: Date.now() });
+    const okResult = await okExec.checkPendingOrderFills();
+    assert.equal(okResult.polled, 1, 'a successful getOrder counts as a poll');
+
+    // getOrder rejects → swallowed to null → no successful poll → polled=0
+    const deadAdapter = {
+      getOrder: async () => { throw new Error('REST down'); },
+      cancelOrder: async () => { throw new Error('nope'); },
+      placeLimitBuy: async () => { throw new Error('nope'); },
+      placeLimitSell: async () => { throw new Error('nope'); },
+      getOrderFills: async () => [],
+    };
+    const deadExec = createOrderExecutor('gemini', baseConfig(), deadAdapter, 'ETH-USD', {});
+    deadExec.restorePendingOrder('o2', { type: 'body_tp', price: 2400, size: 0.1, sizeUsdc: 240, placedAt: Date.now() });
+    const deadResult = await deadExec.checkPendingOrderFills();
+    assert.equal(deadResult.polled, 0, 'a fully-failing order feed must report zero successful polls');
+
+    // No pending orders → zero round-trips → polled=0
+    const emptyExec = createOrderExecutor('gemini', baseConfig(), okAdapter, 'ETH-USD', {});
+    const emptyResult = await emptyExec.checkPendingOrderFills();
+    assert.equal(emptyResult.polled, 0, 'no pending orders means no liveness signal');
+  });
+
   it('skips onFillDetected when filledSize is zero', async () => {
     // Cancellation with no fills is the common case — clean cancel, no
     // ledger work needed. Don't fire onFillDetected to avoid spurious

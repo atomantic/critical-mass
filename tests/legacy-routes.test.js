@@ -66,9 +66,15 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
     throw err;
   });
 
+  // saveConfig writes atomically (tmp + rename), so the data lands at
+  // USER_CONFIG_FILE + '.tmp' before the rename. Capture either path, and stub
+  // renameSync to a no-op (the tmp file never really exists under the mock).
   mock.method(fs, 'writeFileSync', (filePath, data) => {
-    if (filePath === USER_CONFIG_FILE) writtenData = JSON.parse(data);
+    if (filePath === USER_CONFIG_FILE || filePath === USER_CONFIG_FILE + '.tmp') {
+      writtenData = JSON.parse(data);
+    }
   });
+  mock.method(fs, 'renameSync', () => {});
 
   mock.method(fs, 'mkdirSync', () => {});
 
