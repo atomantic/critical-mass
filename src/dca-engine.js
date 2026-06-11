@@ -138,6 +138,68 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
 };
 
 /**
+ * Recover durable 'awaiting_sell' rows left by a crash between the buy-save and
+ * sell placement (issue #129). recordBuyFill persists the buy as 'awaiting_sell'
+ * BEFORE sell placement (issue #106); if the process dies before
+ * attachSellOrder/markSellPlacementFailed runs, the row is durable but invisible
+ * to getPendingOrders (status filter) and has no recovery path — the filled buy
+ * sits with no tracked sell while later intervals keep buying.
+ *
+ * For each such row, re-derive the buyDetails the sell-placement path expects
+ * from the persisted fields (buyOrderId/buyPrice/buyQuantity) and re-attempt the
+ * sell via the same orderManager.placeSellOrderWithRetry used post-buy. On
+ * success attach the sell; on failure mark sell_failed for operator follow-up.
+ * Dry-run rows are never persisted as awaiting_sell, so this only ever sees real
+ * orders. State is NOT saved here — the caller persists once after reconciliation.
+ *
+ * @param {BotState} state - Current state (mutated in place)
+ * @param {ExchangeConfig} config - Configuration
+ * @param {Object} adapter - Exchange adapter
+ * @param {string} exchange - Exchange name
+ * @returns {Promise<{recovered: number, failed: number}>} Reconciliation outcome
+ */
+const reconcileAwaitingSells = async (state, config, adapter, exchange) => {
+  const awaiting = (state.orders || []).filter(o => o.status === 'awaiting_sell');
+  if (awaiting.length === 0) {
+    return { recovered: 0, failed: 0 };
+  }
+
+  logger.log('INFO', `🔧 [${exchange}] Reconciling ${awaiting.length} orphaned awaiting_sell row(s) before new buy`);
+
+  let recovered = 0;
+  let failed = 0;
+
+  for (const order of awaiting) {
+    // Re-derive the buyDetails shape placeSellOrderWithRetry expects. The
+    // retry path recomputes sellQuantity from assetAmount + holdbackPercent and
+    // sellPrice from price + markup, so the original buy price/qty is enough.
+    const buyDetails = {
+      orderId: order.buyOrderId,
+      assetAmount: order.buyQuantity,
+      price: order.buyPrice,
+    };
+
+    let sellOrder;
+    try {
+      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter);
+    } catch (err) {
+      stateTracker.markSellPlacementFailed(state, order.buyOrderId, err.message);
+      logger.log('ERROR', `🔧 [${exchange}] Recovery sell failed for buy ${order.buyOrderId} — marked sell_failed: ${err.message}`);
+      tradeEvents.error(exchange, `Recovery sell placement failed: ${err.message}`, { buyOrderId: order.buyOrderId });
+      failed += 1;
+      continue;
+    }
+
+    stateTracker.attachSellOrder(state, order.buyOrderId, sellOrder);
+    logger.log('INFO', `🔧 [${exchange}] Recovery sell placed for buy ${order.buyOrderId}: ${sellOrder.orderId} @ ${sellOrder.limitPrice}`);
+    tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
+    recovered += 1;
+  }
+
+  return { recovered, failed };
+};
+
+/**
  * Run the interval DCA cycle for an exchange
  * @param {string} [exchange] - Exchange name (default: coinbase)
  * @returns {Promise<CycleResult>} Result of the cycle
@@ -192,6 +254,16 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     if (filledOrders.length > 0) {
       logger.log('INFO', `[${exchange}] ${filledOrders.length} orders filled since last run`);
       stateTracker.saveState(state, exchange);
+    }
+
+    // Recover orphaned awaiting_sell rows (crash between buy-save and sell
+    // placement) BEFORE evaluating a new buy — otherwise the filled buy sits
+    // with no tracked sell while later intervals keep buying (issue #129).
+    if (config.dryRun !== true) {
+      const recon = await reconcileAwaitingSells(state, config, adapter, exchange);
+      if (recon.recovered > 0 || recon.failed > 0) {
+        stateTracker.saveState(state, exchange);
+      }
     }
   }
 
@@ -625,6 +697,7 @@ module.exports = {
   runAllExchangeCycles,
   checkStatus,
   syncOrderStatuses,
+  reconcileAwaitingSells,
   loadConfig,
   executeConsolidation,
 };
