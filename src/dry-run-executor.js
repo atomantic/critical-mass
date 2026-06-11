@@ -202,12 +202,18 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * Place or update take-profit sell order (simulated)
    * @param {number} assetQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
-   * @param {string} [regime] - Current regime for logging
+   * @param {Object} [options] - Options (matches the live executor signature)
+   * @param {boolean} [options.forceUpdate] - Bypass anti-churn (use after buy fills)
    * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, errorMessage?: string}>}
    */
-  const placeTakeProfitOrder = async (assetQty, tpPrice, regime = 'UNKNOWN') => {
-    // Anti-churn: check if price OR size change is significant
-    if (activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
+  const placeTakeProfitOrder = async (assetQty, tpPrice, options = {}) => {
+    // Match the live executor: the engine passes {forceUpdate:true} after buy
+    // fills to force a TP resize. The dry-run path previously took a `regime`
+    // string here and ignored forceUpdate, so anti-churn could skip resizes the
+    // live path forces — order-flow divergence between dry-run and live (#109).
+    const forceUpdate = options && options.forceUpdate;
+    // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
+    if (!forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
       const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
       const sizeChange = Math.abs(assetQty - lastTpSize) / lastTpSize * 100;
       // Update if neither price nor size changed significantly
@@ -248,7 +254,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     lastTpPrice = roundedPrice;
     lastTpSize = roundedQty;
 
-    logDecision('tp_placed', regime, marketStateRef.lastPrice || 0, {
+    logDecision('tp_placed', marketStateRef.regime || 'UNKNOWN', marketStateRef.lastPrice || 0, {
       orderId,
       tpPrice: roundedPrice,
       assetQty: roundedQty,
@@ -362,8 +368,12 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     if (order.type === 'entry') {
       simulatedTotalBought += order.size;
 
-      // Post-only limit orders have 0% maker fees on Coinbase Advanced Trade
-      const estimatedFee = 0;
+      // Apply the configured per-side fee rate (matches live cost-basis math).
+      // Hardcoding 0 (assuming free maker fills) systematically inflated dry-run
+      // P&L vs live and was wrong for Gemini/Crypto.com, which charge maker fees
+      // — the dry-run executor is shared across exchanges (#109).
+      const feeRate = config.feeRate ?? 0.001; // ?? so an explicit 0 (zero-fee dry run) is honored, not replaced
+      const estimatedFee = order.size * fillPrice * feeRate;
       const costBasis = (order.size * fillPrice) + estimatedFee;
 
       // Store cost basis on order for UI display
@@ -404,7 +414,15 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     } else if (order.type === 'body_tp') {
       simulatedTotalSold += order.size;
 
-      // Look up body tracking info for cost basis
+      // Look up body tracking info for cost basis.
+      // NOTE: bodyInfo.costBasis is initialized as roundedQty * TP price (not
+      // the body's ENTRY price), so avgBuyPrice here is effectively the TP
+      // price and `pnl` is a placeholder, not a faithful realized P&L. Applying
+      // a per-side sell fee on top of that broken basis would make capital
+      // DECREASE by the fee instead of realizing profit — so we deliberately do
+      // NOT fee-adjust this branch. The dry-run body cost-basis model needs to
+      // carry the real entry cost first; tracked in issue #133. (The entry /
+      // legacy take_profit branches, which use real entry cost, ARE fee-adjusted.)
       const bodyInfo = getBodyByTpOrderId(orderId);
       const avgBuyPrice = bodyInfo ? (bodyInfo.costBasis / bodyInfo.assetQty) : getAverageEntryPrice();
       const costBasis = order.size * avgBuyPrice;
@@ -446,8 +464,9 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
 
       // Calculate simulated P&L for this TP
       const proceeds = order.size * fillPrice;
-      // Post-only limit orders have 0% maker fees on Coinbase Advanced Trade
-      const estimatedFee = 0;
+      // Apply the configured per-side fee rate (see entry-fill note above) (#109).
+      const feeRate = config.feeRate ?? 0.001; // ?? so an explicit 0 (zero-fee dry run) is honored, not replaced
+      const estimatedFee = proceeds * feeRate;
       const netProceeds = proceeds - estimatedFee;
 
       // Estimate cost basis from filled orders
@@ -533,6 +552,13 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * Get average entry price from filled buy orders
    * @returns {number}
    */
+  // Average gross fill PRICE (not fee-inclusive). Used for the state-export
+  // avgEntryPrice display and the legacy-TP/body-TP cost-basis estimate. The
+  // legacy-TP P&L derived from this still omits the buy-side fee, so dry-run
+  // realized P&L over-counts capital by the entry fee — part of the broader
+  // dry-run cost-basis modeling gap tracked in issue #133 (dry-run-only, no
+  // real-money impact). Not changed here to avoid shifting this shared helper's
+  // semantics under the avgEntryPrice display consumer.
   const getAverageEntryPrice = () => {
     const buyFills = filledOrders.filter(o => o.type === 'entry' && o.side === 'buy');
     if (buyFills.length === 0) return 0;
