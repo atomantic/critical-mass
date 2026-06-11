@@ -1251,11 +1251,15 @@ const createFillLedger = (exchange, productId, pair) => {
           ex.size += f.size || 0;
           ex.cost += (f.quoteAmount || 0) + (f.netFee || 0);
           if (f.sellOrderId && !ex.sellOrderId) ex.sellOrderId = f.sellOrderId;
+          // consumedCostFraction is annotated identically on every row of the
+          // orderId (like bodyPnl) — take the latest non-null, not summed.
+          if (f.consumedCostFraction != null) ex.consumedCostFraction = f.consumedCostFraction;
         } else {
           buyAggByOrderId.set(aggKey, {
             size: f.size || 0,
             cost: (f.quoteAmount || 0) + (f.netFee || 0),
             sellOrderId: f.sellOrderId || null,
+            consumedCostFraction: f.consumedCostFraction ?? 0,
           });
         }
       } else if (f.side === 'sell') {
@@ -1298,7 +1302,16 @@ const createFillLedger = (exchange, productId, pair) => {
     let heldOpenBuyCostBasis = 0;
     for (const buy of buyAggByOrderId.values()) {
       if (!buy.sellOrderId || !sellAggByOrderId.has(buy.sellOrderId)) {
-        heldOpenBuyCostBasis += buy.cost;
+        // Held cost = the buy's cost MINUS the fraction already realized via
+        // prior partial body-TP fills (issue #128). On a partial body-TP fill
+        // the engine re-links the buy to a fresh resting TP and stamps
+        // consumedCostFraction = realized-so-far / original. Counting the full
+        // cost as held while that sold tranche's prorated cost is already in
+        // realizedPnL (via bodyPnl) double-counts it, transiently understating
+        // total return until the residual TP fills. Subtracting the consumed
+        // fraction holds only the genuinely-open remainder.
+        const consumed = buy.consumedCostFraction > 0 ? Math.min(buy.consumedCostFraction, 1) : 0;
+        heldOpenBuyCostBasis += buy.cost * (1 - consumed);
         continue;
       }
       const ex = pairedBySellOrderId.get(buy.sellOrderId);

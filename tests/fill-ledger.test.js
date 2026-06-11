@@ -1406,22 +1406,37 @@ describe('Fill Ledger', () => {
       assert.equal(derived.realizedAssetPnL, 0.0001, 'holdback taken once per orderId');
     });
 
-    it('keeps full original cost held after a partial fill re-links buys to a re-placed TP', () => {
+    it('holds only the un-consumed remainder after a partial fill re-links buys to a re-placed TP (issue #128)', () => {
       const ledger = createTestLedger();
       ledger.startNewCycle();
       ledger.ingestFill(makeBuyFill({ tradeId: 'h-b4', orderId: 'buy-4', price: '100000', size: '0.002' }));
       ledger.annotateFillsByOrderId('buy-4', { sellOrderId: 'tp-old', bodyId: 'body-2' });
 
-      // Partial fill of tp-old, annotated by the engine
+      // Partial fill of tp-old: half the body sold. Engine annotates the sell
+      // with the realized bodyPnl and stamps the source buys with the consumed
+      // fraction (0.5 of the original cost now realized).
       ledger.ingestFill(makeSellFill({ tradeId: 'h-s3', orderId: 'tp-old', price: '105000', size: '0.001' }));
       ledger.annotateFillsByOrderId('tp-old', { bodyPnl: 2.5, bodyHoldbackAsset: 0, isBodyOwned: true, partialFill: true });
-      // placeBodyTp re-links the buys to the re-placed TP for the remainder
-      ledger.annotateFillsByOrderId('buy-4', { sellOrderId: 'tp-new' });
+      // placeBodyTp re-links the buys to the re-placed TP for the remainder,
+      // and the partial-fill handler stamps consumedCostFraction.
+      ledger.annotateFillsByOrderId('buy-4', { sellOrderId: 'tp-new', consumedCostFraction: 0.5 });
 
       const derived = ledger.getDerivedRealizedPnL();
-      // tp-new has no fills yet → buy cost stays held (conservative until residual TP fills)
-      assert.equal(derived.heldOpenBuyCostBasis, 200.10);
+      // tp-new has no fills yet, BUT half the cost was already realized via the
+      // partial — only the un-consumed half (100.05) is genuinely held.
+      assert.equal(derived.heldOpenBuyCostBasis, 100.05,
+        'held cost excludes the already-realized partial tranche');
       assert.equal(derived.realizedPnL, 2.5, 'first tranche realized via annotation');
+    });
+
+    it('holds full cost when no partial has been consumed (consumedCostFraction absent)', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'h-b5', orderId: 'buy-5', price: '100000', size: '0.002' }));
+      ledger.annotateFillsByOrderId('buy-5', { sellOrderId: 'tp-resting', bodyId: 'body-3' });
+      // Resting TP, no fills, no partial consumed → full cost held (unchanged behavior).
+      const derived = ledger.getDerivedRealizedPnL();
+      assert.equal(derived.heldOpenBuyCostBasis, 200.10);
     });
   });
 

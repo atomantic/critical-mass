@@ -2591,6 +2591,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
           const remainingAsset = roundAsset(body.assetQty - summary.totalSize);
           const remainingCostBasis = roundUSDC(body.costBasis * (1 - soldRatio));
+
+          // Track the cumulative fraction of the body's ORIGINAL cost basis that
+          // has now been realized via partial sells (issue #128). This partial
+          // consumed `soldRatio` of the CURRENT (remaining) body; compose it
+          // with any prior consumption so the fraction is relative to the
+          // original: consumed = 1 − Π(1 − soldRatioᵢ). Annotating the source
+          // buys with it lets computeRealizedFromCyclePairs subtract the
+          // already-realized portion from heldOpenBuyCostBasis while the residual
+          // TP rests — otherwise the sold tranche's cost is double-counted (once
+          // realized via bodyPnl, once held), transiently understating return.
+          const prevConsumed = body.consumedCostFraction || 0;
+          body.consumedCostFraction = 1 - (1 - prevConsumed) * (1 - soldRatio);
+          for (const srcId of new Set([
+            ...(body.sourceOrderIds || []),
+            ...((body.buyOrders || []).map(b => b.orderId)),
+          ])) {
+            if (srcId && srcId !== 'core-migration') {
+              fillLedger.annotateFillsByOrderId(srcId, { consumedCostFraction: body.consumedCostFraction });
+            }
+          }
+
           body.assetQty = remainingAsset;
           body.costBasis = remainingCostBasis;
           // avgPrice stays the same (weighted average of buys doesn't change)
