@@ -21,6 +21,10 @@ const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils')
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
 const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
 
+// Monotonic per-process counter for unique saveConfig tmp filenames (avoids a
+// cross-process rename race on a shared fixed tmp path — see saveConfig).
+let _saveConfigTmpSeq = 0;
+
 /**
  * Deep merge two objects. Values from `override` take precedence.
  * Arrays are replaced, not concatenated.
@@ -382,7 +386,12 @@ const saveConfig = (config) => {
   // takes down the gateway AND every engine process at boot, with no recovery
   // path. Inlined rather than importing state-tracker.atomicWriteSync to avoid
   // a require cycle (state-tracker already requires config-utils) (issue #110 M7).
-  const tmpPath = USER_CONFIG_FILE + '.tmp';
+  // The tmp filename is unique per writer (pid + counter) so two processes
+  // saving concurrently (e.g. an engine auto-updating regime limits while the
+  // gateway handles a settings PUT) can't rename each other's tmp file — which
+  // would ENOENT the second rename or persist the wrong payload. The rename
+  // itself is atomic, so the last writer wins cleanly (#110 M7 / review).
+  const tmpPath = `${USER_CONFIG_FILE}.${process.pid}.${++_saveConfigTmpSeq}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(diff, null, 2));
   fs.renameSync(tmpPath, USER_CONFIG_FILE);
   // Bust the cache so the next read picks up our write immediately, even

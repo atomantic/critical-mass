@@ -70,7 +70,10 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
   // USER_CONFIG_FILE + '.tmp' before the rename. Capture either path, and stub
   // renameSync to a no-op (the tmp file never really exists under the mock).
   mock.method(fs, 'writeFileSync', (filePath, data) => {
-    if (filePath === USER_CONFIG_FILE || filePath === USER_CONFIG_FILE + '.tmp') {
+    // saveConfig writes to a unique tmp path (USER_CONFIG_FILE.<pid>.<n>.tmp)
+    // then renames. Capture any write whose target is the config file or its
+    // tmp sibling.
+    if (filePath === USER_CONFIG_FILE || String(filePath).startsWith(USER_CONFIG_FILE + '.')) {
       writtenData = JSON.parse(data);
     }
   });
