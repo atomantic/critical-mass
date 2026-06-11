@@ -51,6 +51,34 @@ describe('checkPendingOrderFills — CANCELLED with partial fills', () => {
     assert.ok(captured[0].status.placedAt > 0, 'placedAt should be propagated');
   });
 
+  it('reports polled>0 when a status round-trip succeeds, and polled=0 when getOrder fails (issue #110 M6)', async () => {
+    // The engine gates healthMonitor.recordOrderUpdate() on result.polled so a
+    // dead order-status REST path can't masquerade as a live order feed.
+    const okAdapter = makeAdapter({ status: 'OPEN', filledSize: 0, completionPercentage: 0, side: 'SELL' });
+    const okExec = createOrderExecutor('gemini', baseConfig(), okAdapter, 'ETH-USD', {});
+    okExec.restorePendingOrder('o1', { type: 'body_tp', price: 2400, size: 0.1, sizeUsdc: 240, placedAt: Date.now() });
+    const okResult = await okExec.checkPendingOrderFills();
+    assert.equal(okResult.polled, 1, 'a successful getOrder counts as a poll');
+
+    // getOrder rejects → swallowed to null → no successful poll → polled=0
+    const deadAdapter = {
+      getOrder: async () => { throw new Error('REST down'); },
+      cancelOrder: async () => { throw new Error('nope'); },
+      placeLimitBuy: async () => { throw new Error('nope'); },
+      placeLimitSell: async () => { throw new Error('nope'); },
+      getOrderFills: async () => [],
+    };
+    const deadExec = createOrderExecutor('gemini', baseConfig(), deadAdapter, 'ETH-USD', {});
+    deadExec.restorePendingOrder('o2', { type: 'body_tp', price: 2400, size: 0.1, sizeUsdc: 240, placedAt: Date.now() });
+    const deadResult = await deadExec.checkPendingOrderFills();
+    assert.equal(deadResult.polled, 0, 'a fully-failing order feed must report zero successful polls');
+
+    // No pending orders → zero round-trips → polled=0
+    const emptyExec = createOrderExecutor('gemini', baseConfig(), okAdapter, 'ETH-USD', {});
+    const emptyResult = await emptyExec.checkPendingOrderFills();
+    assert.equal(emptyResult.polled, 0, 'no pending orders means no liveness signal');
+  });
+
   it('skips onFillDetected when filledSize is zero', async () => {
     // Cancellation with no fills is the common case — clean cancel, no
     // ledger work needed. Don't fire onFillDetected to avoid spurious
@@ -157,5 +185,31 @@ describe('refreshStaleOrders — CANCELLED with partial fills', () => {
 
     assert.equal(refreshed, 1);
     assert.equal(captured.length, 0);
+  });
+});
+
+describe('getPendingCounts — ladder_entry visibility (issue #107 M5)', () => {
+  const adapter = makeAdapter({ status: 'OPEN' });
+
+  it('counts ladder_entry orders separately from entry orders', () => {
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+    exec.restorePendingOrder('e-1', { type: 'entry', price: 100, size: 1, sizeUsdc: 100, placedAt: Date.now() });
+    exec.restorePendingOrder('l-1', { type: 'ladder_entry', price: 99, size: 1, sizeUsdc: 99, placedAt: Date.now() });
+    exec.restorePendingOrder('l-2', { type: 'ladder_entry', price: 98, size: 1, sizeUsdc: 98, placedAt: Date.now() });
+    exec.restorePendingOrder('tp-1', { type: 'body_tp', price: 110, size: 1, sizeUsdc: 110, placedAt: Date.now() });
+
+    const counts = exec.getPendingCounts();
+    assert.equal(counts.entries, 1);
+    assert.equal(counts.ladderEntries, 2, 'ladder rungs must be counted so reactive entries can detect them');
+    assert.equal(counts.bodies, 1);
+    assert.equal(counts.total, 4);
+  });
+
+  it('reports zero ladderEntries when only reactive entries rest', () => {
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+    exec.restorePendingOrder('e-1', { type: 'entry', price: 100, size: 1, sizeUsdc: 100, placedAt: Date.now() });
+    const counts = exec.getPendingCounts();
+    assert.equal(counts.entries, 1);
+    assert.equal(counts.ladderEntries, 0);
   });
 });

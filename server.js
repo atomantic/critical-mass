@@ -13,6 +13,7 @@ const {
   getConfiguredExchanges,
   getGlobalConfig,
   getBackupConfig,
+  getDefaultPair,
 } = require('./src/config-utils');
 const {
   normalizeConfig,
@@ -161,9 +162,16 @@ const exchangeIPCMap = { coinbase: coinbaseIPC, gemini: geminiIPC, cryptocom: cr
 
 const candleCache = createCandleCache();
 
-// Feed ALL exchange IPC ticks into the shared candle cache
+// Feed exchange IPC ticks into the shared candle cache. The cache is keyed by
+// exchange ONLY, so when an exchange runs more than one fund (e.g. coinbase
+// BTC-USDC + ETH-USDC) we must accept ticks from a single canonical pair —
+// otherwise ETH and BTC ticks interleave into one OHLC series (garbage candles,
+// fake volatility) and drive the BTC UpDown predictor. Use the exchange's
+// default pair as that canonical series (issue #110 M3).
 ipcEventListeners.push((name, msg) => {
   if (msg.channel === 'regime:status') {
+    const pair = msg.payload?.pair;
+    if (pair && pair !== getDefaultPair(name)) return;
     const market = msg.payload?.status?.market || msg.payload?.market;
     if (market?.lastPrice) {
       const price = parseFloat(market.lastPrice);
@@ -180,9 +188,13 @@ candleCache.seedAll();
 
 const updownService = createUpDownService(io, { exchangeIPCMap, readJSON, writeJSON, DATA_DIR, candleCache });
 
-// Forward coinbase BTC price data to updown service for Socket.IO emission + P&L
+// Forward coinbase BTC price data to updown service for Socket.IO emission + P&L.
+// Only the default (BTC) pair — a second coinbase fund must not drive the BTC
+// UpDown predictor with its own asset's price (issue #110 M3).
 ipcEventListeners.push((name, msg) => {
   if (name === 'coinbase' && msg.channel === 'regime:status') {
+    const pair = msg.payload?.pair;
+    if (pair && pair !== getDefaultPair('coinbase')) return;
     const market = msg.payload?.status?.market || msg.payload?.market;
     if (market?.lastPrice) {
       const price = parseFloat(market.lastPrice);
