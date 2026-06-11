@@ -418,7 +418,14 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       const bodyInfo = getBodyByTpOrderId(orderId);
       const avgBuyPrice = bodyInfo ? (bodyInfo.costBasis / bodyInfo.assetQty) : getAverageEntryPrice();
       const costBasis = order.size * avgBuyPrice;
-      const proceeds = order.size * fillPrice;
+      // Apply the per-side fee to sell proceeds (mirrors the live body-TP path
+      // and the entry/take_profit branches above). Without this the dominant
+      // celestial cycle path simulated zero fees, overstating dry-run P&L vs
+      // live for Gemini/Crypto.com. NOTE: the buy-side body cost basis
+      // (bodyInfo.costBasis) is still gross of entry fee — a deeper dry-run
+      // modeling gap tracked separately (issue follow-up).
+      const feeRate = config.feeRate || 0.001;
+      const proceeds = order.size * fillPrice * (1 - feeRate);
       const pnl = proceeds - costBasis;
       simulatedBodyRealizedPnL += pnl;
 
