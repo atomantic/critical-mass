@@ -369,50 +369,101 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter);
     tradeEvents.buyFilled(exchange, buyResult.assetAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
 
+    /**
+     * Contain a sell-placement failure: the buy is already persisted (with
+     * lastRunId set), so the cycle's accounting survives and the next
+     * interval cannot double-buy. There is no retry mechanism for failed
+     * sell placement — fixed strategy marks the order entry 'sell_failed'
+     * for operator follow-up; Fibonacci self-heals next cycle via its
+     * consolidated sell (which re-covers the full cumulative position).
+     * @param {Error} err - The sell-placement error
+     * @returns {CycleResult} Partial-cycle result
+     */
+    const sellPlacementFailed = (err) => {
+      logger.log('ERROR', `[${exchange}] Sell placement failed after buy ${buyResult.orderId} — buy persisted (lastRunId=${state.lastRunId}), sell skipped: ${err.message}`);
+      tradeEvents.error(exchange, `Sell placement failed: ${err.message}`, { buyOrderId: buyResult.orderId });
+      return {
+        status: 'sell_placement_failed',
+        intervalType: config.intervalType,
+        buyResult,
+        error: err.message,
+        exchange,
+        state: {
+          totalAllocated: state.totalAllocated,
+          assetReserves: state.assetReserves,
+          outstandingOrdersUSDC: state.outstandingOrdersUSDC,
+          intervalsRun: state.totalIntervalsRun,
+        },
+      };
+    };
+
     if (isFibonacci) {
-      // Fibonacci strategy: consolidated sell order
+      // Fibonacci strategy: persist the buy BEFORE attempting the
+      // consolidated sell so a sell-placement throw cannot lose it (issue #106)
       stateTracker.updateAfterFibBuy(state, buyResult, config);
+      stateTracker.saveState(state, exchange);
       const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
+      logger.logFibBuy(buyResult, state, cycleInfo, exchange);
 
-      const fibSellResult = await orderManager.placeFibonacciSellOrder(
-        config,
-        cycleInfo.cumulativeAsset,
-        cycleInfo.avgCostBasis,
-        state.fibActiveSellOrderId,
-        adapter
-      );
-
-      if (fibSellResult.alreadyFilled) {
-        // Rare case: previous order filled between check and now
-        const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
-        stateTracker.updateAfterFibSellFill(state, fibFill);
-        logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange);
-        // Now place new sell order for this buy
-        const newFibSellResult = await orderManager.placeFibonacciSellOrder(
+      try {
+        const fibSellResult = await orderManager.placeFibonacciSellOrder(
           config,
-          buyResult.assetAmount,
-          buyResult.price + (buyResult.netFees || 0) / buyResult.assetAmount,
-          null,
+          cycleInfo.cumulativeAsset,
+          cycleInfo.avgCostBasis,
+          state.fibActiveSellOrderId,
           adapter
         );
-        sellOrder = newFibSellResult.sellOrder;
-        holdbackAsset = newFibSellResult.holdbackAsset;
-        stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
-      } else {
-        sellOrder = fibSellResult.sellOrder;
-        holdbackAsset = fibSellResult.holdbackAsset;
-        stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantity, holdbackAsset);
+
+        if (fibSellResult.alreadyFilled) {
+          // Rare case: previous order filled between check and now
+          const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
+          if (!fibFill) {
+            // Fill details unavailable despite FILLED status — leave
+            // fibActiveSellOrderId intact so next cycle's fill check resolves it
+            throw new Error(`fill details unavailable for filled fib sell ${state.fibActiveSellOrderId}`);
+          }
+          stateTracker.updateAfterFibSellFill(state, fibFill);
+          stateTracker.saveState(state, exchange);
+          logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange);
+          // Now place new sell order for this buy
+          const newFibSellResult = await orderManager.placeFibonacciSellOrder(
+            config,
+            buyResult.assetAmount,
+            buyResult.price + (buyResult.netFees || 0) / buyResult.assetAmount,
+            null,
+            adapter
+          );
+          sellOrder = newFibSellResult.sellOrder;
+          holdbackAsset = newFibSellResult.holdbackAsset;
+          stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
+        } else {
+          sellOrder = fibSellResult.sellOrder;
+          holdbackAsset = fibSellResult.holdbackAsset;
+          stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantity, holdbackAsset);
+        }
+      } catch (err) {
+        return sellPlacementFailed(err);
       }
 
-      logger.logFibBuy(buyResult, state, cycleInfo, exchange);
       logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange);
       tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
     } else {
-      // Fixed strategy: individual sell order
-      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter);
+      // Fixed strategy: persist the buy BEFORE attempting sell placement so
+      // a sell-placement throw cannot lose it (issue #106)
       holdbackAsset = buyResult.assetAmount * (config.holdbackPercent / 100);
-      stateTracker.updateAfterBuy(state, buyResult, sellOrder, config);
+      stateTracker.recordBuyFill(state, buyResult, config);
+      stateTracker.saveState(state, exchange);
       logger.logBuy(buyResult, state, exchange);
+
+      try {
+        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter);
+      } catch (err) {
+        stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message);
+        stateTracker.saveState(state, exchange);
+        return sellPlacementFailed(err);
+      }
+
+      stateTracker.attachSellOrder(state, buyResult.orderId, sellOrder);
       logger.logSellOrder(sellOrder, state, exchange);
       tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
     }
