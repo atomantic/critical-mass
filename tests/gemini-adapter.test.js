@@ -108,17 +108,68 @@ describe('gemini getOrderFills', () => {
     assert.equal(fills[0].liquidityIndicator, 'MAKER');
   });
 
-  it('fetches a single newest-since page (Gemini has no older-than cursor) and warns on a full-page cap', async () => {
-    // Gemini's /v1/mytrades is since-lower-bound + newest-first with no
-    // older-than cursor (live-verified), so a forward-advancing cursor would
-    // ask for NEWER trades and never reach the order's older fills. The adapter
-    // therefore makes exactly ONE mytrades request bounded by the order's
-    // creation, and logs a truncation warning when a full page comes back.
+  it('stitches multiple <=500-trade slices so >500-fill windows are fully reachable (issue #130)', async () => {
+    // Gemini /v1/mytrades is since-lower-bound; when more than limit_trades
+    // match it returns the OLDEST limit_trades at-or-after `since` (live-probed
+    // 2026-06-11). So advancing `since` to the newest timestamp of each full
+    // page walks forward through the whole window. The target order's fill sits
+    // in the SECOND slice — only reachable if the adapter pages forward — and
+    // the boundary trade (shared between slices) must be deduped by tid.
+    const adapter = createGeminiAdapter(keysPath);
+    const createdMs = 1750000000000;
+
+    // Slice 0: 500 trades, oldest-first window of other-order trades.
+    // 1s spacing → newest of slice 0 is createdMs + 499_000.
+    const slice0 = Array.from({ length: 500 }, (_, i) =>
+      makeTrade({ tid: 10000 + i, order_id: 111, symbol: 'btcusd', timestampms: createdMs + i * 1000 }));
+    const boundaryMs = createdMs + 499 * 1000; // newest of slice 0
+    // Slice 1 (since = boundaryMs): the boundary trade reappears (tid 10499)
+    // plus the target fill and one more, all at/after boundaryMs. Partial page.
+    const targetFill = makeTrade({ tid: 99999, order_id: 777, symbol: 'btcusd', timestampms: boundaryMs + 5000 });
+    const slice1 = [
+      makeTrade({ tid: 10499, order_id: 111, symbol: 'btcusd', timestampms: boundaryMs }), // duplicate boundary
+      targetFill,
+      makeTrade({ tid: 88888, order_id: 222, symbol: 'btcusd', timestampms: boundaryMs + 9000 }),
+    ];
+
+    const { calls } = installFetchMock((endpoint, payload) => {
+      if (endpoint === '/v1/order/status') {
+        return { order_id: 777, symbol: 'BTCUSD', timestampms: createdMs };
+      }
+      if (endpoint === '/v1/mytrades') {
+        const sinceMs = payload.timestamp * 1000;
+        // First slice requested at the creation-time bound; second at the
+        // newest timestamp from slice 0.
+        return sinceMs >= boundaryMs ? slice1 : slice0;
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    });
+
+    const fills = await adapter.getOrderFills('777');
+
+    const mt = mytradesCalls(calls);
+    assert.equal(mt.length, 2, 'pages forward into a second slice after a full page');
+    assert.equal(mt[0].payload.symbol, 'btcusd');
+    assert.equal(mt[0].payload.timestamp, Math.floor((createdMs - 60000) / 1000));
+    // Second request advances `since` to the newest second seen in slice 0.
+    assert.equal(mt[1].payload.timestamp, Math.floor(boundaryMs / 1000));
+
+    // The target fill lives in slice 1 and is only found via stitching.
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0].tradeId, '99999');
+    assert.equal(fills[0].orderId, '777');
+  });
+
+  it('terminates and warns when >500 trades share the same second (no older-than cursor)', async () => {
+    // Pathological: a full page whose trades all share one timestamp. Advancing
+    // `since` cannot move past it (Gemini timestamp is second-granular), so the
+    // adapter must stop after re-requesting the same second once, warn, and not
+    // loop forever.
     const adapter = createGeminiAdapter(keysPath);
     const createdMs = 1750000000000;
     const warnings = [];
     const origLog = console.log;
-    console.log = (msg) => { if (typeof msg === 'string' && msg.includes('page cap')) warnings.push(msg); };
+    console.log = (msg) => { if (typeof msg === 'string' && msg.includes('same second')) warnings.push(msg); };
     let fills;
     try {
       const { calls } = installFetchMock((endpoint) => {
@@ -126,10 +177,10 @@ describe('gemini getOrderFills', () => {
           return { order_id: 777, symbol: 'BTCUSD', timestampms: createdMs };
         }
         if (endpoint === '/v1/mytrades') {
-          // A full 500-trade page: 499 other-order trades + the target fill.
+          // 500 trades all at the same millisecond, including the target.
           const rows = Array.from({ length: 499 }, (_, i) =>
-            makeTrade({ tid: 10000 + i, order_id: 111, symbol: 'btcusd', timestampms: createdMs + i * 1000 }));
-          rows.push(makeTrade({ tid: 99999, order_id: 777, symbol: 'btcusd', timestampms: createdMs + 600000 }));
+            makeTrade({ tid: 20000 + i, order_id: 111, symbol: 'btcusd', timestampms: createdMs }));
+          rows.push(makeTrade({ tid: 99999, order_id: 777, symbol: 'btcusd', timestampms: createdMs }));
           return rows;
         }
         throw new Error(`unexpected endpoint ${endpoint}`);
@@ -138,18 +189,15 @@ describe('gemini getOrderFills', () => {
       fills = await adapter.getOrderFills('777');
 
       const mt = mytradesCalls(calls);
-      assert.equal(mt.length, 1, 'exactly one mytrades request — no forward pagination');
-      assert.equal(mt[0].payload.symbol, 'btcusd');
-      assert.equal(mt[0].payload.timestamp, Math.floor((createdMs - 60000) / 1000));
+      // Two requests max: initial + one retry at the same second, then it bails.
+      assert.ok(mt.length <= 2, `must not loop forever, got ${mt.length} requests`);
     } finally {
       console.log = origLog;
     }
 
-    // The target fill is found within the single page, and a truncation warning fired.
     assert.equal(fills.length, 1);
     assert.equal(fills[0].tradeId, '99999');
-    assert.equal(fills[0].orderId, '777');
-    assert.equal(warnings.length, 1, 'full-page cap must emit a visible truncation warning');
+    assert.equal(warnings.length, 1, 'same-second saturation must emit a visible warning');
   });
 
   it('preserves order_id/tid exceeding MAX_SAFE_INTEGER as exact strings', async () => {
