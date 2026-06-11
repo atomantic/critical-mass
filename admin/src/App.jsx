@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom'
 import Dashboard from './components/Dashboard'
 import ConfigEditor from './components/ConfigEditor'
@@ -156,6 +156,11 @@ function AppContent() {
   const currentStrategy = resolveStrategy(currentExchangeConfig)
   const currentPair = urlPair || currentExchangeConfig?.productId || 'BTC-USDC'
 
+  // Latest selected fund, readable from inside in-flight fetch callbacks so a
+  // slow response for a previous fund can be discarded (fund-switch race, #111).
+  const activeFundRef = useRef(`${currentExchange}::${currentPair}`)
+  activeFundRef.current = `${currentExchange}::${currentPair}`
+
   // WebSocket connection for regime strategy
   const { connected: wsConnected } = useRegimeEvents(
     currentStrategy === 'regime' ? currentExchange : null,
@@ -210,15 +215,22 @@ function AppContent() {
   const pairQuery = () => buildPairQuery(currentPair)
 
   const fetchData = async () => {
+    // Capture the fund identity at request time. If the user switches funds
+    // while this request is in flight, a slow response must not overwrite the
+    // newer fund's summary (stale data shown for up to 30s, and ConfigEditor
+    // would adopt the wrong baseline) (#111).
+    const reqFund = `${currentExchange}::${currentPair}`
     setLoading(true)
     setError(null)
     const res = await fetch(`/api/${currentExchange}/summary${pairQuery()}`)
+    if (activeFundRef.current !== reqFund) return // fund switched mid-flight — discard
     if (!res.ok) {
       setError('Failed to fetch data')
       setLoading(false)
       return
     }
     const data = await res.json()
+    if (activeFundRef.current !== reqFund) return
     setSummary(data)
     setLoading(false)
 
@@ -229,9 +241,12 @@ function AppContent() {
   // Fetch regime status (for header controls)
   const fetchRegimeStatus = async () => {
     if (currentStrategy !== 'regime') return
+    const reqFund = `${currentExchange}::${currentPair}`
     const res = await fetch(`/api/${currentExchange}/regime/status${pairQuery()}`)
+    if (activeFundRef.current !== reqFund) return // fund switched mid-flight — discard
     if (res.ok) {
       const data = await res.json()
+      if (activeFundRef.current !== reqFund) return
       setRegimeRunning(data.status?.isRunning || false)
       setRegimeDryRun(data.status?.isDryRun || false)
       setRegimeLifecycle(data.status?.lifecycle?.lifecycle || 'active')
