@@ -2150,7 +2150,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
-  const handleOrderFill = async (fillData) => {
+  const handleOrderFillImpl = async (fillData, dedupRef) => {
+    // dedupRef is a per-call holder: the buy/sell branches record the inner
+    // dedup key they add ({ set, key }) into it so the wrapper can clear that
+    // key if processing throws. A per-call object (not a shared closure var)
+    // keeps this correct even if two handleOrderFill calls interleave across
+    // awaits (WS vs polling).
     // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
     if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
       await cancelPartialFillOrder({ adapter, exchange }, fillData.orderId);
@@ -2223,6 +2228,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         return;
       }
       recentlyProcessedBuyFills.add(buyDedupKey);
+      if (dedupRef) { dedupRef.set = recentlyProcessedBuyFills; dedupRef.key = buyDedupKey; }
       const tb = setTimeout(() => { recentlyProcessedBuyFills.delete(buyDedupKey); ttlTimers.delete(tb); }, 5 * 60 * 1000);
       ttlTimers.add(tb);
 
@@ -2398,6 +2404,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         return;
       }
       recentlyProcessedSellFills.add(dedupKey);
+      if (dedupRef) { dedupRef.set = recentlyProcessedSellFills; dedupRef.key = dedupKey; }
       const t1 = setTimeout(() => { recentlyProcessedSellFills.delete(dedupKey); ttlTimers.delete(t1); }, 5 * 60 * 1000);
       ttlTimers.add(t1);
 
@@ -2706,6 +2713,24 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     orderExecutor.handleOrderFill(fillData.orderId);
+  };
+
+  /**
+   * Wrapper around handleOrderFillImpl: if processing throws AFTER the inner
+   * buy/sell dedup key was added (e.g. during TP placement or persistence),
+   * clear that key so the next reconcile/poll retry re-processes the fill
+   * instead of skipping it as "already processed" until the 5-min TTL. Applies
+   * to ALL callers (WS, reconcile, polling) — the polling callback also clears
+   * its own outer recentlyProcessedFills key (issue #99 follow-up).
+   */
+  const handleOrderFill = async (fillData) => {
+    const dedupRef = { set: null, key: null };
+    try {
+      return await handleOrderFillImpl(fillData, dedupRef);
+    } catch (err) {
+      if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
+      throw err;
+    }
   };
 
   /**
@@ -4082,28 +4107,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // and handleOrderFill awaits network + fs work that can reject on a
       // routine API blip. An unhandled rejection here crashes the process
       // (Node ≥15) mid-fill, leaving state partially mutated. Contain it and
-      // DELETE the dedup key so the next reconcile poll re-detects and
-      // re-processes the fill (ingestFill dedups by tradeId, so already-ingested
-      // fills aren't double-counted on retry). Note: if the reject lands after
-      // the buy branch's cycleBuys++/body push but during TP placement, the
-      // retry can double-count those in-memory — tracked separately for an
-      // ingest-guarded refactor (issue #99 follow-up).
+      // DELETE this outer polling dedup key so the next reconcile poll
+      // re-detects and re-processes (ingestFill dedups by tradeId, so
+      // already-ingested fills aren't double-counted on retry). handleOrderFill
+      // clears its OWN inner buy/sell dedup key on throw (see its wrapper), so
+      // every caller path retries cleanly. Note: a reject after the buy
+      // branch's cycleBuys++/body push but during TP placement can still
+      // double-count those in-memory — tracked for an ingest-guarded refactor
+      // (issue #131).
       try {
         await handleOrderFill(fillData);
       } catch (err) {
         recentlyProcessedFills.delete(dedupKey);
-        // handleOrderFill's sell branch adds its OWN dedup key to
-        // recentlyProcessedSellFills before the throwable work. Clearing only
-        // the outer key would let the next reconcile retry hit that inner key
-        // and skip the sell as "already processed" — delaying recovery until
-        // the 5-min TTL. Clear the inner sell key too (same key shape) so the
-        // retry actually re-processes (issue #99 follow-up).
-        if (status.side?.toLowerCase() === 'sell') {
-          const sellKey = status.isPartialFill
-            ? `${orderId}:${(status.filledSize || 0).toFixed(8)}`
-            : orderId;
-          recentlyProcessedSellFills.delete(sellKey);
-        }
         console.log(`❌ [${exchange}] Error processing polled fill ${orderId} (side=${status.side}): ${err.message} — will retry on next reconcile`);
       }
     };
