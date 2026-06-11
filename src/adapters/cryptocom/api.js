@@ -341,13 +341,19 @@ const createCryptocomAdapter = (keysPath = null) => {
     // Calculate quantity from notional, round down to tick size
     const rawQuantity = quoteAmount / price;
     const roundedQuantity = floorToIncrement(rawQuantity, qtyTickSize);
+    // Format to the instrument's decimal precision: floorToIncrement returns a
+    // mathematically-correct tick but can carry binary float artifacts
+    // (e.g. 8.200000000000001), and raw toString() would send over-precision
+    // digits that Crypto.com rejects. The limit paths already toFixed; match them.
+    const qtyDecimals = incrementToDecimals(details.baseIncrement);
+    const quantityStr = roundedQuantity.toFixed(qtyDecimals);
 
     // Use quantity for more control over rounding
     const orderParams = {
       instrument_name: instrument,
       side: 'BUY',
       type: 'MARKET',
-      quantity: roundedQuantity.toString(),
+      quantity: quantityStr,
       client_oid: clientOrderId,
       spot_margin: 'SPOT',
     };
