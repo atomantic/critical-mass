@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit } = require('../src/regime-engine');
 
 describe('cancelPartialFillOrder', () => {
   const makeDeps = ({ cancelOrder, exchange = 'gemini' } = {}) => {
@@ -159,5 +159,24 @@ describe('isBuyAlreadyCommitted (issue #131)', () => {
       { sourceOrderIds: ['b', 'buy-x'], buyOrders: [{ orderId: 'b' }, { orderId: 'buy-x' }] },
     ];
     assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), true);
+  });
+});
+
+describe('shouldSkipBuyRecommit (issue #131 — advancing-partial guard, codex P1)', () => {
+  const committed = [{ sourceOrderIds: ['buy-x'], buyOrders: [{ orderId: 'buy-x' }] }];
+
+  it('SKIPS a retry: body already owns the orderId AND no new fills ingested', () => {
+    assert.equal(shouldSkipBuyRecommit(0, committed, 'buy-x'), true);
+  });
+
+  it('does NOT skip an advancing partial: body owns the orderId but NEW fills were ingested', () => {
+    // This is the codex P1 regression: an advancing partial buy fill brings new
+    // trade rows and must process even though the first partial created a body.
+    assert.equal(shouldSkipBuyRecommit(2, committed, 'buy-x'), false);
+  });
+
+  it('does NOT skip the first fill of a brand-new order (no body owns it yet)', () => {
+    assert.equal(shouldSkipBuyRecommit(0, committed, 'buy-new'), false);
+    assert.equal(shouldSkipBuyRecommit(1, [], 'buy-new'), false);
   });
 });
