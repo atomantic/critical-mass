@@ -367,6 +367,15 @@ const createFillLedger = (exchange, productId, pair) => {
    * Ingest a fill (idempotent)
    * @param {Object} fillData - Raw fill data from exchange
    * @param {number} [orderPlacedAt] - Optional timestamp when the order was placed (for fill time tracking)
+   * @param {Object} [options]
+   * @param {boolean} [options.skipPersist] - Skip the auto-persist (batch ingestion flushes once at the end)
+   * @param {string|null} [options.cycleId] - Explicit cycle assignment. Defaults to the live
+   *   currentCycleId. Pass `null` for fills that may be historical (sync/manual reconciliation):
+   *   stamping a days-old fill with the live cycleId inflates current-cycle totals and can trip
+   *   recalculateCycles' sell-ratio heuristic into marking the active cycle complete. A null-cycle
+   *   fill is picked up by recalculateCycles' orphan logic and placed in its correct cycle by
+   *   buy/sell pattern (issue #108). Note: pass the property explicitly — an absent `cycleId` key
+   *   keeps the live-cycle default; only an explicit `null`/value overrides it.
    * @returns {{ingested: boolean, fill: Fill|null}} Result
    */
   const ingestFill = (fillData, orderPlacedAt = null, options = {}) => {
@@ -382,6 +391,13 @@ const createFillLedger = (exchange, productId, pair) => {
     // Calculate fill time if we have order placement time
     const fillTimeMs = orderPlacedAt && orderPlacedAt > 0 ? fillTimestamp - orderPlacedAt : null;
 
+    // Cycle assignment: default to the live cycle, but let callers ingesting
+    // potentially-historical fills (sync-fills, manual-trade reconciliation)
+    // pass an explicit cycleId (typically null) so old fills don't land in the
+    // current cycle. Only override when the key is actually present — an absent
+    // key must keep the live-cycle default (issue #108).
+    const cycleId = 'cycleId' in options ? options.cycleId : currentCycleId;
+
     const fill = {
       tradeId,
       orderId: fillData.orderId || fillData.order_id,
@@ -396,7 +412,7 @@ const createFillLedger = (exchange, productId, pair) => {
       liquidityIndicator: fillData.liquidityIndicator || fillData.liquidity_indicator || 'TAKER',
       timestamp: fillTimestamp,
       ingestedAt: Date.now(),
-      cycleId: currentCycleId,
+      cycleId,
       // Fill time tracking
       orderPlacedAt: orderPlacedAt || null,
       fillTimeMs: fillTimeMs,
@@ -893,8 +909,11 @@ const createFillLedger = (exchange, productId, pair) => {
           let assetSold = 0;
 
           for (const fill of cycleFills) {
-            // Skip body/satellite fills — they have independent P&L tracking
-            if (fill.isSatellite || fill.bodyId) continue;
+            // Skip body-owned/satellite fills — they have independent P&L
+            // tracking. Mirror the completed-cycle path's filter exactly
+            // (isBodyOwned included) so an orphan-recovered cycle and a
+            // normal cycle compute P&L over the same set of fills (issue #108).
+            if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
 
             if (fill.side === 'buy') {
               totalAsset += fill.size;
@@ -1033,6 +1052,116 @@ const createFillLedger = (exchange, productId, pair) => {
   };
 
   /**
+   * Read-only sibling of recalculateCycles (issue #132). Computes the SAME
+   * cycleDetails / orphansFixed / activeCycleId WITHOUT mutating any ledger
+   * state — it never assigns cycleIds to fills, touches cycleIndex /
+   * currentCycleId / nextCycleNumber, sets the dirty flag, or persists. This
+   * lets the running-engine recalculate PREVIEW show full per-cycle detail and
+   * the orphan-fix count without risking the engine's periodic save persisting
+   * a recalc the operator may cancel.
+   *
+   * The P&L numbers (realizedPnL/realizedAssetPnL) intentionally come from the
+   * cycle-pair source of truth (getDerivedRealizedPnL), same as the live
+   * preview — recalculateCycles' own avgCost-prorated totals are diagnostic.
+   * Here we surface cycleDetails (which the apply-time recalc would produce) and
+   * the orphan-fix count so the UI can render them.
+   *
+   * @returns {{cyclesCompleted: number, cycleDetails: Array, orphansFixed: number, activeCycleId: string|null}}
+   */
+  const previewRecalculateCycles = () => {
+    const allFills = Array.from(fills.values()).sort((a, b) => a.timestamp - b.timestamp);
+
+    // Group by cycleId; collect orphans (cycleId: null) separately.
+    const cycleMap = new Map();
+    const orphanFills = [];
+    for (const fill of allFills) {
+      if (!fill.cycleId) orphanFills.push(fill);
+      else {
+        if (!cycleMap.has(fill.cycleId)) cycleMap.set(fill.cycleId, []);
+        cycleMap.get(fill.cycleId).push(fill);
+      }
+    }
+
+    // Pure helper: derive a completed-cycle detail row from a fill list. Mirrors
+    // the body-owned/satellite filter used by recalculateCycles (issue #108).
+    const detailFor = (cycleId, cycleFills) => {
+      let totalAsset = 0, totalCost = 0, sellProceeds = 0, assetSold = 0;
+      for (const fill of cycleFills) {
+        if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+        if (fill.side === 'buy') {
+          totalAsset += fill.size;
+          totalCost += fill.quoteAmount + fill.netFee;
+        } else if (fill.side === 'sell') {
+          sellProceeds += fill.quoteAmount - fill.netFee;
+          assetSold += fill.size;
+        }
+      }
+      const avgCost = totalAsset > 0 ? totalCost / totalAsset : 0;
+      return {
+        cycleId,
+        buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
+        sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
+        totalAssetBought: roundAsset(totalAsset),
+        assetSold: roundAsset(assetSold),
+        holdbackAsset: roundAsset(totalAsset - assetSold),
+        avgCost: roundUSDC(avgCost),
+        sellPrice: assetSold > 0 ? roundUSDC(sellProceeds / assetSold) : 0,
+        pnl: roundUSDC(sellProceeds - avgCost * assetSold),
+      };
+    };
+
+    // Sell-ratio completion heuristic over ALL fills (matches recalculateCycles).
+    const isCompletedCycle = (cycleFills) => {
+      let buys = 0, sells = 0;
+      for (const fill of cycleFills) {
+        if (fill.side === 'buy') buys += fill.size;
+        else if (fill.side === 'sell') sells += fill.size;
+      }
+      return buys > 0 && sells / buys >= 0.5;
+    };
+
+    const cycleDetails = [];
+    for (const [cycleId, cycleFills] of cycleMap) {
+      if (isCompletedCycle(cycleFills)) cycleDetails.push(detailFor(cycleId, cycleFills));
+    }
+
+    // Replay orphan placement WITHOUT mutating fills — count how many would be
+    // assigned and which would-be cycles complete vs become the active cycle.
+    let orphansFixed = 0;
+    let previewActiveCycleId = currentCycleId;
+    if (orphanFills.length > 0) {
+      const sorted = [...orphanFills].sort((a, b) => a.timestamp - b.timestamp);
+      const orphanCycles = [];
+      let current = [];
+      let lastWasSell = false;
+      for (const fill of sorted) {
+        if (lastWasSell && fill.side === 'buy') {
+          if (current.length > 0) orphanCycles.push(current);
+          current = [];
+        }
+        current.push(fill);
+        lastWasSell = fill.side === 'sell';
+      }
+      if (current.length > 0) orphanCycles.push(current);
+
+      for (let i = 0; i < orphanCycles.length; i++) {
+        const cycleFills = orphanCycles[i];
+        const cycleId = `cycle-${cycleFills[0].timestamp}-recovered-${i + 1}`;
+        orphansFixed += cycleFills.length;
+        if (isCompletedCycle(cycleFills)) cycleDetails.push(detailFor(cycleId, cycleFills));
+        else previewActiveCycleId = cycleId;
+      }
+    }
+
+    return {
+      cyclesCompleted: cycleDetails.length,
+      cycleDetails,
+      orphansFixed,
+      activeCycleId: previewActiveCycleId,
+    };
+  };
+
+  /**
    * Update a fill's cycleId
    * @param {string} tradeId - Trade ID
    * @param {string} cycleId - New cycle ID
@@ -1110,16 +1239,27 @@ const createFillLedger = (exchange, productId, pair) => {
     const sellAggByOrderId = new Map();
     for (const f of fills.values()) {
       if (f.side === 'buy') {
-        const ex = buyAggByOrderId.get(f.orderId);
+        // Buys without an orderId (legacy/manual rows) must NOT all collapse
+        // under a single `undefined` key — that merges every no-orderId buy's
+        // cost into one aggregate where the first row's sellOrderId wins,
+        // attributing the whole blob's cost to one sell (or stranding it all
+        // as held). Key each by its unique tradeId so it carries its OWN
+        // sellOrderId / held-vs-paired classification (issue #108).
+        const aggKey = f.orderId || `__noorder__:${f.tradeId}`;
+        const ex = buyAggByOrderId.get(aggKey);
         if (ex) {
           ex.size += f.size || 0;
           ex.cost += (f.quoteAmount || 0) + (f.netFee || 0);
           if (f.sellOrderId && !ex.sellOrderId) ex.sellOrderId = f.sellOrderId;
+          // consumedCostFraction is annotated identically on every row of the
+          // orderId (like bodyPnl) — take the latest non-null, not summed.
+          if (f.consumedCostFraction != null) ex.consumedCostFraction = f.consumedCostFraction;
         } else {
-          buyAggByOrderId.set(f.orderId, {
+          buyAggByOrderId.set(aggKey, {
             size: f.size || 0,
             cost: (f.quoteAmount || 0) + (f.netFee || 0),
             sellOrderId: f.sellOrderId || null,
+            consumedCostFraction: f.consumedCostFraction ?? 0,
           });
         }
       } else if (f.side === 'sell') {
@@ -1162,7 +1302,16 @@ const createFillLedger = (exchange, productId, pair) => {
     let heldOpenBuyCostBasis = 0;
     for (const buy of buyAggByOrderId.values()) {
       if (!buy.sellOrderId || !sellAggByOrderId.has(buy.sellOrderId)) {
-        heldOpenBuyCostBasis += buy.cost;
+        // Held cost = the buy's cost MINUS the fraction already realized via
+        // prior partial body-TP fills (issue #128). On a partial body-TP fill
+        // the engine re-links the buy to a fresh resting TP and stamps
+        // consumedCostFraction = realized-so-far / original. Counting the full
+        // cost as held while that sold tranche's prorated cost is already in
+        // realizedPnL (via bodyPnl) double-counts it, transiently understating
+        // total return until the residual TP fills. Subtracting the consumed
+        // fraction holds only the genuinely-open remainder.
+        const consumed = buy.consumedCostFraction > 0 ? Math.min(buy.consumedCostFraction, 1) : 0;
+        heldOpenBuyCostBasis += buy.cost * (1 - consumed);
         continue;
       }
       const ex = pairedBySellOrderId.get(buy.sellOrderId);
@@ -1303,6 +1452,7 @@ const createFillLedger = (exchange, productId, pair) => {
     getFillsSince,
     aggregateFills,
     recalculateCycles,
+    previewRecalculateCycles,
     computeFifoRealized,
     computeRealizedFromCyclePairs,
     getDerivedRealizedPnL,

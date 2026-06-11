@@ -200,7 +200,10 @@ const syncFills = async (exchange, fillLedger, options = {}) => {
         liquidityIndicator: exFill.liquidityIndicator,
         tradeTime: new Date(exFill.timestamp).toISOString(),
         fee_asset: exFill.feeCurrency,
-      }, null, { skipPersist: true });
+        // Reconciliation fills can be days old — never stamp them with the live
+        // cycle. Null routes them through recalculateCycles' orphan placement
+        // by buy/sell pattern (issue #108).
+      }, null, { skipPersist: true, cycleId: null });
       if (result.ingested) {
         ingested.push(exFill);
       }

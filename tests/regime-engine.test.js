@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit } = require('../src/regime-engine');
 
 describe('cancelPartialFillOrder', () => {
   const makeDeps = ({ cancelOrder, exchange = 'gemini' } = {}) => {
@@ -128,5 +128,65 @@ describe('resolveEntryBudget', () => {
 
   it('signals cooldown on a fully drained wallet', () => {
     assert.deepEqual(resolveEntryBudget(100, 0, MIN), { action: 'cooldown' });
+  });
+});
+
+describe('isBuyAlreadyCommitted (issue #131)', () => {
+  it('is false when no body owns the orderId', () => {
+    const bodies = [{ sourceOrderIds: ['other-1'], buyOrders: [{ orderId: 'other-1' }] }];
+    assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), false);
+  });
+
+  it('is true when a body lists the orderId in sourceOrderIds', () => {
+    const bodies = [{ sourceOrderIds: ['buy-x'], buyOrders: [] }];
+    assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), true);
+  });
+
+  it('is true when a body lists the orderId in buyOrders', () => {
+    const bodies = [{ sourceOrderIds: [], buyOrders: [{ orderId: 'buy-x' }] }];
+    assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), true);
+  });
+
+  it('handles missing/empty bodies and missing constituent arrays', () => {
+    assert.equal(isBuyAlreadyCommitted(undefined, 'buy-x'), false);
+    assert.equal(isBuyAlreadyCommitted([], 'buy-x'), false);
+    assert.equal(isBuyAlreadyCommitted([{}], 'buy-x'), false);
+  });
+
+  it('detects the orderId across multiple bodies', () => {
+    const bodies = [
+      { sourceOrderIds: ['a'], buyOrders: [{ orderId: 'a' }] },
+      { sourceOrderIds: ['b', 'buy-x'], buyOrders: [{ orderId: 'b' }, { orderId: 'buy-x' }] },
+    ];
+    assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), true);
+  });
+});
+
+describe('shouldSkipBuyRecommit (issue #131 — advancing-partial guard, codex P1)', () => {
+  const committed = [{ sourceOrderIds: ['buy-x'], buyOrders: [{ orderId: 'buy-x' }] }];
+
+  it('SKIPS a retry: body already owns the orderId AND no new fills ingested', () => {
+    assert.equal(shouldSkipBuyRecommit(0, committed, 'buy-x'), true);
+  });
+
+  it('does NOT skip an advancing partial: body owns the orderId but NEW fills were ingested', () => {
+    // This is the codex P1 regression: an advancing partial buy fill brings new
+    // trade rows and must process even though the first partial created a body.
+    assert.equal(shouldSkipBuyRecommit(2, committed, 'buy-x'), false);
+  });
+
+  it('does NOT skip the first fill of a brand-new order (no body owns it yet)', () => {
+    assert.equal(shouldSkipBuyRecommit(0, committed, 'buy-new'), false);
+    assert.equal(shouldSkipBuyRecommit(1, [], 'buy-new'), false);
+  });
+
+  // cycleBuys-counts-once contract (codex P2): the handler increments cycleBuys
+  // only when the order is NOT already owned. isBuyAlreadyCommitted is the gate.
+  it('an advancing partial is recognized as already-owned (so cycleBuys is not re-counted)', () => {
+    // First partial created the body → order is owned. The advancing partial
+    // still processes (shouldSkipBuyRecommit false because new fills arrived),
+    // but isBuyAlreadyCommitted is true so the inline guard suppresses cycleBuys++.
+    assert.equal(isBuyAlreadyCommitted(committed, 'buy-x'), true);
+    assert.equal(shouldSkipBuyRecommit(3, committed, 'buy-x'), false);
   });
 });
