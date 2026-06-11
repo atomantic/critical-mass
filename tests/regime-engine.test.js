@@ -179,4 +179,14 @@ describe('shouldSkipBuyRecommit (issue #131 — advancing-partial guard, codex P
     assert.equal(shouldSkipBuyRecommit(0, committed, 'buy-new'), false);
     assert.equal(shouldSkipBuyRecommit(1, [], 'buy-new'), false);
   });
+
+  // cycleBuys-counts-once contract (codex P2): the handler increments cycleBuys
+  // only when the order is NOT already owned. isBuyAlreadyCommitted is the gate.
+  it('an advancing partial is recognized as already-owned (so cycleBuys is not re-counted)', () => {
+    // First partial created the body → order is owned. The advancing partial
+    // still processes (shouldSkipBuyRecommit false because new fills arrived),
+    // but isBuyAlreadyCommitted is true so the inline guard suppresses cycleBuys++.
+    assert.equal(isBuyAlreadyCommitted(committed, 'buy-x'), true);
+    assert.equal(shouldSkipBuyRecommit(3, committed, 'buy-x'), false);
+  });
 });

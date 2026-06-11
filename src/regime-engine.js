@@ -2327,6 +2327,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       const summary = fillLedger.aggregateFills(fillsToAggregate);
 
+      // Was this exchange order ALREADY represented by a body before this pass?
+      // An advancing partial (orderId already owned, new fills this pass) must
+      // process its new tranche but must NOT consume a second cycleBuys step —
+      // cycleBuys counts buy ORDERS filled in the cycle, and one order that
+      // fills across multiple events is a single buy (codex P2). A brand-new
+      // order increments; an advancing partial only refreshes entry tracking.
+      const orderAlreadyOwned = isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId);
+
       // Commit the cycleBuys/lastEntry counter exactly once, at the point the
       // body that owns this orderId is committed (issue #131). Idempotent within
       // a single handleOrderFill call via committedBuyCounter; the gated guard
@@ -2335,7 +2343,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const commitBuyCounter = () => {
         if (committedBuyCounter) return;
         committedBuyCounter = true;
-        positionState.cycleBuys += 1;
+        // Only a genuinely new buy order advances the cycle-buy count; an
+        // advancing partial of an already-owned order refreshes entry tracking
+        // without re-counting the order (codex P2).
+        if (!orderAlreadyOwned) positionState.cycleBuys += 1;
         positionState.lastEntryPrice = summary.avgPrice;
         positionState.lastEntryTime = Date.now();
       };
