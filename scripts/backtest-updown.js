@@ -225,10 +225,21 @@ function preAggregateAll(candles1m) {
   // Use the same path helper that backtest-engine uses to WRITE the cache
   // (btc-usdc-price-cache-daily.json) — a hardcoded 'btc-price-cache-daily.json'
   // here previously never matched, silently disabling daily-SMA features.
+  // Accept the cache ONLY when it both has enough history (>30 rows) AND covers
+  // the backtest window — i.e. its last daily candle reaches within one day of
+  // the 1m data's end. A stale cache (last candle well before the 1m range end)
+  // would otherwise freeze 1d/1w signals for the whole run; in that case derive
+  // from the freshly-loaded 1m data, which always covers the window.
   const dailyCache = loadCandlesFromFile(getCacheFile('daily', 'coinbase', 'BTC-USDC'))
-  if (dailyCache.length > 30) {
+  const lastTickTs = candles1m.length > 0 ? candles1m[candles1m.length - 1].timestamp : 0
+  const cacheLastTs = dailyCache.length > 0 ? dailyCache[dailyCache.length - 1].timestamp : 0
+  const cacheCoversWindow = cacheLastTs >= lastTickTs - TF_MS['1d']
+  if (dailyCache.length > 30 && cacheCoversWindow) {
     result['1d'] = dailyCache
   } else {
+    if (dailyCache.length > 30 && !cacheCoversWindow) {
+      console.log(`⚠️  Daily cache is stale (last ${new Date(cacheLastTs).toISOString().slice(0, 10)} vs window end ${new Date(lastTickTs).toISOString().slice(0, 10)}) — deriving daily candles from 1m data instead`)
+    }
     result['1d'] = aggregateToHigherTF(candles1m, TF_MS['1d'])
   }
 
