@@ -135,7 +135,12 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
     setImportNote('')
     setCreateBody(true)
     if (order.side === 'sell') {
-      setRecoveryBuyPrice(Math.floor(order.avgPrice * 0.97).toString())
+      // Default to 3% below avg price, rounded to a precision appropriate for
+      // the price magnitude. Math.floor() destroyed sub-dollar prices (CRO etc.)
+      // to "0" → a $0 GTC limit buy, and even $2.50 → $2 (#111).
+      const raw = order.avgPrice * 0.97
+      const decimals = raw >= 100 ? 2 : raw >= 1 ? 4 : 6
+      setRecoveryBuyPrice(raw > 0 ? raw.toFixed(decimals) : '')
       setImportMode('place')
     }
     setExistingBuyOrderId('')
@@ -157,7 +162,13 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
         note: importNote,
       }
       if (importMode === 'place' && recoveryBuyPrice) {
-        body.recoveryBuyPrice = parseFloat(recoveryBuyPrice)
+        const px = parseFloat(recoveryBuyPrice)
+        if (!Number.isFinite(px) || px <= 0) {
+          setError('Recovery buy price must be a positive number')
+          setImporting(false)
+          return
+        }
+        body.recoveryBuyPrice = px
       } else if (importMode === 'link' && existingBuyOrderId) {
         body.existingBuyOrderId = existingBuyOrderId
       }
