@@ -1883,9 +1883,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     isRunning = true;
 
-    // Start Gemini heartbeat to prevent order auto-cancellation
+    // Start Gemini heartbeat to prevent order auto-cancellation.
+    // Owner key: the adapter is a per-exchange singleton shared across funds,
+    // and its heartbeat is refcounted per owner so stopping one fund cannot
+    // kill another fund's heartbeat.
     if (!isDryRun && adapter.startHeartbeat) {
-      adapter.startHeartbeat();
+      adapter.startHeartbeat(fundLabel);
     }
 
     console.log(`✅ [${exchange}] ${modeLabel}Regime engine started`);
@@ -1962,9 +1965,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     }
 
-    // Stop heartbeat
-    if (adapter.stopHeartbeat) {
-      adapter.stopHeartbeat();
+    // Deregister this fund from the shared heartbeat (the adapter only
+    // clears the timer when no other fund still needs it). Mirrors the
+    // !isDryRun condition in start() so a dry-run engine can never
+    // deregister a live fund's heartbeat.
+    if (!isDryRun && adapter.stopHeartbeat) {
+      adapter.stopHeartbeat(fundLabel);
     }
 
     // Stop intervals first
