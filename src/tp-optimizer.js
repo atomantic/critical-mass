@@ -119,10 +119,20 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
   let percentileCacheValid = false;
 
   /**
-   * Apply time decay to histogram
+   * Apply time decay to both histograms.
+   *
+   * volHistogram was previously never decayed while cycle `histogram` was, so
+   * thousands of undecayed streaming vol samples (recordVolatilitySample adds
+   * +1 each, continuously) swamped the cycleWeight-boosted recent cycles in
+   * calculatePercentiles — anchoring p25/p75 (and live TP recommendations) to
+   * long-dead volatility regimes. Decaying both keeps the combined
+   * distribution time-weighted as the module's header promises (issue #108).
    */
   const applyTimeDecay = () => {
     for (const bucket of histogram) {
+      bucket.weight *= TIME_DECAY_ALPHA;
+    }
+    for (const bucket of volHistogram) {
       bucket.weight *= TIME_DECAY_ALPHA;
     }
   };
