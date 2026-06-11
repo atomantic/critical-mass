@@ -4018,13 +4018,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // order-executor invokes this callback fire-and-forget (no await/catch),
       // and handleOrderFill awaits network + fs work that can reject on a
       // routine API blip. An unhandled rejection here crashes the process
-      // (Node ≥15) mid-fill, leaving state partially mutated. Contain it —
-      // the orderId stays in recentlyProcessedFills, so the next reconcile
-      // poll re-detects and re-processes the fill cleanly (issue #99).
+      // (Node ≥15) mid-fill, leaving state partially mutated. Contain it and
+      // DELETE the dedup key so the next reconcile poll re-detects and
+      // re-processes the fill (ingestFill dedups by tradeId, so already-ingested
+      // fills aren't double-counted on retry). Note: if the reject lands after
+      // the buy branch's cycleBuys++/body push but during TP placement, the
+      // retry can double-count those in-memory — tracked separately for an
+      // ingest-guarded refactor (issue #99 follow-up).
       try {
         await handleOrderFill(fillData);
       } catch (err) {
         recentlyProcessedFills.delete(dedupKey);
+        // handleOrderFill's sell branch adds its OWN dedup key to
+        // recentlyProcessedSellFills before the throwable work. Clearing only
+        // the outer key would let the next reconcile retry hit that inner key
+        // and skip the sell as "already processed" — delaying recovery until
+        // the 5-min TTL. Clear the inner sell key too (same key shape) so the
+        // retry actually re-processes (issue #99 follow-up).
+        if (status.side?.toLowerCase() === 'sell') {
+          const sellKey = status.isPartialFill
+            ? `${orderId}:${(status.filledSize || 0).toFixed(8)}`
+            : orderId;
+          recentlyProcessedSellFills.delete(sellKey);
+        }
         console.log(`❌ [${exchange}] Error processing polled fill ${orderId} (side=${status.side}): ${err.message} — will retry on next reconcile`);
       }
     };

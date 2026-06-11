@@ -679,7 +679,15 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
   let result;
   if (engine?.recalculateAndRefresh) {
     if (!apply) {
-      // Preview only: derive without mutating engine/disk state.
+      // Preview only: derive P&L read-only via getDerivedRealizedPnL (no
+      // mutation). cycleDetails/orphansFixed require recalculateCycles(), which
+      // mutates the ledger (stamps orphan cycleIds, sets the dirty flag) — we
+      // must NOT run that on the LIVE engine ledger during a preview the
+      // operator may cancel (the engine's periodic save could then persist a
+      // recalc the operator didn't apply). So the running-engine preview shows
+      // the P&L delta but leaves cycleDetails empty / orphansFixed 0; the Apply
+      // below runs the real recalc. A read-only recalc variant for full preview
+      // fidelity is tracked separately (issue #132).
       const fillLedger = engine.getFillLedger();
       const derived = fillLedger.getDerivedRealizedPnL();
       const cycleFills = fillLedger.getCurrentCycleFills();
@@ -689,6 +697,7 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
         realizedAssetPnL: derived.realizedAssetPnL,
         cycleDetails: [],
         orphansFixed: 0,
+        previewLimited: true, // running-engine preview omits cycleDetails/orphansFixed (see above)
         activeCycleId: fillLedger.getCurrentCycleId(),
         currentCycleFills: cycleFills.length,
       };
@@ -752,6 +761,9 @@ ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
     orphansFixed: result.orphansFixed,
     activeCycleId: result.activeCycleId,
     currentCycleFills: result.currentCycleFills,
+    // Forward the running-engine preview limitation so the dashboard can warn
+    // that cycleDetails/orphansFixed are omitted until Apply (issue #132).
+    ...(result.previewLimited ? { previewLimited: true } : {}),
   };
 });
 
