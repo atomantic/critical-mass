@@ -584,8 +584,19 @@ const normalizeExchangeBlock = (exchangeBlock) => {
     return { pairs: {} };
   }
   if (exchangeBlock.pairs && typeof exchangeBlock.pairs === 'object') {
-    // Already in nested form — return shallow copy with pairs preserved
-    return exchangeBlock;
+    // Already in nested form — return a copy that also clones each pair block
+    // (the comment used to say "shallow copy" but returned the LIVE cached
+    // object). loadRawConfig returns the shared _configCache, and callers mutate
+    // the normalized result before saveConfig: updateFundConfig replaces
+    // pairs[pair] (a one-level pairs clone would suffice) but updateRegimeConfig
+    // does `normalized.pairs[pair].regime = merged` IN PLACE — so the inner pair
+    // objects must be cloned too, or a saveConfig throw leaves the cache showing
+    // the new value while disk doesn't (#113 / review).
+    const pairsCopy = {};
+    for (const [p, block] of Object.entries(exchangeBlock.pairs)) {
+      pairsCopy[p] = (block && typeof block === 'object') ? { ...block } : block;
+    }
+    return { ...exchangeBlock, pairs: pairsCopy };
   }
   // Legacy flat → synthesize a single-fund pairs map
   const productId = exchangeBlock.productId || DEFAULTS.productId;
