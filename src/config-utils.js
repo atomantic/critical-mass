@@ -392,7 +392,18 @@ const saveConfig = (config) => {
   // would ENOENT the second rename or persist the wrong payload. The rename
   // itself is atomic, so the last writer wins cleanly (#110 M7 / review).
   const tmpPath = `${USER_CONFIG_FILE}.${process.pid}.${++_saveConfigTmpSeq}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(diff, null, 2));
+  // Preserve the existing file's permission mode across the atomic replace.
+  // tmp+rename creates a NEW inode at the default umask mode (commonly 0644),
+  // so without this an operator who locked down config.json to 0600 (it can
+  // hold the Telegram token / other secrets) would silently get it widened to
+  // world-readable on every settings save. Fall back to 0600 for a brand-new
+  // file since it may contain secrets (#110 review).
+  let mode = 0o600;
+  try {
+    const existing = fs.statSync(USER_CONFIG_FILE).mode & 0o777;
+    if (existing) mode = existing; // keep the operator's chosen mode; ignore a 0/absent mode
+  } catch { /* new file → restrictive default */ }
+  fs.writeFileSync(tmpPath, JSON.stringify(diff, null, 2), { mode });
   fs.renameSync(tmpPath, USER_CONFIG_FILE);
   // Bust the cache so the next read picks up our write immediately, even
   // before the OS updates mtime.
