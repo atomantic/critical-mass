@@ -317,10 +317,16 @@ const incrementToDecimals = (increment) => {
  *
  * `Math.floor(value / increment) * increment` steps a FULL increment down for
  * many exactly-representable inputs — e.g. Math.floor(0.29/0.01)*0.01 === 0.28,
- * Math.floor(8.2/0.1)*0.1 === 8.1 — because 0.29/0.01 computes to 28.999…. That
- * costs a tick on every TP (selling cheaper) and shaves a full increment off
- * order sizes (dust that never gets swept). A relative epsilon before flooring
- * absorbs the representation error without ever rounding UP past a real tick.
+ * Math.floor(8.2/0.1)*0.1 === 8.1 — because 0.29/0.01 computes to 28.999….
+ * That costs a tick on every TP (selling cheaper) and shaves a full increment
+ * off order sizes (dust that never gets swept).
+ *
+ * We correct ONLY genuine machine error: if the quotient is within a small
+ * RELATIVE tolerance of an integer, snap to that integer; otherwise floor
+ * normally. A blanket `+epsilon` before flooring would round a value that is
+ * legitimately just-below a tick (e.g. 1.99999999999) UP to the next tick —
+ * dangerous on a sell-size / limit-price path. Relative tolerance keeps the
+ * correction correct across magnitudes (price ~1e5, size ~1e-4).
  *
  * @param {number} value - Value to floor
  * @param {number} increment - Exchange increment / tick size (must be > 0)
@@ -329,9 +335,14 @@ const incrementToDecimals = (increment) => {
 const floorToIncrement = (value, increment) => {
   if (!(increment > 0)) return value;
   const quotient = value / increment;
-  // Epsilon scaled to the quotient magnitude; 1e-9 relative is far below any
-  // real tick yet comfortably above double-rounding error for these ranges.
-  return Math.floor(quotient + 1e-9) * increment;
+  // Strip pure double-rounding dust by re-rounding the quotient to 12
+  // significant digits BEFORE flooring: 0.29/0.01 = 28.999999999999996 →
+  // "29.0000000000" → 29 (the dust we must absorb is ~1e-13 relative, far
+  // inside 12 sig-figs). A genuinely sub-tick value keeps its remainder —
+  // 1.99999999999/0.01 = 199.999999999 stays 199.999999999 → floors to 199 —
+  // so we never round a real value UP past a tick on a sell-size / price path.
+  const cleaned = parseFloat(quotient.toPrecision(12));
+  return Math.floor(cleaned) * increment;
 };
 
 /**

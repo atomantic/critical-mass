@@ -372,7 +372,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       // Hardcoding 0 (assuming free maker fills) systematically inflated dry-run
       // P&L vs live and was wrong for Gemini/Crypto.com, which charge maker fees
       // — the dry-run executor is shared across exchanges (#109).
-      const feeRate = config.feeRate || 0.001;
+      const feeRate = config.feeRate ?? 0.001; // ?? so an explicit 0 (zero-fee dry run) is honored, not replaced
       const estimatedFee = order.size * fillPrice * feeRate;
       const costBasis = (order.size * fillPrice) + estimatedFee;
 
@@ -465,7 +465,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       // Calculate simulated P&L for this TP
       const proceeds = order.size * fillPrice;
       // Apply the configured per-side fee rate (see entry-fill note above) (#109).
-      const feeRate = config.feeRate || 0.001;
+      const feeRate = config.feeRate ?? 0.001; // ?? so an explicit 0 (zero-fee dry run) is honored, not replaced
       const estimatedFee = proceeds * feeRate;
       const netProceeds = proceeds - estimatedFee;
 

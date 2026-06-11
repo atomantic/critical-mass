@@ -21,6 +21,14 @@ describe('floorToIncrement (issue #109)', () => {
     assert.equal(Number(floorToIncrement(8.27, 0.1).toFixed(1)), 8.2);
   });
 
+  it('does NOT round a genuinely-just-below-tick value up to the next tick', () => {
+    // A real sub-tick remainder (not float dust) must floor down — rounding it
+    // up would submit a sell size larger than available / a price above the
+    // intended threshold on the live order path.
+    assert.equal(Number(floorToIncrement(1.99999999999, 0.01).toFixed(2)), 1.99);
+    assert.equal(Number(floorToIncrement(0.299999, 0.01).toFixed(2)), 0.29);
+  });
+
   it('handles 8-decimal base increments (BTC sizes)', () => {
     assert.equal(Number(floorToIncrement(0.00012345, 0.00000001).toFixed(8)), 0.00012345);
     assert.equal(Number(floorToIncrement(0.123456789, 0.00000001).toFixed(8)), 0.12345678);
