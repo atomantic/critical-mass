@@ -1019,18 +1019,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Start the regime engine
    * @returns {Promise<{success: boolean, error?: string}>}
    */
-  const start = async () => {
-    if (isRunning || isStarting) {
-      console.log(`⚠️ [${exchange}] ${modeLabel}Regime engine already ${isRunning ? 'running' : 'starting'}`);
-      return { success: false, error: 'Engine already running' };
-    }
-    // isRunning is only set true near the END of start() (after recovery + order
-    // checks), so two near-simultaneous start() calls (API double-tap) could
-    // both pass the isRunning guard and spin up duplicate intervals/WS feeds/
-    // SIGUSR1 handlers/TPs. isStarting closes that window without disturbing the
-    // recovery path that relies on isRunning being false until ready (#113).
-    isStarting = true;
-
+  const startImpl = async () => {
     console.log(`🚀 [${exchange}] ${modeLabel}Starting regime engine for ${productId}`);
 
     // Fetch product details for price tick size (affects TP price rounding)
@@ -1862,7 +1851,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             }
           });
         }
-        isStarting = false;
         return { success: true, autoClosed: true };
       }
     }
@@ -1891,7 +1879,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     isRunning = true;
-    isStarting = false;
 
     // Start Gemini heartbeat to prevent order auto-cancellation.
     // Owner key: the adapter is a per-exchange singleton shared across funds,
@@ -1936,6 +1923,33 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     return { success: true };
+  };
+
+  /**
+   * Public start(): reentrancy-guarded wrapper around startImpl.
+   *
+   * isRunning is only set true near the END of startImpl (after recovery +
+   * order checks), so two near-simultaneous start() calls (API double-tap)
+   * could both pass an isRunning-only guard and spin up duplicate intervals /
+   * WS feeds / SIGUSR1 handlers / TPs. The isStarting flag closes that window
+   * without disturbing the recovery path that relies on isRunning being false
+   * until ready. The try/finally is essential: startImpl awaits unguarded work
+   * (recoverState, getCurrentPrice, connectWebSocket) that can reject on a
+   * transient exchange error — clearing isStarting in finally keeps a failed
+   * start RETRYABLE instead of permanently bricking the engine instance (#113).
+   * @returns {Promise<{success: boolean, error?: string}>}
+   */
+  const start = async () => {
+    if (isRunning || isStarting) {
+      console.log(`⚠️ [${exchange}] ${modeLabel}Regime engine already ${isRunning ? 'running' : 'starting'}`);
+      return { success: false, error: 'Engine already running' };
+    }
+    isStarting = true;
+    try {
+      return await startImpl();
+    } finally {
+      isStarting = false;
+    }
   };
 
   /**
