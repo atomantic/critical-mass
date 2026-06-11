@@ -86,7 +86,9 @@ const calculateApyMetrics = (positionState, config, marketState) => {
   // Cost basis of currently-held position. In the cycle-pair model, reserves
   // are zero-cost (their cost was attributed to the paired sell), so this
   // tracks active body cost only — set by refreshRealizedFromCyclePairs as
-  // Σ cost over buys with no sellOrderId. Falls back to bodyCost for stale state.
+  // Σ cost over buys whose sellOrderId is absent or has no sell fills yet
+  // (sellOrderId is stamped at TP placement, not fill). Falls back to bodyCost
+  // for stale state.
   const heldAssetCostBasis = positionState.heldAssetCostBasis ?? bodyCost;
   const unrealizedReturn = heldAssetMarketValue - heldAssetCostBasis;
 
