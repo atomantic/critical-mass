@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const crypto = require('crypto');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
-const { incrementToDecimals } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance

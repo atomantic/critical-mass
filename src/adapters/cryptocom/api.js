@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
-const { incrementToDecimals } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance

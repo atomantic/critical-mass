@@ -414,18 +414,19 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     } else if (order.type === 'body_tp') {
       simulatedTotalSold += order.size;
 
-      // Look up body tracking info for cost basis
+      // Look up body tracking info for cost basis.
+      // NOTE: bodyInfo.costBasis is initialized as roundedQty * TP price (not
+      // the body's ENTRY price), so avgBuyPrice here is effectively the TP
+      // price and `pnl` is a placeholder, not a faithful realized P&L. Applying
+      // a per-side sell fee on top of that broken basis would make capital
+      // DECREASE by the fee instead of realizing profit — so we deliberately do
+      // NOT fee-adjust this branch. The dry-run body cost-basis model needs to
+      // carry the real entry cost first; tracked in issue #133. (The entry /
+      // legacy take_profit branches, which use real entry cost, ARE fee-adjusted.)
       const bodyInfo = getBodyByTpOrderId(orderId);
       const avgBuyPrice = bodyInfo ? (bodyInfo.costBasis / bodyInfo.assetQty) : getAverageEntryPrice();
       const costBasis = order.size * avgBuyPrice;
-      // Apply the per-side fee to sell proceeds (mirrors the live body-TP path
-      // and the entry/take_profit branches above). Without this the dominant
-      // celestial cycle path simulated zero fees, overstating dry-run P&L vs
-      // live for Gemini/Crypto.com. NOTE: the buy-side body cost basis
-      // (bodyInfo.costBasis) is still gross of entry fee — a deeper dry-run
-      // modeling gap tracked separately (issue follow-up).
-      const feeRate = config.feeRate || 0.001;
-      const proceeds = order.size * fillPrice * (1 - feeRate);
+      const proceeds = order.size * fillPrice;
       const pnl = proceeds - costBasis;
       simulatedBodyRealizedPnL += pnl;
 
