@@ -277,8 +277,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       }
     }
 
-    // Contract outcome evaluation
-    const contractOutcome = prediction.contract
+    // Contract outcome evaluation — only on the LONGEST window (1h), which best
+    // represents the contract horizon. evaluateOutcome runs once per window
+    // (1m/5m/15m/1h), so emitting contractOutcome on every window made
+    // getMetrics count one prediction's contract result up to 4× (and it could
+    // score win at 5m yet loss at 1h for the same contract) (issue #108).
+    const isLongestWindow = windowMs === EVAL_WINDOWS[EVAL_WINDOWS.length - 1]
+    const contractOutcome = (prediction.contract && isLongestWindow)
       ? evaluateContractOutcome(prediction.contract, exitPrice)
       : null
 
@@ -339,13 +344,16 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     const prediction = buildPrediction(result, trigger)
     if (!prediction) return
 
-    // Track de-duplication: signal_change within 55s of last sample skips next interval
+    // Track de-duplication: a recorded signal_change must push lastSampleTs
+    // forward UNCONDITIONALLY so the interval sampler (which skips when
+    // now - lastSampleTs < DEDUP_WINDOW_MS) suppresses the next tick. The old
+    // code only refreshed when ALREADY within the window — so a signal_change
+    // landing 56s+ after the last sample didn't suppress the interval tick
+    // seconds later, recording two near-duplicate predictions that
+    // double-count in accuracy/byWindow/byIndicator and the adaptive-weight
+    // loop (issue #108).
     if (trigger === 'signal_change') {
-      const now = Date.now()
-      if (now - lastSampleTs < DEDUP_WINDOW_MS) {
-        // This signal_change is close to a sample — skip next interval
-        lastSampleTs = now
-      }
+      lastSampleTs = Date.now()
     }
 
     if (prediction.compositeDirection === 'neutral') {

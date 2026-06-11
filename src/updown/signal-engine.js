@@ -541,6 +541,25 @@ const scoreToSignalDynamic = (score, atrRatio) => {
 };
 
 /**
+ * Resolve the displayed signal type in (and out of) the no-trade zone.
+ * Outside the zone the raw signal stands. Inside it, entries are suppressed
+ * (NO_TRADE_ZONE) UNLESS the raw signal is an exit for a held position
+ * (up→SELL/STRONG_SELL, down→BUY/STRONG_BUY) — masking those is exactly when
+ * riding to settlement costs 100% (issue #108). Pure + exported for testing.
+ * @param {string} rawType - scoreToSignalDynamic output
+ * @param {boolean} noTradeZone
+ * @param {{direction?: 'up'|'down'}|null} heldPosition
+ * @returns {string}
+ */
+const resolveNoTradeZoneType = (rawType, noTradeZone, heldPosition) => {
+  if (!noTradeZone) return rawType;
+  const dir = heldPosition?.direction;
+  if (dir === 'up' && (rawType === 'SELL' || rawType === 'STRONG_SELL')) return rawType;
+  if (dir === 'down' && (rawType === 'BUY' || rawType === 'STRONG_BUY')) return rawType;
+  return 'NO_TRADE_ZONE';
+};
+
+/**
  * Map composite score to signal label (original fixed thresholds)
  * @param {number} score
  * @returns {'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL'}
@@ -736,7 +755,7 @@ const createSignalEngine = (candleAggregator) => {
    * @param {number | null} [contractExpiry] - Contract expiry timestamp (ms)
    * @param {Object} [scorecardMetrics] - Metrics from scorecard for horizon prediction
    */
-  const computeSignals = (contractExpiry = null, scorecardMetrics = null) => {
+  const computeSignals = (contractExpiry = null, scorecardMetrics = null, heldPosition = null) => {
     const now = Date.now();
     const timeToExpiry = (contractExpiry && contractExpiry > now) ? contractExpiry - now : Infinity;
     const noTradeZone = timeToExpiry <= NO_TRADE_ZONE_MS;
@@ -871,7 +890,10 @@ const createSignalEngine = (candleAggregator) => {
     // Feature 2: Volatility-scaled signal thresholds
     const candles5m = candleAggregator.getCandles('5m');
     const volatility = computeVolatilityContext(candles5m);
-    const type = noTradeZone ? 'NO_TRADE_ZONE' : scoreToSignalDynamic(compositeScore, volatility.ratio);
+    const rawType = scoreToSignalDynamic(compositeScore, volatility.ratio);
+    // NO_TRADE_ZONE suppresses entries near expiry but must surface exit signals
+    // for a held position (issue #108) — see resolveNoTradeZoneType.
+    const type = resolveNoTradeZoneType(rawType, noTradeZone, heldPosition);
 
     // Multi-factor confidence: score magnitude (0-0.5) + TF agreement (0-0.3) + ADX regime (0-0.2)
     const scoreFactor = Math.min(0.5, Math.abs(compositeScore) / 100);
@@ -913,6 +935,7 @@ module.exports = {
   createSignalEngine,
   scoreToSignal,
   scoreToSignalDynamic,
+  resolveNoTradeZoneType,
   scoreRSI,
   scoreStochastic,
   scoreMACD,

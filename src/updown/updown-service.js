@@ -8,7 +8,7 @@
  */
 
 const path = require('path');
-const { createSignalEngine, scoreToSignalDynamic } = require('./signal-engine');
+const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType } = require('./signal-engine');
 const { createScorecard } = require('./scorecard');
 const { log } = require('../logger');
 
@@ -182,8 +182,9 @@ const createUpDownService = (io, deps) => {
       signalEngine.setIndicatorWeights(metrics.adaptiveWeights);
     }
 
-    // Feature 8: Pass scorecard metrics for horizon prediction
-    const result = signalEngine.computeSignals(contract.expiry, metrics);
+    // Feature 8: Pass scorecard metrics for horizon prediction.
+    // Pass the held position so NO_TRADE_ZONE surfaces exit signals (issue #108).
+    const result = signalEngine.computeSignals(contract.expiry, metrics, position);
 
     // Tick momentum confirmation — adjust composite score post-computation
     const tickMomentum = computeTickMomentum();
@@ -198,8 +199,11 @@ const createUpDownService = (io, deps) => {
         const dampFactor = 1 - 0.15 * Math.min(1, tickMomentum.magnitude / 20);
         result.score = Math.round(result.score * dampFactor * 100) / 100;
       }
-      // Recompute type and confidence after adjustment
-      result.type = result.noTradeZone ? 'NO_TRADE_ZONE' : scoreToSignalDynamic(result.score, result.volatility?.ratio ?? 1);
+      // Recompute type and confidence after the tick-momentum score adjustment,
+      // preserving exit-signal surfacing for a held position in the no-trade
+      // zone (issue #108) — same rule as the signal engine.
+      const adjustedRaw = scoreToSignalDynamic(result.score, result.volatility?.ratio ?? 1);
+      result.type = resolveNoTradeZoneType(adjustedRaw, result.noTradeZone, position);
       result.confidence = Math.round(Math.min(1, Math.abs(result.score) / 60) * 100) / 100;
     }
 
