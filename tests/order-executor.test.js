@@ -159,3 +159,29 @@ describe('refreshStaleOrders — CANCELLED with partial fills', () => {
     assert.equal(captured.length, 0);
   });
 });
+
+describe('getPendingCounts — ladder_entry visibility (issue #107 M5)', () => {
+  const adapter = makeAdapter({ status: 'OPEN' });
+
+  it('counts ladder_entry orders separately from entry orders', () => {
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+    exec.restorePendingOrder('e-1', { type: 'entry', price: 100, size: 1, sizeUsdc: 100, placedAt: Date.now() });
+    exec.restorePendingOrder('l-1', { type: 'ladder_entry', price: 99, size: 1, sizeUsdc: 99, placedAt: Date.now() });
+    exec.restorePendingOrder('l-2', { type: 'ladder_entry', price: 98, size: 1, sizeUsdc: 98, placedAt: Date.now() });
+    exec.restorePendingOrder('tp-1', { type: 'body_tp', price: 110, size: 1, sizeUsdc: 110, placedAt: Date.now() });
+
+    const counts = exec.getPendingCounts();
+    assert.equal(counts.entries, 1);
+    assert.equal(counts.ladderEntries, 2, 'ladder rungs must be counted so reactive entries can detect them');
+    assert.equal(counts.bodies, 1);
+    assert.equal(counts.total, 4);
+  });
+
+  it('reports zero ladderEntries when only reactive entries rest', () => {
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+    exec.restorePendingOrder('e-1', { type: 'entry', price: 100, size: 1, sizeUsdc: 100, placedAt: Date.now() });
+    const counts = exec.getPendingCounts();
+    assert.equal(counts.entries, 1);
+    assert.equal(counts.ladderEntries, 0);
+  });
+});

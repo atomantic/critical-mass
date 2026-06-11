@@ -75,12 +75,12 @@
 // ============================================================================
 
 /**
- * @typedef {'pending' | 'filled' | 'consolidated'} OrderStatus
+ * @typedef {'pending' | 'filled' | 'consolidated' | 'awaiting_sell' | 'sell_failed'} OrderStatus
  */
 
 /**
  * @typedef {Object} TrackedOrder
- * @property {string} orderId - Sell order ID
+ * @property {string|null} orderId - Sell order ID (null until a sell is attached)
  * @property {string} buyOrderId - Original buy order ID
  * @property {number} buyPrice - Price paid for BTC
  * @property {number} buyQuantity - Amount of BTC bought
@@ -89,7 +89,7 @@
  * @property {number} buyRebates - Rebates received on buy
  * @property {number} buyNetFees - Net fees on buy (fees - rebates)
  * @property {number} buyCostBasis - Total cost basis including fees
- * @property {number} sellPrice - Limit price for sell order
+ * @property {number|null} sellPrice - Limit price for sell order (null until a sell is attached)
  * @property {number} sellQuantity - Amount of BTC to sell
  * @property {number} holdbackAsset - Amount of BTC held in reserves
  * @property {OrderStatus} status - Order status
@@ -100,6 +100,8 @@
  * @property {number} [sellRebates] - Rebates received on sell
  * @property {number} [sellNetFees] - Net fees on sell
  * @property {number} [netProceeds] - Net proceeds after fees
+ * @property {string} [sellFailedReason] - Why sell placement failed (status 'sell_failed')
+ * @property {string} [sellFailedAt] - ISO timestamp when sell placement failed
  * @property {string} [consolidatedInto] - Order ID of the consolidated order (for original orders)
  * @property {string} [consolidatedAt] - ISO timestamp when order was consolidated
  * @property {boolean} [isConsolidated] - Whether this order is a consolidated order
@@ -316,6 +318,7 @@
  * @property {number} [currentPrice] - Current price if price check
  * @property {number} [maxBuyPrice] - Max buy price if price too high
  * @property {string} [lastRunId] - Last run ID if already ran
+ * @property {string} [error] - Error message (e.g. sell placement failure)
  */
 
 /**

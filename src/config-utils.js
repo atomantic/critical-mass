@@ -509,6 +509,49 @@ const EXCHANGE_LEVEL_KEYS = new Set([
 ]);
 
 /**
+ * Global sub-objects that must NEVER be merged into per-fund configs.
+ * They carry secrets (notifications.telegram.botToken) or unrelated global
+ * settings (sentinel, backup, aggressivenessPresets), and fund configs are
+ * returned verbatim by API routes (e.g. legacy GET /api/config on an
+ * unauthenticated listener). Consumers that need these sub-objects read them
+ * via the dedicated accessors: getNotificationConfig, getSentinelConfig,
+ * getBackupConfig, getAggressivenessPresets.
+ */
+const GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG = Object.freeze([
+  'notifications',
+  'sentinel',
+  'backup',
+  'aggressivenessPresets',
+]);
+
+/**
+ * Copy of `global` with the secret-bearing/excluded sub-objects removed,
+ * safe to spread into a fund config.
+ * @param {Object|undefined} globalConfig
+ * @returns {Object}
+ */
+const omitExcludedGlobals = (globalConfig) => {
+  const safe = { ...(globalConfig || {}) };
+  for (const key of GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG) delete safe[key];
+  return safe;
+};
+
+/**
+ * Mask a secret for display: first 6 chars + '...' + last 4 chars.
+ * @param {string} [secret]
+ * @returns {string}
+ */
+const maskSecret = (secret) => secret ? `${secret.slice(0, 6)}...${secret.slice(-4)}` : '';
+
+/**
+ * Detect a previously-masked secret being echoed back by a client
+ * (round-trip guard). Real Telegram bot tokens never contain '...'.
+ * @param {*} value
+ * @returns {boolean}
+ */
+const isMaskedSecret = (value) => typeof value === 'string' && value.includes('...');
+
+/**
  * Normalize an exchange block to its `{ pairs, ...exchangeLevelFields }` form.
  * If the block is in legacy flat format, synthesizes `pairs[productId]` from
  * the flat fund-level fields. The original block is NOT mutated.
@@ -608,7 +651,7 @@ const getFundConfig = (exchange, pair) => {
 
   const merged = {
     ...DEFAULTS,
-    ...config.global,
+    ...omitExcludedGlobals(config.global),
     ...fundBlock,
   };
 
@@ -1407,4 +1450,8 @@ module.exports = {
   // Currency parsing
   getBaseCurrency,
   getQuoteCurrency,
+  // Secret handling
+  GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG,
+  maskSecret,
+  isMaskedSecret,
 };
