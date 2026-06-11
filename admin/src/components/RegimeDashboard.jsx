@@ -685,23 +685,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }, [status?.config])
 
-  // Refresh the Filled Orders table when a fill lands. fetchFills otherwise ran
-  // only on mount + manual actions, so the realized-P&L bar and cycle groupings
-  // went stale while the engine traded live — visibly disagreeing with the
-  // socket-driven Position card. Key on the position markers that change on a
-  // buy or sell fill; debounce so a burst of partial-fill status emits triggers
-  // a single refetch (#111).
-  const fillMarker = `${status?.position?.cyclesCompleted ?? ''}:${status?.position?.cycleBuys ?? ''}:${status?.position?.realizedPnL ?? ''}:${status?.position?.realizedAssetPnL ?? ''}`
-  const fillRefreshRef = useRef(null)
-  useEffect(() => {
-    // Skip the very first run (mount already fetched fills).
-    if (fillRefreshRef.current === null) { fillRefreshRef.current = fillMarker; return }
-    if (fillRefreshRef.current === fillMarker) return
-    fillRefreshRef.current = fillMarker
-    const t = setTimeout(() => { fetchFills() }, 1500)
-    return () => clearTimeout(t)
-  }, [fillMarker, fetchFills])
-
   // Compute filtered fills for display based on cycle toggle
   const filteredFills = useMemo(() => {
     if (!liveFills || liveFills.length === 0) {
@@ -777,6 +760,24 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       setLiveFills(data.fills || [])
     }
   }, [exchange])
+
+  // Refresh the Filled Orders table when a fill lands. fetchFills otherwise ran
+  // only on mount + manual actions, so the realized-P&L bar and cycle groupings
+  // went stale while the engine traded live — visibly disagreeing with the
+  // socket-driven Position card. Key on the position markers that change on a
+  // buy or sell fill; debounce so a burst of partial-fill status emits triggers
+  // a single refetch (#111). Declared AFTER fetchFills to avoid a TDZ
+  // ReferenceError on the dep array at render (#111 review).
+  const fillMarker = `${status?.position?.cyclesCompleted ?? ''}:${status?.position?.cycleBuys ?? ''}:${status?.position?.realizedPnL ?? ''}:${status?.position?.realizedAssetPnL ?? ''}`
+  const fillRefreshRef = useRef(null)
+  useEffect(() => {
+    // Skip the very first run (mount already fetched fills).
+    if (fillRefreshRef.current === null) { fillRefreshRef.current = fillMarker; return }
+    if (fillRefreshRef.current === fillMarker) return
+    fillRefreshRef.current = fillMarker
+    const t = setTimeout(() => { fetchFills() }, 1500)
+    return () => clearTimeout(t)
+  }, [fillMarker, fetchFills])
 
   // Fetch cached chart data from server
   const fetchCachedChartData = useCallback(async () => {
