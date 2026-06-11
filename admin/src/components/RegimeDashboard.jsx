@@ -1826,6 +1826,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </div>
                   )}
 
+                  {recalcPreview.previewLimited && (
+                    <div className="text-xs text-gray-400 mb-2">
+                      Engine is running — preview shows the P&amp;L delta only. Orphan-fix count and per-cycle detail are computed when you Apply (or preview with the engine stopped).
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-3 gap-2 text-xs mb-3">
                     <div className="text-gray-400">Field</div>
                     <div className="text-gray-400">Before</div>
