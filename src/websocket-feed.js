@@ -265,8 +265,15 @@ const createWebSocketFeed = (exchange, config) => {
       for (const ticker of tickers) {
         if (!isMatchingProduct(ticker.product_id)) continue;
 
+        // Reject the event when price is missing/non-positive rather than
+        // coercing it to 0 — a hard 0 propagates into priceHistory, the chart
+        // buffer, and the APY calc downstream (consumers assign lastPrice with
+        // no >0 guard) (issue #110 M1).
+        const price = parseFloat(ticker.price);
+        if (!Number.isFinite(price) || price <= 0) continue;
+
         const tickerData = {
-          price: parseFloat(ticker.price || 0),
+          price,
           bid: parseFloat(ticker.best_bid || 0),
           ask: parseFloat(ticker.best_ask || 0),
           bidSize: parseFloat(ticker.best_bid_quantity || 0),
@@ -292,6 +299,10 @@ const createWebSocketFeed = (exchange, config) => {
 
       for (const trade of event.trades || []) {
         if (!isMatchingProduct(trade.product_id)) continue;
+        // Guard against a malformed trade with no side — trade.side.toLowerCase()
+        // would otherwise throw synchronously inside the ws 'message' listener,
+        // becoming an uncaughtException with no global handler (issue #110 M2).
+        if (!trade.side) continue;
 
         const tradeData = {
           tradeId: trade.trade_id,

@@ -79,7 +79,10 @@ const buildOfflineStatus = (exchange, pair) => {
     position.realizedAssetPnL = derived.realizedAssetPnL;
     position.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
   } catch (e) {
-    log.warn(`[${exchange}/${pair}] offline cycle-pair derivation failed: ${e.message}`);
+    // logger exports a plain function — log.warn is undefined and would itself
+    // throw, turning the corrupt-ledger fallback into a 500 exactly when it's
+    // needed (issue #110 M5).
+    log('WARN', `[${exchange}/${pair}] offline cycle-pair derivation failed: ${e.message}`);
   }
 
   return {
