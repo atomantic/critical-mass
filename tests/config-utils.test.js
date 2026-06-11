@@ -58,6 +58,7 @@ const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
  */
 const setupFsMocks = ({ base = null, user = null } = {}) => {
   let writtenData = null;
+  let writtenMode;
 
   // The config-utils module caches loadRawConfig() between calls keyed on
   // file mtimes. Tests mock existsSync/readFileSync but not statSync, so
@@ -81,21 +82,29 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
   // from the mocked file presence so the cache key changes with each setup.
   let mtimeCounter = 0;
   mock.method(fs, 'statSync', (filePath) => {
-    if (filePath === BASE_CONFIG_FILE && base !== null) return { mtimeMs: ++mtimeCounter };
-    if (filePath === USER_CONFIG_FILE && user !== null) return { mtimeMs: ++mtimeCounter };
+    // Include a realistic mode (0600) so saveConfig's permission-preserving
+    // atomic write reads back the operator's chosen mode under the mock.
+    if (filePath === BASE_CONFIG_FILE && base !== null) return { mtimeMs: ++mtimeCounter, mode: 0o100600 };
+    if (filePath === USER_CONFIG_FILE && user !== null) return { mtimeMs: ++mtimeCounter, mode: 0o100600 };
     const err = new Error(`ENOENT: no such file: ${filePath}`);
     err.code = 'ENOENT';
     throw err;
   });
 
-  mock.method(fs, 'writeFileSync', (_filePath, data) => {
+  mock.method(fs, 'writeFileSync', (_filePath, data, opts) => {
     writtenData = JSON.parse(data);
+    writtenMode = opts && opts.mode;
   });
+
+  // saveConfig writes atomically (tmp + rename); the tmp file never really
+  // exists under the fs mocks, so stub renameSync to a no-op.
+  mock.method(fs, 'renameSync', () => {});
 
   mock.method(fs, 'mkdirSync', () => {});
 
   return {
     written: () => writtenData,
+    writtenMode: () => writtenMode,
   };
 };
 
@@ -544,6 +553,21 @@ describe('saveConfig', () => {
     // Unchanged fields should NOT be in the diff
     assert.equal(written.exchanges?.coinbase?.productId, undefined);
     assert.equal(written.global, undefined);
+  });
+
+  it('preserves the existing config file permission mode on the atomic write', () => {
+    // statSync mock reports the existing file as 0600 — saveConfig must write
+    // the tmp file with that mode so an operator-locked-down config (it can
+    // hold secrets) isn't widened to default 0644 on save (#110 review).
+    const mocks = setupFsMocks({ base: { global: { schedulerInterval: 1 } }, user: { global: { schedulerInterval: 2 } } });
+    saveConfig({ global: { schedulerInterval: 3 } });
+    assert.equal(mocks.writtenMode() & 0o777, 0o600, 'atomic write must preserve the existing 0600 mode');
+  });
+
+  it('uses a restrictive 0600 mode for a brand-new config file', () => {
+    const mocks = setupFsMocks({ base: { global: { schedulerInterval: 1 } }, user: null });
+    saveConfig({ global: { schedulerInterval: 3 } });
+    assert.equal(mocks.writtenMode() & 0o777, 0o600, 'new config file must be created 0600 (may hold secrets)');
   });
 
   it('writes empty object when config matches base exactly', () => {

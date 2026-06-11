@@ -25,6 +25,14 @@ const celestialHierarchy = require('./celestial-hierarchy');
 // Store active market data services keyed by `${exchange}::${pair}`
 const marketDataServices = new Map();
 
+// In-flight start() promises keyed the same way. startMarketDataService does a
+// check-then-await-then-set, so two overlapping calls (e.g. the engine startup
+// loop's fire-and-forget start vs the regime:stop handler's start) could both
+// pass the has() check and both create a service — the loser overwritten in the
+// map and leaked forever (live WS feed + 60s interval + a second fillLedger
+// whose persist() fights the winner). De-duping on this map closes the gap.
+const startingMarketDataServices = new Map();
+
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
 const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 
@@ -1752,6 +1760,11 @@ const startMarketDataService = async (exchange, pair) => {
   if (marketDataServices.has(key)) {
     return { success: true, message: 'Already running' };
   }
+  // Coalesce concurrent starts onto a single in-flight promise so the
+  // check-then-act window can't spawn two services for the same fund.
+  if (startingMarketDataServices.has(key)) {
+    return startingMarketDataServices.get(key);
+  }
 
   // service.start() → createFillLedger → load() can throw on cold-start
   // corruption. The throw happens inside start(), not the factory — so
@@ -1760,14 +1773,22 @@ const startMarketDataService = async (exchange, pair) => {
   // regime:stop IPC handler that starts a standalone service for
   // handover) get a graceful failure they can decide on instead of an
   // unhandled rejection that aborts their flow.
-  const service = createMarketDataService(exchange, pair);
-  const result = await service.start();
+  const startPromise = (async () => {
+    const service = createMarketDataService(exchange, pair);
+    const result = await service.start();
+    if (result.success) {
+      marketDataServices.set(key, service);
+    } else {
+      // Failed start must not leak its WS feed / interval timers.
+      service.stop?.();
+    }
+    return result;
+  })().finally(() => {
+    startingMarketDataServices.delete(key);
+  });
 
-  if (result.success) {
-    marketDataServices.set(key, service);
-  }
-
-  return result;
+  startingMarketDataServices.set(key, startPromise);
+  return startPromise;
 };
 
 /**
