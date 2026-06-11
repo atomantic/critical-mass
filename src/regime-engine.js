@@ -611,8 +611,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const derived = fillLedger.getDerivedRealizedPnL();
     positionState.realizedPnL = derived.realizedPnL;
     positionState.realizedAssetPnL = derived.realizedAssetPnL;
-    // Cost basis of currently-held bot position (open buys not yet linked to
-    // a fired TP). Used by APY calc for unrealized P&L of body assets:
+    // Cost basis of currently-held bot position (buys whose linked sell order
+    // has not filled — sellOrderId alone means a TP was *placed*, not fired).
+    // Used by APY calc for unrealized P&L of body assets:
     //   unrealizedReturn = body_qty × current_price − heldAssetCostBasis.
     // Reserves are zero-cost; their full mark-to-market value is profit.
     positionState.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
@@ -1882,9 +1883,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     isRunning = true;
 
-    // Start Gemini heartbeat to prevent order auto-cancellation
+    // Start Gemini heartbeat to prevent order auto-cancellation.
+    // Owner key: the adapter is a per-exchange singleton shared across funds,
+    // and its heartbeat is refcounted per owner so stopping one fund cannot
+    // kill another fund's heartbeat.
     if (!isDryRun && adapter.startHeartbeat) {
-      adapter.startHeartbeat();
+      adapter.startHeartbeat(fundLabel);
     }
 
     console.log(`✅ [${exchange}] ${modeLabel}Regime engine started`);
@@ -1961,9 +1965,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     }
 
-    // Stop heartbeat
-    if (adapter.stopHeartbeat) {
-      adapter.stopHeartbeat();
+    // Deregister this fund from the shared heartbeat (the adapter only
+    // clears the timer when no other fund still needs it). Mirrors the
+    // !isDryRun condition in start() so a dry-run engine can never
+    // deregister a live fund's heartbeat.
+    if (!isDryRun && adapter.stopHeartbeat) {
+      adapter.stopHeartbeat(fundLabel);
     }
 
     // Stop intervals first
@@ -2543,15 +2550,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           ...(isPartial && { partialFill: true }),
         });
 
-        // Link source buy fills to this sell order for buy→sell display linkage
-        const annotatedSrcIds = new Set();
-        for (const srcId of (body.sourceOrderIds || [])) {
-          fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: fillData.orderId });
-          annotatedSrcIds.add(srcId);
-        }
-        for (const buyOrder of (body.buyOrders || [])) {
-          if (buyOrder.orderId !== 'core-migration' && !annotatedSrcIds.has(buyOrder.orderId)) {
-            fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: fillData.orderId });
+        // Link source buy fills to this sell order for buy→sell display linkage.
+        // Skip on partial fills: placeBodyTp above already re-linked the buys to
+        // the re-placed TP for the remainder — stamping the filled orderId here
+        // would clobber that linkage and make the remaining tranche's cost basis
+        // vanish from heldOpenBuyCostBasis until the residual TP fills.
+        if (!isPartial) {
+          const annotatedSrcIds = new Set();
+          for (const srcId of (body.sourceOrderIds || [])) {
+            fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: fillData.orderId });
+            annotatedSrcIds.add(srcId);
+          }
+          for (const buyOrder of (body.buyOrders || [])) {
+            if (buyOrder.orderId !== 'core-migration' && !annotatedSrcIds.has(buyOrder.orderId)) {
+              fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: fillData.orderId });
+            }
           }
         }
 

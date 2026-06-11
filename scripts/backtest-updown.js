@@ -22,6 +22,7 @@ const path = require('path')
 const { getAdapter } = require('../src/adapters')
 const { createCandleAggregator, TIMEFRAMES } = require('../src/candle-aggregator')
 const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
+const { getCacheFile } = require('../src/backtest-engine')
 const { DATA_DIR } = require('../src/paths')
 
 const coinbase = getAdapter('coinbase')
@@ -165,8 +166,7 @@ async function loadOrFetch1mCandles(fromMs, toMs) {
 /**
  * Load candle data from an existing cache file (for daily/weekly).
  */
-function loadCandlesFromFile(filename) {
-  const filepath = path.join(COINBASE_DIR, filename)
+function loadCandlesFromFile(filepath) {
   if (!fs.existsSync(filepath)) return []
   const data = JSON.parse(fs.readFileSync(filepath, 'utf-8'))
   return (data.prices || []).map(p => ({
@@ -221,11 +221,25 @@ function preAggregateAll(candles1m) {
     result[tf] = aggregateToHigherTF(candles1m, TF_MS[tf])
   }
 
-  // Daily: try cache first, fall back to derivation
-  const dailyCache = loadCandlesFromFile('btc-price-cache-daily.json')
-  if (dailyCache.length > 30) {
+  // Daily: try cache first, fall back to derivation.
+  // Use the same path helper that backtest-engine uses to WRITE the cache
+  // (btc-usdc-price-cache-daily.json) — a hardcoded 'btc-price-cache-daily.json'
+  // here previously never matched, silently disabling daily-SMA features.
+  // Accept the cache ONLY when it both has enough history (>30 rows) AND covers
+  // the backtest window — i.e. its last daily candle reaches within one day of
+  // the 1m data's end. A stale cache (last candle well before the 1m range end)
+  // would otherwise freeze 1d/1w signals for the whole run; in that case derive
+  // from the freshly-loaded 1m data, which always covers the window.
+  const dailyCache = loadCandlesFromFile(getCacheFile('daily', 'coinbase', 'BTC-USDC'))
+  const lastTickTs = candles1m.length > 0 ? candles1m[candles1m.length - 1].timestamp : 0
+  const cacheLastTs = dailyCache.length > 0 ? dailyCache[dailyCache.length - 1].timestamp : 0
+  const cacheCoversWindow = cacheLastTs >= lastTickTs - TF_MS['1d']
+  if (dailyCache.length > 30 && cacheCoversWindow) {
     result['1d'] = dailyCache
   } else {
+    if (dailyCache.length > 30 && !cacheCoversWindow) {
+      console.log(`⚠️  Daily cache is stale (last ${new Date(cacheLastTs).toISOString().slice(0, 10)} vs window end ${new Date(lastTickTs).toISOString().slice(0, 10)}) — deriving daily candles from 1m data instead`)
+    }
     result['1d'] = aggregateToHigherTF(candles1m, TF_MS['1d'])
   }
 
@@ -272,14 +286,22 @@ function findLastIndex(candles, targetTs) {
 // ─── Seeding ─────────────────────────────────────────────
 
 /**
- * Seed the aggregator with candles up to evalTs for all TFs.
+ * Seed the aggregator with COMPLETED candles up to evalTs for all TFs.
+ *
+ * Live parity: candle-aggregator getCandles() only ever returns completed
+ * candles — the in-progress bucket lives in getCurrentCandle() and is never
+ * visible to the signal engine. A bucket's timestamp is its START, so a
+ * bucket is completed only when its END (timestamp + tfMs) <= evalTs.
+ * Seeding by start (timestamp <= evalTs) leaked up to 59min (1h), ~24h (1d),
+ * or ~7d (1w) of future high/low/close into every signal — lookahead bias.
  */
 function seedUpTo(aggregator, tfCandles, evalTs) {
   for (const tf of ALL_SIGNAL_TFS) {
     const candles = tfCandles[tf]
     if (!candles || candles.length === 0) continue
 
-    const lastIdx = findLastIndex(candles, evalTs)
+    // timestamp + TF_MS[tf] <= evalTs  ⟺  timestamp <= evalTs - TF_MS[tf]
+    const lastIdx = findLastIndex(candles, evalTs - TF_MS[tf])
     if (lastIdx < 0) continue
 
     const maxC = MAX_CANDLES[tf] || 200
@@ -345,11 +367,16 @@ function runSimulation(candles1m, tfCandles, config) {
       const ts = candle.timestamp
       const price = candle.close
 
-      // Patch Date.now to eval timestamp
-      Date.now = () => ts
+      // Decision time = the 1m candle's END. In live trading the signal fires
+      // on the tick that completes this candle, so its close is known and the
+      // candle itself is in the completed buffer — but nothing newer is.
+      const decisionTs = ts + TF_MS['1m']
 
-      // Seed aggregator with data up to this point
-      seedUpTo(aggregator, tfCandles, ts)
+      // Patch Date.now to the decision timestamp
+      Date.now = () => decisionTs
+
+      // Seed aggregator with completed candles only (no in-progress buckets)
+      seedUpTo(aggregator, tfCandles, decisionTs)
 
       // Compute signal
       const result = engine.computeSignals(null, null)
@@ -561,6 +588,7 @@ async function main() {
   // 5. Output results
   const evalCandleCount = candles1m.filter(c => c.timestamp >= evalStartMs).length
   console.log('\n=== UpDown Backtest Results ===')
+  console.log('  NOTE: results model ZERO fees/spread/premium — directional signal quality only, not net profitability.')
   console.log(`  Period: ${new Date(evalStartMs).toISOString().slice(0, 10)} to ${new Date(evalEndMs).toISOString().slice(0, 10)} (${EVAL_DAYS} days)`)
   console.log(`  Warmup: ${WARMUP_DAYS} days | Candles: ${evalCandleCount.toLocaleString()}`)
   console.log('')
@@ -629,6 +657,7 @@ async function main() {
   // Summary JSON
   const summaryPath = path.join(BACKTEST_DIR, `backtest-summary-${dateStr}.json`)
   fs.writeFileSync(summaryPath, JSON.stringify({
+    note: 'Results model zero fees/spread/premium — directional signal quality only, not net profitability.',
     config: {
       evalDays: EVAL_DAYS,
       warmupDays: WARMUP_DAYS,
@@ -646,7 +675,11 @@ async function main() {
   console.log(`Summary: ${summaryPath}`)
 }
 
-main().catch(err => {
-  console.error('Backtest failed:', err.message)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Backtest failed:', err.message)
+    process.exit(1)
+  })
+}
+
+module.exports = { seedUpTo, findLastIndex, TF_MS }
