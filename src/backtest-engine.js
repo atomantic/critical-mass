@@ -773,5 +773,6 @@ const runBacktest = async (params, preFetchedPrices = null) => {
 module.exports = {
   runBacktest,
   getPriceData,
-  fetchPriceData
+  fetchPriceData,
+  getCacheFile
 };
