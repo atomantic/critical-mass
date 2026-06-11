@@ -414,6 +414,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     : null;
 
   let isRunning = false;
+  let isStarting = false; // reentrancy guard for start() (#113)
   let wsFeed = null;
   let metricsInterval = null;
   let reconcileInterval = null;
@@ -1017,10 +1018,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {Promise<{success: boolean, error?: string}>}
    */
   const start = async () => {
-    if (isRunning) {
-      console.log(`⚠️ [${exchange}] ${modeLabel}Regime engine already running`);
+    if (isRunning || isStarting) {
+      console.log(`⚠️ [${exchange}] ${modeLabel}Regime engine already ${isRunning ? 'running' : 'starting'}`);
       return { success: false, error: 'Engine already running' };
     }
+    // isRunning is only set true near the END of start() (after recovery + order
+    // checks), so two near-simultaneous start() calls (API double-tap) could
+    // both pass the isRunning guard and spin up duplicate intervals/WS feeds/
+    // SIGUSR1 handlers/TPs. isStarting closes that window without disturbing the
+    // recovery path that relies on isRunning being false until ready (#113).
+    isStarting = true;
 
     console.log(`🚀 [${exchange}] ${modeLabel}Starting regime engine for ${productId}`);
 
@@ -1853,6 +1860,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             }
           });
         }
+        isStarting = false;
         return { success: true, autoClosed: true };
       }
     }
@@ -1881,6 +1889,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     isRunning = true;
+    isStarting = false;
 
     // Start Gemini heartbeat to prevent order auto-cancellation
     if (!isDryRun && adapter.startHeartbeat) {
@@ -1942,6 +1951,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
         position: { ...positionState },
         tpOptimizer: tpOptimizer.exportState(),
+        // Include sizeOptimizer so dry-run restarts don't lose sizing
+        // adjustments (saveDryRunState persists it; forceSave omitted it) (#113).
+        sizeOptimizer: sizeOptimizer.exportState(),
       }, pair);
     } else {
       // Save live state on shutdown

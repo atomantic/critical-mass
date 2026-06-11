@@ -514,8 +514,11 @@ const normalizeExchangeBlock = (exchangeBlock) => {
     return { pairs: {} };
   }
   if (exchangeBlock.pairs && typeof exchangeBlock.pairs === 'object') {
-    // Already in nested form — return shallow copy with pairs preserved
-    return exchangeBlock;
+    // Already in nested form — return an actual shallow copy (the comment said
+    // "shallow copy" but returned the live object). updateFundConfig mutates
+    // normalized.pairs[pair] in place; on the live cache object that diverges
+    // the in-memory cache from disk if the subsequent saveConfig throws (#113).
+    return { ...exchangeBlock, pairs: { ...exchangeBlock.pairs } };
   }
   // Legacy flat → synthesize a single-fund pairs map
   const productId = exchangeBlock.productId || DEFAULTS.productId;
