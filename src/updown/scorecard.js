@@ -282,7 +282,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     // (1m/5m/15m/1h), so emitting contractOutcome on every window made
     // getMetrics count one prediction's contract result up to 4× (and it could
     // score win at 5m yet loss at 1h for the same contract) (issue #108).
-    const isLongestWindow = windowMs === EVAL_WINDOWS[EVAL_WINDOWS.length - 1]
+    // Use Math.max (not [length-1]) so this stays correct if EVAL_WINDOWS is
+    // ever reordered — the longest window is the contract horizon regardless.
+    const isLongestWindow = windowMs === Math.max(...EVAL_WINDOWS)
     const contractOutcome = (prediction.contract && isLongestWindow)
       ? evaluateContractOutcome(prediction.contract, exitPrice)
       : null
