@@ -26,6 +26,12 @@ export function useChartDataBuffer(status) {
   const [atrHistory, setAtrHistory] = useState([])
   const [regimeHistory, setRegimeHistory] = useState([])
   const [initialized, setInitialized] = useState(false)
+  // Ref mirror of `initialized` so initializeFromCache can guard against
+  // re-init without taking `initialized` as a dep — otherwise the callback's
+  // identity flips on first run, cascading through fetchCachedChartData → the
+  // load effect, which re-runs all 5 fetches and flashes the loading state
+  // every mount (#111).
+  const initializedRef = useRef(false)
 
   const lastSampleTimeRef = useRef(0)
   // Accumulation refs — mutated on every tick, flushed to state periodically
@@ -128,12 +134,13 @@ export function useChartDataBuffer(status) {
     setPriceHistory([])
     setAtrHistory([])
     setRegimeHistory([])
+    initializedRef.current = false
     setInitialized(false)
   }, [])
 
   // Initialize from cached server data
   const initializeFromCache = useCallback((cachedData) => {
-    if (!cachedData || initialized) return
+    if (!cachedData || initializedRef.current) return
 
     const now = Date.now()
     const cutoff = now - MAX_RETENTION_MS
@@ -155,8 +162,9 @@ export function useChartDataBuffer(status) {
     setRegimeHistory([...regimeRef.current])
     dirtyRef.current = false
 
+    initializedRef.current = true
     setInitialized(true)
-  }, [initialized])
+  }, [])
 
   return {
     priceHistory,

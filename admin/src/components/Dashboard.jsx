@@ -455,7 +455,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                 </thead>
                 <tbody>
                   {(state.orders || []).filter(o => o.status === 'pending').sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).map((order, i) => (
-                    <tr key={i} className="border-t border-gray-700">
+                    <tr key={order.orderId || order.buyOrderId || i} className="border-t border-gray-700">
                       <td className="py-2 whitespace-nowrap">{new Date(order.createdAt).toISOString().replace('T', ' ').slice(0, 19)}</td>
                       <td className="py-2 whitespace-nowrap">{formatPrice(order.buyPrice)}</td>
                       <td className="py-2 whitespace-nowrap">{formatPrice(order.sellPrice)}</td>
