@@ -414,19 +414,17 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     } else if (order.type === 'body_tp') {
       simulatedTotalSold += order.size;
 
-      // Look up body tracking info for cost basis.
-      // NOTE: bodyInfo.costBasis is initialized as roundedQty * TP price (not
-      // the body's ENTRY price), so avgBuyPrice here is effectively the TP
-      // price and `pnl` is a placeholder, not a faithful realized P&L. Applying
-      // a per-side sell fee on top of that broken basis would make capital
-      // DECREASE by the fee instead of realizing profit — so we deliberately do
-      // NOT fee-adjust this branch. The dry-run body cost-basis model needs to
-      // carry the real entry cost first; tracked in issue #133. (The entry /
-      // legacy take_profit branches, which use real entry cost, ARE fee-adjusted.)
+      // Look up body tracking info for cost basis. bodyInfo.costBasis is now the
+      // body's real fee-inclusive ENTRY cost (set in placeBodyTpOrder, #133), so
+      // avgBuyPrice already carries the buy-side fee. We can therefore fee-adjust
+      // the sell proceeds too — mirroring live's `proceeds = quoteAmount - netFee`
+      // — for full round-trip fee parity (both legs accounted).
+      const feeRate = config.feeRate ?? 0.001; // ?? honors an explicit 0 (zero-fee dry run)
       const bodyInfo = getBodyByTpOrderId(orderId);
       const avgBuyPrice = bodyInfo ? (bodyInfo.costBasis / bodyInfo.assetQty) : getAverageEntryPrice();
       const costBasis = order.size * avgBuyPrice;
-      const proceeds = order.size * fillPrice;
+      const grossProceeds = order.size * fillPrice;
+      const proceeds = grossProceeds - (grossProceeds * feeRate);
       const pnl = proceeds - costBasis;
       simulatedBodyRealizedPnL += pnl;
 
@@ -616,11 +614,20 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     };
 
     pendingOrders.set(orderId, order);
+    // Cost basis must reflect the body's real ENTRY cost (gross of fees was the
+    // bug in #133). Mirror the live engine's `body.costBasis = quoteAmount +
+    // netFee`: derive entry notional from the average filled-buy price and fold
+    // in the per-side entry fee. Falls back to the TP price only when no buy
+    // fills exist yet (e.g. core migration), since there's no entry to price.
+    const feeRate = config.feeRate ?? 0.001; // ?? honors an explicit 0 (zero-fee dry run)
+    const avgEntryPrice = getAverageEntryPrice() || roundedPrice;
+    const entryNotional = roundedQty * avgEntryPrice;
+    const costBasis = entryNotional + (entryNotional * feeRate);
     bodyTpOrders.set(bodyId, {
       tpOrderId: orderId,
       assetQty: roundedQty,
       tpPrice: roundedPrice,
-      costBasis: roundedQty * roundedPrice,
+      costBasis,
     });
 
     console.log(`🧪 [${exchange}] [DRY-RUN] Body TP placed: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
