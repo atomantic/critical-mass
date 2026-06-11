@@ -210,7 +210,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         if (retryCount < maxRetries) {
           console.log(`🔄 [${exchange}] Retrying with fresh prices (retry ${retryCount + 1}/${maxRetries})`);
           const freshPrices = await adapter.getBidAsk(productId);
-          return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1);
+          // Preserve the dynamic (momentum-adjusted) offset across retries —
+          // dropping the 5th arg silently reverts to config.entryOffsetBps.
+          return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps);
         }
 
         return {
@@ -233,7 +235,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       console.log(`🔄 [${exchange}] Post-only rejected (market moved), fetching fresh prices (retry ${retryCount + 1}/${maxRetries})`);
 
       const freshPrices = await adapter.getBidAsk(productId);
-      return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1);
+      // Preserve the dynamic offset across retries (see note above).
+      return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps);
     }
 
     console.log(`❌ [${exchange}] Entry bid failed: ${result.errorMessage || 'unknown error'} (${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)})`);
@@ -253,96 +256,97 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @returns {Promise<{success: boolean, orderId?: string, updated?: boolean, filledDuringCancel?: boolean, filledOrderId?: string, errorMessage?: string}>}
    */
   const placeTakeProfitOrder = async (assetQty, tpPrice, options = {}) => {
-    // Serialize concurrent TP updates to prevent duplicate sells
+    // Serialize concurrent TP updates to prevent duplicate sells.
+    // try/finally guarantees release even if cancelTpOrder() or the
+    // non-POST_ONLY_REJ rethrow below throws — otherwise the lock leaks and
+    // (until the mutex auto-release) every later TP placement stalls.
     const release = await tpMutex.acquire();
+    try {
+      // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
+      if (!options.forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
+        const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
+        const sizeChange = Math.abs(assetQty - lastTpSize) / lastTpSize * 100;
+        // Update if neither price nor size changed significantly
+        if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
+          return {
+            success: true,
+            orderId: activeTpOrderId,
+            updated: false, // No update needed
+          };
+        }
+      }
 
-    // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
-    if (!options.forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
-      const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
-      const sizeChange = Math.abs(assetQty - lastTpSize) / lastTpSize * 100;
-      // Update if neither price nor size changed significantly
-      if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
-        release();
+      // Cancel existing TP order if present
+      if (activeTpOrderId) {
+        const oldTpId = activeTpOrderId;
+        const cancelResult = await cancelTpOrder();
+
+        if (cancelResult.filled) {
+          // Old TP filled in-flight — abort new TP placement, signal caller
+          return {
+            success: false,
+            filledDuringCancel: true,
+            filledOrderId: cancelResult.filledOrderId,
+            errorMessage: `TP ${oldTpId} filled during cancel`,
+          };
+        }
+
+        if (!cancelResult.cancelled) {
+          console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, keeping it tracked to avoid duplicate sells`);
+          return {
+            success: false,
+            errorMessage: `Cannot place new TP: failed to cancel existing TP order ${oldTpId}`,
+          };
+        }
+      }
+
+      const roundedPrice = roundPrice(tpPrice, priceIncrement);
+      const roundedQty = roundAsset(assetQty);
+
+      console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
+
+      let result;
+      try {
+        result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
+      } catch (err) {
+        // POST_ONLY_REJ means TP price is below current bid — price already passed TP level.
+        // Retry without POST_ONLY so the order fills immediately as a taker.
+        if (err.message && err.message.includes('POST_ONLY_REJ')) {
+          console.log(`⚡ [${exchange}] TP price ${fmtPrice(roundedPrice)} below bid — retrying as taker order`);
+          result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
+        } else {
+          throw err;
+        }
+      }
+
+      if (result.success) {
+        console.log(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
+        activeTpOrderId = result.orderId;
+        lastTpPrice = roundedPrice;
+        lastTpSize = roundedQty;
+
+        pendingOrders.set(result.orderId, {
+          type: 'take_profit',
+          price: roundedPrice,
+          size: roundedQty,
+          sizeUsdc: roundedQty * roundedPrice,
+          placedAt: Date.now(),
+        });
+
         return {
           success: true,
-          orderId: activeTpOrderId,
-          updated: false, // No update needed
-        };
-      }
-    }
-
-    // Cancel existing TP order if present
-    if (activeTpOrderId) {
-      const oldTpId = activeTpOrderId;
-      const cancelResult = await cancelTpOrder();
-
-      if (cancelResult.filled) {
-        // Old TP filled in-flight — abort new TP placement, signal caller
-        release();
-        return {
-          success: false,
-          filledDuringCancel: true,
-          filledOrderId: cancelResult.filledOrderId,
-          errorMessage: `TP ${oldTpId} filled during cancel`,
+          orderId: result.orderId,
+          updated: true,
         };
       }
 
-      if (!cancelResult.cancelled) {
-        console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, keeping it tracked to avoid duplicate sells`);
-        release();
-        return {
-          success: false,
-          errorMessage: `Cannot place new TP: failed to cancel existing TP order ${oldTpId}`,
-        };
-      }
-    }
-
-    const roundedPrice = roundPrice(tpPrice, priceIncrement);
-    const roundedQty = roundAsset(assetQty);
-
-    console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
-
-    let result;
-    try {
-      result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
-    } catch (err) {
-      // POST_ONLY_REJ means TP price is below current bid — price already passed TP level.
-      // Retry without POST_ONLY so the order fills immediately as a taker.
-      if (err.message && err.message.includes('POST_ONLY_REJ')) {
-        console.log(`⚡ [${exchange}] TP price ${fmtPrice(roundedPrice)} below bid — retrying as taker order`);
-        result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
-      } else {
-        throw err;
-      }
-    }
-
-    if (result.success) {
-      console.log(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
-      activeTpOrderId = result.orderId;
-      lastTpPrice = roundedPrice;
-      lastTpSize = roundedQty;
-
-      pendingOrders.set(result.orderId, {
-        type: 'take_profit',
-        price: roundedPrice,
-        size: roundedQty,
-        sizeUsdc: roundedQty * roundedPrice,
-        placedAt: Date.now(),
-      });
-
-      release();
       return {
-        success: true,
-        orderId: result.orderId,
-        updated: true,
+        success: false,
+        errorMessage: result.errorMessage || 'TP order placement failed',
       };
+    } finally {
+      release();
     }
-
-    release();
-    return {
-      success: false,
-      errorMessage: result.errorMessage || 'TP order placement failed',
-    };
   };
 
   /**
@@ -527,10 +531,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   const checkPendingOrderFills = async () => {
     let filled = 0;
     let cancelled = 0;
+    let polled = 0; // count of order-status round-trips that actually succeeded
 
     for (const [orderId, order] of pendingOrders) {
       const status = await adapter.getOrder(orderId).catch(() => null);
       if (!status) continue;
+      polled++; // a non-null status proves the order-status REST path is alive
 
       const normalizedStatus = (status.status || '').toUpperCase();
 
@@ -562,7 +568,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
     }
 
-    return { filled, cancelled };
+    return { filled, cancelled, polled };
   };
 
   /**
@@ -725,20 +731,22 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Get pending orders count by type
-   * @returns {{entries: number, takeProfits: number, bodies: number, total: number}}
+   * @returns {{entries: number, ladderEntries: number, takeProfits: number, bodies: number, total: number}}
    */
   const getPendingCounts = () => {
     let entries = 0;
+    let ladderEntries = 0;
     let takeProfits = 0;
     let bodies = 0;
 
     for (const order of pendingOrders.values()) {
       if (order.type === 'entry') entries++;
+      else if (order.type === 'ladder_entry') ladderEntries++;
       else if (order.type === 'take_profit') takeProfits++;
       else if (order.type === 'body_tp') bodies++;
     }
 
-    return { entries, takeProfits, bodies, total: pendingOrders.size };
+    return { entries, ladderEntries, takeProfits, bodies, total: pendingOrders.size };
   };
 
   /**

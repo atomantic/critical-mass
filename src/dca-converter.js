@@ -33,10 +33,17 @@ const categorizeOrders = (orders) => {
       continue;
     }
 
-    if (order.status === 'pending') {
+    // 'awaiting_sell' / 'sell_failed' represent a REAL filled buy whose sell is
+    // not yet (or never) placed — the asset is held with an open obligation,
+    // exactly like a 'pending' open-sell. Bucket them as pending so the
+    // conversion migrates their buy cost/qty instead of silently dropping a
+    // real position (issue #106 follow-up).
+    if (order.status === 'pending' || order.status === 'awaiting_sell' || order.status === 'sell_failed') {
       pending.push(order);
     } else if (order.status === 'filled') {
       filled.push(order);
+    } else {
+      skipped++;
     }
   }
 
@@ -519,6 +526,7 @@ const mergeToRegime = (exchange) => {
 };
 
 module.exports = {
+  categorizeOrders,
   previewConversion,
   executeConversion,
   mergeToRegime,

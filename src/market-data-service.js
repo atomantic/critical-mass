@@ -25,6 +25,14 @@ const celestialHierarchy = require('./celestial-hierarchy');
 // Store active market data services keyed by `${exchange}::${pair}`
 const marketDataServices = new Map();
 
+// In-flight start() promises keyed the same way. startMarketDataService does a
+// check-then-await-then-set, so two overlapping calls (e.g. the engine startup
+// loop's fire-and-forget start vs the regime:stop handler's start) could both
+// pass the has() check and both create a service — the loser overwritten in the
+// map and leaked forever (live WS feed + 60s interval + a second fillLedger
+// whose persist() fights the winner). De-duping on this map closes the gap.
+const startingMarketDataServices = new Map();
+
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
 const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 
@@ -502,6 +510,7 @@ const createMarketDataService = (exchange, pair) => {
     vwap: 0,
     vwapDistance: 0,
     recentSwing: 0,
+    momentum: { magnitude: 0, direction: 'neutral' },
     lastUpdate: 0,
   };
 
@@ -756,15 +765,11 @@ const createMarketDataService = (exchange, pair) => {
       priceHistory.shift();
     }
 
-    // Update regime detector with new price
+    // Classify regime with the latest price + metrics. Same call shape as
+    // the live engine (regime-engine.js updateMetrics): classify(marketState)
+    // reads lastPrice/atr1m/realizedVol/volBaseline/vwap directly.
     if (regimeDetector && marketState.atr1m > 0) {
-      regimeDetector.update({
-        lastPrice: data.price,
-        atr1m: marketState.atr1m,
-        realizedVol: marketState.realizedVol,
-        volBaseline: marketState.volBaseline,
-        vwapDistance: marketState.vwapDistance,
-      });
+      regimeDetector.classify(marketState);
 
       const mode = regimeDetector.getMode();
       if (mode !== regimeState.mode) {
@@ -1522,23 +1527,42 @@ const createMarketDataService = (exchange, pair) => {
       adapter.getCandles(productId, fourHoursAgo, now, 'FIVE_MINUTE'),
     ]);
 
-    if (result1m.status === 'fulfilled' && result1m.value?.candles) {
-      candles1m = result1m.value.candles;
+    // Adapters return a bare Candle[] array (coinbase/gemini/cryptocom),
+    // not a { candles } wrapper.
+    if (result1m.status === 'fulfilled' && Array.isArray(result1m.value)) {
+      candles1m = result1m.value;
     }
-    if (result5m.status === 'fulfilled' && result5m.value?.candles) {
-      candles5m = result5m.value.candles;
+    if (result5m.status === 'fulfilled' && Array.isArray(result5m.value)) {
+      candles5m = result5m.value;
     }
 
-    if (candles1m?.length > 0 || candles5m?.length > 0) {
-      const metrics = calculateAllMetrics(candles1m || [], candles5m || [], marketState.lastPrice);
+    // Require BOTH candle sets before updating — vwap/atr5m/recentSwing all
+    // derive from candles5m, so proceeding with an empty 5m set (transient
+    // fetch failure) would zero vwap while atr1m stays positive, and the next
+    // ticker would classify with vwap=0 (price reads as massively above VWAP)
+    // → false CAUTION/TREND transitions. The live engine path bails entirely
+    // when either fetch fails; mirror that all-or-nothing semantics here and
+    // keep the prior metrics until the full window is available.
+    if (candles1m?.length > 0 && candles5m?.length > 0) {
+      // Mirror the live engine path (regime-engine.js updateMetrics): seed
+      // the EMA with the previous volBaseline (NOT lastPrice) and pass the
+      // regime config so atrPeriod/vwapPeriodHours overrides apply.
+      const config = getRegimeConfig(exchange, resolvedPair);
+      const metrics = calculateAllMetrics(candles1m || [], candles5m || [], marketState.volBaseline, config);
 
       marketState.atr1m = metrics.atr1m;
       marketState.atr5m = metrics.atr5m;
       marketState.realizedVol = metrics.realizedVol;
       marketState.volBaseline = metrics.volBaseline;
       marketState.vwap = metrics.vwap;
-      marketState.vwapDistance = metrics.vwapDistance;
       marketState.recentSwing = metrics.recentSwing;
+      marketState.momentum = metrics.momentum;
+
+      // calculateAllMetrics doesn't return vwapDistance — derive it locally
+      // the same way the engine does (ATR-normalized distance from VWAP).
+      if (marketState.lastPrice > 0 && marketState.atr1m > 0) {
+        marketState.vwapDistance = (marketState.lastPrice - marketState.vwap) / marketState.atr1m;
+      }
     }
   };
 
@@ -1706,9 +1730,14 @@ const createMarketDataService = (exchange, pair) => {
     // through a real factory instance without spinning up the WS feed.
     _test: {
       handleOrderUpdate,
+      handleTicker,
+      updateMetrics,
+      marketState,
+      regimeState,
       injectFillLedger: (ledger) => { fillLedger = ledger; },
       injectProductId: (id) => { productId = id; },
       injectAdapter: (a) => { _adapterOverride = a; },
+      injectRegimeDetector: (d) => { regimeDetector = d; },
       pendingTerminalRetries,
       pendingPartialRetries,
       timerTracker,
@@ -1731,6 +1760,11 @@ const startMarketDataService = async (exchange, pair) => {
   if (marketDataServices.has(key)) {
     return { success: true, message: 'Already running' };
   }
+  // Coalesce concurrent starts onto a single in-flight promise so the
+  // check-then-act window can't spawn two services for the same fund.
+  if (startingMarketDataServices.has(key)) {
+    return startingMarketDataServices.get(key);
+  }
 
   // service.start() → createFillLedger → load() can throw on cold-start
   // corruption. The throw happens inside start(), not the factory — so
@@ -1739,14 +1773,22 @@ const startMarketDataService = async (exchange, pair) => {
   // regime:stop IPC handler that starts a standalone service for
   // handover) get a graceful failure they can decide on instead of an
   // unhandled rejection that aborts their flow.
-  const service = createMarketDataService(exchange, pair);
-  const result = await service.start();
+  const startPromise = (async () => {
+    const service = createMarketDataService(exchange, pair);
+    const result = await service.start();
+    if (result.success) {
+      marketDataServices.set(key, service);
+    } else {
+      // Failed start must not leak its WS feed / interval timers.
+      service.stop?.();
+    }
+    return result;
+  })().finally(() => {
+    startingMarketDataServices.delete(key);
+  });
 
-  if (result.success) {
-    marketDataServices.set(key, service);
-  }
-
-  return result;
+  startingMarketDataServices.set(key, startPromise);
+  return startPromise;
 };
 
 /**

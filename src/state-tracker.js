@@ -228,18 +228,20 @@ const checkIfRanThisInterval = (state, intervalType) =>
   hasRunThisInterval(state.lastRunId, intervalType);
 
 /**
- * Update state after a buy order
+ * Record a confirmed buy fill before any sell order exists.
+ * Persisting this immediately after the fill — BEFORE sell placement —
+ * guarantees a sell-placement failure cannot lose the buy: totalAllocated,
+ * reserves, and lastRunId are all set here, so the next interval cannot
+ * double-buy (issue #106).
  * @param {BotState} state - Current state
  * @param {BuyResult} buyDetails - Buy order details
- * @param {SellOrder} sellOrder - Sell order details
  * @param {ExchangeConfig} config - Configuration
  * @returns {BotState} Updated state
  */
-const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
+const recordBuyFill = (state, buyDetails, config) => {
   const normalized = normalizeConfig(config);
   const holdbackAsset = buyDetails.assetAmount * (config.holdbackPercent / 100);
   const sellQuantity = buyDetails.assetAmount - holdbackAsset;
-  const expectedSellUSDC = sellQuantity * sellOrder.limitPrice;
 
   // Extract fee details (with defaults for backwards compatibility)
   const buyFees = buyDetails.fees || 0;
@@ -251,8 +253,6 @@ const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
   // Actual cost includes net fees
   state.usdcFundSize -= (buyDetails.usdcAmount + buyNetFees);
   state.assetReserves += holdbackAsset;
-  state.outstandingOrdersAsset += sellQuantity;
-  state.outstandingOrdersUSDC += expectedSellUSDC;
   state.lastRunId = getRunIdentifier(normalized.intervalType);
   state.lastRunTimestamp = Date.now();
 
@@ -262,7 +262,7 @@ const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
   state.netFees = (state.netFees || 0) + buyNetFees;
 
   state.orders.push({
-    orderId: sellOrder.orderId,
+    orderId: null,
     buyOrderId: buyDetails.orderId,
     buyPrice: buyDetails.price,
     buyQuantity: buyDetails.assetAmount,
@@ -271,14 +271,84 @@ const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
     buyRebates: buyRebates,
     buyNetFees: buyNetFees,
     buyCostBasis: buyDetails.usdcAmount + buyNetFees,
-    sellPrice: sellOrder.limitPrice,
+    sellPrice: null,
     sellQuantity: sellQuantity,
     holdbackAsset: holdbackAsset,
-    status: 'pending',
+    status: 'awaiting_sell',
     createdAt: new Date().toISOString(),
   });
 
   return state;
+};
+
+/**
+ * Find the order entry recorded by recordBuyFill that has no sell attached yet
+ * @param {BotState} state - Current state
+ * @param {string} buyOrderId - Buy order ID
+ * @returns {TrackedOrder|undefined} Matching order entry
+ */
+const findAwaitingSellOrder = (state, buyOrderId) =>
+  state.orders.find(o => o.buyOrderId === buyOrderId && o.status === 'awaiting_sell');
+
+/**
+ * Attach a successfully placed sell order to a previously recorded buy fill
+ * @param {BotState} state - Current state
+ * @param {string} buyOrderId - Buy order ID the sell covers
+ * @param {SellOrder} sellOrder - Placed sell order details
+ * @returns {BotState} Updated state
+ */
+const attachSellOrder = (state, buyOrderId, sellOrder) => {
+  const order = findAwaitingSellOrder(state, buyOrderId);
+  if (!order) {
+    console.log(`⚠️ attachSellOrder: no awaiting_sell order for buy ${buyOrderId} — sell ${sellOrder?.orderId} not linked`);
+    return state;
+  }
+
+  order.orderId = sellOrder.orderId;
+  order.sellPrice = sellOrder.limitPrice;
+  order.status = 'pending';
+  state.outstandingOrdersAsset += order.sellQuantity;
+  state.outstandingOrdersUSDC += order.sellQuantity * sellOrder.limitPrice;
+
+  return state;
+};
+
+/**
+ * Mark a recorded buy fill whose sell placement failed.
+ * Excluded from pending-order checks (status filter) but kept visible in
+ * state for operator follow-up — the buy's accounting is already recorded.
+ * @param {BotState} state - Current state
+ * @param {string} buyOrderId - Buy order ID
+ * @param {string} reason - Failure reason
+ * @returns {BotState} Updated state
+ */
+const markSellPlacementFailed = (state, buyOrderId, reason) => {
+  const order = findAwaitingSellOrder(state, buyOrderId);
+  if (!order) {
+    console.log(`⚠️ markSellPlacementFailed: no awaiting_sell order for buy ${buyOrderId} — failure not recorded (reason: ${reason})`);
+    return state;
+  }
+
+  order.status = 'sell_failed';
+  order.sellFailedReason = reason;
+  order.sellFailedAt = new Date().toISOString();
+
+  return state;
+};
+
+/**
+ * Update state after a buy order with the sell already placed (dry-run path
+ * and any caller that has both halves up front). Composes recordBuyFill +
+ * attachSellOrder so both paths share one accounting implementation.
+ * @param {BotState} state - Current state
+ * @param {BuyResult} buyDetails - Buy order details
+ * @param {SellOrder} sellOrder - Sell order details
+ * @param {ExchangeConfig} config - Configuration
+ * @returns {BotState} Updated state
+ */
+const updateAfterBuy = (state, buyDetails, sellOrder, config) => {
+  recordBuyFill(state, buyDetails, config);
+  return attachSellOrder(state, buyDetails.orderId, sellOrder);
 };
 
 /**
@@ -831,6 +901,9 @@ module.exports = {
   migrateState,
   checkAllocationRemaining,
   checkIfRanThisInterval,
+  recordBuyFill,
+  attachSellOrder,
+  markSellPlacementFailed,
   updateAfterBuy,
   updateAfterSellFill,
   updateAfterConsolidation,

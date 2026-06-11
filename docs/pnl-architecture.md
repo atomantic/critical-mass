@@ -45,7 +45,9 @@ before something interrupted) — distinct from designed holdback.
 ```
 position.realizedPnL       ← Σ per-sell bodyPnl across the fill ledger
 position.realizedAssetPnL  ← Σ per-sell bodyHoldbackAsset
-position.heldAssetCostBasis ← Σ cost over buys with no sellOrderId
+position.heldAssetCostBasis ← Σ cost over buys whose sellOrderId is absent
+                              or has no sell fills yet (sellOrderId is stamped
+                              at TP placement, not fill)
 ```
 
 All three are derived in `src/fill-ledger.js:computeRealizedFromCyclePairs()`,

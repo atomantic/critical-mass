@@ -21,6 +21,10 @@ const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils')
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
 const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
 
+// Monotonic per-process counter for unique saveConfig tmp filenames (avoids a
+// cross-process rename race on a shared fixed tmp path — see saveConfig).
+let _saveConfigTmpSeq = 0;
+
 /**
  * Deep merge two objects. Values from `override` take precedence.
  * Arrays are replaced, not concatenated.
@@ -377,7 +381,30 @@ const saveConfig = (config) => {
     : {};
   const diff = computeDiff(base, config);
   fs.mkdirSync(path.dirname(USER_CONFIG_FILE), { recursive: true });
-  fs.writeFileSync(USER_CONFIG_FILE, JSON.stringify(diff, null, 2));
+  // Atomic write (tmp + rename): a crash mid-write would otherwise leave a
+  // truncated config.json, and loadRawConfig throws on parse failure — which
+  // takes down the gateway AND every engine process at boot, with no recovery
+  // path. Inlined rather than importing state-tracker.atomicWriteSync to avoid
+  // a require cycle (state-tracker already requires config-utils) (issue #110 M7).
+  // The tmp filename is unique per writer (pid + counter) so two processes
+  // saving concurrently (e.g. an engine auto-updating regime limits while the
+  // gateway handles a settings PUT) can't rename each other's tmp file — which
+  // would ENOENT the second rename or persist the wrong payload. The rename
+  // itself is atomic, so the last writer wins cleanly (#110 M7 / review).
+  const tmpPath = `${USER_CONFIG_FILE}.${process.pid}.${++_saveConfigTmpSeq}.tmp`;
+  // Preserve the existing file's permission mode across the atomic replace.
+  // tmp+rename creates a NEW inode at the default umask mode (commonly 0644),
+  // so without this an operator who locked down config.json to 0600 (it can
+  // hold the Telegram token / other secrets) would silently get it widened to
+  // world-readable on every settings save. Fall back to 0600 for a brand-new
+  // file since it may contain secrets (#110 review).
+  let mode = 0o600;
+  try {
+    const existing = fs.statSync(USER_CONFIG_FILE).mode & 0o777;
+    if (existing) mode = existing; // keep the operator's chosen mode; ignore a 0/absent mode
+  } catch { /* new file → restrictive default */ }
+  fs.writeFileSync(tmpPath, JSON.stringify(diff, null, 2), { mode });
+  fs.renameSync(tmpPath, USER_CONFIG_FILE);
   // Bust the cache so the next read picks up our write immediately, even
   // before the OS updates mtime.
   _configCache = null;
@@ -502,6 +529,49 @@ const EXCHANGE_LEVEL_KEYS = new Set([
 ]);
 
 /**
+ * Global sub-objects that must NEVER be merged into per-fund configs.
+ * They carry secrets (notifications.telegram.botToken) or unrelated global
+ * settings (sentinel, backup, aggressivenessPresets), and fund configs are
+ * returned verbatim by API routes (e.g. legacy GET /api/config on an
+ * unauthenticated listener). Consumers that need these sub-objects read them
+ * via the dedicated accessors: getNotificationConfig, getSentinelConfig,
+ * getBackupConfig, getAggressivenessPresets.
+ */
+const GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG = Object.freeze([
+  'notifications',
+  'sentinel',
+  'backup',
+  'aggressivenessPresets',
+]);
+
+/**
+ * Copy of `global` with the secret-bearing/excluded sub-objects removed,
+ * safe to spread into a fund config.
+ * @param {Object|undefined} globalConfig
+ * @returns {Object}
+ */
+const omitExcludedGlobals = (globalConfig) => {
+  const safe = { ...(globalConfig || {}) };
+  for (const key of GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG) delete safe[key];
+  return safe;
+};
+
+/**
+ * Mask a secret for display: first 6 chars + '...' + last 4 chars.
+ * @param {string} [secret]
+ * @returns {string}
+ */
+const maskSecret = (secret) => secret ? `${secret.slice(0, 6)}...${secret.slice(-4)}` : '';
+
+/**
+ * Detect a previously-masked secret being echoed back by a client
+ * (round-trip guard). Real Telegram bot tokens never contain '...'.
+ * @param {*} value
+ * @returns {boolean}
+ */
+const isMaskedSecret = (value) => typeof value === 'string' && value.includes('...');
+
+/**
  * Normalize an exchange block to its `{ pairs, ...exchangeLevelFields }` form.
  * If the block is in legacy flat format, synthesizes `pairs[productId]` from
  * the flat fund-level fields. The original block is NOT mutated.
@@ -601,7 +671,7 @@ const getFundConfig = (exchange, pair) => {
 
   const merged = {
     ...DEFAULTS,
-    ...config.global,
+    ...omitExcludedGlobals(config.global),
     ...fundBlock,
   };
 
@@ -1400,4 +1470,8 @@ module.exports = {
   // Currency parsing
   getBaseCurrency,
   getQuoteCurrency,
+  // Secret handling
+  GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG,
+  maskSecret,
+  isMaskedSecret,
 };
