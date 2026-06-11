@@ -480,24 +480,33 @@ const createGeminiAdapter = (keysPath = null) => {
    */
   const fetchTradesSince = async (symbol, sinceTimestampMs) => {
     const PAGE_SIZE = 500;
-    const MAX_PAGES = 50;
-    const allTrades = [];
-    let timestamp = Math.floor(sinceTimestampMs / 1000);
+    const timestamp = Math.floor(sinceTimestampMs / 1000);
 
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const params = { limit_trades: PAGE_SIZE, timestamp };
-      if (symbol) params.symbol = symbol;
-      const trades = await makeRestRequest('/v1/mytrades', params);
+    // /v1/mytrades treats `timestamp` as a SINCE lower bound and returns the
+    // NEWEST trades at-or-after it, capped at limit_trades, most-recent-first
+    // (live-verified 2026-06-10: results are descending and every row >= since).
+    // symbol omitted (null) → all-symbol scan (also live-verified: HTTP 200,
+    // trades across all symbols, despite the docs implying symbol is required).
+    //
+    // Gemini exposes only a since-lower-bound — there is NO upper-bound / older-
+    // than cursor — so a forward-advancing cursor (the obvious paginate idiom)
+    // would ask for trades NEWER than ones already seen and never reach the
+    // OLDER fills near the order's creation. We therefore fetch the single
+    // newest page bounded by `since`. For a per-order fill scan since the
+    // order's own creation this covers everything unless >500 trades for the
+    // (symbol, since-now) window exist — in which case the OLDEST fills are
+    // unreachable via this endpoint. Surface that explicitly rather than
+    // silently truncating; the proper backward-paging redesign is tracked
+    // separately (see issue) since Gemini's API can't express it directly.
+    const params = { limit_trades: PAGE_SIZE, timestamp };
+    if (symbol) params.symbol = symbol;
+    const trades = await makeRestRequest('/v1/mytrades', params);
 
-      if (!Array.isArray(trades) || trades.length === 0) break;
-      allTrades.push(...trades);
-      if (trades.length < PAGE_SIZE) break;
-
-      const lastTs = Math.max(...trades.map(t => t.timestampms || (t.timestamp * 1000)));
-      timestamp = Math.floor(lastTs / 1000) + 1;
+    if (!Array.isArray(trades)) return [];
+    if (trades.length >= PAGE_SIZE) {
+      console.log(`⚠️ [gemini] mytrades hit the ${PAGE_SIZE}-trade page cap for ${symbol || 'all-symbols'} since ${new Date(sinceTimestampMs).toISOString()} — oldest fills in this window may be unreachable (Gemini exposes no older-than cursor); fill recovery for very high-volume orders may be incomplete`);
     }
-
-    return allTrades;
+    return trades;
   };
 
   /**

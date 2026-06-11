@@ -108,38 +108,48 @@ describe('gemini getOrderFills', () => {
     assert.equal(fills[0].liquidityIndicator, 'MAKER');
   });
 
-  it('paginates past the 500-trade cap and finds fills beyond the first page', async () => {
+  it('fetches a single newest-since page (Gemini has no older-than cursor) and warns on a full-page cap', async () => {
+    // Gemini's /v1/mytrades is since-lower-bound + newest-first with no
+    // older-than cursor (live-verified), so a forward-advancing cursor would
+    // ask for NEWER trades and never reach the order's older fills. The adapter
+    // therefore makes exactly ONE mytrades request bounded by the order's
+    // creation, and logs a truncation warning when a full page comes back.
     const adapter = createGeminiAdapter(keysPath);
     const createdMs = 1750000000000;
-    const { calls } = installFetchMock((endpoint, payload, all) => {
-      if (endpoint === '/v1/order/status') {
-        return { order_id: 777, symbol: 'BTCUSD', timestampms: createdMs };
-      }
-      if (endpoint === '/v1/mytrades') {
-        const page = mytradesCalls(all).length; // current call included
-        if (page === 1) {
-          // Full page of other-order trades — fills for 777 are further on
-          return Array.from({ length: 500 }, (_, i) =>
-            makeTrade({ tid: 10000 + i, order_id: 111, symbol: 'btcusd', timestampms: createdMs + i * 1000 })
-          );
+    const warnings = [];
+    const origLog = console.log;
+    console.log = (msg) => { if (typeof msg === 'string' && msg.includes('page cap')) warnings.push(msg); };
+    let fills;
+    try {
+      const { calls } = installFetchMock((endpoint) => {
+        if (endpoint === '/v1/order/status') {
+          return { order_id: 777, symbol: 'BTCUSD', timestampms: createdMs };
         }
-        return [makeTrade({ tid: 99999, order_id: 777, symbol: 'btcusd', timestampms: createdMs + 600000 })];
-      }
-      throw new Error(`unexpected endpoint ${endpoint}`);
-    });
+        if (endpoint === '/v1/mytrades') {
+          // A full 500-trade page: 499 other-order trades + the target fill.
+          const rows = Array.from({ length: 499 }, (_, i) =>
+            makeTrade({ tid: 10000 + i, order_id: 111, symbol: 'btcusd', timestampms: createdMs + i * 1000 }));
+          rows.push(makeTrade({ tid: 99999, order_id: 777, symbol: 'btcusd', timestampms: createdMs + 600000 }));
+          return rows;
+        }
+        throw new Error(`unexpected endpoint ${endpoint}`);
+      });
 
-    const fills = await adapter.getOrderFills('777');
+      fills = await adapter.getOrderFills('777');
 
-    const mt = mytradesCalls(calls);
-    assert.equal(mt.length, 2);
-    // Second page resumes 1s after the newest trade of the first page
-    const page1MaxTs = createdMs + 499 * 1000;
-    assert.equal(mt[1].payload.timestamp, Math.floor(page1MaxTs / 1000) + 1);
-    assert.equal(mt[1].payload.symbol, 'btcusd');
+      const mt = mytradesCalls(calls);
+      assert.equal(mt.length, 1, 'exactly one mytrades request — no forward pagination');
+      assert.equal(mt[0].payload.symbol, 'btcusd');
+      assert.equal(mt[0].payload.timestamp, Math.floor((createdMs - 60000) / 1000));
+    } finally {
+      console.log = origLog;
+    }
 
+    // The target fill is found within the single page, and a truncation warning fired.
     assert.equal(fills.length, 1);
     assert.equal(fills[0].tradeId, '99999');
     assert.equal(fills[0].orderId, '777');
+    assert.equal(warnings.length, 1, 'full-page cap must emit a visible truncation warning');
   });
 
   it('preserves order_id/tid exceeding MAX_SAFE_INTEGER as exact strings', async () => {
