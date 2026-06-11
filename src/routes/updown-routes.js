@@ -87,7 +87,13 @@ If you cannot read a value, use null. Return ONLY the JSON object.`;
  */
 const parseExpiryToMs = (value) => {
   if (value == null) return null;
-  if (typeof value === 'number' && value > 0) return value;
+  if (typeof value === 'number' && value > 0) {
+    // Detect a seconds-epoch passed where ms is expected: anything below ~1e12
+    // is a timestamp before 2001 in ms, i.e. almost certainly seconds. Treating
+    // a seconds value as ms yields a 1970 date → timeToExpiry=Infinity →
+    // NO_TRADE_ZONE/warning silently disabled for the whole contract (issue #108).
+    return value < 1e12 ? value * 1000 : value;
+  }
   if (typeof value === 'string') {
     const ms = new Date(value).getTime();
     return Number.isFinite(ms) ? ms : null;
@@ -268,7 +274,12 @@ module.exports = (app, deps) => {
       const content = readFileSync(path.join(SCORECARD_DIR, file), 'utf-8');
       for (const line of content.split('\n')) {
         if (!line.trim()) continue;
-        const rec = JSON.parse(line);
+        // The journal is written via fire-and-forget appendFile, so a crash
+        // mid-append can leave a torn line. Skip unparseable lines (mirrors
+        // scorecard.js loadHistory) instead of 500-ing the whole endpoint
+        // permanently (issue #108).
+        let rec;
+        try { rec = JSON.parse(line); } catch { continue; }
         records.push(rec);
       }
     }
@@ -533,7 +544,15 @@ module.exports = (app, deps) => {
     if (direction !== 'up' && direction !== 'down') {
       return res.status(400).json({ success: false, error: 'direction must be "up" or "down"' });
     }
-    updownService.setPosition({ entryPrice: parseFloat(entryPrice), contracts: parseFloat(contracts), direction, entryTime: req.body.entryTime });
+    // Reject non-numeric/non-positive values: !entryPrice doesn't catch "abc",
+    // and parseFloat('abc')=NaN would persist into the position and emit
+    // {pnl: NaN} over the socket (issue #108).
+    const px = parseFloat(entryPrice);
+    const qty = parseFloat(contracts);
+    if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({ success: false, error: 'entryPrice and contracts must be positive numbers' });
+    }
+    updownService.setPosition({ entryPrice: px, contracts: qty, direction, entryTime: req.body.entryTime });
     res.json({ success: true });
   });
 

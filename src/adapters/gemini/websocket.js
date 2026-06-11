@@ -18,6 +18,7 @@ const WebSocket = require('ws');
 
 const GEMINI_WS_URL = 'wss://api.gemini.com/v2/marketdata';
 const HEARTBEAT_INTERVAL = 30000;
+const MAX_MISSED_PONGS = 2; // terminate after this many unanswered pings
 const RECONNECT_BASE_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 60000;
 
@@ -52,6 +53,7 @@ const createGeminiWebSocketFeed = (exchange, config) => {
   let reconnectAttempts = 0;
   let heartbeatInterval = null;
   let reconnectTimeout = null;
+  let missedPongs = 0;
 
   const symbol = toGeminiSymbol(config.productId).toUpperCase();
 
@@ -80,6 +82,7 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('message', (data) => {
+      missedPongs = 0; // Any inbound data proves the connection is alive
       handleMessage(data.toString());
     });
 
@@ -94,7 +97,7 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('pong', () => {
-      // Connection alive
+      missedPongs = 0; // Connection alive
     });
   };
 
@@ -236,12 +239,22 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     }, delay);
   };
 
+  // Heartbeat with pong-timeout watchdog: if MAX_MISSED_PONGS pings go
+  // unanswered, terminate() forces 'close' so the reconnect/backoff path runs.
   const startHeartbeat = () => {
     stopHeartbeat();
+    missedPongs = 0;
     heartbeatInterval = setInterval(() => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.ping();
+      if (ws?.readyState !== WebSocket.OPEN) return;
+
+      if (missedPongs >= MAX_MISSED_PONGS) {
+        console.log(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`);
+        ws.terminate();
+        return;
       }
+
+      missedPongs++;
+      ws.ping();
     }, HEARTBEAT_INTERVAL);
   };
 

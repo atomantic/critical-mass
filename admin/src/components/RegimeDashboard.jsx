@@ -649,6 +649,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [rollUpConfirm, setRollUpConfirm] = useState(null)
   const [rollingUp, setRollingUp] = useState(false)
   const [collapseAllConfirm, setCollapseAllConfirm] = useState(false)
+  const [drawdownResumeConfirm, setDrawdownResumeConfirm] = useState(false)
   const [collapsingAll, setCollapsingAll] = useState(false)
   const [tpEditModal, setTpEditModal] = useState(null) // { bodyId, currentTpPct, currentPrice, avgPrice, bodyLabel, inputValue, priceValue, mode: 'pct'|'price' }
   const [settingTp, setSettingTp] = useState(false)
@@ -760,6 +761,24 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }, [exchange])
 
+  // Refresh the Filled Orders table when a fill lands. fetchFills otherwise ran
+  // only on mount + manual actions, so the realized-P&L bar and cycle groupings
+  // went stale while the engine traded live — visibly disagreeing with the
+  // socket-driven Position card. Key on the position markers that change on a
+  // buy or sell fill; debounce so a burst of partial-fill status emits triggers
+  // a single refetch (#111). Declared AFTER fetchFills to avoid a TDZ
+  // ReferenceError on the dep array at render (#111 review).
+  const fillMarker = `${status?.position?.cyclesCompleted ?? ''}:${status?.position?.cycleBuys ?? ''}:${status?.position?.realizedPnL ?? ''}:${status?.position?.realizedAssetPnL ?? ''}`
+  const fillRefreshRef = useRef(null)
+  useEffect(() => {
+    // Skip the very first run (mount already fetched fills).
+    if (fillRefreshRef.current === null) { fillRefreshRef.current = fillMarker; return }
+    if (fillRefreshRef.current === fillMarker) return
+    fillRefreshRef.current = fillMarker
+    const t = setTimeout(() => { fetchFills() }, 1500)
+    return () => clearTimeout(t)
+  }, [fillMarker, fetchFills])
+
   // Fetch cached chart data from server
   const fetchCachedChartData = useCallback(async () => {
     const res = await fetch(`/api/${exchange}/regime/chart-data${pairQuery}`)
@@ -848,61 +867,83 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     load()
   }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData, fetchPresets])
 
-  // Resume from drawdown pause
+  // Resume from drawdown pause (confirmed via modal — project forbids window.confirm)
   const handleResumeDrawdown = async () => {
-    if (!confirm('Resume trading from drawdown pause? This will reset the peak equity to current levels.')) return
+    setDrawdownResumeConfirm(false)
     const res = await fetch(`/api/${exchange}/regime/resume-drawdown${pairQuery}`, { method: 'POST' })
     if (res.ok) await fetchStatus()
+    else addToast({ type: 'error', title: 'Resume failed', message: `HTTP ${res.status}` })
   }
 
   // Preview recalculate
   const handleRecalculatePreview = async () => {
     setRecalculating(true)
-    const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apply: false }),
-    })
-    const data = await res.json()
-    if (data.success) {
-      setRecalcPreview(data)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apply: false }),
+      })
+      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      if (res.ok && data.success) {
+        setRecalcPreview(data)
+      } else {
+        addToast({ type: 'error', title: 'Recalculate failed', message: data.error || data.message || `HTTP ${res.status}` })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Recalculate failed', message: err.message })
+    } finally {
+      setRecalculating(false)
     }
-    setRecalculating(false)
   }
 
   // Apply recalculate
   const handleRecalculateApply = async () => {
     setRecalculating(true)
-    const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apply: true }),
-    })
-    const data = await res.json()
-    if (data.success) {
-      setRecalcPreview(null)
-      await fetchStatus()
+    try {
+      const res = await fetch(`/api/${exchange}/regime/recalculate${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apply: true }),
+      })
+      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      if (res.ok && data.success) {
+        setRecalcPreview(null)
+        await fetchStatus()
+      } else {
+        addToast({ type: 'error', title: 'Recalculate failed', message: data.error || data.message || `HTTP ${res.status}` })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Recalculate failed', message: err.message })
+    } finally {
+      setRecalculating(false)
     }
-    setRecalculating(false)
   }
 
   // Manual body roll-up merge
   const handleRollUp = async (bodyId) => {
     setRollingUp(true)
-    const res = await fetch(`/api/${exchange}/regime/rollup-body${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bodyId }),
-    })
-    const data = await res.json()
-    setRollingUp(false)
-    setRollUpConfirm(null)
-    if (data.success && data.status) {
-      // Directly update socket status from API response for immediate visual refresh
-      // (avoids race where socketStatus overrides stale localStatus from fetchStatus)
-      setSocketStatus(data.status)
-      // Re-fetch fills so buy order annotations (bodyId, sellOrderId) reflect the merge
-      fetchFills()
+    try {
+      const res = await fetch(`/api/${exchange}/regime/rollup-body${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bodyId }),
+      })
+      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      if (res.ok && data.success && data.status) {
+        // Directly update socket status from API response for immediate visual refresh
+        // (avoids race where socketStatus overrides stale localStatus from fetchStatus)
+        setSocketStatus(data.status)
+        // Re-fetch fills so buy order annotations (bodyId, sellOrderId) reflect the merge
+        fetchFills()
+      } else {
+        addToast({ type: 'error', title: 'Roll-up failed', message: data.error || data.message || `HTTP ${res.status}` })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Roll-up failed', message: err.message })
+    } finally {
+      setRollingUp(false)
+      setRollUpConfirm(null)
     }
   }
 
@@ -933,17 +974,26 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     const endpoint = mode === 'pct' ? 'set-body-tp' : 'set-body-tp-price'
     const payload = mode === 'pct' ? { bodyId: tpEditModal.bodyId, tpPct: value } : { bodyId: tpEditModal.bodyId, limitPrice: value }
     setSettingTp(true)
-    const res = await fetch(`/api/${exchange}/regime/${endpoint}${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    const data = await res.json()
-    setSettingTp(false)
-    setTpEditModal(null)
-    if (data.success && data.status) {
-      setSocketStatus(data.status)
-      fetchFills()
+    try {
+      const res = await fetch(`/api/${exchange}/regime/${endpoint}${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      if (res.ok && data.success && data.status) {
+        setSocketStatus(data.status)
+        fetchFills()
+        setTpEditModal(null)
+      } else {
+        // Keep the modal open on failure so the operator can retry — the old TP
+        // is still resting on the exchange, so silently closing misled them.
+        addToast({ type: 'error', title: 'Set TP failed', message: data.error || data.message || `HTTP ${res.status}` })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Set TP failed', message: err.message })
+    } finally {
+      setSettingTp(false)
     }
   }
 
@@ -1658,7 +1708,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs font-medium text-gray-400">Risk Limits</h3>
                 {risk.isDrawdownPaused && (
-                  <button onClick={handleResumeDrawdown} className="px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] rounded flex items-center gap-1">
+                  <button onClick={() => setDrawdownResumeConfirm(true)} className="px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] rounded flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
                     Resume
                   </button>
@@ -1826,6 +1876,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </div>
                   )}
 
+                  {recalcPreview.previewLimited && (
+                    <div className="text-xs text-gray-400 mb-2">
+                      Engine is running — preview shows the P&amp;L delta only. Orphan-fix count and per-cycle detail are computed when you Apply (or preview with the engine stopped).
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-3 gap-2 text-xs mb-3">
                     <div className="text-gray-400">Field</div>
                     <div className="text-gray-400">Before</div>
@@ -1919,7 +1975,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           className="text-gray-500 hover:text-gray-300"
                           title="Cancel"
                         >
-                          \u2717
+                          {'\u2717'}
                         </button>
                       </span>
                     ) : (
@@ -2735,7 +2791,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   // Build sell groups: each = { sell, buys[], key }
                   let sellGroups = []
                   let orphanedBuys = []
-                  let pnlMapTotal = null // set in live mode for authoritative P&L total
 
                   if (isDryRun) {
                     // Walk chronologically: buys accumulate until a core sell consumes them
@@ -2777,12 +2832,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     // ONCE per orderId, not summed (summing multiplies pnl by N partials).
                     // Mirrors fill-ledger.js:computeRealizedFromCyclePairs.
                     const pnlMap = new Map()
-                    const buysBySellId = new Map()
                     filteredFills.forEach(fill => {
-                      if (fill.side === 'buy' && fill.sellOrderId) {
-                        if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, [])
-                        buysBySellId.get(fill.sellOrderId).push(fill)
-                      } else if (fill.side === 'sell') {
+                      if (fill.side === 'sell') {
                         const bodyPnl = fill.bodyPnl ?? fill.satellitePnl
                         const holdback = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0
                         const prev = pnlMap.get(fill.orderId)
@@ -2792,7 +2843,11 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           if (!prev.hasAnnotation && bodyPnl != null) { prev.pnl = bodyPnl; prev.holdback = holdback; prev.hasAnnotation = true }
                         } else {
                           pnlMap.set(fill.orderId, {
-                            pnl: bodyPnl ?? 0,
+                            // null (not 0) when unannotated, so the group-level
+                            // prorated fallback below prices it — seeding 0 would
+                            // make `sell.pnl != null` true and skip the fallback,
+                            // rendering a real sell as $0.00 (#111 review).
+                            pnl: bodyPnl ?? null,
                             holdback,
                             hasAnnotation: bodyPnl != null,
                             proceeds: (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0),
@@ -2802,33 +2857,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       }
                     })
 
-                    // Authoritative total: trust the bodyPnl annotation (engine's prorated
-                    // cost basis at sell time). Buy linkage in the ledger is often partial —
-                    // not every body buy gets sellOrderId stamped — so "proceeds − linked
-                    // cost" inflates pnl by the missing-linkage cost. Only fall back to
-                    // proceeds − linked when the sell has no annotation at all.
-                    pnlMapTotal = 0
-                    for (const [orderId, data] of pnlMap) {
-                      if (data.hasAnnotation) {
-                        pnlMapTotal += data.pnl
-                        continue
-                      }
-                      const linked = buysBySellId.get(orderId)
-                      if (linked && linked.length > 0) {
-                        linked.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-                        let remain = data.totalSold
-                        let buyCost = 0
-                        for (const buy of linked) {
-                          if (remain <= 0) break
-                          const use = Math.min(remain, buy.size || 0)
-                          const unitCost = buy.size > 0 ? ((buy.quoteAmount || buy.size * buy.price) + (buy.netFee || buy.fee || 0)) / buy.size : 0
-                          buyCost += use * unitCost
-                          remain -= use
-                        }
-                        data.pnl = data.proceeds - buyCost
-                        pnlMapTotal += data.pnl
-                      }
-                    }
+                    // Per-sell P&L: annotated sells keep their once-per-orderId
+                    // bodyPnl/satellitePnl (set above); non-annotated sells are
+                    // left null here and priced by the prorated group-level
+                    // fallback below (which links buys by sellOrderId AND the
+                    // bodyId redirect, so it covers more sells than a raw
+                    // sellOrderId-only walk would).
 
                     // Aggregate fills by orderId
                     const aggBuysAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy'))
@@ -2899,13 +2933,30 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     })
                     sellGroups.reverse()
 
-                    // Recompute P&L from linked buys for non-body sells only.
-                    // Body sells keep server-annotated bodyPnl (uses exact body.costBasis)
-                    // to stay consistent with the Position card's realizedPnL accumulator.
+                    // P&L is already resolved per sell in pnlMap above: the
+                    // bodyPnl/satellitePnl annotation (engine's PRORATED cost
+                    // basis) is taken once per orderId when present, else a
+                    // prorated buy-walk fallback. sell.pnl was copied from there.
+                    // Only fill in a value when it's still null — e.g. the richer
+                    // bodyId-redirect linkage here found buys the first pass
+                    // missed — and PRORATE it (use Σbuy_unitCost × sold_qty), never
+                    // proceeds − full linked-buy cost. Charging the held-back
+                    // portion's cost (the old recompute) understated each row vs
+                    // the engine's realizedPnL and made the grand total disagree
+                    // with the Position card (#111).
                     sellGroups.forEach(group => {
+                      if (group.sell.pnl != null) return
                       if (group.buys.length === 0) return
-                      if ((group.sell.isBodyOwned ?? group.sell.isSatellite) && (group.sell.bodyPnl ?? group.sell.satellitePnl) != null) return
-                      const buyCost = group.buys.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
+                      const buys = [...group.buys].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+                      let remain = group.sell.size || 0
+                      let buyCost = 0
+                      for (const b of buys) {
+                        if (remain <= 0) break
+                        const use = Math.min(remain, b.size || 0)
+                        const unitCost = b.size > 0 ? ((b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0)) / b.size : 0
+                        buyCost += use * unitCost
+                        remain -= use
+                      }
                       const sellProceeds = (group.sell.quoteAmount || group.sell.size * group.sell.price) - (group.sell.netFee || group.sell.fee || 0)
                       group.sell.pnl = sellProceeds - buyCost
                     })
@@ -3317,6 +3368,32 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 disabled={collapsingAll}
               >
                 {collapsingAll ? 'Collapsing…' : 'Collapse All'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Drawdown resume confirmation dialog */}
+      {drawdownResumeConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setDrawdownResumeConfirm(false)}>
+          <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white text-lg font-medium mb-3">Resume from Drawdown Pause</h3>
+            <p className="text-gray-300 text-sm mb-4">
+              Resume trading from the drawdown pause? This resets the peak equity to current levels.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                onClick={() => setDrawdownResumeConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-green-600 hover:bg-green-500 rounded transition-colors"
+                onClick={handleResumeDrawdown}
+              >
+                Resume Trading
               </button>
             </div>
           </div>

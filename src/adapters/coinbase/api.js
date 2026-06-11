@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
-const { incrementToDecimals } = require('../../shared-utils');
+const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -313,8 +313,8 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const baseIncrement = parseFloat(product.baseIncrement);
     const quoteIncrement = parseFloat(product.quoteIncrement);
 
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedPrice = Math.floor(price / quoteIncrement) * quoteIncrement;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
+    const roundedPrice = floorToIncrement(price, quoteIncrement);
 
     // Derive decimal precision from original increment strings to avoid float → scientific-notation issues
     const basePrecision = incrementToDecimals(product.baseIncrement);
@@ -510,9 +510,9 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const baseIncrement = parseFloat(product.baseIncrement);
     const quoteIncrement = parseFloat(product.quoteIncrement);
 
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
-    const roundedStopPrice = Math.floor(stopPrice / quoteIncrement) * quoteIncrement;
-    const roundedLimitPrice = Math.floor(limitPrice / quoteIncrement) * quoteIncrement;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
+    const roundedStopPrice = floorToIncrement(stopPrice, quoteIncrement);
+    const roundedLimitPrice = floorToIncrement(limitPrice, quoteIncrement);
 
     // Derive decimal precision from original increment strings to avoid float → scientific-notation issues
     const basePrecision = incrementToDecimals(product.baseIncrement);
@@ -556,7 +556,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
     const product = await adapter.getProductDetails(productId);
     const baseIncrement = parseFloat(product.baseIncrement);
-    const roundedAmount = Math.floor(baseAmount / baseIncrement) * baseIncrement;
+    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
     // Derive precision from original increment string to avoid float → scientific-notation issues
     const basePrecision = incrementToDecimals(product.baseIncrement);
 
