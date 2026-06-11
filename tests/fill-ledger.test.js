@@ -1424,4 +1424,64 @@ describe('Fill Ledger', () => {
       assert.equal(derived.realizedPnL, 2.5, 'first tranche realized via annotation');
     });
   });
+
+  describe('historical-fill cycle assignment (issue #108)', () => {
+    it('stamps the live cycle by default', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle(); // cycle-1
+      const { fill } = ledger.ingestFill(makeBuyFill({ tradeId: 'live-1', orderId: 'o-live' }));
+      assert.equal(fill.cycleId, 'cycle-1');
+    });
+
+    it('routes a fill to orphan (null) cycle when caller passes cycleId: null', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle(); // cycle-1 is live
+      const { fill } = ledger.ingestFill(
+        makeBuyFill({ tradeId: 'hist-1', orderId: 'o-hist' }),
+        null,
+        { cycleId: null }
+      );
+      assert.equal(fill.cycleId, null,
+        'a historical fill must not inherit the live cycle');
+      // It is not counted in the current cycle's fills
+      assert.equal(ledger.getCurrentCycleFills().some(f => f.tradeId === 'hist-1'), false);
+    });
+
+    it('an absent cycleId key still uses the live-cycle default (only explicit null overrides)', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle(); // cycle-1
+      const { fill } = ledger.ingestFill(
+        makeBuyFill({ tradeId: 'live-2', orderId: 'o-live2' }),
+        null,
+        { skipPersist: true } // no cycleId key
+      );
+      assert.equal(fill.cycleId, 'cycle-1');
+    });
+  });
+
+  describe('computeRealizedFromCyclePairs no-orderId buys (issue #108)', () => {
+    it('does not merge distinct no-orderId buys under a single undefined key', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      // Two legacy/manual buys with NO orderId. One is linked to a filled sell,
+      // the other is open. Under the old `undefined`-key merge, the first row's
+      // sellOrderId would win for the combined cost — mis-classifying both.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'no-b1', orderId: undefined, price: '100000', size: '0.001' }));
+      ledger.ingestFill(makeBuyFill({ tradeId: 'no-b2', orderId: undefined, price: '100000', size: '0.001' }));
+      // Link only the first buy to a sell that actually fills
+      ledger.annotateFillsByOrderId(undefined, {}); // no-op safety
+      // Manually link no-b1 to a sell via updateFill-like annotation path:
+      // annotateFillsByOrderId keys on orderId, so set sellOrderId directly.
+      for (const f of ledger.getAllFills()) {
+        if (f.tradeId === 'no-b1') { f.sellOrderId = 'sell-x'; }
+      }
+      ledger.markDirty();
+      ledger.ingestFill(makeSellFill({ tradeId: 'no-s1', orderId: 'sell-x', price: '105000', size: '0.001' }));
+
+      const derived = ledger.getDerivedRealizedPnL();
+      // Only no-b2's cost (100.10) remains held; no-b1 is paired/closed.
+      assert.equal(derived.heldOpenBuyCostBasis, 100.10,
+        'the open no-orderId buy is held; the linked one is not');
+    });
+  });
 });

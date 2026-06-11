@@ -799,7 +799,10 @@ const ingestAdapterFills = (fillLedger, fills, orderId, defaultSide) => {
       liquidityIndicator: raw.liquidityIndicator || 'TAKER',
       tradeTime: raw.tradeTime,
       fee_asset: 'USDC',
-    }, null, { skipPersist: true });
+      // Manual-trade reconciliation fills can be days old — don't stamp the
+      // live cycle (issue #108). recalculateCycles' orphan logic will place
+      // them in the correct cycle by buy/sell pattern.
+    }, null, { skipPersist: true, cycleId: null });
   }
   return { tradeIds, totalSize, totalQuote };
 };
