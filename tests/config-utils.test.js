@@ -35,6 +35,10 @@ const {
   updateBackupConfig,
   setExchangeEnabled,
   setExchangeDryRun,
+  getFundConfig,
+  maskSecret,
+  isMaskedSecret,
+  GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG,
 } = configUtils;
 
 // Resolved paths matching what config-utils.js computes internally
@@ -593,6 +597,81 @@ describe('getExchangeConfig', () => {
     assert.equal(result.intervalType, 'daily');
     // intervalsToSpread comes from DEFAULTS
     assert.equal(result.intervalsToSpread, DEFAULTS.intervalsToSpread);
+  });
+});
+
+// ============================================================================
+// Secret exclusion from fund configs (issue #104)
+// ============================================================================
+
+describe('getFundConfig secret exclusion', () => {
+  afterEach(() => mock.restoreAll());
+
+  const SECRET_TOKEN = '123456:SECRET-BOT-TOKEN-abcdef';
+
+  const baseWithSecrets = {
+    exchanges: { coinbase: { productId: 'BTC-USDC' } },
+    global: {
+      schedulerInterval: 15000,
+      simpleDcaEnabled: true,
+      notifications: {
+        enabled: true,
+        telegram: { botToken: SECRET_TOKEN, chatId: '999' },
+      },
+      sentinel: { enabled: true, feeds: [] },
+      backup: { enabled: true, maxBackups: 3 },
+      aggressivenessPresets: { moderate: { kFactor: 0.6 } },
+    },
+  };
+
+  it('never merges secret-bearing global sub-objects into the fund config', () => {
+    setupFsMocks({ base: baseWithSecrets, user: null });
+    const result = getFundConfig('coinbase', 'BTC-USDC');
+    for (const key of GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG) {
+      assert.equal(result[key], undefined, `${key} must not leak into fund config`);
+    }
+    assert.ok(!JSON.stringify(result).includes(SECRET_TOKEN));
+  });
+
+  it('getExchangeConfig (legacy alias) also excludes secrets', () => {
+    setupFsMocks({ base: baseWithSecrets, user: null });
+    const result = getExchangeConfig('coinbase');
+    assert.ok(!JSON.stringify(result).includes('botToken'));
+    assert.ok(!JSON.stringify(result).includes(SECRET_TOKEN));
+  });
+
+  it('still merges non-secret global scalars into the fund config', () => {
+    setupFsMocks({ base: baseWithSecrets, user: null });
+    const result = getFundConfig('coinbase', 'BTC-USDC');
+    assert.equal(result.schedulerInterval, 15000);
+    assert.equal(result.simpleDcaEnabled, true);
+    assert.equal(result.productId, 'BTC-USDC');
+  });
+
+  it('engine path still resolves the real token via getNotificationConfig', () => {
+    setupFsMocks({ base: baseWithSecrets, user: null });
+    const notif = getNotificationConfig();
+    assert.equal(notif.telegram.botToken, SECRET_TOKEN);
+    assert.equal(notif.telegram.chatId, '999');
+    assert.equal(notif.enabled, true);
+  });
+});
+
+describe('maskSecret / isMaskedSecret', () => {
+  it('masks to first 6 + ... + last 4', () => {
+    assert.equal(maskSecret('123456:SECRET-BOT-TOKEN-abcdef'), '123456...cdef');
+  });
+
+  it('returns empty string for empty/undefined', () => {
+    assert.equal(maskSecret(''), '');
+    assert.equal(maskSecret(undefined), '');
+  });
+
+  it('detects masked values and rejects real tokens', () => {
+    assert.equal(isMaskedSecret(maskSecret('123456:SECRET-BOT-TOKEN-abcdef')), true);
+    assert.equal(isMaskedSecret('123456:SECRET-BOT-TOKEN-abcdef'), false);
+    assert.equal(isMaskedSecret(undefined), false);
+    assert.equal(isMaskedSecret(''), false);
   });
 });
 
