@@ -127,9 +127,10 @@ module.exports = {
     },
     {
       name: "critical-mass-ui",
-      script: `${__dirname}/admin/node_modules/.bin/vite`,
+      script: `${__dirname}/admin/node_modules/vite/bin/vite.js`,
       cwd: `${__dirname}/admin`,
-      args: `--host 0.0.0.0 --port ${PORTS.UI}`,
+      interpreter: "node",
+      args: ["--host", "0.0.0.0", "--port", String(PORTS.UI)],
       env: {
         NODE_ENV: "development",
         VITE_PORT: PORTS.UI,
