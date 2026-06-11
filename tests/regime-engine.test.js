@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted } = require('../src/regime-engine');
 
 describe('cancelPartialFillOrder', () => {
   const makeDeps = ({ cancelOrder, exchange = 'gemini' } = {}) => {
@@ -128,5 +128,36 @@ describe('resolveEntryBudget', () => {
 
   it('signals cooldown on a fully drained wallet', () => {
     assert.deepEqual(resolveEntryBudget(100, 0, MIN), { action: 'cooldown' });
+  });
+});
+
+describe('isBuyAlreadyCommitted (issue #131)', () => {
+  it('is false when no body owns the orderId', () => {
+    const bodies = [{ sourceOrderIds: ['other-1'], buyOrders: [{ orderId: 'other-1' }] }];
+    assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), false);
+  });
+
+  it('is true when a body lists the orderId in sourceOrderIds', () => {
+    const bodies = [{ sourceOrderIds: ['buy-x'], buyOrders: [] }];
+    assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), true);
+  });
+
+  it('is true when a body lists the orderId in buyOrders', () => {
+    const bodies = [{ sourceOrderIds: [], buyOrders: [{ orderId: 'buy-x' }] }];
+    assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), true);
+  });
+
+  it('handles missing/empty bodies and missing constituent arrays', () => {
+    assert.equal(isBuyAlreadyCommitted(undefined, 'buy-x'), false);
+    assert.equal(isBuyAlreadyCommitted([], 'buy-x'), false);
+    assert.equal(isBuyAlreadyCommitted([{}], 'buy-x'), false);
+  });
+
+  it('detects the orderId across multiple bodies', () => {
+    const bodies = [
+      { sourceOrderIds: ['a'], buyOrders: [{ orderId: 'a' }] },
+      { sourceOrderIds: ['b', 'buy-x'], buyOrders: [{ orderId: 'b' }, { orderId: 'buy-x' }] },
+    ];
+    assert.equal(isBuyAlreadyCommitted(bodies, 'buy-x'), true);
   });
 });

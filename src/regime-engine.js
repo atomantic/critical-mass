@@ -133,6 +133,21 @@ const resolveEntryBudget = (requestedUsdc, availableQuote, minSize) => {
 };
 
 /**
+ * True when some celestial body already lists `orderId` among its constituent
+ * buy orders — i.e. a prior handleOrderFill attempt already committed this buy
+ * (issue #131). Used to make the buy-fill branch idempotent against a retry
+ * that re-enters after the dedup key was cleared on a post-commit throw.
+ * @param {Array<{sourceOrderIds?: string[], buyOrders?: Array<{orderId: string}>}>} bodies
+ * @param {string} orderId
+ * @returns {boolean}
+ */
+const isBuyAlreadyCommitted = (bodies, orderId) =>
+  (bodies || []).some(b =>
+    (b.sourceOrderIds || []).includes(orderId) ||
+    (b.buyOrders || []).some(bo => bo.orderId === orderId)
+  );
+
+/**
  * Build the dashboard pendingOrders payload: enrich the executor's tracked
  * orders with body/cost-basis metadata, then union any body TPs the executor
  * doesn't track in-memory (after engine stop, or pre-reconcile after start).
@@ -2265,6 +2280,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const tb = setTimeout(() => { recentlyProcessedBuyFills.delete(buyDedupKey); ttlTimers.delete(tb); }, 5 * 60 * 1000);
       ttlTimers.add(tb);
 
+      // Idempotency guard against a retry that already committed this buy
+      // (issue #131). The dedup key above is CLEARED when handleOrderFill throws
+      // (so a transient failure on the early getOrderFills fetch can retry), but
+      // cycleBuys++ and celestialBodies.push() below mutate in-memory state that
+      // ingestFill's tradeId dedup does NOT protect. If a prior attempt threw
+      // AFTER pushing the body (e.g. placeBodyTp rejected), the next reconcile/
+      // poll would re-run this branch and double-count: a second cycleBuys and a
+      // duplicate body for the same buyOrderId (→ duplicate TP). If any body
+      // already lists this orderId among its constituents, the buy is committed
+      // — let ensureTakeProfitPlaced/reconcile repair any missing TP instead.
+      if (isBuyAlreadyCommitted(positionState.celestialBodies, fillData.orderId)) {
+        console.log(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
+        return;
+      }
+
       // Check if this is a ladder order fill (use positionState since polling may delete from pendingOrders before callback)
       const isLadderFill =
         (positionState.pendingLadderOrders &&
@@ -2292,9 +2322,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         config.mergeProximityScale ?? 1.0
       );
 
-      positionState.cycleBuys += 1;
-      positionState.lastEntryPrice = summary.avgPrice;
-      positionState.lastEntryTime = Date.now();
+      // NOTE: cycleBuys / lastEntry* are committed AFTER the body is created or
+      // merged below (issue #131). Incrementing here — before the merge-cancel
+      // await (cancelBodyTpOrder) — meant a reject there left a stranded
+      // cycleBuys++ with no body owning the orderId, which the
+      // buyAlreadyCommitted guard above could not detect on retry, so the next
+      // reconcile re-incremented. Deferring the counter to post-commit keeps the
+      // increment and the body atomic with respect to a retry.
 
       const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
 
@@ -2404,6 +2438,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           isLadderFill,
         });
       }
+
+      // Commit the buy counter NOW that a body owns this orderId (issue #131).
+      // If the code above threw before reaching here, the dedup key was cleared
+      // and no body committed the orderId, so a retry re-runs cleanly without a
+      // stranded increment; if it reached here, the buyAlreadyCommitted guard
+      // short-circuits any retry. Either way cycleBuys stays consistent.
+      positionState.cycleBuys += 1;
+      positionState.lastEntryPrice = summary.avgPrice;
+      positionState.lastEntryTime = Date.now();
 
       // Remove filled entry from persisted pending orders
       if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
@@ -5040,4 +5083,5 @@ module.exports = {
   cancelPartialFillOrder,
   buildPartialFillData,
   resolveEntryBudget,
+  isBuyAlreadyCommitted,
 };
