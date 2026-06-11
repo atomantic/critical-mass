@@ -2790,7 +2790,6 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   // Build sell groups: each = { sell, buys[], key }
                   let sellGroups = []
                   let orphanedBuys = []
-                  let pnlMapTotal = null // set in live mode for authoritative P&L total
 
                   if (isDryRun) {
                     // Walk chronologically: buys accumulate until a core sell consumes them
@@ -2832,12 +2831,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     // ONCE per orderId, not summed (summing multiplies pnl by N partials).
                     // Mirrors fill-ledger.js:computeRealizedFromCyclePairs.
                     const pnlMap = new Map()
-                    const buysBySellId = new Map()
                     filteredFills.forEach(fill => {
-                      if (fill.side === 'buy' && fill.sellOrderId) {
-                        if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, [])
-                        buysBySellId.get(fill.sellOrderId).push(fill)
-                      } else if (fill.side === 'sell') {
+                      if (fill.side === 'sell') {
                         const bodyPnl = fill.bodyPnl ?? fill.satellitePnl
                         const holdback = (fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset) || 0
                         const prev = pnlMap.get(fill.orderId)
@@ -2847,7 +2842,11 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           if (!prev.hasAnnotation && bodyPnl != null) { prev.pnl = bodyPnl; prev.holdback = holdback; prev.hasAnnotation = true }
                         } else {
                           pnlMap.set(fill.orderId, {
-                            pnl: bodyPnl ?? 0,
+                            // null (not 0) when unannotated, so the group-level
+                            // prorated fallback below prices it — seeding 0 would
+                            // make `sell.pnl != null` true and skip the fallback,
+                            // rendering a real sell as $0.00 (#111 review).
+                            pnl: bodyPnl ?? null,
                             holdback,
                             hasAnnotation: bodyPnl != null,
                             proceeds: (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0),
@@ -2857,33 +2856,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       }
                     })
 
-                    // Authoritative total: trust the bodyPnl annotation (engine's prorated
-                    // cost basis at sell time). Buy linkage in the ledger is often partial —
-                    // not every body buy gets sellOrderId stamped — so "proceeds − linked
-                    // cost" inflates pnl by the missing-linkage cost. Only fall back to
-                    // proceeds − linked when the sell has no annotation at all.
-                    pnlMapTotal = 0
-                    for (const [orderId, data] of pnlMap) {
-                      if (data.hasAnnotation) {
-                        pnlMapTotal += data.pnl
-                        continue
-                      }
-                      const linked = buysBySellId.get(orderId)
-                      if (linked && linked.length > 0) {
-                        linked.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-                        let remain = data.totalSold
-                        let buyCost = 0
-                        for (const buy of linked) {
-                          if (remain <= 0) break
-                          const use = Math.min(remain, buy.size || 0)
-                          const unitCost = buy.size > 0 ? ((buy.quoteAmount || buy.size * buy.price) + (buy.netFee || buy.fee || 0)) / buy.size : 0
-                          buyCost += use * unitCost
-                          remain -= use
-                        }
-                        data.pnl = data.proceeds - buyCost
-                        pnlMapTotal += data.pnl
-                      }
-                    }
+                    // Per-sell P&L: annotated sells keep their once-per-orderId
+                    // bodyPnl/satellitePnl (set above); non-annotated sells are
+                    // left null here and priced by the prorated group-level
+                    // fallback below (which links buys by sellOrderId AND the
+                    // bodyId redirect, so it covers more sells than a raw
+                    // sellOrderId-only walk would).
 
                     // Aggregate fills by orderId
                     const aggBuysAll = aggregateByOrderId(filteredFills.filter(f => f.side === 'buy'))
