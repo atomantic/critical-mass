@@ -313,6 +313,54 @@ const incrementToDecimals = (increment) => {
 };
 
 /**
+ * Floor a value to an exchange increment, guarding against float dust.
+ *
+ * `Math.floor(value / increment) * increment` steps a FULL increment down for
+ * many exactly-representable inputs — e.g. Math.floor(0.29/0.01)*0.01 === 0.28,
+ * Math.floor(8.2/0.1)*0.1 === 8.1 — because 0.29/0.01 computes to 28.999….
+ * That costs a tick on every TP (selling cheaper) and shaves a full increment
+ * off order sizes (dust that never gets swept).
+ *
+ * We correct ONLY genuine machine error: if the quotient is within a small
+ * RELATIVE tolerance of an integer, snap to that integer; otherwise floor
+ * normally. A blanket `+epsilon` before flooring would round a value that is
+ * legitimately just-below a tick (e.g. 1.99999999999) UP to the next tick —
+ * dangerous on a sell-size / limit-price path. Relative tolerance keeps the
+ * correction correct across magnitudes (price ~1e5, size ~1e-4).
+ *
+ * @param {number} value - Value to floor
+ * @param {number} increment - Exchange increment / tick size (must be > 0)
+ * @returns {number} Floored value (NOT precision-formatted — callers toFixed via incrementToDecimals)
+ */
+const floorToIncrement = (value, increment) => {
+  if (!(increment > 0)) return value;
+  // Floor the quotient, then candidate the NEXT tick up and snap to it ONLY
+  // when `value` is within a tiny RELATIVE tolerance below that next tick —
+  // i.e. the gap is pure double-rounding dust, not a real sub-tick remainder.
+  //   0.29/0.01 = 28.9999999996 → floor 28 → next tick 0.29; |0.29-0.29|≈4e-18
+  //     ≤ tol → snap up to 0.29 (the dust we must absorb).
+  //   1.99999999999/0.01 = 199.999999999 → floor 199 → next tick 2.00;
+  //     2.00-1.99999999999 = 1e-11, tol ≈ 2e-9 → NOT within tol → stays 1.99
+  //     (a genuine sub-tick value is never rounded up on a sell/price path).
+  // Comparing in VALUE space with a value-relative tolerance keeps this correct
+  // across magnitudes AND fine increments (price ~1e5, 1e-8 BTC ticks) where a
+  // quotient-space toPrecision/epsilon breaks (e.g. 99999.99999999 / 1e-8).
+  const flooredUnits = Math.floor(value / increment);
+  const nextTick = (flooredUnits + 1) * increment;
+  // Snap to the next tick ONLY when `value` sits below it by no more than a few
+  // ULPs of `value` — i.e. the gap is genuine IEEE-754 rounding error from the
+  // value/increment*increment round-trip, never a real sub-tick remainder.
+  // Float dust is ≈ value·2.2e-16; we use 8·EPSILON (~1.8e-15 relative) as a
+  // safe ceiling. This GUARANTEES the result never exceeds the input by more
+  // than a few ULPs (critical for a sell-size / limit-price floor): a value a
+  // genuine fraction-of-a-tick below the next tick (1.99999999999 @ 0.01, gap
+  // 1e-11 ≫ ULP) floors down; only true dust (0.29 @ 0.01, gap ~4e-18) snaps up.
+  const tol = Math.max(Math.abs(value), increment) * Number.EPSILON * 8;
+  if (nextTick - value >= 0 && nextTick - value <= tol) return nextTick;
+  return flooredUnits * increment;
+};
+
+/**
  * Format a price for display: >= $1 shows 2 decimals, < $1 shows up to 6 significant digits
  * @param {number} p
  * @returns {string}
@@ -351,6 +399,7 @@ module.exports = {
   saveRegimeRunningFlag,
   shouldAutoResumeRegime,
   incrementToDecimals,
+  floorToIncrement,
   fmtPrice,
   fmtCurrency,
 };
