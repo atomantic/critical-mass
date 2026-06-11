@@ -423,6 +423,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
   const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
   const recentlyProcessedSellFills = new Set(); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
+  const recentlyProcessedBuyFills = new Set(); // Dedup guard: prevents buy orders from being processed twice across WS/polling (would duplicate the body at full size)
   const tpPlacementInFlight = new Set(); // Dedup guard: prevents concurrent placeBodyTp calls for the same body
 
   // Race 3: Merge-snapshot maps for fills arriving after body removal during merges
@@ -2001,6 +2002,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     ttlTimers.clear();
     recentlyProcessedFills.clear();
     recentlyProcessedSellFills.clear();
+    recentlyProcessedBuyFills.clear();
     pendingMergeTpOrders.clear();
     completedMergeTpOrders.clear();
 
@@ -2119,6 +2121,24 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (data.status === 'FILLED') {
       await handleOrderFill(data);
     } else if (data.status === 'CANCELLED') {
+      // A cancelled order with a fill still bought/sold that filled portion.
+      // Route it through handleOrderFill BEFORE dropping tracking so the fill
+      // isn't lost — otherwise the asset sits untracked (the polling path's
+      // handleCancelledOrder already does this; the WS path previously didn't,
+      // losing fills on exchanges with no order-events WS fallback) (issue #107 M3).
+      if (data.filledSize > 0) {
+        // A cancel-AFTER-FULL-fill (completionPercentage >= 100) is a TERMINAL
+        // fill, not a partial — route it as FILLED so a fully-filled body TP
+        // completes instead of being relisted as a residual body. Only treat it
+        // as partial when it's genuinely under-filled. Mirrors the polling path,
+        // which checks completionPercentage >= 100 before CANCELLED (issue #107).
+        const fullyFilled = (data.completionPercentage || 0) >= 100;
+        console.log(`⚠️ [${exchange}] WS CANCELLED ${data.orderId} with ${data.filledSize} ${fullyFilled ? 'full' : 'partial'} fill — routing through handleOrderFill before dropping tracking`);
+        orderExecutor.markSettled?.(data.orderId);
+        await handleOrderFill(fullyFilled
+          ? { ...data, status: 'FILLED', isPartialFill: false }
+          : buildPartialFillData(data.orderId, data.side, data));
+      }
       orderExecutor.handleOrderCancel(data.orderId);
       // Remove cancelled entry from persisted pending orders
       if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
@@ -2137,7 +2157,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Handle order fill
    * @param {Object} fillData - Fill data
    */
-  const handleOrderFill = async (fillData) => {
+  const handleOrderFillImpl = async (fillData, dedupRef) => {
+    // dedupRef is a per-call holder: the buy/sell branches record the inner
+    // dedup key they add ({ set, key }) into it so the wrapper can clear that
+    // key if processing throws. A per-call object (not a shared closure var)
+    // keeps this correct even if two handleOrderFill calls interleave across
+    // awaits (WS vs polling).
     // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
     if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
       await cancelPartialFillOrder({ adapter, exchange }, fillData.orderId);
@@ -2195,6 +2220,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Determine if buy or sell
     if (fillData.side.toLowerCase() === 'buy') {
+      // Buy-fill dedup across WS vs polling. Without it, a buy detected by both
+      // the polling path (which starts the multi-hundred-ms handleOrderFill
+      // chain, incl. a possible 2s retry) and a late WS FILLED event for the
+      // same order would run the buy branch twice — falling back to the full
+      // getFillsForOrder set on the second pass and creating a duplicate body
+      // at full size (cycleBuys double-incremented). Mirrors the sell dedup.
+      // For partials, key on filled size so an advancing partial still processes.
+      const buyDedupKey = fillData.isPartialFill
+        ? `${fillData.orderId}:${(fillData.filledSize || 0).toFixed(8)}`
+        : fillData.orderId;
+      if (recentlyProcessedBuyFills.has(buyDedupKey)) {
+        console.log(`⏭️ [${exchange}] Buy fill already processed, skipping: ${buyDedupKey}`);
+        return;
+      }
+      recentlyProcessedBuyFills.add(buyDedupKey);
+      if (dedupRef) { dedupRef.set = recentlyProcessedBuyFills; dedupRef.key = buyDedupKey; }
+      const tb = setTimeout(() => { recentlyProcessedBuyFills.delete(buyDedupKey); ttlTimers.delete(tb); }, 5 * 60 * 1000);
+      ttlTimers.add(tb);
+
       // Check if this is a ladder order fill (use positionState since polling may delete from pendingOrders before callback)
       const isLadderFill =
         (positionState.pendingLadderOrders &&
@@ -2367,6 +2411,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         return;
       }
       recentlyProcessedSellFills.add(dedupKey);
+      if (dedupRef) { dedupRef.set = recentlyProcessedSellFills; dedupRef.key = dedupKey; }
       const t1 = setTimeout(() => { recentlyProcessedSellFills.delete(dedupKey); ttlTimers.delete(t1); }, 5 * 60 * 1000);
       ttlTimers.add(t1);
 
@@ -2448,8 +2493,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const pnl = proceeds - proratedCostBasis;
         const holdbackAsset = roundAsset(body.assetQty - summary.totalSize);
 
-        // Detect partial fill: order is still open on the exchange
-        const isPartial = fillData.isPartialFill || soldRatio < 0.95;
+        // Detect a TRUE partial fill: the TP was placed for body.assetOnOrder
+        // but the exchange filled less than that. This is distinct from
+        // designed holdback (totalSize === assetOnOrder < assetQty on a healthy
+        // 100% fill). Comparing against assetQty (the old soldRatio<0.95 check)
+        // misclassified healthy fills as partial whenever holdback ≳ 5% of the
+        // body — zeroing the reserve and re-listing it for sale (issue #107 M1).
+        // Fall back to the soldRatio heuristic only when assetOnOrder is
+        // missing (legacy bodies / migration) so behavior degrades safely.
+        const onOrder = body.assetOnOrder || 0;
+        const isPartial = fillData.isPartialFill ||
+          (onOrder > 0
+            ? summary.totalSize < onOrder * 0.99 // 1% tolerance for rounding/fees
+            : soldRatio < 0.95);
 
         // Update celestial state
         const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
@@ -2667,6 +2723,24 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Wrapper around handleOrderFillImpl: if processing throws AFTER the inner
+   * buy/sell dedup key was added (e.g. during TP placement or persistence),
+   * clear that key so the next reconcile/poll retry re-processes the fill
+   * instead of skipping it as "already processed" until the 5-min TTL. Applies
+   * to ALL callers (WS, reconcile, polling) — the polling callback also clears
+   * its own outer recentlyProcessedFills key (issue #99 follow-up).
+   */
+  const handleOrderFill = async (fillData) => {
+    const dedupRef = { set: null, key: null };
+    try {
+      return await handleOrderFillImpl(fillData, dedupRef);
+    } catch (err) {
+      if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
+      throw err;
+    }
+  };
+
+  /**
    * Update trade imbalance from recent trades
    */
   const updateTradeImbalance = () => {
@@ -2808,6 +2882,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (fetchFailed) {
       // Still log hourly summary with cached metrics
       logHourlySummary();
+      // Placing a TP needs no candle data (falls back to tpMinPercent), so the
+      // candle-fetch failure must NOT block the TP-replacement safety net — a
+      // body whose TP placement failed would otherwise have no resting sell for
+      // as long as the candle endpoint errors, even with a healthy order API.
+      // The reconcile loop only repairs bodies that already HAVE a tpOrderId,
+      // so this is the only path that covers a missing TP (issue #107 M4).
+      await ensureTakeProfitPlaced();
       return;
     }
 
@@ -2857,14 +2938,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     logHourlySummary();
 
     // Place TP order if we have a position but no active TP order (e.g., after recovery)
-    if (!isDryRun && positionState.totalAsset > 0) {
-      const bodies = positionState.celestialBodies || [];
-      const bodiesWithoutTp = bodies.filter(b => !b.tpOrderId);
-      const needsTp = bodies.length > 0 ? bodiesWithoutTp.length > 0 : !positionState.activeTpOrderId;
-      if (needsTp) {
-        console.log(`📝 [${exchange}] Position without TP order detected — bodies=${bodies.length} (${bodiesWithoutTp.length} need TP: ${bodiesWithoutTp.map(b => b.id.slice(-8)).join(',')}), avgCost=${fmtPrice(positionState.avgCostBasis)}, cycleBuys=${positionState.cycleBuys}`);
-        await placeTakeProfitOrder();
-      }
+    await ensureTakeProfitPlaced();
+  };
+
+  /**
+   * Place a TP for any held position that lacks a resting sell order. Extracted
+   * from updateMetrics so it can run even when candle fetch fails (TP placement
+   * doesn't need candles). No-op in dry-run or when fully covered.
+   */
+  const ensureTakeProfitPlaced = async () => {
+    if (isDryRun || positionState.totalAsset <= 0) return;
+    const bodies = positionState.celestialBodies || [];
+    const bodiesWithoutTp = bodies.filter(b => !b.tpOrderId);
+    const needsTp = bodies.length > 0 ? bodiesWithoutTp.length > 0 : !positionState.activeTpOrderId;
+    if (needsTp) {
+      console.log(`📝 [${exchange}] Position without TP order detected — bodies=${bodies.length} (${bodiesWithoutTp.length} need TP: ${bodiesWithoutTp.map(b => b.id.slice(-8)).join(',')}), avgCost=${fmtPrice(positionState.avgCostBasis)}, cycleBuys=${positionState.cycleBuys}`);
+      await placeTakeProfitOrder();
     }
   };
 
@@ -3107,8 +3196,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Fund lifecycle guard: when draining/closed, never place new entries
     if (positionState.lifecycle && positionState.lifecycle !== LIFECYCLE.ACTIVE) return;
 
-    // Don't place new entry if there's already a pending entry order on the exchange
-    if (orderExecutor.getPendingCounts().entries > 0) return;
+    // Don't place a new reactive entry if there's already a pending entry OR a
+    // resting ladder rung on the exchange. ladder_entry orders were previously
+    // invisible to this guard, so after ladderAutoSwitch reverted to reactive
+    // mode (vol dropped before any rung filled, totalAsset still 0) reactive
+    // entries stacked on top of the full-budget ladder — over-committing
+    // beyond maxUsdcDeployed (issue #107 M5).
+    const pending = orderExecutor.getPendingCounts();
+    if (pending.entries > 0 || pending.ladderEntries > 0) return;
 
     // Skip if in insufficient funds cooldown (prevents rapid retry spam on 406 errors)
     if (now < insufficientFundsCooldownUntil) return;
@@ -4019,28 +4114,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // and handleOrderFill awaits network + fs work that can reject on a
       // routine API blip. An unhandled rejection here crashes the process
       // (Node ≥15) mid-fill, leaving state partially mutated. Contain it and
-      // DELETE the dedup key so the next reconcile poll re-detects and
-      // re-processes the fill (ingestFill dedups by tradeId, so already-ingested
-      // fills aren't double-counted on retry). Note: if the reject lands after
-      // the buy branch's cycleBuys++/body push but during TP placement, the
-      // retry can double-count those in-memory — tracked separately for an
-      // ingest-guarded refactor (issue #99 follow-up).
+      // DELETE this outer polling dedup key so the next reconcile poll
+      // re-detects and re-processes (ingestFill dedups by tradeId, so
+      // already-ingested fills aren't double-counted on retry). handleOrderFill
+      // clears its OWN inner buy/sell dedup key on throw (see its wrapper), so
+      // every caller path retries cleanly. Note: a reject after the buy
+      // branch's cycleBuys++/body push but during TP placement can still
+      // double-count those in-memory — tracked for an ingest-guarded refactor
+      // (issue #131).
       try {
         await handleOrderFill(fillData);
       } catch (err) {
         recentlyProcessedFills.delete(dedupKey);
-        // handleOrderFill's sell branch adds its OWN dedup key to
-        // recentlyProcessedSellFills before the throwable work. Clearing only
-        // the outer key would let the next reconcile retry hit that inner key
-        // and skip the sell as "already processed" — delaying recovery until
-        // the 5-min TTL. Clear the inner sell key too (same key shape) so the
-        // retry actually re-processes (issue #99 follow-up).
-        if (status.side?.toLowerCase() === 'sell') {
-          const sellKey = status.isPartialFill
-            ? `${orderId}:${(status.filledSize || 0).toFixed(8)}`
-            : orderId;
-          recentlyProcessedSellFills.delete(sellKey);
-        }
         console.log(`❌ [${exchange}] Error processing polled fill ${orderId} (side=${status.side}): ${err.message} — will retry on next reconcile`);
       }
     };
