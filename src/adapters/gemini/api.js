@@ -471,14 +471,68 @@ const createGeminiAdapter = (keysPath = null) => {
   };
 
   /**
-   * Get fills for an order
-   * Gemini includes fees in the trade response
+   * Walk /v1/mytrades forward from a timestamp, paginating past the
+   * per-request trade cap. Gemini returns trades on-or-after `timestamp`
+   * (seconds), most-recent-first, capped at limit_trades per request.
+   * @param {string|null} symbol - Gemini symbol (e.g., 'ethusd'), or null for all symbols
+   * @param {number} sinceTimestampMs - Start timestamp in milliseconds
+   * @returns {Promise<Array>} Raw trade rows since the timestamp
+   */
+  const fetchTradesSince = async (symbol, sinceTimestampMs) => {
+    const PAGE_SIZE = 500;
+    const MAX_PAGES = 50;
+    const allTrades = [];
+    let timestamp = Math.floor(sinceTimestampMs / 1000);
+
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const params = { limit_trades: PAGE_SIZE, timestamp };
+      if (symbol) params.symbol = symbol;
+      const trades = await makeRestRequest('/v1/mytrades', params);
+
+      if (!Array.isArray(trades) || trades.length === 0) break;
+      allTrades.push(...trades);
+      if (trades.length < PAGE_SIZE) break;
+
+      const lastTs = Math.max(...trades.map(t => t.timestampms || (t.timestamp * 1000)));
+      timestamp = Math.floor(lastTs / 1000) + 1;
+    }
+
+    return allTrades;
+  };
+
+  /**
+   * Get fills for an order.
+   * Gemini includes fees in the trade response.
+   *
+   * Gemini has no per-order trades endpoint — fills are synthesized from
+   * /v1/mytrades. The old implementation hardcoded symbol 'btcusd' and the
+   * most recent 100 trades with no time bound, so non-BTC funds always got
+   * [] (fees lost, offline TP recovery corrupted) and even BTC orders became
+   * unfindable once 100 newer trades occurred — the same failure mode as the
+   * May 2026 Crypto.com CRO partial-fill leak (cryptocom/api.js getOrderFills).
+   *
+   * Fix (mirrors the Crypto.com approach): look up the order to learn its
+   * symbol and creation time, then walk /v1/mytrades forward from that time
+   * with pagination so fills are found regardless of product or trade volume.
    * @param {string} orderId - Order ID
    * @returns {Promise<OrderFill[]>} List of fills
    */
   adapter.getOrderFills = async (orderId) => {
-    // Get trades for this account and filter by order
-    const trades = await makeRestRequest('/v1/mytrades', { symbol: 'btcusd', limit_trades: 100 });
+    // Step 1: locate the order so the trade scan uses the right symbol and
+    // is bounded to the order's actual lifetime.
+    let symbol = null;
+    let sinceMs = Date.now() - 60 * 60 * 1000; // fallback: last hour, all symbols
+    try {
+      const order = await makeRestRequest('/v1/order/status', { order_id: orderId });
+      if (order?.symbol) symbol = order.symbol.toLowerCase();
+      const createdMs = Number(order?.timestampms || (order?.timestamp ? Number(order.timestamp) * 1000 : 0));
+      if (createdMs > 0) sinceMs = createdMs - 60000; // 60s pad for clock skew
+    } catch (err) {
+      console.log(`⚠️ [gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message} — scanning last hour across all symbols`);
+    }
+
+    // Step 2: paginate trades since order creation and filter by order
+    const trades = await fetchTradesSince(symbol, sinceMs);
 
     const fills = trades
       .filter(trade => trade.order_id?.toString() === orderId.toString())
@@ -560,10 +614,24 @@ const createGeminiAdapter = (keysPath = null) => {
    * Start sending periodic heartbeats to keep orders alive.
    * Gemini API keys with "Requires Heartbeat" enabled will cancel
    * all open orders if no heartbeat is received within ~5 minutes.
+   *
+   * The adapter is a cached per-exchange singleton shared by every fund in
+   * the process, so the single heartbeat timer is refcounted by owner key:
+   * each consumer (fund) registers on start and deregisters on stop, and the
+   * timer is only cleared when the last consumer stops. This prevents
+   * stopping fund A from killing fund B's heartbeat (which would let Gemini
+   * auto-cancel fund B's open orders ~5 minutes later).
+   * Calls are idempotent per owner — double-start/double-stop from the same
+   * engine cannot skew the refcount.
    */
   let heartbeatTimer = null;
-  adapter.startHeartbeat = () => {
-    if (heartbeatTimer) return;
+  const heartbeatOwners = new Set();
+  adapter.startHeartbeat = (owner = 'default') => {
+    heartbeatOwners.add(owner);
+    if (heartbeatTimer) {
+      console.log(`💓 [gemini] Heartbeat already running — ${owner} registered (${heartbeatOwners.size} consumer(s))`);
+      return;
+    }
     const HEARTBEAT_MS = 60000; // Send every 60s (well within 5-min timeout)
     const sendHeartbeat = () => {
       makeRestRequest('/v1/heartbeat')
@@ -578,13 +646,19 @@ const createGeminiAdapter = (keysPath = null) => {
     };
     sendHeartbeat(); // Send immediately
     heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
-    console.log(`💓 [gemini] Heartbeat started (every ${HEARTBEAT_MS / 1000}s)`);
+    console.log(`💓 [gemini] Heartbeat started by ${owner} (every ${HEARTBEAT_MS / 1000}s)`);
   };
 
-  adapter.stopHeartbeat = () => {
+  adapter.stopHeartbeat = (owner = 'default') => {
+    heartbeatOwners.delete(owner);
+    if (heartbeatOwners.size > 0) {
+      console.log(`💓 [gemini] Heartbeat kept alive after ${owner} stopped (${heartbeatOwners.size} consumer(s) remain)`);
+      return;
+    }
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
+      console.log(`💔 [gemini] Heartbeat stopped by ${owner} (no consumers remain)`);
     }
   };
 
@@ -594,27 +668,7 @@ const createGeminiAdapter = (keysPath = null) => {
    * @param {number} sinceTimestampMs - Start timestamp in milliseconds
    * @returns {Promise<Array>} All trades since the timestamp
    */
-  adapter.getAllTrades = async (symbol, sinceTimestampMs) => {
-    const allTrades = [];
-    let timestamp = Math.floor(sinceTimestampMs / 1000);
-
-    for (let page = 1; page <= 50; page++) {
-      const trades = await makeRestRequest('/v1/mytrades', {
-        symbol,
-        limit_trades: 500,
-        timestamp,
-      });
-
-      if (!Array.isArray(trades) || trades.length === 0) break;
-      allTrades.push(...trades);
-      if (trades.length < 500) break;
-
-      const lastTs = Math.max(...trades.map(t => t.timestampms || (t.timestamp * 1000)));
-      timestamp = Math.floor(lastTs / 1000) + 1;
-    }
-
-    return allTrades;
-  };
+  adapter.getAllTrades = (symbol, sinceTimestampMs) => fetchTradesSince(symbol, sinceTimestampMs);
 
   return adapter;
 };
