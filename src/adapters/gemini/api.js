@@ -472,41 +472,76 @@ const createGeminiAdapter = (keysPath = null) => {
 
   /**
    * Walk /v1/mytrades forward from a timestamp, paginating past the
-   * per-request trade cap. Gemini returns trades on-or-after `timestamp`
-   * (seconds), most-recent-first, capped at limit_trades per request.
+   * per-request trade cap and stitching slices so the whole [since, now]
+   * window is reachable even when it holds far more than one page of trades.
    * @param {string|null} symbol - Gemini symbol (e.g., 'ethusd'), or null for all symbols
    * @param {number} sinceTimestampMs - Start timestamp in milliseconds
-   * @returns {Promise<Array>} Raw trade rows since the timestamp
+   * @returns {Promise<Array>} Raw trade rows since the timestamp (deduped by tid)
    */
   const fetchTradesSince = async (symbol, sinceTimestampMs) => {
     const PAGE_SIZE = 500;
-    const timestamp = Math.floor(sinceTimestampMs / 1000);
 
-    // /v1/mytrades treats `timestamp` as a SINCE lower bound and returns the
-    // NEWEST trades at-or-after it, capped at limit_trades, most-recent-first
-    // (live-verified 2026-06-10: results are descending and every row >= since).
-    // symbol omitted (null) → all-symbol scan (also live-verified: HTTP 200,
-    // trades across all symbols, despite the docs implying symbol is required).
+    // /v1/mytrades treats `timestamp` as a SINCE lower bound and, when more
+    // than limit_trades match, returns the OLDEST limit_trades at-or-after it
+    // (the page is rendered most-recent-first, which originally looked like a
+    // "newest page", but live-probing 2026-06-11 with limit=1/5/50 against a
+    // fixed early `since` showed the OLDEST trade is always retained while the
+    // newest edge grows with the limit — i.e. the cap drops the NEWEST overflow,
+    // not the oldest). symbol omitted (null) → all-symbol scan (also
+    // live-verified: HTTP 200, trades across all symbols).
     //
-    // Gemini exposes only a since-lower-bound — there is NO upper-bound / older-
-    // than cursor — so a forward-advancing cursor (the obvious paginate idiom)
-    // would ask for trades NEWER than ones already seen and never reach the
-    // OLDER fills near the order's creation. We therefore fetch the single
-    // newest page bounded by `since`. For a per-order fill scan since the
-    // order's own creation this covers everything unless >500 trades for the
-    // (symbol, since-now) window exist — in which case the OLDEST fills are
-    // unreachable via this endpoint. Surface that explicitly rather than
-    // silently truncating; the proper backward-paging redesign is tracked
-    // separately (see issue) since Gemini's API can't express it directly.
-    const params = { limit_trades: PAGE_SIZE, timestamp };
-    if (symbol) params.symbol = symbol;
-    const trades = await makeRestRequest('/v1/mytrades', params);
+    // Because the cap keeps the oldest matches, a forward-advancing `since`
+    // cursor is the correct pagination idiom (Gemini has no upper-bound/
+    // older-than param, but it doesn't need one here): each full page tells us
+    // the newest timestamp it reached, and re-requesting with `since` set to
+    // that timestamp walks forward into the next slice. The boundary trade(s)
+    // at exactly that second reappear and are dropped by tid dedup. This
+    // reaches EVERY trade in [since, now], so >500-fill orders are no longer
+    // truncated (issue #130).
+    const symbolLabel = symbol || 'all-symbols';
+    const byTid = new Map();
+    let sinceMs = sinceTimestampMs;
+    let prevNewestMs = -1;
 
-    if (!Array.isArray(trades)) return [];
-    if (trades.length >= PAGE_SIZE) {
-      console.log(`⚠️ [gemini] mytrades hit the ${PAGE_SIZE}-trade page cap for ${symbol || 'all-symbols'} since ${new Date(sinceTimestampMs).toISOString()} — oldest fills in this window may be unreachable (Gemini exposes no older-than cursor); fill recovery for very high-volume orders may be incomplete`);
+    // Each full page must advance `since` past at least one trade, so a finite
+    // window yields finite pages. Cap iterations anyway to guarantee
+    // termination against a pathological response.
+    const MAX_PAGES = 10000;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const params = { limit_trades: PAGE_SIZE, timestamp: Math.floor(sinceMs / 1000) };
+      if (symbol) params.symbol = symbol;
+      const trades = await makeRestRequest('/v1/mytrades', params);
+
+      if (!Array.isArray(trades) || trades.length === 0) break;
+
+      let newestMs = -1;
+      for (const trade of trades) {
+        // tid is a big-int string (preserved by makeRestRequest); never Number() it.
+        const tid = trade.tid?.toString();
+        if (tid !== undefined && !byTid.has(tid)) byTid.set(tid, trade);
+        const ts = Number(trade.timestampms || 0);
+        if (ts > newestMs) newestMs = ts;
+      }
+
+      // Partial page → the whole window is covered, we're done.
+      if (trades.length < PAGE_SIZE) break;
+
+      // Full page. Advance `since` to the newest timestamp reached so the next
+      // slice starts where this one ended (boundary trades dedup by tid).
+      if (newestMs <= sinceMs && newestMs === prevNewestMs) {
+        // No forward progress is possible — >PAGE_SIZE trades share the same
+        // second AND we already requested that second. Gemini's `timestamp` is
+        // second-granular with no sub-second/older-than cursor, so the newest
+        // of that same-second cluster is genuinely unreachable. Surface it
+        // rather than loop forever.
+        console.log(`⚠️ [gemini] mytrades has >${PAGE_SIZE} trades at the same second for ${symbolLabel} (${new Date(newestMs).toISOString()}); the newest of that cluster is unreachable via Gemini's API — fill recovery may be incomplete`);
+        break;
+      }
+      prevNewestMs = newestMs;
+      sinceMs = newestMs;
     }
-    return trades;
+
+    return Array.from(byTid.values());
   };
 
   /**
