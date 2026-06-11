@@ -2868,6 +2868,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (!isDryRun && orderExecutor.checkPendingOrderFills) {
         orderExecutor.checkPendingOrderFills()
           .then(result => {
+            // A successful poll proves order-status visibility is alive even
+            // when no WS order event has arrived. lastOrderUpdateMs was
+            // otherwise refreshed ONLY by WS order events, so a resting TP that
+            // legitimately goes quiet for >staleOrdersMs (default 60s, equal to
+            // reconcileIntervalMs) tripped stale_orders → SAFE during normal
+            // operation. Recording liveness here keeps the signal honest — it
+            // still fires if BOTH the WS feed and polling stop (issue #110 M6).
+            healthMonitor.recordOrderUpdate();
             if (result.filled > 0 || result.cancelled > 0) {
               console.log(`🔄 [${exchange}] Reconcile fill check: ${result.filled} filled, ${result.cancelled} cancelled`);
             }

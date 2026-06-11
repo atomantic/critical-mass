@@ -88,6 +88,10 @@ const setupFsMocks = ({ base = null, user = null } = {}) => {
     writtenData = JSON.parse(data);
   });
 
+  // saveConfig writes atomically (tmp + rename); the tmp file never really
+  // exists under the fs mocks, so stub renameSync to a no-op.
+  mock.method(fs, 'renameSync', () => {});
+
   mock.method(fs, 'mkdirSync', () => {});
 
   return {

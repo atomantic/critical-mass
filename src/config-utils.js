@@ -377,7 +377,14 @@ const saveConfig = (config) => {
     : {};
   const diff = computeDiff(base, config);
   fs.mkdirSync(path.dirname(USER_CONFIG_FILE), { recursive: true });
-  fs.writeFileSync(USER_CONFIG_FILE, JSON.stringify(diff, null, 2));
+  // Atomic write (tmp + rename): a crash mid-write would otherwise leave a
+  // truncated config.json, and loadRawConfig throws on parse failure — which
+  // takes down the gateway AND every engine process at boot, with no recovery
+  // path. Inlined rather than importing state-tracker.atomicWriteSync to avoid
+  // a require cycle (state-tracker already requires config-utils) (issue #110 M7).
+  const tmpPath = USER_CONFIG_FILE + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(diff, null, 2));
+  fs.renameSync(tmpPath, USER_CONFIG_FILE);
   // Bust the cache so the next read picks up our write immediately, even
   // before the OS updates mtime.
   _configCache = null;
