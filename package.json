@@ -42,7 +42,7 @@
     "jsonwebtoken": "9.0.3",
     "portos-ai-toolkit": "0.8.4",
     "socket.io": "4.8.3",
-    "ws": "8.20.0"
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "concurrently": "10.0.3",
