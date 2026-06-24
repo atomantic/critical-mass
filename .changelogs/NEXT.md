@@ -1,5 +1,9 @@
 # Unreleased Changes
 
+## README
+
+- The dashboard screenshot now renders on GitHub. It had been silently excluded from the repo by a blanket `*.png` ignore rule, so the README showed a broken image.
+
 ## Added
 
 - `fill-ledger.js:computeRealizedFromCyclePairs` — new source-of-truth derivation that walks the buy↔sell pairing in the ledger and sums per-cycle outcomes. Returns `{realizedPnL, realizedAssetPnL, heldOpenBuyCostBasis, unpairedSellQty}`. Replaces FIFO replay as the engine's source of truth; FIFO retained as a diagnostic.
