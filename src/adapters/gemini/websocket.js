@@ -157,26 +157,38 @@ const createGeminiWebSocketFeed = (exchange, config) => {
   /**
    * Recompute best bid (highest bid price) and best ask (lowest ask price)
    * from the live book maps. Iterates rather than spreading into Math.max/min
-   * to stay safe on deep books (argument-count limits).
-   *
-   * A momentarily empty side leaves the previous best untouched rather than
-   * resetting it to 0: a 0 bid/ask would flow into entry pricing as a
-   * divide-by-zero (assetQty = sizeUsdc / 0 = Infinity) since the engine has
-   * no bid>0 guard. This mirrors the old code, which never let a positive best
-   * fall back to 0. Cross-session staleness is handled separately — the
-   * (re)connect handler explicitly zeroes both before the fresh snapshot.
+   * to stay safe on deep books (argument-count limits). An empty side recomputes
+   * to 0 — a truthful "no level here" — and `emitTicker` then withholds the
+   * ticker until the side refills, so neither a stale held best nor a 0 reaches
+   * downstream pricing.
    */
   const recomputeBest = () => {
-    if (bidLevels.size) {
-      let hb = 0;
-      for (const p of bidLevels.keys()) if (p > hb) hb = p;
-      bestBid = hb;
-    }
-    if (askLevels.size) {
-      let la = 0;
-      for (const p of askLevels.keys()) if (la === 0 || p < la) la = p;
-      bestAsk = la;
-    }
+    let hb = 0;
+    for (const p of bidLevels.keys()) if (p > hb) hb = p;
+    bestBid = hb;
+    let la = 0;
+    for (const p of askLevels.keys()) if (la === 0 || p < la) la = p;
+    bestAsk = la;
+  };
+
+  /**
+   * Emit a ticker only when the book has a valid, uncrossed top-of-book
+   * (both sides present, bid <= ask). A missing side (best === 0) or a crossed
+   * book would feed bad prices into order pricing — notably a 0 bid divides to
+   * Infinity in entry sizing (assetQty = sizeUsdc / bid), and a crossed book is
+   * exactly the corruption this fix removes — so withhold the update until the
+   * book is whole again. For a liquid market that gap is momentary.
+   */
+  const emitTicker = () => {
+    if (!config.onTicker) return;
+    if (!(bestBid > 0) || !(bestAsk > 0) || bestBid > bestAsk) return;
+    config.onTicker({
+      price: lastPrice || bestBid,
+      bid: bestBid,
+      ask: bestAsk,
+      volume24h: 0, // Not available from L2 stream
+      timestamp: Date.now(),
+    });
   };
 
   /**
@@ -219,16 +231,7 @@ const createGeminiWebSocketFeed = (exchange, config) => {
       }
     }
 
-    // Emit ticker if we have meaningful data
-    if ((lastPrice > 0 || bestBid > 0) && config.onTicker) {
-      config.onTicker({
-        price: lastPrice || bestBid,
-        bid: bestBid,
-        ask: bestAsk,
-        volume24h: 0, // Not available from L2 stream
-        timestamp: Date.now(),
-      });
-    }
+    emitTicker();
   };
 
   /**
@@ -248,16 +251,8 @@ const createGeminiWebSocketFeed = (exchange, config) => {
       });
     }
 
-    // Emit ticker update with latest trade price
-    if (config.onTicker) {
-      config.onTicker({
-        price: lastPrice,
-        bid: bestBid,
-        ask: bestAsk,
-        volume24h: 0,
-        timestamp: Date.now(),
-      });
-    }
+    // Emit ticker update with latest trade price (gated on a valid book).
+    emitTicker();
   };
 
   const handleDisconnect = () => {

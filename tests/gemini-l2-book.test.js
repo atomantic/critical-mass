@@ -57,16 +57,21 @@ const { createGeminiWebSocketFeed } = require('../src/adapters/gemini/websocket'
 const openFeed = (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   FakeWebSocket.instances = [];
-  let lastTicker = null;
+  const emitted = [];
   const feed = createGeminiWebSocketFeed('gemini', {
     productId: 'BTC-USD',
     publicOnly: true,
-    onTicker: (tk) => { lastTicker = tk; },
+    onTicker: (tk) => { emitted.push(tk); },
   });
   feed.connect();
   const sock = FakeWebSocket.instances[0];
   sock.emit('open');
-  return { feed, sock, ticker: () => lastTicker };
+  return {
+    feed,
+    sock,
+    ticker: () => emitted[emitted.length - 1] ?? null, // most recent
+    tickers: () => emitted,                            // every emit
+  };
 };
 
 /** Emit an l2_updates message with the given [side, price, qty] changes. */
@@ -123,22 +128,32 @@ describe('Gemini L2 best bid/ask book (issue #144)', () => {
     assert.equal(ticker().bid, 102);
   });
 
-  it('does not push a 0 bid downstream when every bid level is removed', (t) => {
-    const { sock, ticker } = openFeed(t);
+  it('never emits a 0-side or crossed book when a side is emptied', (t) => {
+    const { sock, ticker, tickers } = openFeed(t);
 
     l2(sock, [['buy', '100', '1'], ['sell', '101', '1']]);
     assert.equal(ticker().bid, 100);
 
-    // All bids removed (transient empty side). A bid of 0 would divide-by-zero
-    // in entry pricing (assetQty = sizeUsdc / 0 = Infinity), so the last known
-    // good bid must be held rather than reset to 0.
+    // All bids removed → the bid side is empty. The feed must withhold the
+    // ticker rather than emit bid:0 (divide-by-zero in entry pricing) or a
+    // stale held bid that the moving ask side could cross.
     l2(sock, [['buy', '100', '0']]);
-    assert.notEqual(ticker().bid, 0, 'an emptied bid side must not emit a 0 bid');
-    assert.equal(ticker().bid, 100, 'last known good bid is held until a real bid arrives');
+    // An ask-only update while bids are empty must still not emit.
+    l2(sock, [['sell', '102', '1']]);
+    const beforeRefill = tickers().length;
+    assert.equal(beforeRefill, 1, 'no ticker emitted while the bid side is empty');
 
-    // A real bid then takes over cleanly.
-    l2(sock, [['buy', '102', '1']]);
-    assert.equal(ticker().bid, 102);
+    // A real bid refills the side → a fresh, valid book emits.
+    l2(sock, [['buy', '95', '1']]);
+    assert.equal(ticker().bid, 95);
+    assert.equal(ticker().ask, 101);
+
+    // Invariant across EVERY emitted ticker: both sides positive, never crossed.
+    for (const tk of tickers()) {
+      assert.ok(tk.bid > 0, `emitted bid must be > 0 (got ${tk.bid})`);
+      assert.ok(tk.ask > 0, `emitted ask must be > 0 (got ${tk.ask})`);
+      assert.ok(tk.bid <= tk.ask, `emitted book must not be crossed (${tk.bid} > ${tk.ask})`);
+    }
   });
 
   it('resets lastPrice on reconnect so the first ticker is not a stale trade price', (t) => {
