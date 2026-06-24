@@ -4,6 +4,14 @@
 
 - The dashboard screenshot now renders on GitHub. It had been silently excluded from the repo by a blanket `*.png` ignore rule, so the README showed a broken image.
 
+## Configuration
+
+- The app now boots out of the box from `config.example.json` when no local `config.json` is present, falling back to safe dry-run defaults. Your real allocations and capital live only in a local, untracked config, so a fresh clone runs without exposing operator settings.
+
+## Internal
+
+- `package.json` license field corrected from ISC to MIT to match the bundled MIT LICENSE.
+
 ## Added
 
 - `fill-ledger.js:computeRealizedFromCyclePairs` — new source-of-truth derivation that walks the buy↔sell pairing in the ledger and sums per-cycle outcomes. Returns `{realizedPnL, realizedAssetPnL, heldOpenBuyCostBasis, unpairedSellQty}`. Replaces FIFO replay as the engine's source of truth; FIFO retained as a diagnostic.

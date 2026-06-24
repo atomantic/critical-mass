@@ -34,7 +34,7 @@
     "critical-mass"
   ],
   "author": "Adam Eivy (@antic|@atomantic)",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "express": "5.2.1",

@@ -19,7 +19,16 @@ const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils')
  */
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
+const EXAMPLE_CONFIG_FILE = path.join(__dirname, '..', 'config.example.json');
 const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
+
+// Resolve the effective base-config path. config.json is git-ignored (it holds
+// the operator's real allocations/capital), so a fresh clone won't have one —
+// fall back to the committed config.example.json so the app boots out of the
+// box with safe dry-run defaults. Operator overrides still land in
+// data/config.json and merge on top either way.
+const resolveBaseConfigFile = () =>
+  fs.existsSync(BASE_CONFIG_FILE) ? BASE_CONFIG_FILE : EXAMPLE_CONFIG_FILE;
 
 // Monotonic per-process counter for unique saveConfig tmp filenames (avoids a
 // cross-process rename race on a shared fixed tmp path — see saveConfig).
@@ -356,13 +365,14 @@ const _resetConfigCacheForTests = () => {
  * @returns {Object} Raw configuration object
  */
 const loadRawConfig = () => {
-  const baseMtime = _statMtimeMs(BASE_CONFIG_FILE);
+  const baseFile = resolveBaseConfigFile();
+  const baseMtime = _statMtimeMs(baseFile);
   const userMtime = _statMtimeMs(USER_CONFIG_FILE);
-  const cacheKey = `${baseMtime}|${userMtime}`;
+  const cacheKey = `${baseFile}|${baseMtime}|${userMtime}`;
   if (_configCache && _configCacheKey === cacheKey) {
     return _configCache;
   }
-  const base = baseMtime > 0 ? JSON.parse(fs.readFileSync(BASE_CONFIG_FILE, 'utf8')) : {};
+  const base = baseMtime > 0 ? JSON.parse(fs.readFileSync(baseFile, 'utf8')) : {};
   const user = userMtime > 0 ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8')) : {};
   _configCache = Object.keys(user).length ? deepMerge(base, user) : base;
   _configCacheKey = cacheKey;
@@ -376,8 +386,9 @@ const loadRawConfig = () => {
  * @returns {void}
  */
 const saveConfig = (config) => {
-  const base = fs.existsSync(BASE_CONFIG_FILE)
-    ? JSON.parse(fs.readFileSync(BASE_CONFIG_FILE, 'utf8'))
+  const baseFile = resolveBaseConfigFile();
+  const base = fs.existsSync(baseFile)
+    ? JSON.parse(fs.readFileSync(baseFile, 'utf8'))
     : {};
   const diff = computeDiff(base, config);
   fs.mkdirSync(path.dirname(USER_CONFIG_FILE), { recursive: true });
