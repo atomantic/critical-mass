@@ -70,6 +70,8 @@ cp config.example.json config.json  # Copy example config and customize
 
 ### API Keys
 
+> **Tip:** You can also configure exchange API keys directly in the admin dashboard UI (the **API Keys** tab) instead of editing files by hand. The UI writes the same `data/<exchange>-keys.json` files described below.
+
 Create exchange-specific key files in the `data/` directory:
 
 **Coinbase** (`data/coinbase-keys.json`):
