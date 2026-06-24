@@ -57,10 +57,17 @@ const createGeminiWebSocketFeed = (exchange, config) => {
 
   const symbol = toGeminiSymbol(config.productId).toUpperCase();
 
-  // Track best bid/ask from L2 updates
+  // Track best bid/ask from L2 updates.
+  // The full book is maintained per side (price -> qty) from the `changes`
+  // stream so that a qty=0 removal at the current best is applied as a
+  // deletion and the best is recomputed from what remains (issue #144).
+  // Without the book, bestBid/bestAsk only ever ratcheted one-directionally
+  // (up for bid, down for ask) and produced a stale, crossed book.
   let bestBid = 0;
   let bestAsk = 0;
   let lastPrice = 0;
+  const bidLevels = new Map(); // price -> qty
+  const askLevels = new Map(); // price -> qty
 
   const connect = () => {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -75,6 +82,17 @@ const createGeminiWebSocketFeed = (exchange, config) => {
       console.log(`✅ [${exchange}] Gemini WebSocket connected`);
       isConnected = true;
       reconnectAttempts = 0;
+
+      // A (re)connection means the next l2_updates is a fresh full snapshot.
+      // Drop any prior book state so removals from the old session can't
+      // linger as phantom levels and re-cross the recomputed best. lastPrice
+      // is reset too so the first post-reconnect ticker reports the fresh
+      // bestBid rather than a stale pre-disconnect trade price.
+      bidLevels.clear();
+      askLevels.clear();
+      bestBid = 0;
+      bestAsk = 0;
+      lastPrice = 0;
 
       subscribe();
       startHeartbeat();
@@ -137,6 +155,43 @@ const createGeminiWebSocketFeed = (exchange, config) => {
   };
 
   /**
+   * Recompute best bid (highest bid price) and best ask (lowest ask price)
+   * from the live book maps. Iterates rather than spreading into Math.max/min
+   * to stay safe on deep books (argument-count limits). An empty side recomputes
+   * to 0 — a truthful "no level here" — and `emitTicker` then withholds the
+   * ticker until the side refills, so neither a stale held best nor a 0 reaches
+   * downstream pricing.
+   */
+  const recomputeBest = () => {
+    let hb = 0;
+    for (const p of bidLevels.keys()) if (p > hb) hb = p;
+    bestBid = hb;
+    let la = 0;
+    for (const p of askLevels.keys()) if (la === 0 || p < la) la = p;
+    bestAsk = la;
+  };
+
+  /**
+   * Emit a ticker only when the book has a valid, uncrossed top-of-book
+   * (both sides present, bid <= ask). A missing side (best === 0) or a crossed
+   * book would feed bad prices into order pricing — notably a 0 bid divides to
+   * Infinity in entry sizing (assetQty = sizeUsdc / bid), and a crossed book is
+   * exactly the corruption this fix removes — so withhold the update until the
+   * book is whole again. For a liquid market that gap is momentary.
+   */
+  const emitTicker = () => {
+    if (!config.onTicker) return;
+    if (!(bestBid > 0) || !(bestAsk > 0) || bestBid > bestAsk) return;
+    config.onTicker({
+      price: lastPrice || bestBid,
+      bid: bestBid,
+      ask: bestAsk,
+      volume24h: 0, // Not available from L2 stream
+      timestamp: Date.now(),
+    });
+  };
+
+  /**
    * Process L2 book updates and embedded trades.
    * Update best bid/ask from changes, then emit ticker.
    */
@@ -146,14 +201,18 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     for (const [side, price, qty] of changes) {
       const p = parseFloat(price);
       const q = parseFloat(qty);
-      if (side === 'buy' && q > 0 && (p > bestBid || bestBid === 0)) {
-        bestBid = p;
-      } else if (side === 'sell' && q > 0 && (p < bestAsk || bestAsk === 0)) {
-        bestAsk = p;
-      }
-      // A removal (qty=0) at current best means our cached value is stale,
-      // but the next change will correct it. Acceptable for ticker purposes.
+      if (!(p > 0)) continue;
+      const levels = side === 'buy' ? bidLevels : side === 'sell' ? askLevels : null;
+      if (!levels) continue;
+      // qty>0 sets/updates the level; qty=0 removes it (Gemini deletion).
+      if (q > 0) levels.set(p, q);
+      else levels.delete(p);
     }
+
+    // Recompute the best from the live book: highest remaining bid, lowest
+    // remaining ask. A removal at the prior best now drops the best to the
+    // next level instead of leaving a stale, crossed value.
+    recomputeBest();
 
     // Process embedded trades (present in snapshot and some updates)
     const trades = message.trades || [];
@@ -172,16 +231,7 @@ const createGeminiWebSocketFeed = (exchange, config) => {
       }
     }
 
-    // Emit ticker if we have meaningful data
-    if ((lastPrice > 0 || bestBid > 0) && config.onTicker) {
-      config.onTicker({
-        price: lastPrice || bestBid,
-        bid: bestBid,
-        ask: bestAsk,
-        volume24h: 0, // Not available from L2 stream
-        timestamp: Date.now(),
-      });
-    }
+    emitTicker();
   };
 
   /**
@@ -201,16 +251,8 @@ const createGeminiWebSocketFeed = (exchange, config) => {
       });
     }
 
-    // Emit ticker update with latest trade price
-    if (config.onTicker) {
-      config.onTicker({
-        price: lastPrice,
-        bid: bestBid,
-        ask: bestAsk,
-        volume24h: 0,
-        timestamp: Date.now(),
-      });
-    }
+    // Emit ticker update with latest trade price (gated on a valid book).
+    emitTicker();
   };
 
   const handleDisconnect = () => {
