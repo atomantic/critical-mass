@@ -85,11 +85,14 @@ const createGeminiWebSocketFeed = (exchange, config) => {
 
       // A (re)connection means the next l2_updates is a fresh full snapshot.
       // Drop any prior book state so removals from the old session can't
-      // linger as phantom levels and re-cross the recomputed best.
+      // linger as phantom levels and re-cross the recomputed best. lastPrice
+      // is reset too so the first post-reconnect ticker reports the fresh
+      // bestBid rather than a stale pre-disconnect trade price.
       bidLevels.clear();
       askLevels.clear();
       bestBid = 0;
       bestAsk = 0;
+      lastPrice = 0;
 
       subscribe();
       startHeartbeat();
@@ -154,15 +157,26 @@ const createGeminiWebSocketFeed = (exchange, config) => {
   /**
    * Recompute best bid (highest bid price) and best ask (lowest ask price)
    * from the live book maps. Iterates rather than spreading into Math.max/min
-   * to stay safe on deep books (argument-count limits). Empty side -> 0.
+   * to stay safe on deep books (argument-count limits).
+   *
+   * A momentarily empty side leaves the previous best untouched rather than
+   * resetting it to 0: a 0 bid/ask would flow into entry pricing as a
+   * divide-by-zero (assetQty = sizeUsdc / 0 = Infinity) since the engine has
+   * no bid>0 guard. This mirrors the old code, which never let a positive best
+   * fall back to 0. Cross-session staleness is handled separately — the
+   * (re)connect handler explicitly zeroes both before the fresh snapshot.
    */
   const recomputeBest = () => {
-    let hb = 0;
-    for (const p of bidLevels.keys()) if (p > hb) hb = p;
-    bestBid = hb;
-    let la = 0;
-    for (const p of askLevels.keys()) if (la === 0 || p < la) la = p;
-    bestAsk = la;
+    if (bidLevels.size) {
+      let hb = 0;
+      for (const p of bidLevels.keys()) if (p > hb) hb = p;
+      bestBid = hb;
+    }
+    if (askLevels.size) {
+      let la = 0;
+      for (const p of askLevels.keys()) if (la === 0 || p < la) la = p;
+      bestAsk = la;
+    }
   };
 
   /**

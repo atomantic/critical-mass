@@ -123,6 +123,46 @@ describe('Gemini L2 best bid/ask book (issue #144)', () => {
     assert.equal(ticker().bid, 102);
   });
 
+  it('does not push a 0 bid downstream when every bid level is removed', (t) => {
+    const { sock, ticker } = openFeed(t);
+
+    l2(sock, [['buy', '100', '1'], ['sell', '101', '1']]);
+    assert.equal(ticker().bid, 100);
+
+    // All bids removed (transient empty side). A bid of 0 would divide-by-zero
+    // in entry pricing (assetQty = sizeUsdc / 0 = Infinity), so the last known
+    // good bid must be held rather than reset to 0.
+    l2(sock, [['buy', '100', '0']]);
+    assert.notEqual(ticker().bid, 0, 'an emptied bid side must not emit a 0 bid');
+    assert.equal(ticker().bid, 100, 'last known good bid is held until a real bid arrives');
+
+    // A real bid then takes over cleanly.
+    l2(sock, [['buy', '102', '1']]);
+    assert.equal(ticker().bid, 102);
+  });
+
+  it('resets lastPrice on reconnect so the first ticker is not a stale trade price', (t) => {
+    const { sock, ticker } = openFeed(t);
+
+    // Snapshot carries an embedded trade → lastPrice becomes 200.
+    sock.emit('message', Buffer.from(JSON.stringify({
+      type: 'l2_updates', symbol: 'BTCUSD',
+      changes: [['buy', '199', '1'], ['sell', '201', '1']],
+      trades: [{ tid: 1, price: '200', quantity: '0.1', side: 'buy', timestamp: 1 }],
+    })));
+    assert.equal(ticker().price, 200);
+
+    // Reconnect, then a fresh snapshot at a much lower range with NO trade.
+    sock.terminate();
+    t.mock.timers.tick(1000);
+    const sock2 = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    sock2.emit('open');
+    l2(sock2, [['buy', '49', '1'], ['sell', '51', '1']]);
+
+    // Price must reflect the fresh book (bestBid 49), not the stale 200 trade.
+    assert.equal(ticker().price, 49, 'stale pre-reconnect lastPrice must not survive');
+  });
+
   it('clears the book on reconnect so stale levels do not re-cross the best', (t) => {
     const { sock, ticker } = openFeed(t);
 
