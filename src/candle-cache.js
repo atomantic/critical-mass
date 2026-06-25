@@ -144,9 +144,11 @@ const aggregateCandles = (sourceCandles, targetIntervalMs) => {
 /**
  * Derive intermediate timeframes from seeded candle data.
  * @param {ReturnType<typeof createCandleAggregator>} agg
+ * @param {number} [now=Date.now()] - Reference time; all derivations happen at one instant
+ *   after the fetches, so a single sample is correct (unlike the per-fetch direct seeds).
  * @returns {number} total derived candles
  */
-const seedDerivedTimeframes = (agg) => {
+const seedDerivedTimeframes = (agg, now = Date.now()) => {
   const derivations = [
     { source: '1m',  target: '3m',  intervalMs: 180_000 },
     { source: '1m',  target: '10m', intervalMs: 600_000 },
@@ -157,10 +159,21 @@ const seedDerivedTimeframes = (agg) => {
   ];
   let derived = 0;
   for (const { source, target, intervalMs } of derivations) {
+    // Include the source's in-progress (current) bucket ONLY for sources coarser than
+    // 1m: their open bucket holds pre-start sub-bucket data that live 1m roll-up can't
+    // reconstruct, so without it the derived in-progress candle is short on volume/high/
+    // low. A 1m source's in-progress bucket is the base bucket — aggregateUp rolls it
+    // into the target live anyway, so folding it here would double-count (and live 1m
+    // carries 24h ticker volume per server.js, making the spike large). Those coarser
+    // source currents were already boundary-deducted when directly seeded, so the derived
+    // bucket stays boundary-exclusive and live roll-up adds the boundary once — no
+    // boundaryInclusive deduction needed here (issue #145).
     const sourceCandles = agg.getCandles(source);
-    const targetCandles = aggregateCandles(sourceCandles, intervalMs);
+    const sourceCurrent = source === '1m' ? null : agg.getCurrentCandle(source);
+    const all = sourceCurrent ? [...sourceCandles, sourceCurrent] : sourceCandles;
+    const targetCandles = aggregateCandles(all, intervalMs);
     if (targetCandles.length) {
-      agg.seedCandles(target, targetCandles);
+      agg.seedCandles(target, targetCandles, now);
       derived += targetCandles.length;
       log('INFO', `🕯️ candle-cache: derived ${targetCandles.length} ${target} candles from ${source}`);
     }
@@ -206,6 +219,13 @@ const createCandleCache = () => {
     const agg = getOrCreate(exchange);
     let totalSeeded = 0;
 
+    // Fetch every timeframe FIRST, then seed them all against a single post-fetch `now`.
+    // One shared reference keeps the promoted in-progress buckets consistent across
+    // timeframes — a per-fetch `now` could promote current['5m'] to a later bucket than
+    // current['1m'], which aggregateUp then rewinds, producing out-of-order/duplicate
+    // candles. Capturing it AFTER the fetches (not once up front) also keeps it fresh, so
+    // a slow fetch can't misclassify the in-progress bucket as completed (issue #145).
+    const fetched = [];
     for (const { tf, hours, coinbaseGranularity, cryptocomTf } of SEED_TIMEFRAMES) {
       let candles;
       if (exchange === 'coinbase') {
@@ -215,16 +235,20 @@ const createCandleCache = () => {
       } else {
         continue;
       }
-
-      if (candles.length > 0) {
-        agg.seedCandles(tf, candles);
-        totalSeeded += candles.length;
-        log('INFO', `🕯️ candle-cache: seeded ${candles.length} ${tf} candles for ${exchange}`);
-      }
+      if (candles.length > 0) fetched.push({ tf, candles });
     }
 
-    // Derive intermediate timeframes (10m, 30m, 2h, 4h) from seeded data
-    totalSeeded += seedDerivedTimeframes(agg);
+    const now = Date.now();
+    for (const { tf, candles } of fetched) {
+      // Directly-fetched seeds include the in-progress 1m bucket's partial volume, so mark
+      // them boundaryInclusive to net out the later 1m roll-up (issue #145).
+      agg.seedCandles(tf, candles, now, { boundaryInclusive: true });
+      totalSeeded += candles.length;
+      log('INFO', `🕯️ candle-cache: seeded ${candles.length} ${tf} candles for ${exchange}`);
+    }
+
+    // Derive intermediate timeframes (10m, 30m, 2h, 4h) from seeded data, same `now`.
+    totalSeeded += seedDerivedTimeframes(agg, now);
 
     return totalSeeded;
   };
@@ -310,4 +334,4 @@ const createCandleCache = () => {
   return { seedFromPublicAPI, processTick, getCandles, getAllCandles, getAggregator, seedAll };
 };
 
-module.exports = { createCandleCache };
+module.exports = { createCandleCache, seedDerivedTimeframes, aggregateCandles };

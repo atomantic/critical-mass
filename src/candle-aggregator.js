@@ -56,6 +56,14 @@ const createCandleAggregator = () => {
   const buffers = {};
   /** @type {Record<string, {open: number, high: number, low: number, close: number, volume: number, timestamp: number} | null>} */
   const current = {};
+  // Volume of the in-progress 1m bucket as it appeared in the most recent 1m REST seed.
+  // Used to net out the boundary minute when a directly-fetched higher-timeframe REST
+  // seed (which already includes it) later has that 1m bucket rolled up. Captured from
+  // the SEED (not live current['1m']) on purpose: live ticks carry ticker volume — e.g.
+  // 24h rolling volume (server.js) — which is not comparable to per-bucket REST volume,
+  // so subtracting it would clamp the higher-tf seed to zero (issue #145).
+  /** @type {{timestamp: number, volume: number} | null} */
+  let boundary1mSeed = null;
 
   for (const tf of TIMEFRAME_KEYS) {
     buffers[tf] = [];
@@ -69,7 +77,16 @@ const createCandleAggregator = () => {
    */
   const pushCandle = (tf, candle) => {
     const buf = buffers[tf];
-    buf.push(candle);
+    const tail = buf[buf.length - 1];
+    if (tail && tail.timestamp === candle.timestamp) {
+      // Replace rather than append — never emit two candles with the same
+      // timestamp (issue #145 backstop; the primary fix promotes the in-progress
+      // seeded bucket to `current` in seedCandles, but this guards any seed that
+      // bypasses that path).
+      buf[buf.length - 1] = candle;
+    } else {
+      buf.push(candle);
+    }
     const max = TIMEFRAMES[tf].maxCandles;
     if (buf.length > max) {
       buf.splice(0, buf.length - max);
@@ -172,11 +189,83 @@ const createCandleAggregator = () => {
    * Seed historical candles for a timeframe (e.g., on startup from exchange API)
    * @param {string} timeframe - Timeframe key
    * @param {Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>} candles - Oldest first
+   * @param {number} [now=Date.now()] - Current time, used to detect the in-progress bucket
+   * @param {{boundaryInclusive?: boolean}} [opts] - `boundaryInclusive: true` marks a
+   *   directly-fetched seed whose in-progress higher-timeframe candle already includes the
+   *   live 1m boundary bucket's partial volume (see the deduction below). Derived seeds —
+   *   built from already-completed candles — must leave this false.
    */
-  const seedCandles = (timeframe, candles) => {
+  const seedCandles = (timeframe, candles, now = Date.now(), { boundaryInclusive = false } = {}) => {
     if (!TIMEFRAMES[timeframe] || !candles?.length) return;
-    const max = TIMEFRAMES[timeframe].maxCandles;
-    buffers[timeframe] = candles.slice(-max);
+    const { maxCandles, intervalMs } = TIMEFRAMES[timeframe];
+    const seeded = candles.slice(-maxCandles);
+    // The seed fetch usually includes the still-open bucket as a partial candle.
+    // Promote it to `current` (instead of leaving it in the completed buffer) so
+    // live ticks continue that same candle — otherwise aggregation starts a fresh
+    // candle for the same timestamp and emits a duplicate at the seed/live
+    // boundary, and the live candle under-reports ticks before service start
+    // (issue #145).
+    const newest = seeded[seeded.length - 1];
+    const isInProgress = !!newest && newest.timestamp === floorTimestamp(now, intervalMs);
+    // seedAll() runs non-blocking after the live tick listener is wired (server.js),
+    // so ticks may have already built current[tf] while this fetch was pending. Never
+    // destroy that live in-progress candle (issue #145).
+    const existing = current[timeframe];
+    if (isInProgress) {
+      const promoted = { ...newest };
+      // A directly-fetched higher-timeframe seed already aggregates the in-progress 1m
+      // bucket's volume up to fetch time. aggregateUp later rolls the FULL 1m candle into
+      // this same candle, so deduct the boundary minute now to avoid counting it twice
+      // (which spikes volume-derived signals). Use the 1m REST SEED's volume (captured
+      // below) — the same data source as this higher-tf REST seed, hence comparable — NOT
+      // live current['1m'].volume, which carries non-comparable ticker volume (24h rolling,
+      // per server.js) that would clamp the seed to zero. Only volume double-counts (roll-up
+      // uses max/min/overwrite for high/low/close); derived seeds exclude the boundary
+      // minute and pass boundaryInclusive=false. (issue #145)
+      // Only deduct when the seeded boundary minute is STILL the in-progress 1m bucket:
+      // that's exactly when aggregateUp will later roll its full volume into this candle.
+      // If live ticks already advanced 1m to a newer minute (seeding spanned a minute
+      // boundary), the seeded minute has already rolled up — deducting it would subtract
+      // an already-counted minute and undercount the higher timeframe.
+      if (boundaryInclusive && timeframe !== '1m' && boundary1mSeed &&
+          current['1m'] && current['1m'].timestamp === boundary1mSeed.timestamp &&
+          floorTimestamp(boundary1mSeed.timestamp, intervalMs) === promoted.timestamp) {
+        promoted.volume = Math.max(0, promoted.volume - boundary1mSeed.volume);
+      }
+      buffers[timeframe] = seeded.slice(0, -1);
+      if (!existing || existing.timestamp < promoted.timestamp) {
+        // No live candle yet (the common case), or it's older than the seed's bucket —
+        // promote the seed snapshot.
+        current[timeframe] = promoted;
+      } else if (existing.timestamp === promoted.timestamp) {
+        // Same in-progress bucket built by ticks during the non-blocking seed: keep the
+        // live candle (its close is newest) but fold in the seed's TRUE bucket open
+        // (earliest) and extremes. Take the seed's per-bucket REST volume outright, NOT
+        // max(): the seed covers the full bucket [bucket-start, fetch] — a superset of the
+        // live partial's [service-start, now] — so it's the authoritative bucket volume,
+        // and the live value may be non-comparable ticker volume (24h rolling, per
+        // server.js) that max() would wrongly preserve (issue #145; see issue #161).
+        existing.open = promoted.open;
+        existing.high = Math.max(existing.high, promoted.high);
+        existing.low = Math.min(existing.low, promoted.low);
+        existing.volume = promoted.volume;
+      }
+      // else: live already advanced past the seed's bucket — keep it untouched.
+    } else {
+      buffers[timeframe] = seeded;
+      // Seed carries no in-progress bucket (its newest candle is completed). Keep a live
+      // current ONLY if it's newer than that newest completed seed — i.e. genuinely the
+      // open bucket the seed didn't cover. A live current at/before the newest completed
+      // seed overlaps seeded data (e.g. the fetch crossed a candle boundary after ticks
+      // started the partial); clear it so the backstop doesn't later replace the complete
+      // seeded candle with the live partial (issue #145).
+      if (!existing || existing.timestamp <= newest.timestamp) current[timeframe] = null;
+    }
+    // Record the 1m REST boundary volume from THIS seed so later higher-tf seeds can
+    // deduct it (comparable REST value, immune to live ticker-volume corruption).
+    if (timeframe === '1m') {
+      boundary1mSeed = isInProgress ? { timestamp: newest.timestamp, volume: newest.volume } : null;
+    }
   };
 
   return { processTick, getCandles, seedCandles, getCurrentCandle };
