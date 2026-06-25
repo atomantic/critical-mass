@@ -372,8 +372,32 @@ const loadRawConfig = () => {
   if (_configCache && _configCacheKey === cacheKey) {
     return _configCache;
   }
-  const base = baseMtime > 0 ? JSON.parse(fs.readFileSync(baseFile, 'utf8')) : {};
-  const user = userMtime > 0 ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8')) : {};
+  // Guard JSON.parse: loadRawConfig runs inside setInterval/setTimeout
+  // callbacks (server.js exchange refresh, regime-engine updateMetrics →
+  // handleTpAdjustment), so a thrown SyntaxError is an uncaught exception that
+  // KILLS the whole gateway/engine — taking down live trading with no recovery
+  // (observed crashing the gateway 2026-04-28 and the cryptocom engine
+  // 2026-05-18 on a transient empty/partial read). The atomic write in
+  // saveConfig (#123) only protects USER_CONFIG_FILE; the base config is still
+  // exposed, and external corruption can hit either file. On a parse failure
+  // with a last-good cache in hand, keep running on it; only a cold-start
+  // failure (no cache yet) rethrows so the operator repairs before the engine
+  // boots on the wrong config — mirroring fill-ledger.js's cold-start contract
+  // (issue #185).
+  let base;
+  let user;
+  try {
+    base = baseMtime > 0 ? JSON.parse(fs.readFileSync(baseFile, 'utf8')) : {};
+    user = userMtime > 0 ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8')) : {};
+  } catch (err) {
+    if (_configCache) {
+      // Leave _configCacheKey stale so the next call retries the read and picks
+      // up the repaired file immediately once it parses cleanly again.
+      console.warn(`⚠️ [config] reload failed (${err.message}) — keeping last-good config`);
+      return _configCache;
+    }
+    throw err;
+  }
   _configCache = Object.keys(user).length ? deepMerge(base, user) : base;
   _configCacheKey = cacheKey;
   return _configCache;
