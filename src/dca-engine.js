@@ -92,6 +92,22 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
 
   const result = await consolidatePendingOrders(config, pendingOrders, adapter);
 
+  if (result.success && result.newOrderId == null) {
+    // Every eligible order filled during its cancel window (issue #150): no
+    // consolidated order was placed and no asset is held. Do NOT push a phantom
+    // consolidated entry (orderId: null) into state — the filled originals are
+    // detected and closed by the engine's normal fill reconciliation on the next
+    // sync. Advance the consolidation schedule so we don't immediately retry, then
+    // persist. Skip the ordersConsolidated event (nothing was consolidated).
+    if (config.consolidateInterval && config.consolidateInterval !== 'never') {
+      state.lastConsolidationId = getConsolidationRunId(config.consolidateInterval);
+      state.lastConsolidationTimestamp = Date.now();
+    }
+    stateTracker.saveState(state, exchange);
+    logger.log('INFO', `[${exchange}] Consolidation placed no order — all eligible orders filled during cancel (${result.filledDuringCancelOrderIds?.length || 0} filled)`);
+    return result;
+  }
+
   if (result.success) {
     // Get the orders that were actually consolidated (not skipped)
     const consolidatedOrders = pendingOrders.filter(o =>

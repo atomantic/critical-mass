@@ -158,3 +158,37 @@ describe('applyConsolidationRecovery (issue #149)', () => {
     assert.equal(getPendingOrders(state).length, 2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// updateAfterConsolidation must not push a phantom consolidated order when
+// nothing was consolidated. issue #150 returns { success: true, newOrderId: null }
+// (every eligible order filled during its cancel window); calling this helper
+// with an empty source set / null id previously pushed an orderId:null 'pending'
+// order that crashes the next sync's adapter.getOrder(null).
+// ---------------------------------------------------------------------------
+const { updateAfterConsolidation } = require('../src/state-tracker');
+
+describe('updateAfterConsolidation no-consolidation guard (issue #150)', () => {
+  it('pushes no phantom order when newOrderId is null and there are no source orders', () => {
+    const state = { orders: [{ orderId: 'old-a', status: 'pending', sellQuantity: 0.1, sellPrice: 2400 }] };
+    const before = state.orders.length;
+    updateAfterConsolidation(state, [], null, 0, 0);
+    assert.equal(state.orders.length, before, 'no order should be added');
+    assert.ok(!state.orders.some(o => o.orderId == null), 'no orderId:null phantom');
+  });
+
+  it('still consolidates normally when given real source orders and a new id', () => {
+    const state = {
+      orders: [
+        { orderId: 'old-a', status: 'pending', buyQuantity: 0.1, buyCostBasis: 240, sellQuantity: 0.1, sellPrice: 2400 },
+        { orderId: 'old-b', status: 'pending', buyQuantity: 0.2, buyCostBasis: 500, sellQuantity: 0.2, sellPrice: 2500 },
+      ],
+    };
+    updateAfterConsolidation(state, [...state.orders], 'new-consolidated', 2466, 0.3);
+    const consolidated = state.orders.find(o => o.orderId === 'new-consolidated');
+    assert.ok(consolidated, 'consolidated order added');
+    assert.equal(consolidated.status, 'pending');
+    assert.deepEqual(consolidated.sourceOrderIds, ['old-a', 'old-b']);
+    assert.equal(state.orders.find(o => o.orderId === 'old-a').status, 'consolidated');
+  });
+});
