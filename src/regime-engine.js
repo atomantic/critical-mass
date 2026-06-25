@@ -3143,7 +3143,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (!isDryRun && positionState.activeTpOrderId) {
         adapter.getOrder(positionState.activeTpOrderId)
           .then(async (orderStatus) => {
-            if (orderStatus.status === 'FILLED') {
+            // Coinbase can flip completionPercentage to 100 a tick before status
+            // flips to FILLED — match the rest of the codebase's fill detection so
+            // the reconcile backstop acts during that window (issue #155).
+            if (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100) {
               console.log(`✅ [${exchange}] Reconcile detected TP order ${positionState.activeTpOrderId} filled (WebSocket missed)`);
               // Build fill data in the format handleOrderFill expects
               const fillData = {
@@ -3179,7 +3182,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (!body.tpOrderId) continue;
           adapter.getOrder(body.tpOrderId)
             .then(async (bodyStatus) => {
-              if (bodyStatus.status === 'FILLED') {
+              if (bodyStatus.status === 'FILLED' || bodyStatus.completionPercentage >= 100) {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
                 console.log(`${tierCfg.emoji} [${exchange}] Reconcile detected body TP ${body.tpOrderId} filled`);
                 const fillData = {
