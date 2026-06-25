@@ -12,7 +12,7 @@
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
-const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, isFilledStatus } = require('./shared-utils');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -116,7 +116,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       if (!result.success) {
         // Cancel call rejected — check terminal state before deciding to retry
         const status = await adapter.getOrder(orderId).catch(() => null);
-        if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
+        if (isFilledStatus(status)) {
           console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
           return { cancelled: false, filled: true };
         }
@@ -140,7 +140,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         if (verified?.status === 'CANCELLED') {
           return { cancelled: true, filled: false };
         }
-        if (verified?.status === 'FILLED' || verified?.completionPercentage >= 100) {
+        if (isFilledStatus(verified)) {
           console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
           return { cancelled: false, filled: true };
         }
@@ -446,7 +446,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           // Normalize status to uppercase for comparison
           const normalizedStatus = (status.status || '').toUpperCase();
 
-          if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
+          if (isFilledStatus(status)) {
             // Order filled but WebSocket missed it - notify regime engine
             console.log(`✅ [${exchange}] Stale check detected filled order ${orderId} (WebSocket missed)`);
             // Capture placedAt BEFORE deleting from pendingOrders
@@ -496,7 +496,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const status = await adapter.getOrder(orderId);
         const normalizedStatus = (status.status || '').toUpperCase();
 
-        if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
+        if (isFilledStatus(status)) {
           console.log(`✅ [${exchange}] Refresh detected filled ${order.type} order ${orderId}`);
           const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
@@ -540,7 +540,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       const normalizedStatus = (status.status || '').toUpperCase();
 
-      if (normalizedStatus === 'FILLED' || status.completionPercentage >= 100) {
+      if (isFilledStatus(status)) {
         console.log(`✅ [${exchange}] Fill check detected filled ${order.type} order ${orderId}`);
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);

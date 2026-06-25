@@ -386,8 +386,29 @@ const fmtCurrency = (p) => {
   return `$${p.toFixed(5)}`;
 };
 
+// ============ Order Status Helpers ============
+
+/**
+ * Canonical "is this order fully filled?" predicate.
+ *
+ * An order counts as filled when its status is FILLED **or** its
+ * completionPercentage has reached 100. Both signals are checked because
+ * Coinbase can flip completionPercentage to 100 a tick before status flips to
+ * FILLED (issue #107) — relying on status alone misses that window, which the
+ * reconcile/offline backstops depend on (issue #155). The status comparison is
+ * case-insensitive (some call sites already upper-case before comparing), and a
+ * null/undefined order is never filled.
+ *
+ * @param {{status?: string, completionPercentage?: number}|null|undefined} order
+ * @returns {boolean}
+ */
+const isFilledStatus = (order) =>
+  !!order &&
+  (String(order.status || '').toUpperCase() === 'FILLED' || order.completionPercentage >= 100);
+
 module.exports = {
   BASIS_POINTS_DIVISOR,
+  isFilledStatus,
   readJSON,
   writeJSON,
   parseTSV,

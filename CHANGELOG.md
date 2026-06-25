@@ -31,6 +31,7 @@ All notable changes to this project will be documented in this file.
 - **Remove express-rate-limit from admin server** - Single-user local dashboard doesn't need request rate limiting; was causing 429 errors on page load
 
 ### Changed
+- **Extract shared `isFilledStatus(order)` predicate** - The `status === 'FILLED' || completionPercentage >= 100` fill-detection check was duplicated ~13 times across `regime-engine.js`, `order-executor.js`, and `order-manager.js`. It now lives once in `shared-utils.js` (null-safe, case-insensitive status) with direct unit coverage, replacing every inline occurrence. The `completionPercentage >= 100` arm guards the Coinbase completion-before-status window the reconcile/offline backstops rely on (#107, #155) (#174)
 - **Remove baseSizeUsdc from aggressiveness presets** - Base size is now a platform/fund config only, no longer overridden when switching aggressiveness levels
 
 ### Fixed

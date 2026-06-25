@@ -3,6 +3,7 @@ const { getAdapter } = require('./adapters');
 const { log } = require('./logger');
 const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { getBaseCurrency } = require('./config-utils');
+const { isFilledStatus } = require('./shared-utils');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -26,7 +27,7 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const order = await adapter.getOrder(orderId);
 
-    if (order.status === 'FILLED' || order.completionPercentage >= 100) {
+    if (isFilledStatus(order)) {
       // Get detailed fill info with fees/rebates
       const fillSummary = await adapter.getOrderFillSummary(orderId);
 
