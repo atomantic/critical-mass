@@ -26,7 +26,7 @@ describe('dry-run-state saveState — immediate branch preserves queued funds (#
     const { mod, modPath } = freshModule();
     const { saveState, STATE_FILE } = mod;
     t.after(() => {
-      try { fs.unlinkSync(STATE_FILE); } catch { /* never written */ }
+      fs.rmSync(STATE_FILE, { force: true });
       delete require.cache[modPath];
     });
 
@@ -55,7 +55,7 @@ describe('dry-run-state saveState — immediate branch preserves queued funds (#
     const { mod, modPath } = freshModule();
     const { saveState, STATE_FILE } = mod;
     t.after(() => {
-      try { fs.unlinkSync(STATE_FILE); } catch { /* never written */ }
+      fs.rmSync(STATE_FILE, { force: true });
       delete require.cache[modPath];
     });
 
