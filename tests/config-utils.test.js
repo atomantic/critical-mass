@@ -532,6 +532,25 @@ describe('loadRawConfig', () => {
     assert.deepStrictEqual(result, good, 'returns the last-good cached config');
     assert.ok(warnings.some(w => w.includes('reload failed')), 'logs a reload-failed warning');
   });
+
+  it('warns only once across repeated failed reloads (no per-tick spam)', () => {
+    const baseConfig = { exchanges: { coinbase: { enabled: true } } };
+    setupFsMocks({ base: baseConfig, user: null });
+    loadRawConfig(); // prime _configCache with a good load
+
+    mock.method(fs, 'readFileSync', () => 'not json{');
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    try {
+      loadRawConfig();
+      loadRawConfig();
+      loadRawConfig();
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 1, 'persistent corruption must warn once, not every call');
+  });
 });
 
 describe('loadConfig', () => {
