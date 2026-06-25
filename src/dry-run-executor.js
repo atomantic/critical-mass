@@ -303,8 +303,11 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
 
     for (const [orderId, order] of pendingOrders) {
       if (order.type === 'entry' && order.side === 'buy' && order.status === 'open') {
-        // Entry fills if price drops to or below our bid level (with small tolerance for spread)
-        if (currentPrice <= order.price * 1.001) {
+        // Entry fills only if the market trades at or below our bid level — a real
+        // maker buy limit never fills above the limit price. Matches the exact,
+        // tolerance-free TP-side check in checkTpFills (currentPrice >= order.price)
+        // so dry-run fills are not asymmetrically optimistic about entries. (#154)
+        if (currentPrice <= order.price) {
           simulateFill(orderId, order.price);
         } else if (now - order.placedAt > config.orderStaleMs) {
           // Cancel stale entries that haven't filled
