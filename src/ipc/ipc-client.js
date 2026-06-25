@@ -116,6 +116,10 @@ const createIPCClient = (url, name, options = {}) => {
    * @param {Object} msg
    */
   const handleIncoming = (msg) => {
+    // A well-formed JSON frame can still be a non-object (e.g. the literal
+    // `null`); guard before dereferencing so it can't throw out of the handler.
+    if (!msg || typeof msg !== 'object') return;
+
     if (msg.type === MSG_TYPE.PONG) return;
 
     if (msg.type === MSG_TYPE.RESPONSE) {
