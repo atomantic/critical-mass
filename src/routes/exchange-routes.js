@@ -398,10 +398,13 @@ module.exports = (app, deps) => {
     const config = getFundConfig(exchange, pair);
 
     const { loadRegimeState } = require('../state-tracker');
-    const { createFillLedger } = require('../fill-ledger');
+    const { getCachedFillLedger } = require('../fill-ledger');
     const regimeState = loadRegimeState(exchange, pair);
     const position = regimeState.position || {};
-    const fillLedger = createFillLedger(exchange, config.productId, pair);
+    // Read-only, cached: this endpoint is polled every 30s by the dashboard.
+    // Reconstructing (and re-parsing the multi-MB ledger) on each poll blocks
+    // the gateway event loop; the cache reloads only on file change (#183).
+    const fillLedger = getCachedFillLedger(exchange, config.productId, pair);
     const allFills = fillLedger.getAllFills();
 
     const buyFills = allFills.filter(f => f.side === 'buy');

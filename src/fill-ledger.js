@@ -89,9 +89,17 @@ const findInvalidLedgerReason = (data) => {
  * @param {string} exchange - Exchange name
  * @param {string} [productId] - Product ID (e.g. 'BTC-USDC') used to derive base currency for logs
  * @param {string} [pair] - Pair name; defaults to the exchange's default pair (resolved when ledger is created)
+ * @param {Object} [opts] - Options
+ * @param {boolean} [opts.quiet=false] - Suppress the routine "Loaded N fills" /
+ *   "Restored active cycle" info logs. Read-only gateway consumers that
+ *   construct a throwaway ledger per HTTP request set this so they don't spam
+ *   the gateway log on every dashboard poll; engines/scripts leave it off so
+ *   their once-per-process boot diagnostic is still emitted. Corruption
+ *   warnings/errors are always logged regardless.
  * @returns {Object} Fill ledger instance
  */
-const createFillLedger = (exchange, productId, pair) => {
+const createFillLedger = (exchange, productId, pair, opts = {}) => {
+  const quiet = opts.quiet === true;
   /** @type {Map<string, Fill>} */
   const fills = new Map();
   /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
@@ -162,7 +170,7 @@ const createFillLedger = (exchange, productId, pair) => {
       // momentarily-missing file (e.g., operator's edit/rename window)
       // doesn't wipe live data. To intentionally clear, write `[]` to
       // the file — that loads cleanly to empty state.
-      console.log(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`);
+      if (!quiet) console.log(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`);
       hasLoadedSuccessfully = true;
       return;
     }
@@ -277,7 +285,7 @@ const createFillLedger = (exchange, productId, pair) => {
       const sellRatio = stats.sellsAsset / stats.buysAsset;
       if (sellRatio < 1.0) {
         currentCycleId = fill.cycleId;
-        console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sells)`);
+        if (!quiet) console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sells)`);
         break;
       }
     }
@@ -294,7 +302,7 @@ const createFillLedger = (exchange, productId, pair) => {
     nextCycleNumber = maxCycleNum + 1;
 
     hasLoadedSuccessfully = true;
-    console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
+    if (!quiet) console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
   };
 
   // Counter for tests: increments only when persist() actually writes to
@@ -1480,7 +1488,67 @@ const createFillLedger = (exchange, productId, pair) => {
   };
 };
 
+/**
+ * Read-only fill-ledger cache for the gateway. Keyed on (exchange|pair) and
+ * invalidated by the ledger file's mtime+size, so repeated dashboard polls
+ * reuse an already-loaded instance instead of re-reading and re-parsing the
+ * whole file (multi-MB / tens of thousands of rows) on every request — which
+ * otherwise blocks the gateway event loop on each poll (issue #183).
+ *
+ * ONLY for read-only consumers (status/summary/cost-basis HTTP routes). The
+ * returned instance is shared across requests; callers must NOT mutate it
+ * (no ingestFill/persist/annotate). Engines/scripts that own a mutable live
+ * ledger must keep using createFillLedger directly. The cache is per-process,
+ * so the gateway and each engine keep independent caches.
+ * @type {Map<string, {ledger: Object, mtimeMs: number, size: number}>}
+ */
+const _readOnlyLedgerCache = new Map();
+
+/**
+ * Get a cached, quiet, read-only fill ledger for the given fund. Reloads only
+ * when the on-disk file's mtime or size changes; otherwise returns the cached
+ * instance without touching disk.
+ * @param {string} exchange
+ * @param {string} [productId]
+ * @param {string} [pair]
+ * @returns {Object} Fill ledger instance (read-only — do not mutate)
+ */
+const getCachedFillLedger = (exchange, productId, pair) => {
+  const filePath = getFillLedgerPath(exchange, pair);
+  let mtimeMs = 0;
+  let size = 0;
+  let exists = false;
+  try {
+    const st = fs.statSync(filePath);
+    mtimeMs = st.mtimeMs;
+    size = st.size;
+    exists = true;
+  } catch { /* missing file → not cached (see below) */ }
+
+  // Only cache funds whose ledger file actually exists. `pair` reaches this from
+  // the HTTP layer format-validated but NOT existence-checked, so a client
+  // polling /summary?pair=<bogus> (many valid-format values) would otherwise
+  // insert a permanent cache entry + empty ledger per distinct value and grow
+  // the gateway heap without bound. A nonexistent fund just builds a throwaway
+  // (cheap: load() early-returns on the missing file) and is never cached.
+  if (!exists) return createFillLedger(exchange, productId, pair, { quiet: true });
+
+  // Note: key intentionally omits productId — it only feeds log formatting in the
+  // ledger, never a value returned to read-only callers, so a (rare) productId
+  // divergence for the same (exchange,pair) can't affect cached results.
+  const key = `${exchange}|${pair}`;
+  const cached = _readOnlyLedgerCache.get(key);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+    return cached.ledger;
+  }
+
+  const ledger = createFillLedger(exchange, productId, pair, { quiet: true });
+  _readOnlyLedgerCache.set(key, { ledger, mtimeMs, size });
+  return ledger;
+};
+
 module.exports = {
   createFillLedger,
+  getCachedFillLedger,
   getFillLedgerPath,
 };
