@@ -144,9 +144,11 @@ const aggregateCandles = (sourceCandles, targetIntervalMs) => {
 /**
  * Derive intermediate timeframes from seeded candle data.
  * @param {ReturnType<typeof createCandleAggregator>} agg
+ * @param {number} [now=Date.now()] - Reference time; all derivations happen at one instant
+ *   after the fetches, so a single sample is correct (unlike the per-fetch direct seeds).
  * @returns {number} total derived candles
  */
-const seedDerivedTimeframes = (agg) => {
+const seedDerivedTimeframes = (agg, now = Date.now()) => {
   const derivations = [
     { source: '1m',  target: '3m',  intervalMs: 180_000 },
     { source: '1m',  target: '10m', intervalMs: 600_000 },
@@ -157,12 +159,21 @@ const seedDerivedTimeframes = (agg) => {
   ];
   let derived = 0;
   for (const { source, target, intervalMs } of derivations) {
+    // Include the source's in-progress (current) bucket, not just completed candles —
+    // otherwise the derived in-progress bucket omits the pre-start portion of the open
+    // source bucket, which aggregateUp never replays (it only rolls FUTURE completed 1m
+    // candles), leaving the derived candle short on volume/high/low (issue #145).
     const sourceCandles = agg.getCandles(source);
-    const targetCandles = aggregateCandles(sourceCandles, intervalMs);
+    const sourceCurrent = agg.getCurrentCandle(source);
+    const all = sourceCurrent ? [...sourceCandles, sourceCurrent] : sourceCandles;
+    const targetCandles = aggregateCandles(all, intervalMs);
     if (targetCandles.length) {
-      // Derived from already-completed candles, so the in-progress bucket does NOT
-      // include the 1m boundary partial — leave boundaryInclusive false (issue #145).
-      agg.seedCandles(target, targetCandles, Date.now());
+      // Only a 1m-sourced derivation carries the FULL boundary minute (current['1m']
+      // is the base bucket, never deducted), so it must deduct to avoid the later
+      // roll-up double count. 5m/1h/1d source currents were already boundary-deducted
+      // when directly seeded, so their derived buckets already exclude the boundary —
+      // boundaryInclusive false (issue #145).
+      agg.seedCandles(target, targetCandles, now, { boundaryInclusive: source === '1m' });
       derived += targetCandles.length;
       log('INFO', `🕯️ candle-cache: derived ${targetCandles.length} ${target} candles from ${source}`);
     }
@@ -317,4 +328,4 @@ const createCandleCache = () => {
   return { seedFromPublicAPI, processTick, getCandles, getAllCandles, getAggregator, seedAll };
 };
 
-module.exports = { createCandleCache };
+module.exports = { createCandleCache, seedDerivedTimeframes, aggregateCandles };
