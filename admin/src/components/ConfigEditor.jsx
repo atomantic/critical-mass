@@ -90,6 +90,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [expandedPresets, setExpandedPresets] = useState(new Set())
   const prevExchangeRef = useRef(exchange)
   const prevStrategyRef = useRef(strategy)
+  // Count of in-flight toggle auto-saves. The background summary poll refreshes
+  // initialConfig every ~30s; without this guard, a poll landing between an
+  // optimistic toggle and its persisted write would fire the sync effect below
+  // (isDirty is never set for a toggle) and snap the switch back to stale state.
+  const togglePendingRef = useRef(0)
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
@@ -107,9 +112,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     }
   }, [exchange, strategy, initialConfig])
 
-  // Sync with initialConfig when not dirty (e.g., server-side refresh)
+  // Sync with initialConfig when not dirty (e.g., server-side refresh). Skip
+  // while a toggle auto-save is in flight so a background poll can't clobber the
+  // optimistic value before the write resolves.
   useEffect(() => {
-    if (initialConfig && !isDirty) {
+    if (initialConfig && !isDirty && togglePendingRef.current === 0) {
       setConfig(initialConfig)
     }
   }, [initialConfig]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -225,8 +232,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // the saved state. `enabled`/`dryRun` write to the same place the Save button
   // does — see the PATCH /api/:exchange/config and PUT regime/config handlers.
   const persistToggle = async (label, doFetch, optimistic, revert) => {
+    togglePendingRef.current += 1
     optimistic()
     const res = await doFetch()
+    togglePendingRef.current -= 1
     if (res.ok) {
       setMessage({ type: 'success', text: `${label} saved` })
       onSave?.()
