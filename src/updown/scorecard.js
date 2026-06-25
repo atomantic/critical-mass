@@ -145,6 +145,34 @@ const evaluateContractOutcome = (contractSnapshot, exitPrice) => {
 }
 
 /**
+ * Tally hydrated JSONL records into outcomes + prediction counts.
+ *
+ * Mirrors the live `recordPrediction` counting so a restart that hydrates from
+ * disk matches the running totals: a neutral prediction is a *skip*, not a
+ * prediction, so it counts toward `skipCount` and is excluded from
+ * `totalPredictions`. Counting every prediction record (neutrals included)
+ * double-categorizes neutrals — they're in both totals (issue #158).
+ *
+ * @param {Array<Object|null>} records - parsed JSONL records
+ * @returns {{outcomes: Object[], predCount: number, skipCount: number, totalPredictions: number}}
+ */
+const tallyHistory = (records) => {
+  const outcomes = []
+  let predCount = 0
+  let skipCount = 0
+  for (const record of records) {
+    if (!record) continue
+    if (record.type === 'outcome' && record.compositeCorrect != null) {
+      outcomes.push(record)
+    } else if (record.type === 'prediction') {
+      predCount++
+      if (record.compositeDirection === 'neutral') skipCount++
+    }
+  }
+  return { outcomes, predCount, skipCount, totalPredictions: predCount - skipCount }
+}
+
+/**
  * Create a scorecard instance
  * @param {Object} opts
  * @param {Object} opts.io - Socket.IO server instance
@@ -557,24 +585,21 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     // Load last 7 days of data (matches BUFFER_SIZE of ~2000 outcomes)
     const recentFiles = jsonlFiles.slice(-7)
 
+    // Neutrals are skips, not predictions — tallyHistory excludes them from
+    // totalPredictions so reload mirrors live counting (issue #158).
     let loaded = 0
-    let predCount = 0
-    let skipCount = 0
+    let predictions = 0
+    let skipped = 0
     for (const file of recentFiles) {
       const content = await readFile(path.join(SCORECARD_DIR, file), 'utf8').catch(() => '')
-      const lines = content.split('\n').filter(Boolean)
-      for (const line of lines) {
-        let record
-        try { record = JSON.parse(line) } catch { continue }
-        if (!record) continue
-        if (record.type === 'outcome' && record.compositeCorrect != null) {
-          outcomeBuffer.push(record)
-          loaded++
-        } else if (record.type === 'prediction') {
-          predCount++
-          if (record.compositeDirection === 'neutral') skipCount++
-        }
-      }
+      const records = content.split('\n').filter(Boolean).map(line => {
+        try { return JSON.parse(line) } catch { return null }
+      })
+      const tally = tallyHistory(records)
+      for (const outcome of tally.outcomes) outcomeBuffer.push(outcome)
+      loaded += tally.outcomes.length
+      predictions += tally.totalPredictions
+      skipped += tally.skipCount
     }
 
     // Trim to buffer size
@@ -582,9 +607,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       outcomeBuffer.splice(0, outcomeBuffer.length - BUFFER_SIZE)
     }
 
-    totalPredictions = predCount
-    totalSkipped = skipCount
-    log('INFO', `📊 Scorecard loaded history outcomes=${loaded} predictions=${predCount} skipped=${skipCount} files=${recentFiles.length}`)
+    totalPredictions = predictions
+    totalSkipped = skipped
+    log('INFO', `📊 Scorecard loaded history outcomes=${loaded} predictions=${predictions} skipped=${skipped} files=${recentFiles.length}`)
   }
 
   /**
@@ -668,4 +693,4 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
   return { recordPrediction, getMetrics, start, stop }
 }
 
-module.exports = { createScorecard, computeAdaptiveWeights, evaluateContractOutcome }
+module.exports = { createScorecard, computeAdaptiveWeights, evaluateContractOutcome, tallyHistory }
