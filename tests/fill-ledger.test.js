@@ -1546,4 +1546,58 @@ describe('Fill Ledger', () => {
       assert.equal(preview.cycleDetails[0].holdbackAsset, real.cycleDetails[0].holdbackAsset);
     });
   });
+
+  // =======================================================================
+  // Read-only caching + quiet logs (issue #183)
+  // =======================================================================
+  describe('getCachedFillLedger / quiet (issue #183)', () => {
+    it('quiet:true suppresses the routine load info logs; default still logs', () => {
+      const { createFillLedger } = freshFillLedgerModule();
+      // Seed a persisted file so load() reaches the "Loaded N fills" path
+      // (not the "fill-ledger not found" early return).
+      const writer = createFillLedger('cache-ex');
+      writer.startNewCycle();
+      writer.ingestFill(makeBuyFill({ tradeId: 'q-1' }));
+      writer.persist({ force: true });
+
+      const lines = [];
+      const orig = console.log;
+      console.log = (...a) => { lines.push(a.join(' ')); };
+      try {
+        createFillLedger('cache-ex', undefined, undefined, { quiet: true });
+        const quietLines = lines.filter(l => l.includes('Loaded') || l.includes('Restored active cycle'));
+        assert.deepEqual(quietLines, [], 'quiet load must not emit routine info logs');
+
+        createFillLedger('cache-ex'); // default: not quiet
+        const loudLines = lines.filter(l => l.includes('Loaded'));
+        assert.ok(loudLines.length >= 1, 'non-quiet load should emit "Loaded N fills"');
+      } finally {
+        console.log = orig;
+      }
+    });
+
+    it('returns the SAME instance while the file is unchanged, and a NEW one after it changes', () => {
+      const mod = freshFillLedgerModule();
+      const { createFillLedger, getCachedFillLedger } = mod;
+
+      // Seed a persisted file via a writable ledger.
+      const writer = createFillLedger('cache-ex');
+      writer.startNewCycle();
+      writer.ingestFill(makeBuyFill({ tradeId: 'c-1' }));
+      writer.persist({ force: true });
+
+      const a = getCachedFillLedger('cache-ex');
+      const b = getCachedFillLedger('cache-ex');
+      assert.strictEqual(a, b, 'unchanged file must return the cached instance');
+      assert.equal(a.getFillCount(), 1);
+
+      // Change the file (size changes → cache invalidates regardless of mtime granularity).
+      writer.ingestFill(makeBuyFill({ tradeId: 'c-2', orderId: 'order-buy-2' }));
+      writer.persist({ force: true });
+
+      const c = getCachedFillLedger('cache-ex');
+      assert.notStrictEqual(c, a, 'changed file must produce a fresh instance');
+      assert.equal(c.getFillCount(), 2, 'fresh instance must reflect the new fill');
+    });
+  });
 });

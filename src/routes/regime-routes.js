@@ -89,9 +89,12 @@ const buildOfflineStatus = (exchange, pair) => {
 
   // Re-derive from the ledger — a stopped engine leaves stale values on disk.
   try {
-    const { createFillLedger } = require('../fill-ledger');
+    const { getCachedFillLedger } = require('../fill-ledger');
     const productId = config.productId || pair;
-    const fl = createFillLedger(exchange, productId, pair);
+    // Read-only, cached (#183): the offline fallback fires on every status poll
+    // while the engine is unreachable; without caching each poll re-parses the
+    // whole multi-MB ledger on the gateway event loop.
+    const fl = getCachedFillLedger(exchange, productId, pair);
     const derived = fl.getDerivedRealizedPnL();
     position.realizedPnL = derived.realizedPnL;
     position.realizedAssetPnL = derived.realizedAssetPnL;
