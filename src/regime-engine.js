@@ -458,6 +458,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const recentlyProcessedBuyFills = new Set(); // Dedup guard: prevents buy orders from being processed twice across WS/polling (would duplicate the body at full size)
   const tpPlacementInFlight = new Set(); // Dedup guard: prevents concurrent placeBodyTp calls for the same body
 
+  // Transition-only logging guards (#187). These states persist across many
+  // updateMetrics cycles (a body lacking a TP, a sub-min "dust" body waiting to
+  // consolidate, a low-balance entry pause), so logging them every ~60s cycle
+  // floods the log with identical lines. We log on state CHANGE only — control
+  // flow / trading behavior is unchanged; the placement/entry attempts still run
+  // every cycle so the state recovers the moment it can.
+  let lastTpNeedKey = null;            // sorted body-ids currently lacking a TP
+  const dustWaitLoggedQty = new Map(); // bodyId -> last-logged sub-min rounded qty
+  let lowBalancePauseLogged = false;   // true while inside an already-logged low-balance pause
+
   // Race 3: Merge-snapshot maps for fills arriving after body removal during merges
   // tpOrderId → body snapshot (active during merge operation)
   const pendingMergeTpOrders = new Map();
@@ -3100,8 +3110,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const bodiesWithoutTp = bodies.filter(b => !b.tpOrderId);
     const needsTp = bodies.length > 0 ? bodiesWithoutTp.length > 0 : !positionState.activeTpOrderId;
     if (needsTp) {
-      console.log(`📝 [${exchange}] Position without TP order detected — bodies=${bodies.length} (${bodiesWithoutTp.length} need TP: ${bodiesWithoutTp.map(b => b.id.slice(-8)).join(',')}), avgCost=${fmtPrice(positionState.avgCostBasis)}, cycleBuys=${positionState.cycleBuys}`);
+      // Log only when the set of TP-needing bodies changes — a body stuck below
+      // the exchange min (see placeTakeProfitOrder) otherwise re-logs every cycle.
+      const tpNeedKey = bodiesWithoutTp.map(b => b.id).sort().join(',');
+      if (tpNeedKey !== lastTpNeedKey) {
+        console.log(`📝 [${exchange}] Position without TP order detected — bodies=${bodies.length} (${bodiesWithoutTp.length} need TP: ${bodiesWithoutTp.map(b => b.id.slice(-8)).join(',')}), avgCost=${fmtPrice(positionState.avgCostBasis)}, cycleBuys=${positionState.cycleBuys}`);
+        lastTpNeedKey = tpNeedKey;
+      }
       await placeTakeProfitOrder();
+    } else {
+      lastTpNeedKey = null;
     }
   };
 
@@ -3605,9 +3623,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (budget.action === 'cooldown') {
       const cooldownMs = config.insufficientFundsCooldownMs || 60000;
       insufficientFundsCooldownUntil = Date.now() + cooldownMs;
-      console.log(`⏸️ [${exchange}] Wallet ${quoteCurrency} balance $${(availableQuote || 0).toFixed(2)} below min order $${minSize} — pausing entries for ${cooldownMs / 1000}s`);
+      // Log once per low-balance episode, not on every cooldown re-trigger — the
+      // pause re-fires each cycle while the wallet stays underfunded (#187). The
+      // flag resets below once an entry can be funded again.
+      if (!lowBalancePauseLogged) {
+        console.log(`⏸️ [${exchange}] Wallet ${quoteCurrency} balance $${(availableQuote || 0).toFixed(2)} below min order $${minSize} — pausing entries for ${cooldownMs / 1000}s`);
+        lowBalancePauseLogged = true;
+      }
       return;
     }
+    lowBalancePauseLogged = false;
     sizing.sizeUsdc = budget.sizeUsdc;
 
     // Calculate dynamic offset based on momentum direction
@@ -3849,7 +3874,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             return false;
           }
         } else {
-          console.log(`📏 [${exchange}] Body ${body.id.slice(-8)} assetQty ${fullQty} (rounded ${roundedFullQty}) below exchange min ${baseMinSize}, waiting for consolidation`);
+          // Re-log only when this body's rounded qty changes (consolidation
+          // progress); otherwise a permanently-stranded dust body floods the
+          // log every cycle (#187).
+          if (dustWaitLoggedQty.get(body.id) !== roundedFullQty) {
+            console.log(`📏 [${exchange}] Body ${body.id.slice(-8)} assetQty ${fullQty} (rounded ${roundedFullQty}) below exchange min ${baseMinSize}, waiting for consolidation`);
+            dustWaitLoggedQty.set(body.id, roundedFullQty);
+          }
           return false;
         }
       }
