@@ -286,11 +286,34 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   const sellResult = await adapter.placeLimitSell(config.productId, totalAsset, consolidatedPrice);
 
   if (!sellResult.success) {
+    const error = `Failed to place consolidated order: ${sellResult.errorMessage}`;
+    // The eligible sells are already cancelled, so the held asset is now naked
+    // (no resting take-profit). Re-place the original orders so the position is
+    // never left unprotected on a consolidated-place failure. Note: we can't
+    // place the consolidated order before cancelling — the asset is still locked
+    // in the open sells, so the exchange would reject it for insufficient balance.
+    log('ERROR', `${error} — re-placing ${eligibleOrders.length} original sells to avoid a naked position`);
+    const restoredOrders = [];
+    const failedRestoreOrderIds = [];
+    for (const order of eligibleOrders) {
+      const restoreResult = await adapter.placeLimitSell(config.productId, order.sellQuantity, order.sellPrice);
+      if (restoreResult.success) {
+        // Capture the old→new mapping so the caller can re-point tracked state
+        // at the new exchange order IDs (the cancelled IDs no longer exist).
+        restoredOrders.push({ oldOrderId: order.orderId, newOrderId: restoreResult.orderId });
+      } else {
+        failedRestoreOrderIds.push(order.orderId);
+        log('ERROR', `Failed to restore sell for cancelled order ${order.orderId}: ${restoreResult.errorMessage}`);
+      }
+    }
+
     return {
       success: false,
-      error: `Failed to place consolidated order: ${sellResult.errorMessage}`,
+      error,
       cancelledOrderIds,
       skippedOrderIds,
+      restoredOrders,
+      failedRestoreOrderIds,
     };
   }
 

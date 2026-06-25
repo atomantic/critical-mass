@@ -484,6 +484,45 @@ const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSell
 };
 
 /**
+ * Sync state after a consolidation that FAILED to place its consolidated order
+ * and fell back to re-placing the original sells (issue #149). The cancelled
+ * exchange order IDs no longer exist, so re-point each tracked order at its new
+ * ID; sells that could not be re-placed are naked, so flag them sell_failed
+ * (which also excludes them from getPendingOrders).
+ * @param {BotState} state - Current state (mutated in place)
+ * @param {{oldOrderId: string, newOrderId: string}[]} [restoredOrders] - Re-placed sells
+ * @param {string[]} [failedRestoreOrderIds] - Cancelled sells that could not be re-placed
+ * @returns {BotState} Updated state
+ */
+const applyConsolidationRecovery = (state, restoredOrders = [], failedRestoreOrderIds = []) => {
+  const now = new Date().toISOString();
+
+  for (const { oldOrderId, newOrderId } of restoredOrders) {
+    const order = state.orders.find(o => o.orderId === oldOrderId);
+    if (order) {
+      order.orderId = newOrderId;
+      order.restoredFrom = oldOrderId;
+      order.restoredAt = now;
+    }
+  }
+
+  for (const oldOrderId of failedRestoreOrderIds) {
+    const order = state.orders.find(o => o.orderId === oldOrderId);
+    if (order) {
+      order.status = 'sell_failed';
+      order.sellFailedReason = 'consolidation place failed and sell could not be re-placed';
+      order.sellFailedAt = now;
+      // No resting sell remains for this order, so drop its exposure from the
+      // pending-sell aggregates (Math.max guards against float drift).
+      state.outstandingOrdersAsset = Math.max(0, state.outstandingOrdersAsset - (order.sellQuantity || 0));
+      state.outstandingOrdersUSDC = Math.max(0, state.outstandingOrdersUSDC - ((order.sellQuantity || 0) * (order.sellPrice || 0)));
+    }
+  }
+
+  return state;
+};
+
+/**
  * Initialize Fibonacci state fields if not present
  * @param {BotState} state - Current state
  * @param {ExchangeConfig} config - Configuration
@@ -952,6 +991,7 @@ module.exports = {
   updateAfterBuy,
   updateAfterSellFill,
   updateAfterConsolidation,
+  applyConsolidationRecovery,
   getPendingOrders,
   getStateFile,
   // Fibonacci state management

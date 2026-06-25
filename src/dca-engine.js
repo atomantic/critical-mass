@@ -130,6 +130,17 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
 
     logger.log('INFO', `[${exchange}] Consolidation complete: ${result.consolidatedCount} orders -> 1 @ $${result.consolidatedPrice.toFixed(2)}`);
   } else {
+    // Consolidation cancelled the original sells before its place failed; the
+    // recovery path re-placed them under new exchange IDs (issue #149). Re-point
+    // tracked state at the new IDs and flag any sell that couldn't be re-placed,
+    // then persist so the engine doesn't keep tracking the cancelled orders.
+    if (result.restoredOrders?.length || result.failedRestoreOrderIds?.length) {
+      stateTracker.applyConsolidationRecovery(state, result.restoredOrders, result.failedRestoreOrderIds);
+      stateTracker.saveState(state, exchange);
+      if (result.failedRestoreOrderIds?.length) {
+        logger.log('ERROR', `[${exchange}] ${result.failedRestoreOrderIds.length} sell(s) left naked after failed consolidation — operator action needed: ${result.failedRestoreOrderIds.join(', ')}`);
+      }
+    }
     logger.log('ERROR', `[${exchange}] Consolidation failed: ${result.error}`);
     tradeEvents.error(exchange, `Consolidation failed: ${result.error}`);
   }
