@@ -77,10 +77,11 @@ function SectionCard({ title, children, className = '' }) {
   )
 }
 
-function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca' }) {
+function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca', engineRunning = false, engineDryRun = false, onRestart }) {
   const [config, setConfig] = useState(initialConfig || {})
   const [saving, setSaving] = useState(false)
   const [toggleBusy, setToggleBusy] = useState(false)
+  const [restarting, setRestarting] = useState(false)
   const [message, setMessage] = useState(null)
   const [isDirty, setIsDirty] = useState(false)
   const [presets, setPresets] = useState(null)
@@ -112,6 +113,16 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       }
     }
   }, [exchange, strategy, initialConfig])
+
+  // A regime fund needs an engine restart to apply a dryRun change whenever the
+  // saved config diverges from the mode the running engine actually started in.
+  // Derived from authoritative, freshly-polled server state (engineRunning /
+  // engineDryRun, refreshed every 5s and on fund switch) rather than a local
+  // baseline — so it self-corrects across toggles, reverts, other-tab edits, and
+  // navigation without any stored flag to go stale. dryRun only takes effect at
+  // engine construction (the engine captures it once and picks its live-vs-paper
+  // executor), so a config/engine mismatch is exactly the restart trigger.
+  const restartNeeded = isRegime && engineRunning && config.dryRun !== engineDryRun
 
   // Sync with initialConfig when not dirty (e.g., server-side refresh). Skip
   // while a toggle auto-save is in flight so a background poll can't clobber the
@@ -245,6 +256,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const res = await doFetch()
       if (res.ok) {
         setMessage({ type: 'success', text: `${label} saved` })
+        // restartNeeded is derived from engine vs saved state — the optimistic
+        // config update plus onSave's refetch drive the banner; nothing to set.
         onSave?.()
       } else {
         revert()
@@ -258,6 +271,32 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       togglePendingRef.current -= 1
       setToggleBusy(false)
     }
+  }
+
+  // Restart the regime engine so it reconstructs from the freshly-saved config.
+  // This is the only way a dryRun change actually takes effect — the engine
+  // captures dryRun (and picks its live vs paper order executor) at construction
+  // and never re-derives it on a config update. start refuses if already
+  // running, so stop first (best-effort: a stopped engine just starts fresh).
+  const handleRestartEngine = async () => {
+    setRestarting(true)
+    setMessage(null)
+    await fetch(`/api/${exchange}/regime/stop${pairQuery}`, { method: 'POST' }).catch(() => {})
+    const start = await fetch(`/api/${exchange}/regime/start${pairQuery}`, { method: 'POST' }).catch(() => null)
+    if (start && start.ok) {
+      setMessage({ type: 'success', text: 'Engine restarted — change applied' })
+      onSave?.()
+      onRestart?.() // refresh engine status so the derived restart banner clears
+    } else {
+      // Stop is best-effort but may have succeeded, so the engine can now be
+      // STOPPED rather than running its old mode. Say so explicitly — "failed to
+      // restart" alone would imply nothing changed. The banner stays (derived
+      // from the still-mismatched / now-stopped engine state) for a retry.
+      const err = start ? await start.json().catch(() => ({})) : {}
+      setMessage({ type: 'error', text: err.error || 'Engine may now be stopped — start it manually from the dashboard' })
+      onRestart?.() // refresh engine status to reflect the stop
+    }
+    setRestarting(false)
   }
 
   const handleToggleDryRun = () => {
@@ -399,6 +438,20 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               : 'bg-red-900/50 border border-red-700 text-red-200'
           }`}>
             {message.text}
+          </div>
+        )}
+
+        {restartNeeded && (
+          <div className="mb-3 p-2 rounded text-sm bg-amber-900/40 border border-amber-700 text-amber-200 flex items-center justify-between gap-3">
+            <span>⚠️ Dry-run mode is applied when the engine starts — restart it for this change to take effect.</span>
+            <button
+              type="button"
+              onClick={handleRestartEngine}
+              disabled={restarting}
+              className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium disabled:opacity-50 whitespace-nowrap"
+            >
+              {restarting ? 'Restarting…' : 'Restart Engine'}
+            </button>
           </div>
         )}
 
