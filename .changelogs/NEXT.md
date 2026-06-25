@@ -1,5 +1,8 @@
 # Unreleased Changes
 
+## Dev UI
+- The admin Dev UI now loads when accessed over a private Tailscale network hostname (e.g. a `*.ts.net` MagicDNS address), instead of being blocked with a "host is not allowed" error.
+
 ## Market data candles
 - **[issue-145] No duplicate candles at the seed/live boundary** — after seeding historical candles on startup, the still-open candle is now continued by live ticks instead of being duplicated, so charts and trend signals read clean, single-timestamped candles with complete volume rather than two overlapping candles per timeframe.
 

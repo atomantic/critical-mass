@@ -13,4 +13,5 @@ tmp-*
 !docs/*.png
 .ghostty-theme
 .claude/
+.antigravitycli/
 scripts/*.txt

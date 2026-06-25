@@ -10,6 +10,8 @@ export default defineConfig({
   server: {
     port: UI_PORT,
     host: '0.0.0.0',
+    // Allow access over the private Tailscale network (e.g. *.ts.net MagicDNS hosts)
+    allowedHosts: true,
     proxy: {
       '/api': {
         target: `http://localhost:${API_PORT}`,
