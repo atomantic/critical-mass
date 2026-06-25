@@ -759,6 +759,8 @@
  * @property {number} [consolidatedCount] - Number of orders consolidated
  * @property {string[]} [skippedOrderIds] - Order IDs skipped due to partial fills
  * @property {string[]} [cancelledOrderIds] - Order IDs that were cancelled
+ * @property {string[]} [restoredOrderIds] - New order IDs re-placed after a consolidated-place failure (naked-position recovery)
+ * @property {string[]} [failedRestoreOrderIds] - Cancelled order IDs that could NOT be re-placed during recovery
  * @property {string} [error] - Error message if consolidation failed
  */
 
