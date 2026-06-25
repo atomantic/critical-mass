@@ -585,9 +585,11 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     // Load last 7 days of data (matches BUFFER_SIZE of ~2000 outcomes)
     const recentFiles = jsonlFiles.slice(-7)
 
+    // Neutrals are skips, not predictions — tallyHistory excludes them from
+    // totalPredictions so reload mirrors live counting (issue #158).
     let loaded = 0
-    let predCount = 0
-    let skipCount = 0
+    let predictions = 0
+    let skipped = 0
     for (const file of recentFiles) {
       const content = await readFile(path.join(SCORECARD_DIR, file), 'utf8').catch(() => '')
       const records = content.split('\n').filter(Boolean).map(line => {
@@ -596,8 +598,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       const tally = tallyHistory(records)
       for (const outcome of tally.outcomes) outcomeBuffer.push(outcome)
       loaded += tally.outcomes.length
-      predCount += tally.predCount
-      skipCount += tally.skipCount
+      predictions += tally.totalPredictions
+      skipped += tally.skipCount
     }
 
     // Trim to buffer size
@@ -605,11 +607,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       outcomeBuffer.splice(0, outcomeBuffer.length - BUFFER_SIZE)
     }
 
-    // Neutrals are skips, not predictions — match live counting (issue #158).
-    const nonNeutral = predCount - skipCount
-    totalPredictions = nonNeutral
-    totalSkipped = skipCount
-    log('INFO', `📊 Scorecard loaded history outcomes=${loaded} predictions=${nonNeutral} skipped=${skipCount} files=${recentFiles.length}`)
+    totalPredictions = predictions
+    totalSkipped = skipped
+    log('INFO', `📊 Scorecard loaded history outcomes=${loaded} predictions=${predictions} skipped=${skipped} files=${recentFiles.length}`)
   }
 
   /**
