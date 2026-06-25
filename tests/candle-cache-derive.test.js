@@ -48,4 +48,26 @@ describe('seedDerivedTimeframes includes the in-progress source bucket (issue #1
     assert.equal(agg.getCurrentCandle('2h').volume, 103, 'no double count: 93 + full 1m(10)');
     assert.equal(agg.getCurrentCandle('1h').volume, 103, '1h and 2h agree on the boundary roll-up');
   });
+
+  it('does NOT fold the live 1m source into 3m (rolled up live instead) — no double count', () => {
+    const agg = createCandleAggregator();
+    const t = 200_000; // in-progress 1m bucket = 180000, in-progress 3m bucket = 180000
+    agg.seedCandles('1m', [
+      { open: 1, high: 1, low: 1, close: 1, volume: 5, timestamp: 120_000 }, // completed
+      { open: 2, high: 2, low: 2, close: 2, volume: 7, timestamp: 180_000 }, // in-progress
+    ], t);
+    // Live ticker tick balloons current['1m'] with non-comparable cumulative volume.
+    agg.processTick(2, 200_000, 5_000_000); // current['1m']@180000 volume -> 5_000_007
+
+    seedDerivedTimeframes(agg, t);
+    // 3m is derived from COMPLETED 1m only (120000). The in-progress 1m is NOT folded —
+    // so the live garbage volume is not pre-seeded into 3m.
+    assert.deepEqual(agg.getCandles('3m').map(c => c.timestamp), [0], 'only the completed 3m bucket');
+
+    // Finalize the boundary 1m: aggregateUp rolls its full volume into 3m@180000 ONCE.
+    agg.processTick(2, 240_000, 1);
+    const cur3m = agg.getCurrentCandle('3m');
+    assert.equal(cur3m.timestamp, 180_000);
+    assert.equal(cur3m.volume, 5_000_007, 'boundary 1m volume counted once (folding would have doubled it)');
+  });
 });

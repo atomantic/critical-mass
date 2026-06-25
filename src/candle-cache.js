@@ -159,21 +159,21 @@ const seedDerivedTimeframes = (agg, now = Date.now()) => {
   ];
   let derived = 0;
   for (const { source, target, intervalMs } of derivations) {
-    // Include the source's in-progress (current) bucket, not just completed candles —
-    // otherwise the derived in-progress bucket omits the pre-start portion of the open
-    // source bucket, which aggregateUp never replays (it only rolls FUTURE completed 1m
-    // candles), leaving the derived candle short on volume/high/low (issue #145).
+    // Include the source's in-progress (current) bucket ONLY for sources coarser than
+    // 1m: their open bucket holds pre-start sub-bucket data that live 1m roll-up can't
+    // reconstruct, so without it the derived in-progress candle is short on volume/high/
+    // low. A 1m source's in-progress bucket is the base bucket — aggregateUp rolls it
+    // into the target live anyway, so folding it here would double-count (and live 1m
+    // carries 24h ticker volume per server.js, making the spike large). Those coarser
+    // source currents were already boundary-deducted when directly seeded, so the derived
+    // bucket stays boundary-exclusive and live roll-up adds the boundary once — no
+    // boundaryInclusive deduction needed here (issue #145).
     const sourceCandles = agg.getCandles(source);
-    const sourceCurrent = agg.getCurrentCandle(source);
+    const sourceCurrent = source === '1m' ? null : agg.getCurrentCandle(source);
     const all = sourceCurrent ? [...sourceCandles, sourceCurrent] : sourceCandles;
     const targetCandles = aggregateCandles(all, intervalMs);
     if (targetCandles.length) {
-      // Only a 1m-sourced derivation carries the FULL boundary minute (current['1m']
-      // is the base bucket, never deducted), so it must deduct to avoid the later
-      // roll-up double count. 5m/1h/1d source currents were already boundary-deducted
-      // when directly seeded, so their derived buckets already exclude the boundary —
-      // boundaryInclusive false (issue #145).
-      agg.seedCandles(target, targetCandles, now, { boundaryInclusive: source === '1m' });
+      agg.seedCandles(target, targetCandles, now);
       derived += targetCandles.length;
       log('INFO', `🕯️ candle-cache: derived ${targetCandles.length} ${target} candles from ${source}`);
     }
