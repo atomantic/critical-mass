@@ -98,6 +98,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // optimistic toggle and its persisted write would fire the sync effect below
   // (isDirty is never set for a toggle) and snap the switch back to stale state.
   const togglePendingRef = useRef(0)
+  // The dryRun mode the running engine was constructed with — our baseline for
+  // deciding whether a restart is actually needed. Best-effort: the value loaded
+  // when the editor opened, refreshed after a successful restart. A toggle that
+  // ends up matching this value needs no restart (e.g. toggle then revert).
+  const engineDryRunRef = useRef(undefined)
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
@@ -111,9 +116,19 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       if (initialConfig) {
         setConfig(initialConfig)
         setIsDirty(false)
+        // New fund: re-baseline the engine's dryRun mode and drop any stale hint.
+        engineDryRunRef.current = initialConfig.dryRun
+        setRestartNeeded(false)
       }
     }
   }, [exchange, strategy, initialConfig])
+
+  // Seed the engine-dryRun baseline once when the fund first loads.
+  useEffect(() => {
+    if (initialConfig && engineDryRunRef.current === undefined) {
+      engineDryRunRef.current = initialConfig.dryRun
+    }
+  }, [initialConfig])
 
   // Sync with initialConfig when not dirty (e.g., server-side refresh). Skip
   // while a toggle auto-save is in flight so a background poll can't clobber the
@@ -239,7 +254,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // the opposite of the final UI state. try/finally is required here — a network
   // rejection must still decrement the ref, or the sync effect stays blocked
   // forever and the toggle is stuck showing an unsaved value.
-  const persistToggle = async (label, doFetch, optimistic, revert, { requiresRestart = false } = {}) => {
+  const persistToggle = async (label, doFetch, optimistic, revert, { restartTargetValue } = {}) => {
     togglePendingRef.current += 1
     setToggleBusy(true)
     optimistic()
@@ -247,9 +262,13 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const res = await doFetch()
       if (res.ok) {
         setMessage({ type: 'success', text: `${label} saved` })
-        // Some fields (dryRun) are read once at engine construction, so the
-        // saved value only takes effect after a restart — surface the hint.
-        if (requiresRestart && isRegime) setRestartNeeded(true)
+        // Fields read once at engine construction (dryRun) only take effect after
+        // a restart. Flag the hint when the saved value diverges from the running
+        // engine's mode — and CLEAR it when they match again (e.g. toggle then
+        // revert), so we never offer a pointless restart of a correct engine.
+        if (restartTargetValue !== undefined && isRegime) {
+          setRestartNeeded(restartTargetValue !== engineDryRunRef.current)
+        }
         onSave?.()
       } else {
         revert()
@@ -277,11 +296,16 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     const start = await fetch(`/api/${exchange}/regime/start${pairQuery}`, { method: 'POST' }).catch(() => null)
     if (start && start.ok) {
       setMessage({ type: 'success', text: 'Engine restarted — change applied' })
+      engineDryRunRef.current = config.dryRun // the engine now runs the saved mode
       setRestartNeeded(false)
       onSave?.()
     } else {
+      // Stop is best-effort but may have succeeded, so the engine can now be
+      // STOPPED rather than running its old mode. Say so explicitly — "failed to
+      // restart" alone would imply nothing changed. Keep restartNeeded set so the
+      // banner/button stay available for a retry.
       const err = start ? await start.json().catch(() => ({})) : {}
-      setMessage({ type: 'error', text: err.error || 'Failed to restart engine' })
+      setMessage({ type: 'error', text: err.error || 'Engine may now be stopped — start it manually from the dashboard' })
     }
     setRestarting(false)
   }
@@ -298,7 +322,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       }),
       () => setConfig(prev => ({ ...prev, dryRun: next })),
       () => setConfig(prev => ({ ...prev, dryRun: !next })),
-      { requiresRestart: true },
+      { restartTargetValue: next },
     )
   }
 
