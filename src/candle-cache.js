@@ -201,8 +201,8 @@ const createCandleCache = () => {
   // feed the aggregator the delta since the previous tick — clamped to >= 0 to absorb
   // the rolling window shedding older trades (day rollover) or a stale baseline after a
   // feed gap. The first tick after start or reseed has no baseline and contributes 0
-  // incremental volume. Exchanges with no usable ticker volume (e.g. Gemini L2 sends
-  // volume24h: 0) therefore contribute 0 live volume rather than corrupt candles. (issue #161)
+  // incremental volume. A non-positive reading (e.g. Gemini L2 sends volume24h: 0, or a
+  // transient parse glitch) contributes 0 and never overwrites a good baseline. (issue #161)
   /** @type {Map<string, number>} */
   const lastVolume24h = new Map();
 
@@ -301,9 +301,13 @@ const createCandleCache = () => {
   const processTick = (exchange, price, timestamp, volume24h = 0) => {
     const agg = getOrCreate(exchange);
     const prev = lastVolume24h.get(exchange);
-    lastVolume24h.set(exchange, volume24h);
-    // No baseline yet (first tick / post-reseed) or the rolling window shrank: 0 increment.
-    const incremental = prev === undefined ? 0 : Math.max(0, volume24h - prev);
+    // A non-positive reading means "no usable ticker volume this tick" — a parse glitch,
+    // or an exchange like Gemini L2 that never reports it. Never let it overwrite a good
+    // baseline: doing so would make the NEXT real reading a full-24h spike (the #161 bug).
+    if (volume24h > 0) lastVolume24h.set(exchange, volume24h);
+    // 0 increment when there's no baseline yet (first tick / post-reseed), no usable reading
+    // this tick, or the rolling window shrank (day rollover / reconnect).
+    const incremental = (prev === undefined || !(volume24h > 0)) ? 0 : Math.max(0, volume24h - prev);
     agg.processTick(price, timestamp, incremental);
   };
 

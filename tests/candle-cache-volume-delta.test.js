@@ -44,6 +44,14 @@ describe('candle-cache feeds incremental volume, not the rolling 24h total (issu
     assert.equal(vol(cache, 'cryptocom'), 25);
   });
 
+  it('a transient 0 reading between two real readings does not produce a full-24h spike', () => {
+    const cache = createCandleCache();
+    cache.processTick('coinbase', 100, T0, 5000);       // baseline
+    cache.processTick('coinbase', 101, T0 + 1000, 0);    // parse glitch -> 0, no baseline write
+    cache.processTick('coinbase', 102, T0 + 2000, 5010); // delta vs 5000 (not vs 0) -> +10
+    assert.equal(vol(cache, 'coinbase'), 10, 'glitch tick contributes 0 and preserves the baseline');
+  });
+
   it('an exchange that always reports volume24h: 0 (Gemini L2) contributes 0 live volume', () => {
     const cache = createCandleCache();
     cache.processTick('gemini', 100, T0, 0);
