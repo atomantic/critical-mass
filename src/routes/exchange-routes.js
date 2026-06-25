@@ -249,6 +249,22 @@ module.exports = (app, deps) => {
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
+    // Guard against cross-market contamination. The config editor GETs a fund's
+    // config and PUTs it back verbatim; if a stale config from another fund leaked
+    // into the editor state (e.g. switching exchange/pair before the new config
+    // loaded), its productId would clobber this fund — e.g. saving Coinbase's
+    // "BTC-USDC" over Gemini's "ETHUSD", which then prices the ETH fund off the BTC
+    // feed. The pair is the fund's identity, so a saved productId must trade the
+    // same base asset. Quote-only edits (USD→USDC) still pass.
+    if (pair && typeof updates.productId === 'string' && updates.productId) {
+      const pairBase = getBaseCurrency(pair);
+      const incomingBase = getBaseCurrency(updates.productId);
+      if (pairBase !== incomingBase) {
+        log('WARN', `🛑 [${exchange}/${pair}] Rejected config save: productId "${updates.productId}" trades ${incomingBase}, not ${pairBase}`);
+        return res.status(400).json({ error: `productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a config save cannot change a fund's traded asset` });
+      }
+    }
+
     // regime is a nested object — sanitize keys against the allowlist before merging.
     // Unknown keys are DROPPED (not rejected): the config editor GETs the full stored
     // config and PUTs it back verbatim, so a hard 400 on a stale key — e.g. a field

@@ -152,3 +152,71 @@ describe('PUT /api/:exchange/config tolerates stale regime keys', () => {
     assert.ok(!written.includes('maxSatelliteOrders'), 'dead key must not enter saved overrides');
   });
 });
+
+// A Gemini fund (ETHUSD) alongside a Coinbase fund (BTC-USDC). The bug: switching
+// the platform on the config page could leave the editor holding Coinbase's stale
+// config (productId "BTC-USDC") while the URL/query already pointed at the Gemini
+// ETHUSD fund, so the "Save" PUT wrote a Coinbase BTC productId over the Gemini ETH
+// fund — which then priced the ETH fund off the BTC feed.
+const MULTI_EXCHANGE_CONFIG = {
+  exchanges: {
+    coinbase: {
+      pairs: {
+        'BTC-USDC': { productId: 'BTC-USDC', enabled: true, dryRun: true },
+      },
+    },
+    gemini: {
+      pairs: {
+        ETHUSD: { productId: 'ETHUSD', enabled: true, dryRun: false, totalAllocation: 10000 },
+      },
+    },
+  },
+};
+
+describe('PUT /api/:exchange/config refuses a cross-market productId', () => {
+  afterEach(() => mock.restoreAll());
+
+  const setup = () => {
+    const fsMocks = setupFsMocks(MULTI_EXCHANGE_CONFIG);
+    const app = createFakeApp();
+    registerExchangeRoutes(app, {
+      exchangeIPCMap: {
+        coinbase: { request: () => Promise.resolve({ success: true }) },
+        gemini: { request: () => Promise.resolve({ success: true }) },
+      },
+      parseTSV: () => [],
+      calculateCostBasis: () => ({}),
+      getNextTradeInfo: () => ({}),
+    });
+    return { app, fsMocks };
+  };
+
+  const geminiReq = (body) => ({ params: { exchange: 'gemini' }, query: { pair: 'ETHUSD' }, body });
+
+  it('rejects saving a Coinbase BTC productId over the Gemini ETH fund (400)', async () => {
+    const { app } = setup();
+
+    // Editor holds Coinbase's stale config but the query targets the Gemini ETH fund.
+    const stale = { productId: 'BTC-USDC', enabled: true, dryRun: false };
+    const res = await invoke(app, 'PUT /api/:exchange/config', geminiReq(stale));
+
+    assert.equal(res.statusCode, 400, `cross-market save must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+  });
+
+  it('does not clobber the stored ETHUSD productId when a bad save is rejected', async () => {
+    const { app } = setup();
+    await invoke(app, 'PUT /api/:exchange/config', geminiReq({ productId: 'BTC-USDC' }));
+
+    const after = await invoke(app, 'GET /api/:exchange/config', geminiReq({}));
+    assert.equal(after.body.productId, 'ETHUSD', 'ETH fund must keep its own productId');
+  });
+
+  it('still allows a legitimate same-asset save (quote-only change USD→USDC)', async () => {
+    const { app } = setup();
+    const res = await invoke(app, 'PUT /api/:exchange/config', geminiReq({ productId: 'ETH-USDC', totalAllocation: 12000 }));
+
+    assert.equal(res.statusCode, 200, `same-asset save must succeed (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    const after = await invoke(app, 'GET /api/:exchange/config', geminiReq({}));
+    assert.equal(after.body.totalAllocation, 12000, 'legitimate field change must persist');
+  });
+});
