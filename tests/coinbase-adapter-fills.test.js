@@ -10,20 +10,29 @@ const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 
 // ---------------------------------------------------------------------------
 // Test harness
+//
+// getOrderFills() signs a JWT with an EC private key before calling fetch, so
+// the test writes a freshly-generated prime256v1 key to a temp keys file and
+// mocks global.fetch to return canned /historical/fills responses.
 // ---------------------------------------------------------------------------
 
 let keysPath;
 let originalFetch;
 
 /**
- * Install a global.fetch mock that records each request and returns whatever
- * the handler produces. The handler receives the parsed URL so tests can drive
- * cursor-based pagination off the query string.
- * @param {(url: URL, calls: URL[]) => any} handler Returns the JSON response body.
+ * Install a global.fetch mock that records each request and returns a canned
+ * response. Accepts either:
+ *   - a handler `(url, calls) => responseBody` so tests can drive cursor-based
+ *     pagination off the query string, or
+ *   - an array of raw fills, which is wrapped as `{ fills }` (single page).
+ * @param {((url: URL, calls: URL[]) => any) | any[]} handlerOrFills
  * @returns {{calls: URL[]}}
  */
-const installFetchMock = (handler) => {
+const installFetchMock = (handlerOrFills) => {
   const calls = [];
+  const handler = typeof handlerOrFills === 'function'
+    ? handlerOrFills
+    : () => ({ fills: handlerOrFills });
   global.fetch = async (url) => {
     const parsed = new URL(url);
     calls.push(parsed);
@@ -123,5 +132,80 @@ describe('coinbase getOrderFills pagination', () => {
     // First page (no cursor) → STUCK, second page (cursor=STUCK) repeats STUCK → stop.
     assert.equal(calls.length, 2, 'should break once the cursor repeats');
     assert.equal(fills.length, 2);
+  });
+});
+
+describe('coinbase getOrderFills size_in_quote handling (issue #148)', () => {
+  it('converts quote-denominated size to base when size_in_quote is true', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+    installFetchMock([
+      {
+        trade_id: 't1',
+        order_id: 'o1',
+        product_id: 'BTC-USDC',
+        side: 'BUY',
+        price: '50000',
+        size: '500',        // 500 USDC notional
+        size_in_quote: true, // boolean flag -> size is in quote currency
+        commission: '2.5',
+        trade_time: '2026-06-24T00:00:00Z',
+        liquidity_indicator: 'TAKER',
+      },
+    ]);
+
+    const [fill] = await adapter.getOrderFills('o1');
+
+    // 500 USDC / 50000 = 0.01 BTC base
+    assert.equal(fill.size, 0.01);
+    // quote notional preserved
+    assert.equal(fill.sizeInQuote, 500);
+    // never NaN (the old parseFloat(true) bug)
+    assert.ok(!Number.isNaN(fill.size));
+    assert.ok(!Number.isNaN(fill.sizeInQuote));
+  });
+
+  it('treats size as base currency when size_in_quote is false', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+    installFetchMock([
+      {
+        trade_id: 't2',
+        order_id: 'o2',
+        product_id: 'BTC-USDC',
+        side: 'SELL',
+        price: '50000',
+        size: '0.02',        // already base currency
+        size_in_quote: false,
+        commission: '1.0',
+        trade_time: '2026-06-24T01:00:00Z',
+        liquidity_indicator: 'MAKER',
+      },
+    ]);
+
+    const [fill] = await adapter.getOrderFills('o2');
+
+    assert.equal(fill.size, 0.02);
+    // quote notional = price * base
+    assert.equal(fill.sizeInQuote, 1000);
+  });
+
+  it('handles the string "true" form of size_in_quote', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+    installFetchMock([
+      {
+        trade_id: 't3',
+        order_id: 'o3',
+        product_id: 'ETH-USDC',
+        side: 'BUY',
+        price: '2000',
+        size: '400',
+        size_in_quote: 'true',
+        trade_time: '2026-06-24T02:00:00Z',
+      },
+    ]);
+
+    const [fill] = await adapter.getOrderFills('o3');
+
+    assert.equal(fill.size, 0.2); // 400 / 2000
+    assert.equal(fill.sizeInQuote, 400);
   });
 });

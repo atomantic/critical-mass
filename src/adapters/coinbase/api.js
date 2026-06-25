@@ -472,14 +472,26 @@ const createCoinbaseAdapter = (keysPath = null) => {
       // Extract detailed commission breakdown
       const commissionDetail = fill.commission_detail_total || {};
 
+      // Coinbase returns `size_in_quote` as a boolean flag (not a numeric size).
+      // When true (e.g. market-buy fills), `size` is denominated in quote
+      // currency (USDC), so convert it to base currency and derive the quote
+      // notional separately — mirroring normalizeFills() in sync-fills.js and
+      // the gemini/cryptocom adapters, where `size` is base currency and
+      // `sizeInQuote` is the quote-currency amount.
+      const price = parseFloat(fill.price);
+      const rawSize = parseFloat(fill.size);
+      const sizeInQuote = fill.size_in_quote === true || fill.size_in_quote === 'true';
+      const size = sizeInQuote && price > 0 ? rawSize / price : rawSize;
+      const quoteAmount = sizeInQuote ? rawSize : price * size;
+
       return {
         tradeId: fill.trade_id,
         orderId: fill.order_id,
         productId: fill.product_id,
         side: fill.side,
-        price: parseFloat(fill.price),
-        size: parseFloat(fill.size),
-        sizeInQuote: parseFloat(fill.size_in_quote || 0),
+        price,
+        size,
+        sizeInQuote: quoteAmount,
         // Fee breakdown
         commission: parseFloat(fill.commission || 0),
         totalCommission: parseFloat(commissionDetail.total_commission || fill.commission || 0),

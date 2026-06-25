@@ -840,7 +840,7 @@ function AppContent() {
                   ? <ChartsRegime key={`${currentExchange}-${currentPair}`} exchange={currentExchange} pair={currentPair} />
                   : <ChartsDCA summary={summary} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />
               } />
-              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} onSave={fetchData} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} />} />
+              <Route path="/:exchange/:pair/config" element={<ConfigEditor key={`${currentExchange}-${currentPair}`} config={summary?.config} onSave={fetchData} exchange={currentExchange} pair={currentPair} strategy={currentStrategy} engineRunning={regimeRunning} engineDryRun={regimeDryRun} onRestart={fetchRegimeStatus} />} />
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>
