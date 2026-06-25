@@ -630,6 +630,14 @@ module.exports = (app, deps) => {
     if (cost == null || returnAmount == null) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount are required' });
     }
+    // Reject non-numeric values: parseFloat('abc')=NaN would persist as null
+    // over the wire and break the win/loss pnl filters (issue #151, mirrors
+    // the position route's guard for #108).
+    const costNum = parseFloat(cost);
+    const returnNum = parseFloat(returnAmount);
+    if (!Number.isFinite(costNum) || !Number.isFinite(returnNum)) {
+      return res.status(400).json({ success: false, error: 'cost and returnAmount must be numbers' });
+    }
     const data = readTrades();
 
     // Auto-capture trade context from service
@@ -643,9 +651,9 @@ module.exports = (app, deps) => {
     const trade = {
       id: data.nextId || (data.trades.length + 1),
       date: date || new Date().toISOString().slice(0, 10),
-      cost: parseFloat(cost),
-      returnAmount: parseFloat(returnAmount),
-      pnl: parseFloat(returnAmount) - parseFloat(cost),
+      cost: costNum,
+      returnAmount: returnNum,
+      pnl: returnNum - costNum,
       note: note || '',
       direction: inferredDirection || null,
       entryTime: new Date().toISOString(),
@@ -678,6 +686,15 @@ module.exports = (app, deps) => {
     const data = readTrades();
     const trade = data.trades.find(t => t.id === id);
     if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
+
+    // Reject non-numeric updates before mutating the trade: a NaN from
+    // parseFloat('abc') would persist as null over the wire and break the
+    // win/loss pnl filters (issue #151).
+    for (const field of ['cost', 'returnAmount', 'btcPriceAtExit']) {
+      if (req.body[field] != null && !Number.isFinite(parseFloat(req.body[field]))) {
+        return res.status(400).json({ success: false, error: `${field} must be a number` });
+      }
+    }
 
     if (req.body.date != null) trade.date = req.body.date;
     if (req.body.cost != null) trade.cost = parseFloat(req.body.cost);
