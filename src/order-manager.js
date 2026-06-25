@@ -281,18 +281,23 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
       };
     }
 
+    // Re-fetch may return null/undefined for a just-cancelled or not-found order.
+    // Treat an indeterminate result as "do not consolidate" (exclude), the
+    // conservative choice: re-selling an order that may have filled is the
+    // double-sell we're guarding against, whereas excluding a cleanly-cancelled
+    // order only frees its asset for the engine's normal reconciliation to re-cover.
     const postCancel = await adapter.getOrder(order.orderId);
-    if (postCancel.completionPercentage > 0 || postCancel.status === 'FILLED') {
-      // Filled (fully or partially) during the cancel window — its filled quantity
-      // is already sold on the exchange. Exclude the WHOLE order from the
-      // consolidated total and from cancelledOrderIds so the caller doesn't treat
-      // it as consolidated; report it in filledDuringCancelOrderIds for
-      // reconciliation. We deliberately do NOT fold a partial fill's unfilled
+    if (!postCancel || postCancel.completionPercentage > 0 || postCancel.status === 'FILLED') {
+      // Filled (fully or partially) during the cancel window, or indeterminate —
+      // any filled quantity is already sold on the exchange. Exclude the WHOLE
+      // order from the consolidated total and from cancelledOrderIds so the caller
+      // doesn't treat it as consolidated; report it in filledDuringCancelOrderIds
+      // for reconciliation. We deliberately do NOT fold a partial fill's unfilled
       // remainder into the consolidated order: updateAfterConsolidation would
       // attribute the order's full cost basis to the new order while only the
       // remainder is in it, corrupting P&L. The freed remainder asset is re-covered
       // by the engine's normal cycle reconciliation, same as any cancelled order.
-      log('WARN', `Order ${order.orderId} filled (${postCancel.completionPercentage}%) during cancel — excluding from consolidated total`);
+      log('WARN', `Order ${order.orderId} filled (${postCancel?.completionPercentage ?? 'unknown'}%) during cancel — excluding from consolidated total`);
       filledDuringCancelOrderIds.push(order.orderId);
       continue;
     }

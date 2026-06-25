@@ -165,6 +165,29 @@ describe('consolidatePendingOrders — gap-fill double-sell guard (issue #150)',
     assert.deepEqual(result.filledDuringCancelOrderIds, ['a']);
   });
 
+  it('excludes an order whose post-cancel re-fetch is indeterminate (null)', async () => {
+    const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
+    const places = [];
+    const cancelled = new Set();
+
+    // 'a' returns null on its post-cancel re-fetch (not-found / adapter returns
+    // nothing). It must be excluded — not re-sold — and must not throw.
+    const adapter = {
+      getOrder: async (orderId) => (cancelled.has('a') && orderId === 'a')
+        ? null
+        : { completionPercentage: 0 },
+      cancelOrder: async (orderId) => { cancelled.add(orderId); return { success: true }; },
+      placeLimitSell: async (productId, qty) => { places.push(qty); return { success: true, orderId: 'consolidated-1' }; },
+    };
+
+    const result = await consolidatePendingOrders(baseConfig(), orders, adapter);
+
+    assert.equal(result.success, true);
+    assert.ok(Math.abs(places[0] - 0.2) < 1e-9, `expected 0.2, got ${places[0]}`);
+    assert.deepEqual(result.cancelledOrderIds, ['b']);
+    assert.deepEqual(result.filledDuringCancelOrderIds, ['a']);
+  });
+
   it('places no consolidated order when every eligible order fills during cancel', async () => {
     const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
     let placeCount = 0;
