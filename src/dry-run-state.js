@@ -112,6 +112,28 @@ const saveAllState = (state) => {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 };
 
+/**
+ * Flush every queued fund in `pendingStates` to disk in a single pass, stamping
+ * each with `now`, then empty the queue. Shared by the debounce timer, the
+ * immediate save branch, and forceSave so none of them can strand a fund that
+ * was queued by an earlier debounced call (#159).
+ * @returns {number} how many funds were flushed
+ */
+const flushPendingStates = () => {
+  const now = Date.now();
+  const allState = loadAllState();
+  const fundCount = pendingStates.size;
+  for (const [k, state] of pendingStates) {
+    allState.exchanges[k] = {
+      ...state,
+      savedAt: now,
+    };
+  }
+  pendingStates.clear();
+  saveAllState(allState);
+  return fundCount;
+};
+
 const { fundKey: composeFundKey } = require('./shared-utils');
 
 // Compose the key for the per-fund slot inside the dry-run state file.
@@ -167,17 +189,7 @@ const saveState = (exchange, exchangeState, pair) => {
     if (!pendingSave) {
       pendingSave = setTimeout(() => {
         pendingSave = null;
-        // Flush all pending states
-        const allState = loadAllState();
-        const fundCount = pendingStates.size;
-        for (const [k, state] of pendingStates) {
-          allState.exchanges[k] = {
-            ...state,
-            savedAt: Date.now(),
-          };
-        }
-        pendingStates.clear();
-        saveAllState(allState);
+        const fundCount = flushPendingStates();
         lastSaveTime = Date.now();
         console.log(`💾 Dry-run state saved for ${fundCount} fund(s)`);
       }, SAVE_DEBOUNCE_MS);
@@ -186,15 +198,20 @@ const saveState = (exchange, exchangeState, pair) => {
   }
 
   lastSaveTime = now;
-  pendingStates.clear();
 
-  const allState = loadAllState();
-  allState.exchanges[key] = {
-    ...exchangeState,
-    savedAt: now,
-  };
-  saveAllState(allState);
-  console.log(`💾 [${key}] Dry-run state saved`);
+  // Cancel any scheduled debounce flush: we're about to write synchronously, so
+  // a stale timer would later flush an emptied pendingStates map (a no-op) while
+  // believing it still had work to do.
+  if (pendingSave) {
+    clearTimeout(pendingSave);
+    pendingSave = null;
+  }
+
+  // Flush EVERY queued fund (this one is already queued above), not just the
+  // current key. Clearing pendingStates without writing them — the old behavior —
+  // dropped any fund queued by an earlier debounced call (issue #159).
+  const fundCount = flushPendingStates();
+  console.log(`💾 [${key}] Dry-run state saved (${fundCount} fund(s))`);
 };
 
 /**
@@ -223,12 +240,11 @@ const forceSave = (exchange, exchangeState, pair) => {
     pendingSave = null;
   }
 
-  const allState = loadAllState();
-  allState.exchanges[key] = {
-    ...exchangeState,
-    savedAt: Date.now(),
-  };
-  saveAllState(allState);
+  // Queue this fund's fresh snapshot, then flush the whole queue — cancelling the
+  // timer above would otherwise strand any fund queued by an earlier debounced
+  // call (issue #159). Setting it last lets it win over any stale queued entry.
+  pendingStates.set(key, exchangeState);
+  flushPendingStates();
   console.log(`💾 [${key}] Dry-run state force saved`);
 };
 
