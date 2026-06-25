@@ -68,7 +68,13 @@ const createIPCClient = (url, name, options = {}) => {
     });
 
     ws.on('message', (data) => {
-      const msg = deserialize(data.toString());
+      let msg;
+      try {
+        msg = deserialize(data.toString());
+      } catch (err) {
+        log('ERROR', `🔗 [${name}] IPC message deserialize error: ${String(err)}`);
+        return;
+      }
       handleIncoming(msg);
     });
 
