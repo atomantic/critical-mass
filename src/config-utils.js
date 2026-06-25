@@ -344,6 +344,12 @@ const GLOBAL_DEFAULTS = {
 // when a single request fans out across many funds.
 let _configCache = null;
 let _configCacheKey = null;
+// Throttle the "reload failed" warning to once per failure episode. Because
+// _configCacheKey is intentionally left stale on failure (to force a retry every
+// call), a persistently-broken config would otherwise re-warn on every tick
+// across every process/timer. Logged once on entering the failed state; reset on
+// the next clean load (#185 review).
+let _configReloadFailedLogged = false;
 
 const _statMtimeMs = (file) => {
   try { return fs.statSync(file).mtimeMs; } catch { return 0; }
@@ -358,6 +364,7 @@ const _statMtimeMs = (file) => {
 const _resetConfigCacheForTests = () => {
   _configCache = null;
   _configCacheKey = null;
+  _configReloadFailedLogged = false;
 };
 
 /**
@@ -372,8 +379,39 @@ const loadRawConfig = () => {
   if (_configCache && _configCacheKey === cacheKey) {
     return _configCache;
   }
-  const base = baseMtime > 0 ? JSON.parse(fs.readFileSync(baseFile, 'utf8')) : {};
-  const user = userMtime > 0 ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8')) : {};
+  // Guard JSON.parse: loadRawConfig runs inside setInterval/setTimeout
+  // callbacks (server.js exchange refresh, regime-engine updateMetrics →
+  // handleTpAdjustment), so a thrown SyntaxError is an uncaught exception that
+  // KILLS the whole gateway/engine — taking down live trading with no recovery
+  // (observed crashing the gateway 2026-04-28 and the cryptocom engine
+  // 2026-05-18 on a transient empty/partial read). The atomic write in
+  // saveConfig (#123) only protects USER_CONFIG_FILE; the base config is still
+  // exposed, and external corruption can hit either file. On a parse failure
+  // with a last-good cache in hand, keep running on it; only a cold-start
+  // failure (no cache yet) rethrows so the operator repairs before the engine
+  // boots on the wrong config — mirroring fill-ledger.js's cold-start contract
+  // (issue #185).
+  let base;
+  let user;
+  try {
+    base = baseMtime > 0 ? JSON.parse(fs.readFileSync(baseFile, 'utf8')) : {};
+    user = userMtime > 0 ? JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf8')) : {};
+  } catch (err) {
+    if (_configCache) {
+      // Leave _configCacheKey stale so the next call retries the read and picks
+      // up the repaired file immediately once it parses cleanly again. Warn once
+      // per episode (not every tick) — a persistently-broken config edit would
+      // otherwise flood every process's log. Operators must still notice their
+      // change didn't take effect; the engine keeps running on last-good config.
+      if (!_configReloadFailedLogged) {
+        console.warn(`⚠️ [config] reload failed (${err.message}) — STILL USING LAST-GOOD CONFIG; repair ${USER_CONFIG_FILE}`);
+        _configReloadFailedLogged = true;
+      }
+      return _configCache;
+    }
+    throw err;
+  }
+  _configReloadFailedLogged = false; // clean load — re-arm the failure warning
   _configCache = Object.keys(user).length ? deepMerge(base, user) : base;
   _configCacheKey = cacheKey;
   return _configCache;

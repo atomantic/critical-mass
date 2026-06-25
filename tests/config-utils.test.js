@@ -501,6 +501,56 @@ describe('loadRawConfig', () => {
     // Empty user config has no keys, so base is returned as-is
     assert.deepStrictEqual(result, baseConfig);
   });
+
+  // Issue #185: loadRawConfig runs inside timer callbacks, so an unguarded
+  // JSON.parse throw is a process-killing uncaught exception. A transient bad
+  // read must NOT crash live trading when a last-good config is cached.
+  it('throws on a cold-start parse failure when no config is cached yet', () => {
+    setupFsMocks({ base: { exchanges: {} }, user: null });
+    mock.method(fs, 'readFileSync', () => '{ this is not json');
+    assert.throws(() => loadRawConfig(), /JSON|Unexpected|token/i);
+  });
+
+  it('keeps the last-good config (no crash) when a reload hits invalid JSON', () => {
+    const baseConfig = { exchanges: { coinbase: { enabled: true } } };
+    setupFsMocks({ base: baseConfig, user: null });
+    const good = loadRawConfig();
+    assert.equal(good.exchanges.coinbase.enabled, true);
+
+    // statSync increments mtime each call, so the next loadRawConfig re-reads
+    // (cache key differs) and hits the corrupted read.
+    mock.method(fs, 'readFileSync', () => 'not json{');
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    let result;
+    try {
+      result = loadRawConfig(); // must not throw
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.deepStrictEqual(result, good, 'returns the last-good cached config');
+    assert.ok(warnings.some(w => w.includes('reload failed')), 'logs a reload-failed warning');
+  });
+
+  it('warns only once across repeated failed reloads (no per-tick spam)', () => {
+    const baseConfig = { exchanges: { coinbase: { enabled: true } } };
+    setupFsMocks({ base: baseConfig, user: null });
+    loadRawConfig(); // prime _configCache with a good load
+
+    mock.method(fs, 'readFileSync', () => 'not json{');
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(' '));
+    try {
+      loadRawConfig();
+      loadRawConfig();
+      loadRawConfig();
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(warnings.length, 1, 'persistent corruption must warn once, not every call');
+  });
 });
 
 describe('loadConfig', () => {
