@@ -220,6 +220,67 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     }
   }
 
+  // Persist a single toggle immediately (no full-form Save). Optimistically flips
+  // local state, then reverts if the request fails so the switch never lies about
+  // the saved state. `enabled`/`dryRun` write to the same place the Save button
+  // does — see the PATCH /api/:exchange/config and PUT regime/config handlers.
+  const persistToggle = async (label, doFetch, optimistic, revert) => {
+    optimistic()
+    const res = await doFetch()
+    if (res.ok) {
+      setMessage({ type: 'success', text: `${label} saved` })
+      onSave?.()
+    } else {
+      revert()
+      const err = await res.json().catch(() => ({}))
+      setMessage({ type: 'error', text: err.error || `Failed to save ${label}` })
+    }
+  }
+
+  const handleToggleDryRun = () => {
+    const next = !config.dryRun
+    persistToggle(
+      'Dry Run',
+      () => fetch(`/api/${exchange}/config${pairQuery}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: next }),
+      }),
+      () => setConfig(prev => ({ ...prev, dryRun: next })),
+      () => setConfig(prev => ({ ...prev, dryRun: !next })),
+    )
+  }
+
+  const handleToggleEnabled = () => {
+    if (isRegime) {
+      // Regime funds track activation in regime.enabled — persist via the regime
+      // config endpoint (a fund-level PATCH would write the wrong field).
+      const next = !regimeConfig.enabled
+      persistToggle(
+        'Enabled',
+        () => fetch(`/api/${exchange}/regime/config${pairQuery}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: next }),
+        }),
+        () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: next } })),
+        () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: !next } })),
+      )
+    } else {
+      const next = !config.enabled
+      persistToggle(
+        'Enabled',
+        () => fetch(`/api/${exchange}/config${pairQuery}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: next }),
+        }),
+        () => setConfig(prev => ({ ...prev, enabled: next })),
+        () => setConfig(prev => ({ ...prev, enabled: !next })),
+      )
+    }
+  }
+
   const INTERVAL_OPTIONS = [
     { value: '1min', label: '1 Min' },
     { value: '5min', label: '5 Min' },
@@ -275,14 +336,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               <span className="text-gray-400">Enabled</span>
               <button
                 type="button"
-                onClick={() => {
-                  // Strategy-specific enabled toggle
-                  if (isRegime) {
-                    handleRegimeChange('enabled', !regimeConfig.enabled)
-                  } else {
-                    handleChange('enabled', !config.enabled)
-                  }
-                }}
+                onClick={handleToggleEnabled}
                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
                   (isRegime ? regimeConfig.enabled : config.enabled)
                     ? 'bg-green-500' : 'bg-gray-600'
@@ -298,7 +352,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               <span className="text-gray-400">Dry Run</span>
               <button
                 type="button"
-                onClick={() => handleChange('dryRun', !config.dryRun)}
+                onClick={handleToggleDryRun}
                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
                   config.dryRun ? 'bg-yellow-500' : 'bg-gray-600'
                 }`}

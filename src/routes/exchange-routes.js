@@ -249,19 +249,28 @@ module.exports = (app, deps) => {
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
-    // regime is a nested object — validate keys against allowlist before merging
+    // regime is a nested object — sanitize keys against the allowlist before merging.
+    // Unknown keys are DROPPED (not rejected): the config editor GETs the full stored
+    // config and PUTs it back verbatim, so a hard 400 on a stale key — e.g. a field
+    // removed from the engine in a later version but still present in a fund's
+    // persisted config — would make that fund permanently unsaveable. Dropping keeps
+    // the security intent (unknown keys never enter the saved overrides or reach the
+    // engine) while letting the save succeed. Note this doesn't rewrite the base
+    // config.json: a stale key living there stays inert (saveConfig persists only a
+    // diff and computeDiff doesn't tombstone removals), but it's harmless — never
+    // forwarded and dropped again on every save.
     if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
       const sanitizedRegime = {};
-      const rejectedKeys = [];
+      const droppedKeys = [];
       for (const key of Object.keys(req.body.regime)) {
         if (REGIME_ALLOWED_KEYS.has(key)) {
           sanitizedRegime[key] = req.body.regime[key];
         } else {
-          rejectedKeys.push(key);
+          droppedKeys.push(key);
         }
       }
-      if (rejectedKeys.length > 0) {
-        return res.status(400).json({ success: false, error: `Unknown regime keys: ${rejectedKeys.join(', ')}` });
+      if (droppedKeys.length > 0) {
+        log('WARN', `🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on save: ${droppedKeys.join(', ')}`);
       }
       if (Object.keys(sanitizedRegime).length > 0) {
         updates.regime = sanitizedRegime;
