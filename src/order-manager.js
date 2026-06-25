@@ -293,12 +293,14 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     // place the consolidated order before cancelling — the asset is still locked
     // in the open sells, so the exchange would reject it for insufficient balance.
     log('ERROR', `${error} — re-placing ${eligibleOrders.length} original sells to avoid a naked position`);
-    const restoredOrderIds = [];
+    const restoredOrders = [];
     const failedRestoreOrderIds = [];
     for (const order of eligibleOrders) {
       const restoreResult = await adapter.placeLimitSell(config.productId, order.sellQuantity, order.sellPrice);
       if (restoreResult.success) {
-        restoredOrderIds.push(restoreResult.orderId);
+        // Capture the old→new mapping so the caller can re-point tracked state
+        // at the new exchange order IDs (the cancelled IDs no longer exist).
+        restoredOrders.push({ oldOrderId: order.orderId, newOrderId: restoreResult.orderId });
       } else {
         failedRestoreOrderIds.push(order.orderId);
         log('ERROR', `Failed to restore sell for cancelled order ${order.orderId}: ${restoreResult.errorMessage}`);
@@ -310,7 +312,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
       error,
       cancelledOrderIds,
       skippedOrderIds,
-      restoredOrderIds,
+      restoredOrders,
       failedRestoreOrderIds,
     };
   }

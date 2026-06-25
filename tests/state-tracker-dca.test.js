@@ -105,3 +105,47 @@ describe('state-tracker DCA buy persistence (issue #106)', () => {
     assert.equal(composed.assetReserves, stepwise.assetReserves);
   });
 });
+
+// ---------------------------------------------------------------------------
+// issue #149 — when consolidation cancels the original sells but fails to place
+// the consolidated order, the recovery re-places the originals under NEW
+// exchange IDs. applyConsolidationRecovery re-points tracked state at those IDs
+// and flags any sell that couldn't be re-placed so it isn't treated as pending.
+// ---------------------------------------------------------------------------
+const { applyConsolidationRecovery } = require('../src/state-tracker');
+
+describe('applyConsolidationRecovery (issue #149)', () => {
+  const stateWithPendingSells = () => ({
+    orders: [
+      { orderId: 'old-a', status: 'pending', sellQuantity: 0.1 },
+      { orderId: 'old-b', status: 'pending', sellQuantity: 0.2 },
+    ],
+  });
+
+  it('re-points restored sells at their new exchange IDs (stays pending)', () => {
+    const state = stateWithPendingSells();
+    applyConsolidationRecovery(state, [
+      { oldOrderId: 'old-a', newOrderId: 'new-a' },
+      { oldOrderId: 'old-b', newOrderId: 'new-b' },
+    ], []);
+
+    assert.deepEqual(getPendingOrders(state).map(o => o.orderId), ['new-a', 'new-b']);
+    assert.equal(state.orders[0].restoredFrom, 'old-a');
+  });
+
+  it('flags un-restorable sells as sell_failed so they leave the pending set', () => {
+    const state = stateWithPendingSells();
+    applyConsolidationRecovery(state, [{ oldOrderId: 'old-a', newOrderId: 'new-a' }], ['old-b']);
+
+    assert.deepEqual(getPendingOrders(state).map(o => o.orderId), ['new-a']);
+    const naked = state.orders.find(o => o.orderId === 'old-b');
+    assert.equal(naked.status, 'sell_failed');
+    assert.match(naked.sellFailedReason, /could not be re-placed/);
+  });
+
+  it('is a no-op on empty inputs', () => {
+    const state = stateWithPendingSells();
+    applyConsolidationRecovery(state);
+    assert.equal(getPendingOrders(state).length, 2);
+  });
+});

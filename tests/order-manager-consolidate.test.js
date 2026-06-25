@@ -42,7 +42,12 @@ describe('consolidatePendingOrders — naked-position recovery (issue #149)', ()
     assert.equal(result.success, false);
     assert.match(result.error, /post only would cross/);
     // Both cancelled orders were re-placed so the position is never left naked.
-    assert.deepEqual(result.restoredOrderIds, ['restored-0.1', 'restored-0.2']);
+    // The result maps each cancelled exchange ID to its new ID so the caller can
+    // re-point tracked state.
+    assert.deepEqual(result.restoredOrders, [
+      { oldOrderId: 'a', newOrderId: 'restored-0.1' },
+      { oldOrderId: 'b', newOrderId: 'restored-0.2' },
+    ]);
     assert.deepEqual(result.failedRestoreOrderIds, []);
 
     // The consolidated place was attempted before any restore place.
@@ -66,7 +71,7 @@ describe('consolidatePendingOrders — naked-position recovery (issue #149)', ()
     const result = await consolidatePendingOrders(baseConfig(), orders, adapter);
 
     assert.equal(result.success, false);
-    assert.deepEqual(result.restoredOrderIds, ['restored-a']);
+    assert.deepEqual(result.restoredOrders, [{ oldOrderId: 'a', newOrderId: 'restored-a' }]);
     assert.deepEqual(result.failedRestoreOrderIds, ['b']);
   });
 
@@ -83,6 +88,6 @@ describe('consolidatePendingOrders — naked-position recovery (issue #149)', ()
     assert.equal(result.success, true);
     assert.equal(result.newOrderId, 'consolidated-1');
     assert.equal(placeCount, 1, 'exactly one place — no restores');
-    assert.equal(result.restoredOrderIds, undefined);
+    assert.equal(result.restoredOrders, undefined);
   });
 });
