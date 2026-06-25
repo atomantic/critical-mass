@@ -177,7 +177,6 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
   let mode = 'RANGING';
   let score = 0;
   let emas = { h21: 0, h50: 0, h200: 0, d20: 0 };
-  let prevEma20d = 0;
   let lastUpdate = 0;
   let candleCounts = { hourly: 0, daily: 0 };
   let updateTimer = null;
@@ -242,9 +241,17 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     const h200 = hourlyCandles.length >= 200 ? calculateEMA(hourlyCandles, 200) : 0;
     const d20 = calculateEMA(dailyCandles, 20);
 
-    // Save previous daily EMA for slope calculation
-    const prevD20 = prevEma20d;
-    prevEma20d = d20;
+    // Previous day's 20d EMA for the slope term: recompute the EMA over the
+    // daily series excluding the most recent (still-forming) daily candle.
+    // Measuring the slope across two consecutive *daily* candles makes it a
+    // true daily-trend signal. The old code snapshotted prevEma20d every
+    // ~5-min update cycle, so the slope measured a 20-day EMA's movement over
+    // 5 minutes — effectively zero, silently killing up to 20 points of
+    // macro-score range (#153). Computing it from the series is stateless, so
+    // it stays correct across engine restarts. With exactly 20 daily candles
+    // the prior series has 19 (< 20 period) and calculateEMA returns 0,
+    // leaving the slope term neutral until a 21st daily candle exists.
+    const prevD20 = calculateEMA(dailyCandles.slice(0, -1), 20);
 
     emas = { h21, h50, h200, d20 };
 
