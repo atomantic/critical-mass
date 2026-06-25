@@ -56,12 +56,6 @@ const createCandleAggregator = () => {
   const buffers = {};
   /** @type {Record<string, {open: number, high: number, low: number, close: number, volume: number, timestamp: number} | null>} */
   const current = {};
-  // The in-progress base (1m) bucket promoted by the most recent seed, if any.
-  // Used to net out double-counted volume when a directly-fetched higher-timeframe
-  // seed (which already includes this 1m bucket's partial) later has that 1m bucket
-  // rolled up into it by aggregateUp (issue #145).
-  /** @type {{timestamp: number, volume: number} | null} */
-  let boundary1m = null;
 
   for (const tf of TIMEFRAME_KEYS) {
     buffers[tf] = [];
@@ -210,16 +204,18 @@ const createCandleAggregator = () => {
     const existing = current[timeframe];
     if (newest && newest.timestamp === floorTimestamp(now, intervalMs)) {
       const promoted = { ...newest };
-      // A directly-fetched higher-timeframe seed already aggregates the in-progress
-      // 1m bucket's volume. Once that 1m bucket completes, aggregateUp rolls its FULL
-      // volume into this same candle — counting the boundary minute twice and spiking
-      // volume-derived signals. Deduct the seeded boundary-1m volume now so the later
-      // roll-up nets out correct. (high/low/close use max/min/overwrite on roll-up, so
-      // only volume double-counts; derived seeds exclude the boundary minute and skip
-      // this.)
-      if (boundaryInclusive && timeframe !== '1m' && boundary1m &&
-          floorTimestamp(boundary1m.timestamp, intervalMs) === promoted.timestamp) {
-        promoted.volume = Math.max(0, promoted.volume - boundary1m.volume);
+      // A directly-fetched higher-timeframe seed already aggregates the in-progress 1m
+      // bucket's volume up to fetch time. aggregateUp later rolls the FULL 1m candle into
+      // this same candle, so deduct the 1m bucket's volume now to avoid counting the
+      // boundary minute twice (which spikes volume-derived signals). Read current['1m']
+      // LIVE — a stored snapshot would go stale once ticks grow the 1m candle mid-startup,
+      // under-deducting and re-introducing the double count. Only volume double-counts
+      // (roll-up uses max/min/overwrite for high/low/close); derived seeds exclude the
+      // boundary minute and pass boundaryInclusive=false. (issue #145)
+      const base1m = current['1m'];
+      if (boundaryInclusive && timeframe !== '1m' && base1m &&
+          floorTimestamp(base1m.timestamp, intervalMs) === promoted.timestamp) {
+        promoted.volume = Math.max(0, promoted.volume - base1m.volume);
       }
       buffers[timeframe] = seeded.slice(0, -1);
       if (!existing || existing.timestamp < promoted.timestamp) {
@@ -227,9 +223,11 @@ const createCandleAggregator = () => {
         // promote the seed snapshot.
         current[timeframe] = promoted;
       } else if (existing.timestamp === promoted.timestamp) {
-        // Same in-progress bucket: keep the live candle (its close is newest) but fold
-        // in the seed's extremes/volume. Don't sum volume — seed and live cover
-        // overlapping wall-clock, so take the larger rather than double-counting.
+        // Same in-progress bucket built by ticks during the non-blocking seed: keep the
+        // live candle (its close is newest) but fold in the seed's TRUE bucket open
+        // (earliest) and extremes. Don't sum volume — seed and live cover overlapping
+        // wall-clock, so take the larger rather than double-counting.
+        existing.open = promoted.open;
         existing.high = Math.max(existing.high, promoted.high);
         existing.low = Math.min(existing.low, promoted.low);
         existing.volume = Math.max(existing.volume, promoted.volume);
@@ -240,10 +238,6 @@ const createCandleAggregator = () => {
       // Seed carries no in-progress bucket; only initialize current if no live candle
       // exists — never wipe one ticks already started.
       if (!existing) current[timeframe] = null;
-    }
-    if (timeframe === '1m') {
-      const cur = current['1m'];
-      boundary1m = cur ? { timestamp: cur.timestamp, volume: cur.volume } : null;
     }
   };
 

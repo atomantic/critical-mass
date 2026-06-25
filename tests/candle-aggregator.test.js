@@ -136,10 +136,29 @@ describe('candle-aggregator seed/live boundary (issue #145)', () => {
     ], t);
     const cur = agg.getCurrentCandle('1m');
     assert.equal(cur.timestamp, 180_000);
+    assert.equal(cur.open, 1, 'seed open kept (true bucket open, earlier than first live tick)');
     assert.equal(cur.high, 50, 'live high preserved (max of live 50, seed 40)');
     assert.equal(cur.low, 1, 'seed low folded in (min of live 50, seed 1)');
     assert.equal(cur.close, 50, 'live close kept (newest)');
     assert.equal(cur.volume, 7, 'max(live 3, seed 7) — not summed (overlapping coverage)');
+  });
+
+  it('deducts the live (not stale) 1m volume for a higher tf seeded after ticks', () => {
+    const agg = createCandleAggregator();
+    const t = 200_000;
+    // 1m seeded (vol 7), then live ticks grow the in-progress boundary minute to vol 12.
+    agg.seedCandles('1m', [
+      { open: 2, high: 2, low: 2, close: 2, volume: 7, timestamp: 180_000 },
+    ], t);
+    agg.processTick(3, 200_000, 5); // current['1m']@180000 volume 7 -> 12
+    // 5m fetched AFTER those ticks: its boundary partial reflects the grown ~12.
+    agg.seedCandles('5m', [
+      { open: 1, high: 3, low: 1, close: 2, volume: 100, timestamp: 0 },
+    ], t, { boundaryInclusive: true });
+    assert.equal(agg.getCurrentCandle('5m').volume, 88, 'deduct LIVE 1m vol 12 (100-12), not stale 7');
+    // Finalize the 1m (vol 12) -> rolls up the full 12 into 5m@0: 88 + 12 = 100.
+    agg.processTick(4, 240_000, 1);
+    assert.equal(agg.getCurrentCandle('5m').volume, 100, 'no double count: 88 + full 1m(12)');
   });
 
   it('keeps a live in-progress candle when the seed carries only completed buckets', () => {
