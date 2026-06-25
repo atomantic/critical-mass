@@ -78,6 +78,26 @@ describe('POST /api/updown/trades rejects non-numeric values (issue #151)', () =
     assert.equal(res.body.success, false);
   });
 
+  it('rejects numeric-prefix junk like "12abc" (parseFloat would accept it)', async () => {
+    const { app, getWritten } = setup();
+    const res = await invoke(app, 'POST /api/updown/trades', { body: { cost: '12abc', returnAmount: 100 } });
+    assert.equal(res.statusCode, 400);
+    assert.equal(getWritten(), null);
+  });
+
+  it('rejects empty-string cost', async () => {
+    const { app } = setup();
+    const res = await invoke(app, 'POST /api/updown/trades', { body: { cost: '', returnAmount: 100 } });
+    assert.equal(res.statusCode, 400);
+  });
+
+  it('accepts numeric strings', async () => {
+    const { app } = setup();
+    const res = await invoke(app, 'POST /api/updown/trades', { body: { cost: '50', returnAmount: '80.5' } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.trade.pnl, 30.5);
+  });
+
   it('accepts finite numeric values and persists a finite pnl', async () => {
     const { app, getWritten } = setup();
     const res = await invoke(app, 'POST /api/updown/trades', { body: { cost: 50, returnAmount: 80 } });
@@ -111,6 +131,13 @@ describe('PUT /api/updown/trades/:id rejects non-numeric updates (issue #151)', 
     const { app } = setup(existing());
     const res = await invoke(app, 'PUT /api/updown/trades/:id', { params: { id: '1' }, body: { btcPriceAtExit: 'nope' } });
     assert.equal(res.statusCode, 400);
+  });
+
+  it('rejects numeric-prefix junk like "12abc" on update', async () => {
+    const { app, getWritten } = setup(existing());
+    const res = await invoke(app, 'PUT /api/updown/trades/:id', { params: { id: '1' }, body: { returnAmount: '120xyz' } });
+    assert.equal(res.statusCode, 400);
+    assert.equal(getWritten(), null);
   });
 
   it('accepts finite numeric updates and recomputes pnl', async () => {
