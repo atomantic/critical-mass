@@ -98,3 +98,68 @@ describe('dry-run body-TP cost basis — round-trip fee parity (#133)', () => {
     assert.ok(Math.abs(bodyInfo.costBasis - qty * placed.price) < 1e-6);
   });
 });
+
+describe('dry-run multi-entry weighted entry price — per-cycle, not global (#152)', () => {
+  // Fill an entry at `price` and return its filled asset qty.
+  const fillEntry = async (exec, sizeUsdc, price) => {
+    const placed = await exec.placeEntryBid(sizeUsdc, price, price * 1.0001);
+    assert.ok(placed.success);
+    exec.checkEntryFills(placed.price);
+    return placed.assetQty;
+  };
+
+  it('weights the 2nd+ entry of a later cycle by that cycle\'s volume only', async () => {
+    const config = baseConfig();
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    // --- Cycle 1: two entries, then close via a body TP so the cycle resets. ---
+    const q1a = await fillEntry(exec, 1000, 100_000);
+    const q1b = await fillEntry(exec, 1000, 100_000);
+    const cycle1Qty = q1a + q1b; // stays in the GLOBAL simulatedTotalBought after the sell
+
+    const tpRes = await exec.placeTakeProfitOrder(cycle1Qty, 110_000, { forceUpdate: true });
+    assert.ok(tpRes.success);
+    exec.checkTpFills(110_000); // take_profit fill records cycle analytics + resets tracking
+    // Cycle closed: currentCycleTracking reset, but global cumulative bought retained.
+    assert.equal(exec.getOptimalTpAnalytics().currentCycle, null);
+
+    // --- Cycle 2: two entries at different prices. ---
+    const q2a = await fillEntry(exec, 1000, 50_000);
+    const q2b = await fillEntry(exec, 1000, 70_000);
+
+    // Correct weighted average uses ONLY cycle 2's accumulated quantity.
+    const expected = (50_000 * q2a + 70_000 * q2b) / (q2a + q2b);
+
+    // Buggy value (pre-#152): weights by the GLOBAL cumulative bought, which still
+    // includes cycle 1's volume — inflating the basis on the 2nd entry.
+    const buggy = (50_000 * (cycle1Qty + q2a) + 70_000 * q2b) / (cycle1Qty + q2a + q2b);
+
+    const entryPrice = exec.getOptimalTpAnalytics().currentCycle.entryPrice;
+    assert.ok(
+      Math.abs(entryPrice - expected) < 1e-6,
+      `cycle-2 entry price ${entryPrice} should be the per-cycle weighted avg ${expected}`,
+    );
+    // Regression guard: must NOT match the global-weighted (buggy) value.
+    assert.ok(
+      Math.abs(entryPrice - buggy) > 1e-6,
+      `cycle-2 entry price ${entryPrice} must not use global cumulative bought (${buggy})`,
+    );
+  });
+
+  it('first-cycle multi-entry average is unchanged (no regression)', async () => {
+    const config = baseConfig();
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    const qa = await fillEntry(exec, 1000, 80_000);
+    const qb = await fillEntry(exec, 1000, 120_000);
+    const expected = (80_000 * qa + 120_000 * qb) / (qa + qb);
+
+    const entryPrice = exec.getOptimalTpAnalytics().currentCycle.entryPrice;
+    assert.ok(
+      Math.abs(entryPrice - expected) < 1e-6,
+      `first-cycle entry price ${entryPrice} should equal weighted avg ${expected}`,
+    );
+  });
+});

@@ -109,7 +109,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
   let simulatedTotalSold = 0;
 
   // Optimal TP tracking
-  /** @type {{entryPrice: number, entryTime: number, maxPrice: number, maxPriceTime: number, minPrice: number}|null} */
+  /** @type {{entryPrice: number, entryTime: number, maxPrice: number, maxPriceTime: number, minPrice: number, cycleQty: number}|null} */
   let currentCycleTracking = null;
 
   /** @type {Array<{entryPrice: number, exitPrice: number, maxPrice: number, minPrice: number, optimalTpPct: number, actualTpPct: number, missedProfitPct: number, timeToMax: number, cycleNumber: number}>} */
@@ -387,12 +387,19 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
           maxPrice: fillPrice,
           maxPriceTime: Date.now(),
           minPrice: fillPrice,
+          cycleQty: order.size,
         };
       } else {
-        // Update weighted average entry price for multi-entry cycles
-        const prevTotal = currentCycleTracking.entryPrice * (simulatedTotalBought - order.size);
+        // Update weighted average entry price for multi-entry cycles.
+        // Weight by THIS cycle's accumulated quantity (cycleQty), not the global
+        // simulatedTotalBought — the global figure includes prior cycles' volume and
+        // is never reset on sells, so using it skews entryPrice (and the downstream
+        // optimalTpPct/actualTpPct/missedProfitPct analytics) on the 2nd+ entry of
+        // any cycle after the first (#152).
+        const prevTotal = currentCycleTracking.entryPrice * currentCycleTracking.cycleQty;
         const newTotal = prevTotal + (fillPrice * order.size);
-        currentCycleTracking.entryPrice = newTotal / simulatedTotalBought;
+        currentCycleTracking.cycleQty += order.size;
+        currentCycleTracking.entryPrice = newTotal / currentCycleTracking.cycleQty;
       }
 
       logDecision('entry_filled', 'N/A', fillPrice, {
@@ -1124,6 +1131,19 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
 
     // Restore cycle tracking
     currentCycleTracking = state.currentCycleTracking || null;
+    // Backward-compat: states serialized before #152 lack cycleQty. The optimal-TP
+    // analytics cycle is bounded by take_profit fills (which reset currentCycleTracking)
+    // and accumulates ONLY entry fills in between — no sells occur inside it — so the
+    // net open quantity (totalBought - totalSold) exactly equals the current cycle's
+    // accumulated buy size for that flow. (The lone inexact case is the celestial
+    // body_tp path, which increments totalSold without resetting the cycle; for that
+    // mixed mode this is a best-effort one-time approximation that only nudges the
+    // weighting of the first post-restart entry in the operator-facing analytics —
+    // never any financial figure.) Clamp to >= 0 so the next weighted average stays
+    // finite even on an inconsistent ledger.
+    if (currentCycleTracking && !Number.isFinite(currentCycleTracking.cycleQty)) {
+      currentCycleTracking.cycleQty = Math.max(simulatedTotalBought - simulatedTotalSold, 0);
+    }
     cycleAnalytics.length = 0;
     if (state.cycleAnalytics) {
       cycleAnalytics.push(...state.cycleAnalytics);
