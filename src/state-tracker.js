@@ -512,6 +512,10 @@ const applyConsolidationRecovery = (state, restoredOrders = [], failedRestoreOrd
       order.status = 'sell_failed';
       order.sellFailedReason = 'consolidation place failed and sell could not be re-placed';
       order.sellFailedAt = now;
+      // No resting sell remains for this order, so drop its exposure from the
+      // pending-sell aggregates (Math.max guards against float drift).
+      state.outstandingOrdersAsset = Math.max(0, state.outstandingOrdersAsset - (order.sellQuantity || 0));
+      state.outstandingOrdersUSDC = Math.max(0, state.outstandingOrdersUSDC - ((order.sellQuantity || 0) * (order.sellPrice || 0)));
     }
   }
 

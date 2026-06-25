@@ -116,13 +116,16 @@ const { applyConsolidationRecovery } = require('../src/state-tracker');
 
 describe('applyConsolidationRecovery (issue #149)', () => {
   const stateWithPendingSells = () => ({
+    // old-a: 0.1 @ 2400, old-b: 0.2 @ 2500 → outstanding 0.3 asset / 740 USDC
+    outstandingOrdersAsset: 0.3,
+    outstandingOrdersUSDC: 0.1 * 2400 + 0.2 * 2500,
     orders: [
-      { orderId: 'old-a', status: 'pending', sellQuantity: 0.1 },
-      { orderId: 'old-b', status: 'pending', sellQuantity: 0.2 },
+      { orderId: 'old-a', status: 'pending', sellQuantity: 0.1, sellPrice: 2400 },
+      { orderId: 'old-b', status: 'pending', sellQuantity: 0.2, sellPrice: 2500 },
     ],
   });
 
-  it('re-points restored sells at their new exchange IDs (stays pending)', () => {
+  it('re-points restored sells at their new exchange IDs (stays pending, exposure unchanged)', () => {
     const state = stateWithPendingSells();
     applyConsolidationRecovery(state, [
       { oldOrderId: 'old-a', newOrderId: 'new-a' },
@@ -131,9 +134,12 @@ describe('applyConsolidationRecovery (issue #149)', () => {
 
     assert.deepEqual(getPendingOrders(state).map(o => o.orderId), ['new-a', 'new-b']);
     assert.equal(state.orders[0].restoredFrom, 'old-a');
+    // Restored at the same qty/price, so pending-sell exposure is unchanged.
+    assert.ok(Math.abs(state.outstandingOrdersAsset - 0.3) < 1e-9);
+    assert.ok(Math.abs(state.outstandingOrdersUSDC - 740) < 1e-9);
   });
 
-  it('flags un-restorable sells as sell_failed so they leave the pending set', () => {
+  it('flags un-restorable sells sell_failed and removes their exposure from outstanding', () => {
     const state = stateWithPendingSells();
     applyConsolidationRecovery(state, [{ oldOrderId: 'old-a', newOrderId: 'new-a' }], ['old-b']);
 
@@ -141,6 +147,9 @@ describe('applyConsolidationRecovery (issue #149)', () => {
     const naked = state.orders.find(o => o.orderId === 'old-b');
     assert.equal(naked.status, 'sell_failed');
     assert.match(naked.sellFailedReason, /could not be re-placed/);
+    // old-b (0.2 @ 2500) no longer has a resting sell → exposure drops to old-a's.
+    assert.ok(Math.abs(state.outstandingOrdersAsset - 0.1) < 1e-9);
+    assert.ok(Math.abs(state.outstandingOrdersUSDC - 240) < 1e-9);
   });
 
   it('is a no-op on empty inputs', () => {
