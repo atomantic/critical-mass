@@ -250,9 +250,13 @@ const createCandleAggregator = () => {
       // else: live already advanced past the seed's bucket — keep it untouched.
     } else {
       buffers[timeframe] = seeded;
-      // Seed carries no in-progress bucket; only initialize current if no live candle
-      // exists — never wipe one ticks already started.
-      if (!existing) current[timeframe] = null;
+      // Seed carries no in-progress bucket (its newest candle is completed). Keep a live
+      // current ONLY if it's newer than that newest completed seed — i.e. genuinely the
+      // open bucket the seed didn't cover. A live current at/before the newest completed
+      // seed overlaps seeded data (e.g. the fetch crossed a candle boundary after ticks
+      // started the partial); clear it so the backstop doesn't later replace the complete
+      // seeded candle with the live partial (issue #145).
+      if (!existing || existing.timestamp <= newest.timestamp) current[timeframe] = null;
     }
     // Record the 1m REST boundary volume from THIS seed so later higher-tf seeds can
     // deduct it (comparable REST value, immune to live ticker-volume corruption).

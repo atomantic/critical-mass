@@ -190,6 +190,27 @@ describe('candle-aggregator seed/live boundary (issue #145)', () => {
     assert.equal(agg.getCurrentCandle('1m').high, 50);
   });
 
+  it('clears a stale live current that overlaps a completed seed (fetch crossed a boundary)', () => {
+    const agg = createCandleAggregator();
+    // A live tick builds current['1m']@180000 (in-progress at the time).
+    agg.processTick(50, 180_000, 3);
+    // The seed fetch returns just after the 180000 bucket closed: now is in the 240000
+    // bucket and the seed's newest candle is the now-COMPLETED 180000 candle.
+    agg.seedCandles('1m', [
+      { open: 1, high: 9, low: 1, close: 9, volume: 99, timestamp: 180_000 },
+    ], 240_000);
+    // The live partial @180000 overlaps the completed seed and must be cleared — otherwise
+    // the next tick finalizes it and the backstop replaces the full seeded candle.
+    assert.equal(agg.getCurrentCandle('1m'), null, 'stale overlapping live current cleared');
+    assert.deepEqual(agg.getCandles('1m').map(c => [c.timestamp, c.volume]), [[180_000, 99]],
+      'completed seeded candle left intact');
+    // A later tick starts a fresh current; no duplicate of 180000.
+    agg.processTick(8, 240_000, 1);
+    assert.equal(agg.getCurrentCandle('1m').timestamp, 240_000);
+    const ts = agg.getCandles('1m').map(c => c.timestamp);
+    assert.equal(new Set(ts).size, ts.length, 'no duplicate timestamps');
+  });
+
   it('never emits two candles with the same timestamp via pushCandle backstop', () => {
     const agg = createCandleAggregator();
     // Defensive: even if a seed leaves an in-progress bucket in the buffer (e.g.
