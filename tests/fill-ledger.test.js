@@ -1599,5 +1599,15 @@ describe('Fill Ledger', () => {
       assert.notStrictEqual(c, a, 'changed file must produce a fresh instance');
       assert.equal(c.getFillCount(), 2, 'fresh instance must reflect the new fill');
     });
+
+    it('does NOT cache a fund whose ledger file does not exist (no unbounded growth from bogus pairs)', () => {
+      const { getCachedFillLedger } = freshFillLedgerModule();
+      // No file written for these pairs → each call must return a throwaway and
+      // never populate the cache, so a flood of bogus pairs can't grow the heap.
+      const a = getCachedFillLedger('cache-ex', undefined, 'NOPE-1');
+      const b = getCachedFillLedger('cache-ex', undefined, 'NOPE-1');
+      assert.equal(a.getFillCount(), 0);
+      assert.notStrictEqual(a, b, 'missing-file funds must not be cached (fresh instance each call)');
+    });
   });
 });

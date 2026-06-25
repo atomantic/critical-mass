@@ -1517,12 +1517,25 @@ const getCachedFillLedger = (exchange, productId, pair) => {
   const filePath = getFillLedgerPath(exchange, pair);
   let mtimeMs = 0;
   let size = 0;
+  let exists = false;
   try {
     const st = fs.statSync(filePath);
     mtimeMs = st.mtimeMs;
     size = st.size;
-  } catch { /* missing file → 0/0; stable key until it appears */ }
+    exists = true;
+  } catch { /* missing file → not cached (see below) */ }
 
+  // Only cache funds whose ledger file actually exists. `pair` reaches this from
+  // the HTTP layer format-validated but NOT existence-checked, so a client
+  // polling /summary?pair=<bogus> (many valid-format values) would otherwise
+  // insert a permanent cache entry + empty ledger per distinct value and grow
+  // the gateway heap without bound. A nonexistent fund just builds a throwaway
+  // (cheap: load() early-returns on the missing file) and is never cached.
+  if (!exists) return createFillLedger(exchange, productId, pair, { quiet: true });
+
+  // Note: key intentionally omits productId — it only feeds log formatting in the
+  // ledger, never a value returned to read-only callers, so a (rare) productId
+  // divergence for the same (exchange,pair) can't affect cached results.
   const key = `${exchange}|${pair}`;
   const cached = _readOnlyLedgerCache.get(key);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
