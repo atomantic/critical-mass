@@ -81,6 +81,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [config, setConfig] = useState(initialConfig || {})
   const [saving, setSaving] = useState(false)
   const [toggleBusy, setToggleBusy] = useState(false)
+  const [restartNeeded, setRestartNeeded] = useState(false)
+  const [restarting, setRestarting] = useState(false)
   const [message, setMessage] = useState(null)
   const [isDirty, setIsDirty] = useState(false)
   const [presets, setPresets] = useState(null)
@@ -237,7 +239,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // the opposite of the final UI state. try/finally is required here — a network
   // rejection must still decrement the ref, or the sync effect stays blocked
   // forever and the toggle is stuck showing an unsaved value.
-  const persistToggle = async (label, doFetch, optimistic, revert) => {
+  const persistToggle = async (label, doFetch, optimistic, revert, { requiresRestart = false } = {}) => {
     togglePendingRef.current += 1
     setToggleBusy(true)
     optimistic()
@@ -245,6 +247,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       const res = await doFetch()
       if (res.ok) {
         setMessage({ type: 'success', text: `${label} saved` })
+        // Some fields (dryRun) are read once at engine construction, so the
+        // saved value only takes effect after a restart — surface the hint.
+        if (requiresRestart && isRegime) setRestartNeeded(true)
         onSave?.()
       } else {
         revert()
@@ -260,6 +265,27 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     }
   }
 
+  // Restart the regime engine so it reconstructs from the freshly-saved config.
+  // This is the only way a dryRun change actually takes effect — the engine
+  // captures dryRun (and picks its live vs paper order executor) at construction
+  // and never re-derives it on a config update. start refuses if already
+  // running, so stop first (best-effort: a stopped engine just starts fresh).
+  const handleRestartEngine = async () => {
+    setRestarting(true)
+    setMessage(null)
+    await fetch(`/api/${exchange}/regime/stop${pairQuery}`, { method: 'POST' }).catch(() => {})
+    const start = await fetch(`/api/${exchange}/regime/start${pairQuery}`, { method: 'POST' }).catch(() => null)
+    if (start && start.ok) {
+      setMessage({ type: 'success', text: 'Engine restarted — change applied' })
+      setRestartNeeded(false)
+      onSave?.()
+    } else {
+      const err = start ? await start.json().catch(() => ({})) : {}
+      setMessage({ type: 'error', text: err.error || 'Failed to restart engine' })
+    }
+    setRestarting(false)
+  }
+
   const handleToggleDryRun = () => {
     if (togglePendingRef.current > 0) return // a toggle save is already in flight
     const next = !config.dryRun
@@ -272,6 +298,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       }),
       () => setConfig(prev => ({ ...prev, dryRun: next })),
       () => setConfig(prev => ({ ...prev, dryRun: !next })),
+      { requiresRestart: true },
     )
   }
 
@@ -399,6 +426,20 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               : 'bg-red-900/50 border border-red-700 text-red-200'
           }`}>
             {message.text}
+          </div>
+        )}
+
+        {isRegime && restartNeeded && (
+          <div className="mb-3 p-2 rounded text-sm bg-amber-900/40 border border-amber-700 text-amber-200 flex items-center justify-between gap-3">
+            <span>⚠️ Dry-run mode is applied when the engine starts — restart it for this change to take effect.</span>
+            <button
+              type="button"
+              onClick={handleRestartEngine}
+              disabled={restarting}
+              className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium disabled:opacity-50 whitespace-nowrap"
+            >
+              {restarting ? 'Restarting…' : 'Restart Engine'}
+            </button>
           </div>
         )}
 
