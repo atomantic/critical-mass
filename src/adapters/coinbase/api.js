@@ -450,19 +450,22 @@ const createCoinbaseAdapter = (keysPath = null) => {
     // proration, holdback, and partial-fill detection downstream. Mirrors the
     // cursor loop in getAccountBalance.
     const PAGE_LIMIT = 250;
+    const basePath = `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}&limit=${PAGE_LIMIT}`;
     let cursor = null;
     let allFills = [];
 
     do {
-      const apiPath = cursor
-        ? `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}&limit=${PAGE_LIMIT}&cursor=${cursor}`
-        : `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}&limit=${PAGE_LIMIT}`;
+      // Cursors are opaque tokens that may contain =, +, / — encode before interpolating.
+      const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
       const data = await makeRequest('GET', apiPath);
 
       allFills = allFills.concat(data.fills || []);
 
-      // Coinbase returns an empty-string cursor (falsy) when no pages remain
-      cursor = data.cursor;
+      // Terminate on Coinbase's documented has_next === false signal (the response
+      // can echo a non-empty cursor on the final page). Fall back to an empty/absent
+      // cursor, and guard against a stuck cursor that repeats to avoid an infinite loop.
+      const nextCursor = data.cursor;
+      cursor = (data.has_next !== false && nextCursor && nextCursor !== cursor) ? nextCursor : null;
     } while (cursor);
 
     return allFills.map(fill => {

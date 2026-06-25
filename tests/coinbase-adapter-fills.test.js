@@ -68,11 +68,12 @@ describe('coinbase getOrderFills pagination', () => {
   it('accumulates fills across every cursor page', async () => {
     const adapter = createCoinbaseAdapter(keysPath);
 
-    // Three pages of 2 fills each; the final page returns an empty-string cursor.
+    // Three pages of 2 fills each; the final page signals end via has_next: false.
     const pages = {
-      '': { fills: [makeFill(1, 0.1), makeFill(2, 0.2)], cursor: 'CUR1' },
-      'CUR1': { fills: [makeFill(3, 0.3), makeFill(4, 0.4)], cursor: 'CUR2' },
-      'CUR2': { fills: [makeFill(5, 0.5), makeFill(6, 0.6)], cursor: '' },
+      '': { fills: [makeFill(1, 0.1), makeFill(2, 0.2)], cursor: 'CUR1', has_next: true },
+      'CUR1': { fills: [makeFill(3, 0.3), makeFill(4, 0.4)], cursor: 'CUR2', has_next: true },
+      // Final page echoes a non-empty cursor but has_next: false — must still terminate.
+      'CUR2': { fills: [makeFill(5, 0.5), makeFill(6, 0.6)], cursor: 'CUR3', has_next: false },
     };
 
     const { calls } = installFetchMock((url) => {
@@ -105,5 +106,22 @@ describe('coinbase getOrderFills pagination', () => {
     assert.equal(calls.length, 1, 'should stop after one page');
     assert.equal(fills.length, 1);
     assert.equal(fills[0].size, 0.1);
+  });
+
+  it('does not loop forever when the API repeats the same cursor', async () => {
+    const adapter = createCoinbaseAdapter(keysPath);
+
+    // A stuck endpoint keeps returning the same non-empty cursor with has_next: true.
+    const { calls } = installFetchMock((url) => ({
+      fills: [makeFill(url.searchParams.get('cursor') ? 2 : 1, 0.1)],
+      cursor: 'STUCK',
+      has_next: true,
+    }));
+
+    const fills = await adapter.getOrderFills('ORDER-1');
+
+    // First page (no cursor) → STUCK, second page (cursor=STUCK) repeats STUCK → stop.
+    assert.equal(calls.length, 2, 'should break once the cursor repeats');
+    assert.equal(fills.length, 2);
   });
 });
