@@ -4079,6 +4079,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     cycleBuysLimitWarningLogged = false;
     usdcCapWarningLogged = false;
     budgetExhaustedWarningLogged = false;
+    // Reset the low-balance pause throttle on cycle reset too (not only on the
+    // funded-entry path): an earlier guard (risk/budget) can return before the
+    // balance preflight, so without this a recovered-then-redrained wallet could
+    // suppress the next distinct low-balance episode's log (#187 review).
+    lowBalancePauseLogged = false;
 
     // Sync aggregate fields from any remaining bodies
     const bodies = positionState.celestialBodies || [];
