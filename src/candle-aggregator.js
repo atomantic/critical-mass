@@ -222,7 +222,13 @@ const createCandleAggregator = () => {
       // per server.js) that would clamp the seed to zero. Only volume double-counts (roll-up
       // uses max/min/overwrite for high/low/close); derived seeds exclude the boundary
       // minute and pass boundaryInclusive=false. (issue #145)
+      // Only deduct when the seeded boundary minute is STILL the in-progress 1m bucket:
+      // that's exactly when aggregateUp will later roll its full volume into this candle.
+      // If live ticks already advanced 1m to a newer minute (seeding spanned a minute
+      // boundary), the seeded minute has already rolled up — deducting it would subtract
+      // an already-counted minute and undercount the higher timeframe.
       if (boundaryInclusive && timeframe !== '1m' && boundary1mSeed &&
+          current['1m'] && current['1m'].timestamp === boundary1mSeed.timestamp &&
           floorTimestamp(boundary1mSeed.timestamp, intervalMs) === promoted.timestamp) {
         promoted.volume = Math.max(0, promoted.volume - boundary1mSeed.volume);
       }

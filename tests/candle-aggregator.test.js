@@ -125,6 +125,24 @@ describe('candle-aggregator seed/live boundary (issue #145)', () => {
     assert.equal(agg.getCurrentCandle('5m').volume, 40, 'derived seed volume untouched');
   });
 
+  it('skips the boundary deduction when live ticks advanced past the seeded 1m minute', () => {
+    const agg = createCandleAggregator();
+    const t = 200_000;
+    // 1m REST seed: boundary minute 180000, vol 7.
+    agg.seedCandles('1m', [
+      { open: 2, high: 2, low: 2, close: 2, volume: 7, timestamp: 180_000 },
+    ], t);
+    // A live tick advances 1m to the NEXT minute (240000), rolling 180000 up. The seeded
+    // boundary (180000) is now stale — already counted.
+    agg.processTick(9, 240_000, 100);
+    // 5m seed arrives now (still 5m bucket 0). Deduction must be skipped, not subtract the
+    // already-rolled 180000 minute (which would undercount).
+    agg.seedCandles('5m', [
+      { open: 1, high: 9, low: 1, close: 9, volume: 100, timestamp: 0 },
+    ], 240_000, { boundaryInclusive: true });
+    assert.equal(agg.getCurrentCandle('5m').volume, 100, 'no stale deduction of an already-rolled minute');
+  });
+
   it('does not destroy a live in-progress candle when a seed arrives mid-fetch', () => {
     const agg = createCandleAggregator();
     const t = 200_000; // in-progress 1m bucket = 180000
