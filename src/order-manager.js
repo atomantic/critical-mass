@@ -283,10 +283,15 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
 
     const postCancel = await adapter.getOrder(order.orderId);
     if (postCancel.completionPercentage > 0 || postCancel.status === 'FILLED') {
-      // Filled (fully or partially) during the cancel window — its quantity is
-      // already sold on the exchange. Exclude it from the consolidated total and
-      // from cancelledOrderIds so the caller doesn't treat it as consolidated;
-      // the engine's normal fill-detection path records the sale.
+      // Filled (fully or partially) during the cancel window — its filled quantity
+      // is already sold on the exchange. Exclude the WHOLE order from the
+      // consolidated total and from cancelledOrderIds so the caller doesn't treat
+      // it as consolidated; report it in filledDuringCancelOrderIds for
+      // reconciliation. We deliberately do NOT fold a partial fill's unfilled
+      // remainder into the consolidated order: updateAfterConsolidation would
+      // attribute the order's full cost basis to the new order while only the
+      // remainder is in it, corrupting P&L. The freed remainder asset is re-covered
+      // by the engine's normal cycle reconciliation, same as any cancelled order.
       log('WARN', `Order ${order.orderId} filled (${postCancel.completionPercentage}%) during cancel — excluding from consolidated total`);
       filledDuringCancelOrderIds.push(order.orderId);
       continue;
@@ -295,11 +300,6 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     cancelledOrders.push(order);
     cancelledOrderIds.push(order.orderId);
   }
-
-  // Step 3: Calculate weighted average sell price from confirmed-cancelled orders
-  const totalAsset = cancelledOrders.reduce((sum, o) => sum + o.sellQuantity, 0);
-  const weightedPriceSum = cancelledOrders.reduce((sum, o) => sum + (o.sellQuantity * o.sellPrice), 0);
-  const consolidatedPrice = weightedPriceSum / totalAsset;
 
   if (cancelledOrders.length === 0) {
     // Every eligible order filled during its cancel window — nothing left to
@@ -317,6 +317,11 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
       filledDuringCancelOrderIds,
     };
   }
+
+  // Step 3: Calculate weighted average sell price from confirmed-cancelled orders
+  const totalAsset = cancelledOrders.reduce((sum, o) => sum + o.sellQuantity, 0);
+  const weightedPriceSum = cancelledOrders.reduce((sum, o) => sum + (o.sellQuantity * o.sellPrice), 0);
+  const consolidatedPrice = weightedPriceSum / totalAsset;
 
   log('INFO', `Consolidating ${cancelledOrders.length} orders: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
 

@@ -138,6 +138,10 @@ describe('consolidatePendingOrders — gap-fill double-sell guard (issue #150)',
     assert.equal(result.consolidatedCount, 2);
   });
 
+  // A partial fill in the cancel window excludes the WHOLE order (not just the
+  // filled fraction): folding the unfilled remainder into the consolidated order
+  // would mis-attribute the order's full cost basis to it. The freed remainder is
+  // re-covered by the engine's normal reconciliation.
   it('treats a partial fill during the cancel as gap-filled and excludes it', async () => {
     const orders = [order('a', 0.1, 2400), order('b', 0.2, 2500)];
     const places = [];
