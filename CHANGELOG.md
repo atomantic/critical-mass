@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 - **Stale pending-entry purge on engine startup** - Removes saved pending entries that were filled/cancelled while engine was offline
 
 ### Fixed
+- **Coinbase getOrderFills size_in_quote handling** - `size_in_quote` is a boolean flag, not a numeric size; fills now convert quote-denominated `size` (e.g. market buys) to base currency and report the quote notional in `sizeInQuote`, mirroring `sync-fills.js` (was `parseFloat(true)` → NaN, corrupting `assetQty`/cost-basis)
 - **avgPrice precision for low-priced assets** - Removed premature `roundUSDC` on avgPrice in fill-ledger aggregation so sub-cent assets (e.g. CRO at $0.08) aren't truncated
 - **Self-heal body avgPrice on regime startup** - Detects and corrects bodies where avgPrice diverged >0.1% from costBasis/assetQty due to prior rounding
 - **Recovery module currency parsing** - Use canonical `getBaseCurrency`/`getQuoteCurrency` helpers instead of fragile string split
