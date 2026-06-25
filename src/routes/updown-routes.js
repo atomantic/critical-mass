@@ -596,6 +596,18 @@ module.exports = (app, deps) => {
 
   const readTrades = () => readJSON(TRADES_PATH, { trades: [], nextId: 1 });
   const writeTrades = (data) => fs.writeFileSync(TRADES_PATH, JSON.stringify(data, null, 2));
+  // Strictly parse a finite number, or NaN. Unlike parseFloat, this rejects
+  // numeric-prefix junk ('12abc'), empty/whitespace strings, arrays, and
+  // booleans — non-numeric input must not persist as null over the wire and
+  // break the win/loss pnl filters (issue #151).
+  const parseFiniteNumber = (v) => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+    if (typeof v === 'string' && v.trim() !== '') {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : NaN;
+    }
+    return NaN;
+  };
 
   app.get('/api/updown/trades', (req, res) => {
     const data = readTrades();
@@ -630,6 +642,11 @@ module.exports = (app, deps) => {
     if (cost == null || returnAmount == null) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount are required' });
     }
+    const costNum = parseFiniteNumber(cost);
+    const returnNum = parseFiniteNumber(returnAmount);
+    if (!Number.isFinite(costNum) || !Number.isFinite(returnNum)) {
+      return res.status(400).json({ success: false, error: 'cost and returnAmount must be numbers' });
+    }
     const data = readTrades();
 
     // Auto-capture trade context from service
@@ -643,9 +660,9 @@ module.exports = (app, deps) => {
     const trade = {
       id: data.nextId || (data.trades.length + 1),
       date: date || new Date().toISOString().slice(0, 10),
-      cost: parseFloat(cost),
-      returnAmount: parseFloat(returnAmount),
-      pnl: parseFloat(returnAmount) - parseFloat(cost),
+      cost: costNum,
+      returnAmount: returnNum,
+      pnl: returnNum - costNum,
       note: note || '',
       direction: inferredDirection || null,
       entryTime: new Date().toISOString(),
@@ -679,13 +696,20 @@ module.exports = (app, deps) => {
     const trade = data.trades.find(t => t.id === id);
     if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
 
+    // Reject non-numeric updates before mutating the trade (issue #151).
+    for (const field of ['cost', 'returnAmount', 'btcPriceAtExit']) {
+      if (req.body[field] != null && !Number.isFinite(parseFiniteNumber(req.body[field]))) {
+        return res.status(400).json({ success: false, error: `${field} must be a number` });
+      }
+    }
+
     if (req.body.date != null) trade.date = req.body.date;
-    if (req.body.cost != null) trade.cost = parseFloat(req.body.cost);
-    if (req.body.returnAmount != null) trade.returnAmount = parseFloat(req.body.returnAmount);
+    if (req.body.cost != null) trade.cost = parseFiniteNumber(req.body.cost);
+    if (req.body.returnAmount != null) trade.returnAmount = parseFiniteNumber(req.body.returnAmount);
     if (req.body.note != null) trade.note = req.body.note;
     if (req.body.direction != null) trade.direction = req.body.direction;
     if (req.body.exitTime != null) trade.exitTime = req.body.exitTime;
-    if (req.body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFloat(req.body.btcPriceAtExit);
+    if (req.body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFiniteNumber(req.body.btcPriceAtExit);
     trade.pnl = trade.returnAmount - trade.cost;
     writeTrades(data);
     res.json({ success: true, trade });
