@@ -444,9 +444,28 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<OrderFill[]>} List of fills with fee details
    */
   adapter.getOrderFills = async (orderId) => {
-    const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}`);
+    // Coinbase paginates this endpoint (~100 fills/page by default). Loop on the
+    // response cursor accumulating every page so high-fill-count orders aren't
+    // truncated — a truncated set under-reports totalSize and corrupts cost-basis
+    // proration, holdback, and partial-fill detection downstream. Mirrors the
+    // cursor loop in getAccountBalance.
+    const PAGE_LIMIT = 250;
+    let cursor = null;
+    let allFills = [];
 
-    return (data.fills || []).map(fill => {
+    do {
+      const apiPath = cursor
+        ? `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}&limit=${PAGE_LIMIT}&cursor=${cursor}`
+        : `/api/v3/brokerage/orders/historical/fills?order_id=${orderId}&limit=${PAGE_LIMIT}`;
+      const data = await makeRequest('GET', apiPath);
+
+      allFills = allFills.concat(data.fills || []);
+
+      // Coinbase returns an empty-string cursor (falsy) when no pages remain
+      cursor = data.cursor;
+    } while (cursor);
+
+    return allFills.map(fill => {
       // Extract detailed commission breakdown
       const commissionDetail = fill.commission_detail_total || {};
 
