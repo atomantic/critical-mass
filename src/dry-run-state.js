@@ -186,15 +186,29 @@ const saveState = (exchange, exchangeState, pair) => {
   }
 
   lastSaveTime = now;
-  pendingStates.clear();
 
+  // Cancel any scheduled debounce flush: we're about to write synchronously, so
+  // a stale timer would later flush an emptied pendingStates map (a no-op) while
+  // believing it still had work to do.
+  if (pendingSave) {
+    clearTimeout(pendingSave);
+    pendingSave = null;
+  }
+
+  // Flush EVERY queued fund (including this one, set above at line 161), not just
+  // the current key. Clearing pendingStates here without writing them — the old
+  // behavior — dropped any fund queued by an earlier debounced call (issue #159).
   const allState = loadAllState();
-  allState.exchanges[key] = {
-    ...exchangeState,
-    savedAt: now,
-  };
+  const fundCount = pendingStates.size;
+  for (const [k, state] of pendingStates) {
+    allState.exchanges[k] = {
+      ...state,
+      savedAt: now,
+    };
+  }
+  pendingStates.clear();
   saveAllState(allState);
-  console.log(`💾 [${key}] Dry-run state saved`);
+  console.log(`💾 [${key}] Dry-run state saved (${fundCount} fund(s))`);
 };
 
 /**
