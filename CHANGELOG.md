@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
 - **Stale pending-entry purge on engine startup** - Removes saved pending entries that were filled/cancelled while engine was offline
 
 ### Fixed
-- **UpDown trades reject non-numeric cost/returnAmount** - `POST`/`PUT /api/updown/trades` now return 400 when `cost`, `returnAmount`, or `btcPriceAtExit` aren't finite numbers, instead of persisting NaN (serialized as null) that misclassified the win/loss filters; mirrors the position route's #108 guard
+- **UpDown trades reject non-numeric cost/returnAmount** - `POST /api/updown/trades` now returns 400 when `cost` or `returnAmount` isn't a finite number, and `PUT /api/updown/trades/:id` returns 400 for non-numeric `cost`/`returnAmount`/`btcPriceAtExit`, instead of persisting NaN (serialized as null) that misclassified the win/loss filters; mirrors the position route's #108 guard
 - **Coinbase getOrderFills size_in_quote handling** - `size_in_quote` is a boolean flag, not a numeric size; fills now convert quote-denominated `size` (e.g. market buys) to base currency and report the quote notional in `sizeInQuote`, mirroring `sync-fills.js` (was `parseFloat(true)` → NaN, corrupting `assetQty`/cost-basis)
 - **avgPrice precision for low-priced assets** - Removed premature `roundUSDC` on avgPrice in fill-ledger aggregation so sub-cent assets (e.g. CRO at $0.08) aren't truncated
 - **Self-heal body avgPrice on regime startup** - Detects and corrects bodies where avgPrice diverged >0.1% from costBasis/assetQty due to prior rounding

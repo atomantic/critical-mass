@@ -596,6 +596,9 @@ module.exports = (app, deps) => {
 
   const readTrades = () => readJSON(TRADES_PATH, { trades: [], nextId: 1 });
   const writeTrades = (data) => fs.writeFileSync(TRADES_PATH, JSON.stringify(data, null, 2));
+  // parseFloat('abc')=NaN would persist as null over the wire and break the
+  // win/loss pnl filters (issue #151, mirrors the position route's #108 guard).
+  const isFiniteNumeric = (v) => Number.isFinite(parseFloat(v));
 
   app.get('/api/updown/trades', (req, res) => {
     const data = readTrades();
@@ -630,14 +633,11 @@ module.exports = (app, deps) => {
     if (cost == null || returnAmount == null) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount are required' });
     }
-    // Reject non-numeric values: parseFloat('abc')=NaN would persist as null
-    // over the wire and break the win/loss pnl filters (issue #151, mirrors
-    // the position route's guard for #108).
-    const costNum = parseFloat(cost);
-    const returnNum = parseFloat(returnAmount);
-    if (!Number.isFinite(costNum) || !Number.isFinite(returnNum)) {
+    if (!isFiniteNumeric(cost) || !isFiniteNumeric(returnAmount)) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount must be numbers' });
     }
+    const costNum = parseFloat(cost);
+    const returnNum = parseFloat(returnAmount);
     const data = readTrades();
 
     // Auto-capture trade context from service
@@ -687,11 +687,9 @@ module.exports = (app, deps) => {
     const trade = data.trades.find(t => t.id === id);
     if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
 
-    // Reject non-numeric updates before mutating the trade: a NaN from
-    // parseFloat('abc') would persist as null over the wire and break the
-    // win/loss pnl filters (issue #151).
+    // Reject non-numeric updates before mutating the trade (issue #151).
     for (const field of ['cost', 'returnAmount', 'btcPriceAtExit']) {
-      if (req.body[field] != null && !Number.isFinite(parseFloat(req.body[field]))) {
+      if (req.body[field] != null && !isFiniteNumeric(req.body[field])) {
         return res.status(400).json({ success: false, error: `${field} must be a number` });
       }
     }
