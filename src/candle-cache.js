@@ -144,10 +144,9 @@ const aggregateCandles = (sourceCandles, targetIntervalMs) => {
 /**
  * Derive intermediate timeframes from seeded candle data.
  * @param {ReturnType<typeof createCandleAggregator>} agg
- * @param {number} [now=Date.now()] - Shared seed reference time
  * @returns {number} total derived candles
  */
-const seedDerivedTimeframes = (agg, now = Date.now()) => {
+const seedDerivedTimeframes = (agg) => {
   const derivations = [
     { source: '1m',  target: '3m',  intervalMs: 180_000 },
     { source: '1m',  target: '10m', intervalMs: 600_000 },
@@ -163,7 +162,7 @@ const seedDerivedTimeframes = (agg, now = Date.now()) => {
     if (targetCandles.length) {
       // Derived from already-completed candles, so the in-progress bucket does NOT
       // include the 1m boundary partial — leave boundaryInclusive false (issue #145).
-      agg.seedCandles(target, targetCandles, now);
+      agg.seedCandles(target, targetCandles, Date.now());
       derived += targetCandles.length;
       log('INFO', `🕯️ candle-cache: derived ${targetCandles.length} ${target} candles from ${source}`);
     }
@@ -208,10 +207,6 @@ const createCandleCache = () => {
   const seedFromPublicAPI = async (exchange) => {
     const agg = getOrCreate(exchange);
     let totalSeeded = 0;
-    // One reference time for the whole seed so every timeframe agrees on which
-    // bucket is in-progress (SEED_TIMEFRAMES lists 1m first, so the 1m boundary is
-    // promoted before the higher timeframes that deduct it — see issue #145).
-    const now = Date.now();
 
     for (const { tf, hours, coinbaseGranularity, cryptocomTf } of SEED_TIMEFRAMES) {
       let candles;
@@ -224,16 +219,19 @@ const createCandleCache = () => {
       }
 
       if (candles.length > 0) {
-        // Directly-fetched seeds include the in-progress 1m bucket's partial volume,
-        // so mark them boundaryInclusive to net out the later 1m roll-up (issue #145).
-        agg.seedCandles(tf, candles, now, { boundaryInclusive: true });
+        // Sample `now` right after the fetch (not once up front) so a fetch that
+        // crosses a candle boundary doesn't misclassify the in-progress bucket as
+        // completed. Directly-fetched seeds include the in-progress 1m bucket's
+        // partial volume, so mark them boundaryInclusive to net out the later 1m
+        // roll-up (issue #145).
+        agg.seedCandles(tf, candles, Date.now(), { boundaryInclusive: true });
         totalSeeded += candles.length;
         log('INFO', `🕯️ candle-cache: seeded ${candles.length} ${tf} candles for ${exchange}`);
       }
     }
 
     // Derive intermediate timeframes (10m, 30m, 2h, 4h) from seeded data
-    totalSeeded += seedDerivedTimeframes(agg, now);
+    totalSeeded += seedDerivedTimeframes(agg);
 
     return totalSeeded;
   };

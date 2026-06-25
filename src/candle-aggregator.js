@@ -204,6 +204,10 @@ const createCandleAggregator = () => {
     // boundary, and the live candle under-reports ticks before service start
     // (issue #145).
     const newest = seeded[seeded.length - 1];
+    // seedAll() runs non-blocking after the live tick listener is wired (server.js),
+    // so ticks may have already built current[tf] while this fetch was pending. Never
+    // destroy that live in-progress candle (issue #145).
+    const existing = current[timeframe];
     if (newest && newest.timestamp === floorTimestamp(now, intervalMs)) {
       const promoted = { ...newest };
       // A directly-fetched higher-timeframe seed already aggregates the in-progress
@@ -217,13 +221,29 @@ const createCandleAggregator = () => {
           floorTimestamp(boundary1m.timestamp, intervalMs) === promoted.timestamp) {
         promoted.volume = Math.max(0, promoted.volume - boundary1m.volume);
       }
-      current[timeframe] = promoted;
       buffers[timeframe] = seeded.slice(0, -1);
-      if (timeframe === '1m') boundary1m = { timestamp: promoted.timestamp, volume: promoted.volume };
+      if (!existing || existing.timestamp < promoted.timestamp) {
+        // No live candle yet (the common case), or it's older than the seed's bucket —
+        // promote the seed snapshot.
+        current[timeframe] = promoted;
+      } else if (existing.timestamp === promoted.timestamp) {
+        // Same in-progress bucket: keep the live candle (its close is newest) but fold
+        // in the seed's extremes/volume. Don't sum volume — seed and live cover
+        // overlapping wall-clock, so take the larger rather than double-counting.
+        existing.high = Math.max(existing.high, promoted.high);
+        existing.low = Math.min(existing.low, promoted.low);
+        existing.volume = Math.max(existing.volume, promoted.volume);
+      }
+      // else: live already advanced past the seed's bucket — keep it untouched.
     } else {
-      current[timeframe] = null;
       buffers[timeframe] = seeded;
-      if (timeframe === '1m') boundary1m = null;
+      // Seed carries no in-progress bucket; only initialize current if no live candle
+      // exists — never wipe one ticks already started.
+      if (!existing) current[timeframe] = null;
+    }
+    if (timeframe === '1m') {
+      const cur = current['1m'];
+      boundary1m = cur ? { timestamp: cur.timestamp, volume: cur.volume } : null;
     }
   };
 

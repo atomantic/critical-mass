@@ -125,6 +125,34 @@ describe('candle-aggregator seed/live boundary (issue #145)', () => {
     assert.equal(agg.getCurrentCandle('5m').volume, 40, 'derived seed volume untouched');
   });
 
+  it('does not destroy a live in-progress candle when a seed arrives mid-fetch', () => {
+    const agg = createCandleAggregator();
+    const t = 200_000; // in-progress 1m bucket = 180000
+    // A live tick builds current['1m']@180000 before the (non-blocking) seed returns.
+    agg.processTick(50, 200_000, 3); // open/high/close 50, volume 3
+    // Seed arrives with the same in-progress bucket (an older snapshot).
+    agg.seedCandles('1m', [
+      { open: 1, high: 40, low: 1, close: 40, volume: 7, timestamp: 180_000 },
+    ], t);
+    const cur = agg.getCurrentCandle('1m');
+    assert.equal(cur.timestamp, 180_000);
+    assert.equal(cur.high, 50, 'live high preserved (max of live 50, seed 40)');
+    assert.equal(cur.low, 1, 'seed low folded in (min of live 50, seed 1)');
+    assert.equal(cur.close, 50, 'live close kept (newest)');
+    assert.equal(cur.volume, 7, 'max(live 3, seed 7) — not summed (overlapping coverage)');
+  });
+
+  it('keeps a live in-progress candle when the seed carries only completed buckets', () => {
+    const agg = createCandleAggregator();
+    agg.processTick(50, 200_000, 3); // current['1m']@180000
+    // Seed's newest (120000) is older than the in-progress bucket at now=200000.
+    agg.seedCandles('1m', [
+      { open: 1, high: 1, low: 1, close: 1, volume: 9, timestamp: 120_000 },
+    ], 200_000);
+    assert.equal(agg.getCurrentCandle('1m').timestamp, 180_000, 'live candle not cleared');
+    assert.equal(agg.getCurrentCandle('1m').high, 50);
+  });
+
   it('never emits two candles with the same timestamp via pushCandle backstop', () => {
     const agg = createCandleAggregator();
     // Defensive: even if a seed leaves an in-progress bucket in the buffer (e.g.
