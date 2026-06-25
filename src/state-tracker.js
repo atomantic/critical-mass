@@ -425,6 +425,14 @@ const getPendingOrders = (state) => state.orders.filter(o => o.status === 'pendi
  * @returns {BotState} Updated state
  */
 const updateAfterConsolidation = (state, consolidatedOrders, newOrderId, newSellPrice, newSellQuantity) => {
+  // Nothing was consolidated (e.g. every eligible order filled during its cancel
+  // window — issue #150 returns newOrderId: null with no source orders). Never
+  // build a consolidated entry from an empty set / null id: that pushes a phantom
+  // 'pending' order with orderId: null into state, which then crashes the next
+  // sync's adapter.getOrder(null) and inflates pending counts. State integrity
+  // invariant — a consolidated order must have a real id and at least one source.
+  if (!consolidatedOrders?.length || newOrderId == null) return;
+
   const now = new Date().toISOString();
   const sourceOrderIds = consolidatedOrders.map(o => o.orderId);
 
