@@ -37,7 +37,7 @@ const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
 const celestialHierarchy = require('./celestial-hierarchy');
-const { fmtCurrency: fmtPrice } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, isFilledStatus } = require('./shared-utils');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -740,7 +740,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // without that branch an offline fill in that brief window is missed
       // and the TP is restored as open by the path further down.
       const orderStatus = await adapter.getOrder(positionState.activeTpOrderId);
-      if (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100) {
+      if (isFilledStatus(orderStatus)) {
         console.log(`✅ [${exchange}] TP order ${positionState.activeTpOrderId} filled while offline`);
         tpFilled = true;
 
@@ -845,7 +845,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
 
         // Same FILLED-or-completion=100 pattern as the core TP path above.
-        if (orderStatus && (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100)) {
+        if (isFilledStatus(orderStatus)) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
           console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} filled while offline`);
 
@@ -1268,7 +1268,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             && bodyStatus.status !== 'FAILED'
             && bodyStatus.status !== 'EXPIRED';
 
-          if (bodyExists && (bodyStatus.status === 'FILLED' || bodyStatus.completionPercentage >= 100)) {
+          if (bodyExists && isFilledStatus(bodyStatus)) {
             // Body filled while offline — handled in checkOfflineOrderFills above
             continue;
           }
@@ -1325,7 +1325,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               await placeBodyTp(body);
             } else {
               const status = await adapter.getOrder(body.tpOrderId).catch(() => null);
-              if (status && (status.status === 'FILLED' || status.completionPercentage >= 100)) {
+              if (isFilledStatus(status)) {
                 console.log(`📋 [${exchange}] Overpriced body TP ${body.tpOrderId.slice(0, 8)} already filled — polling will process`);
               } else {
                 console.log(`⚠️ [${exchange}] Failed to cancel overpriced body TP ${body.tpOrderId}: ${cancelResult.errorMessage || 'unknown'}`);
@@ -1745,7 +1745,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           continue;
         }
         try {
-          const isFullFilled = orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100;
+          const isFullFilled = isFilledStatus(orderStatus);
           const partialSize = parseFloat(orderStatus.filledSize || 0);
           if (!isFullFilled && partialSize <= 0) continue; // truly empty cancel, ok to purge
           console.log(`📥 [${exchange}] Catching up offline entry ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`);
@@ -3146,7 +3146,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // Coinbase can flip completionPercentage to 100 a tick before status
             // flips to FILLED — match the rest of the codebase's fill detection so
             // the reconcile backstop acts during that window (issue #155).
-            if (orderStatus.status === 'FILLED' || orderStatus.completionPercentage >= 100) {
+            if (isFilledStatus(orderStatus)) {
               console.log(`✅ [${exchange}] Reconcile detected TP order ${positionState.activeTpOrderId} filled (WebSocket missed)`);
               // Build fill data in the format handleOrderFill expects
               const fillData = {
@@ -3182,7 +3182,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (!body.tpOrderId) continue;
           adapter.getOrder(body.tpOrderId)
             .then(async (bodyStatus) => {
-              if (bodyStatus.status === 'FILLED' || bodyStatus.completionPercentage >= 100) {
+              if (isFilledStatus(bodyStatus)) {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
                 console.log(`${tierCfg.emoji} [${exchange}] Reconcile detected body TP ${body.tpOrderId} filled`);
                 const fillData = {
