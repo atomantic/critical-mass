@@ -79,6 +79,20 @@ describe('validateConfigUpdate', () => {
     assert.match(errors[0], /dcaStrategy.*one of/);
   });
 
+  it('dcaStrategy enum matches engine-honored values (fixed, fibonacci)', () => {
+    // The engine branches on dcaStrategy === 'fibonacci' (dca-engine.js,
+    // state-tracker.js, backtest-engine.js); 'regime' is not read anywhere.
+    for (const strategy of ['fixed', 'fibonacci']) {
+      const { value, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, { dcaStrategy: strategy });
+      assert.deepStrictEqual(errors, [], `expected ${strategy} to be accepted`);
+      assert.deepStrictEqual(value, { dcaStrategy: strategy });
+    }
+    // 'regime' is inert in the engine and must be rejected.
+    const { errors: regimeErrors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, { dcaStrategy: 'regime' });
+    assert.equal(regimeErrors.length, 1);
+    assert.match(regimeErrors[0], /dcaStrategy.*one of/);
+  });
+
   it('EXCHANGE_CONFIG_SCHEMA includes all DEFAULTS fields', () => {
     const expected = [
       'enabled', 'dryRun', 'productId', 'dcaStrategy', 'intervalType',
