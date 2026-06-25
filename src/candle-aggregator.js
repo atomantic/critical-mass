@@ -240,12 +240,15 @@ const createCandleAggregator = () => {
       } else if (existing.timestamp === promoted.timestamp) {
         // Same in-progress bucket built by ticks during the non-blocking seed: keep the
         // live candle (its close is newest) but fold in the seed's TRUE bucket open
-        // (earliest) and extremes. Don't sum volume — seed and live cover overlapping
-        // wall-clock, so take the larger rather than double-counting.
+        // (earliest) and extremes. Take the seed's per-bucket REST volume outright, NOT
+        // max(): the seed covers the full bucket [bucket-start, fetch] — a superset of the
+        // live partial's [service-start, now] — so it's the authoritative bucket volume,
+        // and the live value may be non-comparable ticker volume (24h rolling, per
+        // server.js) that max() would wrongly preserve (issue #145; see issue #161).
         existing.open = promoted.open;
         existing.high = Math.max(existing.high, promoted.high);
         existing.low = Math.min(existing.low, promoted.low);
-        existing.volume = Math.max(existing.volume, promoted.volume);
+        existing.volume = promoted.volume;
       }
       // else: live already advanced past the seed's bucket — keep it untouched.
     } else {

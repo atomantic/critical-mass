@@ -146,8 +146,9 @@ describe('candle-aggregator seed/live boundary (issue #145)', () => {
   it('does not destroy a live in-progress candle when a seed arrives mid-fetch', () => {
     const agg = createCandleAggregator();
     const t = 200_000; // in-progress 1m bucket = 180000
-    // A live tick builds current['1m']@180000 before the (non-blocking) seed returns.
-    agg.processTick(50, 200_000, 3); // open/high/close 50, volume 3
+    // A live tick builds current['1m']@180000 before the (non-blocking) seed returns,
+    // carrying a large non-comparable ticker volume (e.g. 24h rolling volume).
+    agg.processTick(50, 200_000, 5_000_000); // open/high/close 50
     // Seed arrives with the same in-progress bucket (an older snapshot).
     agg.seedCandles('1m', [
       { open: 1, high: 40, low: 1, close: 40, volume: 7, timestamp: 180_000 },
@@ -158,7 +159,7 @@ describe('candle-aggregator seed/live boundary (issue #145)', () => {
     assert.equal(cur.high, 50, 'live high preserved (max of live 50, seed 40)');
     assert.equal(cur.low, 1, 'seed low folded in (min of live 50, seed 1)');
     assert.equal(cur.close, 50, 'live close kept (newest)');
-    assert.equal(cur.volume, 7, 'max(live 3, seed 7) — not summed (overlapping coverage)');
+    assert.equal(cur.volume, 7, 'seed per-bucket REST volume wins over non-comparable live ticker volume');
   });
 
   it('deducts the 1m REST seed volume, not non-comparable live ticker volume', () => {
