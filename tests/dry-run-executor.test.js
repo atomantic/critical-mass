@@ -163,3 +163,63 @@ describe('dry-run multi-entry weighted entry price — per-cycle, not global (#1
     );
   });
 });
+
+describe('dry-run entry fills only at or below the limit price (#154)', () => {
+  it('does NOT fill a buy limit while the market trades above it', async () => {
+    const config = baseConfig();
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    const bid = 100_000;
+    const placed = await exec.placeEntryBid(1000, bid, bid * 1.0001);
+    assert.ok(placed.success);
+    assert.equal(placed.price, bid, 'entryOffsetBps=0 ⇒ bid placed at the limit');
+
+    // Market 0.05% ABOVE the limit — inside the old +0.1% tolerance that wrongly filled.
+    exec.checkEntryFills(placed.price * 1.0005);
+    assert.equal(
+      exec.getOptimalTpAnalytics().currentCycle,
+      null,
+      'entry must not fill while price is above the limit',
+    );
+
+    // Even right at the old tolerance edge (+0.1%) it must stay unfilled.
+    exec.checkEntryFills(placed.price * 1.001);
+    assert.equal(
+      exec.getOptimalTpAnalytics().currentCycle,
+      null,
+      'entry must not fill at the +0.1% tolerance edge',
+    );
+  });
+
+  it('fills exactly at the limit price (parity with the TP-side check)', async () => {
+    const config = baseConfig();
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    const bid = 100_000;
+    const placed = await exec.placeEntryBid(1000, bid, bid * 1.0001);
+    assert.ok(placed.success);
+
+    exec.checkEntryFills(placed.price);
+    const cycle = exec.getOptimalTpAnalytics().currentCycle;
+    assert.ok(cycle, 'entry fills when the market reaches the limit');
+    assert.equal(cycle.entryPrice, placed.price, 'fill price is the limit price');
+  });
+
+  it('fills when the market trades below the limit', async () => {
+    const config = baseConfig();
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    const bid = 100_000;
+    const placed = await exec.placeEntryBid(1000, bid, bid * 1.0001);
+    assert.ok(placed.success);
+
+    exec.checkEntryFills(placed.price * 0.999);
+    assert.ok(
+      exec.getOptimalTpAnalytics().currentCycle,
+      'entry fills when price drops below the limit',
+    );
+  });
+});
