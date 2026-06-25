@@ -1131,10 +1131,16 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
 
     // Restore cycle tracking
     currentCycleTracking = state.currentCycleTracking || null;
-    // Backward-compat: states serialized before #152 lack cycleQty. Cycles are
-    // atomic (a sell closes its own cycle's buys), so the net open quantity
-    // (totalBought - totalSold) is the current cycle's accumulated buy size. Fall
-    // back to a positive value so the next multi-entry weighted average stays finite.
+    // Backward-compat: states serialized before #152 lack cycleQty. The optimal-TP
+    // analytics cycle is bounded by take_profit fills (which reset currentCycleTracking)
+    // and accumulates ONLY entry fills in between — no sells occur inside it — so the
+    // net open quantity (totalBought - totalSold) exactly equals the current cycle's
+    // accumulated buy size for that flow. (The lone inexact case is the celestial
+    // body_tp path, which increments totalSold without resetting the cycle; for that
+    // mixed mode this is a best-effort one-time approximation that only nudges the
+    // weighting of the first post-restart entry in the operator-facing analytics —
+    // never any financial figure.) Clamp to >= 0 so the next weighted average stays
+    // finite even on an inconsistent ledger.
     if (currentCycleTracking && !Number.isFinite(currentCycleTracking.cycleQty)) {
       currentCycleTracking.cycleQty = Math.max(simulatedTotalBought - simulatedTotalSold, 0);
     }
