@@ -1,4 +1,7 @@
 # Unreleased Changes
 
+## Market data candles
+- **[issue-145] No duplicate candles at the seed/live boundary** — after seeding historical candles on startup, the still-open candle is now continued by live ticks instead of being duplicated, so charts and trend signals read clean, single-timestamped candles with complete volume rather than two overlapping candles per timeframe.
+
 ## Gemini market data
 - **[issue-144] Accurate Gemini live bid/ask** — Gemini's real-time best bid and ask now track the live order book instead of drifting one-way over a session, so entry orders are priced off the current market rather than a stale, too-high bid.
