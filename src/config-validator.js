@@ -58,7 +58,7 @@ const EXCHANGE_CONFIG_SCHEMA = {
   enabled: { type: 'boolean' },
   dryRun: { type: 'boolean' },
   productId: { type: 'string' },
-  dcaStrategy: { type: 'string', enum: ['fixed', 'regime'] },
+  dcaStrategy: { type: 'string', enum: ['fixed', 'fibonacci'] },
   intervalType: { type: 'string' },
   amount: { type: 'number', min: 0 },
   totalAllocation: { type: 'number', min: 0 },
