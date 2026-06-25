@@ -87,6 +87,44 @@ describe('candle-aggregator seed/live boundary (issue #145)', () => {
     assert.equal(agg.getCurrentCandle('5m').timestamp, 300_000);
   });
 
+  it('does not double-count the boundary minute for a directly-seeded higher timeframe', () => {
+    const agg = createCandleAggregator();
+    // now=200000: in-progress 1m bucket = 180000, in-progress 5m bucket = 0 (which
+    // contains the boundary 1m@180000). This is codex's reproduction scenario.
+    const t = 200_000;
+    // 1m seeded first (establishes the boundary, vol 7).
+    agg.seedCandles('1m', [
+      { open: 1, high: 1, low: 1, close: 1, volume: 5, timestamp: 120_000 },
+      { open: 2, high: 2, low: 2, close: 2, volume: 7, timestamp: 180_000 }, // in-progress
+    ], t);
+    // 5m directly fetched: its in-progress @0 candle ALREADY includes the 1m@180000
+    // partial (vol 7 of the 100). boundaryInclusive deducts it at promotion.
+    agg.seedCandles('5m', [
+      { open: 1, high: 3, low: 1, close: 2, volume: 100, timestamp: 0 },
+    ], t, { boundaryInclusive: true });
+    assert.equal(agg.getCurrentCandle('5m').volume, 93, 'seeded 5m volume minus boundary 1m (100-7)');
+
+    // Live ticks: continue the 1m, then finalize it so it rolls up into 5m@0.
+    agg.processTick(9, 200_000, 2); // 1m@180000 volume 7 -> 9
+    agg.processTick(9, 240_000, 1); // finalize 1m@180000 (vol 9) -> aggregateUp into 5m@0
+    // 5m@0 = 93 + 9 = 102 (NOT 109) — the boundary minute is counted once.
+    assert.equal(agg.getCurrentCandle('5m').volume, 102, 'no double count: 93 + full 1m(9)');
+  });
+
+  it('keeps full boundary volume for a derived (boundary-exclusive) higher timeframe', () => {
+    const agg = createCandleAggregator();
+    const t = 200_000;
+    agg.seedCandles('1m', [
+      { open: 2, high: 2, low: 2, close: 2, volume: 7, timestamp: 180_000 },
+    ], t);
+    // Derived 5m built from COMPLETED 1m only, so its partial excludes the boundary
+    // minute — no deduction (default boundaryInclusive=false).
+    agg.seedCandles('5m', [
+      { open: 1, high: 3, low: 1, close: 2, volume: 40, timestamp: 0 },
+    ], t);
+    assert.equal(agg.getCurrentCandle('5m').volume, 40, 'derived seed volume untouched');
+  });
+
   it('never emits two candles with the same timestamp via pushCandle backstop', () => {
     const agg = createCandleAggregator();
     // Defensive: even if a seed leaves an in-progress bucket in the buffer (e.g.

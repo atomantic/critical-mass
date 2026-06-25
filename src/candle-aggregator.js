@@ -56,6 +56,12 @@ const createCandleAggregator = () => {
   const buffers = {};
   /** @type {Record<string, {open: number, high: number, low: number, close: number, volume: number, timestamp: number} | null>} */
   const current = {};
+  // The in-progress base (1m) bucket promoted by the most recent seed, if any.
+  // Used to net out double-counted volume when a directly-fetched higher-timeframe
+  // seed (which already includes this 1m bucket's partial) later has that 1m bucket
+  // rolled up into it by aggregateUp (issue #145).
+  /** @type {{timestamp: number, volume: number} | null} */
+  let boundary1m = null;
 
   for (const tf of TIMEFRAME_KEYS) {
     buffers[tf] = [];
@@ -182,8 +188,12 @@ const createCandleAggregator = () => {
    * @param {string} timeframe - Timeframe key
    * @param {Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>} candles - Oldest first
    * @param {number} [now=Date.now()] - Current time, used to detect the in-progress bucket
+   * @param {{boundaryInclusive?: boolean}} [opts] - `boundaryInclusive: true` marks a
+   *   directly-fetched seed whose in-progress higher-timeframe candle already includes the
+   *   live 1m boundary bucket's partial volume (see the deduction below). Derived seeds —
+   *   built from already-completed candles — must leave this false.
    */
-  const seedCandles = (timeframe, candles, now = Date.now()) => {
+  const seedCandles = (timeframe, candles, now = Date.now(), { boundaryInclusive = false } = {}) => {
     if (!TIMEFRAMES[timeframe] || !candles?.length) return;
     const { maxCandles, intervalMs } = TIMEFRAMES[timeframe];
     const seeded = candles.slice(-maxCandles);
@@ -195,11 +205,25 @@ const createCandleAggregator = () => {
     // (issue #145).
     const newest = seeded[seeded.length - 1];
     if (newest && newest.timestamp === floorTimestamp(now, intervalMs)) {
-      current[timeframe] = { ...newest };
+      const promoted = { ...newest };
+      // A directly-fetched higher-timeframe seed already aggregates the in-progress
+      // 1m bucket's volume. Once that 1m bucket completes, aggregateUp rolls its FULL
+      // volume into this same candle — counting the boundary minute twice and spiking
+      // volume-derived signals. Deduct the seeded boundary-1m volume now so the later
+      // roll-up nets out correct. (high/low/close use max/min/overwrite on roll-up, so
+      // only volume double-counts; derived seeds exclude the boundary minute and skip
+      // this.)
+      if (boundaryInclusive && timeframe !== '1m' && boundary1m &&
+          floorTimestamp(boundary1m.timestamp, intervalMs) === promoted.timestamp) {
+        promoted.volume = Math.max(0, promoted.volume - boundary1m.volume);
+      }
+      current[timeframe] = promoted;
       buffers[timeframe] = seeded.slice(0, -1);
+      if (timeframe === '1m') boundary1m = { timestamp: promoted.timestamp, volume: promoted.volume };
     } else {
       current[timeframe] = null;
       buffers[timeframe] = seeded;
+      if (timeframe === '1m') boundary1m = null;
     }
   };
 
