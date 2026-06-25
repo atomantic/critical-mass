@@ -758,7 +758,8 @@
  * @property {number} [consolidatedAsset] - Total BTC in consolidated order
  * @property {number} [consolidatedCount] - Number of orders consolidated
  * @property {string[]} [skippedOrderIds] - Order IDs skipped due to partial fills
- * @property {string[]} [cancelledOrderIds] - Order IDs that were cancelled
+ * @property {string[]} [cancelledOrderIds] - Order IDs confirmed cancelled (0% filled) and folded into the consolidated order
+ * @property {string[]} [filledDuringCancelOrderIds] - Order IDs that filled in the gap between the eligibility check and the cancel; excluded from the consolidated total to avoid a double-sell (issue #150)
  * @property {{oldOrderId: string, newOrderId: string}[]} [restoredOrders] - Sells re-placed after a consolidated-place failure (naked-position recovery), mapping cancelled ID to new ID
  * @property {string[]} [failedRestoreOrderIds] - Cancelled order IDs that could NOT be re-placed during recovery
  * @property {string} [error] - Error message if consolidation failed

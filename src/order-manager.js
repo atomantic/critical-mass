@@ -232,7 +232,9 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
 
   const eligibleOrders = [];
   const skippedOrderIds = [];
+  const cancelledOrders = [];
   const cancelledOrderIds = [];
+  const filledDuringCancelOrderIds = [];
 
   // Step 1: Check each order for partial fills
   log('INFO', `Checking ${realOrders.length} orders for partial fills...`);
@@ -257,15 +259,15 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     };
   }
 
-  // Step 2: Calculate weighted average sell price
-  const totalAsset = eligibleOrders.reduce((sum, o) => sum + o.sellQuantity, 0);
-  const weightedPriceSum = eligibleOrders.reduce((sum, o) => sum + (o.sellQuantity * o.sellPrice), 0);
-  const consolidatedPrice = weightedPriceSum / totalAsset;
   const baseCurrency = getBaseCurrency(config.productId);
 
-  log('INFO', `Consolidating ${eligibleOrders.length} orders: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
-
-  // Step 3: Cancel all eligible orders
+  // Step 2: Cancel all eligible orders, then re-fetch each to confirm it was
+  // actually cancelled and not filled in the gap between the up-front eligibility
+  // check and the cancel (issue #150). cancelOrder returns success on an
+  // already-terminal (filled) order, so a fill landing in that window would
+  // otherwise be counted into totalAsset and re-sold by the consolidated order —
+  // a double-sell. Partition into confirmed-cancelled (still 0% filled) vs
+  // filled-during-cancel; only the confirmed set feeds the consolidated quantity.
   log('INFO', `Cancelling ${eligibleOrders.length} orders...`);
   for (const order of eligibleOrders) {
     const cancelResult = await adapter.cancelOrder(order.orderId);
@@ -278,8 +280,55 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
         skippedOrderIds,
       };
     }
+
+    // Re-fetch may return null/undefined for a just-cancelled or not-found order.
+    // Treat an indeterminate result as "do not consolidate" (exclude), the
+    // conservative choice: re-selling an order that may have filled is the
+    // double-sell we're guarding against, whereas excluding a cleanly-cancelled
+    // order only frees its asset for the engine's normal reconciliation to re-cover.
+    const postCancel = await adapter.getOrder(order.orderId);
+    if (!postCancel || postCancel.completionPercentage > 0 || postCancel.status === 'FILLED') {
+      // Filled (fully or partially) during the cancel window, or indeterminate —
+      // any filled quantity is already sold on the exchange. Exclude the WHOLE
+      // order from the consolidated total and from cancelledOrderIds so the caller
+      // doesn't treat it as consolidated; report it in filledDuringCancelOrderIds
+      // for reconciliation. We deliberately do NOT fold a partial fill's unfilled
+      // remainder into the consolidated order: updateAfterConsolidation would
+      // attribute the order's full cost basis to the new order while only the
+      // remainder is in it, corrupting P&L. The freed remainder asset is re-covered
+      // by the engine's normal cycle reconciliation, same as any cancelled order.
+      log('WARN', `Order ${order.orderId} filled (${postCancel?.completionPercentage ?? 'unknown'}%) during cancel — excluding from consolidated total`);
+      filledDuringCancelOrderIds.push(order.orderId);
+      continue;
+    }
+
+    cancelledOrders.push(order);
     cancelledOrderIds.push(order.orderId);
   }
+
+  if (cancelledOrders.length === 0) {
+    // Every eligible order filled during its cancel window — nothing left to
+    // consolidate. The fills are real and tracked elsewhere; report them so the
+    // caller can reconcile, but place no order (no asset is held).
+    log('WARN', 'All eligible orders filled during cancel — no consolidated order placed');
+    return {
+      success: true,
+      newOrderId: null,
+      consolidatedPrice: 0,
+      consolidatedAsset: 0,
+      consolidatedCount: 0,
+      skippedOrderIds,
+      cancelledOrderIds,
+      filledDuringCancelOrderIds,
+    };
+  }
+
+  // Step 3: Calculate weighted average sell price from confirmed-cancelled orders
+  const totalAsset = cancelledOrders.reduce((sum, o) => sum + o.sellQuantity, 0);
+  const weightedPriceSum = cancelledOrders.reduce((sum, o) => sum + (o.sellQuantity * o.sellPrice), 0);
+  const consolidatedPrice = weightedPriceSum / totalAsset;
+
+  log('INFO', `Consolidating ${cancelledOrders.length} orders: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
 
   // Step 4: Place new consolidated order
   log('INFO', `Placing consolidated sell order: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
@@ -287,15 +336,17 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
 
   if (!sellResult.success) {
     const error = `Failed to place consolidated order: ${sellResult.errorMessage}`;
-    // The eligible sells are already cancelled, so the held asset is now naked
-    // (no resting take-profit). Re-place the original orders so the position is
-    // never left unprotected on a consolidated-place failure. Note: we can't
-    // place the consolidated order before cancelling — the asset is still locked
-    // in the open sells, so the exchange would reject it for insufficient balance.
-    log('ERROR', `${error} — re-placing ${eligibleOrders.length} original sells to avoid a naked position`);
+    // The confirmed-cancelled sells are already cancelled, so the held asset is
+    // now naked (no resting take-profit). Re-place those orders so the position is
+    // never left unprotected on a consolidated-place failure. Orders that filled
+    // during their cancel window are NOT re-placed — that quantity is already sold.
+    // Note: we can't place the consolidated order before cancelling — the asset is
+    // still locked in the open sells, so the exchange would reject it for
+    // insufficient balance.
+    log('ERROR', `${error} — re-placing ${cancelledOrders.length} original sells to avoid a naked position`);
     const restoredOrders = [];
     const failedRestoreOrderIds = [];
-    for (const order of eligibleOrders) {
+    for (const order of cancelledOrders) {
       const restoreResult = await adapter.placeLimitSell(config.productId, order.sellQuantity, order.sellPrice);
       if (restoreResult.success) {
         // Capture the old→new mapping so the caller can re-point tracked state
@@ -312,21 +363,23 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
       error,
       cancelledOrderIds,
       skippedOrderIds,
+      filledDuringCancelOrderIds,
       restoredOrders,
       failedRestoreOrderIds,
     };
   }
 
-  log('INFO', `Consolidation complete: ${eligibleOrders.length} orders -> 1 order (${sellResult.orderId})`);
+  log('INFO', `Consolidation complete: ${cancelledOrders.length} orders -> 1 order (${sellResult.orderId})`);
 
   return {
     success: true,
     newOrderId: sellResult.orderId,
     consolidatedPrice,
     consolidatedAsset: totalAsset,
-    consolidatedCount: eligibleOrders.length,
+    consolidatedCount: cancelledOrders.length,
     skippedOrderIds,
     cancelledOrderIds,
+    filledDuringCancelOrderIds,
   };
 };
 
