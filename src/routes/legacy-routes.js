@@ -4,9 +4,14 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
+const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, REGIME_DEFAULTS } = require('../config-utils');
 const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
 const { log, getLogFile } = require('../logger');
+const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+
+// --- Security: regime sub-object allowlist ---
+// Derived from REGIME_DEFAULTS so it automatically stays in sync as config-utils evolves.
+const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
 
 /**
  * @param {import('express').Express} app
@@ -21,9 +26,41 @@ module.exports = (app, deps) => {
   });
 
   app.put('/api/config', (req, res) => {
-    const config = req.body;
-    updateExchangeConfig('coinbase', config);
-    res.json({ success: true, config });
+    // Validate against the allowlist schema so the unprefixed legacy path has the
+    // same mass-assignment protection as PUT /api/:exchange/config — unknown keys are
+    // dropped, out-of-range values are rejected with 400 (issue #146). Without this,
+    // req.body was deep-merged into config.json verbatim, letting a client inject
+    // arbitrary keys or out-of-range values (e.g. {amount:-1, evilKey:1}).
+    const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
+
+    // regime is a nested object — sanitize keys against the allowlist before merging.
+    // Unknown keys are DROPPED (not rejected), mirroring PUT /api/:exchange/config:
+    // the config editor GETs the full stored config and PUTs it back verbatim, so a
+    // hard 400 on a stale key (e.g. a field removed from the engine in a later
+    // version but still present in a fund's persisted config) would make that fund
+    // permanently unsaveable. Dropping keeps the security intent — unknown keys never
+    // enter the saved overrides or reach the engine — while letting the save succeed.
+    if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
+      const sanitizedRegime = {};
+      const droppedKeys = [];
+      for (const key of Object.keys(req.body.regime)) {
+        if (REGIME_ALLOWED_KEYS.has(key)) {
+          sanitizedRegime[key] = req.body.regime[key];
+        } else {
+          droppedKeys.push(key);
+        }
+      }
+      if (droppedKeys.length > 0) {
+        log('WARN', `🧹 [coinbase] Dropped ${droppedKeys.length} unknown regime key(s) on legacy config save: ${droppedKeys.join(', ')}`);
+      }
+      if (Object.keys(sanitizedRegime).length > 0) {
+        updates.regime = sanitizedRegime;
+      }
+    }
+
+    updateExchangeConfig('coinbase', updates);
+    res.json({ success: true, config: getExchangeConfig('coinbase') });
   });
 
   app.patch('/api/config', (req, res) => {

@@ -169,6 +169,73 @@ describe('legacy routes do not leak global secrets (issue #104)', () => {
   });
 });
 
+describe('PUT /api/config validates against the allowlist (issue #146)', () => {
+  afterEach(() => mock.restoreAll());
+
+  const BASE_COINBASE = {
+    exchanges: { coinbase: { productId: 'BTC-USDC', amount: 25, holdbackPercent: 5 } },
+    global: { schedulerInterval: 30000 },
+  };
+
+  const setup = (base = BASE_COINBASE) => {
+    const fsMocks = setupFsMocks({ base, user: null });
+    const app = createFakeApp();
+    registerLegacyRoutes(app, {
+      parseTSV: () => [],
+      calculateCostBasis: () => ({}),
+      getNextTradeInfo: () => ({}),
+    });
+    return { app, fsMocks };
+  };
+
+  it('drops unknown keys instead of persisting them', async () => {
+    const { app, fsMocks } = setup();
+    const res = await invoke(app, 'PUT /api/config', {
+      body: { amount: 50, evilKey: 1, __proto__hack: true },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    const written = fsMocks.written();
+    assert.equal(written.exchanges.coinbase.amount, 50);
+    assert.equal(written.exchanges.coinbase.evilKey, undefined);
+    assert.equal(written.exchanges.coinbase.__proto__hack, undefined);
+    // The echoed config must not carry the injected key either.
+    assert.ok(!JSON.stringify(res.body.config).includes('evilKey'));
+  });
+
+  it('rejects out-of-range values with 400 and persists nothing', async () => {
+    const { app, fsMocks } = setup();
+    const res = await invoke(app, 'PUT /api/config', {
+      body: { amount: -1, holdbackPercent: 9999 },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.ok(/amount|holdbackPercent/.test(res.body.error));
+    assert.equal(fsMocks.written(), null, 'no config write should occur on a rejected payload');
+  });
+
+  it('drops unknown nested regime keys but still saves the known ones (no 400)', async () => {
+    const { app, fsMocks } = setup();
+    const res = await invoke(app, 'PUT /api/config', {
+      body: { regime: { enabled: true, bogusRegimeKey: 1 } },
+    });
+    assert.equal(res.statusCode, 200, `must not 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    const written = fsMocks.written();
+    assert.equal(written.exchanges.coinbase.regime.enabled, true, 'known regime key must persist');
+    assert.ok(!JSON.stringify(written).includes('bogusRegimeKey'), 'unknown regime key must not enter overrides');
+  });
+
+  it('accepts a valid update including allowed regime keys', async () => {
+    const { app, fsMocks } = setup();
+    const res = await invoke(app, 'PUT /api/config', {
+      body: { amount: 40, regime: { enabled: true } },
+    });
+    assert.equal(res.statusCode, 200);
+    const written = fsMocks.written();
+    assert.equal(written.exchanges.coinbase.amount, 40);
+    assert.equal(written.exchanges.coinbase.regime.enabled, true);
+  });
+});
+
 describe('PUT /api/notifications/config masked-token round-trip guard', () => {
   afterEach(() => mock.restoreAll());
 
