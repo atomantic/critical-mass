@@ -10,6 +10,7 @@ const {
   classifyMacroMode,
   createMacroRegime,
 } = require('../src/macro-regime');
+const { calculateEMA } = require('../src/volatility-utils');
 
 // ============================================================================
 // Helpers
@@ -454,7 +455,7 @@ describe('createMacroRegime: update()', () => {
     assert.ok(state.score > 0, `high price override should produce positive score, got ${state.score}`);
   });
 
-  it('correctly computes EMA slope on second update', async () => {
+  it('computes a flat slope on flat daily data across updates', async () => {
     const hourly = generateCandles(200, 100000);
     const daily = generateCandles(25, 100000);
     const adapter = createMockAdapter({
@@ -463,17 +464,47 @@ describe('createMacroRegime: update()', () => {
     });
     const regime = createMacroRegime('test', defaultConfig(), adapter, 'BTC-USDC');
 
-    // First update sets prevEma20d
+    // Slope is now computed statelessly from the daily series within each
+    // update (not snapshotted across updates), so flat data => slope ~0 on
+    // the very first update and every subsequent one.
     await regime.update();
     const score1 = regime.getState().score;
 
-    // Second update uses prevEma20d for slope calc (flat data => slope ~0)
     await regime.update();
     const score2 = regime.getState().score;
 
     // Both should be near zero with flat data
     assert.ok(Math.abs(score1) < 10);
     assert.ok(Math.abs(score2) < 10);
+  });
+
+  it('measures daily-trend slope across the daily series within one update (#153)', async () => {
+    // Regression: the slope term used to snapshot the 20d EMA every ~5-min
+    // update, so it measured a 20-day EMA's movement over 5 minutes (≈0) and
+    // was dead on the first update (prev EMA started at 0). Now prevD20 is
+    // recomputed from the series excluding the still-forming daily candle, so
+    // the slope is a real daily-trend signal from the first update onward.
+    const hourly = generateCandles(200, 100000);
+    const daily = generateCandles(25, 95000, 500); // rising daily candles
+    const adapter = createMockAdapter({
+      hourlyCandles: hourly,
+      dailyCandles: daily,
+    });
+    const regime = createMacroRegime('test', defaultConfig(), adapter, 'BTC-USDC');
+    await regime.update();
+
+    // Reconstruct the prev-day EMA the update uses and prove it is a real,
+    // distinct value (the bug made it equal the current EMA → slope = 0).
+    const d20 = calculateEMA(daily, 20);
+    const prevD20 = calculateEMA(daily.slice(0, -1), 20);
+    assert.ok(prevD20 > 0, 'prev-day EMA must come from the series, not 0');
+    assert.ok(d20 > prevD20, 'rising daily candles must yield a positive slope');
+
+    const price = hourly[hourly.length - 1].close;
+    const aliveSlope = scoreDailyTrend(price, d20, prevD20);
+    const deadSlope = scoreDailyTrend(price, d20, d20); // degenerate prev === current
+    assert.notEqual(aliveSlope, deadSlope);
+    assert.ok(aliveSlope > deadSlope, 'live positive slope must raise the daily-trend score');
   });
 
   it('sets h200 to 0 when fewer than 200 hourly candles', async () => {
