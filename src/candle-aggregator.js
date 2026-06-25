@@ -69,7 +69,16 @@ const createCandleAggregator = () => {
    */
   const pushCandle = (tf, candle) => {
     const buf = buffers[tf];
-    buf.push(candle);
+    const tail = buf[buf.length - 1];
+    if (tail && tail.timestamp === candle.timestamp) {
+      // Replace rather than append — never emit two candles with the same
+      // timestamp (issue #145 backstop; the primary fix promotes the in-progress
+      // seeded bucket to `current` in seedCandles, but this guards any seed that
+      // bypasses that path).
+      buf[buf.length - 1] = candle;
+    } else {
+      buf.push(candle);
+    }
     const max = TIMEFRAMES[tf].maxCandles;
     if (buf.length > max) {
       buf.splice(0, buf.length - max);
@@ -172,11 +181,26 @@ const createCandleAggregator = () => {
    * Seed historical candles for a timeframe (e.g., on startup from exchange API)
    * @param {string} timeframe - Timeframe key
    * @param {Array<{open: number, high: number, low: number, close: number, volume: number, timestamp: number}>} candles - Oldest first
+   * @param {number} [now=Date.now()] - Current time, used to detect the in-progress bucket
    */
-  const seedCandles = (timeframe, candles) => {
+  const seedCandles = (timeframe, candles, now = Date.now()) => {
     if (!TIMEFRAMES[timeframe] || !candles?.length) return;
-    const max = TIMEFRAMES[timeframe].maxCandles;
-    buffers[timeframe] = candles.slice(-max);
+    const { maxCandles, intervalMs } = TIMEFRAMES[timeframe];
+    const seeded = candles.slice(-maxCandles);
+    // The seed fetch usually includes the still-open bucket as a partial candle.
+    // Promote it to `current` (instead of leaving it in the completed buffer) so
+    // live ticks continue that same candle — otherwise aggregation starts a fresh
+    // candle for the same timestamp and emits a duplicate at the seed/live
+    // boundary, and the live candle under-reports ticks before service start
+    // (issue #145).
+    const newest = seeded[seeded.length - 1];
+    if (newest && newest.timestamp === floorTimestamp(now, intervalMs)) {
+      current[timeframe] = { ...newest };
+      buffers[timeframe] = seeded.slice(0, -1);
+    } else {
+      current[timeframe] = null;
+      buffers[timeframe] = seeded;
+    }
   };
 
   return { processTick, getCandles, seedCandles, getCurrentCandle };
