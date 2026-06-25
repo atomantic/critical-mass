@@ -196,6 +196,16 @@ const createCandleCache = () => {
   /** @type {Map<string, ReturnType<typeof createCandleAggregator>>} */
   const aggregators = new Map();
 
+  // Per-exchange rolling-24h-volume baseline. Exchange ticker volume (`volume24h`)
+  // is the rolling 24-hour total, NOT the volume traded since the last tick, so we
+  // feed the aggregator the delta since the previous tick — clamped to >= 0 to absorb
+  // the rolling window shedding older trades (day rollover) or a stale baseline after a
+  // feed gap. The first tick after start or reseed has no baseline and contributes 0
+  // incremental volume. Exchanges with no usable ticker volume (e.g. Gemini L2 sends
+  // volume24h: 0) therefore contribute 0 live volume rather than corrupt candles. (issue #161)
+  /** @type {Map<string, number>} */
+  const lastVolume24h = new Map();
+
   /**
    * Get or create an aggregator for an exchange
    * @param {string} exchange
@@ -217,6 +227,9 @@ const createCandleCache = () => {
    */
   const seedFromPublicAPI = async (exchange) => {
     const agg = getOrCreate(exchange);
+    // Reseed is a fresh start for live volume — drop any stale 24h baseline so the first
+    // live tick after seeding contributes 0 increment instead of a huge bogus delta (issue #161).
+    lastVolume24h.delete(exchange);
     let totalSeeded = 0;
 
     // Fetch every timeframe FIRST, then seed them all against a single post-fetch `now`.
@@ -277,15 +290,21 @@ const createCandleCache = () => {
   };
 
   /**
-   * Process a live price tick for an exchange
+   * Process a live price tick for an exchange.
+   * `volume24h` is the exchange's rolling 24-hour volume; the aggregator is fed the
+   * incremental delta since the previous tick, not the raw 24h total (issue #161).
    * @param {string} exchange
    * @param {number} price
    * @param {number} timestamp
-   * @param {number} [volume=0]
+   * @param {number} [volume24h=0] rolling 24-hour volume from the ticker
    */
-  const processTick = (exchange, price, timestamp, volume = 0) => {
+  const processTick = (exchange, price, timestamp, volume24h = 0) => {
     const agg = getOrCreate(exchange);
-    agg.processTick(price, timestamp, volume);
+    const prev = lastVolume24h.get(exchange);
+    lastVolume24h.set(exchange, volume24h);
+    // No baseline yet (first tick / post-reseed) or the rolling window shrank: 0 increment.
+    const incremental = prev === undefined ? 0 : Math.max(0, volume24h - prev);
+    agg.processTick(price, timestamp, incremental);
   };
 
   /**
