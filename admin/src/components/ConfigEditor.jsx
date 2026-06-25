@@ -80,6 +80,7 @@ function SectionCard({ title, children, className = '' }) {
 function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pair, strategy = 'dca' }) {
   const [config, setConfig] = useState(initialConfig || {})
   const [saving, setSaving] = useState(false)
+  const [toggleBusy, setToggleBusy] = useState(false)
   const [message, setMessage] = useState(null)
   const [isDirty, setIsDirty] = useState(false)
   const [presets, setPresets] = useState(null)
@@ -231,22 +232,36 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // local state, then reverts if the request fails so the switch never lies about
   // the saved state. `enabled`/`dryRun` write to the same place the Save button
   // does — see the PATCH /api/:exchange/config and PUT regime/config handlers.
+  // Serialized via togglePendingRef (see the click guard in the handlers): only
+  // one toggle save is ever in flight, so out-of-order responses can't persist
+  // the opposite of the final UI state. try/finally is required here — a network
+  // rejection must still decrement the ref, or the sync effect stays blocked
+  // forever and the toggle is stuck showing an unsaved value.
   const persistToggle = async (label, doFetch, optimistic, revert) => {
     togglePendingRef.current += 1
+    setToggleBusy(true)
     optimistic()
-    const res = await doFetch()
-    togglePendingRef.current -= 1
-    if (res.ok) {
-      setMessage({ type: 'success', text: `${label} saved` })
-      onSave?.()
-    } else {
+    try {
+      const res = await doFetch()
+      if (res.ok) {
+        setMessage({ type: 'success', text: `${label} saved` })
+        onSave?.()
+      } else {
+        revert()
+        const err = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: err.error || `Failed to save ${label}` })
+      }
+    } catch {
       revert()
-      const err = await res.json().catch(() => ({}))
-      setMessage({ type: 'error', text: err.error || `Failed to save ${label}` })
+      setMessage({ type: 'error', text: `Failed to save ${label}` })
+    } finally {
+      togglePendingRef.current -= 1
+      setToggleBusy(false)
     }
   }
 
   const handleToggleDryRun = () => {
+    if (togglePendingRef.current > 0) return // a toggle save is already in flight
     const next = !config.dryRun
     persistToggle(
       'Dry Run',
@@ -261,6 +276,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   }
 
   const handleToggleEnabled = () => {
+    if (togglePendingRef.current > 0) return // a toggle save is already in flight
     if (isRegime) {
       // Regime funds track activation in regime.enabled — persist via the regime
       // config endpoint (a fund-level PATCH would write the wrong field).
@@ -346,7 +362,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               <button
                 type="button"
                 onClick={handleToggleEnabled}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                disabled={toggleBusy}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
                   (isRegime ? regimeConfig.enabled : config.enabled)
                     ? 'bg-green-500' : 'bg-gray-600'
                 }`}
@@ -362,7 +379,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               <button
                 type="button"
                 onClick={handleToggleDryRun}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                disabled={toggleBusy}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
                   config.dryRun ? 'bg-yellow-500' : 'bg-gray-600'
                 }`}
               >

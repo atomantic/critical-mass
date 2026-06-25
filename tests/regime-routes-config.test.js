@@ -109,6 +109,18 @@ describe('PUT/GET /api/:exchange/regime/config dryRun round-trip', () => {
     assert.equal(getRes.body.config.dryRun, false, 'GET must reflect the toggled dryRun after a refresh');
   });
 
+  it('rejects a non-boolean dryRun so it can never flip the fund to live trading', async () => {
+    const app = setup();
+
+    const res = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor({ dryRun: 'false' }));
+    assert.equal(res.statusCode, 400, 'a string dryRun must be rejected, not persisted');
+    assert.equal(res.body.success, false);
+
+    // The fund must remain in its original dry-run state, untouched.
+    const getRes = await invoke(app, 'GET /api/:exchange/regime/config', reqFor({}));
+    assert.equal(getRes.body.config.dryRun, true, 'dryRun must be unchanged after a rejected write');
+  });
+
   it('persists dryRun even when bundled with regime field updates', async () => {
     const app = setup();
 

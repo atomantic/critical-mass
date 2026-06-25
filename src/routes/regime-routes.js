@@ -184,6 +184,18 @@ module.exports = (app, deps) => {
       (FUND_LEVEL_FIELDS.includes(key) ? fundUpdates : regimeUpdates)[key] = value;
     }
 
+    // Type-guard fund-level fields before persisting. validateRegimeConfig above
+    // only checks regime fields, so a malformed fund value would otherwise slip
+    // through. dryRun is the dangerous one: the engine reads it with `=== true`,
+    // so persisting the string "false" would silently flip the fund to LIVE
+    // trading on restart. productId names the traded pair — reject non-strings.
+    if ('dryRun' in fundUpdates && typeof fundUpdates.dryRun !== 'boolean') {
+      return res.status(400).json({ success: false, errors: ['dryRun must be a boolean'] });
+    }
+    if ('productId' in fundUpdates && (typeof fundUpdates.productId !== 'string' || !fundUpdates.productId.trim())) {
+      return res.status(400).json({ success: false, errors: ['productId must be a non-empty string'] });
+    }
+
     if (Object.keys(fundUpdates).length > 0) {
       updateFundConfig(exchange, pair, fundUpdates);
     }
