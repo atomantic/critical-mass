@@ -143,22 +143,22 @@ describe('candle-aggregator seed/live boundary (issue #145)', () => {
     assert.equal(cur.volume, 7, 'max(live 3, seed 7) — not summed (overlapping coverage)');
   });
 
-  it('deducts the live (not stale) 1m volume for a higher tf seeded after ticks', () => {
+  it('deducts the 1m REST seed volume, not non-comparable live ticker volume', () => {
     const agg = createCandleAggregator();
     const t = 200_000;
-    // 1m seeded (vol 7), then live ticks grow the in-progress boundary minute to vol 12.
+    // 1m REST seed: boundary minute volume 7 (comparable to higher-tf REST seeds).
     agg.seedCandles('1m', [
       { open: 2, high: 2, low: 2, close: 2, volume: 7, timestamp: 180_000 },
     ], t);
-    agg.processTick(3, 200_000, 5); // current['1m']@180000 volume 7 -> 12
-    // 5m fetched AFTER those ticks: its boundary partial reflects the grown ~12.
+    // A live ticker tick carrying cumulative volume (e.g. 24h rolling volume per
+    // server.js) balloons current['1m'] — this must NOT be subtracted from the REST
+    // seed, or it would clamp the higher-tf seed to zero.
+    agg.processTick(3, 200_000, 5_000_000);
     agg.seedCandles('5m', [
       { open: 1, high: 3, low: 1, close: 2, volume: 100, timestamp: 0 },
     ], t, { boundaryInclusive: true });
-    assert.equal(agg.getCurrentCandle('5m').volume, 88, 'deduct LIVE 1m vol 12 (100-12), not stale 7');
-    // Finalize the 1m (vol 12) -> rolls up the full 12 into 5m@0: 88 + 12 = 100.
-    agg.processTick(4, 240_000, 1);
-    assert.equal(agg.getCurrentCandle('5m').volume, 100, 'no double count: 88 + full 1m(12)');
+    assert.equal(agg.getCurrentCandle('5m').volume, 93,
+      'deducts the REST seed boundary (100-7=93), not the 5,000,000 ticker volume');
   });
 
   it('keeps a live in-progress candle when the seed carries only completed buckets', () => {

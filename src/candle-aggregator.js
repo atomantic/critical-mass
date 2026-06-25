@@ -56,6 +56,14 @@ const createCandleAggregator = () => {
   const buffers = {};
   /** @type {Record<string, {open: number, high: number, low: number, close: number, volume: number, timestamp: number} | null>} */
   const current = {};
+  // Volume of the in-progress 1m bucket as it appeared in the most recent 1m REST seed.
+  // Used to net out the boundary minute when a directly-fetched higher-timeframe REST
+  // seed (which already includes it) later has that 1m bucket rolled up. Captured from
+  // the SEED (not live current['1m']) on purpose: live ticks carry ticker volume — e.g.
+  // 24h rolling volume (server.js) — which is not comparable to per-bucket REST volume,
+  // so subtracting it would clamp the higher-tf seed to zero (issue #145).
+  /** @type {{timestamp: number, volume: number} | null} */
+  let boundary1mSeed = null;
 
   for (const tf of TIMEFRAME_KEYS) {
     buffers[tf] = [];
@@ -198,24 +206,25 @@ const createCandleAggregator = () => {
     // boundary, and the live candle under-reports ticks before service start
     // (issue #145).
     const newest = seeded[seeded.length - 1];
+    const isInProgress = !!newest && newest.timestamp === floorTimestamp(now, intervalMs);
     // seedAll() runs non-blocking after the live tick listener is wired (server.js),
     // so ticks may have already built current[tf] while this fetch was pending. Never
     // destroy that live in-progress candle (issue #145).
     const existing = current[timeframe];
-    if (newest && newest.timestamp === floorTimestamp(now, intervalMs)) {
+    if (isInProgress) {
       const promoted = { ...newest };
       // A directly-fetched higher-timeframe seed already aggregates the in-progress 1m
       // bucket's volume up to fetch time. aggregateUp later rolls the FULL 1m candle into
-      // this same candle, so deduct the 1m bucket's volume now to avoid counting the
-      // boundary minute twice (which spikes volume-derived signals). Read current['1m']
-      // LIVE — a stored snapshot would go stale once ticks grow the 1m candle mid-startup,
-      // under-deducting and re-introducing the double count. Only volume double-counts
-      // (roll-up uses max/min/overwrite for high/low/close); derived seeds exclude the
-      // boundary minute and pass boundaryInclusive=false. (issue #145)
-      const base1m = current['1m'];
-      if (boundaryInclusive && timeframe !== '1m' && base1m &&
-          floorTimestamp(base1m.timestamp, intervalMs) === promoted.timestamp) {
-        promoted.volume = Math.max(0, promoted.volume - base1m.volume);
+      // this same candle, so deduct the boundary minute now to avoid counting it twice
+      // (which spikes volume-derived signals). Use the 1m REST SEED's volume (captured
+      // below) — the same data source as this higher-tf REST seed, hence comparable — NOT
+      // live current['1m'].volume, which carries non-comparable ticker volume (24h rolling,
+      // per server.js) that would clamp the seed to zero. Only volume double-counts (roll-up
+      // uses max/min/overwrite for high/low/close); derived seeds exclude the boundary
+      // minute and pass boundaryInclusive=false. (issue #145)
+      if (boundaryInclusive && timeframe !== '1m' && boundary1mSeed &&
+          floorTimestamp(boundary1mSeed.timestamp, intervalMs) === promoted.timestamp) {
+        promoted.volume = Math.max(0, promoted.volume - boundary1mSeed.volume);
       }
       buffers[timeframe] = seeded.slice(0, -1);
       if (!existing || existing.timestamp < promoted.timestamp) {
@@ -238,6 +247,11 @@ const createCandleAggregator = () => {
       // Seed carries no in-progress bucket; only initialize current if no live candle
       // exists — never wipe one ticks already started.
       if (!existing) current[timeframe] = null;
+    }
+    // Record the 1m REST boundary volume from THIS seed so later higher-tf seeds can
+    // deduct it (comparable REST value, immune to live ticker-volume corruption).
+    if (timeframe === '1m') {
+      boundary1mSeed = isInProgress ? { timestamp: newest.timestamp, volume: newest.volume } : null;
     }
   };
 
