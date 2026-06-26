@@ -219,6 +219,15 @@ describe('isStrandedDustBody (issue #189)', () => {
     assert.equal(isStrandedDustBody({ assetQty: 0.0013, tpOrderId: null }, MIN, 0.0007), true);
   });
 
+  it('does NOT flag a body sitting exactly at the minimum under a decimal increment (float-floor #195)', () => {
+    // 0.29 at increment 0.01: a naive Math.floor(0.29/0.01)*0.01 under-floors to
+    // 0.28 (float error), which would misclassify an at-minimum sellable body as
+    // dust. floorToIncrement snaps 0.29 back to 0.29, so it is NOT dust.
+    assert.equal(isStrandedDustBody({ assetQty: 0.29, tpOrderId: null }, 0.29, 0.01), false);
+    // And a genuinely sub-min qty under the same decimal increment IS dust.
+    assert.equal(isStrandedDustBody({ assetQty: 0.005, tpOrderId: null }, 0.29, 0.01), true);
+  });
+
   it('handles a null body safely', () => {
     assert.equal(isStrandedDustBody(null, MIN, INC), false);
   });

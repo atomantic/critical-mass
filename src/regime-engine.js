@@ -37,7 +37,7 @@ const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
 const celestialHierarchy = require('./celestial-hierarchy');
-const { fmtCurrency: fmtPrice, isFilledStatus } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, isFilledStatus, floorToIncrement } = require('./shared-utils');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -164,7 +164,11 @@ const isBuyAlreadyCommitted = (bodies, orderId) =>
 const isStrandedDustBody = (body, baseMinSize, baseIncrement) => {
   if (!body || body.tpOrderId || !(body.assetQty > 0)) return false;
   const inc = baseIncrement || 0.00000001;
-  const roundedFullQty = Math.floor(roundAsset(body.assetQty) / inc) * inc;
+  // floorToIncrement (epsilon-safe), NOT a naive Math.floor(qty/inc)*inc: for a
+  // decimal increment like 0.01, float error under-floors exact multiples (0.29
+  // → 0.28), which would misclassify a body sitting exactly at baseMinSize as
+  // dust and wrongly merge a sellable body (codex review #195).
+  const roundedFullQty = floorToIncrement(roundAsset(body.assetQty), inc);
   return roundedFullQty < baseMinSize;
 };
 
