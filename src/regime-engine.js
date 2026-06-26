@@ -2930,6 +2930,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const dedupRef = { set: null, key: null };
     fillInProgress++; // gates the automatic dust consolidator (see fillInProgress)
     try {
+      // Defer to an in-flight body merge (#196): a merge rewrites celestialBodies
+      // + TP state across its awaits, and so does the fill handler — both touching
+      // the same body would double-count or drop qty/cost. The fillInProgress gate
+      // above stops a NEW merge from starting mid-fill; this WAIT covers the other
+      // direction (a merge already running when the fill arrives). Fills must not
+      // be dropped, so we wait, not skip. Deadlock-free: a running merge never
+      // waits on fillInProgress. Bounded so a stuck flag can't hang a fill forever.
+      const waitDeadline = Date.now() + 15000;
+      while (mergeInProgress && Date.now() < waitDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      if (mergeInProgress) {
+        console.log(`⚠️ [${exchange}] Fill ${fillData.orderId} proceeding after 15s wait — merge lock still held (possible stuck merge)`);
+      }
       return await handleOrderFillImpl(fillData, dedupRef);
     } catch (err) {
       if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
