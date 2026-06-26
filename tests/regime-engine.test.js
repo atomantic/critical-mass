@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
 
 describe('cancelPartialFillOrder', () => {
   const makeDeps = ({ cancelOrder, exchange = 'gemini' } = {}) => {
@@ -188,5 +188,38 @@ describe('shouldSkipBuyRecommit (issue #131 — advancing-partial guard, codex P
     // but isBuyAlreadyCommitted is true so the inline guard suppresses cycleBuys++.
     assert.equal(isBuyAlreadyCommitted(committed, 'buy-x'), true);
     assert.equal(shouldSkipBuyRecommit(3, committed, 'buy-x'), false);
+  });
+});
+
+describe('isStrandedDustBody (issue #189)', () => {
+  const MIN = 0.001;       // exchange min order size (e.g. ETH)
+  const INC = 0.00000001;  // base increment
+
+  it('flags a positive-qty body that rounds below the exchange minimum and has no TP', () => {
+    assert.equal(isStrandedDustBody({ assetQty: 0.000525, tpOrderId: null }, MIN, INC), true);
+  });
+
+  it('does NOT flag a body that already has a resting TP, even if below min', () => {
+    assert.equal(isStrandedDustBody({ assetQty: 0.000525, tpOrderId: 'order-123' }, MIN, INC), false);
+  });
+
+  it('does NOT flag a body at or above the exchange minimum', () => {
+    assert.equal(isStrandedDustBody({ assetQty: 0.001, tpOrderId: null }, MIN, INC), false);
+    assert.equal(isStrandedDustBody({ assetQty: 0.05, tpOrderId: null }, MIN, INC), false);
+  });
+
+  it('does NOT flag an empty/zero/negative-qty body (would churn a neighbour TP for nothing)', () => {
+    assert.equal(isStrandedDustBody({ assetQty: 0, tpOrderId: null }, MIN, INC), false);
+    assert.equal(isStrandedDustBody({ assetQty: -1, tpOrderId: null }, MIN, INC), false);
+    assert.equal(isStrandedDustBody({ tpOrderId: null }, MIN, INC), false); // assetQty undefined
+  });
+
+  it('flags a qty that is >= min raw but falls below min AFTER increment rounding', () => {
+    // 0.0013 >= min 0.001, but floor to a 0.0007 increment → 0.0007 < min.
+    assert.equal(isStrandedDustBody({ assetQty: 0.0013, tpOrderId: null }, MIN, 0.0007), true);
+  });
+
+  it('handles a null body safely', () => {
+    assert.equal(isStrandedDustBody(null, MIN, INC), false);
   });
 });
