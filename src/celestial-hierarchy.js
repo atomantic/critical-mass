@@ -106,8 +106,12 @@ const generateBodyId = (orderId) => {
  * @returns {CelestialBody}
  */
 const createNewBody = (newBuy, buyOrderId) => {
-  const assetQty = newBuy.assetQty || newBuy.totalSize;
-  const costBasis = newBuy.costBasis || (newBuy.totalValue + (newBuy.totalFees || 0));
+  // Nullish coalescing, NOT ||, for the same reason as mergeIntoBody (#191): a
+  // sub-cent buy legitimately has costBasis 0, and `0 || fallback` falls through
+  // to newBuy.totalValue — undefined on a {costBasis}-shaped arg — yielding
+  // `undefined + 0 = NaN` that would poison the new body's costBasis/avgPrice.
+  const assetQty = newBuy.assetQty ?? newBuy.totalSize;
+  const costBasis = newBuy.costBasis ?? (newBuy.totalValue + (newBuy.totalFees || 0));
   return {
     id: generateBodyId(buyOrderId),
     tier: 'satellite',
