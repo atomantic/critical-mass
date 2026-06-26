@@ -3210,9 +3210,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (mergeInProgress) return; // Defer while a body merge/roll-up cancels & replaces TPs (#189)
       reconcileInProgress = true;
 
+      // Collect every async chain this tick dispatches so reconcileInProgress is
+      // held until ALL of them settle — the body-TP chains below cancel/replace
+      // TPs fire-and-forget, and clearing the flag on the recovery promise alone
+      // would let a merge (or the next reconcile tick) race an in-flight TP
+      // re-placement (#189 review).
+      const pending = [];
+
       // Check for entry fills that WebSocket might have missed
       if (!isDryRun && orderExecutor.checkPendingOrderFills) {
-        orderExecutor.checkPendingOrderFills()
+        pending.push(orderExecutor.checkPendingOrderFills()
           .then(result => {
             // A SUCCESSFUL order-status poll proves the order-status REST path
             // is alive even when no WS order event has arrived. lastOrderUpdateMs
@@ -3232,12 +3239,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           })
           .catch(err => {
             console.log(`❌ [${exchange}] Fill check failed: ${err.message}`);
-          });
+          }));
       }
 
       // Check for TP order fill that WebSocket might have missed
       if (!isDryRun && positionState.activeTpOrderId) {
-        adapter.getOrder(positionState.activeTpOrderId)
+        pending.push(adapter.getOrder(positionState.activeTpOrderId)
           .then(async (orderStatus) => {
             // Coinbase can flip completionPercentage to 100 a tick before status
             // flips to FILLED — match the rest of the codebase's fill detection so
@@ -3268,7 +3275,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             } else {
               console.log(`❌ [${exchange}] TP order check failed: ${err.message}`);
             }
-          });
+          }));
       }
 
       // Check celestial body TP orders for fills/cancellations that WebSocket might have missed
@@ -3276,7 +3283,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (activeBodies.length > 0) {
         for (const body of [...activeBodies]) {
           if (!body.tpOrderId) continue;
-          adapter.getOrder(body.tpOrderId)
+          pending.push(adapter.getOrder(body.tpOrderId)
             .then(async (bodyStatus) => {
               if (isFilledStatus(bodyStatus)) {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
@@ -3360,11 +3367,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // body on the next tick anyway (issue #99).
             .catch(err => {
               console.log(`❌ [${exchange}] Body ${body.id.slice(-8)} TP reconcile handler error: ${err.message}`);
-            });
+            }));
         }
       }
 
-      recoveryModule.reconcile(positionState, fillLedger)
+      pending.push(recoveryModule.reconcile(positionState, fillLedger)
         .then(result => {
           if (result.updated) {
             // MERGE the recomputed balance/qty fields into the EXISTING state —
@@ -3397,10 +3404,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         })
         .catch(err => {
           console.log(`❌ [${exchange}] Reconciliation failed: ${err.message}`);
-        })
-        .finally(() => {
-          reconcileInProgress = false;
-        });
+        }));
+
+      // Release the lock only after every dispatched chain settles (#189 review).
+      Promise.allSettled(pending).finally(() => {
+        reconcileInProgress = false;
+      });
     }, config.reconcileIntervalMs);
   };
 
