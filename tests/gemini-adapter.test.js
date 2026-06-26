@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { createGeminiAdapter } = require('../src/adapters/gemini/api');
+const { createGeminiAdapter, createRestThrottle, isRetryableRateLimit } = require('../src/adapters/gemini/api');
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -256,7 +256,10 @@ describe('gemini getOrderFills', () => {
 
 describe('gemini heartbeat refcount', () => {
   it('keeps the heartbeat alive until the last owner stops', async () => {
-    mock.timers.enable({ apis: ['setInterval'] });
+    // 'Date' is mocked alongside setInterval so tick() advances the clock the
+    // REST throttle reads (issue #193) — otherwise a 60s-apart heartbeat looks
+    // simultaneous to the throttle and gets spaced out.
+    mock.timers.enable({ apis: ['setInterval', 'Date'] });
     const adapter = createGeminiAdapter(keysPath);
     const { calls } = installFetchMock(() => ({ result: 'ok' }));
 
@@ -278,7 +281,10 @@ describe('gemini heartbeat refcount', () => {
   });
 
   it('is idempotent per owner: double-start does not require double-stop', async () => {
-    mock.timers.enable({ apis: ['setInterval'] });
+    // 'Date' is mocked alongside setInterval so tick() advances the clock the
+    // REST throttle reads (issue #193) — otherwise a 60s-apart heartbeat looks
+    // simultaneous to the throttle and gets spaced out.
+    mock.timers.enable({ apis: ['setInterval', 'Date'] });
     const adapter = createGeminiAdapter(keysPath);
     const { calls } = installFetchMock(() => ({ result: 'ok' }));
 
@@ -300,5 +306,85 @@ describe('gemini heartbeat refcount', () => {
     adapter.stopHeartbeat('gemini/BTC-USD');
 
     mock.timers.reset();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REST throttle + 429 retry (issue #193)
+// ---------------------------------------------------------------------------
+
+describe('createRestThrottle', () => {
+  it('lets the first request through with no wait, then spaces the rest by minIntervalMs', async () => {
+    const sleeps = [];
+    let clock = 1000;
+    const acquire = createRestThrottle({
+      minIntervalMs: 200,
+      now: () => clock,
+      sleep: async (ms) => { sleeps.push(ms); clock += ms; },
+    });
+    await acquire(); // first slot: no prior reservation → no wait
+    await acquire();
+    await acquire();
+    assert.deepEqual(sleeps, [200, 200]);
+  });
+
+  it('does not over-wait when callers are already naturally spaced', async () => {
+    const sleeps = [];
+    let clock = 0;
+    const acquire = createRestThrottle({
+      minIntervalMs: 200,
+      now: () => clock,
+      sleep: async (ms) => { sleeps.push(ms); clock += ms; },
+    });
+    await acquire();      // reserves up to t=200
+    clock = 5000;         // caller idles well past the slot
+    await acquire();      // already past → no wait
+    assert.deepEqual(sleeps, []);
+  });
+});
+
+describe('isRetryableRateLimit', () => {
+  it('retries a 429 while attempts remain', () => {
+    assert.equal(isRetryableRateLimit(429, 0, 2), true);
+    assert.equal(isRetryableRateLimit(429, 1, 2), true);
+  });
+  it('stops retrying a 429 once attempts are exhausted', () => {
+    assert.equal(isRetryableRateLimit(429, 2, 2), false);
+  });
+  it('never retries non-429 statuses (would risk double-placing on 5xx)', () => {
+    assert.equal(isRetryableRateLimit(500, 0, 2), false);
+    assert.equal(isRetryableRateLimit(400, 0, 2), false);
+  });
+});
+
+describe('makeRestRequest 429 handling (issue #193)', () => {
+  it('retries a 429 then succeeds, regenerating the payload (fresh nonce) each attempt', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    const nonces = [];
+    const { calls } = installFetchMock((endpoint, payload, allCalls) => {
+      nonces.push(payload.nonce);
+      // First balances call gets rate-limited, the retry succeeds.
+      if (allCalls.filter(c => c.endpoint === '/v1/balances').length === 1) {
+        return { __error: true, status: 429 };
+      }
+      return [{ currency: 'USD', available: '100.00', amount: '100.00' }];
+    });
+    const bal = await adapter.getAccountBalance('USD');
+    assert.equal(calls.filter(c => c.endpoint === '/v1/balances').length, 2);
+    assert.equal(bal.available, 100);
+    // Two attempts → two distinct, increasing nonces (no reuse).
+    assert.equal(nonces.length, 2);
+    assert.notEqual(nonces[0], nonces[1]);
+  });
+
+  it('gives up after RATE_LIMIT_MAX_RETRIES and throws the 429', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    const { calls } = installFetchMock(() => ({ __error: true, status: 429 }));
+    await assert.rejects(
+      () => adapter.getAccountBalance('USD'),
+      (err) => err.status === 429 && /429/.test(err.message)
+    );
+    // 1 initial + 2 retries = 3 attempts total.
+    assert.equal(calls.filter(c => c.endpoint === '/v1/balances').length, 3);
   });
 });

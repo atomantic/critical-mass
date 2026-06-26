@@ -26,6 +26,47 @@ const REST_BASE_URL = 'https://api.gemini.com';
 const WS_FAST_API_URL = 'wss://api.gemini.com/v1/order/events';
 const WS_MARKET_DATA_URL = 'wss://api.gemini.com/v1/marketdata';
 
+// Gemini private REST limit is ~5 req/s; spacing every 200ms keeps a reconcile
+// burst (order/status × N + balances + mytrades) from starving the heartbeat —
+// the call that keeps resting orders alive (issue #193).
+const REST_MIN_INTERVAL_MS = 200;
+const RATE_LIMIT_MAX_RETRIES = 2;   // attempts beyond the first, on HTTP 429 only
+const RATE_LIMIT_BACKOFF_MS = 500;  // linear: 500ms, 1000ms
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Build a self-spacing gate that serializes callers to at most one request per
+ * `minIntervalMs`. Each caller atomically reserves the next slot (no await
+ * between reading and bumping `nextSlot`, so concurrent callers can't collide).
+ * Returns the wait promise ONLY when a delay is needed, else `null` — so a
+ * caller with an open slot proceeds synchronously (no microtask deferral of the
+ * subsequent request). Pure aside from the injected clock/sleep.
+ * @param {{minIntervalMs:number, now?:()=>number, sleep?:(ms:number)=>Promise<void>}} opts
+ * @returns {()=>(Promise<void>|null)} acquire — await its result before each rate-limited request
+ */
+const createRestThrottle = ({ minIntervalMs, now = Date.now, sleep = defaultSleep } = {}) => {
+  let nextSlot = 0;
+  return () => {
+    const current = now();
+    const wait = Math.max(0, nextSlot - current);
+    nextSlot = Math.max(current, nextSlot) + minIntervalMs;
+    return wait > 0 ? sleep(wait) : null;
+  };
+};
+
+/**
+ * A 429 is a pre-processing rejection (the request never reached the matching
+ * engine), so retrying is safe even for order placement — unlike a network
+ * error, where the order may have landed. Only 429 is retried.
+ * @param {number} status
+ * @param {number} attempt - zero-based attempt index already performed
+ * @param {number} maxRetries
+ * @returns {boolean}
+ */
+const isRetryableRateLimit = (status, attempt, maxRetries) =>
+  status === 429 && attempt < maxRetries;
+
 /**
  * Create a Gemini adapter instance
  * @param {string|null} [keysPath] - Path to keys file (defaults to data/gemini-keys.json)
@@ -43,6 +84,9 @@ const createGeminiAdapter = (keysPath = null) => {
   let wsConnected = false;
   const pendingOrders = new Map();
   const orderUpdates = new Map();
+
+  // Serializes all private REST calls to ~5 req/s (issue #193).
+  const acquireRestSlot = createRestThrottle({ minIntervalMs: REST_MIN_INTERVAL_MS });
 
   /**
    * Check if keys file exists and contains valid-looking credentials
@@ -90,43 +134,56 @@ const createGeminiAdapter = (keysPath = null) => {
    * @returns {Promise<any>} API response
    */
   const makeRestRequest = async (endpoint, payload = {}) => {
-    const { apiKey, apiSecret } = adapter.loadCredentials();
-    const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
+    // attempt is zero-based; we may retry on 429 up to RATE_LIMIT_MAX_RETRIES.
+    // Credentials/headers are regenerated per attempt so the nonce strictly
+    // increases (Gemini rejects a reused/stale nonce).
+    for (let attempt = 0; ; attempt++) {
+      const slotWait = acquireRestSlot();
+      if (slotWait) await slotWait;
+      const { apiKey, apiSecret } = adapter.loadCredentials();
+      const headers = getRestAuthHeaders(apiKey, apiSecret, endpoint, payload);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-    let response;
-    let rawText;
-    try {
-      response = await fetch(`${REST_BASE_URL}${endpoint}`, {
-        method: 'POST',
-        headers,
-        signal: controller.signal,
-      });
-      // Preserve big integers as strings using regex before JSON parse
-      rawText = await response.text();
-    } catch (err) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      let response;
+      let rawText;
+      try {
+        response = await fetch(`${REST_BASE_URL}${endpoint}`, {
+          method: 'POST',
+          headers,
+          signal: controller.signal,
+        });
+        // Preserve big integers as strings using regex before JSON parse
+        rawText = await response.text();
+      } catch (err) {
+        clearTimeout(timeout);
+        // Network errors are NOT retried: the request may have reached the
+        // matching engine, so a blind retry could double-place an order.
+        const cleanError = new Error(`Gemini API network: ${err.message}`);
+        cleanError.status = 'network';
+        cleanError.endpoint = `POST ${endpoint}`;
+        throw cleanError;
+      }
       clearTimeout(timeout);
-      const cleanError = new Error(`Gemini API network: ${err.message}`);
-      cleanError.status = 'network';
-      cleanError.endpoint = `POST ${endpoint}`;
-      throw cleanError;
-    }
-    clearTimeout(timeout);
 
-    if (!response.ok) {
-      let errData;
-      try { errData = JSON.parse(rawText); } catch { errData = {}; }
-      const detail = errData.reason || errData.message || '';
-      const cleanError = new Error(`Gemini API ${response.status}: ${response.statusText}${detail ? ` (${detail})` : ''}`);
-      cleanError.status = response.status;
-      cleanError.endpoint = `POST ${endpoint}`;
-      cleanError.responseData = errData;
-      throw cleanError;
-    }
+      if (!response.ok) {
+        if (isRetryableRateLimit(response.status, attempt, RATE_LIMIT_MAX_RETRIES)) {
+          await defaultSleep(RATE_LIMIT_BACKOFF_MS * (attempt + 1));
+          continue;
+        }
+        let errData;
+        try { errData = JSON.parse(rawText); } catch { errData = {}; }
+        const detail = errData.reason || errData.message || '';
+        const cleanError = new Error(`Gemini API ${response.status}: ${response.statusText}${detail ? ` (${detail})` : ''}`);
+        cleanError.status = response.status;
+        cleanError.endpoint = `POST ${endpoint}`;
+        cleanError.responseData = errData;
+        throw cleanError;
+      }
 
-    const preserved = rawText.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
-    return JSON.parse(preserved);
+      const preserved = rawText.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
+      return JSON.parse(preserved);
+    }
   };
 
   /**
@@ -719,4 +776,6 @@ const createGeminiAdapter = (keysPath = null) => {
 
 module.exports = {
   createGeminiAdapter,
+  createRestThrottle,
+  isRetryableRateLimit,
 };
