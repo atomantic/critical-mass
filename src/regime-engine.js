@@ -482,6 +482,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // merged (e.g. target TP partially filled) doesn't re-attempt+re-log every
   // cycle (#189). 0 = no cooldown.
   let dustMergeRetryAfter = 0;
+  // Count of in-flight handleOrderFill calls (WS push + polling can overlap at
+  // awaits — see handleOrderFill wrapper). The AUTOMATIC dust consolidator yields
+  // while this is > 0 so it never STARTS a merge mid-fill: a buy fill mutates
+  // celestialBodies / cancels-replaces a body TP, which would race the merge's
+  // own cancel+rewrite. Manual operator merges are not gated (deliberate action).
+  let fillInProgress = 0;
   let stateSaveInterval = null;
   let entryInProgress = false; // Lock to prevent concurrent entry evaluations
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
@@ -2922,11 +2928,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const handleOrderFill = async (fillData) => {
     const dedupRef = { set: null, key: null };
+    fillInProgress++; // gates the automatic dust consolidator (see fillInProgress)
     try {
       return await handleOrderFillImpl(fillData, dedupRef);
     } catch (err) {
       if (dedupRef.set) dedupRef.set.delete(dedupRef.key);
       throw err;
+    } finally {
+      fillInProgress--;
     }
   };
 
@@ -3147,7 +3156,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const consolidateDustBodies = async () => {
     if (isDryRun || !productDetails?.baseMinSize) return;
-    if (mergeInProgress || reconcileInProgress) return; // busy → retry next tick (no cooldown)
+    if (mergeInProgress || reconcileInProgress || fillInProgress > 0) return; // busy → retry next tick (no cooldown)
     if (Date.now() < dustMergeRetryAfter) return;        // backing off after a failed attempt
     const bodies = positionState.celestialBodies || [];
     if (bodies.length < 2) return;
