@@ -13,6 +13,7 @@ For completed work, see [DONE.md](./DONE.md).
 - [ ] Upgrade Vite build toolchain (5.4 -> 8.x) and `@vitejs/plugin-react` (4.7 -> 6.x)
 - [ ] Complete `src/paths.js` adoption — file exists but is not imported in most modules (15+ `path.join(__dirname, ...)` remain)
 - [ ] Complete `src/routes/async-handler.js` adoption — file exists but is not imported in any route
+- [ ] Make the gemini `makeRestRequest` 429 backoff injectable (`src/adapters/gemini/api.js:177`) like `createRestThrottle`'s `sleep`, so the 429 integration tests can use fake timers instead of ~2s of real sleep (review #194/codex finding #3 — test ergonomics only, no production bug)
 
 ## Future / Ideas
 

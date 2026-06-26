@@ -26,9 +26,12 @@ const REST_BASE_URL = 'https://api.gemini.com';
 const WS_FAST_API_URL = 'wss://api.gemini.com/v1/order/events';
 const WS_MARKET_DATA_URL = 'wss://api.gemini.com/v1/marketdata';
 
-// Gemini private REST limit is ~5 req/s; spacing every 200ms keeps a reconcile
-// burst (order/status × N + balances + mytrades) from starving the heartbeat —
-// the call that keeps resting orders alive (issue #193).
+// Gemini private REST limit is ~5 req/s. Spacing every 200ms keeps a reconcile
+// burst (order/status × N + balances + mytrades) from tripping the rate limiter
+// and 429-failing the heartbeat — the call that keeps resting orders alive
+// (issue #193). Spacing is plain FIFO, not priority: the heartbeat can queue
+// behind a burst, but the worst-case delay (~N×200ms) is negligible against
+// both the 60s heartbeat cadence and Gemini's ~5-min order-cancel window.
 const REST_MIN_INTERVAL_MS = 200;
 const RATE_LIMIT_MAX_RETRIES = 2;   // attempts beyond the first, on HTTP 429 only
 const RATE_LIMIT_BACKOFF_MS = 500;  // linear: 500ms, 1000ms
@@ -56,9 +59,10 @@ const createRestThrottle = ({ minIntervalMs, now = Date.now, sleep = defaultSlee
 };
 
 /**
- * A 429 is a pre-processing rejection (the request never reached the matching
- * engine), so retrying is safe even for order placement — unlike a network
- * error, where the order may have landed. Only 429 is retried.
+ * Whether an HTTP error should be retried. Only a 429 (rate limit) qualifies,
+ * and only while attempts remain. Callers that place orders disable retry via
+ * `retryRateLimit: false` (see makeRestRequest) — this predicate just decides
+ * the 429-and-attempt-budget part.
  * @param {number} status
  * @param {number} attempt - zero-based attempt index already performed
  * @param {number} maxRetries
@@ -133,7 +137,13 @@ const createGeminiAdapter = (keysPath = null) => {
    * @param {Object} [payload] - Request payload
    * @returns {Promise<any>} API response
    */
-  const makeRestRequest = async (endpoint, payload = {}) => {
+  const makeRestRequest = async (endpoint, payload = {}, opts = {}) => {
+    // retryRateLimit defaults true. Order placement (/v1/order/new) opts OUT:
+    // blind-retrying it on a 429 could double-place if the 429 originated from
+    // an intermediary AFTER the order reached the matching engine (Gemini does
+    // not dedupe by client_order_id). A missed placement is cheap — the engine
+    // re-places on the next cycle — so order/new fails fast instead.
+    const retryRateLimit = opts.retryRateLimit !== false;
     // attempt is zero-based; we may retry on 429 up to RATE_LIMIT_MAX_RETRIES.
     // Credentials/headers are regenerated per attempt so the nonce strictly
     // increases (Gemini rejects a reused/stale nonce).
@@ -167,7 +177,7 @@ const createGeminiAdapter = (keysPath = null) => {
       clearTimeout(timeout);
 
       if (!response.ok) {
-        if (isRetryableRateLimit(response.status, attempt, RATE_LIMIT_MAX_RETRIES)) {
+        if (retryRateLimit && isRetryableRateLimit(response.status, attempt, RATE_LIMIT_MAX_RETRIES)) {
           await defaultSleep(RATE_LIMIT_BACKOFF_MS * (attempt + 1));
           continue;
         }
@@ -326,7 +336,7 @@ const createGeminiAdapter = (keysPath = null) => {
       options: ['immediate-or-cancel'], // IOC to simulate market order
     };
 
-    const result = await makeRestRequest('/v1/order/new', orderPayload);
+    const result = await makeRestRequest('/v1/order/new', orderPayload, { retryRateLimit: false });
 
     const success = !result.is_cancelled && result.order_id;
 
@@ -382,7 +392,7 @@ const createGeminiAdapter = (keysPath = null) => {
       options: postOnly ? ['maker-or-cancel'] : [],
     };
 
-    const result = await makeRestRequest('/v1/order/new', orderPayload);
+    const result = await makeRestRequest('/v1/order/new', orderPayload, { retryRateLimit: false });
 
     const success = !result.is_cancelled && result.order_id;
 
@@ -442,7 +452,7 @@ const createGeminiAdapter = (keysPath = null) => {
       options: postOnly ? ['maker-or-cancel'] : [],
     };
 
-    const result = await makeRestRequest('/v1/order/new', orderPayload);
+    const result = await makeRestRequest('/v1/order/new', orderPayload, { retryRateLimit: false });
 
     const success = !result.is_cancelled && result.order_id;
 

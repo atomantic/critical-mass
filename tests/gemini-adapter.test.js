@@ -387,4 +387,23 @@ describe('makeRestRequest 429 handling (issue #193)', () => {
     // 1 initial + 2 retries = 3 attempts total.
     assert.equal(calls.filter(c => c.endpoint === '/v1/balances').length, 3);
   });
+
+  it('does NOT retry a 429 on order placement — fails fast to avoid a double-place', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    // Stub product details so placeLimitSell reaches the order/new call.
+    adapter.getProductDetails = async () => ({
+      baseIncrement: '0.00000001',
+      quoteIncrement: '0.01',
+      baseMinSize: '0.00001',
+      quoteMinSize: '0.1',
+      price: 2500,
+    });
+    const { calls } = installFetchMock(() => ({ __error: true, status: 429 }));
+    await assert.rejects(
+      () => adapter.placeLimitSell('ETH-USD', 0.5, 2500),
+      (err) => err.status === 429
+    );
+    // Exactly one attempt: order/new opts out of 429 retry (retryRateLimit:false).
+    assert.equal(calls.filter(c => c.endpoint === '/v1/order/new').length, 1);
+  });
 });
