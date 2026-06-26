@@ -148,6 +148,27 @@ const isBuyAlreadyCommitted = (bodies, orderId) =>
   );
 
 /**
+ * Pure predicate: is this body stranded sub-min "dust"? — it has a positive qty,
+ * no resting TP order, AND its entire qty rounds below the exchange minimum order
+ * size, so a TP can never be placed for it on its own. Such a body must be
+ * consolidated into another body to recover its value (issue #189).
+ *
+ * The `assetQty > 0` guard excludes empty/zero bodies (a zero body isn't value to
+ * recover and must not trigger a merge that churns a healthy neighbour's TP); a
+ * tiny-but-positive qty that rounds to 0 IS dust and should be consolidated.
+ * @param {Object} body - Celestial body
+ * @param {number} baseMinSize - Exchange minimum order size (base asset)
+ * @param {number} baseIncrement - Exchange base-size increment for rounding
+ * @returns {boolean}
+ */
+const isStrandedDustBody = (body, baseMinSize, baseIncrement) => {
+  if (!body || body.tpOrderId || !(body.assetQty > 0)) return false;
+  const inc = baseIncrement || 0.00000001;
+  const roundedFullQty = Math.floor(roundAsset(body.assetQty) / inc) * inc;
+  return roundedFullQty < baseMinSize;
+};
+
+/**
  * Decide whether a buy-fill handling pass is a RETRY that must be skipped to
  * avoid double-counting (issue #131), vs. a legitimate new tranche (including an
  * advancing partial) that must process. The distinguishing signal is whether
@@ -450,6 +471,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   let metricsInterval = null;
   let reconcileInterval = null;
   let reconcileInProgress = false; // Lock to prevent concurrent reconciliation ticks
+  // Mutual-exclusion lock for body merges/roll-ups (#189). manualMergeBody,
+  // rollupAllBodies, and the automatic dust consolidator all cancel/replace TP
+  // orders and rewrite celestialBodies; without a lock the metrics-timer dust
+  // merge can interleave with an operator roll-up or the reconcile loop at an
+  // await and double-count a body's qty/cost. Held across a whole merge; the
+  // reconcile loop also defers while it is set (and vice-versa).
+  let mergeInProgress = false;
+  // Cooldown after a failed dust consolidation so a body that can't currently be
+  // merged (e.g. target TP partially filled) doesn't re-attempt+re-log every
+  // cycle (#189). 0 = no cooldown.
+  let dustMergeRetryAfter = 0;
   let stateSaveInterval = null;
   let entryInProgress = false; // Lock to prevent concurrent entry evaluations
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
@@ -3100,12 +3132,57 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Auto-consolidate one stranded sub-min "dust" body per cycle (#189). A body
+   * whose entire qty rounds below the exchange minimum can never get a TP placed,
+   * so it would otherwise sit idle forever with its value stranded. Fold it into
+   * the NEAREST other body (by avg price) via the locked merge primitive so the
+   * combined qty can clear the minimum and get a TP. Merging into the nearest
+   * body (rather than relying on tpPrice ordering) also handles the all-dust case
+   * — two sub-min bodies with no resting TP still merge and accumulate.
+   *
+   * Deferred (not failed) while a merge/reconcile is in flight, so it never sets
+   * the failure cooldown just because the engine was momentarily busy; a genuine
+   * merge failure (e.g. target TP partially filled) backs off for a few minutes
+   * so it doesn't re-attempt and re-log every cycle.
+   */
+  const consolidateDustBodies = async () => {
+    if (isDryRun || !productDetails?.baseMinSize) return;
+    if (mergeInProgress || reconcileInProgress) return; // busy → retry next tick (no cooldown)
+    if (Date.now() < dustMergeRetryAfter) return;        // backing off after a failed attempt
+    const bodies = positionState.celestialBodies || [];
+    if (bodies.length < 2) return;
+    const baseMinSize = parseFloat(productDetails.baseMinSize);
+    const baseIncrement = parseFloat(productDetails.baseIncrement) || 0.00000001;
+
+    const dust = bodies.find(b => isStrandedDustBody(b, baseMinSize, baseIncrement));
+    if (!dust) return;
+
+    // Pick the nearest OTHER body by avg price as the merge target.
+    let target = null;
+    let bestDist = Infinity;
+    for (const b of bodies) {
+      if (b.id === dust.id) continue;
+      const dist = Math.abs((b.avgPrice || 0) - (dust.avgPrice || 0));
+      if (dist < bestDist) { bestDist = dist; target = b; }
+    }
+    if (!target) return;
+
+    const result = await manualMergeBody(dust.id, { targetId: target.id, label: 'Auto-consolidation (dust)' });
+    if (!result.success) {
+      dustMergeRetryAfter = Date.now() + 300000; // 5 min backoff (bounds failure re-log)
+      console.log(`⚠️ [${exchange}] Dust auto-consolidation deferred: ${result.message}`);
+    }
+  };
+
+  /**
    * Place a TP for any held position that lacks a resting sell order. Extracted
    * from updateMetrics so it can run even when candle fetch fails (TP placement
    * doesn't need candles). No-op in dry-run or when fully covered.
    */
   const ensureTakeProfitPlaced = async () => {
     if (isDryRun || positionState.totalAsset <= 0) return;
+    // Recover stranded sub-min dust first so a merged body gets its TP below.
+    await consolidateDustBodies();
     const bodies = positionState.celestialBodies || [];
     const bodiesWithoutTp = bodies.filter(b => !b.tpOrderId);
     const needsTp = bodies.length > 0 ? bodiesWithoutTp.length > 0 : !positionState.activeTpOrderId;
@@ -3130,6 +3207,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     reconcileInterval = setInterval(() => {
       if (!isRunning) return; // Guard against firing after stop
       if (reconcileInProgress) return; // Skip tick if previous run is still in progress
+      if (mergeInProgress) return; // Defer while a body merge/roll-up cancels & replaces TPs (#189)
       reconcileInProgress = true;
 
       // Check for entry fills that WebSocket might have missed
@@ -4669,7 +4747,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @param {string} bodyId - ID of the source body (lower TP) to roll up
    * @returns {Promise<{success: boolean, message: string, mergedBody?: Object}>}
    */
-  const manualMergeBody = async (bodyId) => {
+  // Inner merge primitive — assumes the caller holds the merge lock (see the
+  // manualMergeBody wrapper). opts.targetId forces a specific merge target
+  // (used by the dust consolidator, which must NOT rely on tpPrice ordering —
+  // a restored sub-min body can carry a stale tpPrice); opts.label customises
+  // the log prefix (#189).
+  const _mergeBodyImpl = async (bodyId, opts = {}) => {
+    const { targetId = null, label = 'Manual roll-up' } = opts;
     if (!isRunning) {
       return { success: false, message: 'Engine not running' };
     }
@@ -4682,27 +4766,36 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, message: `Body ${bodyId} not found` };
     }
 
-    // Find next-highest body by tpPrice (lowest tpPrice above source's)
-    const candidates = bodies
-      .filter(b => b.id !== source.id && b.tpPrice > source.tpPrice)
-      .sort((a, b) => a.tpPrice - b.tpPrice);
-    if (candidates.length === 0) {
-      return { success: false, message: 'No higher body to merge into (this is the highest)' };
+    let target;
+    if (targetId != null) {
+      // Explicit target (dust consolidation): merge source INTO this body.
+      target = bodies.find(b => b.id === targetId && b.id !== source.id);
+      if (!target) {
+        return { success: false, message: `Target body ${targetId} not found` };
+      }
+    } else {
+      // Default: merge into the next-highest body by tpPrice (lowest tpPrice above source's).
+      const candidates = bodies
+        .filter(b => b.id !== source.id && b.tpPrice > source.tpPrice)
+        .sort((a, b) => a.tpPrice - b.tpPrice);
+      if (candidates.length === 0) {
+        return { success: false, message: 'No higher body to merge into (this is the highest)' };
+      }
+      target = candidates[0];
     }
-    const target = candidates[0];
 
     // Check both orders for partial fills before merging
     for (const body of [source, target]) {
       if (body.tpOrderId) {
         const orderStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
         if (orderStatus && orderStatus.filledSize > 0) {
-          const label = body === source ? 'Source' : 'Target';
-          return { success: false, message: `${label} body ${body.id.slice(-8)} has a partially filled TP order (${orderStatus.filledSize} filled) — cannot merge` };
+          const which = body === source ? 'Source' : 'Target';
+          return { success: false, message: `${which} body ${body.id.slice(-8)} has a partially filled TP order (${orderStatus.filledSize} filled) — cannot merge` };
         }
       }
     }
 
-    console.log(`🔗 [${exchange}] Manual roll-up: merging body ${source.id.slice(-8)} (TP ${fmtPrice(source.tpPrice)}) → ${target.id.slice(-8)} (TP ${fmtPrice(target.tpPrice)})`);
+    console.log(`🔗 [${exchange}] ${label}: merging body ${source.id.slice(-8)} (TP ${fmtPrice(source.tpPrice)}) → ${target.id.slice(-8)} (TP ${fmtPrice(target.tpPrice)})`);
 
     // Race 3: snapshot both bodies before cancelling TPs
     // If a TP fills between cancel and state removal, the fill handler uses the snapshot
@@ -4824,6 +4917,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Public single-body merge. Acquires the merge lock (deferring if a merge or
+   * reconcile is already running) so a metrics-timer dust merge can't interleave
+   * with an operator roll-up or the reconcile loop (#189). Callers that already
+   * hold the lock (rollupAllBodies) pass { _noLock: true }.
+   * @param {string} bodyId
+   * @param {{targetId?: string, label?: string, _noLock?: boolean}} [opts]
+   */
+  const manualMergeBody = async (bodyId, opts = {}) => {
+    if (opts._noLock) return _mergeBodyImpl(bodyId, opts);
+    if (mergeInProgress || reconcileInProgress) {
+      return { success: false, message: 'A merge or reconcile is already in progress' };
+    }
+    mergeInProgress = true;
+    try {
+      return await _mergeBodyImpl(bodyId, opts);
+    } finally {
+      mergeInProgress = false;
+    }
+  };
+
+  /**
    * Collapse every celestial body into a single body with one TP order.
    * Iteratively rolls up the lowest-TP body into the next-highest using
    * manualMergeBody until only one body remains.
@@ -4835,34 +4949,44 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (startCount < 2) {
       return { success: false, message: `Need at least 2 bodies to collapse, found ${startCount}` };
     }
-
-    console.log(`🔗 [${exchange}] Collapse-all triggered: ${startCount} bodies → 1`);
-
-    let mergedCount = 0;
-    let lastResult = null;
-    // Safety bound: each iteration removes one body, so we can't need more than startCount-1
-    for (let i = 0; i < startCount - 1; i++) {
-      const bodies = positionState.celestialBodies || [];
-      if (bodies.length < 2) break;
-      const lowest = [...bodies].sort((a, b) => (a.tpPrice || 0) - (b.tpPrice || 0))[0];
-      const result = await manualMergeBody(lowest.id);
-      if (!result.success) {
-        return {
-          success: false,
-          message: `Collapse aborted after ${mergedCount} merges: ${result.message}`,
-          mergedCount,
-        };
-      }
-      mergedCount++;
-      lastResult = result;
+    // Acquire the merge lock ONCE for the whole collapse (defer to any in-flight
+    // merge/reconcile); internal calls pass _noLock so they don't re-acquire it
+    // (which would self-deadlock against this hold) (#189).
+    if (mergeInProgress || reconcileInProgress) {
+      return { success: false, message: 'A merge or reconcile is already in progress' };
     }
+    mergeInProgress = true;
+    try {
+      console.log(`🔗 [${exchange}] Collapse-all triggered: ${startCount} bodies → 1`);
 
-    return {
-      success: true,
-      message: `Collapsed ${startCount} bodies into 1 (${mergedCount} merges)`,
-      mergedCount,
-      finalBody: lastResult?.mergedBody || null,
-    };
+      let mergedCount = 0;
+      let lastResult = null;
+      // Safety bound: each iteration removes one body, so we can't need more than startCount-1
+      for (let i = 0; i < startCount - 1; i++) {
+        const bodies = positionState.celestialBodies || [];
+        if (bodies.length < 2) break;
+        const lowest = [...bodies].sort((a, b) => (a.tpPrice || 0) - (b.tpPrice || 0))[0];
+        const result = await manualMergeBody(lowest.id, { _noLock: true });
+        if (!result.success) {
+          return {
+            success: false,
+            message: `Collapse aborted after ${mergedCount} merges: ${result.message}`,
+            mergedCount,
+          };
+        }
+        mergedCount++;
+        lastResult = result;
+      }
+
+      return {
+        success: true,
+        message: `Collapsed ${startCount} bodies into 1 (${mergedCount} merges)`,
+        mergedCount,
+        finalBody: lastResult?.mergedBody || null,
+      };
+    } finally {
+      mergeInProgress = false;
+    }
   };
 
   /**
@@ -5203,4 +5327,5 @@ module.exports = {
   resolveEntryBudget,
   isBuyAlreadyCommitted,
   shouldSkipBuyRecommit,
+  isStrandedDustBody,
 };
