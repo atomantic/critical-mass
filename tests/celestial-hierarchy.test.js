@@ -398,6 +398,20 @@ describe('mergeIntoBody', () => {
     assert.ok(Array.isArray(body.buyOrders));
     assert.equal(body.buyOrders.length, 1);
   });
+
+  it('does NOT corrupt costBasis to NaN when a {costBasis} buy has a legit 0 cost (issue #191)', () => {
+    // A sub-cent orphan buy: aggregateFills rounds totalValue to $0.00, so the
+    // recovery caller passes { assetQty, costBasis: 0 }. With `||` this fell
+    // through to newBuy.totalValue (undefined) → NaN. With `??` it stays 0.
+    const body = makeBody({ assetQty: 0.02, costBasis: 1400, avgPrice: 70000 });
+    const orphan = { assetQty: 3e-8, costBasis: 0, avgPrice: 59618, buyOrderId: 'orphan-1' };
+    mergeIntoBody(body, orphan, 10000, 'orphan-1');
+
+    assert.ok(Number.isFinite(body.costBasis), `costBasis must stay finite, got ${body.costBasis}`);
+    assert.ok(Number.isFinite(body.avgPrice), `avgPrice must stay finite, got ${body.avgPrice}`);
+    assert.ok(Math.abs(body.costBasis - 1400) < 0.01, 'costBasis unchanged by a $0 buy');
+    assert.ok(Math.abs(body.assetQty - 0.02000003) < 1e-9, 'assetQty gains the dust');
+  });
 });
 
 // ============================================================================

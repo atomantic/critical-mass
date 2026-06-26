@@ -201,8 +201,13 @@ const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxB
  * @returns {CelestialBody} Updated body (mutated in place)
  */
 const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
-  const newBtcQty = newBuy.assetQty || newBuy.totalSize;
-  const newCost = newBuy.costBasis || (newBuy.totalValue + (newBuy.totalFees || 0));
+  // Nullish coalescing, NOT ||: a sub-cent buy legitimately has costBasis 0
+  // (aggregateFills rounds totalValue to USDC cents), and `0 || fallback` would
+  // fall through to newBuy.totalValue — undefined on a {costBasis}-shaped arg —
+  // yielding `undefined + 0 = NaN` that poisons the body's costBasis/avgPrice
+  // (issue #191). assetQty gets the same treatment for symmetry.
+  const newBtcQty = newBuy.assetQty ?? newBuy.totalSize;
+  const newCost = newBuy.costBasis ?? (newBuy.totalValue + (newBuy.totalFees || 0));
   const orderId = buyOrderId || newBuy.buyOrderId;
 
   target.assetQty = roundAsset(target.assetQty + newBtcQty);
