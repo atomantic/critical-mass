@@ -252,6 +252,16 @@ describe('createNewBody', () => {
     assert.equal(body.costBasis, 1000);
   });
 
+  it('does NOT corrupt costBasis to NaN when a {costBasis} buy has a legit 0 cost (issue #191 symmetry)', () => {
+    // Same root cause as mergeIntoBody: a {assetQty, costBasis: 0}-shaped arg has
+    // no totalValue, so `0 || (undefined + 0)` was NaN. `??` keeps the legit 0.
+    const newBuy = { assetQty: 3e-8, costBasis: 0, avgPrice: 59618 };
+    const body = createNewBody(newBuy, 'buy-order-zero');
+    assert.equal(body.costBasis, 0);
+    assert.ok(!Number.isNaN(body.costBasis), 'costBasis must not be NaN');
+    assert.equal(body.assetQty, 3e-8);
+  });
+
   it('stores the buyOrderId in sourceOrderIds', () => {
     const body = createNewBody(makeNewBuy(), 'buy-order-4');
     assert.deepStrictEqual(body.sourceOrderIds, ['buy-order-4']);
