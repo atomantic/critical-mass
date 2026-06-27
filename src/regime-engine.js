@@ -361,8 +361,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const isDryRun = exchangeConfig.dryRun === true;
   const modeLabel = isDryRun ? '[DRY-RUN] ' : '';
 
-  // Create adapter
-  const adapter = getAdapter(exchange);
+  // Create adapter. `let` (not `const`) so the #196 merge↔fill concurrency
+  // integration tests can swap in a mock adapter via the _test hooks; no
+  // production path ever reassigns it.
+  let adapter = getAdapter(exchange);
 
   // Create all component instances
   const fillLedger = createFillLedger(exchange, productId, pair);
@@ -430,8 +432,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   // Create order executor - use dry-run executor when dryRun is enabled
-  // Callbacks are set up later after internal functions are defined
-  const orderExecutor = isDryRun
+  // Callbacks are set up later after internal functions are defined.
+  // `let` so the #196 concurrency tests can inject a mock; no production
+  // reassignment.
+  let orderExecutor = isDryRun
     ? createDryRunExecutor(exchange, config, marketState, {
         onBuyFill: (...args) => dryRunCallbacks.onBuyFill && dryRunCallbacks.onBuyFill(...args),
         onSellFill: (...args) => dryRunCallbacks.onSellFill && dryRunCallbacks.onSellFill(...args),
@@ -445,7 +449,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         },
       });
 
-  const recoveryModule = createRecoveryModule(exchange, adapter, productId);
+  // `let` so the #196 reconcile lock-release test can inject a mock with a
+  // controllable deferred promise; no production reassignment.
+  let recoveryModule = createRecoveryModule(exchange, adapter, productId);
 
   // Create TP optimizer for dynamic TP adjustment
   const tpOptimizer = createTpOptimizer(exchange, config, {
@@ -3228,10 +3234,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
-   * Start periodic reconciliation
+   * One reconciliation pass. Extracted from the setInterval callback so the
+   * #196 lock-release integration test can drive a single tick directly (via the
+   * _test hooks) without a lingering interval. Behaviour is identical to the
+   * inlined callback it replaced.
    */
-  const startReconciliation = () => {
-    reconcileInterval = setInterval(() => {
+  const reconcileTick = () => {
       if (!isRunning) return; // Guard against firing after stop
       if (reconcileInProgress) return; // Skip tick if previous run is still in progress
       if (mergeInProgress) return; // Defer while a body merge/roll-up cancels & replaces TPs (#189)
@@ -3437,7 +3445,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       Promise.allSettled(pending).finally(() => {
         reconcileInProgress = false;
       });
-    }, config.reconcileIntervalMs);
+  };
+
+  /**
+   * Start periodic reconciliation
+   */
+  const startReconciliation = () => {
+    reconcileInterval = setInterval(reconcileTick, config.reconcileIntervalMs);
   };
 
   /**
@@ -5351,6 +5365,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     _getMarketState: () => marketState,
     _getPositionState: () => positionState,
     _getConfig: () => config,
+    // #196 merge↔fill concurrency surface: setters to drive deterministic
+    // interleavings and inject mock exchange deps, plus direct handles on the
+    // internal closures the integration tests exercise. Test-only — never call
+    // from production code.
+    _test: {
+      setRunning: (v) => { isRunning = v; },
+      setProductDetails: (v) => { productDetails = v; },
+      setAdapter: (v) => { adapter = v; },
+      setOrderExecutor: (v) => { orderExecutor = v; },
+      setRecoveryModule: (v) => { recoveryModule = v; },
+      setMergeInProgress: (v) => { mergeInProgress = v; },
+      setReconcileInProgress: (v) => { reconcileInProgress = v; },
+      setDustMergeRetryAfter: (v) => { dustMergeRetryAfter = v; },
+      getFlags: () => ({ isRunning, mergeInProgress, reconcileInProgress, fillInProgress, dustMergeRetryAfter }),
+      consolidateDustBodies,
+      mergeBody: _mergeBodyImpl,
+      handleOrderFill,
+      reconcileTick,
+      // Clear the background TTL timers a merge/fill schedules (5-min dedup
+      // sweeps) so a test process can exit without waiting on them.
+      clearTimers: () => { for (const t of ttlTimers) clearTimeout(t); ttlTimers.clear(); },
+    },
   };
 };
 
