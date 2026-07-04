@@ -522,6 +522,12 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
             throw new Error(`fill details unavailable for filled fib sell ${state.fibActiveSellOrderId}`);
           }
           stateTracker.updateAfterFibSellFill(state, fibFill);
+          // The just-executed buy_n was already folded into the cumulative
+          // totals by updateAfterFibBuy above; the sell-fill reset just zeroed
+          // them, so re-seed the fresh cycle from buy_n or it is dropped from
+          // cycle accounting (issue #200, Bug A). The fund debit for buy_n
+          // already ran in updateAfterFibBuy and is NOT repeated here.
+          stateTracker.seedFibCycleFromBuy(state, buyResult);
           stateTracker.saveState(state, exchange);
           logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange);
           // Now place new sell order for this buy
@@ -536,6 +542,14 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
           holdbackAsset = newFibSellResult.holdbackAsset;
           stateTracker.updateAfterFibSellOrder(state, sellOrder, newFibSellResult.sellQuantity, holdbackAsset);
         } else {
+          // A partially-filled previous sell was cancelled and rolled into this
+          // consolidated order — book the already-executed proceeds before
+          // tracking the new sell (issue #200, Bug B). The cycle is NOT reset;
+          // holdback is realized only when the consolidated sell fully fills.
+          if (fibSellResult.prevFill) {
+            stateTracker.creditFibPartialSell(state, fibSellResult.prevFill);
+            logger.log('INFO', `[${exchange}] Credited partially-filled prev fib sell ${fibSellResult.prevFill.orderId}: ${fibSellResult.prevFill.filledSize.toFixed(8)} ${getBaseCurrency(config.productId)} → net proceeds $${(fibSellResult.prevFill.netProceeds || 0).toFixed(2)}`);
+          }
           sellOrder = fibSellResult.sellOrder;
           holdbackAsset = fibSellResult.holdbackAsset;
           stateTracker.updateAfterFibSellOrder(state, sellOrder, fibSellResult.sellQuantity, holdbackAsset);

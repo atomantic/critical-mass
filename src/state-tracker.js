@@ -645,6 +645,61 @@ const updateAfterFibSellFill = (state, fillDetails) => {
 };
 
 /**
+ * Re-seed the Fibonacci cycle cumulative totals from a single buy after a
+ * mid-cycle reset. Used when the previous cycle's consolidated sell filled
+ * during (or right after) the current interval's buy: updateAfterFibBuy has
+ * already folded this buy into the (now-reset) cumulative totals, so the buy
+ * would otherwise be dropped from the fresh cycle's accounting (issue #200,
+ * Bug A). This only re-seeds the fib cycle fields — the fund debit for this
+ * buy already ran in updateAfterFibBuy and must NOT be repeated.
+ * @param {BotState} state - Current state
+ * @param {BuyResult} buyDetails - The just-executed buy that opens the new cycle
+ * @returns {BotState} Updated state
+ */
+const seedFibCycleFromBuy = (state, buyDetails) => {
+  const buyNetFees = buyDetails.netFees || 0;
+  const costBasis = buyDetails.usdcAmount + buyNetFees;
+
+  state.fibCycleStartTime = Date.now();
+  state.fibCumulativeCost = costBasis;
+  state.fibCumulativeAsset = buyDetails.assetAmount;
+  // Position 1: one buy accumulated, next buy draws Fibonacci position 1
+  // (mirrors updateAfterFibBuy incrementing after the first accumulation).
+  state.fibPosition = 1;
+
+  return state;
+};
+
+/**
+ * Credit the executed portion of a previous cycle sell that was only
+ * PARTIALLY_FILLED before being cancelled and rolled into a new consolidated
+ * sell (issue #200, Bug B). Unlike updateAfterFibSellFill this does NOT reset
+ * the cycle and does NOT credit holdback reserves — the cycle continues and its
+ * holdback is only realized when the (new) consolidated sell fully fills.
+ * @param {BotState} state - Current state
+ * @param {FibonacciFillDetails} fillDetails - Executed-portion fill details
+ * @returns {BotState} Updated state
+ */
+const creditFibPartialSell = (state, fillDetails) => {
+  const sellFees = fillDetails.fees || 0;
+  const sellRebates = fillDetails.rebates || 0;
+  const sellNetFees = fillDetails.netFees || 0;
+  const netProceeds = fillDetails.netProceeds || (fillDetails.fillValue - sellNetFees);
+
+  // Return the already-realized proceeds to the fund
+  state.usdcFundSize += netProceeds;
+  state.outstandingOrdersAsset = Math.max(0, state.outstandingOrdersAsset - (fillDetails.filledSize || 0));
+  state.outstandingOrdersUSDC = Math.max(0, state.outstandingOrdersUSDC - (fillDetails.fillValue || 0));
+
+  // Update cumulative fee tracking
+  state.totalFees = (state.totalFees || 0) + sellFees;
+  state.totalRebates = (state.totalRebates || 0) + sellRebates;
+  state.netFees = (state.netFees || 0) + sellNetFees;
+
+  return state;
+};
+
+/**
  * Get current Fibonacci cycle information
  * @param {BotState} state - Current state
  * @returns {FibonacciCycleInfo} Cycle information
@@ -1007,6 +1062,8 @@ module.exports = {
   updateAfterFibBuy,
   updateAfterFibSellOrder,
   updateAfterFibSellFill,
+  seedFibCycleFromBuy,
+  creditFibPartialSell,
   getFibonacciCycleInfo,
   // Regime state management
   // (updateRegimeStateAfterTP was removed — used a `realizedPnL += pnl`

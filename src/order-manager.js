@@ -397,23 +397,79 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
 const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, prevOrderId, adapter) => {
   const baseCurrency = getBaseCurrency(config.productId);
 
-  // Cancel previous order if it exists and is not filled
+  // Inspect the previous sell before mutating any state. We look at the actual
+  // executed amount (filledSize), not just the coarse status string, because
+  // exchanges disagree on how they label a live partially-executed order
+  // (Gemini → 'PARTIALLY_FILLED'; Coinbase → 'OPEN' with filled_size > 0).
+  // Three cases: fully filled, partially filled (still live), fully open.
+  let alreadySoldQty = 0;
+  let prevFill = null;
+
   if (prevOrderId) {
     const prevOrderStatus = await adapter.getOrder(prevOrderId);
+    const filledSize = prevOrderStatus.filledSize || 0;
+    // A resting limit sell the engine placed is still live while OPEN/PENDING or,
+    // on Gemini, PARTIALLY_FILLED. Only a live order should be cancelled; a
+    // terminal status (CANCELLED/EXPIRED/UNKNOWN) falls through to place-new,
+    // preserving prior behaviour.
+    const isLive = prevOrderStatus.status === 'OPEN'
+      || prevOrderStatus.status === 'PENDING'
+      || prevOrderStatus.status === 'PARTIALLY_FILLED';
 
-    if (prevOrderStatus.status === 'OPEN' || prevOrderStatus.status === 'PENDING') {
-      log('INFO', `Cancelling previous Fibonacci sell order ${prevOrderId}`);
-      await adapter.cancelOrder(prevOrderId);
-    } else if (prevOrderStatus.status === 'FILLED') {
-      // Order already filled - this should trigger cycle reset
+    if (prevOrderStatus.status === 'FILLED') {
+      // Fully filled - this should trigger cycle reset upstream
       log('INFO', `Previous Fibonacci sell order ${prevOrderId} already filled`);
       return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
     }
+
+    if (isLive && filledSize > 0) {
+      // Partially executed and still live (Gemini → 'PARTIALLY_FILLED';
+      // Coinbase → 'OPEN' with filled_size > 0). Cancel the remainder, then
+      // credit the already-executed portion and shrink the new consolidated
+      // sell so the sold quantity is not re-sold from reserves (issue #200,
+      // Bug B).
+      log('INFO', `Previous Fibonacci sell ${prevOrderId} partially filled (${filledSize} ${baseCurrency}); cancelling remainder`);
+      const cancelResult = await adapter.cancelOrder(prevOrderId);
+
+      if (!cancelResult || cancelResult.success !== true) {
+        // Cancel refused - the order filled between getOrder and cancelOrder.
+        // Route through the fill path so the full fill is credited upstream.
+        log('WARN', `Cancel refused for partially-filled ${prevOrderId} - treating as fully filled`);
+        return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
+      }
+
+      // Gather the executed-portion details so the caller can book the proceeds.
+      const fillSummary = await adapter.getOrderFillSummary(prevOrderId);
+      prevFill = {
+        orderId: prevOrderId,
+        filledSize,
+        fillValue: prevOrderStatus.filledValue,
+        averageFilledPrice: prevOrderStatus.averageFilledPrice,
+        fees: fillSummary.totalFees,
+        rebates: fillSummary.totalRebates,
+        netFees: fillSummary.netFees,
+        netProceeds: (prevOrderStatus.filledValue || 0) - fillSummary.netFees,
+      };
+      alreadySoldQty = filledSize;
+    } else if (isLive) {
+      // Fully open, nothing executed - cancel and replace.
+      log('INFO', `Cancelling previous Fibonacci sell order ${prevOrderId}`);
+      const cancelResult = await adapter.cancelOrder(prevOrderId);
+
+      if (!cancelResult || cancelResult.success !== true) {
+        // Cancel refused - the order filled between getOrder and cancelOrder.
+        log('WARN', `Cancel refused for ${prevOrderId} - treating as fully filled`);
+        return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
+      }
+    }
   }
 
-  // Calculate sell quantity and price
+  // Calculate sell quantity and price. Holdback stays a fixed fraction of the
+  // full cycle cumulative (design intent); the new sell only covers what still
+  // needs selling after subtracting any already-executed partial quantity.
   const holdbackAsset = cumulativeAsset * (config.holdbackPercent / 100);
-  const sellQuantity = getFibonacciSellQuantity(cumulativeAsset, config.holdbackPercent);
+  const targetSellQuantity = getFibonacciSellQuantity(cumulativeAsset, config.holdbackPercent);
+  const sellQuantity = Math.max(0, targetSellQuantity - alreadySoldQty);
   const sellPrice = getFibonacciSellPrice(avgCostBasis, config.sellMarkupPercent);
 
   log('INFO', `Placing Fibonacci sell: ${sellQuantity.toFixed(8)} ${baseCurrency} at $${sellPrice.toFixed(2)} (avg cost: $${avgCostBasis.toFixed(2)})`);
@@ -440,6 +496,9 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
     sellQuantity,
     holdbackAsset,
     alreadyFilled: false,
+    // Present only when a partially-filled prev sell was cancelled and rolled
+    // into this consolidated order; the caller books its proceeds (issue #200).
+    prevFill,
   };
 };
 
