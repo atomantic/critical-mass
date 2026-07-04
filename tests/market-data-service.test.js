@@ -2,7 +2,11 @@
 const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService } = require('../src/market-data-service');
+const {
+  ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService,
+  instrumentAdapterForHealth, isRateLimitError,
+} = require('../src/market-data-service');
+const { createHealthMonitor } = require('../src/health-monitor');
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -2196,5 +2200,224 @@ describe('handleTicker carries volume24h into marketState (issue #202)', () => {
     svc._test.handleTicker({ price: 100, bid: 99.9, ask: 100.1, volume24h: 500 });
     svc._test.handleTicker({ price: 101, bid: 100.9, ask: 101.1 }); // no volume24h
     assert.equal(svc._test.marketState.volume24h, 500, 'missing volume24h must not zero the prior value');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Health-monitor instrumentation (issue #228 — follow-up to #211/#225, which
+// wired recordRestError/recordRateLimit/recordRestLatency into regime-engine.js
+// but left market-data-service.js uninstrumented).
+// ---------------------------------------------------------------------------
+
+/** Fake health monitor that just records what was called, for unit tests. */
+const makeHealthSpy = () => {
+  const calls = { latency: [], error: 0, rateLimit: 0 };
+  return {
+    calls,
+    recordRestLatency: (ms) => calls.latency.push(ms),
+    recordRestError: () => { calls.error += 1; },
+    recordRateLimit: () => { calls.rateLimit += 1; },
+  };
+};
+
+describe('instrumentAdapterForHealth (issue #228)', () => {
+  it('records latency on a successful instrumented call (getOrderFills)', async () => {
+    const monitor = makeHealthSpy();
+    const adapter = instrumentAdapterForHealth({ getOrderFills: async () => ['ok'] }, monitor);
+    const result = await adapter.getOrderFills('order-1');
+    assert.deepEqual(result, ['ok']);
+    assert.equal(monitor.calls.latency.length, 1);
+    assert.equal(monitor.calls.error, 0);
+    assert.equal(monitor.calls.rateLimit, 0);
+  });
+
+  it('records latency on a successful instrumented call (getCandles)', async () => {
+    const monitor = makeHealthSpy();
+    const adapter = instrumentAdapterForHealth({ getCandles: async () => [] }, monitor);
+    await adapter.getCandles('BTC-USDC', 0, 1, 'ONE_MINUTE');
+    assert.equal(monitor.calls.latency.length, 1);
+    assert.equal(monitor.calls.error, 0);
+  });
+
+  it('records a generic REST error and re-throws it', async () => {
+    const monitor = makeHealthSpy();
+    const adapter = instrumentAdapterForHealth({ getOrderFills: async () => { throw new Error('boom'); } }, monitor);
+    await assert.rejects(() => adapter.getOrderFills('order-1'), /boom/);
+    assert.equal(monitor.calls.error, 1);
+    assert.equal(monitor.calls.rateLimit, 0);
+    assert.equal(monitor.calls.latency.length, 1, 'latency must still be recorded on failure');
+  });
+
+  it('classifies a 429-shaped error as a rate limit, not a generic error', async () => {
+    const monitor = makeHealthSpy();
+    const err = Object.assign(new Error('Too Many Requests'), { status: 429 });
+    const adapter = instrumentAdapterForHealth({ getCandles: async () => { throw err; } }, monitor);
+    await assert.rejects(() => adapter.getCandles('BTC-USDC', 0, 1, 'ONE_MINUTE'));
+    assert.equal(monitor.calls.rateLimit, 1);
+    assert.equal(monitor.calls.error, 0);
+  });
+
+  it('passes through methods outside the instrumented REST surface untouched', () => {
+    const loadCredentials = () => ({ apiKey: 'k', apiSecret: 's' });
+    const monitor = makeHealthSpy();
+    const adapter = instrumentAdapterForHealth({ loadCredentials, getCandles: async () => [] }, monitor);
+    assert.equal(adapter.loadCredentials, loadCredentials, 'non-REST method must be the original reference');
+  });
+
+  it('is a no-op passthrough when adapter or monitor is missing', () => {
+    const adapter = { getCandles: async () => [] };
+    assert.equal(instrumentAdapterForHealth(adapter, null), adapter);
+    assert.equal(instrumentAdapterForHealth(null, makeHealthSpy()), null);
+  });
+});
+
+describe('isRateLimitError (issue #228)', () => {
+  it('detects rate limits via status, statusCode, response.status, or message', () => {
+    assert.equal(isRateLimitError({ status: 429 }), true);
+    assert.equal(isRateLimitError({ statusCode: 429 }), true);
+    assert.equal(isRateLimitError({ response: { status: 429 } }), true);
+    assert.equal(isRateLimitError({ message: 'HTTP 429 rate limit exceeded' }), true);
+    assert.equal(isRateLimitError({ message: 'rate-limited' }), true);
+  });
+
+  it('does not misclassify generic errors as rate limits', () => {
+    assert.equal(isRateLimitError({ status: 500, message: 'server error' }), false);
+    assert.equal(isRateLimitError(new Error('timeout')), false);
+    assert.equal(isRateLimitError(null), false);
+  });
+});
+
+describe('createMarketDataService: health monitor wiring (issue #228)', () => {
+  it('getHealthState() is null before start()/injection', () => {
+    const svc = createMarketDataService('coinbase');
+    assert.equal(svc.getHealthState(), null);
+  });
+
+  it('a REST error from getOrderFills (via handleOrderUpdate -> ingestNewFillsForOrder) reaches the injected health monitor', async () => {
+    const monitor = makeHealthSpy();
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectHealthMonitor(monitor);
+    svc._test.injectAdapter({ getOrderFills: async () => { throw new Error('adapter unavailable'); } });
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-health-1', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-health-1', status: 'OPEN', filledSize: 0.5, averageFilledPrice: 0, totalFees: 0,
+    });
+
+    assert.equal(monitor.calls.error, 1, 'generic adapter failure must call recordRestError');
+    assert.equal(monitor.calls.rateLimit, 0);
+    assert.ok(monitor.calls.latency.length >= 1, 'latency must be recorded even on failure');
+
+    svc.stop();
+  });
+
+  it('a 429-shaped error from getOrderFills calls recordRateLimit instead of recordRestError', async () => {
+    const monitor = makeHealthSpy();
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectHealthMonitor(monitor);
+    const rateLimitErr = Object.assign(new Error('Too Many Requests'), { status: 429 });
+    svc._test.injectAdapter({ getOrderFills: async () => { throw rateLimitErr; } });
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-health-2', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-health-2', status: 'OPEN', filledSize: 0.5, averageFilledPrice: 0, totalFees: 0,
+    });
+
+    assert.equal(monitor.calls.rateLimit, 1);
+    assert.equal(monitor.calls.error, 0);
+
+    svc.stop();
+  });
+
+  it('a successful getOrderFills call records latency with no errors', async () => {
+    const monitor = makeHealthSpy();
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectHealthMonitor(monitor);
+    svc._test.injectAdapter({
+      getOrderFills: async () => [{ tradeId: 't1', orderId: 'order-health-3', side: 'sell', price: 70000, size: 0.5, totalCommission: 0.05 }],
+    });
+    svc._test.injectFillLedger({
+      ingestFill: (fill) => ({ ingested: true, fill }),
+      getFillsForOrder: () => [{ size: 0.5 }],
+      getRecordedSizeForOrder: () => 0.5,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+    svc.trackOrder('order-health-3', { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+
+    await svc._test.handleOrderUpdate({
+      orderId: 'order-health-3', status: 'OPEN', filledSize: 0.5, averageFilledPrice: 0, totalFees: 0,
+    });
+
+    assert.equal(monitor.calls.error, 0);
+    assert.equal(monitor.calls.rateLimit, 0);
+    assert.equal(monitor.calls.latency.length, 1);
+
+    svc.stop();
+  });
+
+  it('updateMetrics REST errors from getCandles feed the injected health monitor', async () => {
+    const monitor = makeHealthSpy();
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectHealthMonitor(monitor);
+
+    // updateMetrics receives its adapter as a direct argument (not via
+    // getActiveAdapter), mirroring the real start()/setInterval call sites —
+    // so instrument it the same way production code does via getActiveAdapter().
+    svc._test.injectAdapter({ getCandles: async () => { throw new Error('candles unavailable'); } });
+    const adapter = svc._test.getActiveAdapter();
+
+    await svc._test.updateMetrics(adapter, 'BTC-USDC');
+
+    assert.equal(monitor.calls.error, 2, 'both the 1m and 5m getCandles calls fail independently');
+    assert.equal(monitor.calls.latency.length, 2);
+
+    svc.stop();
+  });
+
+  it('getHealthState() reflects a real health monitor after a REST error burst crosses the threshold', async () => {
+    const config = {
+      maxRestErrors: 2, maxRateLimits: 100, maxLatencyMs: 999999,
+      staleDataMs: 999999999, staleOrdersMs: 999999999, safeRecoveryMs: 999999999,
+    };
+    const monitor = createHealthMonitor('coinbase', config);
+    const svc = createMarketDataService('coinbase');
+    svc._test.injectHealthMonitor(monitor);
+    svc._test.injectAdapter({ getOrderFills: async () => { throw new Error('adapter unavailable'); } });
+    svc._test.injectFillLedger({
+      ingestFill: () => ({ ingested: false, fill: null }),
+      getFillsForOrder: () => [],
+      getRecordedSizeForOrder: () => 0,
+      persist: () => {},
+    });
+    svc._test.injectProductId('BTC-USDC');
+
+    for (const orderId of ['order-health-4a', 'order-health-4b', 'order-health-4c']) {
+      svc.trackOrder(orderId, { type: 'take_profit', price: 70000, size: 0.5, placedAt: Date.now() });
+      await svc._test.handleOrderUpdate({ orderId, status: 'OPEN', filledSize: 0.5, averageFilledPrice: 0, totalFees: 0 });
+    }
+
+    assert.equal(svc.getHealthState().healthChecks.restErrorCount, 3);
+    // checkHealth() is what actually flips mode to SAFE; recording alone
+    // only accumulates counters, mirroring health-monitor.js's checkHealth
+    // gate used by the live regime engine (regime-engine.js:3222).
+    monitor.checkHealth({ openOrderCount: 0 });
+    assert.equal(svc.getHealthState().mode, 'SAFE', 'error burst above maxRestErrors must trip SAFE mode on checkHealth()');
+
+    svc.stop();
   });
 });

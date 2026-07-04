@@ -15,6 +15,7 @@ const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
+const { createHealthMonitor } = require('./health-monitor');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState, LIFECYCLE } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
@@ -35,6 +36,59 @@ const startingMarketDataServices = new Map();
 
 // Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
 const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
+
+// REST adapter methods this service actually calls (getOrderFills via
+// ingestNewFillsForOrder, getCandles via updateMetrics) — instrumented so a
+// REST-error burst / rate-limit / latency spike here feeds this service's own
+// health monitor. Mirrors regime-engine.js's instrumentAdapterForHealth
+// (issue #211-B), narrowed to this file's actual call sites rather than the
+// full REST surface the live trading engine exercises (issue #228 follow-up:
+// market-data-service previously had no health-monitor wiring at all).
+const INSTRUMENTED_REST_METHODS = ['getCandles', 'getOrderFills'];
+
+/**
+ * Detect a rate-limit (HTTP 429) from a thrown adapter error. Same detection
+ * rules as regime-engine.js's isRateLimitError.
+ * @param {any} err
+ * @returns {boolean}
+ */
+const isRateLimitError = (err) =>
+  err?.status === 429 || err?.statusCode === 429 || err?.response?.status === 429 ||
+  /\b429\b|rate.?limit/i.test(err?.message || '');
+
+/**
+ * Wrap an adapter's REST methods so every call feeds the health monitor's
+ * latency / error / rate-limit triggers (issue #228). Non-REST methods (WS,
+ * credentials) and any method not in INSTRUMENTED_REST_METHODS pass through
+ * untouched. Pure functional wrapper — no try/catch, errors re-thrown after
+ * recording, so callers' existing error handling is unaffected.
+ * @param {Object} adapter
+ * @param {Object} healthMonitor
+ * @returns {Object} instrumented adapter
+ */
+const instrumentAdapterForHealth = (adapter, healthMonitor) => {
+  if (!adapter || !healthMonitor) return adapter;
+  const wrapped = { ...adapter };
+  for (const name of INSTRUMENTED_REST_METHODS) {
+    const fn = adapter[name];
+    if (typeof fn !== 'function') continue;
+    wrapped[name] = (...args) => {
+      const startedAt = Date.now();
+      return Promise.resolve(fn.apply(adapter, args))
+        .then((result) => {
+          healthMonitor.recordRestLatency(Date.now() - startedAt);
+          return result;
+        })
+        .catch((err) => {
+          healthMonitor.recordRestLatency(Date.now() - startedAt);
+          if (isRateLimitError(err)) healthMonitor.recordRateLimit();
+          else healthMonitor.recordRestError();
+          throw err;
+        });
+    };
+  }
+  return wrapped;
+};
 
 /**
  * Fetch and ingest any new fills for an order, advancing the
@@ -481,6 +535,11 @@ const createMarketDataService = (exchange, pair) => {
   let wsFeed = null;
   let regimeDetector = null;
   let fillLedger = null;
+  // Created in start() once config is available; instruments getActiveAdapter()'s
+  // REST calls (issue #228). Null until start() runs, or until a test injects
+  // one via _test.injectHealthMonitor — instrumentAdapterForHealth no-ops when
+  // this is null, so pre-start adapter calls (if any) pass through unwrapped.
+  let healthMonitor = null;
   let isConnected = false;
   let metricsUpdateInterval = null;
   let productId = null;
@@ -622,6 +681,14 @@ const createMarketDataService = (exchange, pair) => {
       return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
     }
 
+    // Create the health monitor BEFORE the first adapter call so
+    // getActiveAdapter() (used below and by every REST call site) wraps the
+    // adapter with REST error/rate-limit/latency instrumentation from the
+    // start (issue #228 — mirrors regime-engine.js's instrumentAdapterForHealth
+    // wiring, which previously only covered the live regime engine).
+    const config = getRegimeConfig(exchange, resolvedPair);
+    healthMonitor = createHealthMonitor(exchange, config);
+
     const adapter = getActiveAdapter();
 
     // Try to load credentials with error handling
@@ -637,8 +704,6 @@ const createMarketDataService = (exchange, pair) => {
       console.log(`⚠️ [${exchange}] Market data service: No API credentials, skipping`);
       return { success: false, error: 'No API credentials' };
     }
-
-    const config = getRegimeConfig(exchange, resolvedPair);
 
     // Create regime detector for passive monitoring
     regimeDetector = createRegimeDetector(exchange, config);
@@ -821,7 +886,13 @@ const createMarketDataService = (exchange, pair) => {
   // the require cache (market-data-service destructures getAdapter at
   // module load, so cache patches arrive too late).
   let _adapterOverride = null;
-  const getActiveAdapter = () => _adapterOverride || getAdapter(exchange);
+  // Every call site goes through this getter (start()'s initial adapter,
+  // ingestNewFillsForOrder's ingestDeps, retry chains, cancel catch-up), so
+  // wrapping here instruments the full set of REST call sites in one place
+  // (issue #228) rather than at each individual call. instrumentAdapterForHealth
+  // no-ops (returns the adapter unwrapped) when healthMonitor is still null
+  // (pre-start, or in tests that don't inject one).
+  const getActiveAdapter = () => instrumentAdapterForHealth(_adapterOverride || getAdapter(exchange), healthMonitor);
 
   // Per-orderId pending-retry registries. Both are Maps storing a
   // mutable target so replayed WS events for the same order can advance
@@ -1738,6 +1809,9 @@ const createMarketDataService = (exchange, pair) => {
     untrackOrder,
     setOnOrderFill,
     setOnStatusUpdate,
+    // Health state (issue #228) — null until start() creates the monitor (or
+    // a test injects one via _test.injectHealthMonitor).
+    getHealthState: () => (healthMonitor ? healthMonitor.getState() : null),
     // Test hooks. Expose enough surface to drive processOrderUpdate
     // through a real factory instance without spinning up the WS feed.
     _test: {
@@ -1750,6 +1824,8 @@ const createMarketDataService = (exchange, pair) => {
       injectProductId: (id) => { productId = id; },
       injectAdapter: (a) => { _adapterOverride = a; },
       injectRegimeDetector: (d) => { regimeDetector = d; },
+      injectHealthMonitor: (hm) => { healthMonitor = hm; },
+      getActiveAdapter,
       pendingTerminalRetries,
       pendingPartialRetries,
       timerTracker,
@@ -1842,4 +1918,6 @@ module.exports = {
   settleCancelledOrder,
   createTimerTracker,
   createWorkQueue,
+  instrumentAdapterForHealth,
+  isRateLimitError,
 };
