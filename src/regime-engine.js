@@ -5258,6 +5258,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (positionState.lifecycle === LIFECYCLE.DRAINING || positionState.lifecycle === LIFECYCLE.CLOSED) {
       return { success: false, message: `Fund lifecycle is ${positionState.lifecycle} — cycle reset is not applicable` };
     }
+    // resetCycle() unconditionally nulls positionState.activeTpOrderId/assetOnOrder
+    // without cancelling the exchange order first — safe when it's called after
+    // that TP already filled (its only other call sites), but in legacy core
+    // mode (celestialEnabled: false) hitting the cycle-buy cap does NOT imply
+    // the TP filled — it's typically still resting live, covering the whole
+    // accumulated position. Wiping tracking here would orphan a real order: a
+    // later fill would arrive with no positionState.activeTpOrderId to match,
+    // and a restart before it fills would lose the ability to restore it
+    // (issue #232 follow-up). Celestial mode is unaffected — its TPs live on
+    // each body, not on this legacy field.
+    if (positionState.activeTpOrderId) {
+      return { success: false, message: 'A take-profit order is still resting — cancel or wait for it before resetting the cycle' };
+    }
     console.log(`🔄 [${exchange}] Operator reset-cycle: cycleBuys ${positionState.cycleBuys} -> 0, starting new cycle`);
     await resetCycle();
     await saveLiveState();

@@ -138,6 +138,21 @@ describe('#232 resetCycleBuys() — operator reset to resume buying', () => {
     assert.match(result.message, /closed/i);
   });
 
+  it('refuses while a legacy core TP is still resting, rather than orphaning it (issue #232 follow-up)', async () => {
+    // resetCycle() nulls activeTpOrderId/assetOnOrder WITHOUT cancelling the
+    // exchange order — safe only when called after that TP already filled
+    // (its other call sites). In legacy core mode, hitting the cycle-buy cap
+    // does not imply the TP filled; it's typically still resting live over
+    // the whole accumulated position. Wiping tracking here would orphan it.
+    const eng = makeEngine();
+    eng._getPositionState().activeTpOrderId = 'live-core-tp-1';
+    const result = await eng.resetCycleBuys();
+    assert.equal(result.success, false);
+    assert.match(result.message, /resting/i);
+    assert.equal(eng._getPositionState().activeTpOrderId, 'live-core-tp-1', 'the live TP must not be silently untracked');
+    assert.equal(eng._getPositionState().cycleBuys, 3, 'cycle counter untouched by the refusal');
+  });
+
   it('refuses while a fill is in progress (issue #232 follow-up)', async () => {
     // A fill mid-handling may already be ingested into the ledger under the
     // about-to-be-superseded cycle but not yet reflected in cycleBuys —
