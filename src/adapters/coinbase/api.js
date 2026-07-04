@@ -203,6 +203,10 @@ const createCoinbaseAdapter = (keysPath = null) => {
         unknownError.status = 'unknown';
         unknownError.unknownOutcome = true;
         unknownError.endpoint = `${method} ${apiPath}`;
+        // Surface the deterministic client_order_id from the request body so the
+        // caller can reconcile by querying the exchange for this exact order
+        // (issue #226) instead of blind-retrying or assuming a clean failure.
+        unknownError.clientOrderId = data?.client_order_id;
         throw unknownError;
       }
 
@@ -433,6 +437,43 @@ const createCoinbaseAdapter = (keysPath = null) => {
       completionPercentage: parseFloat(order.completion_percentage || 0),
       totalFees: parseFloat(order.total_fees || 0),
       createdTime: order.created_time,
+    };
+  };
+
+  /**
+   * Find an order on the exchange by its deterministic client_order_id.
+   * Used to reconcile an ambiguous 'unknown' placement outcome (issue #226): a
+   * network error after the order POST may have reached the matching engine, so
+   * before re-placing we look for an order carrying the client_order_id we sent.
+   * Scans recent history (scoped to productId when provided) and normalizes the
+   * match into the same shape as getOrder. Returns null when no such order
+   * exists — i.e. the placement genuinely never landed and is safe to re-place.
+   * @param {string} clientOrderId - Deterministic client order ID we submitted
+   * @param {string|null} [productId] - Optional product to scope the lookup
+   * @returns {Promise<OrderDetails|null>} Normalized order details, or null if absent
+   */
+  adapter.findOrderByClientOrderId = async (clientOrderId, productId = null) => {
+    if (!clientOrderId) return null;
+
+    const params = productId
+      ? `?product_ids=${encodeURIComponent(productId)}&limit=100`
+      : '?limit=100';
+    const data = await makeRequest('GET', `/api/v3/brokerage/orders/historical/batch${params}`);
+
+    const match = (data.orders || []).find(o => o.client_order_id === clientOrderId);
+    if (!match) return null;
+
+    return {
+      orderId: match.order_id,
+      productId: match.product_id,
+      side: match.side,
+      status: match.status,
+      filledSize: parseFloat(match.filled_size || 0),
+      filledValue: parseFloat(match.filled_value || 0),
+      averageFilledPrice: parseFloat(match.average_filled_price || 0),
+      completionPercentage: parseFloat(match.completion_percentage || 0),
+      totalFees: parseFloat(match.total_fees || 0),
+      createdTime: match.created_time,
     };
   };
 
@@ -676,6 +717,7 @@ module.exports = {
   placeLimitBuy: defaultAdapter.placeLimitBuy,
   placeLimitSell: defaultAdapter.placeLimitSell,
   getOrder: defaultAdapter.getOrder,
+  findOrderByClientOrderId: defaultAdapter.findOrderByClientOrderId,
   getOpenOrders: defaultAdapter.getOpenOrders,
   cancelOrder: defaultAdapter.cancelOrder,
   getOrderFills: defaultAdapter.getOrderFills,

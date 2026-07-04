@@ -58,6 +58,68 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
 };
 
 /**
+ * Terminal exchange statuses that mean an order never became (or is no longer) a
+ * live/executed position. A reconciled order in one of these states is NOT
+ * adopted — it's treated as a clean failure, safe to re-place next cycle.
+ */
+const NON_ADOPTABLE_STATUSES = new Set(['CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED']);
+
+/**
+ * Place an order and, if the adapter reports an ambiguous 'unknown' outcome
+ * (order-POST network error that may have reached the matching engine — issue
+ * #199/#226), reconcile by client_order_id instead of treating it as a hard
+ * failure. If the exchange shows a live/filled order carrying the deterministic
+ * client_order_id we sent, adopt it (its orderId is real and must be tracked, or
+ * we double-spend by re-buying). Only a genuinely-absent (or terminally-failed)
+ * order is a true failure.
+ *
+ * A try/catch is unavoidable here: the adapter signals the unknown outcome by
+ * throwing (so it can never be mistaken for a clean success), so the caller must
+ * catch to reconcile. Non-unknown errors are re-thrown unchanged.
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @param {string} productId - Product ID (scopes the reconcile lookup)
+ * @param {() => Promise<BuyResult|SellOrder>} placeFn - Placement thunk
+ * @returns {Promise<BuyResult|SellOrder>} Placement result (possibly reconciled)
+ */
+const placeWithUnknownReconcile = async (adapter, productId, placeFn) => {
+  const placement = await placeFn().catch((err) => {
+    // Only the ambiguous order-POST outcome is reconcilable; anything else
+    // (validation errors, hard network failure on non-order POSTs) propagates.
+    if (err?.status === 'unknown' || err?.unknownOutcome === true) {
+      return { __unknownError: err };
+    }
+    throw err;
+  });
+
+  if (!placement?.__unknownError) {
+    return placement;
+  }
+
+  const err = placement.__unknownError;
+  const clientOrderId = err.clientOrderId;
+
+  // Can't reconcile without the id or a lookup capability — surface as a clean
+  // failure (the safe mode: no untracked position, engine re-buys next cycle).
+  if (!clientOrderId || typeof adapter.findOrderByClientOrderId !== 'function') {
+    log('ERROR', `❌ Unknown order outcome and cannot reconcile (clientOrderId=${clientOrderId ?? 'none'}) — treating as failed`);
+    return { success: false, errorMessage: err.message };
+  }
+
+  log('WARN', `⚠️ Unknown order outcome — reconciling by client_order_id ${clientOrderId}`);
+  const found = await adapter.findOrderByClientOrderId(clientOrderId, productId);
+
+  if (found && !NON_ADOPTABLE_STATUSES.has(found.status)) {
+    // The order DID reach the exchange — adopt it rather than re-place (which
+    // would double-spend against the already-executing order).
+    log('INFO', `✅ Reconciled unknown placement — adopting exchange order ${found.orderId} (status ${found.status})`);
+    return { orderId: found.orderId, clientOrderId, success: true, reconciled: true };
+  }
+
+  log('WARN', `❌ Unknown placement not found live on exchange (client_order_id ${clientOrderId}, status ${found?.status ?? 'absent'}) — treating as failed, safe to re-place next cycle`);
+  return { success: false, errorMessage: err.message };
+};
+
+/**
  * Execute a daily buy order
  * @param {ExchangeConfig} config - Configuration
  * @param {number} usdcAmount - Amount to spend in quote currency
@@ -69,8 +131,15 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
 
   log('INFO', `Placing market buy for ${usdcAmount} of ${config.productId}`);
 
-  // Place the market buy
-  const buyResult = await adapter.placeMarketBuy(config.productId, usdcAmount);
+  // Place the market buy. An ambiguous 'unknown' outcome (network error after
+  // the POST may have executed) is reconciled by client_order_id rather than
+  // re-placed — re-placing an order that actually filled is the double-spend
+  // this guards against (issue #226).
+  const buyResult = await placeWithUnknownReconcile(
+    adapter,
+    config.productId,
+    () => adapter.placeMarketBuy(config.productId, usdcAmount)
+  );
 
   if (!buyResult.success) {
     throw new Error(`Market buy failed: ${buyResult.errorMessage}`);
@@ -531,6 +600,7 @@ const checkFibonacciSellFill = async (orderId, adapter) => {
 
 module.exports = {
   executeDailyBuy,
+  placeWithUnknownReconcile,
   placeSellOrder,
   placeSellOrderWithRetry,
   checkFilledOrders,
