@@ -21,7 +21,7 @@
     "cli:debug": "node index.js debug",
     "admin:install": "cd admin && npm install",
     "install:all": "npm install && cd admin && npm install",
-    "test": "node --test 'tests/**/*.test.js'"
+    "test": "node --test --test-concurrency=1 'tests/**/*.test.js'"
   },
   "keywords": [
     "coinbase",
