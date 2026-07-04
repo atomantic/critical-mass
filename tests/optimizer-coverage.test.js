@@ -8,7 +8,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildResultRecord } = require('../src/optimizer-engine');
+const { buildResultRecord, compareOptimizerResults } = require('../src/optimizer-engine');
 
 const baseMetrics = () => ({
   totalValue: 10_500,
@@ -62,5 +62,34 @@ describe('#213B optimizer coverage labeling', () => {
     assert.equal(record.params.underCovered, false);
     assert.equal(record.params.actualIntervals, 30);
     assert.equal(record.params.coveragePct, 100);
+  });
+});
+
+describe('#213B follow-up — compareOptimizerResults ranks fully-covered ahead of under-covered', () => {
+  const makeRecord = (totalValue, underCovered) => ({
+    params: { underCovered },
+    metrics: { totalValue },
+  });
+
+  it('a lower-totalValue fully-covered result outranks a higher-totalValue under-covered one', () => {
+    const fullyCovered = makeRecord(10_000, false);
+    const underCovered = makeRecord(50_000, true); // higher totalValue, but the period silently truncated
+    const results = [underCovered, fullyCovered];
+    results.sort(compareOptimizerResults);
+
+    assert.equal(results[0], fullyCovered, 'a trustworthy result must never be crowned worse than a mislabeled one');
+    assert.equal(results[1], underCovered);
+  });
+
+  it('sorts by totalValue descending within the same coverage group', () => {
+    const results = [makeRecord(100, false), makeRecord(300, false), makeRecord(200, false)];
+    results.sort(compareOptimizerResults);
+    assert.deepEqual(results.map((r) => r.metrics.totalValue), [300, 200, 100]);
+  });
+
+  it('sorts under-covered results among themselves too, not just deprioritized wholesale', () => {
+    const results = [makeRecord(10, true), makeRecord(30, true), makeRecord(20, true)];
+    results.sort(compareOptimizerResults);
+    assert.deepEqual(results.map((r) => r.metrics.totalValue), [30, 20, 10]);
   });
 });

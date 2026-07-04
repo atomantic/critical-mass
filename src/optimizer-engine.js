@@ -181,6 +181,24 @@ const buildResultRecord = (currentParams, result) => {
 };
 
 /**
+ * Rank optimizer results for display/bestResult selection: every fully-covered
+ * result ranks ahead of an under-covered one, then by totalValue descending
+ * within each group. Without the underCovered split, a period whose backtest
+ * silently truncated to far fewer candles than requested (#213B) could still
+ * be crowned bestResult purely on totalValue — defeating the point of
+ * annotating coverage at all, since nothing would act on it before ranking.
+ * @param {Object} a - Result record (shape from buildResultRecord)
+ * @param {Object} b - Result record (shape from buildResultRecord)
+ * @returns {number} Sort comparator result
+ */
+const compareOptimizerResults = (a, b) => {
+  if (a.params.underCovered !== b.params.underCovered) {
+    return a.params.underCovered ? 1 : -1;
+  }
+  return b.metrics.totalValue - a.metrics.totalValue;
+};
+
+/**
  * Run a single backtest with given parameters
  * @param {Object} params - Backtest parameters
  * @param {Object} priceCache - Cached price data by interval type
@@ -324,8 +342,7 @@ const runOptimizer = async ({
     }
   }
 
-  // Sort by totalValue descending
-  results.sort((a, b) => b.metrics.totalValue - a.metrics.totalValue);
+  results.sort(compareOptimizerResults);
 
   const duration = Date.now() - startTime;
 
@@ -362,6 +379,7 @@ module.exports = {
   runOptimizer,
   getTopResults,
   buildResultRecord,
+  compareOptimizerResults,
   DEFAULT_INTERVALS,
   DEFAULT_BUY_AMOUNTS,
   DEFAULT_MARKUPS,
