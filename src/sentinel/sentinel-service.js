@@ -9,7 +9,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const { fetchAllFeeds } = require('./feed-poller');
-const { classifyByKeywords, classifyByAI } = require('./classifier');
+const { classifyByKeywords, classifyByAI, resolveSeverity } = require('./classifier');
 const { log } = require('../logger');
 const { tradeEvents } = require('../trade-events');
 
@@ -108,7 +108,9 @@ const createSentinelService = (io, deps) => {
       source: item.source,
       sourceUrl: item.link,
       category: aiResult?.category || 'unknown',
-      severity: aiResult?.severity || keywordResult.severity,
+      // The AI severity may only upgrade the keyword severity, never downgrade it, and
+      // an invalid/out-of-enum AI value is ignored entirely (issue #212F).
+      severity: resolveSeverity(keywordResult.severity, aiResult?.severity),
       summary: aiResult?.summary || item.description.slice(0, 200),
       suggestedAction: aiResult?.suggestedAction || null,
       matchedKeywords: keywordResult.matchedKeywords,

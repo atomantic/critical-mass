@@ -38,6 +38,13 @@ const createUpDownService = (io, deps) => {
     getCandles: (tf) => candleCache.getCandles('coinbase', tf),
   };
   const signalEngine = createSignalEngine(candleAdapter);
+  // Issue #212C: the scorecard's 60s sampler must NOT share prevIndicators with the
+  // live 5s cycle — createSignalEngine mutates prevIndicators on every computeSignals
+  // call for crossover detection (stoch/MACD), so two consumers sharing one engine
+  // instance race: whichever fires first "consumes" the crossover and the other sees
+  // stale (post-cross) state. A dedicated instance over the same read-only candle
+  // adapter gives the sampler its own crossover memory without affecting the live cycle.
+  const scorecardSignalEngine = createSignalEngine(candleAdapter);
   const scorecard = createScorecard({ io, lastPriceFn: () => lastPrice, contractFn: () => contract });
 
   const TICK_BUFFER_SIZE = 60;
@@ -177,9 +184,11 @@ const createUpDownService = (io, deps) => {
     // Get scorecard metrics for adaptive weights + horizon prediction
     const metrics = scorecard.getMetrics();
 
-    // Feature 7: Feed adaptive weights back to signal engine
+    // Feature 7: Feed adaptive weights back to signal engine (both instances stay
+    // in sync on weights — only crossover memory is intentionally kept separate).
     if (metrics.adaptiveWeights) {
       signalEngine.setIndicatorWeights(metrics.adaptiveWeights);
+      scorecardSignalEngine.setIndicatorWeights(metrics.adaptiveWeights);
     }
 
     // Feature 8: Pass scorecard metrics for horizon prediction.
@@ -298,8 +307,10 @@ const createUpDownService = (io, deps) => {
       lastPrice = candles1m[candles1m.length - 1].close;
     }
 
-    // Start scorecard auto-sampling (every 60s) — awaits JSONL history hydration
-    await scorecard.start(() => signalEngine.computeSignals(contract.expiry, scorecard.getMetrics()));
+    // Start scorecard auto-sampling (every 60s) — awaits JSONL history hydration.
+    // Uses scorecardSignalEngine (issue #212C), a dedicated instance, so the sampler's
+    // reads don't advance the live cycle's crossover-detection memory.
+    await scorecard.start(() => scorecardSignalEngine.computeSignals(contract.expiry, scorecard.getMetrics()));
 
     log('INFO', '📊 UpDown service started interval=5s');
   };

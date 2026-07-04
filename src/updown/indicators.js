@@ -41,10 +41,11 @@ const emaFromValues = (values, period) => {
  * Calculate RSI using Wilder's smoothing method
  * @param {number[]} closes - Array of closing prices (oldest first)
  * @param {number} [period=14] - RSI period
- * @returns {number} RSI value 0-100 (0 if insufficient data)
+ * @returns {number|null} RSI value 0-100, or null if insufficient data (issue #212B —
+ *   callers must NOT treat null as 0; a bare 0 reads as extreme-oversold to the scorers)
  */
 const calculateRSI = (closes, period = 14) => {
-  if (!closes || closes.length < period + 1) return 0;
+  if (!closes || closes.length < period + 1) return null;
 
   let avgGain = 0;
   let avgLoss = 0;
@@ -67,6 +68,10 @@ const calculateRSI = (closes, period = 14) => {
     avgLoss = (avgLoss * (period - 1) + loss) / period;
   }
 
+  // A perfectly flat window (no gains AND no losses) is conventionally RSI=50
+  // (neutral), not RSI=100 — issue #212A. RSI=100 is reserved for "all gains,
+  // zero losses" (a real, if rare, all-up move).
+  if (avgGain === 0 && avgLoss === 0) return 50;
   if (avgLoss === 0) return 100;
   const rs = avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
@@ -150,11 +155,13 @@ const calculateMACD = (closes, fast = 12, slow = 26, signalPeriod = 9) => {
  * @param {number[]} closes - Array of closing prices (oldest first)
  * @param {number} [period=20] - SMA period
  * @param {number} [mult=2] - Standard deviation multiplier
- * @returns {{upper: number, middle: number, lower: number, percentB: number, bandwidth: number}} Zeros if insufficient data
+ * @returns {{upper: number, middle: number, lower: number, percentB: number|null, bandwidth: number}}
+ *   percentB is null if insufficient data (issue #212B — a bare 0 reads as
+ *   extreme-oversold to scoreBollinger, indistinguishable from a real reading)
  */
 const calculateBollingerBands = (closes, period = 20, mult = 2) => {
   if (!closes || closes.length < period) {
-    return { upper: 0, middle: 0, lower: 0, percentB: 0, bandwidth: 0 };
+    return { upper: 0, middle: 0, lower: 0, percentB: null, bandwidth: 0 };
   }
 
   // SMA of last `period` closes
@@ -199,7 +206,8 @@ const calculateRSISeries = (closes, period = 14) => {
   avgGain /= period;
   avgLoss /= period;
 
-  result[period] = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+  // Flat window (no gains AND no losses) → neutral 50, not 100 (issue #212A).
+  result[period] = (avgGain === 0 && avgLoss === 0) ? 50 : avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
 
   for (let i = period + 1; i < closes.length; i++) {
     const change = closes[i] - closes[i - 1];
@@ -207,7 +215,7 @@ const calculateRSISeries = (closes, period = 14) => {
     const loss = change < 0 ? Math.abs(change) : 0;
     avgGain = (avgGain * (period - 1) + gain) / period;
     avgLoss = (avgLoss * (period - 1) + loss) / period;
-    result[i] = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+    result[i] = (avgGain === 0 && avgLoss === 0) ? 50 : avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
   }
 
   return result;

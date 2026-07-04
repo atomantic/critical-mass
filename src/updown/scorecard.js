@@ -127,6 +127,102 @@ const appendRecord = async (record) => {
 }
 
 /**
+ * Evaluate if a directional prediction was correct.
+ * Requires a minimum price move (noise floor) to avoid counting 1-tick fluctuations.
+ * Pure/module-level so it can back both live evaluation and restart backfill (issue #212E).
+ * @param {'up' | 'down' | 'neutral'} direction
+ * @param {number} priceChangeBps
+ * @param {number} [windowMs=300000] - Evaluation window in ms (determines noise floor)
+ * @returns {boolean | null} null if neutral (skipped)
+ */
+const evaluateDirection = (direction, priceChangeBps, windowMs = 300000) => {
+  if (direction === 'neutral') return null
+  const noiseBps = EVAL_NOISE_FLOORS_BPS[windowMs] ?? 10
+  if (direction === 'up') return priceChangeBps > noiseBps
+  return priceChangeBps < -noiseBps
+}
+
+/**
+ * Build an outcome record for a prediction resolved against an exit price.
+ * Pure — no side effects (no persistence, no ring-buffer push, no emit). Shared by
+ * live evaluation (exitPrice from the live price feed) and restart backfill
+ * (exitPrice from historical JSONL records) so both paths score identically (issue #212E).
+ * @param {Object} prediction - Prediction record (live object or JSONL-hydrated)
+ * @param {number} windowMs
+ * @param {number} exitPrice
+ * @returns {Object} Outcome record
+ */
+const buildOutcomeRecord = (prediction, windowMs, exitPrice) => {
+  const priceChangeBps = ((exitPrice - prediction.price) / prediction.price) * 10000
+  const compositeCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs)
+
+  // Per-timeframe evaluation
+  const tfResults = {}
+  for (const tf of ALL_TFS) {
+    const tfData = prediction.timeframes?.[tf]
+    if (!tfData) continue
+    const direction = getDirection(tfData.score)
+    tfResults[tf] = {
+      direction,
+      correct: evaluateDirection(direction, priceChangeBps, windowMs),
+    }
+  }
+
+  // Per-indicator evaluation (across all timeframes)
+  const indicatorResults = {}
+  for (const ind of INDICATORS) {
+    let predictions = 0
+    let correct = 0
+    for (const tf of ALL_TFS) {
+      const tfData = prediction.timeframes?.[tf]
+      const indScore = tfData?.scores?.[ind]
+      if (indScore == null) continue
+      const direction = getDirection(indScore)
+      if (direction === 'neutral') continue
+      predictions++
+      if (evaluateDirection(direction, priceChangeBps, windowMs)) correct++
+    }
+    indicatorResults[ind] = {
+      predictions,
+      correct,
+      accuracy: predictions > 0 ? correct / predictions : null,
+    }
+  }
+
+  // Contract outcome evaluation — only on the LONGEST window (1h), which best
+  // represents the contract horizon. evaluateOutcome runs once per window
+  // (1m/5m/15m/1h), so emitting contractOutcome on every window made
+  // getMetrics count one prediction's contract result up to 4× (and it could
+  // score win at 5m yet loss at 1h for the same contract) (issue #108).
+  // Use Math.max (not [length-1]) so this stays correct if EVAL_WINDOWS is
+  // ever reordered — the longest window is the contract horizon regardless.
+  const isLongestWindow = windowMs === Math.max(...EVAL_WINDOWS)
+  const contractOutcome = (prediction.contract && isLongestWindow)
+    ? evaluateContractOutcome(prediction.contract, exitPrice)
+    : null
+
+  return {
+    type: 'outcome',
+    predictionId: prediction.id,
+    ts: new Date().toISOString(),
+    // predictionTs (issue #212D): byHour must bucket by the hour the PREDICTION was
+    // made, not the settlement/evaluation hour (`ts` above, up to 1h later) — the
+    // time-of-day multiplier in signal-engine.js applies byHour[predictionHour].
+    predictionTs: prediction.ts,
+    window: WINDOW_LABELS[windowMs],
+    entryPrice: prediction.price,
+    exitPrice,
+    priceChangeBps: Math.round(priceChangeBps * 100) / 100,
+    compositeScore: prediction.compositeScore ?? 0,
+    compositeDirection: prediction.compositeDirection,
+    compositeCorrect,
+    tfResults,
+    indicatorResults,
+    contractOutcome,
+  }
+}
+
+/**
  * Evaluate whether a contract's target or stop was hit
  * @param {{target: number, stop: number, direction: string}} contractSnapshot
  * @param {number} exitPrice
@@ -170,6 +266,108 @@ const tallyHistory = (records) => {
     }
   }
   return { outcomes, predCount, skipCount, totalPredictions: predCount - skipCount }
+}
+
+/**
+ * Find directional predictions from hydrated JSONL history that never received an
+ * outcome for one or more of EVAL_WINDOWS — orphaned by a process restart/crash
+ * (issue #212E). Predictions in flight at shutdown live only as `setTimeout` handles,
+ * which `stop()` clears; without this, they inflate `totalPredictions` forever while
+ * never contributing to `totalEvaluated`.
+ *
+ * Pure — no timers, no I/O. For each missing (prediction, window) pair:
+ *  - if the window's target time is still in the future, it's `pending` — the caller
+ *    should schedule a real timeout for the remaining time so live evaluation runs it
+ *    normally once reached;
+ *  - if the target time has already elapsed, it's `elapsed` — resolved here using the
+ *    earliest recorded price at/after the target time (built from other predictions'
+ *    `price` and outcomes' `exitPrice` in the same record set), falling back to the
+ *    latest known price if the outage extended past every later record. If no price
+ *    data exists at all, `exitPrice` is null and the caller should skip it (unsettleable).
+ *
+ * @param {Array<Object|null>} records - parsed JSONL records (predictions + outcomes), any order
+ * @param {number} now - current time (ms), injected for testability
+ * @returns {{
+ *   pending: Array<{prediction: Object, windowMs: number, remainingMs: number}>,
+ *   elapsed: Array<{prediction: Object, windowMs: number, targetTs: number, exitPrice: number|null}>
+ * }}
+ */
+const findUnsettledPredictions = (records, now) => {
+  const predictions = []
+  const priceTimeline = [] // {ts, price}, will be sorted ascending
+  const settledKeys = new Set() // `${predictionId}:${windowLabel}`
+
+  for (const record of records) {
+    if (!record) continue
+    if (record.type === 'prediction' && record.compositeDirection && record.compositeDirection !== 'neutral') {
+      const ts = Date.parse(record.ts)
+      if (Number.isNaN(ts)) continue
+      predictions.push({ ...record, _ts: ts })
+      if (record.price) priceTimeline.push({ ts, price: record.price })
+    } else if (record.type === 'outcome') {
+      if (record.predictionId && record.window) settledKeys.add(`${record.predictionId}:${record.window}`)
+      const ts = Date.parse(record.ts)
+      if (!Number.isNaN(ts) && record.exitPrice) priceTimeline.push({ ts, price: record.exitPrice })
+    }
+  }
+
+  priceTimeline.sort((a, b) => a.ts - b.ts)
+
+  const pending = []
+  const elapsed = []
+
+  for (const prediction of predictions) {
+    for (const windowMs of EVAL_WINDOWS) {
+      const label = WINDOW_LABELS[windowMs]
+      if (settledKeys.has(`${prediction.id}:${label}`)) continue
+
+      const targetTs = prediction._ts + windowMs
+      if (targetTs > now) {
+        pending.push({ prediction, windowMs, remainingMs: targetTs - now })
+        continue
+      }
+
+      let exitPrice = null
+      for (const p of priceTimeline) {
+        if (p.ts >= targetTs) { exitPrice = p.price; break }
+      }
+      if (exitPrice == null && priceTimeline.length > 0) {
+        exitPrice = priceTimeline[priceTimeline.length - 1].price
+      }
+      elapsed.push({ prediction, windowMs, targetTs, exitPrice })
+    }
+  }
+
+  return { pending, elapsed }
+}
+
+/**
+ * Compute per-UTC-hour accuracy (minimum 5 samples) from evaluated outcomes.
+ *
+ * Bucketed by PREDICTION hour, not settlement/evaluation hour (issue #212D) — Feature
+ * 11 in signal-engine.js applies `byHour[predictionHour]` as a time-of-day multiplier,
+ * so bucketing by the later settlement timestamp attributed every 1h-window outcome
+ * (and ~25% of 15m-window outcomes) to the wrong hour. Falls back to `o.ts` for outcome
+ * records persisted before `predictionTs` existed (backward compat with old JSONL).
+ *
+ * @param {Array<Object>} outcomes - Evaluated outcome records (ring buffer or hydrated JSONL)
+ * @returns {Record<number, {correct: number, total: number, accuracy: number|null}>}
+ */
+const computeByHour = (outcomes) => {
+  const byHour = {}
+  for (const o of outcomes) {
+    const bucketTs = o.predictionTs ?? o.ts
+    if (o.compositeCorrect == null || !bucketTs) continue
+    const hour = new Date(bucketTs).getUTCHours()
+    if (!byHour[hour]) byHour[hour] = { correct: 0, total: 0 }
+    byHour[hour].total++
+    if (o.compositeCorrect) byHour[hour].correct++
+  }
+  for (const h of Object.keys(byHour)) {
+    const d = byHour[h]
+    byHour[h].accuracy = d.total >= 5 ? Math.round(d.correct / d.total * 10000) / 100 : null
+  }
+  return byHour
 }
 
 /**
@@ -269,69 +467,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       return
     }
 
-    const priceChangeBps = ((exitPrice - prediction.price) / prediction.price) * 10000
-    const compositeCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs)
-
-    // Per-timeframe evaluation
-    const tfResults = {}
-    for (const tf of ALL_TFS) {
-      const tfData = prediction.timeframes[tf]
-      if (!tfData) continue
-      const direction = getDirection(tfData.score)
-      tfResults[tf] = {
-        direction,
-        correct: evaluateDirection(direction, priceChangeBps, windowMs),
-      }
-    }
-
-    // Per-indicator evaluation (across all timeframes)
-    const indicatorResults = {}
-    for (const ind of INDICATORS) {
-      let predictions = 0
-      let correct = 0
-      for (const tf of ALL_TFS) {
-        const tfData = prediction.timeframes[tf]
-        const indScore = tfData?.scores?.[ind]
-        if (indScore == null) continue
-        const direction = getDirection(indScore)
-        if (direction === 'neutral') continue
-        predictions++
-        if (evaluateDirection(direction, priceChangeBps, windowMs)) correct++
-      }
-      indicatorResults[ind] = {
-        predictions,
-        correct,
-        accuracy: predictions > 0 ? correct / predictions : null,
-      }
-    }
-
-    // Contract outcome evaluation — only on the LONGEST window (1h), which best
-    // represents the contract horizon. evaluateOutcome runs once per window
-    // (1m/5m/15m/1h), so emitting contractOutcome on every window made
-    // getMetrics count one prediction's contract result up to 4× (and it could
-    // score win at 5m yet loss at 1h for the same contract) (issue #108).
-    // Use Math.max (not [length-1]) so this stays correct if EVAL_WINDOWS is
-    // ever reordered — the longest window is the contract horizon regardless.
-    const isLongestWindow = windowMs === Math.max(...EVAL_WINDOWS)
-    const contractOutcome = (prediction.contract && isLongestWindow)
-      ? evaluateContractOutcome(prediction.contract, exitPrice)
-      : null
-
-    const outcome = {
-      type: 'outcome',
-      predictionId: prediction.id,
-      ts: new Date().toISOString(),
-      window: WINDOW_LABELS[windowMs],
-      entryPrice: prediction.price,
-      exitPrice,
-      priceChangeBps: Math.round(priceChangeBps * 100) / 100,
-      compositeScore: prediction.compositeScore ?? 0,
-      compositeDirection: prediction.compositeDirection,
-      compositeCorrect,
-      tfResults,
-      indicatorResults,
-      contractOutcome,
-    }
+    const outcome = buildOutcomeRecord(prediction, windowMs, exitPrice)
 
     // Persist to JSONL
     appendRecord(outcome).catch(() => {})
@@ -348,21 +484,6 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       lastEmitTs = now
       io.to('updown').emit('updown:scorecard', getMetrics())
     }
-  }
-
-  /**
-   * Evaluate if a directional prediction was correct.
-   * Requires a minimum price move (noise floor) to avoid counting 1-tick fluctuations.
-   * @param {'up' | 'down' | 'neutral'} direction
-   * @param {number} priceChangeBps
-   * @param {number} [windowMs=300000] - Evaluation window in ms (determines noise floor)
-   * @returns {boolean | null} null if neutral (skipped)
-   */
-  const evaluateDirection = (direction, priceChangeBps, windowMs = 300000) => {
-    if (direction === 'neutral') return null
-    const noiseBps = EVAL_NOISE_FLOORS_BPS[windowMs] ?? 10
-    if (direction === 'up') return priceChangeBps > noiseBps
-    return priceChangeBps < -noiseBps
   }
 
   /**
@@ -502,19 +623,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       }
     }
 
-    // By UTC hour accuracy (minimum 5 samples)
-    const byHour = {}
-    for (const o of outcomeBuffer) {
-      if (o.compositeCorrect == null || !o.ts) continue
-      const hour = new Date(o.ts).getUTCHours()
-      if (!byHour[hour]) byHour[hour] = { correct: 0, total: 0 }
-      byHour[hour].total++
-      if (o.compositeCorrect) byHour[hour].correct++
-    }
-    for (const h of Object.keys(byHour)) {
-      const d = byHour[h]
-      byHour[h].accuracy = d.total >= 5 ? Math.round(d.correct / d.total * 10000) / 100 : null
-    }
+    const byHour = computeByHour(outcomeBuffer)
 
     // Contract-aware accuracy
     const contractOutcomes = outcomeBuffer.filter(o => o.contractOutcome != null)
@@ -590,16 +699,53 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     let loaded = 0
     let predictions = 0
     let skipped = 0
+    /** @type {Array<Object|null>} All records across loaded files, for issue #212E backfill */
+    const allRecords = []
     for (const file of recentFiles) {
       const content = await readFile(path.join(SCORECARD_DIR, file), 'utf8').catch(() => '')
       const records = content.split('\n').filter(Boolean).map(line => {
         try { return JSON.parse(line) } catch { return null }
       })
+      allRecords.push(...records)
       const tally = tallyHistory(records)
       for (const outcome of tally.outcomes) outcomeBuffer.push(outcome)
       loaded += tally.outcomes.length
       predictions += tally.totalPredictions
       skipped += tally.skipCount
+    }
+
+    // Issue #212E: predictions in flight at shutdown are otherwise never settled —
+    // their evaluation lived only in a setTimeout that stop() cleared. Backfill
+    // windows that already elapsed against the best available recorded price, and
+    // reschedule real timers for windows still open so live evaluation picks them
+    // up normally.
+    const now = Date.now()
+    const { pending, elapsed } = findUnsettledPredictions(allRecords, now)
+
+    let backfilled = 0
+    for (const { prediction, windowMs, exitPrice } of elapsed) {
+      if (exitPrice == null) continue // no price data available at all — unsettleable
+      const outcome = buildOutcomeRecord(prediction, windowMs, exitPrice)
+      outcome.backfilled = true
+      appendRecord(outcome).catch(() => {})
+      outcomeBuffer.push(outcome)
+      backfilled++
+    }
+
+    for (const { prediction, windowMs, remainingMs } of pending) {
+      const timeout = setTimeout(() => {
+        pendingTimeouts.delete(timeout)
+        try {
+          evaluateOutcome(prediction, windowMs)
+        } catch (err) {
+          log('WARN', `📊 Scorecard backfill eval failed predId=${prediction.id} err=${err.message}`)
+        }
+      }, remainingMs)
+      pendingTimeouts.add(timeout)
+    }
+
+    if (backfilled > 0 || pending.length > 0) {
+      log('INFO', `📊 Scorecard restart recovery: backfilled=${backfilled} elapsed outcomes, rescheduled=${pending.length} pending windows`)
     }
 
     // Trim to buffer size
@@ -693,4 +839,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
   return { recordPrediction, getMetrics, start, stop }
 }
 
-module.exports = { createScorecard, computeAdaptiveWeights, evaluateContractOutcome, tallyHistory }
+module.exports = {
+  createScorecard,
+  computeAdaptiveWeights,
+  evaluateContractOutcome,
+  tallyHistory,
+  evaluateDirection,
+  buildOutcomeRecord,
+  findUnsettledPredictions,
+  computeByHour,
+}
