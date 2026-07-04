@@ -113,6 +113,19 @@ const createCoinbaseAdapter = (keysPath = null) => {
   };
 
   /**
+   * Whether this endpoint places a new order. A network error on one of these
+   * POSTs is the ambiguous case: the request may have reached the matching
+   * engine and executed, so it must NOT be blind-retried (the retry re-sends
+   * the same deterministic client_order_id → duplicate-rejected while the first
+   * order actually filled → untracked position + double-spend). See issue #199.
+   * batch_cancel is intentionally excluded — it is not order placement.
+   * @param {string} apiPath - API path (may include a query string)
+   * @returns {boolean}
+   */
+  const isOrderPlacementEndpoint = (apiPath) =>
+    apiPath.split('?')[0] === '/api/v3/brokerage/orders';
+
+  /**
    * Make authenticated request to Coinbase API with retry logic
    * @param {string} method - HTTP method
    * @param {string} apiPath - API path
@@ -164,12 +177,33 @@ const createCoinbaseAdapter = (keysPath = null) => {
         return response.json();
       }
 
-      // Check if we should retry
-      if (attempt < retries && isTransientNetworkError(lastError)) {
+      // Only retry idempotent GETs on a network error. A POST that
+      // network-errors may have already reached the matching engine, so a blind
+      // retry re-sends the same client_order_id and risks a double-place — the
+      // same reasoning the Gemini adapter documents (gemini/api.js: "Network
+      // errors are NOT retried"). Non-GET methods fall through to a terminal
+      // throw below. (429/other HTTP errors are handled by the !response.ok
+      // branch above and are never network-retried here.)
+      if (attempt < retries && method === 'GET' && isTransientNetworkError(lastError)) {
         const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
         console.log(`⚠️ [coinbase] Network error on ${method} ${apiPath.split('?')[0]}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
+      }
+
+      // Order-placement POST that network-errored: the outcome is UNKNOWN — the
+      // order may have executed on the exchange. Surface a distinct status so
+      // the caller can reconcile against the exchange (query by
+      // client_order_id) instead of blind-retrying or assuming a clean failure
+      // and re-buying. See issue #199.
+      if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
+        const unknownError = new Error(
+          `Coinbase API unknown order outcome on ${method} ${apiPath.split('?')[0]}: ${lastError.message} — order may have reached the matching engine; reconcile by client_order_id before re-placing`
+        );
+        unknownError.status = 'unknown';
+        unknownError.unknownOutcome = true;
+        unknownError.endpoint = `${method} ${apiPath}`;
+        throw unknownError;
       }
 
       // Non-retryable error or out of retries
