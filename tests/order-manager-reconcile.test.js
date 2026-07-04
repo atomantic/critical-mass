@@ -237,4 +237,42 @@ describe('placeWithUnknownReconcile — helper contract (issue #226)', () => {
     assert.equal(res.success, false);
     assert.equal(lookups, 0, 'no lookup is possible without a client_order_id');
   });
+
+  it('retries the lookup with backoff before adopting (issue #226 follow-up — eventual consistency)', async () => {
+    // The exchange's order-history endpoint can be briefly eventually-consistent
+    // right after the network error that produced the unknown outcome — a
+    // single immediate lookup risks declaring a real order absent and letting
+    // a caller re-place it (double exposure) purely because the lookup raced
+    // ahead of propagation.
+    let lookups = 0;
+    const adapter = {
+      findOrderByClientOrderId: async () => {
+        lookups++;
+        return lookups < 3 ? null : { orderId: 'real-eventual-1', status: 'OPEN' };
+      },
+    };
+
+    const res = await placeWithUnknownReconcile(
+      adapter, 'BTC-USDC', async () => { throw unknownError('coid-eventual-1'); },
+      [10, 10] // short overrides so the test doesn't wait through production backoff
+    );
+
+    assert.equal(lookups, 3, 'retried until the order became visible');
+    assert.equal(res.success, true);
+    assert.equal(res.reconciled, true);
+    assert.equal(res.orderId, 'real-eventual-1');
+  });
+
+  it('gives up as a clean failure once retries are exhausted', async () => {
+    let lookups = 0;
+    const adapter = { findOrderByClientOrderId: async () => { lookups++; return null; } };
+
+    const res = await placeWithUnknownReconcile(
+      adapter, 'BTC-USDC', async () => { throw unknownError('coid-eventual-2'); },
+      [10, 10]
+    );
+
+    assert.equal(lookups, 3, 'one initial attempt plus 2 retries, matching retryDelaysMs.length');
+    assert.equal(res.success, false);
+  });
 });

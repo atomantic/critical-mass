@@ -96,12 +96,26 @@ const NON_ADOPTABLE_STATUSES = new Set(['CANCELLED', 'EXPIRED', 'FAILED', 'REJEC
  * A try/catch is unavoidable here: the adapter signals the unknown outcome by
  * throwing (so it can never be mistaken for a clean success), so the caller must
  * catch to reconcile. Non-unknown errors are re-thrown unchanged.
+ *
+ * The reconcile lookup retries with backoff (default 500ms/1s) if the first
+ * attempt comes back empty — the exchange's order-history endpoint can be
+ * briefly eventually-consistent right after the network error that produced
+ * the unknown outcome, and declaring a real order absent too early lets a
+ * caller re-place it against one that may still land (double exposure).
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @param {string} productId - Product ID (scopes the reconcile lookup)
  * @param {() => Promise<BuyResult|SellOrder>} placeFn - Placement thunk
+ * @param {number[]} [retryDelaysMs] - Backoff (ms) between reconcile-lookup attempts; pass `[]` for a single immediate attempt (e.g. in tests)
  * @returns {Promise<BuyResult|SellOrder>} Placement result (possibly reconciled)
  */
-const placeWithUnknownReconcile = async (adapter, productId, placeFn) => {
+// Backoff between reconcile-lookup attempts when the first comes back empty —
+// the exchange's order-history endpoint can be briefly eventually-consistent
+// right after a network error on the placement POST, so a single immediate
+// lookup risks declaring a real order absent and letting a caller re-place it
+// (double exposure) purely because the lookup raced ahead of propagation.
+const RECONCILE_RETRY_DELAYS_MS = [500, 1000];
+
+const placeWithUnknownReconcile = async (adapter, productId, placeFn, retryDelaysMs = RECONCILE_RETRY_DELAYS_MS) => {
   const placement = await placeFn().catch((err) => {
     // Only the ambiguous order-POST outcome is reconcilable; anything else
     // (validation errors, hard network failure on non-order POSTs) propagates.
@@ -126,7 +140,12 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn) => {
   }
 
   log('WARN', `⚠️ Unknown order outcome — reconciling by client_order_id ${clientOrderId}`);
-  const found = await adapter.findOrderByClientOrderId(clientOrderId, productId);
+  let found = null;
+  for (let attempt = 0; ; attempt++) {
+    found = await adapter.findOrderByClientOrderId(clientOrderId, productId);
+    if (found || attempt >= retryDelaysMs.length) break;
+    await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
+  }
 
   if (found && !NON_ADOPTABLE_STATUSES.has(found.status)) {
     // The order DID reach the exchange — adopt it rather than re-place (which
