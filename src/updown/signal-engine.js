@@ -41,7 +41,7 @@ const WARNING_ZONE_MS = 8 * 60 * 60 * 1000;
 
 /**
  * Score RSI indicator (-100 to +100)
- * @param {number} rsi
+ * @param {number|null} rsi - null when insufficient data (issue #212B)
  * @returns {number}
  */
 const scoreRSI = (rsi, trendBias = 'neutral') => {
@@ -144,7 +144,7 @@ const scoreMACD = (macd, prevMacd, trendBias = 'neutral') => {
 
 /**
  * Score Bollinger %B indicator (-100 to +100)
- * @param {number} percentB
+ * @param {number|null} percentB - null when insufficient data (issue #212B)
  * @returns {number}
  */
 const scoreBollinger = (percentB, trendBias = 'neutral') => {
@@ -204,12 +204,12 @@ const scoreVWAP = (price, vwap, atr, trendBias = 'neutral') => {
 /**
  * Score momentum (-100 to +100) — legacy, kept for reference
  * @param {{magnitude: number, direction: string}} momentum
- * @param {number} rsi - RSI value for context (oversold condition)
+ * @param {number|null} rsi - RSI value for context (oversold condition); null when insufficient data
  * @returns {number}
  */
 const scoreMomentum = (momentum, rsi) => {
   if (!momentum || momentum.magnitude === 0) return 0;
-  if (momentum.direction === 'up' && rsi < 35) return 60;
+  if (momentum.direction === 'up' && rsi != null && rsi < 35) return 60;
   if (momentum.direction === 'up') return 30;
   if (momentum.direction === 'down') return -60;
   return 0;
@@ -220,7 +220,8 @@ const scoreMomentum = (momentum, rsi) => {
 /**
  * Score momentum acceleration (-100 to +100)
  * @param {{roc3: number, roc10: number, acceleration: string, magnitude: number, direction: string}} momentum
- * @param {number} rsi - RSI value for context
+ * @param {number|null} rsi - RSI value for context; null when insufficient data (issue #212B —
+ *   must not be treated as 0, which would coerce truthy in `rsi < 35` and read as oversold)
  * @returns {number}
  */
 const scoreMomentumAcceleration = (momentum, rsi, trendBias = 'neutral') => {
@@ -233,8 +234,10 @@ const scoreMomentumAcceleration = (momentum, rsi, trendBias = 'neutral') => {
   else if (momentum.acceleration === 'fading') base *= 0.5;
 
   if (trendBias === 'neutral') {
-    // Original RSI context bonus: oversold+up or overbought+down (contrarian)
-    if ((rsi < 35 && momentum.direction === 'up') || (rsi > 65 && momentum.direction === 'down')) {
+    // Original RSI context bonus: oversold+up or overbought+down (contrarian).
+    // rsi != null guard is required: null coerces to 0 in `<`/`>` comparisons,
+    // which would otherwise read insufficient data as "oversold" (issue #212B).
+    if (rsi != null && ((rsi < 35 && momentum.direction === 'up') || (rsi > 65 && momentum.direction === 'down'))) {
       base *= 1.5;
     }
   } else {
