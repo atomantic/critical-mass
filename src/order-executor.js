@@ -13,6 +13,7 @@ const { roundAsset, roundPrice } = require('./volatility-utils');
 const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, isFilledStatus } = require('./shared-utils');
+const { placeWithUnknownReconcile } = require('./order-manager');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -249,7 +250,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     console.log(`📝 [${exchange}] Placing entry bid: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
 
-    const result = await adapter.placeLimitBuy(productId, assetQty, bidPrice, { postOnly: true });
+    // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
+    // follow-up) instead of treating a network error as a clean failure — a
+    // real entry bid may have reached the exchange despite it.
+    const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitBuy(productId, assetQty, bidPrice, { postOnly: true }));
 
     if (result.success) {
       console.log(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)}`);
@@ -404,13 +408,16 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       let result;
       try {
-        result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice);
+        // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue
+        // #226 follow-up) instead of treating a network error as a clean
+        // failure — a real TP sell may have reached the exchange despite it.
+        result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, roundedQty, roundedPrice));
       } catch (err) {
         // POST_ONLY_REJ means TP price is below current bid — price already passed TP level.
         // Retry without POST_ONLY so the order fills immediately as a taker.
         if (err.message && err.message.includes('POST_ONLY_REJ')) {
           console.log(`⚡ [${exchange}] TP price ${fmtPrice(roundedPrice)} below bid — retrying as taker order`);
-          result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
+          result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }));
         } else {
           throw err;
         }
@@ -726,7 +733,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const { assetQty, price, type } = newOrderParams;
 
     if (type === 'entry') {
-      const result = await adapter.placeLimitBuy(productId, assetQty, price, { postOnly: true });
+      // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue
+      // #226 follow-up) instead of treating a network error as a clean
+      // failure — a real replacement order may have reached the exchange.
+      const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitBuy(productId, assetQty, price, { postOnly: true }));
       if (result.success) {
         pendingOrders.set(result.orderId, {
           type: 'entry',
@@ -738,7 +748,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         return { success: true, newOrderId: result.orderId };
       }
     } else {
-      const result = await adapter.placeLimitSell(productId, assetQty, price);
+      const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, assetQty, price));
       if (result.success) {
         activeTpOrderId = result.orderId;
         lastTpPrice = price;
@@ -1020,8 +1030,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
       console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
 
-      // Body TPs should not use post_only — when market reaches TP price, the order must fill
-      const result = await adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false });
+      // Body TPs should not use post_only — when market reaches TP price, the order must fill.
+      // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
+      // follow-up) instead of treating a network error as a clean failure.
+      const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }));
 
       if (result.success) {
         console.log(`✅ [${exchange}] Body TP placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
@@ -1188,7 +1200,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     let failedCount = 0;
 
     for (const level of levels) {
-      const result = await adapter.placeLimitBuy(productId, level.assetQty, level.price, { postOnly: true }).catch(err => {
+      // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue
+      // #226 follow-up) instead of treating a network error as a clean
+      // failure — a real ladder entry may have reached the exchange despite it.
+      const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitBuy(productId, level.assetQty, level.price, { postOnly: true })).catch(err => {
         console.log(`⚠️ [${exchange}] Error placing ladder order at $${level.price}: ${err.message}`);
         return { success: false, errorMessage: err.message };
       });

@@ -86,6 +86,47 @@ describe('executeDailyBuy — unknown-outcome reconciliation (issue #226)', () =
   });
 });
 
+describe('executeDailyBuy — records a partial IOC fill instead of discarding it (issue #208A follow-up)', () => {
+  it('records the fill when the order is CANCELLED but filledSize > 0 (Gemini partial-IOC)', async () => {
+    // Gemini's IOC market buy reports success with a real filledSize when the
+    // remainder is cancelled after a partial execution — but a subsequent
+    // getOrder() poll on that SAME order reports status CANCELLED (matching
+    // the terminal exchange state). The old poll blindly threw on any
+    // CANCELLED status, discarding a fill that already moved funds.
+    const adapter = {
+      placeMarketBuy: async () => ({
+        orderId: 'gem-1', clientOrderId: 'coid-gem-1', success: true,
+        filledSize: 0.006, filledPrice: 50500,
+      }),
+      getOrder: async () => ({
+        orderId: 'gem-1', status: 'CANCELLED',
+        filledSize: 0.006, filledValue: 303, averageFilledPrice: 50500,
+      }),
+      getOrderFillSummary: async () => ({ totalFees: 0.3, totalRebates: 0, netFees: 0.3, fills: [{ size: 0.006 }] }),
+    };
+
+    const result = await executeDailyBuy({ productId: 'BTC-USD', holdbackPercent: 20 }, 300, adapter);
+
+    assert.equal(result.assetAmount, 0.006, 'the partial fill must be recorded, not discarded');
+    assert.equal(result.usdcAmount, 303);
+    assert.equal(result.price, 50500);
+    assert.ok(Math.abs(result.actualCost - (303 + 0.3)) < 1e-9);
+  });
+
+  it('still throws when a CANCELLED order truly has zero fill (no money moved)', async () => {
+    const adapter = {
+      placeMarketBuy: async () => ({ orderId: 'gem-2', clientOrderId: 'coid-gem-2', success: true, filledSize: 0, filledPrice: 0 }),
+      getOrder: async () => ({ orderId: 'gem-2', status: 'CANCELLED', filledSize: 0, filledValue: 0, averageFilledPrice: 0 }),
+      getOrderFillSummary: async () => ({ totalFees: 0, totalRebates: 0, netFees: 0, fills: [] }),
+    };
+
+    await assert.rejects(
+      () => executeDailyBuy({ productId: 'BTC-USD', holdbackPercent: 20 }, 300, adapter),
+      /was CANCELLED/
+    );
+  });
+});
+
 describe('sell placement — unknown-outcome reconciliation (issue #226 sell-side follow-up)', () => {
   it('placeSellOrder adopts a reconciled order and fills in the requested size/price', async () => {
     let placeCalls = 0;

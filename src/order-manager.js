@@ -48,6 +48,26 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
     }
 
     if (order.status === 'CANCELLED' || order.status === 'EXPIRED') {
+      // A cancelled/expired order can still carry a real partial fill — e.g.
+      // Gemini's IOC market buy reports CANCELLED once the unfilled remainder
+      // is cancelled, but order.filledSize/filledValue reflect what actually
+      // executed. Funds moved, so record the fill instead of throwing it away
+      // as a "money moved, engine recorded nothing" leak (issue #208A follow-up).
+      if (order.filledSize > 0) {
+        const fillSummary = await adapter.getOrderFillSummary(orderId);
+        return {
+          orderId,
+          price: order.averageFilledPrice,
+          assetAmount: order.filledSize,
+          usdcAmount: order.filledValue,
+          fees: fillSummary.totalFees,
+          rebates: fillSummary.totalRebates,
+          netFees: fillSummary.netFees,
+          actualCost: order.filledValue + fillSummary.netFees,
+          status: order.status,
+          fills: fillSummary.fills,
+        };
+      }
       throw new Error(`Buy order ${orderId} was ${order.status}`);
     }
 

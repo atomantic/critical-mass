@@ -387,3 +387,99 @@ describe('safeCancelOrder — surfaces cancelled-with-partials filledSize (issue
     assert.equal(result.filledSize, 0.004, 'falls back to the tracked high-water mark when status omits it');
   });
 });
+
+describe('order-executor placement paths — unknown-outcome reconciliation (issue #226 follow-up)', () => {
+  // Coinbase throws this exact shape when a placement POST network-errors
+  // after possibly reaching the exchange (src/adapters/coinbase/api.js).
+  const unknownError = (clientOrderId) =>
+    Object.assign(new Error('unknown order outcome'), { status: 'unknown', unknownOutcome: true, clientOrderId });
+
+  const configFor = (over = {}) => ({
+    entryOffsetBps: 10,
+    entryMaxRetries: 3,
+    tpUpdateThresholdPct: 0.5,
+    orderStaleMs: 30000,
+    cancelRateLimitMs: 0,
+    maxOpenOrders: 20,
+    ...over,
+  });
+
+  it('placeEntryBid adopts a reconciled order instead of retrying into a double-place', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      placeLimitBuy: async () => { placeCalls++; throw unknownError('coid-entry-1'); },
+      findOrderByClientOrderId: async () => ({ orderId: 'real-entry-1', status: 'OPEN' }),
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0 }), // immediate-cancel verify check
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const result = await exec.placeEntryBid(1000, 100_000, 100_010);
+
+    assert.equal(placeCalls, 1, 'must NOT re-place a possibly-executed entry bid');
+    assert.equal(result.success, true);
+    assert.equal(result.orderId, 'real-entry-1');
+  });
+
+  it('placeTakeProfitOrder adopts a reconciled order', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      placeLimitSell: async () => { placeCalls++; throw unknownError('coid-tp-1'); },
+      findOrderByClientOrderId: async () => ({ orderId: 'real-tp-1', status: 'OPEN' }),
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const result = await exec.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true });
+
+    assert.equal(placeCalls, 1);
+    assert.equal(result.success, true);
+    assert.equal(result.orderId, 'real-tp-1');
+  });
+
+  it('placeBodyTpOrder adopts a reconciled order', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      placeLimitSell: async () => { placeCalls++; throw unknownError('coid-body-1'); },
+      findOrderByClientOrderId: async () => ({ orderId: 'real-body-1', status: 'OPEN' }),
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const result = await exec.placeBodyTpOrder(0.01, 55000, 'body-x');
+
+    assert.equal(placeCalls, 1);
+    assert.equal(result.success, true);
+    assert.equal(result.orderId, 'real-body-1');
+  });
+
+  it('placeLadderOrders adopts a reconciled order for a ladder level', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      placeLimitBuy: async () => { placeCalls++; throw unknownError('coid-ladder-1'); },
+      findOrderByClientOrderId: async () => ({ orderId: 'real-ladder-1', status: 'OPEN' }),
+      getOrder: async () => ({ status: 'OPEN' }), // ladder's own immediate-cancel verify check
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const { orders, failedCount } = await exec.placeLadderOrders([
+      { index: 0, price: 90000, sizeUsdc: 900, assetQty: 0.01 },
+    ]);
+
+    assert.equal(placeCalls, 1);
+    assert.equal(failedCount, 0, 'a reconciled placement must not count as a failed ladder level');
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].orderId, 'real-ladder-1');
+  });
+
+  it('a genuinely-failed (non-reconcilable) unknown placement is reported as a clean failure, not blindly retried', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      placeLimitSell: async () => { placeCalls++; throw unknownError('coid-tp-2'); },
+      findOrderByClientOrderId: async () => null, // never landed on the exchange
+    };
+    const exec = createOrderExecutor('coinbase', configFor(), adapter, 'BTC-USDC');
+
+    const result = await exec.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true });
+
+    assert.equal(placeCalls, 1, 'placement attempted exactly once, never blind-retried');
+    assert.equal(result.success, false);
+  });
+});
