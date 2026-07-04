@@ -271,6 +271,9 @@ const createInitialMarketState = () => ({
   vwapDistance: 0,
   recentSwing: 0,
   tradeImbalance: 0,
+  // 24h rolling volume from the ticker feed — consumed by the candle cache's
+  // volume-delta logic (server.js). Without this it was always 0 (issue #202).
+  volume24h: 0,
   momentum: { magnitude: 0, direction: 'neutral' },
   trades: [],
   lastUpdate: 0,
@@ -2169,6 +2172,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     marketState.bid = data.bid;
     marketState.ask = data.ask;
     marketState.spread = data.ask - data.bid;
+    // Carry 24h rolling volume through to the candle cache (issue #202). WS feeds
+    // emit it; nullish-coalesce so a feed without it keeps the prior value.
+    marketState.volume24h = data.volume24h ?? marketState.volume24h;
     marketState.lastUpdate = Date.now();
 
     healthMonitor.recordTickerUpdate();

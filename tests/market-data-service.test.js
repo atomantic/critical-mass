@@ -2109,3 +2109,26 @@ describe('updateMetrics + regime classification (issue #102)', () => {
     assert.equal(svc._test.marketState.lastPrice, 100, 'ticker still updates price');
   });
 });
+
+// ---------------------------------------------------------------------------
+// volume24h carried from ticker into marketState (issue #202)
+// ---------------------------------------------------------------------------
+describe('handleTicker carries volume24h into marketState (issue #202)', () => {
+  it('initial marketState has a volume24h field defaulting to 0', () => {
+    const svc = createMarketDataService('coinbase');
+    assert.equal(svc._test.marketState.volume24h, 0);
+  });
+
+  it('copies data.volume24h from the ticker into marketState', () => {
+    const svc = createMarketDataService('coinbase');
+    svc._test.handleTicker({ price: 100, bid: 99.9, ask: 100.1, volume24h: 12345.67 });
+    assert.equal(svc._test.marketState.volume24h, 12345.67, 'ticker volume24h must reach marketState');
+  });
+
+  it('keeps the prior volume24h when a tick omits it', () => {
+    const svc = createMarketDataService('coinbase');
+    svc._test.handleTicker({ price: 100, bid: 99.9, ask: 100.1, volume24h: 500 });
+    svc._test.handleTicker({ price: 101, bid: 100.9, ask: 101.1 }); // no volume24h
+    assert.equal(svc._test.marketState.volume24h, 500, 'missing volume24h must not zero the prior value');
+  });
+});
