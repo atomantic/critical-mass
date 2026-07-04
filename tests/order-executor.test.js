@@ -322,3 +322,68 @@ describe('getPendingCounts — ladder_entry visibility (issue #107 M5)', () => {
     assert.equal(counts.ladderEntries, 0);
   });
 });
+
+describe('safeCancelOrder — surfaces cancelled-with-partials filledSize (issue #227)', () => {
+  // safeCancelOrder is internal; exercise it via cancelBodyTpOrder / cancelTpOrder.
+  // The `cancelOrder` returns {success:false} + `getOrder` reporting a terminal
+  // CANCELLED status takes the fast reject-path branch (no poll timers).
+  const makeCancelAdapter = (getOrderResult) => ({
+    cancelOrder: async () => ({ success: false }),
+    getOrder: async () => getOrderResult,
+    placeLimitBuy: async () => { throw new Error('placeLimitBuy should not be called'); },
+    placeLimitSell: async () => { throw new Error('placeLimitSell should not be called'); },
+    getOrderFills: async () => [],
+  });
+
+  it('cancelBodyTpOrder surfaces the partial sold qty on a cancelled-with-partials TP', async () => {
+    const adapter = makeCancelAdapter({ status: 'CANCELLED', filledSize: 0.003, side: 'SELL' });
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+    exec.restoreBodyTpOrder('body-1', 'tp-1', 0.01, 51000);
+
+    const result = await exec.cancelBodyTpOrder('body-1', 'tp-1');
+
+    assert.equal(result.cancelled, true, 'a partially-filled-then-cancelled order still reports cancelled');
+    assert.equal(result.filled, false);
+    assert.equal(result.filledSize, 0.003, 'the sold quantity is surfaced directly');
+  });
+
+  it('cancelBodyTpOrder reports filledSize 0 on a clean cancel (guard is specific)', async () => {
+    const adapter = makeCancelAdapter({ status: 'CANCELLED', filledSize: 0, side: 'SELL' });
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+    exec.restoreBodyTpOrder('body-2', 'tp-2', 0.01, 51000);
+
+    const result = await exec.cancelBodyTpOrder('body-2', 'tp-2');
+
+    assert.equal(result.cancelled, true);
+    assert.equal(result.filledSize, 0, 'a clean cancel surfaces no partial');
+  });
+
+  it('cancelBodyTpOrder falls back to the partialFillTracker high-water mark', async () => {
+    // Gemini can jump PARTIALLY_FILLED → CANCELLED with the cancel-status
+    // response omitting the cumulative filledSize. A prior fill-check poll set
+    // the tracker; safeCancelOrder must fall back to it.
+    let call = 0;
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => {
+        call++;
+        // First call: the fill-check poll observes a partial (seeds the tracker).
+        // Second call: the cancel's status read reports CANCELLED with no size.
+        return call === 1
+          ? { status: 'PARTIALLY_FILLED', filledSize: 0.004, completionPercentage: 40, side: 'SELL' }
+          : { status: 'CANCELLED', filledSize: 0, side: 'SELL' };
+      },
+      placeLimitBuy: async () => { throw new Error('nope'); },
+      placeLimitSell: async () => { throw new Error('nope'); },
+      getOrderFills: async () => [],
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {});
+    exec.restoreBodyTpOrder('body-3', 'tp-3', 0.02, 2400);
+
+    await exec.checkPendingOrderFills(); // seeds partialFillTracker via the partial poll
+    const result = await exec.cancelBodyTpOrder('body-3', 'tp-3');
+
+    assert.equal(result.cancelled, true);
+    assert.equal(result.filledSize, 0.004, 'falls back to the tracked high-water mark when status omits it');
+  });
+});

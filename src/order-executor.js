@@ -112,14 +112,29 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    *
    * Total wait budget when ack'd: ~5.5s (verifyDelayMs + 5 × pollDelayMs).
    *
+   * `filledSize` is additive (issue #227): callers that need the exact sold
+   * quantity of a cancelled-with-partials or filled-during-cancel order can read
+   * it directly instead of re-deriving it via a separate `getOrder`. It is 0 on
+   * a clean cancel / failure and resolved from the terminal status, falling back
+   * to `partialFillTracker`'s high-water mark when the cancel-status response
+   * omits the cumulative filled size (e.g. Gemini PARTIALLY_FILLED → CANCELLED).
+   *
    * @param {string} orderId - Order ID to cancel
-   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
+   * @returns {Promise<{cancelled: boolean, filled: boolean, filledSize: number}>}
    */
   const safeCancelOrder = async (orderId) => {
     const maxAckRetries = 2;
     const verifyDelayMs = 500;
     const pollDelayMs = 1000;
     const maxPollAttempts = 6;
+
+    // Resolve the terminal filled quantity: prefer the status' own filledSize,
+    // fall back to the last-known partial high-water mark for this order.
+    const resolveFilledSize = (status) => {
+      const fromStatus = parseFloat(status?.filledSize);
+      if (Number.isFinite(fromStatus) && fromStatus > 0) return fromStatus;
+      return partialFillTracker.get(orderId) || 0;
+    };
 
     for (let attempt = 0; attempt <= maxAckRetries; attempt++) {
       const result = await adapter.cancelOrder(orderId);
@@ -129,10 +144,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const status = await adapter.getOrder(orderId).catch(() => null);
         if (isFilledStatus(status)) {
           console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
-          return { cancelled: false, filled: true };
+          return { cancelled: false, filled: true, filledSize: resolveFilledSize(status) };
         }
         if (status && status.status === 'CANCELLED') {
-          return { cancelled: true, filled: false };
+          return { cancelled: true, filled: false, filledSize: resolveFilledSize(status) };
         }
         if (attempt < maxAckRetries) {
           console.log(`⚠️ [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} (status=${status?.status || 'unknown'}) — retrying (${attempt + 1}/${maxAckRetries})`);
@@ -140,7 +155,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           continue;
         }
         console.log(`🚨 [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} after ${maxAckRetries} retries, status=${status?.status || 'unknown'}`);
-        return { cancelled: false, filled: false };
+        return { cancelled: false, filled: false, filledSize: 0 };
       }
 
       // Cancel ack'd — poll for the status to actually settle. Do NOT re-cancel.
@@ -149,20 +164,24 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const verified = await adapter.getOrder(orderId).catch(() => null);
 
         if (verified?.status === 'CANCELLED') {
-          return { cancelled: true, filled: false };
+          const filledSize = resolveFilledSize(verified);
+          if (filledSize > 0) {
+            console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} cancelled with ${filledSize} partial fill`);
+          }
+          return { cancelled: true, filled: false, filledSize };
         }
         if (isFilledStatus(verified)) {
           console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
-          return { cancelled: false, filled: true };
+          return { cancelled: false, filled: true, filledSize: resolveFilledSize(verified) };
         }
         // status OPEN, PENDING_CANCEL, null (fetch error), or unknown — keep polling
       }
 
       console.log(`🚨 [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} never reported CANCELLED after ${maxPollAttempts} polls`);
-      return { cancelled: false, filled: false };
+      return { cancelled: false, filled: false, filledSize: 0 };
     }
 
-    return { cancelled: false, filled: false };
+    return { cancelled: false, filled: false, filledSize: 0 };
   };
 
   /**
@@ -381,10 +400,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Cancel take-profit order using safeCancelOrder to detect in-flight fills
-   * @returns {Promise<{cancelled: boolean, filled: boolean, filledOrderId?: string}>}
+   * @returns {Promise<{cancelled: boolean, filled: boolean, filledSize: number, filledOrderId?: string}>}
    */
   const cancelTpOrder = async () => {
-    if (!activeTpOrderId) return { cancelled: true, filled: false };
+    if (!activeTpOrderId) return { cancelled: true, filled: false, filledSize: 0 };
 
     const orderToCancel = activeTpOrderId;
     const result = await safeCancelOrder(orderToCancel);
@@ -394,7 +413,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       pendingOrders.delete(orderToCancel);
       activeTpOrderId = null;
       lastTpSize = 0;
-      return { cancelled: true, filled: false };
+      return { cancelled: true, filled: false, filledSize: result.filledSize || 0 };
     }
 
     if (result.filled) {
@@ -402,11 +421,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       pendingOrders.delete(orderToCancel);
       activeTpOrderId = null;
       lastTpSize = 0;
-      return { cancelled: false, filled: true, filledOrderId: orderToCancel };
+      return { cancelled: false, filled: true, filledSize: result.filledSize || 0, filledOrderId: orderToCancel };
     }
 
     console.log(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: unknown state`);
-    return { cancelled: false, filled: false };
+    return { cancelled: false, filled: false, filledSize: 0 };
   };
 
   /**
@@ -973,7 +992,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * Cancel a specific body TP order
    * @param {string} bodyId - Celestial body ID
    * @param {string} [fallbackOrderId] - Order ID to cancel if body isn't in executor tracking
-   * @returns {Promise<{cancelled: boolean, filled: boolean}>}
+   * @returns {Promise<{cancelled: boolean, filled: boolean, filledSize: number}>}
    */
   const cancelBodyTpOrder = async (bodyId, fallbackOrderId) => {
     const body = bodyTpOrders.get(bodyId);
@@ -981,7 +1000,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     if (!orderToCancel) {
       // No tracking AND no fallback — nothing to cancel
-      return { cancelled: true, filled: false };
+      return { cancelled: true, filled: false, filledSize: 0 };
     }
 
     if (!body && fallbackOrderId) {
@@ -993,15 +1012,17 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       pendingOrders.delete(orderToCancel);
       tpOrderToKey.delete(orderToCancel);
       bodyTpOrders.delete(bodyId);
-      return { cancelled: true, filled: false };
+      // filledSize > 0 here means the TP partially filled during the cancel —
+      // surfaced (issue #227) so the merge path can react to the sold tranche.
+      return { cancelled: true, filled: false, filledSize: result.filledSize || 0 };
     }
     if (result.filled) {
       tpOrderToKey.delete(orderToCancel);
       bodyTpOrders.delete(bodyId);
       // Leave in pendingOrders for polling to process the fill
-      return { cancelled: false, filled: true };
+      return { cancelled: false, filled: true, filledSize: result.filledSize || 0 };
     }
-    return { cancelled: false, filled: false };
+    return { cancelled: false, filled: false, filledSize: 0 };
   };
 
   /**
