@@ -44,14 +44,19 @@ function KeysConfig({ exchange, onSave }) {
       setLoading(true)
       setMessage(null)
       setTestResult(null)
-      const res = await fetch(`/api/${exchange}/keys`)
-      if (res.ok) {
-        const data = await res.json()
-        setKeys(data.keys || {})
-      } else if (res.status !== 404) {
-        setMessage({ type: 'error', text: 'Failed to load keys' })
+      try {
+        const res = await fetch(`/api/${exchange}/keys`)
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}))
+          setKeys(data.keys || {})
+        } else if (res.status !== 404) {
+          setMessage({ type: 'error', text: 'Failed to load keys' })
+        }
+      } catch (err) {
+        setMessage({ type: 'error', text: err.message || 'Failed to load keys' })
+      } finally {
+        setLoading(false)
       }
-      setLoading(false)
     }
     fetchKeys()
   }, [exchange])
@@ -64,28 +69,38 @@ function KeysConfig({ exchange, onSave }) {
   const handleSave = async () => {
     setSaving(true)
     setMessage(null)
-    const res = await fetch(`/api/${exchange}/keys`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(keys),
-    })
-    if (res.ok) {
-      setMessage({ type: 'success', text: 'API keys saved successfully!' })
-      onSave?.()
-    } else {
-      const error = await res.json()
-      setMessage({ type: 'error', text: error.error || 'Failed to save keys' })
+    try {
+      const res = await fetch(`/api/${exchange}/keys`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(keys),
+      })
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'API keys saved successfully!' })
+        onSave?.()
+      } else {
+        const error = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: error.error || 'Failed to save keys' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to save keys' })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleTest = async () => {
     setTesting(true)
     setTestResult(null)
-    const res = await fetch(`/api/${exchange}/test-connection`, { method: 'POST' })
-    const data = await res.json()
-    setTestResult(data)
-    setTesting(false)
+    try {
+      const res = await fetch(`/api/${exchange}/test-connection`, { method: 'POST' })
+      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      setTestResult(data)
+    } catch (err) {
+      setTestResult({ success: false, error: err.message })
+    } finally {
+      setTesting(false)
+    }
   }
 
   const hasAllFields = config.fields.every(f => keys[f.key]?.trim())
@@ -94,16 +109,21 @@ function KeysConfig({ exchange, onSave }) {
   const handleDelete = async () => {
     setDeleting(true)
     setMessage(null)
-    const res = await fetch(`/api/${exchange}/keys`, { method: 'DELETE' })
-    if (res.ok) {
-      setKeys({})
-      setConfirmDelete(false)
-      setMessage({ type: 'success', text: 'API keys deleted successfully!' })
-      onSave?.()
-    } else {
-      setMessage({ type: 'error', text: 'Failed to delete keys' })
+    try {
+      const res = await fetch(`/api/${exchange}/keys`, { method: 'DELETE' })
+      if (res.ok) {
+        setKeys({})
+        setConfirmDelete(false)
+        setMessage({ type: 'success', text: 'API keys deleted successfully!' })
+        onSave?.()
+      } else {
+        setMessage({ type: 'error', text: 'Failed to delete keys' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to delete keys' })
+    } finally {
+      setDeleting(false)
     }
-    setDeleting(false)
   }
 
   if (loading) {
