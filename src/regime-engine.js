@@ -2536,6 +2536,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
 
+      // Partial-fill pre-check (mirror _mergeBodyImpl's guard, issue #201). If the
+      // merge target's TP has ALREADY partially filled, merging would fold the new
+      // buy onto the target's stale assetQty/costBasis (which still include the
+      // sold tranche) — leaving the body claiming asset the account no longer
+      // holds and double-attributing the sold tranche's cost. Don't merge; route
+      // the buy to its own new body instead.
+      if (mergeTarget && mergeTarget.tpOrderId) {
+        const targetTpStatus = await adapter.getOrder(mergeTarget.tpOrderId).catch(() => null);
+        if (targetTpStatus && targetTpStatus.filledSize > 0) {
+          console.log(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP partially filled (${targetTpStatus.filledSize} ${baseCurrency}) — routing buy to its own body (issue #201)`);
+          mergeTarget = null;
+        }
+      }
+
       if (mergeTarget) {
         // Race 3: snapshot merge target before cancel in case TP fills in-flight
         if (mergeTarget.tpOrderId) {
@@ -2721,12 +2735,38 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
 
-        const prevMaxUsdc = config.maxUsdcDeployed;
-        config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
 
         orderExecutor.removeBodyTracking(fillData.orderId);
+
+        // Deduct the sold tranche from the LIVE merged body (issue #201). If a buy
+        // folded onto this body in the Race-3 window (between the partial-fill
+        // pre-check and the TP cancel), the merged body still contains the qty/cost
+        // this snapshot sell just realized. Without deducting, the body claims asset
+        // the account no longer holds and the sold tranche's cost is double-counted
+        // (once here via bodyPnl, once retained in the merged body's costBasis).
+        const liveMerged = (positionState.celestialBodies || []).find(b => b.id === mergeSnapshot.id);
+        if (liveMerged) {
+          liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - summary.totalSize));
+          liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - proratedCostBasis));
+          // The resting TP was sized for the pre-deduction (oversized) qty — cancel
+          // and clear it so a correctly-sized TP is re-placed for the remaining body.
+          if (liveMerged.tpOrderId) {
+            const staleTp = liveMerged.tpOrderId;
+            liveMerged.tpOrderId = null;
+            liveMerged.tpPrice = 0;
+            liveMerged.assetOnOrder = 0;
+            await orderExecutor.cancelBodyTpOrder(liveMerged.id, staleTp).catch(() => {});
+            if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(staleTp);
+          }
+        }
+
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+        // Re-place a correctly-sized TP on the deducted body (issue #201).
+        if (liveMerged && liveMerged.assetQty > 0 && !liveMerged.tpOrderId) {
+          await placeBodyTp(liveMerged);
+        }
 
         console.log(`${tierCfg.emoji} [${exchange}] Merge-snapshot TP filled (${mergeSnapshot.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
