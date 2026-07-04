@@ -1,30 +1,49 @@
 import { useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
-import { getSunTexture } from './sunTexture'
+import { NOISE_GLSL, SURFACE_VERT } from './noiseGLSL'
+import FresnelGlow from './FresnelGlow'
+
+// Animated solar surface: two fbm layers (large convection + fine granulation)
+// drifting at different rates, mapped through a deep-orange→amber→white ramp,
+// with photospheric limb darkening. Bright center feeds bloom naturally.
+const SUN_FRAG = /* glsl */`
+  uniform float uTime;
+  varying vec3 vPos;
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+
+  ${NOISE_GLSL}
+
+  void main() {
+    vec3 p = normalize(vPos);
+    float convection = fbm(p * 4.0 + vec3(uTime * 0.06, uTime * 0.04, 0.0));
+    float granules = fbm(p * 10.0 - vec3(0.0, uTime * 0.09, uTime * 0.05));
+    float t = clamp(convection * 0.7 + granules * 0.55, 0.0, 1.0);
+
+    vec3 col = mix(vec3(0.72, 0.25, 0.05), vec3(1.0, 0.62, 0.16), smoothstep(0.15, 0.6, t));
+    col = mix(col, vec3(1.0, 0.94, 0.78), smoothstep(0.6, 0.95, t));
+
+    float limb = clamp(dot(normalize(vNormal), normalize(vViewDir)), 0.0, 1.0);
+    col *= mix(0.55, 1.05, pow(limb, 0.6));
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`
 
 /**
- * Sun-specific geometry: textured sphere with corona layers.
- * Uses MeshBasicMaterial (unlit) so bloom handles the glow.
+ * Sun: animated fbm-noise photosphere (seamless — no texture UV seam),
+ * fresnel corona layers, rotating band rings, and solar flare spokes.
  */
 const SunGeometry = ({ size }) => {
-  const coronaRef1 = useRef()
-  const coronaRef2 = useRef()
   const innerBandRef = useRef()
   const outerBandRef = useRef()
   const flareSpokesRef = useRef()
-  const texture = useMemo(() => getSunTexture(), [])
+  const uniforms = useMemo(() => ({ uTime: { value: 0 } }), [])
 
   useFrame((state) => {
     const time = state.clock.elapsedTime
-    if (coronaRef1.current) {
-      coronaRef1.current.material.opacity = 0.1 + Math.sin(time * 2) * 0.03
-      coronaRef1.current.rotation.y += 0.0012
-    }
-    if (coronaRef2.current) {
-      coronaRef2.current.material.opacity = 0.05 + Math.sin(time * 1.3 + 1) * 0.02
-      coronaRef2.current.rotation.y -= 0.001
-    }
+    uniforms.uTime.value = time
     if (innerBandRef.current) {
       innerBandRef.current.rotation.z += 0.0022
       innerBandRef.current.material.opacity = 0.22 + Math.sin(time * 2.4) * 0.04
@@ -46,24 +65,13 @@ const SunGeometry = ({ size }) => {
   return (
     <group>
       <mesh>
-        <sphereGeometry args={[size, 32, 32]} />
-        <meshBasicMaterial map={texture} color="#FFF7ED" />
+        <sphereGeometry args={[size, 48, 48]} />
+        <shaderMaterial vertexShader={SURFACE_VERT} fragmentShader={SUN_FRAG} uniforms={uniforms} />
       </mesh>
 
-      <mesh scale={0.72}>
-        <sphereGeometry args={[size, 24, 24]} />
-        <meshBasicMaterial color="#FFFFFF" transparent opacity={0.92} />
-      </mesh>
-
-      <mesh ref={coronaRef1} scale={1.25}>
-        <sphereGeometry args={[size, 16, 16]} />
-        <meshBasicMaterial color="#F59E0B" transparent opacity={0.1} side={THREE.BackSide} />
-      </mesh>
-
-      <mesh ref={coronaRef2} scale={1.5}>
-        <sphereGeometry args={[size, 12, 12]} />
-        <meshBasicMaterial color="#FDE68A" transparent opacity={0.05} side={THREE.BackSide} />
-      </mesh>
+      {/* Corona: inner hot rim + wide soft envelope */}
+      <FresnelGlow size={size} scale={1.22} color="#FBBF24" power={2.0} intensity={0.9} pulse={0.12} pulseSpeed={1.6} />
+      <FresnelGlow size={size} scale={1.55} color="#FDE68A" power={3.0} intensity={0.5} pulse={0.08} pulseSpeed={1.1} segments={16} />
 
       <mesh ref={innerBandRef} rotation={[Math.PI * 0.48, 0, Math.PI * 0.08]}>
         <ringGeometry args={[size * 1.03, size * 1.11, 96]} />

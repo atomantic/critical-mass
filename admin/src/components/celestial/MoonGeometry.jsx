@@ -1,15 +1,19 @@
 import { useMemo } from 'react'
 import * as THREE from 'three'
 import { getMoonTexture } from './moonTexture'
+import FresnelGlow from './FresnelGlow'
 
 /**
  * Moon-specific mesh: sphere with procedural cratered texture.
- * Enhanced with bump and roughness maps for a more realistic rocky surface.
+ * Bump and roughness maps give a realistic rocky surface; a faint fresnel
+ * rim keeps the silhouette legible against the dark background.
  */
 const MoonGeometry = ({ size, color, emissiveInt }) => {
   const textures = useMemo(() => getMoonTexture(), [])
-
-  const outlineColor = new THREE.Color('#94A3B8').lerp(new THREE.Color('#C7D2FE'), 0.45)
+  const outlineColor = useMemo(
+    () => new THREE.Color('#94A3B8').lerp(new THREE.Color('#C7D2FE'), 0.45),
+    []
+  )
 
   return (
     <group>
@@ -22,31 +26,13 @@ const MoonGeometry = ({ size, color, emissiveInt }) => {
           roughnessMap={textures.roughnessMap}
           color={color}
           emissive={outlineColor}
-          emissiveIntensity={emissiveInt * 0.55}
+          emissiveIntensity={emissiveInt * 0.75}
           roughness={0.9}
           metalness={0.05}
         />
       </mesh>
 
-      <mesh scale={1.04}>
-        <sphereGeometry args={[size, 24, 24]} />
-        <meshBasicMaterial
-          color="#CBD5E1"
-          transparent
-          opacity={0.05}
-          side={THREE.BackSide}
-        />
-      </mesh>
-
-      <mesh scale={1.015}>
-        <sphereGeometry args={[size, 16, 16]} />
-        <meshBasicMaterial
-          color={outlineColor}
-          wireframe
-          transparent
-          opacity={0.12}
-        />
-      </mesh>
+      <FresnelGlow size={size} scale={1.12} color="#CBD5E1" power={3.0} intensity={0.35} segments={16} />
     </group>
   )
 }

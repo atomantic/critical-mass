@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { getBodySize, bodyPropsEqual } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
+import FresnelGlow from './FresnelGlow'
 
 const CLOUD_LAYERS = 3
 const POINTS_PER_LAYER = 800
@@ -72,33 +73,16 @@ const buildNebulaGeometry = (size) => {
 
 const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const pointsRef = useRef()
-  const coreGlowRef = useRef()
-  const cloudRef1 = useRef()
-  const cloudRef2 = useRef()
 
   const size = getBodySize(body.costBasis, maxUsdcDeployed)
   const hasTP = body.tpPrice > 0
 
   const { positions, colors } = useMemo(() => buildNebulaGeometry(size), [size])
 
-  useFrame((state) => {
-    const time = state.clock.elapsedTime
+  useFrame(() => {
     if (pointsRef.current) {
       pointsRef.current.rotation.y += 0.002
       pointsRef.current.rotation.x += 0.0005
-    }
-    if (coreGlowRef.current) {
-      coreGlowRef.current.material.opacity = hasTP
-        ? 0.18
-        : 0.14 + Math.sin(time * 1.5) * 0.05
-    }
-    if (cloudRef1.current) {
-      cloudRef1.current.rotation.y += 0.0008
-      cloudRef1.current.material.opacity = 0.14 + Math.sin(time * 1.1) * 0.03
-    }
-    if (cloudRef2.current) {
-      cloudRef2.current.rotation.y -= 0.0006
-      cloudRef2.current.material.opacity = 0.1 + Math.sin(time * 0.9 + 1.2) * 0.025
     }
   })
 
@@ -114,30 +98,14 @@ const NebulaBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
         <meshBasicMaterial color="#CFFAFE" />
       </mesh>
 
-      <mesh ref={coreGlowRef} scale={2.0}>
-        <sphereGeometry args={[size * 0.3, 12, 12]} />
-        <meshBasicMaterial color="#06B6D4" transparent opacity={0.15} side={THREE.BackSide} />
-      </mesh>
-
-      <mesh ref={cloudRef1} scale={[1.9, 1.15, 1.45]} rotation={[0.25, 0.2, 0]}>
-        <sphereGeometry args={[size * 0.7, 18, 18]} />
-        <meshBasicMaterial
-          color="#22D3EE"
-          transparent
-          opacity={0.14}
-          side={THREE.BackSide}
-        />
-      </mesh>
-
-      <mesh ref={cloudRef2} scale={[1.7, 0.95, 1.8]} rotation={[-0.18, -0.4, 0.12]}>
-        <sphereGeometry args={[size * 0.9, 18, 18]} />
-        <meshBasicMaterial
-          color="#A78BFA"
-          transparent
-          opacity={0.1}
-          side={THREE.BackSide}
-        />
-      </mesh>
+      {/* Core glow + ellipsoid gas envelopes — fresnel so density reads at the limbs */}
+      <FresnelGlow size={size * 0.3} scale={2.0} color="#06B6D4" power={1.8} intensity={hasTP ? 0.6 : 0.5} pulse={hasTP ? 0 : 0.15} pulseSpeed={1.5} segments={12} />
+      <group rotation={[0.25, 0.2, 0]}>
+        <FresnelGlow size={size * 0.7} scale={[1.9, 1.15, 1.45]} color="#22D3EE" power={2.0} intensity={0.45} pulse={0.08} pulseSpeed={1.1} segments={18} />
+      </group>
+      <group rotation={[-0.18, -0.4, 0.12]}>
+        <FresnelGlow size={size * 0.9} scale={[1.7, 0.95, 1.8]} color="#A78BFA" power={2.2} intensity={0.32} pulse={0.07} pulseSpeed={0.9} segments={18} />
+      </group>
 
       <points ref={pointsRef}>
         <bufferGeometry>

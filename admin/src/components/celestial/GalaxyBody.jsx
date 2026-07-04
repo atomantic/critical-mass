@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { getBodySize, bodyPropsEqual } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
+import FresnelGlow from './FresnelGlow'
 
 const ARM_COUNT = 3
 const POINTS_PER_ARM = 800
@@ -160,7 +161,6 @@ const buildDustGeometry = (size) => {
 const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const mainRef = useRef()
   const dustRef = useRef()
-  const coreGlowRef = useRef()
   const discGlow1Ref = useRef()
   const discGlow2Ref = useRef()
   const discGlow3Ref = useRef()
@@ -176,11 +176,6 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
     if (mainRef.current) mainRef.current.rotation.y += 0.0025
     if (dustRef.current) dustRef.current.rotation.y += 0.0018
 
-    if (coreGlowRef.current) {
-      coreGlowRef.current.material.opacity = hasTP
-        ? 0.2
-        : 0.15 + Math.sin(time * 2) * 0.05
-    }
     if (discGlow1Ref.current) {
       discGlow1Ref.current.material.opacity = 0.14 + Math.sin(time * 1.1) * 0.03
     }
@@ -211,11 +206,8 @@ const GalaxyBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurr
         <meshBasicMaterial color="#FFF1F2" transparent opacity={0.85} />
       </mesh>
 
-      {/* Core glow halo - tight bright bloom */}
-      <mesh ref={coreGlowRef} scale={2.2}>
-        <sphereGeometry args={[size * 0.3, 16, 16]} />
-        <meshBasicMaterial color="#EC4899" transparent opacity={0.18} side={THREE.BackSide} />
-      </mesh>
+      {/* Core glow halo — fresnel + additive so it never depth-occludes the arm particles */}
+      <FresnelGlow size={size * 0.3} scale={2.2} color="#EC4899" power={1.8} intensity={hasTP ? 0.7 : 0.55} pulse={hasTP ? 0 : 0.18} segments={16} />
 
       {/* Layered disc glows — inner hot, mid warm, outer faint */}
       <mesh ref={discGlow1Ref} rotation={[Math.PI / 2, 0, 0]}>

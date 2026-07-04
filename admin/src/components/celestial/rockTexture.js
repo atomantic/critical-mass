@@ -49,7 +49,9 @@ export const getRockTexture = () => {
   }
 
   // 3. Ore Veins (The No Man's Sky glow)
-  otx.fillStyle = '#000000'
+  // Warm dark base (not pure black) so the rock self-illuminates faintly —
+  // asteroids carry no local point lights, this is their only fill light
+  otx.fillStyle = '#8A7A66'
   otx.fillRect(0, 0, size, size)
   
   const oreCount = 10 + Math.floor(Math.random() * 10)

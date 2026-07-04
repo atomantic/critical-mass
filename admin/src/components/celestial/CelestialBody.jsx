@@ -1,11 +1,11 @@
 import { useRef, memo } from 'react'
 import { useFrame } from '@react-three/fiber'
-import * as THREE from 'three'
 import {
   TIER_COLORS, CORE_COLORS,
   GLOW_INTENSITY, EMISSIVE_INTENSITY, MIN_GLOW_OPACITY, STELLAR_TIERS, getBodySize,
 } from './celestialConstants'
 import CelestialTooltip from './CelestialTooltip'
+import FresnelGlow from './FresnelGlow'
 import MoonGeometry from './MoonGeometry'
 import SatelliteGeometry from './SatelliteGeometry'
 import HypergiantGeometry from './HypergiantGeometry'
@@ -25,7 +25,6 @@ import PlanetGeometry from './PlanetGeometry'
  */
 const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseCurrency = 'BTC' }) => {
   const meshRef = useRef()
-  const glowRef = useRef()
 
   const color = TIER_COLORS[body.tier] || TIER_COLORS.satellite
   const glowInt = GLOW_INTENSITY[body.tier] || 0.3
@@ -36,18 +35,7 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
   const isStellar = STELLAR_TIERS.has(body.tier)
   const coreColor = CORE_COLORS[body.tier] || '#ffffff'
 
-  useFrame((state) => {
-    const time = state.clock.elapsedTime
-
-    // Glow animation
-    if (glowRef.current) {
-      if (!hasTP) {
-        glowRef.current.material.opacity = minGlowOpacity + Math.sin(time * 2) * 0.03
-      } else {
-        glowRef.current.material.opacity = isStellar ? Math.max(0.12, minGlowOpacity) : Math.max(minGlowOpacity, glowInt * 0.25)
-      }
-    }
-
+  useFrame(() => {
     // Slow self-rotation
     if (meshRef.current) {
       meshRef.current.rotation.y += 0.005
@@ -101,15 +89,15 @@ const CelestialBody = memo(({ body, showTooltip, onHover, maxUsdcDeployed, baseC
 
       {/* Spherical halo works for round bodies; irregular/mechanical bodies handle readability in their own geometry */}
       {usesSphericalHalo && (
-        <mesh ref={glowRef} scale={glowScale}>
-          <sphereGeometry args={[size, 16, 16]} />
-          <meshBasicMaterial
-            color={color}
-            transparent
-            opacity={minGlowOpacity}
-            side={THREE.BackSide}
-          />
-        </mesh>
+        <FresnelGlow
+          size={size}
+          scale={glowScale}
+          color={color}
+          power={isStellar ? 1.8 : 2.4}
+          intensity={hasTP ? Math.max(minGlowOpacity * 4, glowInt * 0.5) : minGlowOpacity * 4}
+          pulse={hasTP ? 0 : 0.1}
+          segments={16}
+        />
       )}
 
       {/* Pinned tooltip */}

@@ -2,23 +2,19 @@ import { useRef, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { getPlanetTexture } from './planetTexture'
+import FresnelGlow from './FresnelGlow'
 
 /**
- * Planet with atmosphere glow and improved Saturn-like rings for merged bodies.
+ * Planet with fresnel atmosphere glow and Saturn-like rings for merged bodies.
  */
 const PlanetGeometry = ({ size, color, emissiveInt, mergeCount = 0 }) => {
-  const atmosphereRef = useRef()
   const atmosphereRingRef = useRef()
   const texture = useMemo(() => getPlanetTexture(), [])
   const hasRings = mergeCount > 2
 
   useFrame((state) => {
-    const time = state.clock.elapsedTime
-    if (atmosphereRef.current) {
-      atmosphereRef.current.material.opacity = 0.12 + Math.sin(time * 0.8) * 0.03
-    }
     if (atmosphereRingRef.current) {
-      atmosphereRingRef.current.material.opacity = 0.28 + Math.sin(time * 1.2) * 0.05
+      atmosphereRingRef.current.material.opacity = 0.28 + Math.sin(state.clock.elapsedTime * 1.2) * 0.05
     }
   })
 
@@ -36,24 +32,12 @@ const PlanetGeometry = ({ size, color, emissiveInt, mergeCount = 0 }) => {
         />
       </mesh>
 
-      <mesh ref={atmosphereRef} scale={1.12}>
-        <sphereGeometry args={[size, 16, 16]} />
-        <meshBasicMaterial color="#60A5FA" transparent opacity={0.14} side={THREE.BackSide} />
-      </mesh>
+      {/* Atmospheric limb glow — brightest at the surface, fading outward */}
+      <FresnelGlow size={size} scale={1.18} color="#60A5FA" power={2.8} intensity={0.85} pulse={0.12} pulseSpeed={0.8} />
 
       <mesh ref={atmosphereRingRef} rotation={[Math.PI * 0.48, 0, Math.PI * 0.08]}>
         <ringGeometry args={[size * 1.08, size * 1.16, 96]} />
         <meshBasicMaterial color="#93C5FD" transparent opacity={0.3} side={THREE.DoubleSide} />
-      </mesh>
-
-      <mesh scale={1.018}>
-        <sphereGeometry args={[size, 18, 18]} />
-        <meshBasicMaterial
-          color="#60A5FA"
-          wireframe
-          transparent
-          opacity={0.08}
-        />
       </mesh>
 
       {hasRings && (

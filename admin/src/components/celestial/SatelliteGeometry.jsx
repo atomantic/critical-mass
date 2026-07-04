@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useMemo, useEffect } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 
@@ -24,10 +24,33 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
   const panelD = size * 0.5
   const antennaR = size * 0.08
   const antennaH = size * 0.4
-  const outlineColor = new THREE.Color('#60A5FA').lerp(new THREE.Color(color), 0.35)
-  const busEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(busW, busH, busD))
-  const panelEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(panelW, panelH, panelD))
-  const antennaEdges = new THREE.EdgesGeometry(new THREE.ConeGeometry(antennaR, antennaH, 6))
+
+  const outlineColor = useMemo(
+    () => new THREE.Color('#60A5FA').lerp(new THREE.Color(color), 0.35),
+    [color]
+  )
+
+  // Edge geometries are expensive to build — memoize per size and dispose on change
+  const edges = useMemo(() => {
+    const bus = new THREE.BoxGeometry(busW, busH, busD)
+    const panel = new THREE.BoxGeometry(panelW, panelH, panelD)
+    const antenna = new THREE.ConeGeometry(antennaR, antennaH, 6)
+    const result = {
+      bus: new THREE.EdgesGeometry(bus),
+      panel: new THREE.EdgesGeometry(panel),
+      antenna: new THREE.EdgesGeometry(antenna),
+    }
+    bus.dispose()
+    panel.dispose()
+    antenna.dispose()
+    return result
+  }, [busW, busH, busD, panelW, panelH, panelD, antennaR, antennaH])
+
+  useEffect(() => () => {
+    edges.bus.dispose()
+    edges.panel.dispose()
+    edges.antenna.dispose()
+  }, [edges])
 
   const ledRef = useRef()
 
@@ -78,7 +101,7 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
           metalness={0.92}
         />
       </mesh>
-      <TronOutline geometry={busEdges} color={outlineColor} />
+      <TronOutline geometry={edges.bus} color={outlineColor} />
       
       {/* Small status light */}
       <mesh ref={ledRef} position={[busW / 2, busH / 4, busD / 2]}>
@@ -99,7 +122,7 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
           />
         </mesh>
         <group position={[-(busW / 2 + panelW / 2), 0, 0]}>
-          <TronOutline geometry={panelEdges} color="#60A5FA" scale={1.04} />
+          <TronOutline geometry={edges.panel} color="#60A5FA" scale={1.04} />
         </group>
         <mesh position={[(busW / 2 + panelW / 2), 0, 0]}>
           <boxGeometry args={[panelW, panelH, panelD]} />
@@ -112,7 +135,7 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
           />
         </mesh>
         <group position={[(busW / 2 + panelW / 2), 0, 0]}>
-          <TronOutline geometry={panelEdges} color="#60A5FA" scale={1.04} />
+          <TronOutline geometry={edges.panel} color="#60A5FA" scale={1.04} />
         </group>
       </group>
 
@@ -128,7 +151,7 @@ const SatelliteGeometry = ({ size, color, emissiveInt, wireframe }) => {
         />
       </mesh>
       <group position={[0, busH / 2 + antennaH / 2, 0]}>
-        <TronOutline geometry={antennaEdges} color={outlineColor} scale={1.05} />
+        <TronOutline geometry={edges.antenna} color={outlineColor} scale={1.05} />
       </group>
     </group>
   )

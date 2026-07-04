@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useEffect } from 'react'
 import * as THREE from 'three'
 import { getRockTexture } from './rockTexture'
 
@@ -44,6 +44,13 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
     })
   }, [size])
 
+  useEffect(() => () => {
+    chunks.forEach((chunk) => {
+      chunk.geo.dispose()
+      chunk.edges.dispose()
+    })
+  }, [chunks])
+
   return (
     <group>
       {chunks.map((chunk, i) => (
@@ -52,12 +59,6 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
           position={chunk.pos}
           rotation={[i, i * 2, 0]}
         >
-          <pointLight
-            color="#F97316"
-            intensity={0.35 * chunk.scale}
-            distance={size * 3.2}
-            decay={2}
-          />
           <mesh geometry={chunk.geo}>
             <meshStandardMaterial
               map={textures.map}
@@ -65,8 +66,8 @@ const AsteroidGeometry = ({ size, color, emissiveInt }) => {
               bumpScale={0.15}
               emissiveMap={textures.emissiveMap}
               color={new THREE.Color(color).lerp(new THREE.Color('#8A5530'), 0.65)}
-              emissiveIntensity={Math.max(emissiveInt * 7, 0.9)}
-              emissive={new THREE.Color('#7C2D12')}
+              emissiveIntensity={Math.max(emissiveInt * 7, 1.3)}
+              emissive={new THREE.Color('#9A3412')}
               roughness={0.78}
               metalness={0.18}
               flatShading
