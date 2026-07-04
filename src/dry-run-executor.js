@@ -44,6 +44,13 @@ const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR } = require('./shared-utils'
  * @property {Object} details - Additional details
  */
 
+// Bound the retained filled-order history. Unbounded growth meant a long-lived
+// dry-run (e.g. 1-min cadence for weeks) accumulated tens of thousands of orders
+// that were serialized synchronously into dry-run-state.json on every debounced
+// save, and re-scanned on every fill — growing event-loop stalls on a live
+// process (#213E). Mirrors the decisionLog 1000-entry cap.
+const MAX_FILLED_ORDERS = 1000;
+
 let orderIdCounter = 0;
 
 /**
@@ -90,6 +97,18 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
 
   /** @type {SimulatedOrder[]} */
   const filledOrders = [];
+
+  /**
+   * Append a filled order to the bounded history, trimming the oldest entries
+   * once the cap is exceeded (#213E).
+   * @param {SimulatedOrder} order - Filled order snapshot
+   */
+  const recordFilledOrder = (order) => {
+    filledOrders.push(order);
+    while (filledOrders.length > MAX_FILLED_ORDERS) {
+      filledOrders.shift();
+    }
+  };
 
   let lastTpPrice = 0;
   let lastTpSize = 0;
@@ -415,7 +434,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       console.log(`🧪 [${exchange}] [DRY-RUN] Entry FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}`);
 
       // Push to filled orders after all data is populated
-      filledOrders.push({ ...order });
+      recordFilledOrder({ ...order });
 
       // Notify callback for position update
       if (callbacks.onBuyFill) {
@@ -449,7 +468,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       order.avgCostBasis = avgBuyPrice;
       order.isBody = true;
 
-      filledOrders.push({ ...order });
+      recordFilledOrder({ ...order });
 
       logDecision('tp_filled', 'N/A', fillPrice, {
         orderId,
@@ -503,7 +522,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       order.avgCostBasis = avgBuyPrice;
 
       // Push to filled orders after all data is populated
-      filledOrders.push({ ...order });
+      recordFilledOrder({ ...order });
 
       logDecision('tp_filled', 'N/A', fillPrice, {
         orderId,
@@ -560,14 +579,27 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * Get average entry price from filled buy orders
    * @returns {number}
    */
-  // Average gross fill PRICE (not fee-inclusive). Used for the state-export
-  // avgEntryPrice display and the legacy-TP/body-TP cost-basis estimate. The
-  // legacy-TP P&L derived from this still omits the buy-side fee, so dry-run
-  // realized P&L over-counts capital by the entry fee — part of the broader
-  // dry-run cost-basis modeling gap tracked in issue #133 (dry-run-only, no
-  // real-money impact). Not changed here to avoid shifting this shared helper's
-  // semantics under the avgEntryPrice display consumer.
+  // Average gross fill PRICE (not fee-inclusive) for the CURRENT cycle. Used for
+  // the state-export avgEntryPrice display and the legacy-TP/body-TP cost-basis
+  // estimate.
+  //
+  // Scoped to the current cycle via currentCycleTracking, whose entryPrice is
+  // the quantity-weighted average of THIS cycle's entry fills and is reset on
+  // each legacy TP fill (cycle boundary). Reducing the whole filledOrders array
+  // instead — the old behavior — produced a lifetime cross-cycle average that,
+  // in a trending market, drifts arbitrarily far from the current cycle; a new
+  // cycle's TP would then price its cost basis against buys from months/20%
+  // lower and overstate P&L (#213E). It is also why the unbounded history was an
+  // O(n) re-scan on every fill.
+  //
+  // The legacy-TP P&L derived from this still omits the buy-side fee (dry-run
+  // cost-basis gap #133, dry-run-only, no real-money impact).
   const getAverageEntryPrice = () => {
+    if (currentCycleTracking && currentCycleTracking.cycleQty > 0) {
+      return currentCycleTracking.entryPrice;
+    }
+    // Fallback when no cycle is active (e.g. after a legacy TP closed the cycle):
+    // average the retained buy fills so the display/basis is still populated.
     const buyFills = filledOrders.filter(o => o.type === 'entry' && o.side === 'buy');
     if (buyFills.length === 0) return 0;
 
@@ -965,8 +997,17 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * @returns {Object}
    */
   const getSimulatedPnL = () => ({
-    realizedPnL: simulatedRealizedPnL,
-    realizedAssetPnL: simulatedRealizedAssetPnL,
+    // The celestial-body TP flow is the PRIMARY take-profit path; its fills
+    // accumulate into simulatedBodyRealizedPnL/…BtcPnL. Omitting them (the old
+    // behavior) made a body-trading dry-run report realizedPnL: 0 no matter how
+    // many profitable cycles completed (#213D). Fold both legacy and body
+    // counters into the headline figures, and expose the components too.
+    realizedPnL: simulatedRealizedPnL + simulatedBodyRealizedPnL,
+    realizedAssetPnL: simulatedRealizedAssetPnL + simulatedBodyRealizedBtcPnL,
+    legacyRealizedPnL: simulatedRealizedPnL,
+    legacyRealizedAssetPnL: simulatedRealizedAssetPnL,
+    bodyRealizedPnL: simulatedBodyRealizedPnL,
+    bodyRealizedAssetPnL: simulatedBodyRealizedBtcPnL,
     assetOnOrder: getBtcOnOrder(),
     totalBought: simulatedTotalBought,
     totalSold: simulatedTotalSold,
@@ -1113,10 +1154,12 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       }
     }
 
-    // Restore filled orders
+    // Restore filled orders (bounded — trim a legacy oversized history on load
+    // so it can't perpetuate the unbounded-growth save cost, #213E)
     filledOrders.length = 0;
     if (state.filledOrders) {
-      filledOrders.push(...state.filledOrders);
+      const restored = state.filledOrders.slice(-MAX_FILLED_ORDERS);
+      filledOrders.push(...restored);
     }
 
     // Restore TP tracking

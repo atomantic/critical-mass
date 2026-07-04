@@ -110,33 +110,92 @@ const fetchCandles = async (exchange, start, end, granularity, productId = null)
 };
 
 /**
- * Aggregate candles to a larger interval
- * @param {Array} candles - Array of candle data
- * @param {number} factor - Aggregation factor (e.g., 2 for 5min -> 10min)
- * @returns {Array} Aggregated candles
+ * Aggregate candles into wall-clock time buckets of size `intervalMs`.
+ *
+ * Buckets are keyed by `floor(timestamp / intervalMs) * intervalMs`, NOT by
+ * array index. Index-based grouping (the previous behavior) offset every
+ * downstream bucket whenever the input didn't start on a bucket boundary or a
+ * raw candle was missing/dropped, silently double-covering ranges on
+ * incremental refresh of aggregated interval types like 10min/4hour (#213A).
+ * Wall-clock bucketing is idempotent and offset-independent, so re-aggregating
+ * the boundary bucket from raw candles always yields the same key.
+ *
+ * @param {Array} candles - Array of raw candle data
+ * @param {number} intervalMs - Target bucket size in milliseconds
+ * @returns {Array} Aggregated candles (ascending by timestamp)
  */
-const aggregateCandles = (candles, factor) => {
-  if (factor <= 1) return candles;
+const aggregateCandles = (candles, intervalMs) => {
+  if (!candles || candles.length === 0) return [];
+  if (!intervalMs || intervalMs <= 0) return [...candles].sort((a, b) => a.timestamp - b.timestamp);
 
   const sorted = [...candles].sort((a, b) => a.timestamp - b.timestamp);
-  const result = [];
+  const buckets = new Map();
 
-  for (let i = 0; i < sorted.length; i += factor) {
-    const group = sorted.slice(i, i + factor);
-    if (group.length === 0) continue;
-
-    result.push({
-      timestamp: group[0].timestamp,
-      open: group[0].open,
-      high: Math.max(...group.map(c => c.high)),
-      low: Math.min(...group.map(c => c.low)),
-      close: group[group.length - 1].close,
-      volume: group.reduce((sum, c) => sum + c.volume, 0)
-    });
+  for (const c of sorted) {
+    const bucketStart = Math.floor(c.timestamp / intervalMs) * intervalMs;
+    const existing = buckets.get(bucketStart);
+    if (!existing) {
+      buckets.set(bucketStart, {
+        timestamp: bucketStart,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume
+      });
+    } else {
+      existing.high = Math.max(existing.high, c.high);
+      existing.low = Math.min(existing.low, c.low);
+      existing.close = c.close; // sorted ascending → last wins
+      existing.volume += c.volume;
+    }
   }
 
-  return result;
+  return Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
 };
+
+/**
+ * A candle whose bucket has not fully elapsed is still in progress: its
+ * high/low/close/volume are partial. Persisting it corrupts every later
+ * backtest until the bucket is (never) re-fetched, because dedupe keeps the
+ * stale partial forever (#206). A bucket [ts, ts+intervalMs) is complete only
+ * once `ts + intervalMs <= now`.
+ * @param {number} timestamp - Bucket start (ms)
+ * @param {number} intervalMs - Bucket size (ms)
+ * @param {number} nowMs - Current time (ms)
+ * @returns {boolean}
+ */
+const isCompleteBucket = (timestamp, intervalMs, nowMs) => (timestamp + intervalMs) <= nowMs;
+
+/**
+ * Merge `incoming` candles into `existing`, keyed by timestamp, last-write-wins.
+ * Unlike `filter(!has(timestamp))`, this REPLACES a same-timestamp candle, so a
+ * boundary bucket re-fetched as complete overwrites the earlier partial (#206).
+ * @param {Array} existing - Existing cached candles
+ * @param {Array} incoming - New candles to merge (win on timestamp collision)
+ * @returns {Array} Merged candles (ascending by timestamp)
+ */
+const upsertCandles = (existing, incoming) => {
+  const byTs = new Map((existing || []).map(c => [c.timestamp, c]));
+  for (const c of (incoming || [])) byTs.set(c.timestamp, c);
+  return Array.from(byTs.values()).sort((a, b) => a.timestamp - b.timestamp);
+};
+
+/**
+ * Shape an aggregated candle into the cached backtest row format.
+ * @param {Object} c - Aggregated candle
+ * @returns {Object} Cache row
+ */
+const formatCandle = (c) => ({
+  date: new Date(c.timestamp).toISOString(),
+  timestamp: c.timestamp,
+  open: c.open,
+  high: c.high,
+  low: c.low,
+  close: c.close,
+  highOfDay: c.high,
+  lowOfDay: c.low
+});
 
 /**
  * Fetch price data for backtesting
@@ -195,20 +254,17 @@ const fetchPriceData = async (intervals, intervalType = 'daily', exchange = 'coi
   // Sort by timestamp ascending
   allCandles.sort((a, b) => a.timestamp - b.timestamp);
 
-  // Aggregate if needed (e.g., 5min -> 10min or 1hour -> 4hour)
-  const aggregated = aggregateCandles(allCandles, aggregateFactor);
+  // Aggregate into wall-clock buckets (e.g., 5min -> 10min or 1hour -> 4hour).
+  // Passing config.ms (target bucket size) makes factor=1 intervals a no-op
+  // while correctly bucketing aggregated types independent of array offset.
+  const aggregated = aggregateCandles(allCandles, config.ms);
+
+  // Drop the in-progress boundary bucket so a partial candle is never persisted
+  // or backtested against (#206).
+  const complete = aggregated.filter(c => isCompleteBucket(c.timestamp, config.ms, Date.now()));
 
   // Format for backtest
-  return aggregated.slice(-intervals).map(c => ({
-    date: new Date(c.timestamp).toISOString(),
-    timestamp: c.timestamp,
-    open: c.open,
-    high: c.high,
-    low: c.low,
-    close: c.close,
-    highOfDay: c.high,
-    lowOfDay: c.low
-  }));
+  return complete.slice(-intervals).map(formatCandle);
 };
 
 /**
@@ -317,27 +373,20 @@ const getPriceData = async (intervals, intervalType = 'daily', exchange = 'coinb
         }
       }
 
-      // Filter out duplicates and merge
-      const existingTimestamps = new Set(cachedPrices.map(p => p.timestamp));
-      const uniqueNewCandles = newCandles.filter(c => !existingTimestamps.has(c.timestamp));
+      if (newCandles.length > 0) {
+        // Aggregate the fetched RAW candles into target wall-clock buckets, then
+        // UPSERT by timestamp so the re-fetched boundary bucket (now complete)
+        // REPLACES the previously-cached partial instead of being dedupe-dropped
+        // (#206). Dedup/aggregation happen at the aggregated granularity — never
+        // mixing raw timestamps against aggregated bucket keys (#213A).
+        const aggregated = aggregateCandles(newCandles, config.ms);
+        const formatted = aggregated.map(formatCandle);
+        const merged = upsertCandles(cachedPrices, formatted);
 
-      if (uniqueNewCandles.length > 0) {
-        console.log(`Adding ${uniqueNewCandles.length} new ${intervalType} candles for ${effectiveProductId} to ${exchange} cache`);
-
-        // Aggregate if needed
-        const aggregated = aggregateCandles(uniqueNewCandles, config.aggregateFactor);
-        const formatted = aggregated.map(c => ({
-          date: new Date(c.timestamp).toISOString(),
-          timestamp: c.timestamp,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-          highOfDay: c.high,
-          lowOfDay: c.low
-        }));
-
-        cachedPrices = [...cachedPrices, ...formatted].sort((a, b) => a.timestamp - b.timestamp);
+        // Drop the in-progress boundary bucket so a partial candle is never
+        // persisted (#206).
+        cachedPrices = merged.filter(c => isCompleteBucket(c.timestamp, config.ms, now));
+        console.log(`Refreshed ${intervalType} cache for ${effectiveProductId} on ${exchange}: ${formatted.length} bucket(s) upserted, ${cachedPrices.length} total`);
       }
     } else {
       // Full fetch - pass exchange and productId to fetchPriceData
@@ -435,6 +484,16 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     const { date, high, low, close: closePrice, highOfDay: highPrice } = interval;
     const midPrice = (high + low) / 2;
 
+    // Same-interval sell proceeds must not fund a same-interval buy (#213C).
+    // A sell fills at the interval HIGH, which may print AFTER the buy's MID
+    // within the candle, so crediting immediately lets money arrive before it
+    // exists. Accumulate this interval's proceeds here and only add them to
+    // availableFunds AFTER the buy phase — proceeds become spendable next
+    // interval, matching the existing "new orders can't fill same-interval"
+    // conservatism. Only relevant in fixed-fund mode (unlimited mode never
+    // gates buys on availableFunds).
+    let deferredProceeds = 0;
+
     // 1. SELL CHECK PHASE - Check if any pending orders fill this interval
     const filledThisInterval = [];
 
@@ -455,7 +514,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         totalRebates += sellRebate;
 
         if (hasFixedFund) {
-          availableFunds += netProceeds;
+          deferredProceeds += netProceeds; // credited after buy phase (#213C)
         } else {
           usdcBalance += netProceeds;
         }
@@ -502,7 +561,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
           totalRebates += sellRebate;
 
           if (hasFixedFund) {
-            availableFunds += netProceeds;
+            deferredProceeds += netProceeds; // credited after buy phase (#213C)
           } else {
             usdcBalance += netProceeds;
           }
@@ -535,16 +594,23 @@ const runBacktest = async (params, preFetchedPrices = null) => {
       ? getFibonacciBuyAmount(fibPosition, fibBaseAmount)
       : intervalBuyAmount;
 
-    if (availableFunds >= targetBuyAmount) {
+    // Compute the buy fee up-front so BOTH the affordability guard and the cash
+    // debit account for it. The buy fee leaves the cash ledger exactly like the
+    // sell path debits it from netProceeds; previously only `targetBuyAmount`
+    // was debited, so headline totalValue/roi assumed fee-free buys and the
+    // optimizer was biased toward high-buy-count configs (#205).
+    const buyFee = targetBuyAmount * (feePercent / 100);
+    const buyRebate = targetBuyAmount * (rebatePercent / 100);
+    const netBuyFee = buyFee - buyRebate;
+    const buyCost = targetBuyAmount + netBuyFee;
+
+    if (availableFunds >= buyCost) {
       const grossBTC = targetBuyAmount / buyPrice;
-      const buyFee = targetBuyAmount * (feePercent / 100);
-      const buyRebate = targetBuyAmount * (rebatePercent / 100);
-      const netBuyFee = buyFee - buyRebate;
-      const costBasis = targetBuyAmount + netBuyFee;
+      const costBasis = buyCost; // targetBuyAmount + netBuyFee
       const costBasisPerAsset = costBasis / grossBTC;
 
       if (hasFixedFund) {
-        availableFunds -= targetBuyAmount;
+        availableFunds -= buyCost;
       }
 
       totalInvested += targetBuyAmount;
@@ -633,9 +699,15 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         assetAmount: 0,
         usdcAmount: 0,
         availableFunds: availableFunds,
-        requiredFunds: targetBuyAmount,
+        requiredFunds: buyCost,
         fibPosition: isFibonacci ? fibPosition : undefined
       });
+    }
+
+    // Credit this interval's deferred sell proceeds now that the buy phase is
+    // done — they become spendable starting next interval (#213C).
+    if (hasFixedFund && deferredProceeds > 0) {
+      availableFunds += deferredProceeds;
     }
 
     // 3. INTERVAL SNAPSHOT
@@ -774,5 +846,9 @@ module.exports = {
   runBacktest,
   getPriceData,
   fetchPriceData,
-  getCacheFile
+  getCacheFile,
+  // Exported for unit testing of the caching/aggregation invariants (#206, #213A)
+  aggregateCandles,
+  isCompleteBucket,
+  upsertCandles
 };
