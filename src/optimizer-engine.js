@@ -125,6 +125,62 @@ const prefetchPriceData = async (intervals, periods, onProgress, exchange = 'coi
 };
 
 /**
+ * Build the optimizer result record for one backtest, annotating it with the
+ * ACTUAL candle coverage rather than only the requested period label.
+ *
+ * `runSingleBacktest` slices `cachedPrices.slice(-intervals)`; when the cache
+ * holds fewer candles than the requested period needs (common for Gemini /
+ * Crypto.com, whose history is short), the slice silently returns everything
+ * available. `runBacktest` reports the real count as `result.params.intervals`,
+ * so every period longer than the available history produced byte-identical
+ * metrics all labeled with their requested period ("90D"/"1Y") — letting the
+ * sort crown a "1Y" best that actually covered weeks (#213B). We surface
+ * `actualIntervals`, `requestedIntervals`, `coveragePct`, and an `underCovered`
+ * flag so consumers can trust (or discount) the period label.
+ *
+ * @param {Object} currentParams - Requested params (includes `intervals`, `period`)
+ * @param {Object} result - Backtest result from runBacktest
+ * @returns {Object} Result record with annotated params + metrics
+ */
+const buildResultRecord = (currentParams, result) => {
+  const requestedIntervals = currentParams.intervals;
+  // runBacktest sets result.params.intervals = priceData.length (actual count).
+  const actualIntervals = result.params.intervals;
+  const underCovered = actualIntervals < requestedIntervals;
+  const coveragePct = requestedIntervals > 0
+    ? (actualIntervals / requestedIntervals) * 100
+    : 100;
+
+  return {
+    params: {
+      ...currentParams,
+      requestedIntervals,
+      actualIntervals,
+      coveragePct,
+      underCovered,
+    },
+    metrics: {
+      totalValue: result.metrics.totalValue,
+      roi: result.metrics.roi,
+      fillRate: result.metrics.fillRate,
+      sellsFilled: result.metrics.sellsFilled,
+      totalSells: result.metrics.totalSells,
+      avgIntervalsToFill: result.metrics.avgIntervalsToFill,
+      assetReserves: result.metrics.assetReserves,
+      netFees: result.metrics.netFees,
+      intervalsSkipped: result.metrics.intervalsSkipped,
+      // Coverage truth alongside the metrics so a mislabeled period is obvious.
+      actualIntervals,
+      requestedIntervals,
+      coveragePct,
+      underCovered,
+      startDate: result.metrics.startDate,
+      endDate: result.metrics.endDate,
+    },
+  };
+};
+
+/**
  * Run a single backtest with given parameters
  * @param {Object} params - Backtest parameters
  * @param {Object} priceCache - Cached price data by interval type
@@ -250,20 +306,7 @@ const runOptimizer = async ({
 
         const result = await runSingleBacktest(currentParams, priceCache, exchange, productId);
 
-        const fullResult = {
-          params: currentParams,
-          metrics: {
-            totalValue: result.metrics.totalValue,
-            roi: result.metrics.roi,
-            fillRate: result.metrics.fillRate,
-            sellsFilled: result.metrics.sellsFilled,
-            totalSells: result.metrics.totalSells,
-            avgIntervalsToFill: result.metrics.avgIntervalsToFill,
-            assetReserves: result.metrics.assetReserves,
-            netFees: result.metrics.netFees,
-            intervalsSkipped: result.metrics.intervalsSkipped
-          }
-        };
+        const fullResult = buildResultRecord(currentParams, result);
 
         results.push(fullResult);
 
@@ -318,6 +361,7 @@ const getTopResults = (results, n = 10) => {
 module.exports = {
   runOptimizer,
   getTopResults,
+  buildResultRecord,
   DEFAULT_INTERVALS,
   DEFAULT_BUY_AMOUNTS,
   DEFAULT_MARKUPS,
