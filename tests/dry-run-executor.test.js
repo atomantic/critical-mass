@@ -99,6 +99,49 @@ describe('dry-run body-TP cost basis — round-trip fee parity (#133)', () => {
   });
 });
 
+describe('dry-run body-TP cost basis — per-body avgBuyPrice, not cross-body drift (#213E follow-up)', () => {
+  it('seeds a new body from its own avgBuyPrice instead of the running cross-body average', async () => {
+    const config = baseConfig();
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    // Body 1 buys at 100k. In a celestial-hierarchy engine no legacy TP ever
+    // fills to reset currentCycleTracking, so by the time body 2 buys the
+    // running cross-body average has already drifted toward 100k.
+    const placed1 = await exec.placeEntryBid(1000, 100_000, 100_010);
+    exec.checkEntryFills(placed1.price);
+    await exec.placeBodyTpOrder(placed1.assetQty, 110_000, 'body-1', 100_000);
+
+    // Body 2 buys at 150k — a very different price. Without threading its own
+    // avgBuyPrice through, placeBodyTpOrder would fall back to
+    // getAverageEntryPrice(), which is still weighted toward body 1's 100k.
+    const placed2 = await exec.placeEntryBid(1000, 150_000, 150_015);
+    exec.checkEntryFills(placed2.price);
+    const tpRes2 = await exec.placeBodyTpOrder(placed2.assetQty, 165_000, 'body-2', 150_000);
+
+    const bodyInfo2 = exec.getBodyByTpOrderId(tpRes2.orderId);
+    const expectedBasis2 = (placed2.assetQty * 150_000) * (1 + config.feeRate);
+    assert.ok(
+      Math.abs(bodyInfo2.costBasis - expectedBasis2) < 1e-6,
+      `body-2 cost basis ${bodyInfo2.costBasis} should be seeded from its own avgBuyPrice (150k), got basis implying a blended average (expected ${expectedBasis2})`,
+    );
+  });
+
+  it('falls back to getAverageEntryPrice() when no avgBuyPrice is supplied (back-compat)', async () => {
+    const config = baseConfig();
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    const placed = await exec.placeEntryBid(1000, 100_000, 100_010);
+    exec.checkEntryFills(placed.price);
+    const tpRes = await exec.placeBodyTpOrder(placed.assetQty, 110_000, 'body-1');
+
+    const bodyInfo = exec.getBodyByTpOrderId(tpRes.orderId);
+    const expectedBasis = (placed.assetQty * placed.price) * (1 + config.feeRate);
+    assert.ok(Math.abs(bodyInfo.costBasis - expectedBasis) < 1e-6);
+  });
+});
+
 describe('dry-run multi-entry weighted entry price — per-cycle, not global (#152)', () => {
   // Fill an entry at `price` and return its filled asset qty.
   const fillEntry = async (exec, sizeUsdc, price) => {

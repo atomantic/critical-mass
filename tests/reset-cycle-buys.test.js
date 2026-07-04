@@ -103,7 +103,7 @@ describe('#232 resetCycleBuys() — operator reset to resume buying', () => {
     eng._test.setMergeInProgress(true);
     const result = await eng.resetCycleBuys();
     assert.equal(result.success, false);
-    assert.match(result.message, /merge or reconcile/i);
+    assert.match(result.message, /merge, reconcile, or fill/i);
     // Cycle counter untouched by the refusal.
     assert.equal(eng._getPositionState().cycleBuys, 3);
   });
@@ -113,7 +113,21 @@ describe('#232 resetCycleBuys() — operator reset to resume buying', () => {
     eng._test.setReconcileInProgress(true);
     const result = await eng.resetCycleBuys();
     assert.equal(result.success, false);
-    assert.match(result.message, /merge or reconcile/i);
+    assert.match(result.message, /merge, reconcile, or fill/i);
+  });
+
+  it('refuses while a fill is in progress (issue #232 follow-up)', async () => {
+    // A fill mid-handling may already be ingested into the ledger under the
+    // about-to-be-superseded cycle but not yet reflected in cycleBuys —
+    // resetting the cycle boundary underneath it would desync cycleBuys from
+    // the ledger (see consolidateDustBodies' identical gate at line ~3350).
+    const eng = makeEngine();
+    eng._test.setFillInProgress(1);
+    const result = await eng.resetCycleBuys();
+    assert.equal(result.success, false);
+    assert.match(result.message, /merge, reconcile, or fill/i);
+    // Cycle counter untouched by the refusal.
+    assert.equal(eng._getPositionState().cycleBuys, 3);
   });
 
   it('on success resets cycleBuys to 0, starts a new cycle, and preserves bodies', async () => {

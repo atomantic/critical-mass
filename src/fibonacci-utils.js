@@ -89,6 +89,14 @@ const createInitialFibState = () => ({
   fibCumulativeAsset: 0,
   fibActiveSellOrderId: null,
   fibPendingHoldback: 0, // Holdback tracked during cycle, credited to reserves on fill
+  // Snapshot of fibCumulative{Asset,Cost,Position} at the moment
+  // fibActiveSellOrderId was last (re-)consolidated (issue #200, Bug A). Lets
+  // updateAfterFibSellFill detect buys folded into cumulative AFTER the
+  // active sell was sized (a failed/retried consolidation) and re-seed them
+  // into the fresh cycle instead of silently discarding them on reset.
+  fibSellOrderCoveredAsset: 0,
+  fibSellOrderCoveredCost: 0,
+  fibSellOrderCoveredPosition: 0,
 });
 
 /**
@@ -102,6 +110,9 @@ const resetFibState = () => ({
   fibCumulativeAsset: 0,
   fibActiveSellOrderId: null,
   fibPendingHoldback: 0,
+  fibSellOrderCoveredAsset: 0,
+  fibSellOrderCoveredCost: 0,
+  fibSellOrderCoveredPosition: 0,
 });
 
 /**

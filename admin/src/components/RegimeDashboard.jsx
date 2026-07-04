@@ -198,28 +198,33 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
   const handleApplySuggested = async () => {
     if (applying || !canApply) return
     setApplying(true)
-    const params = computeAggressivenessParams(suggested, presets)
-    const updates = { aggressiveness: suggested, ...params }
-    const res = await fetch(`/api/${exchange}/regime/config${pairQuery || ''}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    })
-    setApplying(false)
-    if (res.ok) {
-      addToast?.({
-        type: 'success',
-        title: 'Aggressiveness applied',
-        message: `${currentLabel} → ${suggestedLabel} (suggested by long-term bias)`,
+    try {
+      const params = computeAggressivenessParams(suggested, presets)
+      const updates = { aggressiveness: suggested, ...params }
+      const res = await fetch(`/api/${exchange}/regime/config${pairQuery || ''}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
       })
-      onConfigUpdate()
-    } else {
-      const err = await res.json().catch(() => ({}))
-      addToast?.({
-        type: 'error',
-        title: 'Could not apply suggested level',
-        message: (err.errors && err.errors[0]) || err.error || `HTTP ${res.status}`,
-      })
+      if (res.ok) {
+        addToast?.({
+          type: 'success',
+          title: 'Aggressiveness applied',
+          message: `${currentLabel} → ${suggestedLabel} (suggested by long-term bias)`,
+        })
+        onConfigUpdate()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        addToast?.({
+          type: 'error',
+          title: 'Could not apply suggested level',
+          message: (err.errors && err.errors[0]) || err.error || `HTTP ${res.status}`,
+        })
+      }
+    } catch (err) {
+      addToast?.({ type: 'error', title: 'Could not apply suggested level', message: err.message || 'Network error' })
+    } finally {
+      setApplying(false)
     }
   }
 
@@ -455,7 +460,7 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
 }
 
 // Aggressiveness control component
-function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, presets }) {
+function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, presets, addToast }) {
   const [updating, setUpdating] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [previewLevel, setPreviewLevel] = useState(null)
@@ -467,19 +472,27 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
     if (level === currentLevel || updating) return
 
     setUpdating(true)
-    const params = computeAggressivenessParams(level, presets)
-    const updates = { aggressiveness: level, ...params }
+    try {
+      const params = computeAggressivenessParams(level, presets)
+      const updates = { aggressiveness: level, ...params }
 
-    const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    })
+      const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      })
 
-    if (res.ok) {
-      onConfigUpdate()
+      if (res.ok) {
+        onConfigUpdate()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: (err.errors && err.errors[0]) || err.error || `HTTP ${res.status}` })
+      }
+    } catch (err) {
+      addToast?.({ type: 'error', title: 'Could not update aggressiveness', message: err.message || 'Network error' })
+    } finally {
+      setUpdating(false)
     }
-    setUpdating(false)
   }
 
   const handlePreview = (level) => {
@@ -818,56 +831,73 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
   // DCA conversion handlers
   const handlePreviewConvert = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preview: true, merge: true }),
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Preview Failed', message: err.error || 'Could not preview conversion' })
-      return
+    try {
+      const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preview: true, merge: true }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        addToast({ type: 'error', title: 'Preview Failed', message: err.error || 'Could not preview conversion' })
+        return
+      }
+      const data = await res.json()
+      setConvertPreview(data)
+      setShowConvertConfirm(true)
+    } catch (err) {
+      addToast({ type: 'error', title: 'Preview Failed', message: err.message || 'Network error' })
     }
-    const data = await res.json()
-    setConvertPreview(data)
-    setShowConvertConfirm(true)
   }, [exchange, addToast])
 
   const handleExecuteConvert = useCallback(async () => {
     setConverting(true)
-    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preview: false, merge: convertPreview?.merge }),
-    })
-    setConverting(false)
-    setShowConvertConfirm(false)
-    setConvertPreview(null)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preview: false, merge: convertPreview?.merge }),
+      })
+      setShowConvertConfirm(false)
+      setConvertPreview(null)
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Conversion Failed', message: err.error || 'Could not convert DCA orders' })
-      return
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        addToast({ type: 'error', title: 'Conversion Failed', message: err.error || 'Could not convert DCA orders' })
+        return
+      }
+
+      const data = await res.json()
+      addToast({
+        type: 'success',
+        title: data.summary?.totalBodies ? 'DCA Orders Merged' : 'DCA Orders Converted',
+        message: `${data.summary?.pendingOrders || 0} positions imported. ${data.summary?.totalBodies ? `Total bodies: ${data.summary.totalBodies}.` : ''} Start the regime engine to place sell orders.`,
+      })
+      // Refresh status and fills
+      fetchStatus()
+      fetchFills()
+      setDcaState(null)
+    } catch (err) {
+      setShowConvertConfirm(false)
+      setConvertPreview(null)
+      addToast({ type: 'error', title: 'Conversion Failed', message: err.message || 'Network error' })
+    } finally {
+      setConverting(false)
     }
-
-    const data = await res.json()
-    addToast({
-      type: 'success',
-      title: data.summary?.totalBodies ? 'DCA Orders Merged' : 'DCA Orders Converted',
-      message: `${data.summary?.pendingOrders || 0} positions imported. ${data.summary?.totalBodies ? `Total bodies: ${data.summary.totalBodies}.` : ''} Start the regime engine to place sell orders.`,
-    })
-    // Refresh status and fills
-    fetchStatus()
-    fetchFills()
-    setDcaState(null)
   }, [exchange, addToast, fetchStatus, fetchFills, convertPreview?.merge])
 
   // Initial load only - no polling needed, socket provides live updates
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      await Promise.all([fetchStatus(), fetchConfig(), fetchFills(), fetchCachedChartData(), fetchPresets()])
-      setLoading(false)
+      try {
+        await Promise.all([fetchStatus(), fetchConfig(), fetchFills(), fetchCachedChartData(), fetchPresets()])
+      } catch {
+        // Leave whatever state the individual fetches already set — loading
+        // below still clears so the page never gets stuck on "Loading…".
+      } finally {
+        setLoading(false)
+      }
     }
     load()
   }, [exchange, fetchStatus, fetchConfig, fetchFills, fetchCachedChartData, fetchPresets])
@@ -875,9 +905,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   // Resume from drawdown pause (confirmed via modal — project forbids window.confirm)
   const handleResumeDrawdown = async () => {
     setDrawdownResumeConfirm(false)
-    const res = await fetch(`/api/${exchange}/regime/resume-drawdown${pairQuery}`, { method: 'POST' })
-    if (res.ok) await fetchStatus()
-    else addToast({ type: 'error', title: 'Resume failed', message: `HTTP ${res.status}` })
+    try {
+      const res = await fetch(`/api/${exchange}/regime/resume-drawdown${pairQuery}`, { method: 'POST' })
+      if (res.ok) await fetchStatus()
+      else addToast({ type: 'error', title: 'Resume failed', message: `HTTP ${res.status}` })
+    } catch (err) {
+      addToast({ type: 'error', title: 'Resume failed', message: err.message || 'Network error' })
+    }
   }
 
   // Preview recalculate
@@ -2223,6 +2257,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   pairQuery={pairQuery}
                   onConfigUpdate={fetchConfig}
                   presets={presets}
+                  addToast={addToast}
                 />
 
                 <div className="grid grid-cols-3 gap-4 text-xs">

@@ -22,30 +22,37 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const pairQuery = buildPairQuery(pair)
 
   const fetchData = useCallback(async () => {
-    const [fillsRes, statusRes, ordersRes, configRes] = await Promise.all([
-      fetch(`/api/${exchange}/regime/fills${pairQuery}`),
-      fetch(`/api/${exchange}/regime/status${pairQuery}`),
-      fetch(`/api/${exchange}/regime/open-orders${pairQuery}`),
-      fetch(`/api/${exchange}/config${pairQuery}`),
-    ])
+    try {
+      const [fillsRes, statusRes, ordersRes, configRes] = await Promise.all([
+        fetch(`/api/${exchange}/regime/fills${pairQuery}`),
+        fetch(`/api/${exchange}/regime/status${pairQuery}`),
+        fetch(`/api/${exchange}/regime/open-orders${pairQuery}`),
+        fetch(`/api/${exchange}/config${pairQuery}`),
+      ])
 
-    if (fillsRes.ok) {
-      const data = await fillsRes.json()
-      setFills(data.fills || [])
+      if (fillsRes.ok) {
+        const data = await fillsRes.json()
+        setFills(data.fills || [])
+      }
+      if (statusRes.ok) {
+        const data = await statusRes.json()
+        setStatus(data.status)
+      }
+      if (ordersRes.ok) {
+        const data = await ordersRes.json()
+        setOpenOrders(data.orders || [])
+      }
+      if (configRes.ok) {
+        const data = await configRes.json()
+        setProductId(data.config?.productId || data.productId || null)
+      }
+    } catch {
+      // Leave whatever data is already populated — the 10s poll below will
+      // retry, and loading still clears so the page never gets stuck on
+      // "Loading…" if the very first poll hits a network hiccup.
+    } finally {
+      setLoading(false)
     }
-    if (statusRes.ok) {
-      const data = await statusRes.json()
-      setStatus(data.status)
-    }
-    if (ordersRes.ok) {
-      const data = await ordersRes.json()
-      setOpenOrders(data.orders || [])
-    }
-    if (configRes.ok) {
-      const data = await configRes.json()
-      setProductId(data.config?.productId || data.productId || null)
-    }
-    setLoading(false)
   }, [exchange, pairQuery])
 
   useEffect(() => {

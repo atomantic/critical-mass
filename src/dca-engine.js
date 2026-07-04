@@ -260,7 +260,13 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     return { status: 'already_ran', lastRunId: state.lastRunId, intervalType: config.intervalType, exchange };
   }
 
-  // Check Fibonacci sell fill FIRST (before buying more)
+  // Check Fibonacci sell fill FIRST (before buying more). If a prior
+  // interval's placeFibonacciSellOrder retry threw before it could
+  // re-consolidate a later buy into this order (issue #200, Bug A),
+  // updateAfterFibSellFill detects that excess against the
+  // fibSellOrderCovered* snapshot and re-seeds it into the fresh cycle
+  // rather than dropping it here — so fibPosition may land on a nonzero
+  // re-seeded value below, not always 0.
   if (isFibonacci && state.fibActiveSellOrderId) {
     const fibFill = await orderManager.checkFibonacciSellFill(state.fibActiveSellOrderId, adapter);
     if (fibFill) {
@@ -268,7 +274,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       stateTracker.updateAfterFibSellFill(state, fibFill);
       logger.logFibSellFilled(fibFill, state, cyclePosition, exchange);
       stateTracker.saveState(state, exchange);
-      logger.log('INFO', `[${exchange}] Fibonacci cycle complete - resetting to position 0`);
+      logger.log('INFO', `[${exchange}] Fibonacci cycle complete - now at position ${state.fibPosition || 0}`);
       tradeEvents.cycleComplete(exchange, 'fib_cycle_complete', { profit: fibFill.netProceeds, buysInCycle: cyclePosition });
     }
   }
@@ -521,13 +527,14 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
             // fibActiveSellOrderId intact so next cycle's fill check resolves it
             throw new Error(`fill details unavailable for filled fib sell ${state.fibActiveSellOrderId}`);
           }
+          // buy_n (and any earlier buy left un-consolidated by a prior failed
+          // retry) was already folded into fibCumulative* by updateAfterFibBuy
+          // above and by earlier intervals; updateAfterFibSellFill detects
+          // that excess against the fibSellOrderCovered* snapshot and re-seeds
+          // it into the fresh cycle automatically — it is NOT dropped on reset
+          // (issue #200, Bug A). The fund debit for buy_n already ran in
+          // updateAfterFibBuy and is NOT repeated here.
           stateTracker.updateAfterFibSellFill(state, fibFill);
-          // The just-executed buy_n was already folded into the cumulative
-          // totals by updateAfterFibBuy above; the sell-fill reset just zeroed
-          // them, so re-seed the fresh cycle from buy_n or it is dropped from
-          // cycle accounting (issue #200, Bug A). The fund debit for buy_n
-          // already ran in updateAfterFibBuy and is NOT repeated here.
-          stateTracker.seedFibCycleFromBuy(state, buyResult);
           stateTracker.saveState(state, exchange);
           logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange);
           // Now place new sell order for this buy

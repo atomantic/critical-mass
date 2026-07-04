@@ -200,7 +200,14 @@ async function validateEndpointUrl(url) {
     return { valid: false, error: `Endpoint scheme must be http or https, got: ${parsed.protocol}` };
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  // URL's hostname getter retains brackets on an IPv6 literal (e.g. "[::1]",
+  // not "::1") — but net.isIP/isIPv4/isIPv6 and dns.lookup all require the
+  // unbracketed form. Left bracketed, every IPv6-literal check below silently
+  // no-ops: the textual blocklist never matches (private literals fall
+  // through to a DNS lookup that throws ENOTFOUND, "failing closed" for the
+  // wrong reason) AND legitimate public IPv6-literal endpoints are wrongly
+  // rejected as unresolvable.
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
 
   // Rule 2: fast textual checks (localhost, bare IPs) before DNS round-trip
   const textCheck = checkHostnameTextual(hostname);

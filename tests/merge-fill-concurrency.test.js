@@ -342,6 +342,51 @@ describe('#196 manualMergeBody — lock acquisition', () => {
     assert.equal(flagDuringMerge, true, 'lock held during merge');
     assert.equal(eng._test.getFlags().mergeInProgress, false, 'lock released after merge');
   });
+
+  it('two genuinely concurrent manualMergeBody calls: exactly one succeeds, the other is rejected busy', async () => {
+    // Unlike the flag-driven tests above (which pre-set mergeInProgress before
+    // calling), this fires two REAL overlapping calls via Promise.all and holds
+    // the first deep inside its critical section (past the synchronous
+    // check-then-set, into the awaited cancelBodyTpOrder call) before letting
+    // the second one run — proving the lock acquisition itself serializes
+    // concurrent callers, not just that a pre-set flag is honored.
+    const gate = deferred();
+    // A single successful merge cancels BOTH bodies' existing TPs (source and
+    // target) before placing one new consolidated TP — so 2 calls is the
+    // expected count for exactly one merge. A leaked lock letting the busy
+    // call also enter the critical section would show up as a THIRD (or
+    // more) call, not as a change in the success/busy outcome below, since
+    // both calls race the same gate once opened.
+    let cancelCalls = 0;
+    const eng = makeEngine({
+      bodies: [makeBody('a', 50000, 0.01, 'tp-a'), makeBody('b', 51000, 0.01, 'tp-b')],
+      executor: {
+        cancelBodyTpOrder: async () => {
+          cancelCalls++;
+          await gate.promise; // hold call 1 inside the lock until we release it below
+          return { cancelled: true };
+        },
+      },
+    });
+
+    const call1 = eng.manualMergeBody('a', { targetId: 'b' });
+    await tick(); // let call1 run past its synchronous check-then-set and into cancelBodyTpOrder
+    const call2 = eng.manualMergeBody('a', { targetId: 'b' }); // fires while call1 genuinely holds the lock
+
+    gate.resolve();
+    const [r1, r2] = await Promise.all([call1, call2]);
+
+    const succeeded = [r1, r2].filter((r) => r.success);
+    const busy = [r1, r2].filter((r) => !r.success);
+    assert.equal(succeeded.length, 1, `exactly one concurrent merge should succeed, got: ${JSON.stringify([r1, r2])}`);
+    assert.equal(busy.length, 1);
+    assert.match(busy[0].message, /in progress/i);
+    assert.equal(cancelCalls, 2, 'the busy call never entered the critical section — only the one successful merge\'s two TP cancels ran');
+
+    // Consistent final state: exactly one merged body, not a corrupted double-merge.
+    const bodies = eng._getPositionState().celestialBodies;
+    assert.equal(bodies.length, 1, 'source folded into target exactly once');
+  });
 });
 
 // ---------------------------------------------------------------------------

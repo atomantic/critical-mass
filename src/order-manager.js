@@ -177,10 +177,28 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
   const baseCurrency = getBaseCurrency(config.productId);
   log('INFO', `Placing post-only sell for ${sellQuantity} ${baseCurrency} at ${sellPrice}`);
 
-  const sellResult = await adapter.placeLimitSell(config.productId, sellQuantity, sellPrice);
+  // An ambiguous 'unknown' outcome here (network error after the POST may
+  // have reached the exchange) is reconciled by client_order_id, mirroring
+  // the buy-side fix (issue #226) — otherwise this sell would be treated as
+  // a clean failure while a real order may be resting live and untracked.
+  const sellResult = await placeWithUnknownReconcile(
+    adapter,
+    config.productId,
+    () => adapter.placeLimitSell(config.productId, sellQuantity, sellPrice)
+  );
 
   if (!sellResult.success) {
     throw new Error(`Limit sell failed: ${sellResult.errorMessage}`);
+  }
+
+  // A reconciled placement only carries orderId/clientOrderId (the exchange
+  // lookup that adopted it doesn't echo back the limit price/size we
+  // requested) — fill in the locally-known request parameters so callers
+  // (e.g. state-tracker's attachSellOrder, which reads sellOrder.limitPrice
+  // for accounting) see the same shape as a normal placement success.
+  if (sellResult.reconciled) {
+    sellResult.baseSize = sellQuantity;
+    sellResult.limitPrice = sellPrice;
   }
 
   log('INFO', `Sell order placed: ${sellResult.orderId}`);
@@ -256,9 +274,21 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
       continue;
     }
 
-    const sellResult = await adapter.placeLimitSell(config.productId, sellQuantity, sellPrice);
+    // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
+    // sell-side follow-up) instead of letting it fall through to the
+    // clean-failure retry below, which could re-place against an order that
+    // actually reached the exchange.
+    const sellResult = await placeWithUnknownReconcile(
+      adapter,
+      config.productId,
+      () => adapter.placeLimitSell(config.productId, sellQuantity, sellPrice)
+    );
 
     if (sellResult.success) {
+      if (sellResult.reconciled) {
+        sellResult.baseSize = sellQuantity;
+        sellResult.limitPrice = sellPrice;
+      }
       return sellResult;
     }
 
@@ -552,10 +582,22 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
     log('WARN', `Fibonacci sell price $${sellPrice.toFixed(2)} below market $${currentPrice.toFixed(2)}, adjusting to $${adjustedPrice.toFixed(2)}`);
   }
 
-  const sellResult = await adapter.placeLimitSell(config.productId, sellQuantity, adjustedPrice);
+  // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
+  // sell-side follow-up) instead of treating it as a clean failure — a real
+  // consolidated sell may have reached the exchange despite the network error.
+  const sellResult = await placeWithUnknownReconcile(
+    adapter,
+    config.productId,
+    () => adapter.placeLimitSell(config.productId, sellQuantity, adjustedPrice)
+  );
 
   if (!sellResult.success) {
     throw new Error(`Fibonacci sell order failed: ${sellResult.errorMessage}`);
+  }
+
+  if (sellResult.reconciled) {
+    sellResult.baseSize = sellQuantity;
+    sellResult.limitPrice = adjustedPrice;
   }
 
   log('INFO', `Fibonacci sell order placed: ${sellResult.orderId}`);

@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { executeDailyBuy, placeWithUnknownReconcile } = require('../src/order-manager');
+const { executeDailyBuy, placeWithUnknownReconcile, placeSellOrder, placeSellOrderWithRetry, placeFibonacciSellOrder } = require('../src/order-manager');
 
 // ---------------------------------------------------------------------------
 // #226 — order-manager reconciles an ambiguous 'unknown' placement by
@@ -83,6 +83,78 @@ describe('executeDailyBuy — unknown-outcome reconciliation (issue #226)', () =
       () => executeDailyBuy({ productId: 'BTC-USDC', holdbackPercent: 20 }, 100, adapter),
       /Market buy failed/
     );
+  });
+});
+
+describe('sell placement — unknown-outcome reconciliation (issue #226 sell-side follow-up)', () => {
+  it('placeSellOrder adopts a reconciled order and fills in the requested size/price', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      placeLimitSell: async () => { placeCalls++; throw unknownError('coid-sell-1'); },
+      findOrderByClientOrderId: async () => ({ orderId: 'real-sell-1', status: 'OPEN' }),
+    };
+    const config = { productId: 'BTC-USDC', holdbackPercent: 20, sellMarkupPercent: 5 };
+    const buyDetails = { assetAmount: 0.01, price: 50000 };
+
+    const result = await placeSellOrder(config, buyDetails, adapter);
+
+    assert.equal(placeCalls, 1, 'must NOT re-place a possibly-executed sell');
+    assert.equal(result.orderId, 'real-sell-1');
+    assert.equal(result.reconciled, true);
+    // Locally-known request params must be filled in — a reconciled lookup
+    // doesn't echo back the limit price/size, and state-tracker's
+    // attachSellOrder reads sellOrder.limitPrice directly for accounting.
+    assert.equal(result.baseSize, 0.01 * (1 - 20 / 100));
+    assert.equal(result.limitPrice, 50000 * (1 + 5 / 100));
+  });
+
+  it('placeSellOrder fails cleanly when the sell genuinely never landed', async () => {
+    const adapter = {
+      placeLimitSell: async () => { throw unknownError('coid-sell-2'); },
+      findOrderByClientOrderId: async () => null,
+    };
+    const config = { productId: 'BTC-USDC', holdbackPercent: 20, sellMarkupPercent: 5 };
+
+    await assert.rejects(
+      () => placeSellOrder(config, { assetAmount: 0.01, price: 50000 }, adapter),
+      /Limit sell failed/
+    );
+  });
+
+  it('placeSellOrderWithRetry adopts a reconciled order without exhausting retries', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      getCurrentPrice: async () => 40000,
+      placeLimitSell: async () => { placeCalls++; throw unknownError('coid-sell-3'); },
+      findOrderByClientOrderId: async () => ({ orderId: 'real-sell-3', status: 'OPEN' }),
+    };
+    const config = { productId: 'BTC-USDC', holdbackPercent: 10, sellMarkupPercent: 10 };
+    const buyDetails = { assetAmount: 0.02, price: 50000 };
+
+    const result = await placeSellOrderWithRetry(config, buyDetails, adapter, 3);
+
+    assert.equal(placeCalls, 1, 'reconciled on the first attempt, no blind retry');
+    assert.equal(result.orderId, 'real-sell-3');
+    assert.equal(result.baseSize, 0.02 * (1 - 10 / 100));
+    assert.equal(result.limitPrice, 50000 * 1.1);
+  });
+
+  it('placeFibonacciSellOrder adopts a reconciled consolidated sell', async () => {
+    let placeCalls = 0;
+    const adapter = {
+      getCurrentPrice: async () => 1000,
+      placeLimitSell: async () => { placeCalls++; throw unknownError('coid-sell-4'); },
+      findOrderByClientOrderId: async () => ({ orderId: 'real-sell-4', status: 'OPEN' }),
+    };
+    const config = { productId: 'ETH-USD', holdbackPercent: 15, sellMarkupPercent: 5 };
+
+    const result = await placeFibonacciSellOrder(config, 1.0, 900, null, adapter);
+
+    assert.equal(placeCalls, 1);
+    assert.equal(result.sellOrder.orderId, 'real-sell-4');
+    assert.equal(result.sellOrder.reconciled, true);
+    assert.ok(result.sellOrder.limitPrice > 0, 'limitPrice filled in from the local request, not left undefined');
+    assert.equal(result.sellOrder.baseSize, result.sellQuantity);
   });
 });
 

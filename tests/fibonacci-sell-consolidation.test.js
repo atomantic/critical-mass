@@ -6,8 +6,11 @@ const { placeFibonacciSellOrder } = require('../src/order-manager');
 const {
   seedFibCycleFromBuy,
   creditFibPartialSell,
+  updateAfterFibSellOrder,
+  updateAfterFibSellFill,
+  updateAfterFibBuy,
 } = require('../src/state-tracker');
-const { getFibonacciSellQuantity } = require('../src/fibonacci-utils');
+const { getFibonacciSellQuantity, createInitialFibState } = require('../src/fibonacci-utils');
 
 // ---------------------------------------------------------------------------
 // issue #200 — Fibonacci sell-consolidation state machine
@@ -225,6 +228,79 @@ describe('seedFibCycleFromBuy (Bug A) — re-seed after mid-cycle reset', () => 
     assert.equal(state.fibPosition, 1, 'one buy accumulated → next buy is Fibonacci position 1');
     assert.ok(state.fibCycleStartTime, 'a fresh cycle start time is stamped');
     assert.equal(state.usdcFundSize, 5000, 'must NOT re-debit the fund (buy already debited upstream)');
+  });
+});
+
+describe('updateAfterFibSellFill (Bug A, top-of-cycle path) — re-seed excess from a stale-order fill', () => {
+  it('re-seeds a later buy that never got re-consolidated into the sell that just filled', () => {
+    // interval 1: buy_1, then a consolidated sell is placed and snapshots
+    // fibSellOrderCovered* at buy_1's totals.
+    const state = { ...createInitialFibState(), usdcFundSize: 5000, outstandingOrdersAsset: 0, outstandingOrdersUSDC: 0, assetReserves: 0 };
+    const config = {};
+    const buy1 = { assetAmount: 0.5, usdcAmount: 1000, netFees: 2 };
+    updateAfterFibBuy(state, buy1, config);
+    const sellOrder1 = { orderId: 'sell-1', limitPrice: 2200 };
+    updateAfterFibSellOrder(state, sellOrder1, 0.4, 0.1);
+
+    // interval 2: buy_2 folds into cumulative, but the retry to re-consolidate
+    // the sell (placeFibonacciSellOrder) throws — state.fibActiveSellOrderId
+    // and fibSellOrderCovered* are left pointing at the buy_1-only snapshot.
+    const buy2 = { assetAmount: 0.3, usdcAmount: 600, netFees: 1 };
+    updateAfterFibBuy(state, buy2, config);
+
+    assert.equal(state.fibCumulativeAsset, 0.8, 'cumulative folds both buys');
+    assert.equal(state.fibSellOrderCoveredAsset, 0.5, 'covered snapshot still only reflects buy_1');
+
+    // interval 3 (top-of-cycle check): the STALE sell_1 (sized only for
+    // buy_1) fills. It must not wipe out buy_2's uncovered contribution.
+    const fibFill = { filledSize: 0.4, fillValue: 880, fees: 0, rebates: 0, netFees: 0, netProceeds: 880 };
+    updateAfterFibSellFill(state, fibFill);
+
+    assert.ok(Math.abs(state.fibCumulativeAsset - 0.3) < 1e-9, 'buy_2 survives as the seed of the fresh cycle, not dropped');
+    assert.ok(Math.abs(state.fibCumulativeCost - 601) < 1e-9, "buy_2's cost basis (usdcAmount + netFees) is preserved");
+    assert.equal(state.fibPosition, 1, 'one uncovered buy accumulated → next buy is Fibonacci position 1');
+    assert.ok(state.fibCycleStartTime, 'a fresh cycle start time is stamped');
+  });
+
+  it('is a no-op reset when the fill fully covers current cumulative (normal path)', () => {
+    const state = { ...createInitialFibState(), usdcFundSize: 5000, outstandingOrdersAsset: 0, outstandingOrdersUSDC: 0, assetReserves: 0 };
+    const config = {};
+    const buy1 = { assetAmount: 0.5, usdcAmount: 1000, netFees: 2 };
+    updateAfterFibBuy(state, buy1, config);
+    const sellOrder1 = { orderId: 'sell-1', limitPrice: 2200 };
+    updateAfterFibSellOrder(state, sellOrder1, 0.4, 0.1);
+
+    // No further buys — the sell that fills fully covers current cumulative.
+    const fibFill = { filledSize: 0.4, fillValue: 880, fees: 0, rebates: 0, netFees: 0, netProceeds: 880 };
+    updateAfterFibSellFill(state, fibFill);
+
+    assert.equal(state.fibCumulativeAsset, 0, 'cycle fully resets when nothing was left uncovered');
+    assert.equal(state.fibCumulativeCost, 0);
+    assert.equal(state.fibPosition, 0);
+  });
+
+  it('treats a pre-migration state with no coverage snapshot as fully covered (no spurious re-seed)', () => {
+    // A state persisted before fibSellOrderCovered* existed has the field
+    // missing entirely (undefined), not 0 — must not be treated as "nothing
+    // covered", or the first fill after upgrading mid-cycle would wrongly
+    // re-seed its whole current cumulative as spurious excess.
+    const state = {
+      fibCumulativeAsset: 0.8,
+      fibCumulativeCost: 1600,
+      fibPosition: 2,
+      fibPendingHoldback: 0.1,
+      outstandingOrdersAsset: 0.4,
+      outstandingOrdersUSDC: 880,
+      usdcFundSize: 5000,
+      assetReserves: 0,
+      // fibSellOrderCoveredAsset/Cost/Position intentionally absent
+    };
+    const fibFill = { filledSize: 0.4, fillValue: 880, fees: 0, rebates: 0, netFees: 0, netProceeds: 880 };
+    updateAfterFibSellFill(state, fibFill);
+
+    assert.equal(state.fibCumulativeAsset, 0, 'no snapshot → treated as fully covered, cycle resets cleanly');
+    assert.equal(state.fibCumulativeCost, 0);
+    assert.equal(state.fibPosition, 0);
   });
 });
 

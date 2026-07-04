@@ -198,6 +198,21 @@ describe('validateEndpointUrl — private/localhost URLs rejected', () => {
       assert.equal(result.valid, false, `Expected ${url} to be rejected but it was accepted`);
     });
   }
+
+  // Regression: a bracketed IPv6-literal URL's hostname keeps its brackets
+  // (new URL('http://[::1]/').hostname === '[::1]', not '::1'), which used to
+  // make every IPv6 check below silently no-op — the private literal fell
+  // through to a DNS lookup on the literal '[::1]' string, which throws
+  // ENOTFOUND and "failed closed" for the wrong reason. Pin the actual reason
+  // so a future regression (e.g. an unrelated tweak to hostname normalization)
+  // that reintroduces the bracket bug is caught even though `valid: false`
+  // alone wouldn't change.
+  for (const url of ['http://[::1]/api', 'http://[::]/api', 'http://[fc00::1]/api', 'http://[::ffff:127.0.0.1]/api']) {
+    it(`rejects ${url} via the textual blocklist, not an accidental DNS failure`, async () => {
+      const result = await validateEndpointUrl(url);
+      assert.match(result.error, /private\/reserved range/i, `expected a textual-blocklist rejection, got: ${result.error}`);
+    });
+  }
 });
 
 describe('validateEndpointUrl — public URLs accepted (DNS stubbed)', () => {
@@ -223,6 +238,10 @@ describe('validateEndpointUrl — public URLs accepted (DNS stubbed)', () => {
     'https://api.anthropic.com',
     'http://1.1.1.1/api',
     'https://8.8.8.8',
+    // Bracketed public IPv6 literal — regression guard for the hostname
+    // bracket-stripping fix (a legitimate public IPv6 endpoint must not be
+    // wrongly rejected as "could not be resolved").
+    'http://[2606:4700:4700::1111]/',
   ];
 
   for (const url of publicUrls) {

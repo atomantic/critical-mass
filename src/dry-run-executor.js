@@ -635,9 +635,15 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * @param {number} assetQty - BTC quantity to sell
    * @param {number} tpPrice - Take-profit price
    * @param {string} bodyId - Celestial body ID
+   * @param {number} [avgBuyPrice] - The body's real average buy price (caller's
+   *   body.avgPrice), if known. Preferred over getAverageEntryPrice()'s
+   *   cross-body running average, which never resets in a celestial-hierarchy
+   *   engine (no legacy single-cycle TP ever fills to reset it) and drifts
+   *   arbitrarily far from this specific body's actual entries in a trending
+   *   market (issue #213E follow-up).
    * @returns {Promise<{success: boolean, orderId?: string, errorMessage?: string}>}
    */
-  const placeBodyTpOrder = async (assetQty, tpPrice, bodyId) => {
+  const placeBodyTpOrder = async (assetQty, tpPrice, bodyId, avgBuyPrice) => {
     const roundedPrice = roundPrice(tpPrice, priceIncrement);
     const roundedQty = roundAsset(assetQty);
     const orderId = generateOrderId();
@@ -662,7 +668,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     // in the per-side entry fee. Falls back to the TP price only when no buy
     // fills exist yet (e.g. core migration), since there's no entry to price.
     const feeRate = config.feeRate ?? 0.001; // ?? honors an explicit 0 (zero-fee dry run)
-    const avgEntryPrice = getAverageEntryPrice() || roundedPrice;
+    const avgEntryPrice = avgBuyPrice || getAverageEntryPrice() || roundedPrice;
     const entryNotional = roundedQty * avgEntryPrice;
     const costBasis = entryNotional + (entryNotional * feeRate);
     bodyTpOrders.set(bodyId, {

@@ -4190,7 +4190,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     let result;
     try {
-      result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id);
+      // body.avgPrice is the body's real, already-tracked average buy price —
+      // pass it through so the dry-run executor can seed this body's own
+      // cost basis from it instead of falling back to a global cross-body
+      // running average that drifts in a trending market (issue #213E
+      // follow-up: that fallback is the PRIMARY path in a celestial-hierarchy
+      // engine, since it never trades through the legacy single-cycle path
+      // that resets it). No-op for the live executor, which already tracks
+      // cost basis on `body.costBasis` independently of order placement.
+      result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id, body.avgPrice);
     } catch (err) {
       console.log(`⚠️ [${exchange}] Body TP placement error for ${body.id.slice(-8)}: ${err.message}`);
       return false;
@@ -4307,17 +4315,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // engine's terminal handleOrderFill cleanup would log a spurious "orphan" warning
       // without this markSettled.
       console.log(`📋 [${exchange}] TP filled during cancel-and-replace, routing to fill handler: ${result.filledOrderId}`);
-      const orderStatus = await adapter.getOrder(result.filledOrderId).catch(() => null);
-      if (orderStatus) {
+      // placeTakeProfitOrder's cancel attempt already fetched this order's terminal
+      // status to discover the fill — use those fields directly rather than
+      // re-fetching via a second, redundant getOrder() call whose own failure
+      // would otherwise silently drop the fill entirely (issue #227 follow-up).
+      // Fall back to a fresh fetch only if that data is missing for some reason.
+      let fillData = result.filledSize > 0 ? result : null;
+      if (!fillData) {
+        fillData = await adapter.getOrder(result.filledOrderId).catch(() => null);
+      }
+      if (fillData) {
         orderExecutor.markSettled(result.filledOrderId);
         await handleOrderFill({
           orderId: result.filledOrderId,
           side: 'sell',
           status: 'FILLED',
-          filledSize: parseFloat(orderStatus.filledSize || 0),
-          filledValue: parseFloat(orderStatus.filledValue || 0),
-          averageFilledPrice: parseFloat(orderStatus.averageFilledPrice || 0),
-          totalFees: parseFloat(orderStatus.totalFees || 0),
+          filledSize: parseFloat(fillData.filledSize || 0),
+          filledValue: parseFloat(fillData.filledValue || 0),
+          averageFilledPrice: parseFloat(fillData.averageFilledPrice || 0),
+          totalFees: parseFloat(fillData.totalFees || 0),
         });
       }
       return;
@@ -5225,8 +5241,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const resetCycleBuys = async () => {
     if (!isRunning) return { success: false, message: 'Engine not running' };
-    if (mergeInProgress || reconcileInProgress) {
-      return { success: false, message: 'A merge or reconcile is in progress — try again' };
+    // Also gate on fillInProgress (as consolidateDustBodies does, line 3350):
+    // a fill mid-handling may be ingested into the ledger under the
+    // about-to-be-superseded cycle but not yet reflected in
+    // positionState.cycleBuys — resetting the cycle boundary underneath it
+    // desyncs cycleBuys from the ledger and a restart's auto-correct can
+    // silently erase a real buy step (issue #232 follow-up).
+    if (mergeInProgress || reconcileInProgress || fillInProgress > 0) {
+      return { success: false, message: 'A merge, reconcile, or fill is in progress — try again' };
     }
     console.log(`🔄 [${exchange}] Operator reset-cycle: cycleBuys ${positionState.cycleBuys} -> 0, starting new cycle`);
     await resetCycle();
@@ -5573,6 +5595,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       setRecoveryModule: (v) => { recoveryModule = v; },
       setMergeInProgress: (v) => { mergeInProgress = v; },
       setReconcileInProgress: (v) => { reconcileInProgress = v; },
+      setFillInProgress: (v) => { fillInProgress = v; },
       setDustMergeRetryAfter: (v) => { dustMergeRetryAfter = v; },
       getFlags: () => ({ isRunning, mergeInProgress, reconcileInProgress, fillInProgress, dustMergeRetryAfter }),
       consolidateDustBodies,

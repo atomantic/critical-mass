@@ -170,6 +170,37 @@ describe('Race 1: Duplicate TP prevention', () => {
     assert.equal(result.success, false);
   });
 
+  it('filledDuringCancel carries the fill details already fetched during the cancel attempt (issue #227 follow-up)', async () => {
+    // The status read that DISCOVERS the fill (inside safeCancelOrder) already
+    // has filledSize/filledValue/averageFilledPrice/totalFees — the caller
+    // (regime-engine.js) must be able to read them off the result directly
+    // instead of re-fetching via a second getOrder() call whose own failure
+    // would otherwise silently drop the fill.
+    const adapter = createMockAdapter({
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({
+        status: 'FILLED',
+        completionPercentage: 100,
+        filledSize: 0.01,
+        filledValue: 1050,
+        averageFilledPrice: 105000,
+        totalFees: 1.05,
+      }),
+      placeLimitSell: async () => ({ success: true, orderId: 'sell-1' }),
+    });
+
+    const executor = createOrderExecutor('test', createTestConfig(), adapter, 'BTC-USDC');
+
+    await executor.placeTakeProfitOrder(0.01, 100000, { forceUpdate: true });
+    const result = await executor.placeTakeProfitOrder(0.01, 105000, { forceUpdate: true });
+
+    assert.equal(result.filledDuringCancel, true);
+    assert.equal(result.filledSize, 0.01);
+    assert.equal(result.filledValue, 1050);
+    assert.equal(result.averageFilledPrice, 105000);
+    assert.equal(result.totalFees, 1.05);
+  });
+
   it('mutex serializes concurrent TP updates', async () => {
     let sellCallCount = 0;
     const adapter = createMockAdapter({

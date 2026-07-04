@@ -49,59 +49,65 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
   }, [historicalAtr, realtimeAtr])
 
   const fetchData = useCallback(async () => {
-    const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'
-    const [statusRes, configRes, fillsRes, candlesRes, chartDataRes] = await Promise.all([
-      fetch(`/api/${exchange}/regime/status${pairQuery}`),
-      fetch(`/api/${exchange}/regime/config${pairQuery}`),
-      fetch(`/api/${exchange}/regime/fills${pairQuery}`),
-      fetch(`/api/${exchange}/candles${candlesQuery}`),
-      fetch(`/api/${exchange}/regime/chart-data${pairQuery}`),
-    ])
+    try {
+      const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'
+      const [statusRes, configRes, fillsRes, candlesRes, chartDataRes] = await Promise.all([
+        fetch(`/api/${exchange}/regime/status${pairQuery}`),
+        fetch(`/api/${exchange}/regime/config${pairQuery}`),
+        fetch(`/api/${exchange}/regime/fills${pairQuery}`),
+        fetch(`/api/${exchange}/candles${candlesQuery}`),
+        fetch(`/api/${exchange}/regime/chart-data${pairQuery}`),
+      ])
 
-    if (statusRes.ok) {
-      const data = await statusRes.json()
-      setLocalStatus(data.status)
-    }
-    if (configRes.ok) {
-      const data = await configRes.json()
-      setConfig(data.config)
-    }
-    if (fillsRes.ok) {
-      const data = await fillsRes.json()
-      setFills(data.fills || [])
-    }
-    if (candlesRes.ok) {
-      const data = await candlesRes.json()
-      if (data.candles && data.candles.length > 0) {
-        // Convert candles to price history format matching useChartDataBuffer schema
-        const prices = data.candles.map(c => ({
-          timestamp: c.timestamp,
-          price: parseFloat(c.close),
-          high: parseFloat(c.high),
-          low: parseFloat(c.low),
-        })).reverse() // Oldest first
-        setHistoricalPrices(prices)
+      if (statusRes.ok) {
+        const data = await statusRes.json()
+        setLocalStatus(data.status)
+      }
+      if (configRes.ok) {
+        const data = await configRes.json()
+        setConfig(data.config)
+      }
+      if (fillsRes.ok) {
+        const data = await fillsRes.json()
+        setFills(data.fills || [])
+      }
+      if (candlesRes.ok) {
+        const data = await candlesRes.json()
+        if (data.candles && data.candles.length > 0) {
+          // Convert candles to price history format matching useChartDataBuffer schema
+          const prices = data.candles.map(c => ({
+            timestamp: c.timestamp,
+            price: parseFloat(c.close),
+            high: parseFloat(c.high),
+            low: parseFloat(c.low),
+          })).reverse() // Oldest first
+          setHistoricalPrices(prices)
 
-        // Calculate true range from candles (not smoothed ATR, just range per candle)
-        // This provides initial chart data until real-time ATR metrics arrive
-        const trueRangeData = data.candles.map(c => ({
-          timestamp: c.timestamp,
-          atr1m: parseFloat(c.high) - parseFloat(c.low), // True range, not ATR
-          atr5m: null,
-          realizedVol: null,
-          volBaseline: null,
-        })).reverse()
-        setHistoricalAtr(trueRangeData)
+          // Calculate true range from candles (not smoothed ATR, just range per candle)
+          // This provides initial chart data until real-time ATR metrics arrive
+          const trueRangeData = data.candles.map(c => ({
+            timestamp: c.timestamp,
+            atr1m: parseFloat(c.high) - parseFloat(c.low), // True range, not ATR
+            atr5m: null,
+            realizedVol: null,
+            volBaseline: null,
+          })).reverse()
+          setHistoricalAtr(trueRangeData)
+        }
       }
-    }
-    // Initialize chart data buffer from server cache (restores data across page reloads)
-    if (chartDataRes.ok) {
-      const data = await chartDataRes.json()
-      if (data.data) {
-        initializeFromCache(data.data)
+      // Initialize chart data buffer from server cache (restores data across page reloads)
+      if (chartDataRes.ok) {
+        const data = await chartDataRes.json()
+        if (data.data) {
+          initializeFromCache(data.data)
+        }
       }
+    } catch {
+      // Leave whatever chart state is already populated — loading still
+      // clears below so the page never gets stuck on "Loading…" forever.
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }, [exchange, pair, initializeFromCache]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {

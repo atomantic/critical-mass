@@ -11,7 +11,7 @@ const { readFile } = require('fs/promises');
 const path = require('path');
 const { log } = require('../logger');
 const { SENTINEL_DEFAULTS } = require('../config-utils');
-const { validateEndpointUrl } = require('../url-validator');
+const { validateEndpointUrl, safeFetch } = require('../url-validator');
 
 const PROVIDERS_PATH = path.join(__dirname, '..', '..', 'data', 'providers.json');
 
@@ -152,7 +152,11 @@ Return:
     const headers = { 'Content-Type': 'application/json' };
     if (activeProvider.apiKey) headers['Authorization'] = `Bearer ${activeProvider.apiKey}`;
 
-    const response = await fetch(`${activeProvider.endpoint}/chat/completions`, {
+    // safeFetch re-validates every redirect target against the SSRF denylist and
+    // strips the Authorization header on cross-origin redirect — a bare fetch()
+    // here would leak activeProvider.apiKey to a redirect target and only
+    // validated the pre-redirect URL (issue #215-A class of bug).
+    const response = await safeFetch(`${activeProvider.endpoint}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
