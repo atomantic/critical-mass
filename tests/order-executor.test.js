@@ -188,6 +188,115 @@ describe('refreshStaleOrders — CANCELLED with partial fills', () => {
   });
 });
 
+describe('cancelAllEntries — refused-cancel fill handling (issue #209 A)', () => {
+  const restoreEntry = (exec, orderId, placedAt = Date.now()) =>
+    exec.restorePendingOrder(orderId, { type: 'entry', price: 2300, size: 0.1, sizeUsdc: 230, placedAt });
+
+  it('routes a fill through onFillDetected and does NOT count a refused cancel as cancelled', async () => {
+    // Exchange refuses the cancel (resolves {success:false}) because the order
+    // already filled. Without inspecting result.value.success the old code
+    // counted this as cancelled and dropped tracking, so the polling backstop
+    // never saw the fill (invisible asset on Gemini).
+    const captured = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'FILLED', completionPercentage: 100, filledSize: 0.1, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+    });
+    restoreEntry(exec, 'entry-filled');
+
+    const cancelled = await exec.cancelAllEntries();
+
+    assert.equal(cancelled, 0, 'a filled order is not a cancel');
+    assert.equal(captured.length, 1, 'the fill is routed through onFillDetected');
+    assert.equal(captured[0].orderId, 'entry-filled');
+    assert.ok(captured[0].status.placedAt > 0, 'placedAt propagated for fill-time');
+    assert.equal(exec.getPendingCounts().entries, 0, 'order dropped from tracking after fill routed');
+  });
+
+  it('keeps a still-OPEN order tracked when the cancel is refused (does not silently delete)', async () => {
+    // Refused cancel but the order is still live on the exchange. The old code
+    // deleted it anyway; now we keep it so checkPendingOrderFills can still
+    // catch a later fill.
+    const captured = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'OPEN', completionPercentage: 0, filledSize: 0, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+    });
+    restoreEntry(exec, 'entry-open');
+
+    const cancelled = await exec.cancelAllEntries();
+
+    assert.equal(cancelled, 0);
+    assert.equal(captured.length, 0);
+    assert.equal(exec.getPendingCounts().entries, 1, 'still-open order remains tracked for the polling backstop');
+  });
+
+  it('routes partial fills when a refused cancel resolves to CANCELLED, and counts it cancelled', async () => {
+    const captured = [];
+    const entryCancelled = [];
+    const adapter = {
+      cancelOrder: async () => ({ success: false }),
+      getOrder: async () => ({ status: 'CANCELLED', completionPercentage: 20, filledSize: 0.02, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+      onEntryCancelled: (orderId) => entryCancelled.push(orderId),
+    });
+    restoreEntry(exec, 'entry-partial');
+
+    const cancelled = await exec.cancelAllEntries();
+
+    assert.equal(cancelled, 1, 'a genuine CANCELLED counts as cancelled');
+    assert.equal(captured.length, 1, 'partial fill routed before dropping tracking');
+    assert.equal(captured[0].status.filledSize, 0.02);
+    assert.equal(captured[0].status.isPartialFill, true);
+    assert.deepEqual(entryCancelled, ['entry-partial'], 'entry-cancel callback fires');
+    assert.equal(exec.getPendingCounts().entries, 0);
+  });
+
+  it('counts a genuinely-successful cancel and drops tracking', async () => {
+    const adapter = {
+      cancelOrder: async () => ({ success: true }),
+      getOrder: async () => { throw new Error('getOrder should not be needed on a clean cancel'); },
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {});
+    restoreEntry(exec, 'entry-clean-1');
+    restoreEntry(exec, 'entry-clean-2');
+
+    const cancelled = await exec.cancelAllEntries();
+
+    assert.equal(cancelled, 2);
+    assert.equal(exec.getPendingCounts().entries, 0);
+  });
+
+  it('handles a thrown cancel by checking the order rather than blindly deleting', async () => {
+    // A rejected cancel promise where the order turns out to have filled must
+    // still route the fill.
+    const captured = [];
+    const adapter = {
+      cancelOrder: async () => { throw new Error('network blip'); },
+      getOrder: async () => ({ status: 'FILLED', completionPercentage: 100, filledSize: 0.1, side: 'BUY' }),
+    };
+    const exec = createOrderExecutor('gemini', baseConfig(), adapter, 'ETH-USD', {
+      onFillDetected: (orderId, status) => captured.push({ orderId, status }),
+    });
+    restoreEntry(exec, 'entry-threw');
+
+    const cancelled = await exec.cancelAllEntries();
+
+    assert.equal(cancelled, 0);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].orderId, 'entry-threw');
+    assert.equal(exec.getPendingCounts().entries, 0);
+  });
+});
+
 describe('getPendingCounts — ladder_entry visibility (issue #107 M5)', () => {
   const adapter = makeAdapter({ status: 'OPEN' });
 

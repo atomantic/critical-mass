@@ -72,8 +72,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     }
   };
 
-  // Mutex to serialize concurrent TP updates (prevents duplicate TP sells)
-  const tpMutex = createMutex();
+  // Mutex to serialize concurrent TP updates (prevents duplicate TP sells).
+  //
+  // The TP critical section in placeTakeProfitOrder can legitimately run for a
+  // long time: cancelTpOrder → safeCancelOrder polls up to ~5.5s, and each
+  // placeLimitSell has a 30s per-attempt timeout with up to 3 retries + backoff
+  // (~127s worst case under a degraded network). The mutex's auto-release is
+  // ONLY a last-resort deadlock guard and MUST sit well above that ceiling —
+  // at the default 30s it would auto-release mid-section and admit a second
+  // concurrent placeTakeProfitOrder, producing two live TP sells for one
+  // position (issue #209 B). placeTakeProfitOrder already guarantees release
+  // via try/finally, so this timer should essentially never fire.
+  const TP_MUTEX_DEADLOCK_GUARD_MS = 5 * 60 * 1000; // 300s, > 2× the ~127s ceiling
+  const tpMutex = createMutex(TP_MUTEX_DEADLOCK_GUARD_MS);
 
   /**
    * Check if error indicates a post-only rejection (price moved)
@@ -262,23 +273,30 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // (until the mutex auto-release) every later TP placement stalls.
     const release = await tpMutex.acquire();
     try {
+      // Snapshot the TP id we entered the critical section with. If the mutex's
+      // deadlock-guard timer ever fired mid-section and admitted a concurrent
+      // placeTakeProfitOrder, that section would mutate activeTpOrderId out from
+      // under us; we re-read it before placing (below) and abort rather than
+      // create a second live TP sell (issue #209 B).
+      const entryTpId = activeTpOrderId;
+
       // Anti-churn: check if price OR size change is significant (skip if forceUpdate)
-      if (!options.forceUpdate && activeTpOrderId && lastTpPrice > 0 && lastTpSize > 0) {
+      if (!options.forceUpdate && entryTpId && lastTpPrice > 0 && lastTpSize > 0) {
         const priceChange = Math.abs(tpPrice - lastTpPrice) / lastTpPrice * 100;
         const sizeChange = Math.abs(assetQty - lastTpSize) / lastTpSize * 100;
         // Update if neither price nor size changed significantly
         if (priceChange < config.tpUpdateThresholdPct && sizeChange < 1) {
           return {
             success: true,
-            orderId: activeTpOrderId,
+            orderId: entryTpId,
             updated: false, // No update needed
           };
         }
       }
 
       // Cancel existing TP order if present
-      if (activeTpOrderId) {
-        const oldTpId = activeTpOrderId;
+      if (entryTpId) {
+        const oldTpId = entryTpId;
         const cancelResult = await cancelTpOrder();
 
         if (cancelResult.filled) {
@@ -298,6 +316,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             errorMessage: `Cannot place new TP: failed to cancel existing TP order ${oldTpId}`,
           };
         }
+      }
+
+      // Re-read activeTpOrderId under the lock before placing. After our own
+      // cancel above nulls it (or it was null on entry), any non-null value
+      // that differs from what we entered with means a concurrent section
+      // already placed a TP — abort rather than stack a second live sell.
+      if (activeTpOrderId && activeTpOrderId !== entryTpId) {
+        console.log(`⚠️ [${exchange}] activeTpOrderId changed (${entryTpId || 'none'} → ${activeTpOrderId}) during TP placement — aborting to avoid duplicate TP sell`);
+        return {
+          success: false,
+          errorMessage: `Concurrent TP placement detected (activeTpOrderId=${activeTpOrderId})`,
+        };
       }
 
       const roundedPrice = roundPrice(tpPrice, priceIncrement);
@@ -654,11 +684,22 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Cancel all entry orders (for SAFE mode)
-   * Continues on individual cancel failures to ensure all orders are attempted
-   * @returns {Promise<number>} Number of orders cancelled
+   *
+   * All three adapters resolve `{success:false}` (they do NOT reject) when the
+   * exchange refuses a cancel — the canonical reason being that the order
+   * already filled. A refused cancel therefore must NOT be treated as a
+   * successful cancel: before dropping tracking we query the order and route
+   * any fill through `onFillDetected` (mirroring safeCancelOrder /
+   * handleCancelledOrder), otherwise the polling backstop never sees the fill
+   * and on Gemini (no order-events WS) the bought asset stays invisible until
+   * the next restart's catch-up (issue #209 A).
+   *
+   * Continues on individual failures so every order is attempted.
+   * @returns {Promise<number>} Number of orders actually cancelled
    */
   const cancelAllEntries = async () => {
     let cancelled = 0;
+    let filled = 0;
     let failed = 0;
 
     const entryOrders = Array.from(pendingOrders.entries())
@@ -668,20 +709,58 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       entryOrders.map(([orderId]) => adapter.cancelOrder(orderId))
     );
 
-    results.forEach((result, index) => {
-      const [orderId] = entryOrders[index];
-      if (result.status === 'fulfilled') {
-        pendingOrders.delete(orderId);
-        cancelled++;
-      } else {
-        failed++;
-        console.log(`⚠️ [${exchange}] Failed to cancel order ${orderId}: ${result.reason?.message || 'unknown'}`);
-        // Still remove from tracking - order may have filled or been cancelled already
-        pendingOrders.delete(orderId);
-      }
-    });
+    for (let index = 0; index < results.length; index++) {
+      const result = results[index];
+      const [orderId, order] = entryOrders[index];
 
-    console.log(`🚫 [${exchange}] Cancelled ${cancelled} entry orders${failed > 0 ? ` (${failed} failed)` : ''}`);
+      // A thrown cancel (rejected) OR an exchange refusal (resolved
+      // {success:false}) both mean the cancel did not take.
+      const refused = result.status === 'rejected' || !result.value?.success;
+
+      if (!refused) {
+        pendingOrders.delete(orderId);
+        partialFillTracker.delete(orderId);
+        cancelled++;
+        continue;
+      }
+
+      if (result.status === 'rejected') {
+        console.log(`⚠️ [${exchange}] Cancel threw for entry order ${orderId}: ${result.reason?.message || 'unknown'}`);
+      }
+
+      // Refused cancel — inspect terminal state before dropping tracking.
+      const status = await adapter.getOrder(orderId).catch(() => null);
+
+      if (isFilledStatus(status)) {
+        console.log(`📋 [${exchange}] Entry order ${orderId.slice(0, 8)} already filled (discovered during SAFE-mode cancel) — routing fill`);
+        const placedAt = order.placedAt;
+        pendingOrders.delete(orderId);
+        partialFillTracker.delete(orderId);
+        markSettled(orderId);
+        if (callbacks.onFillDetected) {
+          callbacks.onFillDetected(orderId, { ...status, placedAt });
+        }
+        filled++;
+        continue;
+      }
+
+      const normalizedStatus = (status?.status || '').toUpperCase();
+      if (normalizedStatus === 'CANCELLED') {
+        // Cleanly cancelled (possibly with partial fills) — the shared handler
+        // routes any partial through onFillDetected before dropping tracking.
+        handleCancelledOrder(orderId, order, status, 'SAFE-mode cancel');
+        cancelled++;
+        continue;
+      }
+
+      // OPEN / PENDING / unknown / null — the cancel genuinely did not take and
+      // the order may still be live. Keep it tracked so the polling backstop
+      // (checkPendingOrderFills) can still catch a later fill; do NOT delete.
+      failed++;
+      console.log(`⚠️ [${exchange}] Entry order ${orderId} not cancelled (status=${normalizedStatus || 'unknown'}) — keeping tracked for polling backstop`);
+    }
+
+    console.log(`🚫 [${exchange}] Cancelled ${cancelled} entry orders${filled > 0 ? ` (${filled} filled during cancel)` : ''}${failed > 0 ? ` (${failed} failed, still tracked)` : ''}`);
     return cancelled;
   };
 
