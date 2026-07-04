@@ -121,6 +121,47 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     );
   });
 
+  it('routes buy to its own body when the target TP partially fills DURING the cancel (issue #227)', async () => {
+    // The pre-check sees the target TP clean, so the merge proceeds to cancel it —
+    // but the TP partially fills in the cancel race. safeCancelOrder now surfaces
+    // that sold qty via cancelResult.filledSize, so the merge path must react: do
+    // NOT fold the buy onto the target's stale qty; route it to its own body and
+    // clear the target's cancelled TP (the merge-snapshot sell handler later
+    // deducts the sold tranche and re-places a right-sized TP).
+    let getOrderCalls = 0;
+    let cancelCalls = 0;
+    const target = makeBody('target', 50000, 0.01, 'tp-target');
+    const eng = makeEngine({
+      bodies: [target],
+      adapter: {
+        // Pre-check is clean — the partial only surfaces from the cancel result.
+        getOrder: async () => { getOrderCalls++; return { filledSize: 0, status: 'OPEN' }; },
+        getOrderFills: async () => buyFills('buy-new', 0.01, 50000),
+      },
+      executor: {
+        cancelBodyTpOrder: async () => { cancelCalls++; return { cancelled: true, filled: false, filledSize: 0.004 }; },
+      },
+    });
+
+    await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
+
+    const bodies = eng._getPositionState().celestialBodies;
+    assert.equal(getOrderCalls, 1, 'the pre-check ran and saw a clean target');
+    assert.equal(cancelCalls, 1, 'the merge proceeded to cancel the clean target TP');
+
+    assert.equal(bodies.length, 2, 'the buy became its own body instead of folding onto the partially-sold target');
+    const liveTarget = bodies.find(b => b.id === 'target');
+    assert.ok(liveTarget, 'target body survives');
+    assert.ok(Math.abs(liveTarget.assetQty - 0.01) < 1e-9, `target qty not folded into (deduction deferred to sell handler), got ${liveTarget.assetQty}`);
+    assert.equal(liveTarget.tpOrderId, null, 'the cancelled target TP is cleared, not left dangling');
+
+    const newBody = bodies.find(b => b.id !== 'target');
+    assert.ok(
+      (newBody.sourceOrderIds || []).includes('buy-new') || (newBody.buyOrders || []).some(o => o.orderId === 'buy-new'),
+      'the new body owns the incoming buy order',
+    );
+  });
+
   it('DOES merge when the target TP has no partial fill (guard is specific)', async () => {
     const target = makeBody('target', 50000, 0.01, 'tp-target');
     const eng = makeEngine({

@@ -2560,6 +2560,31 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (mergeTarget.tpOrderId) pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
           console.log(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
           mergeTarget = null;
+        } else if (cancelResult.filledSize > 0) {
+          // Partial-during-cancel race (issue #227): the pre-check above saw the
+          // target TP clean, but it partially filled WHILE we were cancelling.
+          // safeCancelOrder now surfaces the sold quantity via filledSize, so we
+          // react to it directly instead of folding the buy onto the target's
+          // now-stale assetQty/costBasis (which still include the just-sold
+          // tranche). Mirror the pre-check: route the buy to its own body and
+          // clear the cancelled TP. The Race-3 snapshot below carries the sold
+          // tranche to the merge-snapshot sell handler, which deducts it from the
+          // target and re-places a correctly-sized TP.
+          console.log(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP filled ${cancelResult.filledSize} ${baseCurrency} during cancel — routing buy to its own body (issue #227)`);
+          if (mergeTarget.tpOrderId) {
+            const soldTp = mergeTarget.tpOrderId;
+            pendingMergeTpOrders.delete(soldTp);
+            completedMergeTpOrders.set(soldTp, { ...mergeTarget });
+            const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
+            ttlTimers.add(t);
+          }
+          // Clear the cancelled TP so no body references a dead order; the
+          // merge-snapshot handler re-places a right-sized TP after deducting.
+          mergeTarget.tpOrderId = null;
+          mergeTarget.tpPrice = 0;
+          mergeTarget.assetOnOrder = 0;
+          saveLiveState();
+          mergeTarget = null;
         } else {
           // Cancel succeeded — move to completed with TTL
           if (mergeTarget.tpOrderId) {
