@@ -484,6 +484,16 @@ const runBacktest = async (params, preFetchedPrices = null) => {
     const { date, high, low, close: closePrice, highOfDay: highPrice } = interval;
     const midPrice = (high + low) / 2;
 
+    // Same-interval sell proceeds must not fund a same-interval buy (#213C).
+    // A sell fills at the interval HIGH, which may print AFTER the buy's MID
+    // within the candle, so crediting immediately lets money arrive before it
+    // exists. Accumulate this interval's proceeds here and only add them to
+    // availableFunds AFTER the buy phase — proceeds become spendable next
+    // interval, matching the existing "new orders can't fill same-interval"
+    // conservatism. Only relevant in fixed-fund mode (unlimited mode never
+    // gates buys on availableFunds).
+    let deferredProceeds = 0;
+
     // 1. SELL CHECK PHASE - Check if any pending orders fill this interval
     const filledThisInterval = [];
 
@@ -504,7 +514,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         totalRebates += sellRebate;
 
         if (hasFixedFund) {
-          availableFunds += netProceeds;
+          deferredProceeds += netProceeds; // credited after buy phase (#213C)
         } else {
           usdcBalance += netProceeds;
         }
@@ -551,7 +561,7 @@ const runBacktest = async (params, preFetchedPrices = null) => {
           totalRebates += sellRebate;
 
           if (hasFixedFund) {
-            availableFunds += netProceeds;
+            deferredProceeds += netProceeds; // credited after buy phase (#213C)
           } else {
             usdcBalance += netProceeds;
           }
@@ -689,9 +699,15 @@ const runBacktest = async (params, preFetchedPrices = null) => {
         assetAmount: 0,
         usdcAmount: 0,
         availableFunds: availableFunds,
-        requiredFunds: targetBuyAmount,
+        requiredFunds: buyCost,
         fibPosition: isFibonacci ? fibPosition : undefined
       });
+    }
+
+    // Credit this interval's deferred sell proceeds now that the buy phase is
+    // done — they become spendable starting next interval (#213C).
+    if (hasFixedFund && deferredProceeds > 0) {
+      availableFunds += deferredProceeds;
     }
 
     // 3. INTERVAL SNAPSHOT
