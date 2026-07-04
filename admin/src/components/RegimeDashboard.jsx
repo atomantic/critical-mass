@@ -1176,6 +1176,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
   // New buys pause when the cycle buy-limit is reached; existing TPs stay active.
   const buysPaused = position?.cycleBuys != null && config?.maxCycleBuys != null && position.cycleBuys >= config.maxCycleBuys
+  // A draining/closed fund's next cycle boundary is its close trigger — the
+  // "resume buying" reset-cycle action is not applicable then (the engine
+  // rejects it server-side too), so hide the button rather than showing an
+  // action that would just fail with a confusing error.
+  const fundLifecycle = status?.lifecycle?.lifecycle
+  const isDrainingOrClosed = fundLifecycle === 'draining' || fundLifecycle === 'closed'
 
   const regimeStyle = REGIME_COLORS[regime.mode] || REGIME_COLORS.HARVEST
   const healthStyle = HEALTH_COLORS[health.mode] || HEALTH_COLORS.ACTIVE
@@ -1271,7 +1277,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               </div>
             </div>
           </div>
-          {isRunning && (
+          {isRunning && !isDrainingOrClosed && (
             <button
               onClick={() => setResetCycleConfirm(true)}
               disabled={resettingCycle}

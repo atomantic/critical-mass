@@ -5250,6 +5250,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (mergeInProgress || reconcileInProgress || fillInProgress > 0) {
       return { success: false, message: 'A merge, reconcile, or fill is in progress — try again' };
     }
+    // resetCycle() treats a DRAINING lifecycle as "this cycle boundary is the
+    // close trigger" and transitions straight to CLOSED (stopping the engine
+    // via onLifecycleClosed) — an operator clicking "resume buying" while the
+    // fund happens to also be draining must not silently close/stop it
+    // instead (issue #232 follow-up).
+    if (positionState.lifecycle === LIFECYCLE.DRAINING || positionState.lifecycle === LIFECYCLE.CLOSED) {
+      return { success: false, message: `Fund lifecycle is ${positionState.lifecycle} — cycle reset is not applicable` };
+    }
     console.log(`🔄 [${exchange}] Operator reset-cycle: cycleBuys ${positionState.cycleBuys} -> 0, starting new cycle`);
     await resetCycle();
     await saveLiveState();

@@ -9,7 +9,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const { fetchAllFeeds } = require('./feed-poller');
-const { classifyByKeywords, classifyByAI, resolveSeverity } = require('./classifier');
+const { classifyByKeywords, classifyByAI, resolveSeverity, sanitizeForTelegram } = require('./classifier');
 const { log } = require('../logger');
 const { tradeEvents } = require('../trade-events');
 
@@ -145,18 +145,28 @@ const createSentinelService = (io, deps) => {
         // Emit via Socket.IO
         io.to('sentinel').emit('sentinel:alert', alert);
 
-        // Emit critical/warning alerts via tradeEvents for Telegram
+        // Emit critical/warning alerts via tradeEvents for Telegram. alert.title
+        // and (when AI classification is off/failed) alert.summary carry raw,
+        // untrusted feed content — sanitizeForTelegram already protects the
+        // AI-derived summary/suggestedAction (issue #212F) but title and the
+        // raw-description fallback were never run through it, so an unescaped
+        // `*`/`_`/`` ` ``/`[`/`]` in a feed item could break Markdown parsing
+        // (silently dropping delivery) or inject fake formatting. Sanitize only
+        // for the Telegram message — the stored/emitted `alert` object keeps
+        // the raw title/summary for the dashboard display.
+        const tgTitle = sanitizeForTelegram(alert.title, 200);
+        const tgSummary = sanitizeForTelegram(alert.summary, 300);
         if (alert.severity === 'critical') {
           tradeEvents.emit('trade', {
             type: 'sentinel_critical',
             exchange: 'sentinel',
-            message: `*NEWS ALERT*\n${alert.title}\n${alert.summary || ''}\n${alert.suggestedAction ? `Action: ${alert.suggestedAction}` : ''}`,
+            message: `*NEWS ALERT*\n${tgTitle}\n${tgSummary}\n${alert.suggestedAction ? `Action: ${alert.suggestedAction}` : ''}`,
           });
         } else if (alert.severity === 'warning') {
           tradeEvents.emit('trade', {
             type: 'sentinel_warning',
             exchange: 'sentinel',
-            message: `*News Warning*\n${alert.title}\n${alert.summary || ''}`,
+            message: `*News Warning*\n${tgTitle}\n${tgSummary}`,
           });
         }
       }

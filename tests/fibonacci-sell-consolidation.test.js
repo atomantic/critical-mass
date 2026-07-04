@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 
 const { placeFibonacciSellOrder } = require('../src/order-manager');
 const {
-  seedFibCycleFromBuy,
   creditFibPartialSell,
   updateAfterFibSellOrder,
   updateAfterFibSellFill,
@@ -15,7 +14,9 @@ const { getFibonacciSellQuantity, createInitialFibState } = require('../src/fibo
 // ---------------------------------------------------------------------------
 // issue #200 — Fibonacci sell-consolidation state machine
 //   Bug A: the alreadyFilled path drops the just-executed buy from cycle
-//          accounting (seedFibCycleFromBuy re-seeds it).
+//          accounting (updateAfterFibSellFill's excess-detection re-seed
+//          handles this generically — see the "top-of-cycle path" describe
+//          block below, which covers both call sites uniformly).
 //   Bug B: a partially-filled previous sell is left live / re-sold from
 //          reserves (placeFibonacciSellOrder now inspects filledSize, cancels
 //          the remainder, credits the executed portion, and shrinks the new
@@ -208,28 +209,13 @@ describe('placeFibonacciSellOrder — fully-open previous sell (cancel and repla
 
 // ===========================================================================
 // state-tracker helpers (Bug A re-seed + Bug B partial credit)
+//
+// The Bug A re-seed itself is covered by the "updateAfterFibSellFill (Bug A,
+// top-of-cycle path)" describe block below — it re-seeds excess generically
+// (any buy folded into cumulative after the last successful consolidation
+// snapshot, not just a single named buy), which is what both the in-cycle
+// and top-of-cycle call sites actually rely on in production.
 // ===========================================================================
-describe('seedFibCycleFromBuy (Bug A) — re-seed after mid-cycle reset', () => {
-  it('re-seeds cumulative cost/asset/position from the just-executed buy', () => {
-    // Simulate: reset zeroed the cycle, but buy_n must not be dropped.
-    const state = {
-      fibCycleStartTime: null,
-      fibCumulativeCost: 0,
-      fibCumulativeAsset: 0,
-      fibPosition: 0,
-      usdcFundSize: 5000,
-    };
-    const buyResult = { assetAmount: 0.5, usdcAmount: 1000, netFees: 2 };
-
-    seedFibCycleFromBuy(state, buyResult);
-
-    assert.equal(state.fibCumulativeCost, 1002, 'cost basis = usdcAmount + netFees');
-    assert.equal(state.fibCumulativeAsset, 0.5);
-    assert.equal(state.fibPosition, 1, 'one buy accumulated → next buy is Fibonacci position 1');
-    assert.ok(state.fibCycleStartTime, 'a fresh cycle start time is stamped');
-    assert.equal(state.usdcFundSize, 5000, 'must NOT re-debit the fund (buy already debited upstream)');
-  });
-});
 
 describe('updateAfterFibSellFill (Bug A, top-of-cycle path) — re-seed excess from a stale-order fill', () => {
   it('re-seeds a later buy that never got re-consolidated into the sell that just filled', () => {

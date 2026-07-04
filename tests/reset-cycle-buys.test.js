@@ -116,6 +116,28 @@ describe('#232 resetCycleBuys() — operator reset to resume buying', () => {
     assert.match(result.message, /merge, reconcile, or fill/i);
   });
 
+  it('refuses when the fund is draining, rather than closing it (issue #232 follow-up)', async () => {
+    // resetCycle() treats a DRAINING lifecycle as the close trigger for the
+    // NEXT cycle boundary and transitions straight to CLOSED (stopping the
+    // engine). An operator clicking "resume buying" must not accidentally
+    // close/stop a draining fund instead.
+    const eng = makeEngine();
+    eng._getPositionState().lifecycle = 'draining';
+    const result = await eng.resetCycleBuys();
+    assert.equal(result.success, false);
+    assert.match(result.message, /draining/i);
+    assert.equal(eng._getPositionState().lifecycle, 'draining', 'lifecycle must not be advanced to closed by a refused reset');
+    assert.equal(eng._getPositionState().cycleBuys, 3, 'cycle counter untouched by the refusal');
+  });
+
+  it('refuses when the fund is already closed (issue #232 follow-up)', async () => {
+    const eng = makeEngine();
+    eng._getPositionState().lifecycle = 'closed';
+    const result = await eng.resetCycleBuys();
+    assert.equal(result.success, false);
+    assert.match(result.message, /closed/i);
+  });
+
   it('refuses while a fill is in progress (issue #232 follow-up)', async () => {
     // A fill mid-handling may already be ingested into the ledger under the
     // about-to-be-superseded cycle but not yet reflected in cycleBuys —

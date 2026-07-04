@@ -676,32 +676,6 @@ const updateAfterFibSellFill = (state, fillDetails) => {
 };
 
 /**
- * Re-seed the Fibonacci cycle cumulative totals from a single buy after a
- * mid-cycle reset. Used when the previous cycle's consolidated sell filled
- * during (or right after) the current interval's buy: updateAfterFibBuy has
- * already folded this buy into the (now-reset) cumulative totals, so the buy
- * would otherwise be dropped from the fresh cycle's accounting (issue #200,
- * Bug A). This only re-seeds the fib cycle fields — the fund debit for this
- * buy already ran in updateAfterFibBuy and must NOT be repeated.
- * @param {BotState} state - Current state
- * @param {BuyResult} buyDetails - The just-executed buy that opens the new cycle
- * @returns {BotState} Updated state
- */
-const seedFibCycleFromBuy = (state, buyDetails) => {
-  const buyNetFees = buyDetails.netFees || 0;
-  const costBasis = buyDetails.usdcAmount + buyNetFees;
-
-  state.fibCycleStartTime = Date.now();
-  state.fibCumulativeCost = costBasis;
-  state.fibCumulativeAsset = buyDetails.assetAmount;
-  // Position 1: one buy accumulated, next buy draws Fibonacci position 1
-  // (mirrors updateAfterFibBuy incrementing after the first accumulation).
-  state.fibPosition = 1;
-
-  return state;
-};
-
-/**
  * Credit the executed portion of a previous cycle sell that was only
  * PARTIALLY_FILLED before being cancelled and rolled into a new consolidated
  * sell (issue #200, Bug B). Unlike updateAfterFibSellFill this does NOT reset
@@ -1093,7 +1067,6 @@ module.exports = {
   updateAfterFibBuy,
   updateAfterFibSellOrder,
   updateAfterFibSellFill,
-  seedFibCycleFromBuy,
   creditFibPartialSell,
   getFibonacciCycleInfo,
   // Regime state management
