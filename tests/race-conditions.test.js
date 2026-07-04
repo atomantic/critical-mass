@@ -55,6 +55,59 @@ describe('Mutex utility', () => {
 
     assert.deepStrictEqual(results, [0, 1, 2]);
   });
+
+  it('auto-releases after the timeout when a holder never releases (deadlock guard)', async () => {
+    // Documents the hazard the tpMutex fix addresses: a small auto-release
+    // timeout admits a second acquirer even though the first never released.
+    const mutex = createMutex(30);
+    const first = await mutex.acquire(); // acquired, intentionally never released
+    void first;
+
+    const start = Date.now();
+    await mutex.acquire(); // only resolves because the 30ms guard fires
+    const waited = Date.now() - start;
+
+    assert.ok(waited >= 25, `second acquire waited for the auto-release (~30ms), got ${waited}ms`);
+    assert.ok(waited < 200, `second acquire did not hang, got ${waited}ms`);
+  });
+
+  it('does NOT auto-release a slow section when the timeout sits above its duration (issue #209 B)', async () => {
+    // The tpMutex now uses a deadlock guard well above the max real critical
+    // section, so a legitimately slow section never admits a concurrent caller.
+    const mutex = createMutex(10_000); // guard far above the section length
+    const events = [];
+
+    const slow = async () => {
+      const release = await mutex.acquire();
+      events.push('slow-start');
+      await new Promise(r => setTimeout(r, 60)); // slow section
+      events.push('slow-end');
+      release();
+    };
+    const other = async () => {
+      const release = await mutex.acquire();
+      events.push('other');
+      release();
+    };
+
+    await Promise.all([slow(), other()]);
+
+    // No mid-section auto-release: the slow section fully completes before the
+    // second caller runs.
+    assert.deepStrictEqual(events, ['slow-start', 'slow-end', 'other']);
+  });
+
+  it('never auto-releases when timeout is 0', async () => {
+    const mutex = createMutex(0);
+    const first = await mutex.acquire(); // never released
+    void first;
+
+    let secondAcquired = false;
+    mutex.acquire().then(() => { secondAcquired = true; });
+    await new Promise(r => setTimeout(r, 80));
+
+    assert.equal(secondAcquired, false, 'timeout=0 means the lock is held until explicitly released');
+  });
 });
 
 // ============================================================================
@@ -139,6 +192,51 @@ describe('Race 1: Duplicate TP prevention', () => {
     assert.ok(r1.success || r2.success);
     // The second call should have cancelled the first's TP (mutex ensures no overlap)
     assert.ok(sellCallCount >= 1);
+  });
+
+  it('concurrent placeTakeProfitOrder under a slow cancel leaves exactly one live TP (issue #209 B)', async () => {
+    // Two placeTakeProfitOrder calls race while each TP cancel is slow. With
+    // the deadlock guard sitting well above the section duration the mutex
+    // fully serializes them, so the position ends with a single live TP sell —
+    // not two (which would over-sell from holdback/reserves).
+    let sellSeq = 0;
+    const live = new Set();      // order IDs currently resting on the "exchange"
+    const cancelledIds = new Set();
+
+    const adapter = createMockAdapter({
+      cancelOrder: async (orderId) => {
+        // Slow cancel: simulate the degraded-network stall that used to trip
+        // the 30s auto-release. Kept short so the test is fast; serialization
+        // is what we assert, not wall-clock.
+        await new Promise(r => setTimeout(r, 30));
+        live.delete(orderId);
+        cancelledIds.add(orderId);
+        return { success: true };
+      },
+      getOrder: async (orderId) =>
+        cancelledIds.has(orderId)
+          ? { status: 'CANCELLED', completionPercentage: 0 }
+          : { status: 'OPEN', completionPercentage: 0 },
+      placeLimitSell: async () => {
+        const orderId = `tp-${++sellSeq}`;
+        live.add(orderId);
+        return { success: true, orderId };
+      },
+    });
+
+    const executor = createOrderExecutor('test', createTestConfig(), adapter, 'BTC-USDC');
+
+    // Seed an existing active TP so both concurrent calls have to cancel first.
+    executor.restorePendingOrder('tp-0', { type: 'take_profit', price: 99000, size: 0.01, sizeUsdc: 990, placedAt: Date.now() });
+    live.add('tp-0');
+
+    await Promise.all([
+      executor.placeTakeProfitOrder(0.01, 100000, { forceUpdate: true }),
+      executor.placeTakeProfitOrder(0.01, 101000, { forceUpdate: true }),
+    ]);
+
+    assert.equal(live.size, 1, `exactly one TP should be live, found ${[...live].join(',')}`);
+    assert.ok(live.has(executor.getActiveTpOrderId()), 'the tracked active TP is the live one');
   });
 });
 
