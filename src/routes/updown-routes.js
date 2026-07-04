@@ -12,7 +12,7 @@ const { exec } = require('child_process');
 const { readFileSync, readdirSync } = fs;
 const { log } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
-const { validateEndpointUrl } = require('../url-validator');
+const { validateEndpointUrl, safeFetch } = require('../url-validator');
 
 const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
@@ -185,7 +185,11 @@ module.exports = (app, deps) => {
     let aiResponse;
     try {
       log('INFO', `🤖 UpDown screenshot → ${providerId}/${selectedModel}`);
-      const response = await fetch(`${provider.endpoint}/chat/completions`, {
+      // safeFetch re-validates every redirect target through validateEndpointUrl,
+      // strips Authorization on cross-origin redirects, and re-checks the
+      // resolved IP at connect time (closes the redirect + TOCTOU SSRF gaps
+      // that a bare fetch() would leave open — issue #207).
+      const response = await safeFetch(`${provider.endpoint}/chat/completions`, {
         method: 'POST',
         headers,
         signal: controller.signal,
@@ -203,7 +207,15 @@ module.exports = (app, deps) => {
       aiResponse = result.choices?.[0]?.message?.content || '';
     } catch (err) {
       clearTimeout(timeout);
+      // safeFetch's redirect/TOCTOU guard errors ("Blocked endpoint...",
+      // "Blocked private/reserved...") can name the internal address it
+      // refused to connect to — log that detail server-side but return a
+      // generic message to the caller (same treatment as the pre-check above).
+      const isSsrfBlock = /^Blocked (endpoint|private)/.test(err.message || '');
       log('ERROR', `🤖 UpDown screenshot AI failed: ${err.message}`);
+      if (isSsrfBlock) {
+        return res.status(502).json({ success: false, error: 'AI provider endpoint is misconfigured. Contact the administrator.' });
+      }
       return res.status(502).json({ success: false, error: `AI request failed: ${err.message}` });
     }
 
