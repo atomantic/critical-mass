@@ -3121,6 +3121,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return;
     }
 
+    // Adapters return exchange-native order — Coinbase/Gemini are newest-first
+    // while volatility-utils assumes oldest-first (issue #203). Sort here so the
+    // hot metrics path never feeds inverted momentum/swing/vol windows.
+    candles1m.sort((a, b) => a.timestamp - b.timestamp);
+    candles5m.sort((a, b) => a.timestamp - b.timestamp);
+
     const metrics = calculateAllMetrics(candles1m, candles5m, marketState.volBaseline, config);
 
     marketState.atr1m = metrics.atr1m;
