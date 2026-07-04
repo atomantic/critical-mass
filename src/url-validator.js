@@ -16,6 +16,8 @@
 
 const dns = require('dns');
 const net = require('net');
+const http = require('http');
+const https = require('https');
 const { promisify } = require('util');
 
 const dnsLookup = promisify(dns.lookup);
@@ -228,4 +230,182 @@ async function validateEndpointUrl(url) {
   return { valid: true };
 }
 
-module.exports = { validateEndpointUrl, isBlockedIPv4, isBlockedIPv6, checkHostnameTextual };
+/**
+ * Build a `dns.lookup`-compatible function to pass as the `lookup` option
+ * on an `http.request`/`https.request` call.
+ *
+ * Why this exists: `validateEndpointUrl()` resolves DNS once, up front.
+ * The actual outbound connection resolves DNS again, independently,
+ * milliseconds later. A hostname whose record flips public -> private
+ * between those two round trips (DNS rebinding) would sail through the
+ * validator and then connect to the private address anyway (TOCTOU).
+ *
+ * This lookup function is invoked by Node's own connection machinery at
+ * the moment the socket is actually opened, so re-checking the resolved
+ * address here closes that gap — the address that gets checked is the
+ * address that gets connected to.
+ *
+ * @returns {(hostname: string, options: object, callback: Function) => void}
+ */
+function createSafeLookup() {
+  return (hostname, options, callback) => {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    dns.lookup(hostname, options, (err, address, family) => {
+      if (err) return callback(err);
+      if (family === 4 && isBlockedIPv4(address)) {
+        return callback(new Error(`Blocked private/reserved IPv4 address for ${hostname}: ${address}`));
+      }
+      if (family === 6 && isBlockedIPv6(address)) {
+        return callback(new Error(`Blocked private/reserved IPv6 address for ${hostname}: ${address}`));
+      }
+      callback(null, address, family);
+    });
+  };
+}
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const DEFAULT_MAX_REDIRECTS = 5;
+const DEFAULT_MAX_RESPONSE_BYTES = 20 * 1024 * 1024; // 20MB
+
+/**
+ * Strip Authorization headers (any casing) from a headers object. Used
+ * whenever a redirect crosses origins so credentials are never re-sent
+ * to a host the caller didn't configure.
+ * @param {Record<string,string>} headers
+ * @returns {Record<string,string>}
+ */
+function stripAuthHeaders(headers) {
+  const out = {};
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === 'authorization') continue;
+    out[key] = headers[key];
+  }
+  return out;
+}
+
+/**
+ * SSRF-safe, redirect-safe replacement for `fetch()`.
+ *
+ * Unlike a plain `fetch(url, { headers })`, this:
+ *  1. Runs every URL — including every redirect target — through
+ *     `validateEndpointUrl()` before connecting (fixes redirect bypass).
+ *  2. Never auto-follows a redirect to an origin different from the one
+ *     that was validated without re-validating it first.
+ *  3. Strips the `Authorization` header whenever a redirect changes
+ *     origin (fixes credential leak on cross-origin redirect).
+ *  4. Uses a connect-time DNS `lookup` hook that re-checks the resolved
+ *     address against the private-range denylist (fixes DNS-rebinding
+ *     TOCTOU — see `createSafeLookup`).
+ *  5. Caps the response body size to avoid unbounded memory growth from
+ *     a malicious or misbehaving remote endpoint.
+ *
+ * Method/body handling on redirect mirrors the WHATWG fetch spec: a 303
+ * always downgrades to GET with no body; a 301/302 downgrades POST to
+ * GET with no body; 307/308 preserve the original method and body.
+ *
+ * @param {string} url
+ * @param {{ method?: string, headers?: Record<string,string>, body?: string, signal?: AbortSignal, maxRedirects?: number, maxResponseBytes?: number }} [options]
+ * @returns {Promise<{ ok: boolean, status: number, headers: { get: (name: string) => string | undefined }, text: () => Promise<string>, json: () => Promise<any> }>}
+ */
+async function safeFetch(url, options = {}) {
+  const {
+    method = 'GET',
+    headers = {},
+    body,
+    signal,
+    maxRedirects = DEFAULT_MAX_REDIRECTS,
+    maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
+  } = options;
+
+  const originalOrigin = new URL(url).origin;
+  let currentUrl = url;
+  let currentMethod = method;
+  let currentHeaders = { ...headers };
+  let currentBody = body;
+
+  for (let attempt = 0; attempt <= maxRedirects; attempt++) {
+    const validation = await validateEndpointUrl(currentUrl);
+    if (!validation.valid) {
+      throw new Error(`Blocked endpoint: ${validation.error}`);
+    }
+
+    const parsed = new URL(currentUrl);
+    if (parsed.origin !== originalOrigin) {
+      currentHeaders = stripAuthHeaders(currentHeaders);
+    }
+
+    const reqHeaders = { ...currentHeaders };
+    if (currentBody != null) {
+      reqHeaders['Content-Length'] = String(Buffer.byteLength(currentBody));
+    } else {
+      delete reqHeaders['Content-Length'];
+      delete reqHeaders['content-length'];
+    }
+
+    const lib = parsed.protocol === 'https:' ? https : http;
+    /** @type {{ status: number, headers: Record<string, string | string[] | undefined>, buffer: Buffer }} */
+    const result = await new Promise((resolve, reject) => {
+      const req = lib.request(parsed, {
+        method: currentMethod,
+        headers: reqHeaders,
+        lookup: createSafeLookup(),
+        signal,
+      }, (res) => {
+        const chunks = [];
+        let total = 0;
+        res.on('data', (chunk) => {
+          total += chunk.length;
+          if (total > maxResponseBytes) {
+            res.destroy();
+            reject(new Error(`Response exceeded maximum size of ${maxResponseBytes} bytes`));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          resolve({ status: res.statusCode, headers: res.headers, buffer: Buffer.concat(chunks) });
+        });
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      if (currentBody != null) req.write(currentBody);
+      req.end();
+    });
+
+    const location = result.headers.location;
+    if (REDIRECT_STATUSES.has(result.status) && location) {
+      currentUrl = new URL(String(location), currentUrl).toString();
+      if (result.status === 303 || ((result.status === 301 || result.status === 302) && currentMethod === 'POST')) {
+        currentMethod = 'GET';
+        currentBody = undefined;
+      }
+      continue;
+    }
+
+    const responseHeaders = result.headers;
+    return {
+      ok: result.status >= 200 && result.status < 300,
+      status: result.status,
+      headers: { get: (name) => {
+        const v = responseHeaders[name.toLowerCase()];
+        return Array.isArray(v) ? v.join(', ') : v;
+      } },
+      text: async () => result.buffer.toString('utf-8'),
+      json: async () => JSON.parse(result.buffer.toString('utf-8')),
+    };
+  }
+
+  throw new Error(`Too many redirects (>${maxRedirects}) for ${url}`);
+}
+
+module.exports = {
+  validateEndpointUrl,
+  isBlockedIPv4,
+  isBlockedIPv6,
+  checkHostnameTextual,
+  createSafeLookup,
+  safeFetch,
+};

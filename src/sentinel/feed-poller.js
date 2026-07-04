@@ -8,6 +8,7 @@
 
 const { XMLParser } = require('fast-xml-parser');
 const { log } = require('../logger');
+const { safeFetch } = require('../url-validator');
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -63,7 +64,11 @@ const fetchFeed = async (feed, timeoutMs = 15000) => {
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let text;
     try {
-      const response = await fetch(feed.url, {
+      // safeFetch validates the URL (and any redirect target) against the
+      // SSRF denylist and re-checks the resolved IP at connect time — a
+      // bare fetch() here would follow redirects to internal addresses
+      // unchecked (issue #215-A).
+      const response = await safeFetch(feed.url, {
         headers: { 'User-Agent': 'CriticalMass-Sentinel/1.0' },
         signal: controller.signal,
       });

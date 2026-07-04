@@ -6,6 +6,7 @@
  */
 
 const { log } = require('../logger');
+const { validateEndpointUrl } = require('../url-validator');
 
 /**
  * @param {import('express').Express} app
@@ -48,7 +49,7 @@ module.exports = (app, deps) => {
     'keywords',
   ]);
 
-  app.put('/api/sentinel/config', (req, res) => {
+  app.put('/api/sentinel/config', async (req, res) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
       return res.status(400).json({ success: false, error: 'Request body must be a JSON object' });
     }
@@ -63,6 +64,23 @@ module.exports = (app, deps) => {
 
     if (Object.keys(sanitized).length === 0) {
       return res.status(400).json({ success: false, error: `No recognised config keys. Allowed: ${[...SENTINEL_CONFIG_ALLOWED_KEYS].join(', ')}` });
+    }
+
+    // SSRF guard (issue #215-A): validate every feed URL at config-write time,
+    // not just before each poll fetch, so an unsafe URL never even lands in
+    // config.json. The poller (feed-poller.js) re-validates before each fetch
+    // too, since config can also be edited by hand outside this endpoint.
+    if (Array.isArray(sanitized.feeds)) {
+      for (const feed of sanitized.feeds) {
+        if (!feed || typeof feed.url !== 'string') {
+          return res.status(400).json({ success: false, error: 'Each feed requires a url string' });
+        }
+        const validation = await validateEndpointUrl(feed.url);
+        if (!validation.valid) {
+          log('WARN', `Sentinel config rejected: unsafe feed url "${feed.url}": ${validation.error}`);
+          return res.status(400).json({ success: false, error: `Feed URL "${feed.url}" is not allowed: ${validation.error}` });
+        }
+      }
     }
 
     updateSentinelConfig(sanitized);
