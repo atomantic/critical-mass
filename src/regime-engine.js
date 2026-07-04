@@ -2571,8 +2571,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // tranche to the merge-snapshot sell handler, which deducts it from the
           // target and re-places a correctly-sized TP.
           console.log(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP filled ${cancelResult.filledSize} ${baseCurrency} during cancel — routing buy to its own body (issue #227)`);
-          if (mergeTarget.tpOrderId) {
-            const soldTp = mergeTarget.tpOrderId;
+          const soldTp = mergeTarget.tpOrderId;
+          if (soldTp) {
             pendingMergeTpOrders.delete(soldTp);
             completedMergeTpOrders.set(soldTp, { ...mergeTarget });
             const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
@@ -2584,6 +2584,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           mergeTarget.tpPrice = 0;
           mergeTarget.assetOnOrder = 0;
           saveLiveState();
+          // cancelBodyTpOrder has just removed this order from ALL executor
+          // tracking (pendingOrders included) — a future poll can no longer find
+          // it to discover the fill, and if this WS connection happens to also
+          // be degraded right now, nothing else will ever invoke the
+          // merge-snapshot sell handler above. We already have everything the
+          // handler needs (cancelResult's fill details), so book it ourselves
+          // immediately instead of hoping a WS event arrives (issue #227
+          // follow-up). handleOrderFill's own dedup guard makes this safe even
+          // if a WS/poll event for the same fill also arrives independently.
+          if (soldTp) {
+            await handleOrderFill(buildPartialFillData(soldTp, 'sell', {
+              status: 'CANCELLED',
+              filledSize: cancelResult.filledSize,
+              filledValue: cancelResult.filledValue,
+              averageFilledPrice: cancelResult.averageFilledPrice,
+            }, { totalFees: cancelResult.totalFees || 0 })).catch((err) => {
+              console.log(`⚠️ [${exchange}] Failed to book merge-target partial fill for ${soldTp.slice(0, 8)} immediately: ${err.message} — relying on a later WS/poll event`);
+            });
+          }
           mergeTarget = null;
         } else {
           // Cancel succeeded — move to completed with TTL

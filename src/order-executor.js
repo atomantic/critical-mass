@@ -188,7 +188,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           return { cancelled: false, filled: true, ...fillDetails(status, resolveFilledSize(status)) };
         }
         if (status && status.status === 'CANCELLED') {
-          return { cancelled: true, filled: false, filledSize: resolveFilledSize(status) };
+          return { cancelled: true, filled: false, ...fillDetails(status, resolveFilledSize(status)) };
         }
         if (attempt < maxAckRetries) {
           console.log(`⚠️ [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} (status=${status?.status || 'unknown'}) — retrying (${attempt + 1}/${maxAckRetries})`);
@@ -209,7 +209,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           if (filledSize > 0) {
             console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} cancelled with ${filledSize} partial fill`);
           }
-          return { cancelled: true, filled: false, filledSize };
+          return { cancelled: true, filled: false, ...fillDetails(verified, filledSize) };
         }
         if (isFilledStatus(verified)) {
           console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
@@ -1065,7 +1065,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * Cancel a specific body TP order
    * @param {string} bodyId - Celestial body ID
    * @param {string} [fallbackOrderId] - Order ID to cancel if body isn't in executor tracking
-   * @returns {Promise<{cancelled: boolean, filled: boolean, filledSize: number}>}
+   * @returns {Promise<{cancelled: boolean, filled: boolean, filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}>}
    */
   const cancelBodyTpOrder = async (bodyId, fallbackOrderId) => {
     const release = await acquireBodyTpMutex(bodyId);
@@ -1089,7 +1089,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         bodyTpOrders.delete(bodyId);
         // filledSize > 0 here means the TP partially filled during the cancel —
         // surfaced (issue #227) so the merge path can react to the sold tranche.
-        return { cancelled: true, filled: false, filledSize: result.filledSize || 0 };
+        // filledValue/averageFilledPrice/totalFees ride along too (issue #227
+        // follow-up) so a caller that needs to book this fill immediately
+        // (rather than hoping a future WS/poll event finds it, when tracking
+        // for this order has just been fully removed above) has everything
+        // needed without a redundant re-fetch.
+        return {
+          cancelled: true,
+          filled: false,
+          filledSize: result.filledSize || 0,
+          filledValue: result.filledValue || 0,
+          averageFilledPrice: result.averageFilledPrice || 0,
+          totalFees: result.totalFees || 0,
+        };
       }
       if (result.filled) {
         tpOrderToKey.delete(orderToCancel);

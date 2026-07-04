@@ -121,13 +121,14 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     );
   });
 
-  it('routes buy to its own body when the target TP partially fills DURING the cancel (issue #227)', async () => {
+  it('routes buy to its own body AND immediately books the sold tranche when the target TP partially fills DURING the cancel (issue #227 follow-up)', async () => {
     // The pre-check sees the target TP clean, so the merge proceeds to cancel it —
     // but the TP partially fills in the cancel race. safeCancelOrder now surfaces
-    // that sold qty via cancelResult.filledSize, so the merge path must react: do
-    // NOT fold the buy onto the target's stale qty; route it to its own body and
-    // clear the target's cancelled TP (the merge-snapshot sell handler later
-    // deducts the sold tranche and re-places a right-sized TP).
+    // that sold qty (plus value/price/fees) via cancelResult, so the merge path
+    // reacts twice: (1) does NOT fold the buy onto the target's stale qty — routes
+    // it to its own body; (2) books the sold tranche itself immediately, rather
+    // than deferring to a future WS/poll event that may never arrive once
+    // cancelBodyTpOrder has already removed the order from executor tracking.
     let getOrderCalls = 0;
     let cancelCalls = 0;
     const target = makeBody('target', 50000, 0.01, 'tp-target');
@@ -136,10 +137,30 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
       adapter: {
         // Pre-check is clean — the partial only surfaces from the cancel result.
         getOrder: async () => { getOrderCalls++; return { filledSize: 0, status: 'OPEN' }; },
-        getOrderFills: async () => buyFills('buy-new', 0.01, 50000),
+        // Fills are keyed by orderId: the buy's own fill for 'buy-new', and the
+        // target TP's partial sell fill for 'tp-target' (the immediate booking).
+        getOrderFills: async (orderId) => {
+          if (orderId === 'tp-target') {
+            return [{
+              tradeId: 'tp-target-t1',
+              orderId: 'tp-target',
+              side: 'sell',
+              price: '50500',
+              size: '0.004',
+              totalCommission: '0.02',
+              rebate: '0',
+              liquidityIndicator: 'MAKER',
+              tradeTime: new Date().toISOString(),
+            }];
+          }
+          return buyFills('buy-new', 0.01, 50000);
+        },
       },
       executor: {
-        cancelBodyTpOrder: async () => { cancelCalls++; return { cancelled: true, filled: false, filledSize: 0.004 }; },
+        cancelBodyTpOrder: async () => {
+          cancelCalls++;
+          return { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
+        },
       },
     });
 
@@ -152,8 +173,9 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     assert.equal(bodies.length, 2, 'the buy became its own body instead of folding onto the partially-sold target');
     const liveTarget = bodies.find(b => b.id === 'target');
     assert.ok(liveTarget, 'target body survives');
-    assert.ok(Math.abs(liveTarget.assetQty - 0.01) < 1e-9, `target qty not folded into (deduction deferred to sell handler), got ${liveTarget.assetQty}`);
-    assert.equal(liveTarget.tpOrderId, null, 'the cancelled target TP is cleared, not left dangling');
+    // 0.01 - 0.004 sold = 0.006 remaining — deducted immediately, not deferred.
+    assert.ok(Math.abs(liveTarget.assetQty - 0.006) < 1e-9, `sold tranche deducted immediately, got ${liveTarget.assetQty}`);
+    assert.ok(liveTarget.tpOrderId && liveTarget.tpOrderId !== 'tp-target', 'a fresh, correctly-sized TP was re-placed on the deducted body');
 
     const newBody = bodies.find(b => b.id !== 'target');
     assert.ok(
