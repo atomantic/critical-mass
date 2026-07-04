@@ -321,15 +321,40 @@ const createGeminiAdapter = (keysPath = null) => {
     const symbol = toGeminiSymbol(productId);
     const clientOrderId = crypto.randomUUID().replace(/-/g, '');
 
-    // Get current price and add slippage for IOC order
-    const currentPrice = await adapter.getCurrentPrice(productId);
+    // Fetch product details so amount/price honor the symbol's tick sizes.
+    // Gemini rejects (InvalidQuantity/InvalidPrice) any value finer than the
+    // symbol's tick, so an un-floored amount like 0.03980002 fails on every
+    // non-1e-8-tick symbol. Mirror the limit paths' floorToIncrement rounding
+    // and min-size guard rather than the old hardcoded toFixed(8)/toFixed(2).
+    // (issue #208B)
+    const product = await adapter.getProductDetails(productId);
+    const currentPrice = product.price;
+    const baseIncrement = parseFloat(product.baseIncrement);
+    const quoteIncrement = parseFloat(product.quoteIncrement);
+    const baseDecimals = incrementToDecimals(product.baseIncrement);
+    const quoteDecimals = incrementToDecimals(product.quoteIncrement);
+
+    // Aggressive IOC limit above market to simulate a market buy.
     const slippagePrice = currentPrice * 1.005; // 0.5% slippage allowance
-    const quantity = quoteAmount / slippagePrice;
+    const roundedPrice = floorToIncrement(slippagePrice, quoteIncrement);
+    const roundedAmount = floorToIncrement(quoteAmount / slippagePrice, baseIncrement);
+
+    const baseMinSize = parseFloat(product.baseMinSize) || baseIncrement;
+    if (roundedAmount < baseMinSize) {
+      return {
+        orderId: '',
+        clientOrderId,
+        success: false,
+        errorMessage: `Order quantity ${quoteAmount / slippagePrice} rounds to ${roundedAmount}, below minimum ${baseMinSize}`,
+        filledSize: 0,
+        filledPrice: 0,
+      };
+    }
 
     const orderPayload = {
       symbol,
-      amount: quantity.toFixed(8),
-      price: slippagePrice.toFixed(2),
+      amount: roundedAmount.toFixed(baseDecimals),
+      price: roundedPrice.toFixed(quoteDecimals),
       side: 'buy',
       type: 'exchange limit',
       client_order_id: clientOrderId,
@@ -338,13 +363,24 @@ const createGeminiAdapter = (keysPath = null) => {
 
     const result = await makeRestRequest('/v1/order/new', orderPayload, { retryRateLimit: false });
 
-    const success = !result.is_cancelled && result.order_id;
+    // An IOC that fills partially before the remainder is cancelled comes back
+    // is_cancelled:true WITH executed_amount > 0. Treat any real execution as a
+    // success and report the actual filled size/price, so the caller records
+    // the money that moved instead of throwing it away as a total failure —
+    // the "money moved, engine recorded nothing" leak class. (issue #208A)
+    const filledSize = parseFloat(result.executed_amount || 0);
+    const filledPrice = parseFloat(result.avg_execution_price || 0);
+    const success = !!result.order_id && (!result.is_cancelled || filledSize > 0);
 
     return {
       orderId: result.order_id,
       clientOrderId,
       success,
-      errorMessage: result.reason || (result.is_cancelled ? 'Order was cancelled' : null),
+      filledSize,
+      filledPrice,
+      errorMessage: success
+        ? (result.is_cancelled ? `Partially filled ${filledSize}; IOC remainder cancelled` : null)
+        : (result.reason || (result.is_cancelled ? 'Order was cancelled' : null)),
     };
   };
 
