@@ -131,3 +131,52 @@ describe('PUT/GET /api/:exchange/regime/config dryRun round-trip', () => {
     assert.equal(getRes.body.config.baseSizeUsdc, 25, 'regime field must still persist');
   });
 });
+
+describe('POST /api/:exchange/regime/reset-cycle (#232)', () => {
+  afterEach(() => mock.restoreAll());
+
+  const setupWithIPC = (request) => {
+    setupFsMocks(BASE_CONFIG);
+    const app = createFakeApp();
+    registerRegimeRoutes(app, { exchangeIPCMap: { cryptocom: { request } } });
+    return app;
+  };
+
+  const req = { params: { exchange: 'cryptocom' }, query: { pair: 'CRO_USD' } };
+
+  it('forwards to the regime:reset-cycle IPC op with the resolved pair', async () => {
+    let seen = null;
+    const app = setupWithIPC((op, payload, exchange, pair) => {
+      seen = { op, payload, exchange, pair };
+      return Promise.resolve({ success: true, message: 'Cycle reset — buying re-enabled', status: { position: { cycleBuys: 0 } } });
+    });
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/reset-cycle', req);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.status.position.cycleBuys, 0, 'resumed cycle reported as 0 buys');
+    assert.equal(seen.op, 'regime:reset-cycle');
+    assert.equal(seen.exchange, 'cryptocom');
+    assert.equal(seen.pair, 'CRO_USD');
+  });
+
+  it('propagates an engine-refusal (merge in progress) as a 400', async () => {
+    const app = setupWithIPC(() => Promise.resolve({ success: false, message: 'A merge or reconcile is in progress — try again' }));
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/reset-cycle', req);
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.success, false);
+    assert.match(res.body.message, /merge or reconcile/i);
+  });
+
+  it('maps an IPC outage to a 503', async () => {
+    const app = setupWithIPC(() => Promise.reject(new Error('connect ECONNREFUSED')));
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/reset-cycle', req);
+
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.success, false);
+  });
+});
