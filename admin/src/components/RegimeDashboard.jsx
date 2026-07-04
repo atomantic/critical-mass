@@ -651,6 +651,8 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [collapseAllConfirm, setCollapseAllConfirm] = useState(false)
   const [drawdownResumeConfirm, setDrawdownResumeConfirm] = useState(false)
   const [collapsingAll, setCollapsingAll] = useState(false)
+  const [resetCycleConfirm, setResetCycleConfirm] = useState(false)
+  const [resettingCycle, setResettingCycle] = useState(false)
   const [tpEditModal, setTpEditModal] = useState(null) // { bodyId, currentTpPct, currentPrice, avgPrice, bodyLabel, inputValue, priceValue, mode: 'pct'|'price' }
   const [settingTp, setSettingTp] = useState(false)
   const [fillSearchId, setFillSearchId] = useState('')
@@ -975,6 +977,32 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }
 
+  // Operator: reset the accumulation cycle to resume buying after the cycle
+  // buy-limit paused new entries. Open positions and their TPs are preserved.
+  const handleResetCycle = async () => {
+    setResettingCycle(true)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/reset-cycle${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
+      if (data.success) {
+        addToast({ type: 'success', title: 'Cycle reset', message: data.message || 'Buying re-enabled' })
+        if (data.status) setSocketStatus(data.status)
+        fetchFills()
+      } else {
+        addToast({ type: 'error', title: 'Reset failed', message: data.message || data.error || 'Unknown error' })
+        if (data.status) setSocketStatus(data.status)
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Reset failed', message: err.message })
+    } finally {
+      setResettingCycle(false)
+      setResetCycleConfirm(false)
+    }
+  }
+
   // Manually set TP target (by % or limit price) for a celestial body
   const handleSetTp = async (mode) => {
     if (settingTp) return // re-entry guard: Enter key bypasses the disabled button state
@@ -1112,6 +1140,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   // Use pendingOrders from dryRunState for dry-run, from status for live
   const pendingOrdersList = isDryRun ? (dryRunState?.pendingOrders || []) : (status?.pendingOrders || [])
 
+  // New buys pause when the cycle buy-limit is reached; existing TPs stay active.
+  const buysPaused = position?.cycleBuys != null && config?.maxCycleBuys != null && position.cycleBuys >= config.maxCycleBuys
+
   const regimeStyle = REGIME_COLORS[regime.mode] || REGIME_COLORS.HARVEST
   const healthStyle = HEALTH_COLORS[health.mode] || HEALTH_COLORS.ACTIVE
   const apy = status?.apy || {}
@@ -1190,6 +1221,32 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             </div>
           </div>
         )
+      )}
+
+      {/* Buys-paused banner: cycle buy-limit reached, new entries paused */}
+      {buysPaused && (
+        <div className="bg-yellow-900/40 border border-yellow-600/60 rounded-lg px-4 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="text-yellow-400 text-xl">⚠</span>
+            <div>
+              <div className="text-yellow-300 font-medium text-sm">
+                New buys paused — cycle buy-limit reached ({position.cycleBuys}/{config.maxCycleBuys})
+              </div>
+              <div className="text-gray-400 text-xs mt-0.5">
+                The bot will not open new buys until a take-profit closes the cycle. Existing take-profit orders remain active.
+              </div>
+            </div>
+          </div>
+          {isRunning && (
+            <button
+              onClick={() => setResetCycleConfirm(true)}
+              disabled={resettingCycle}
+              className="shrink-0 px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
+            >
+              {resettingCycle ? 'Resetting…' : 'Reset cycle & resume buying'}
+            </button>
+          )}
+        </div>
       )}
 
       {(!isRunning && !market.lastPrice && !position.totalAsset) ? (
@@ -3416,6 +3473,37 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 disabled={collapsingAll}
               >
                 {collapsingAll ? 'Collapsing…' : 'Collapse All'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset-cycle confirmation dialog */}
+      {resetCycleConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !resettingCycle && setResetCycleConfirm(false)}>
+          <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white text-lg font-medium mb-3">Reset Cycle & Resume Buying</h3>
+            <p className="text-gray-300 text-sm mb-4">
+              Starts a new accumulation cycle so the bot resumes buying. Your open positions and their take-profit orders are preserved.
+            </p>
+            <p className="text-gray-500 text-xs mb-4">
+              Resets the cycle buy counter ({position.cycleBuys}/{config?.maxCycleBuys}) to 0. The reset is persistent and survives an engine restart.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                onClick={() => setResetCycleConfirm(false)}
+                disabled={resettingCycle}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-yellow-600 hover:bg-yellow-500 rounded transition-colors disabled:opacity-50"
+                onClick={handleResetCycle}
+                disabled={resettingCycle}
+              >
+                {resettingCycle ? 'Resetting…' : 'Reset cycle & resume buying'}
               </button>
             </div>
           </div>

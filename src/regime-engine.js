@@ -5214,6 +5214,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Operator action: reset the accumulation cycle to re-enable buying after the
+   * cycle buy-limit (maxCycleBuys) has paused new entries. Reuses the engine's
+   * persistent resetCycle() primitive — sets cycleBuys=0, starts a new fill-ledger
+   * cycle (so getCurrentCycleAllBuysCount() reads 0 and the reset survives a
+   * restart), preserves open celestial bodies and their take-profits, and resets
+   * risk-manager cycle tracking. Persists immediately so the new cycle boundary
+   * survives a kill.
+   * @returns {Promise<{success: boolean, message: string, status?: Object}>}
+   */
+  const resetCycleBuys = async () => {
+    if (!isRunning) return { success: false, message: 'Engine not running' };
+    if (mergeInProgress || reconcileInProgress) {
+      return { success: false, message: 'A merge or reconcile is in progress — try again' };
+    }
+    console.log(`🔄 [${exchange}] Operator reset-cycle: cycleBuys ${positionState.cycleBuys} -> 0, starting new cycle`);
+    await resetCycle();
+    await saveLiveState();
+    return { success: true, message: 'Cycle reset — buying re-enabled', status: getStatus() };
+  };
+
+  /**
    * Manually set the TP% for a specific celestial body.
    * Cancels the existing TP, then re-places it at the specified percentage above avgPrice.
    * The override is subject to the fee floor (cannot be set so low it loses money).
@@ -5523,6 +5544,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     forceResumeDrawdown,
     manualMergeBody,
     rollupAllBodies,
+    resetCycleBuys,
     setBodyTpPercent,
     setBodyTpPrice,
     rebuildTP,
