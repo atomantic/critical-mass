@@ -27,10 +27,12 @@ function RegimePriceChart({
   const svgRef = useRef(null)
   const [containerWidth, setContainerWidth] = useState(0)
 
-  // Filter to last 1 hour
+  // Filter to last 1 hour and sort by timestamp — defense in depth against any
+  // unsorted/overlapping upstream series (d3.line/d3.area draw in array order,
+  // so an unsorted series produces a line that jumps backward in time).
   const chartData = useMemo(() => {
     const cutoff = Date.now() - 60 * 60 * 1000
-    return priceData.filter(d => d.timestamp > cutoff)
+    return priceData.filter(d => d.timestamp > cutoff).sort((a, b) => a.timestamp - b.timestamp)
   }, [priceData])
 
   useEffect(() => {
