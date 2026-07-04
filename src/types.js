@@ -172,6 +172,8 @@
  * @property {string} clientOrderId - Client-generated order ID
  * @property {boolean} success - Whether order was placed successfully
  * @property {string} [errorMessage] - Error message if order failed
+ * @property {number} [filledSize] - Base-currency amount actually executed (e.g. a partially-filled IOC)
+ * @property {number} [filledPrice] - Average execution price of the fill
  */
 
 /**

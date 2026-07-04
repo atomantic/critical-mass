@@ -221,21 +221,29 @@ const createCoinbaseAdapter = (keysPath = null) => {
    * @returns {Promise<AccountBalance>}
    */
   adapter.getAccountBalance = async (currency) => {
+    // Paginate defensively, mirroring the hardened getOrderFills loop: this API
+    // family can echo a non-empty cursor on the final page, and a stuck cursor
+    // that round-trips to the same page would otherwise spin an infinite loop
+    // on the hot path (entry sizing, reconcile) — burning rate limit until
+    // restart. Guards: honor has_next === false, stop on a repeated cursor,
+    // cap total pages, and encodeURIComponent the opaque cursor token. (#208C)
+    const basePath = '/api/v3/brokerage/accounts?limit=250';
+    const MAX_PAGES = 1000;
     let cursor = null;
     let allMatchingAccounts = [];
 
     // Collect all accounts for this currency across pages
-    do {
-      const apiPath = cursor
-        ? `/api/v3/brokerage/accounts?limit=250&cursor=${cursor}`
-        : '/api/v3/brokerage/accounts?limit=250';
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
       const data = await makeRequest('GET', apiPath);
 
-      const matches = data.accounts.filter(a => a.currency === currency);
+      const matches = (data.accounts || []).filter(a => a.currency === currency);
       allMatchingAccounts = allMatchingAccounts.concat(matches);
 
-      cursor = data.cursor;
-    } while (cursor);
+      const nextCursor = data.cursor;
+      cursor = (data.has_next !== false && nextCursor && nextCursor !== cursor) ? nextCursor : null;
+      if (!cursor) break;
+    }
 
     if (allMatchingAccounts.length === 0) {
       return { available: 0, hold: 0, total: 0 };

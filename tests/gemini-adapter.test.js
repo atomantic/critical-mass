@@ -407,3 +407,107 @@ describe('makeRestRequest 429 handling (issue #193)', () => {
     assert.equal(calls.filter(c => c.endpoint === '/v1/order/new').length, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// placeMarketBuy — tick sizing (issue #208B) + partial-IOC success (issue #208A)
+// ---------------------------------------------------------------------------
+
+describe('gemini placeMarketBuy tick sizing (issue #208B)', () => {
+  const stubProduct = (adapter, overrides = {}) => {
+    adapter.getProductDetails = async () => ({
+      baseIncrement: '0.000001', // 1e-6 tick, like ETH-USD
+      quoteIncrement: '0.01',
+      baseMinSize: '0.0001',
+      quoteMinSize: '0.1',
+      price: 2500,
+      ...overrides,
+    });
+  };
+
+  it('floors amount to the symbol tick and price to the quote increment (not hardcoded toFixed(8)/(2))', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    stubProduct(adapter);
+    const { calls } = installFetchMock((endpoint) => {
+      if (endpoint === '/v1/order/new') {
+        return { order_id: '123', is_cancelled: false, executed_amount: '0.0398', avg_execution_price: '2510.00' };
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    });
+
+    const res = await adapter.placeMarketBuy('ETH-USD', 100);
+
+    const order = calls.find(c => c.endpoint === '/v1/order/new');
+    // 100 / (2500 * 1.005) = 0.039800995... → floored to 1e-6 = 0.039800
+    assert.equal(order.payload.amount, '0.039800');
+    // amount must be an exact multiple of the 1e-6 tick (no finer digits)
+    const amt = parseFloat(order.payload.amount);
+    assert.ok(Math.abs(Math.round(amt / 1e-6) * 1e-6 - amt) < 1e-12, 'amount not a tick multiple');
+    // slippage price 2512.5 floored to 0.01
+    assert.equal(order.payload.price, '2512.50');
+    assert.equal(res.success, true);
+  });
+
+  it('rejects (success:false, no order sent) when the rounded amount is below min order size', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    stubProduct(adapter, { baseMinSize: '0.1' }); // force below-min
+    const { calls } = installFetchMock((endpoint) => {
+      if (endpoint === '/v1/order/new') return { order_id: '1', is_cancelled: false };
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    });
+
+    const res = await adapter.placeMarketBuy('ETH-USD', 100); // ~0.0398 < 0.1
+
+    assert.equal(res.success, false);
+    assert.match(res.errorMessage, /below minimum/);
+    assert.equal(calls.filter(c => c.endpoint === '/v1/order/new').length, 0, 'must not place an under-min order');
+  });
+});
+
+describe('gemini placeMarketBuy partial-IOC handling (issue #208A)', () => {
+  const stubProduct = (adapter) => {
+    adapter.getProductDetails = async () => ({
+      baseIncrement: '0.000001',
+      quoteIncrement: '0.01',
+      baseMinSize: '0.0001',
+      quoteMinSize: '0.1',
+      price: 2500,
+    });
+  };
+
+  it('reports success with the real filled size/price when a partially-filled IOC comes back is_cancelled', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    stubProduct(adapter);
+    installFetchMock((endpoint) => {
+      if (endpoint === '/v1/order/new') {
+        // IOC cancelled the remainder, but part executed.
+        return { order_id: '777', is_cancelled: true, executed_amount: '0.02', avg_execution_price: '2510.00' };
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    });
+
+    const res = await adapter.placeMarketBuy('ETH-USD', 100);
+
+    assert.equal(res.success, true, 'a partial fill must not be reported as total failure');
+    assert.equal(res.orderId, '777');
+    assert.equal(res.filledSize, 0.02);
+    assert.equal(res.filledPrice, 2510);
+    assert.match(res.errorMessage, /Partially filled/);
+  });
+
+  it('still reports failure when an IOC is cancelled with zero executed_amount', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    stubProduct(adapter);
+    installFetchMock((endpoint) => {
+      if (endpoint === '/v1/order/new') {
+        return { order_id: '778', is_cancelled: true, executed_amount: '0', avg_execution_price: '0' };
+      }
+      throw new Error(`unexpected endpoint ${endpoint}`);
+    });
+
+    const res = await adapter.placeMarketBuy('ETH-USD', 100);
+
+    assert.equal(res.success, false);
+    assert.equal(res.filledSize, 0);
+    assert.match(res.errorMessage, /cancelled/i);
+  });
+});

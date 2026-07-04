@@ -30,10 +30,12 @@ const sortParams = (obj, depth = 0) => {
  */
 const buildParamString = (obj, depth = 0) => {
   if (depth > 3 || obj === null || typeof obj !== 'object') {
-    // Strip trailing zeros for decimals as per Crypto.com spec
-    if (typeof obj === 'number') {
-      return obj.toString().replace(/\.?0+$/, '');
-    }
+    // Concatenate numeric values exactly as JS renders them, matching
+    // Crypto.com's reference implementation. Do NOT strip trailing zeros: JS
+    // toString() never emits trailing decimal zeros, so a strip regex only ever
+    // corrupts INTEGERS ending in 0 (300 → "3", 1750000000000 → "175"), which
+    // makes the local HMAC disagree with the server for any numeric param
+    // ending in 0 → signature-mismatch auth failures. (issue #208D)
     return String(obj);
   }
 
