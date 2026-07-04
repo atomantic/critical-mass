@@ -831,7 +831,7 @@ ipcServer.onRequest('regime:unaccounted-fills', async (payload, exchange, pair) 
   }
   const manualTradeStore = getManualTradeStore(exchange, resolvedPair);
 
-  const result = await getUnaccountedFills(exchange, fillLedger, manualTradeStore, { startDate });
+  const result = await getUnaccountedFills(exchange, fillLedger, manualTradeStore, { startDate, pair: resolvedPair });
   return result;
 });
 
