@@ -158,22 +158,29 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const handleSavePresets = async () => {
     setSavingPresets(true)
     setPresetsMessage(null)
-    const res = await fetch('/api/presets/aggressiveness', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(editingPresets),
-    })
-    if (res.ok) {
-      const data = await res.json()
-      setPresets(data.presets)
-      setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
-      setPresetsDirty(false)
-      setPresetsMessage({ type: 'success', text: 'Presets saved!' })
-    } else {
-      const err = await res.json()
-      setPresetsMessage({ type: 'error', text: err.errors?.join(', ') || 'Failed to save' })
+    try {
+      const res = await fetch('/api/presets/aggressiveness', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingPresets),
+      })
+      if (res.ok) {
+        const data = await res.json().catch(() => null)
+        if (data) {
+          setPresets(data.presets)
+          setEditingPresets(JSON.parse(JSON.stringify(data.presets)))
+        }
+        setPresetsDirty(false)
+        setPresetsMessage({ type: 'success', text: 'Presets saved!' })
+      } else {
+        const err = await res.json().catch(() => ({}))
+        setPresetsMessage({ type: 'error', text: err.errors?.join(', ') || 'Failed to save' })
+      }
+    } catch (err) {
+      setPresetsMessage({ type: 'error', text: err.message || 'Failed to save' })
+    } finally {
+      setSavingPresets(false)
     }
-    setSavingPresets(false)
   }
 
   const handleResetPresets = () => {
@@ -215,20 +222,25 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const handleSave = async () => {
     setSaving(true)
     setMessage(null)
-    const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    })
-    if (res.ok) {
-      setMessage({ type: 'success', text: 'Configuration saved!' })
-      setIsDirty(false)
-      onSave?.()
-    } else {
-      const error = await res.json()
-      setMessage({ type: 'error', text: error.error || 'Failed to save' })
+    try {
+      const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      })
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'Configuration saved!' })
+        setIsDirty(false)
+        onSave?.()
+      } else {
+        const error = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: error.error || 'Failed to save' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to save' })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleReset = () => {

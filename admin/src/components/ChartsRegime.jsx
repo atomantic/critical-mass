@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import RegimePriceChart from './charts/RegimePriceChart'
@@ -24,9 +24,29 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
   // Chart data buffering (for real-time updates) with cache support
   const { priceHistory: realtimePrices, atrHistory: realtimeAtr, regimeHistory, initializeFromCache } = useChartDataBuffer(status)
 
-  // Combine historical + real-time data
-  const priceHistory = historicalPrices.length > 0 ? [...historicalPrices, ...realtimePrices] : realtimePrices
-  const atrHistory = historicalAtr.length > 0 ? [...historicalAtr, ...realtimeAtr] : realtimeAtr
+  // Combine historical (1m candle) data with the live buffer. Once the live
+  // buffer has any data it covers the same recent window as the candle
+  // history (the buffer is restored from up to an hour of cached ticks), so
+  // concatenating both wholesale double-covers that window with an unsorted
+  // series — the price/ATR charts then draw a line that jumps backward in
+  // time and redraws the same hour twice. Only keep the candle points that
+  // predate the live buffer's earliest point, and always sort by timestamp
+  // (matches RegimeDashboard, which only ever feeds the live buffer to its chart).
+  const priceHistory = useMemo(() => {
+    const earliestRealtime = realtimePrices[0]?.timestamp
+    const olderHistorical = earliestRealtime != null
+      ? historicalPrices.filter(d => d.timestamp < earliestRealtime)
+      : historicalPrices
+    return [...olderHistorical, ...realtimePrices].sort((a, b) => a.timestamp - b.timestamp)
+  }, [historicalPrices, realtimePrices])
+
+  const atrHistory = useMemo(() => {
+    const earliestRealtime = realtimeAtr[0]?.timestamp
+    const olderHistorical = earliestRealtime != null
+      ? historicalAtr.filter(d => d.timestamp < earliestRealtime)
+      : historicalAtr
+    return [...olderHistorical, ...realtimeAtr].sort((a, b) => a.timestamp - b.timestamp)
+  }, [historicalAtr, realtimeAtr])
 
   const fetchData = useCallback(async () => {
     const candlesQuery = pair ? `?granularity=ONE_MINUTE&limit=60&pair=${encodeURIComponent(pair)}` : '?granularity=ONE_MINUTE&limit=60'

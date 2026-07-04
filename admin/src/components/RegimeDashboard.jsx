@@ -662,6 +662,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [showLadderPanel, setShowLadderPanel] = useState(false)
   const [ladderPreview, setLadderPreview] = useState(null)
   const [ladderEdits, setLadderEdits] = useState(null)
+  // Raw in-progress text for the numeric ladder inputs, so clearing the field to
+  // retype doesn't commit/persist 0 (mirrors ConfigEditor's FormInput draft pattern).
+  const [ladderNumberDraft, setLadderNumberDraft] = useState({})
   const [placingLadder, setPlacingLadder] = useState(false)
   const [cancellingLadder, setCancellingLadder] = useState(false)
   const [capitalAdjustMode, setCapitalAdjustMode] = useState(false)
@@ -950,27 +953,38 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   // Collapse every celestial body into one (cancels all TPs, places one combined TP)
   const handleCollapseAll = async () => {
     setCollapsingAll(true)
-    const res = await fetch(`/api/${exchange}/regime/rollup-all${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    })
-    const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
-    setCollapsingAll(false)
-    setCollapseAllConfirm(false)
-    if (data.success) {
-      addToast({ type: 'success', title: 'Collapse complete', message: data.message || 'Bodies merged' })
-      if (data.status) setSocketStatus(data.status)
-      fetchFills()
-    } else {
-      addToast({ type: 'error', title: 'Collapse failed', message: data.message || data.error || 'Unknown error' })
-      if (data.status) setSocketStatus(data.status)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/rollup-all${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
+      if (data.success) {
+        addToast({ type: 'success', title: 'Collapse complete', message: data.message || 'Bodies merged' })
+        if (data.status) setSocketStatus(data.status)
+        fetchFills()
+      } else {
+        addToast({ type: 'error', title: 'Collapse failed', message: data.message || data.error || 'Unknown error' })
+        if (data.status) setSocketStatus(data.status)
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Collapse failed', message: err.message })
+    } finally {
+      setCollapsingAll(false)
+      setCollapseAllConfirm(false)
     }
   }
 
   // Manually set TP target (by % or limit price) for a celestial body
   const handleSetTp = async (mode) => {
+    if (settingTp) return // re-entry guard: Enter key bypasses the disabled button state
     const value = parseFloat(mode === 'pct' ? tpEditModal.inputValue : tpEditModal.priceValue)
     if (isNaN(value) || value <= 0) return
+    if (mode === 'price' && value <= (tpEditModal.avgPrice || 0)) {
+      // Mirror the "Set Price" button's disabled guard: never allow a TP at or below avg cost.
+      addToast({ type: 'error', title: 'Set TP failed', message: 'Limit price must be above average cost' })
+      return
+    }
     const endpoint = mode === 'pct' ? 'set-body-tp' : 'set-body-tp-price'
     const payload = mode === 'pct' ? { bodyId: tpEditModal.bodyId, tpPct: value } : { bodyId: tpEditModal.bodyId, limitPrice: value }
     setSettingTp(true)
@@ -999,62 +1013,83 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
   // Fetch ladder preview
   const fetchLadderPreview = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/preview-ladder${pairQuery}`)
-    const data = await res.json()
-    if (data.success) {
-      setLadderPreview(data.preview)
-    } else {
+    try {
+      const res = await fetch(`/api/${exchange}/regime/preview-ladder${pairQuery}`)
+      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
+      if (data.success) {
+        setLadderPreview(data.preview)
+      } else {
+        setLadderPreview(null)
+        addToast({ type: 'error', title: 'Preview Failed', message: data.message || 'Could not preview ladder' })
+      }
+    } catch (err) {
       setLadderPreview(null)
-      addToast({ type: 'error', title: 'Preview Failed', message: data.message || 'Could not preview ladder' })
+      addToast({ type: 'error', title: 'Preview Failed', message: err.message })
     }
   }, [exchange, addToast])
 
   // Save ladder config edits
   const saveLadderEdits = useCallback(async (edits) => {
-    const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(edits),
-    })
-    if (res.ok) {
-      await fetchConfig()
-      await fetchLadderPreview()
+    try {
+      const res = await fetch(`/api/${exchange}/regime/config${pairQuery}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(edits),
+      })
+      if (res.ok) {
+        await fetchConfig()
+        await fetchLadderPreview()
+      } else {
+        addToast({ type: 'error', title: 'Save Failed', message: `Could not save ladder settings (HTTP ${res.status})` })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Save Failed', message: err.message })
     }
-  }, [exchange, fetchConfig, fetchLadderPreview])
+  }, [exchange, fetchConfig, fetchLadderPreview, addToast])
 
   // Place ladder orders
   const handlePlaceLadder = async () => {
     setPlacingLadder(true)
-    const res = await fetch(`/api/${exchange}/regime/rebuild-ladder${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    })
-    const data = await res.json()
-    setPlacingLadder(false)
-    if (data.success) {
-      addToast({ type: 'success', title: 'Ladder Placed', message: data.message })
-      if (data.status) setSocketStatus(data.status)
-      setShowLadderPanel(false)
-      setLadderPreview(null)
-    } else {
-      addToast({ type: 'error', title: 'Ladder Failed', message: data.message || 'Could not place ladder orders' })
+    try {
+      const res = await fetch(`/api/${exchange}/regime/rebuild-ladder${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
+      if (data.success) {
+        addToast({ type: 'success', title: 'Ladder Placed', message: data.message })
+        if (data.status) setSocketStatus(data.status)
+        setShowLadderPanel(false)
+        setLadderPreview(null)
+      } else {
+        addToast({ type: 'error', title: 'Ladder Failed', message: data.message || 'Could not place ladder orders' })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Ladder Failed', message: err.message })
+    } finally {
+      setPlacingLadder(false)
     }
   }
 
   const handleCancelLadder = async () => {
     setCancellingLadder(true)
-    const res = await fetch(`/api/${exchange}/regime/cancel-ladder${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    })
-    const data = await res.json()
-    setCancellingLadder(false)
-    if (data.success) {
-      addToast({ type: 'success', title: 'Ladder Cancelled', message: data.message })
-      if (data.status) setSocketStatus(data.status)
-      fetchConfig()
-    } else {
-      addToast({ type: 'error', title: 'Cancel Failed', message: data.message })
+    try {
+      const res = await fetch(`/api/${exchange}/regime/cancel-ladder${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await res.json().catch(() => ({ success: false, message: 'Bad response' }))
+      if (data.success) {
+        addToast({ type: 'success', title: 'Ladder Cancelled', message: data.message })
+        if (data.status) setSocketStatus(data.status)
+        fetchConfig()
+      } else {
+        addToast({ type: 'error', title: 'Cancel Failed', message: data.message })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Cancel Failed', message: err.message })
+    } finally {
+      setCancellingLadder(false)
     }
   }
 
@@ -2206,6 +2241,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           ladderSizeMode: config?.ladderSizeMode ?? status?.config?.ladderSizeMode ?? 'fibonacci',
                           ladderMinSpacingPct: config?.ladderMinSpacingPct ?? status?.config?.ladderMinSpacingPct ?? 0.5,
                         })
+                        setLadderNumberDraft({})
                         fetchLadderPreview()
                       }
                     }}
@@ -2252,12 +2288,21 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <div>
                     <label className="text-[10px] text-gray-400 block mb-1">ATH Drop %</label>
                     <input
-                      type="number"
-                      value={ladderEdits.ladderMaxAthDropPct}
-                      onChange={e => setLadderEdits(prev => ({ ...prev, ladderMaxAthDropPct: parseFloat(e.target.value) || 0 }))}
-                      onBlur={() => saveLadderEdits({ ladderMaxAthDropPct: ladderEdits.ladderMaxAthDropPct })}
+                      type="text"
+                      inputMode="decimal"
+                      value={ladderNumberDraft.ladderMaxAthDropPct ?? ladderEdits.ladderMaxAthDropPct}
+                      onChange={e => {
+                        const raw = e.target.value
+                        setLadderNumberDraft(prev => ({ ...prev, ladderMaxAthDropPct: raw }))
+                        if (raw.trim() === '') return // don't commit 0 on clear
+                        const n = parseFloat(raw)
+                        if (Number.isFinite(n)) setLadderEdits(prev => ({ ...prev, ladderMaxAthDropPct: n }))
+                      }}
+                      onBlur={() => {
+                        setLadderNumberDraft(prev => ({ ...prev, ladderMaxAthDropPct: undefined }))
+                        saveLadderEdits({ ladderMaxAthDropPct: ladderEdits.ladderMaxAthDropPct })
+                      }}
                       className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
-                      min={1} max={99} step={1}
                     />
                   </div>
                   <div>
@@ -2296,12 +2341,21 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <div>
                     <label className="text-[10px] text-gray-400 block mb-1">Min Spacing %</label>
                     <input
-                      type="number"
-                      value={ladderEdits.ladderMinSpacingPct}
-                      onChange={e => setLadderEdits(prev => ({ ...prev, ladderMinSpacingPct: parseFloat(e.target.value) || 0 }))}
-                      onBlur={() => saveLadderEdits({ ladderMinSpacingPct: ladderEdits.ladderMinSpacingPct })}
+                      type="text"
+                      inputMode="decimal"
+                      value={ladderNumberDraft.ladderMinSpacingPct ?? ladderEdits.ladderMinSpacingPct}
+                      onChange={e => {
+                        const raw = e.target.value
+                        setLadderNumberDraft(prev => ({ ...prev, ladderMinSpacingPct: raw }))
+                        if (raw.trim() === '') return // don't commit 0 on clear
+                        const n = parseFloat(raw)
+                        if (Number.isFinite(n)) setLadderEdits(prev => ({ ...prev, ladderMinSpacingPct: n }))
+                      }}
+                      onBlur={() => {
+                        setLadderNumberDraft(prev => ({ ...prev, ladderMinSpacingPct: undefined }))
+                        saveLadderEdits({ ladderMinSpacingPct: ladderEdits.ladderMinSpacingPct })
+                      }}
                       className="w-full bg-gray-700 text-white text-xs rounded px-2 py-1"
-                      min={0.01} max={5} step={0.1}
                     />
                   </div>
                 </div>

@@ -32,14 +32,25 @@ export function useLogStream(processName, { lines = 500 } = {}) {
         setFlushing(false)
       }
     }
+    // On the shared singleton socket, a reconnect (gateway restart, network
+    // blip) drops the server-side subscription without telling this hook —
+    // re-subscribe whenever the socket (re)connects, and stop claiming
+    // "Streaming" the instant it disconnects (mirrors useSentinelSocket /
+    // useSocketPrice, which both re-subscribe in a 'connect' handler).
+    const handleConnect = () => socket.emit('logs:subscribe', { processName, lines })
+    const handleDisconnect = () => setSubscribed(false)
 
     socket.on('logs:line', handleLine)
     socket.on('logs:subscribed', handleSubscribed)
     socket.on('logs:unsubscribed', handleUnsubscribed)
     socket.on('logs:error', handleError)
     socket.on('logs:flushed', handleFlushed)
+    socket.on('connect', handleConnect)
+    socket.on('disconnect', handleDisconnect)
 
-    socket.emit('logs:subscribe', { processName, lines })
+    if (socket.connected) {
+      socket.emit('logs:subscribe', { processName, lines })
+    }
 
     return () => {
       socket.emit('logs:unsubscribe')
@@ -48,6 +59,8 @@ export function useLogStream(processName, { lines = 500 } = {}) {
       socket.off('logs:unsubscribed', handleUnsubscribed)
       socket.off('logs:error', handleError)
       socket.off('logs:flushed', handleFlushed)
+      socket.off('connect', handleConnect)
+      socket.off('disconnect', handleDisconnect)
       setSubscribed(false)
     }
   }, [processName, lines])

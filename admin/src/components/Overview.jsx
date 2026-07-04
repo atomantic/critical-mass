@@ -58,10 +58,14 @@ function Overview() {
   const { statuses: wsStatuses, connected } = useMultiRegimeStatuses()
 
   const refreshExchanges = async () => {
-    const res = await fetch('/api/exchanges')
-    if (res.ok) {
-      const data = await res.json()
-      setExchanges(data.exchanges || [])
+    try {
+      const res = await fetch('/api/exchanges')
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setExchanges(data.exchanges || [])
+      }
+    } catch {
+      // Network hiccup — the existing exchange list stays as-is; caller UI isn't gated on this.
     }
   }
 
@@ -74,24 +78,37 @@ function Overview() {
   // Fetch exchange list and initial statuses
   useEffect(() => {
     const load = async () => {
-      const res = await fetch('/api/exchanges')
-      if (!res.ok) { setLoading(false); return }
-      const data = await res.json()
-      const exchangeList = data.exchanges || []
-      setExchanges(exchangeList)
+      setLoading(true)
+      try {
+        const res = await fetch('/api/exchanges')
+        if (!res.ok) return
+        const data = await res.json().catch(() => ({}))
+        const exchangeList = data.exchanges || []
+        setExchanges(exchangeList)
 
-      // Fetch regime status for each fund in parallel (pair-aware)
-      const entries = await Promise.all(
-        exchangeList.map(async (ex) => {
-          const pairParam = ex.pair || ex.productId || ''
-          const r = await fetch(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`)
-          if (!r.ok) return [fundKey(ex), null]
-          const d = await r.json()
-          return [fundKey(ex), d.status || null]
-        })
-      )
-      setStatusMap(Object.fromEntries(entries))
-      setLoading(false)
+        // Fetch regime status for each fund in parallel (pair-aware). Each fund's
+        // fetch is individually guarded so one network failure doesn't reject the
+        // whole Promise.all and leave every other fund's status unset.
+        const entries = await Promise.all(
+          exchangeList.map(async (ex) => {
+            try {
+              const pairParam = ex.pair || ex.productId || ''
+              const r = await fetch(`/api/${ex.name}/regime/status?pair=${encodeURIComponent(pairParam)}`)
+              if (!r.ok) return [fundKey(ex), null]
+              const d = await r.json().catch(() => ({}))
+              return [fundKey(ex), d.status || null]
+            } catch {
+              return [fundKey(ex), null]
+            }
+          })
+        )
+        setStatusMap(Object.fromEntries(entries))
+      } catch {
+        // Leave whatever exchanges/statusMap we already have — the loading
+        // flag below still clears so the page never gets stuck on "Loading…".
+      } finally {
+        setLoading(false)
+      }
     }
     load()
   }, [])
