@@ -12,6 +12,10 @@ Multi-exchange crypto accumulation engine with adaptive regime detection and cel
   <img src="docs/app_1.png" alt="Critical Mass Dashboard" width="800" />
 </p>
 
+<p align="center">
+  <img src="docs/app_2.png" alt="Critical Mass Systems" width="800" />
+</p>
+
 ## How It Works
 
 Critical Mass supports two trading strategies that can run independently per exchange:
