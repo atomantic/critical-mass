@@ -271,6 +271,9 @@ const createInitialMarketState = () => ({
   vwapDistance: 0,
   recentSwing: 0,
   tradeImbalance: 0,
+  // 24h rolling volume from the ticker feed — consumed by the candle cache's
+  // volume-delta logic (server.js). Without this it was always 0 (issue #202).
+  volume24h: 0,
   momentum: { magnitude: 0, direction: 'neutral' },
   trades: [],
   lastUpdate: 0,
@@ -314,6 +317,57 @@ const createInitialPositionState = () => ({
   pendingLadderOrders: [],  // [{orderId, price, sizeUsdc, ladderIndex}]
   // Legacy satellite state (migrated into celestialState on load)
 });
+
+// REST adapter methods to instrument for health monitoring (issue #211-B).
+// WS/credential helpers are intentionally excluded — only rate-limited REST
+// calls should feed the latency/error/rate-limit SAFE-mode triggers.
+const INSTRUMENTED_REST_METHODS = [
+  'getCandles', 'getOrder', 'getOpenOrders', 'getOrderFills', 'getOrderFillSummary',
+  'placeMarketBuy', 'placeLimitBuy', 'placeLimitSell', 'placeMarketSell', 'placeStopLimitSell',
+  'cancelOrder', 'getAccountBalance', 'getCurrentPrice', 'getBidAsk', 'getProductDetails',
+];
+
+/**
+ * Detect a rate-limit (HTTP 429) from a thrown adapter error.
+ * @param {any} err
+ * @returns {boolean}
+ */
+const isRateLimitError = (err) =>
+  err?.status === 429 || err?.statusCode === 429 || err?.response?.status === 429 ||
+  /\b429\b|rate.?limit/i.test(err?.message || '');
+
+/**
+ * Wrap an adapter's REST methods so every call feeds the health monitor's
+ * latency / error / rate-limit SAFE-mode triggers (issue #211-B). Non-REST
+ * methods (WS, credentials) pass through untouched. Pure functional wrapper —
+ * no try/catch, errors re-thrown after recording.
+ * @param {Object} adapter
+ * @param {Object} healthMonitor
+ * @returns {Object} instrumented adapter
+ */
+const instrumentAdapterForHealth = (adapter, healthMonitor) => {
+  if (!adapter || !healthMonitor) return adapter;
+  const wrapped = { ...adapter };
+  for (const name of INSTRUMENTED_REST_METHODS) {
+    const fn = adapter[name];
+    if (typeof fn !== 'function') continue;
+    wrapped[name] = (...args) => {
+      const startedAt = Date.now();
+      return Promise.resolve(fn.apply(adapter, args))
+        .then((result) => {
+          healthMonitor.recordRestLatency(Date.now() - startedAt);
+          return result;
+        })
+        .catch((err) => {
+          healthMonitor.recordRestLatency(Date.now() - startedAt);
+          if (isRateLimitError(err)) healthMonitor.recordRateLimit();
+          else healthMonitor.recordRestError();
+          throw err;
+        });
+    };
+  }
+  return wrapped;
+};
 
 /**
  * Create regime engine instance.
@@ -383,6 +437,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     },
   });
+
+  // Instrument REST calls so adapter errors/latency/rate-limits actually drive
+  // SAFE-mode triggers (issue #211-B — previously dead code with no call sites).
+  adapter = instrumentAdapterForHealth(adapter, healthMonitor);
 
   const tailEvents = createTailEventsMonitor(exchange, config, {
     onFlashMove: (delta, multiple) => {
@@ -780,6 +838,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Apply capital growth idempotently per sell order (issue #210-B). The credit
+   * is a non-idempotent config.json write; claiming the credit in the fill
+   * ledger (persisted before this write) makes a crash-replay of the same
+   * sellOrderId a no-op instead of a double-apply that inflates the budget cap.
+   * @param {string} sellOrderId
+   * @param {number} pnl
+   * @returns {number} maxUsdcDeployed BEFORE this credit (unchanged when already credited)
+   */
+  const creditCapitalGrowth = (sellOrderId, pnl) => {
+    const prevMaxUsdc = config.maxUsdcDeployed;
+    if (!fillLedger.claimCapitalCredit(sellOrderId)) {
+      console.log(`ℹ️ [${exchange}] Capital growth for ${sellOrderId?.slice(0, 8)} already credited — skipping re-apply (crash-replay idempotency #210-B)`);
+      return prevMaxUsdc;
+    }
+    config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+    updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+    return prevMaxUsdc;
+  };
+
+  /**
    * Check for orders that filled while offline
    * @returns {Promise<{tpFilled: boolean, entriesFilled: number}>}
    */
@@ -932,9 +1010,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // realizedPnL / realizedAssetPnL (and their bodies* mirrors) are derived
           // from buy↔sell cycle pairing; refreshRealizedFromCyclePairs() repopulates them.
 
-          const prevMaxUsdc = config.maxUsdcDeployed;
-          config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-          updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+          const prevMaxUsdc = creditCapitalGrowth(body.tpOrderId, pnl);
 
           positionState.celestialBodies = positionState.celestialBodies.filter(
             b => b.tpOrderId !== body.tpOrderId
@@ -1143,8 +1219,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const savedTotalBTC = positionState.totalAsset;
       const savedCyclesCompleted = positionState.cyclesCompleted;
       // Cross-validate: if fill ledger has buys in the current cycle, the cycle is NOT completed
-      // (saved state may have been corrupted by a previous buggy restart)
-      const fillLedgerHasBuys = fillLedger.getCurrentCycleBuysCount() > 0;
+      // (saved state may have been corrupted by a previous buggy restart). In celestial mode
+      // every engine buy is body-owned, so count ALL buys — getCurrentCycleBuysCount excludes
+      // body-owned buys and would wrongly report an active cycle as completed (issue #210-A).
+      const celestialMode = config.celestialEnabled !== false;
+      const fillLedgerHasBuys = celestialMode
+        ? fillLedger.getCurrentCycleAllBuysCount() > 0
+        : fillLedger.getCurrentCycleBuysCount() > 0;
       const cycleWasCompleted = hasSavedState && savedTotalBTC === 0 && savedCyclesCompleted > 0
         && !fillLedgerHasBuys;
 
@@ -1168,8 +1249,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         lastTpPrice: savedTpPrice,
       };
 
-      // Auto-correct cycleBuys from fill ledger (source of truth)
-      const actualCycleBuys = fillLedger.getCurrentCycleBuysCount();
+      // Auto-correct cycleBuys from fill ledger (source of truth). In celestial
+      // mode all engine buys are body-owned, so count ALL current-cycle buys —
+      // getCurrentCycleBuysCount excludes them and would zero the restored
+      // counter, letting a mid-cycle restart double the per-cycle step exposure
+      // (issue #210-A).
+      const actualCycleBuys = celestialMode
+        ? fillLedger.getCurrentCycleAllBuysCount()
+        : fillLedger.getCurrentCycleBuysCount();
       if (positionState.cycleBuys !== actualCycleBuys) {
         console.log(`🔧 [${exchange}] Auto-correcting cycleBuys: ${positionState.cycleBuys} -> ${actualCycleBuys} (from fill ledger)`);
         positionState.cycleBuys = actualCycleBuys;
@@ -2150,7 +2237,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (isRunning) healthMonitor.recordWsStatus(true);
       },
       onDisconnect: () => {
-        if (isRunning) healthMonitor.recordWsStatus(false);
+        if (isRunning) {
+          healthMonitor.recordWsStatus(false);
+          // Clear the flash-move anchor so the first tick after the gap doesn't
+          // fire a spurious flash-move against a stale pre-disconnect price (#211-D).
+          tailEvents.resetLastPrice();
+        }
       },
       onError: (error) => {
         if (isRunning) console.log(`❌ [${exchange}] WebSocket error: ${error.message}`);
@@ -2169,6 +2261,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     marketState.bid = data.bid;
     marketState.ask = data.ask;
     marketState.spread = data.ask - data.bid;
+    // Carry 24h rolling volume through to the candle cache (issue #202). WS feeds
+    // emit it; nullish-coalesce so a feed without it keeps the prior value.
+    marketState.volume24h = data.volume24h ?? marketState.volume24h;
     marketState.lastUpdate = Date.now();
 
     healthMonitor.recordTickerUpdate();
@@ -2325,6 +2420,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         price: fillData.averageFilledPrice,
         size: fillData.filledSize,
         quoteAmount: fillData.filledSize * fillData.averageFilledPrice,
+        // Carry the known fee in BOTH fee and netFee so ingestFill persists it
+        // instead of defaulting to 0 (issue #210-C).
+        totalFees: fillData.totalFees || 0,
         netFee: fillData.totalFees || 0,
         timestamp: Date.now(),
       };
@@ -2437,6 +2535,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // increment and the body atomic with respect to a retry.
 
       const fillTypeLabel = isLadderFill ? '[LADDER] ' : '';
+
+      // Partial-fill pre-check (mirror _mergeBodyImpl's guard, issue #201). If the
+      // merge target's TP has ALREADY partially filled, merging would fold the new
+      // buy onto the target's stale assetQty/costBasis (which still include the
+      // sold tranche) — leaving the body claiming asset the account no longer
+      // holds and double-attributing the sold tranche's cost. Don't merge; route
+      // the buy to its own new body instead.
+      if (mergeTarget && mergeTarget.tpOrderId) {
+        const targetTpStatus = await adapter.getOrder(mergeTarget.tpOrderId).catch(() => null);
+        if (targetTpStatus && targetTpStatus.filledSize > 0) {
+          console.log(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP partially filled (${targetTpStatus.filledSize} ${baseCurrency}) — routing buy to its own body (issue #201)`);
+          mergeTarget = null;
+        }
+      }
 
       if (mergeTarget) {
         // Race 3: snapshot merge target before cancel in case TP fills in-flight
@@ -2623,12 +2735,38 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         cs.bodiesCompleted += 1;
         positionState.celestialState = cs;
 
-        const prevMaxUsdc = config.maxUsdcDeployed;
-        config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
 
         orderExecutor.removeBodyTracking(fillData.orderId);
+
+        // Deduct the sold tranche from the LIVE merged body (issue #201). If a buy
+        // folded onto this body in the Race-3 window (between the partial-fill
+        // pre-check and the TP cancel), the merged body still contains the qty/cost
+        // this snapshot sell just realized. Without deducting, the body claims asset
+        // the account no longer holds and the sold tranche's cost is double-counted
+        // (once here via bodyPnl, once retained in the merged body's costBasis).
+        const liveMerged = (positionState.celestialBodies || []).find(b => b.id === mergeSnapshot.id);
+        if (liveMerged) {
+          liveMerged.assetQty = roundAsset(Math.max(0, liveMerged.assetQty - summary.totalSize));
+          liveMerged.costBasis = roundUSDC(Math.max(0, liveMerged.costBasis - proratedCostBasis));
+          // The resting TP was sized for the pre-deduction (oversized) qty — cancel
+          // and clear it so a correctly-sized TP is re-placed for the remaining body.
+          if (liveMerged.tpOrderId) {
+            const staleTp = liveMerged.tpOrderId;
+            liveMerged.tpOrderId = null;
+            liveMerged.tpPrice = 0;
+            liveMerged.assetOnOrder = 0;
+            await orderExecutor.cancelBodyTpOrder(liveMerged.id, staleTp).catch(() => {});
+            if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(staleTp);
+          }
+        }
+
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+
+        // Re-place a correctly-sized TP on the deducted body (issue #201).
+        if (liveMerged && liveMerged.assetQty > 0 && !liveMerged.tpOrderId) {
+          await placeBodyTp(liveMerged);
+        }
 
         console.log(`${tierCfg.emoji} [${exchange}] Merge-snapshot TP filled (${mergeSnapshot.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
@@ -2698,10 +2836,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.celestialState = cs;
         // Partial fills are handled naturally — FIFO sees only the actual sold qty.
 
-        // Grow capital
-        const prevMaxUsdc = config.maxUsdcDeployed;
-        config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+        // Grow capital (idempotent per sellOrderId — issue #210-B)
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
 
         if (isPartial) {
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
@@ -2886,9 +3022,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             positionState.assetOnOrder = 0;
           positionState.cyclesCompleted += 1;
 
-          const prevMaxUsdc = config.maxUsdcDeployed;
-          config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-          updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+          const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
 
           console.log(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
@@ -3082,8 +3216,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Update volatility metrics via REST API
    */
   const updateMetrics = async () => {
-    // Check health status (allows auto-recovery from SAFE mode)
-    healthMonitor.checkHealth();
+    // Check health status (allows auto-recovery from SAFE mode). Pass the live
+    // open-order count so a flat engine is exempt from the stale-orders check
+    // (issue #211-A) — nothing can go stale when there are no resting orders.
+    healthMonitor.checkHealth({ openOrderCount: orderExecutor.getPendingCounts().total });
 
     const now = Math.floor(Date.now() / 1000);
     const oneHourAgo = now - 3600;
@@ -3114,6 +3250,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       await ensureTakeProfitPlaced();
       return;
     }
+
+    // Adapters return exchange-native order — Coinbase/Gemini are newest-first
+    // while volatility-utils assumes oldest-first (issue #203). Sort here so the
+    // hot metrics path never feeds inverted momentum/swing/vol windows.
+    candles1m.sort((a, b) => a.timestamp - b.timestamp);
+    candles5m.sort((a, b) => a.timestamp - b.timestamp);
 
     const metrics = calculateAllMetrics(candles1m, candles5m, marketState.volBaseline, config);
 
@@ -3433,6 +3575,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             const bodies = positionState.celestialBodies || [];
             if (bodies.length > 0) {
               celestialHierarchy.syncPositionState(positionState, bodies);
+            }
+            // rebuildPositionFromFills excludes body-owned buys, so the cycleBuys
+            // copied above is 0 in celestial mode — restore it from the all-buys
+            // count so a reconcile-triggered rebuild doesn't wipe the live counter
+            // and re-open per-cycle step exposure (issue #210-A).
+            if (config.celestialEnabled !== false) {
+              positionState.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
             }
             console.log(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies, lifecycle=${positionState.lifecycle || 'n/a'} preserved)`);
           }
@@ -5400,4 +5549,6 @@ module.exports = {
   isBuyAlreadyCommitted,
   shouldSkipBuyRecommit,
   isStrandedDustBody,
+  instrumentAdapterForHealth,
+  isRateLimitError,
 };

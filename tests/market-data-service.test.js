@@ -2109,3 +2109,92 @@ describe('updateMetrics + regime classification (issue #102)', () => {
     assert.equal(svc._test.marketState.lastPrice, 100, 'ticker still updates price');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Candle ordering: consumers must sort oldest-first before metrics (issue #203)
+// ---------------------------------------------------------------------------
+describe('updateMetrics sorts newest-first adapter candles oldest-first (issue #203)', () => {
+  // A strictly RISING series in oldest→newest order. Fed newest-first (the real
+  // Coinbase/Gemini order), the un-sorted metrics path read the oldest candle as
+  // "current" and inverted momentum to 'down' while price was actually rising.
+  const risingOldestFirst = (count, intervalSec, base = 100, step = 1) => {
+    const nowMs = Date.now();
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      const close = base + i * step;
+      out.push({
+        timestamp: nowMs - (count - i) * intervalSec * 1000,
+        open: close - step,
+        high: close + 0.5,
+        low: close - step - 0.5,
+        close,
+        volume: 10,
+      });
+    }
+    return out;
+  };
+
+  it('reports UP momentum for a rising series delivered newest-first', async () => {
+    const svc = createMarketDataService('coinbase');
+    const oldest1m = risingOldestFirst(60, 60);
+    const oldest5m = risingOldestFirst(48, 300);
+    // Deliver newest-first, exactly as the Coinbase/Gemini adapters do.
+    const newestFirst1m = [...oldest1m].reverse();
+    const newestFirst5m = [...oldest5m].reverse();
+    const adapter = {
+      getCandles: async (_p, _s, _e, granularity) =>
+        granularity === 'ONE_MINUTE' ? newestFirst1m : newestFirst5m,
+    };
+
+    await svc._test.updateMetrics(adapter, 'BTC-USDC');
+
+    assert.equal(
+      svc._test.marketState.momentum.direction,
+      'up',
+      'rising price must read as UP momentum after oldest-first sort',
+    );
+    assert.ok(svc._test.marketState.momentum.magnitude > 0, 'momentum magnitude must be non-zero');
+  });
+
+  it('produces identical metrics whether candles arrive oldest- or newest-first', async () => {
+    const oldest1m = risingOldestFirst(60, 60);
+    const oldest5m = risingOldestFirst(48, 300);
+
+    const svcOldest = createMarketDataService('coinbase');
+    await svcOldest._test.updateMetrics({
+      getCandles: async (_p, _s, _e, g) => (g === 'ONE_MINUTE' ? [...oldest1m] : [...oldest5m]),
+    }, 'BTC-USDC');
+
+    const svcNewest = createMarketDataService('coinbase');
+    await svcNewest._test.updateMetrics({
+      getCandles: async (_p, _s, _e, g) => (g === 'ONE_MINUTE' ? [...oldest1m].reverse() : [...oldest5m].reverse()),
+    }, 'BTC-USDC');
+
+    assert.equal(svcOldest._test.marketState.momentum.direction, svcNewest._test.marketState.momentum.direction);
+    assert.ok(Math.abs(svcOldest._test.marketState.atr1m - svcNewest._test.marketState.atr1m) < 1e-9, 'atr1m order-invariant');
+    assert.ok(Math.abs(svcOldest._test.marketState.recentSwing - svcNewest._test.marketState.recentSwing) < 1e-9, 'recentSwing order-invariant');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// volume24h carried from ticker into marketState (issue #202)
+// ---------------------------------------------------------------------------
+describe('handleTicker carries volume24h into marketState (issue #202)', () => {
+  it('initial marketState has a volume24h field defaulting to 0', () => {
+    const svc = createMarketDataService('coinbase');
+    assert.equal(svc._test.marketState.volume24h, 0);
+  });
+
+  it('copies data.volume24h from the ticker into marketState', () => {
+    const svc = createMarketDataService('coinbase');
+    svc._test.handleTicker({ price: 100, bid: 99.9, ask: 100.1, volume24h: 12345.67 });
+    assert.equal(svc._test.marketState.volume24h, 12345.67, 'ticker volume24h must reach marketState');
+  });
+
+  it('keeps the prior volume24h when a tick omits it', () => {
+    const svc = createMarketDataService('coinbase');
+    svc._test.handleTicker({ price: 100, bid: 99.9, ask: 100.1, volume24h: 500 });
+    svc._test.handleTicker({ price: 101, bid: 100.9, ask: 101.1 }); // no volume24h
+    assert.equal(svc._test.marketState.volume24h, 500, 'missing volume24h must not zero the prior value');
+  });
+});

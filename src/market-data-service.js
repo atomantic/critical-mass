@@ -511,6 +511,8 @@ const createMarketDataService = (exchange, pair) => {
     vwapDistance: 0,
     recentSwing: 0,
     momentum: { magnitude: 0, direction: 'neutral' },
+    // 24h rolling volume from the ticker feed (issue #202) — always 0 before.
+    volume24h: 0,
     lastUpdate: 0,
   };
 
@@ -752,6 +754,9 @@ const createMarketDataService = (exchange, pair) => {
     marketState.bid = data.bid;
     marketState.ask = data.ask;
     marketState.spread = data.ask - data.bid;
+    // Carry 24h rolling volume through to consumers (issue #202). WS feeds emit
+    // it; nullish-coalesce so a feed without it keeps the prior value.
+    marketState.volume24h = data.volume24h ?? marketState.volume24h;
     marketState.lastUpdate = Date.now();
 
     // Add to price history
@@ -1548,6 +1553,13 @@ const createMarketDataService = (exchange, pair) => {
       // the EMA with the previous volBaseline (NOT lastPrice) and pass the
       // regime config so atrPeriod/vwapPeriodHours overrides apply.
       const config = getRegimeConfig(exchange, resolvedPair);
+
+      // Adapters return exchange-native order — Coinbase/Gemini are newest-first
+      // while volatility-utils assumes oldest-first (issue #203). Sort here so the
+      // metrics path never feeds inverted momentum/swing/vol windows.
+      candles1m.sort((a, b) => a.timestamp - b.timestamp);
+      candles5m.sort((a, b) => a.timestamp - b.timestamp);
+
       const metrics = calculateAllMetrics(candles1m || [], candles5m || [], marketState.volBaseline, config);
 
       marketState.atr1m = metrics.atr1m;

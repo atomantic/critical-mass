@@ -303,6 +303,17 @@ const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
   };
 
   /**
+   * Clear the flash-move price anchor (call on WS disconnect). The next tick
+   * after a feed gap would otherwise be compared against an arbitrarily-old
+   * price, firing a spurious flash-move + scaling lockout on reconnect
+   * (issue #211-D). Zeroing lastPrice makes the first post-gap tick re-seed
+   * the anchor without triggering a flash.
+   */
+  const resetLastPrice = () => {
+    lastPrice = 0;
+  };
+
+  /**
    * Reset all pause states (for testing or manual reset)
    */
   const reset = () => {
@@ -336,6 +347,7 @@ const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
     getPauseState,
     isScalingDisabled,
     getSummary,
+    resetLastPrice,
     reset,
     cleanup,
   };

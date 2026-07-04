@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody, instrumentAdapterForHealth, isRateLimitError } = require('../src/regime-engine');
 
 describe('cancelPartialFillOrder', () => {
   const makeDeps = ({ cancelOrder, exchange = 'gemini' } = {}) => {
@@ -230,5 +230,80 @@ describe('isStrandedDustBody (issue #189)', () => {
 
   it('handles a null body safely', () => {
     assert.equal(isStrandedDustBody(null, MIN, INC), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adapter health instrumentation (issue #211-B) — wires REST latency/error/
+// rate-limit into the health monitor so the SAFE-mode triggers stop being dead
+// code.
+// ---------------------------------------------------------------------------
+describe('instrumentAdapterForHealth (issue #211-B)', () => {
+  const makeHealthSpy = () => {
+    const calls = { latency: [], error: 0, rateLimit: 0 };
+    return {
+      spy: calls,
+      monitor: {
+        recordRestLatency: (ms) => calls.latency.push(ms),
+        recordRestError: () => { calls.error += 1; },
+        recordRateLimit: () => { calls.rateLimit += 1; },
+      },
+    };
+  };
+
+  it('records latency on a successful REST call and returns the result', async () => {
+    const { spy, monitor } = makeHealthSpy();
+    const adapter = instrumentAdapterForHealth({ getCandles: async () => ['ok'] }, monitor);
+    const result = await adapter.getCandles('BTC-USD', 0, 1, 'ONE_MINUTE');
+    assert.deepEqual(result, ['ok']);
+    assert.equal(spy.latency.length, 1, 'a successful call records one latency sample');
+    assert.equal(spy.error, 0);
+  });
+
+  it('records a REST error and re-throws when the call rejects', async () => {
+    const { spy, monitor } = makeHealthSpy();
+    const adapter = instrumentAdapterForHealth({ getOrder: async () => { throw new Error('boom'); } }, monitor);
+    await assert.rejects(() => adapter.getOrder('id'), /boom/);
+    assert.equal(spy.error, 1, 'a rejected call records a REST error');
+    assert.equal(spy.rateLimit, 0);
+    assert.equal(spy.latency.length, 1, 'latency is recorded even on failure');
+  });
+
+  it('classifies a 429 as a rate limit, not a generic error', async () => {
+    const { spy, monitor } = makeHealthSpy();
+    const err = Object.assign(new Error('Too Many Requests'), { status: 429 });
+    const adapter = instrumentAdapterForHealth({ placeLimitBuy: async () => { throw err; } }, monitor);
+    await assert.rejects(() => adapter.placeLimitBuy());
+    assert.equal(spy.rateLimit, 1, 'a 429 records a rate limit');
+    assert.equal(spy.error, 0, 'a 429 must not double-count as a rest error');
+  });
+
+  it('passes non-REST methods through untouched', () => {
+    const { monitor } = makeHealthSpy();
+    const ws = () => 'connected';
+    const adapter = instrumentAdapterForHealth({ connectWebSocket: ws, getCandles: async () => [] }, monitor);
+    assert.equal(adapter.connectWebSocket, ws, 'WS/non-REST methods are not wrapped');
+  });
+
+  it('is a no-op when adapter or monitor is missing', () => {
+    const a = { getOrder: async () => 1 };
+    assert.equal(instrumentAdapterForHealth(a, null), a);
+    assert.equal(instrumentAdapterForHealth(null, {}), null);
+  });
+});
+
+describe('isRateLimitError (issue #211-B)', () => {
+  it('detects 429 across common error shapes', () => {
+    assert.equal(isRateLimitError({ status: 429 }), true);
+    assert.equal(isRateLimitError({ statusCode: 429 }), true);
+    assert.equal(isRateLimitError({ response: { status: 429 } }), true);
+    assert.equal(isRateLimitError({ message: 'HTTP 429 rate limit exceeded' }), true);
+    assert.equal(isRateLimitError({ message: 'rate-limited' }), true);
+  });
+
+  it('returns false for ordinary errors', () => {
+    assert.equal(isRateLimitError({ status: 500, message: 'server error' }), false);
+    assert.equal(isRateLimitError(new Error('timeout')), false);
+    assert.equal(isRateLimitError(null), false);
   });
 });

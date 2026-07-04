@@ -413,10 +413,18 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       price: parseFloat(fillData.price),
       size: parseFloat(fillData.size),
       quoteAmount: parseFloat(fillData.price) * parseFloat(fillData.size),
-      fee: parseFloat(fillData.totalCommission || fillData.commission || 0),
+      // Accept an explicit fee/totalFees too — synthetic fills built from order
+      // status (Coinbase eventual-consistency fallback) carry the known fee as
+      // totalFees/fee but no totalCommission, and were previously persisted with
+      // fee:0, permanently overstating that order's P&L (issue #210-C).
+      fee: parseFloat(fillData.totalCommission || fillData.commission || fillData.fee || fillData.totalFees || 0),
       feeAsset: fillData.commissionAsset || fillData.fee_asset || 'USDC',
       rebate: parseFloat(fillData.rebate || 0),
-      netFee: parseFloat(fillData.totalCommission || fillData.commission || 0) - parseFloat(fillData.rebate || 0),
+      // Honor an explicitly-provided netFee (e.g. synthetic fills); otherwise
+      // derive it from the gross fee minus rebate.
+      netFee: (fillData.netFee !== undefined && fillData.netFee !== null)
+        ? parseFloat(fillData.netFee)
+        : parseFloat(fillData.totalCommission || fillData.commission || fillData.fee || fillData.totalFees || 0) - parseFloat(fillData.rebate || 0),
       liquidityIndicator: fillData.liquidityIndicator || fillData.liquidity_indicator || 'TAKER',
       timestamp: fillTimestamp,
       ingestedAt: Date.now(),
@@ -1213,6 +1221,36 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   };
 
   /**
+   * Idempotency guard for capital-growth credit (issue #210-B). Capital growth
+   * (config.maxUsdcDeployed += pnl) is a non-idempotent config.json write that
+   * happens mid-fill, before the fill-processed state is saved — so a crash
+   * before saveLiveState lets the offline replay re-apply the same pnl. This
+   * stamps the sell order's fills `capitalCredited` and persists BEFORE the
+   * caller writes config, so a replay of the same sellOrderId is refused. The
+   * mark-first ordering makes the only crash window a conservative under-credit
+   * (never an inflated budget cap).
+   * @param {string} orderId - Sell order id whose pnl is about to be credited
+   * @returns {boolean} true if the caller should apply the credit; false if it
+   *   was already credited on a prior (pre-crash) run.
+   */
+  const claimCapitalCredit = (orderId) => {
+    if (!orderId) return true;
+    let matched = false;
+    let alreadyCredited = false;
+    for (const [, fill] of fills) {
+      if (fill.orderId === orderId) {
+        matched = true;
+        if (fill.capitalCredited) alreadyCredited = true;
+        fill.capitalCredited = true;
+        dirtySinceLastPersist = true;
+      }
+    }
+    if (alreadyCredited) return false;
+    if (matched) persist();
+    return true;
+  };
+
+  /**
    * Source-of-truth derivation: walk the ledger by buy↔sell pairing and sum
    * per-cycle outcomes. The engine's contract is buy(n)→sell(1) per cycle:
    * every buy gets a sellOrderId stamp when its TP is *placed* (for
@@ -1438,6 +1476,25 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     return uniqueBuyOrders.size;
   };
 
+  /**
+   * Count unique buy ORDERS in the current cycle regardless of body ownership.
+   * In celestial mode every engine buy is body-owned, so getCurrentCycleBuysCount
+   * (which excludes body-owned buys) returns 0 and silently zeroes the restored
+   * cycleBuys counter. This matches the live commitBuyCounter, which increments
+   * once per unique buy order (body-owned or core) in the cycle (issue #210-A).
+   * @returns {number} Unique buy order count (all ownership)
+   */
+  const getCurrentCycleAllBuysCount = () => {
+    const cycleFills = getCurrentCycleFills();
+    const uniqueBuyOrders = new Set();
+    for (const fill of cycleFills) {
+      if (fill.side === 'buy') {
+        uniqueBuyOrders.add(fill.orderId);
+      }
+    }
+    return uniqueBuyOrders.size;
+  };
+
   // Initialize by loading from disk
   load();
 
@@ -1448,6 +1505,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     getRecordedSizeForOrder: (orderId) => orderSizeIndex.get(orderId) || 0,
     getCurrentCycleFills,
     getCurrentCycleBuysCount,
+    getCurrentCycleAllBuysCount,
     rebuildPositionFromFills,
     startNewCycle,
     getCurrentCycleId,
@@ -1466,6 +1524,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     getDerivedRealizedPnL,
     updateFillCycleId,
     annotateFillsByOrderId,
+    claimCapitalCredit,
     persist,
     /** Mark the in-memory ledger as dirty so the next persist() actually
      * writes to disk. Restricted contract: callers MUST limit mutations
