@@ -535,16 +535,23 @@ const runBacktest = async (params, preFetchedPrices = null) => {
       ? getFibonacciBuyAmount(fibPosition, fibBaseAmount)
       : intervalBuyAmount;
 
-    if (availableFunds >= targetBuyAmount) {
+    // Compute the buy fee up-front so BOTH the affordability guard and the cash
+    // debit account for it. The buy fee leaves the cash ledger exactly like the
+    // sell path debits it from netProceeds; previously only `targetBuyAmount`
+    // was debited, so headline totalValue/roi assumed fee-free buys and the
+    // optimizer was biased toward high-buy-count configs (#205).
+    const buyFee = targetBuyAmount * (feePercent / 100);
+    const buyRebate = targetBuyAmount * (rebatePercent / 100);
+    const netBuyFee = buyFee - buyRebate;
+    const buyCost = targetBuyAmount + netBuyFee;
+
+    if (availableFunds >= buyCost) {
       const grossBTC = targetBuyAmount / buyPrice;
-      const buyFee = targetBuyAmount * (feePercent / 100);
-      const buyRebate = targetBuyAmount * (rebatePercent / 100);
-      const netBuyFee = buyFee - buyRebate;
-      const costBasis = targetBuyAmount + netBuyFee;
+      const costBasis = buyCost; // targetBuyAmount + netBuyFee
       const costBasisPerAsset = costBasis / grossBTC;
 
       if (hasFixedFund) {
-        availableFunds -= targetBuyAmount;
+        availableFunds -= buyCost;
       }
 
       totalInvested += targetBuyAmount;
