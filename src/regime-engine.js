@@ -318,6 +318,57 @@ const createInitialPositionState = () => ({
   // Legacy satellite state (migrated into celestialState on load)
 });
 
+// REST adapter methods to instrument for health monitoring (issue #211-B).
+// WS/credential helpers are intentionally excluded — only rate-limited REST
+// calls should feed the latency/error/rate-limit SAFE-mode triggers.
+const INSTRUMENTED_REST_METHODS = [
+  'getCandles', 'getOrder', 'getOpenOrders', 'getOrderFills', 'getOrderFillSummary',
+  'placeMarketBuy', 'placeLimitBuy', 'placeLimitSell', 'placeMarketSell', 'placeStopLimitSell',
+  'cancelOrder', 'getAccountBalance', 'getCurrentPrice', 'getBidAsk', 'getProductDetails',
+];
+
+/**
+ * Detect a rate-limit (HTTP 429) from a thrown adapter error.
+ * @param {any} err
+ * @returns {boolean}
+ */
+const isRateLimitError = (err) =>
+  err?.status === 429 || err?.statusCode === 429 || err?.response?.status === 429 ||
+  /\b429\b|rate.?limit/i.test(err?.message || '');
+
+/**
+ * Wrap an adapter's REST methods so every call feeds the health monitor's
+ * latency / error / rate-limit SAFE-mode triggers (issue #211-B). Non-REST
+ * methods (WS, credentials) pass through untouched. Pure functional wrapper —
+ * no try/catch, errors re-thrown after recording.
+ * @param {Object} adapter
+ * @param {Object} healthMonitor
+ * @returns {Object} instrumented adapter
+ */
+const instrumentAdapterForHealth = (adapter, healthMonitor) => {
+  if (!adapter || !healthMonitor) return adapter;
+  const wrapped = { ...adapter };
+  for (const name of INSTRUMENTED_REST_METHODS) {
+    const fn = adapter[name];
+    if (typeof fn !== 'function') continue;
+    wrapped[name] = (...args) => {
+      const startedAt = Date.now();
+      return Promise.resolve(fn.apply(adapter, args))
+        .then((result) => {
+          healthMonitor.recordRestLatency(Date.now() - startedAt);
+          return result;
+        })
+        .catch((err) => {
+          healthMonitor.recordRestLatency(Date.now() - startedAt);
+          if (isRateLimitError(err)) healthMonitor.recordRateLimit();
+          else healthMonitor.recordRestError();
+          throw err;
+        });
+    };
+  }
+  return wrapped;
+};
+
 /**
  * Create regime engine instance.
  *
@@ -386,6 +437,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     },
   });
+
+  // Instrument REST calls so adapter errors/latency/rate-limits actually drive
+  // SAFE-mode triggers (issue #211-B — previously dead code with no call sites).
+  adapter = instrumentAdapterForHealth(adapter, healthMonitor);
 
   const tailEvents = createTailEventsMonitor(exchange, config, {
     onFlashMove: (delta, multiple) => {
@@ -2153,7 +2208,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (isRunning) healthMonitor.recordWsStatus(true);
       },
       onDisconnect: () => {
-        if (isRunning) healthMonitor.recordWsStatus(false);
+        if (isRunning) {
+          healthMonitor.recordWsStatus(false);
+          // Clear the flash-move anchor so the first tick after the gap doesn't
+          // fire a spurious flash-move against a stale pre-disconnect price (#211-D).
+          tailEvents.resetLastPrice();
+        }
       },
       onError: (error) => {
         if (isRunning) console.log(`❌ [${exchange}] WebSocket error: ${error.message}`);
@@ -3088,8 +3148,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * Update volatility metrics via REST API
    */
   const updateMetrics = async () => {
-    // Check health status (allows auto-recovery from SAFE mode)
-    healthMonitor.checkHealth();
+    // Check health status (allows auto-recovery from SAFE mode). Pass the live
+    // open-order count so a flat engine is exempt from the stale-orders check
+    // (issue #211-A) — nothing can go stale when there are no resting orders.
+    healthMonitor.checkHealth({ openOrderCount: orderExecutor.getPendingCounts().total });
 
     const now = Math.floor(Date.now() / 1000);
     const oneHourAgo = now - 3600;
@@ -5412,4 +5474,6 @@ module.exports = {
   isBuyAlreadyCommitted,
   shouldSkipBuyRecommit,
   isStrandedDustBody,
+  instrumentAdapterForHealth,
+  isRateLimitError,
 };

@@ -1,5 +1,5 @@
 // @ts-check
-const { describe, it, beforeEach } = require('node:test');
+const { describe, it, beforeEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createHealthMonitor, createInitialHealthState } = require('../src/health-monitor');
@@ -270,6 +270,27 @@ describe('Data staleness detection (checkHealth)', () => {
     assert.ok(state.reason.includes('stale_orders'));
   });
 
+  it('exempts the flat (no-open-orders) state from the stale-orders check (issue #211-A)', () => {
+    const monitor = createHealthMonitor('test', createTestConfig({ staleOrdersMs: 1 }));
+    monitor.recordWsStatus(true);
+    monitor.recordOrderUpdate();
+    monitor.getState().healthChecks.lastOrderUpdateMs = Date.now() - 5000;
+    // A flat engine has no orders that could go stale — passing openOrderCount:0
+    // must NOT deadlock it into SAFE mode.
+    const state = monitor.checkHealth({ openOrderCount: 0 });
+    assert.equal(state.mode, 'ACTIVE', 'flat engine must stay ACTIVE despite an old lastOrderUpdateMs');
+  });
+
+  it('still flags stale orders when open orders exist (issue #211-A regression guard)', () => {
+    const monitor = createHealthMonitor('test', createTestConfig({ staleOrdersMs: 1 }));
+    monitor.recordWsStatus(true);
+    monitor.recordOrderUpdate();
+    monitor.getState().healthChecks.lastOrderUpdateMs = Date.now() - 5000;
+    const state = monitor.checkHealth({ openOrderCount: 2 });
+    assert.equal(state.mode, 'SAFE');
+    assert.ok(state.reason.includes('stale_orders'));
+  });
+
   it('triggers SAFE mode when REST errors exceed maxRestErrors', () => {
     const config = createTestConfig({ maxRestErrors: 2 });
     const monitor = createHealthMonitor('test', config);
@@ -311,6 +332,32 @@ describe('Data staleness detection (checkHealth)', () => {
     const state = monitor.checkHealth();
     // Should remain PAUSED, not transition to SAFE
     assert.equal(state.mode, 'PAUSED');
+  });
+
+  it('prunes stale error timestamps inside checkHealth without a fresh error (issue #211-B)', () => {
+    mock.timers.enable({ apis: ['Date'] });
+    try {
+      const config = createTestConfig({ maxRestErrors: 2, safeRecoveryMs: 0 });
+      const monitor = createHealthMonitor('test', config);
+      monitor.recordWsStatus(true);
+      // Burst above threshold → SAFE.
+      monitor.recordRestError();
+      monitor.recordRestError();
+      monitor.recordRestError();
+      assert.equal(monitor.checkHealth().mode, 'SAFE');
+
+      // Advance past the 5-minute error window with ZERO further errors.
+      mock.timers.tick(6 * 60 * 1000);
+
+      // Pre-fix, restErrorCount was only re-pruned inside record*, so it stayed >2
+      // forever and recovery was impossible without a new error. checkHealth must
+      // now prune the stale timestamps itself and recover.
+      const state = monitor.checkHealth();
+      assert.equal(state.healthChecks.restErrorCount, 0, 'stale error timestamps must be pruned in checkHealth');
+      assert.equal(state.mode, 'ACTIVE', 'engine recovers without a fresh error triggering the prune');
+    } finally {
+      mock.timers.reset();
+    }
   });
 
   it('aggregates multiple issues into a single SAFE mode reason', () => {

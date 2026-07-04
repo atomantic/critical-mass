@@ -83,11 +83,18 @@ const calculateRealizedVol = (candles, window = 30) => {
     return 0;
   }
 
-  // Calculate log returns
+  // Calculate log returns. Guard against non-finite/≤0 closes (adapters do a
+  // bare parseFloat on API strings, so a missing/zero close would yield NaN or
+  // -Infinity and permanently poison the EMA volBaseline — issue #211-C). Skip
+  // any pair whose closes aren't both finite positive numbers.
   const returns = [];
   for (let i = 1; i < candles.length; i++) {
-    const logReturn = Math.log(candles[i].close / candles[i - 1].close);
-    returns.push(logReturn);
+    const close = candles[i].close;
+    const prevClose = candles[i - 1].close;
+    if (!Number.isFinite(close) || close <= 0 || !Number.isFinite(prevClose) || prevClose <= 0) {
+      continue;
+    }
+    returns.push(Math.log(close / prevClose));
   }
 
   // Use last 'window' returns
@@ -176,7 +183,15 @@ const calculateSwingRange = (candles, periods = 3) => {
  * @returns {number} Updated baseline
  */
 const updateEMABaseline = (currentVol, baseline, alpha = 0.1) => {
-  if (baseline === 0 || baseline === undefined) {
+  // Reject a non-finite reading — folding NaN/Infinity into the EMA would
+  // poison the baseline forever (every subsequent good update stays NaN), and
+  // the old `=== 0 || undefined` reset never catches NaN (issue #211-C).
+  if (!Number.isFinite(currentVol)) {
+    return baseline;
+  }
+  // Heal a previously-poisoned or unseeded baseline by reseeding from the good
+  // reading rather than propagating a bad prior.
+  if (!Number.isFinite(baseline) || baseline === 0) {
     return currentVol;
   }
   return (alpha * currentVol) + ((1 - alpha) * baseline);

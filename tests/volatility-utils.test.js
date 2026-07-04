@@ -673,3 +673,41 @@ describe('calculateAllMetrics', () => {
     assert.ok(metrics.vwap >= 0);
   });
 });
+
+// ============================================================================
+// NaN poisoning guards (issue #211-C)
+// ============================================================================
+describe('NaN/invalid-close guards (issue #211-C)', () => {
+  const candle = (close, ts) => ({ timestamp: ts, open: close, high: close, low: close, close, volume: 1 });
+
+  it('calculateRealizedVol skips a zero/negative/non-finite close instead of returning NaN', () => {
+    const now = Date.now();
+    const good = [];
+    for (let i = 0; i < 20; i++) good.push(candle(100 + (i % 2 === 0 ? 0.5 : -0.5), now - (20 - i) * 60000));
+    // Inject one poisoned close (0) mid-series — a real "missing close" API hiccup.
+    const poisoned = [...good];
+    poisoned[10] = candle(0, poisoned[10].timestamp);
+    const vol = calculateRealizedVol(poisoned, 30);
+    assert.ok(Number.isFinite(vol), `realizedVol must stay finite despite a bad candle, got ${vol}`);
+    assert.ok(vol >= 0);
+  });
+
+  it('updateEMABaseline rejects a NaN reading and keeps the prior baseline', () => {
+    const prior = 2.5;
+    assert.equal(updateEMABaseline(NaN, prior), prior, 'NaN input must not poison the baseline');
+    assert.equal(updateEMABaseline(Infinity, prior), prior, 'Infinity input must not poison the baseline');
+  });
+
+  it('updateEMABaseline heals a previously-poisoned (NaN) baseline by reseeding', () => {
+    // Pre-fix: alpha*good + (1-alpha)*NaN = NaN forever. Now the good reading reseeds.
+    assert.equal(updateEMABaseline(3.0, NaN), 3.0, 'a good reading must heal a NaN baseline');
+  });
+
+  it('a single bad candle does not freeze the EMA across subsequent good updates', () => {
+    let baseline = 2.0;
+    baseline = updateEMABaseline(NaN, baseline);   // bad reading
+    baseline = updateEMABaseline(2.2, baseline);   // good reading
+    baseline = updateEMABaseline(2.4, baseline);   // good reading
+    assert.ok(Number.isFinite(baseline) && baseline > 0, `baseline must recover, got ${baseline}`);
+  });
+});

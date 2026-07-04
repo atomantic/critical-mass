@@ -193,15 +193,29 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
 
   /**
    * Check all health conditions and update state
+   * @param {Object} [opts]
+   * @param {number} [opts.openOrderCount] - Number of open orders. When 0, the
+   *   stale-orders check is exempted — a flat engine has no orders that can go
+   *   stale, and there's no order update that could ever refresh the timestamp,
+   *   so the check would otherwise deadlock the engine in SAFE mode (issue #211-A).
    * @returns {HealthState}
    */
-  const checkHealth = () => {
+  const checkHealth = (opts = {}) => {
     const now = Date.now();
+    const { openOrderCount } = opts;
 
     // If manually paused, don't auto-transition
     if (state.mode === 'PAUSED') {
       return state;
     }
+
+    // Prune stale error/rate-limit timestamps here (not only inside record*),
+    // so recovery from a past burst doesn't require a fresh error to re-prune
+    // (issue #211-B secondary bug).
+    errorTimestamps = errorTimestamps.filter(t => now - t < ERROR_WINDOW_MS);
+    rateLimitTimestamps = rateLimitTimestamps.filter(t => now - t < ERROR_WINDOW_MS);
+    state.healthChecks.restErrorCount = errorTimestamps.length;
+    state.healthChecks.rateLimitCount = rateLimitTimestamps.length;
 
     // Check for conditions that trigger SAFE mode
     const issues = [];
@@ -214,8 +228,8 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
       }
     }
 
-    // Stale order updates
-    if (state.healthChecks.lastOrderUpdateMs > 0) {
+    // Stale order updates — exempt the flat (no-open-orders) state.
+    if (state.healthChecks.lastOrderUpdateMs > 0 && openOrderCount !== 0) {
       const orderAge = now - state.healthChecks.lastOrderUpdateMs;
       if (orderAge > config.staleOrdersMs) {
         issues.push(`stale_orders:${Math.round(orderAge / 1000)}s`);
