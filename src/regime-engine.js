@@ -838,6 +838,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Apply capital growth idempotently per sell order (issue #210-B). The credit
+   * is a non-idempotent config.json write; claiming the credit in the fill
+   * ledger (persisted before this write) makes a crash-replay of the same
+   * sellOrderId a no-op instead of a double-apply that inflates the budget cap.
+   * @param {string} sellOrderId
+   * @param {number} pnl
+   * @returns {number} maxUsdcDeployed BEFORE this credit (unchanged when already credited)
+   */
+  const creditCapitalGrowth = (sellOrderId, pnl) => {
+    const prevMaxUsdc = config.maxUsdcDeployed;
+    if (!fillLedger.claimCapitalCredit(sellOrderId)) {
+      console.log(`ℹ️ [${exchange}] Capital growth for ${sellOrderId?.slice(0, 8)} already credited — skipping re-apply (crash-replay idempotency #210-B)`);
+      return prevMaxUsdc;
+    }
+    config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
+    updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+    return prevMaxUsdc;
+  };
+
+  /**
    * Check for orders that filled while offline
    * @returns {Promise<{tpFilled: boolean, entriesFilled: number}>}
    */
@@ -990,9 +1010,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // realizedPnL / realizedAssetPnL (and their bodies* mirrors) are derived
           // from buy↔sell cycle pairing; refreshRealizedFromCyclePairs() repopulates them.
 
-          const prevMaxUsdc = config.maxUsdcDeployed;
-          config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-          updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+          const prevMaxUsdc = creditCapitalGrowth(body.tpOrderId, pnl);
 
           positionState.celestialBodies = positionState.celestialBodies.filter(
             b => b.tpOrderId !== body.tpOrderId
@@ -1201,8 +1219,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const savedTotalBTC = positionState.totalAsset;
       const savedCyclesCompleted = positionState.cyclesCompleted;
       // Cross-validate: if fill ledger has buys in the current cycle, the cycle is NOT completed
-      // (saved state may have been corrupted by a previous buggy restart)
-      const fillLedgerHasBuys = fillLedger.getCurrentCycleBuysCount() > 0;
+      // (saved state may have been corrupted by a previous buggy restart). In celestial mode
+      // every engine buy is body-owned, so count ALL buys — getCurrentCycleBuysCount excludes
+      // body-owned buys and would wrongly report an active cycle as completed (issue #210-A).
+      const celestialMode = config.celestialEnabled !== false;
+      const fillLedgerHasBuys = celestialMode
+        ? fillLedger.getCurrentCycleAllBuysCount() > 0
+        : fillLedger.getCurrentCycleBuysCount() > 0;
       const cycleWasCompleted = hasSavedState && savedTotalBTC === 0 && savedCyclesCompleted > 0
         && !fillLedgerHasBuys;
 
@@ -1226,8 +1249,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         lastTpPrice: savedTpPrice,
       };
 
-      // Auto-correct cycleBuys from fill ledger (source of truth)
-      const actualCycleBuys = fillLedger.getCurrentCycleBuysCount();
+      // Auto-correct cycleBuys from fill ledger (source of truth). In celestial
+      // mode all engine buys are body-owned, so count ALL current-cycle buys —
+      // getCurrentCycleBuysCount excludes them and would zero the restored
+      // counter, letting a mid-cycle restart double the per-cycle step exposure
+      // (issue #210-A).
+      const actualCycleBuys = celestialMode
+        ? fillLedger.getCurrentCycleAllBuysCount()
+        : fillLedger.getCurrentCycleBuysCount();
       if (positionState.cycleBuys !== actualCycleBuys) {
         console.log(`🔧 [${exchange}] Auto-correcting cycleBuys: ${positionState.cycleBuys} -> ${actualCycleBuys} (from fill ledger)`);
         positionState.cycleBuys = actualCycleBuys;
@@ -2391,6 +2420,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         price: fillData.averageFilledPrice,
         size: fillData.filledSize,
         quoteAmount: fillData.filledSize * fillData.averageFilledPrice,
+        // Carry the known fee in BOTH fee and netFee so ingestFill persists it
+        // instead of defaulting to 0 (issue #210-C).
+        totalFees: fillData.totalFees || 0,
         netFee: fillData.totalFees || 0,
         timestamp: Date.now(),
       };
@@ -2764,10 +2796,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.celestialState = cs;
         // Partial fills are handled naturally — FIFO sees only the actual sold qty.
 
-        // Grow capital
-        const prevMaxUsdc = config.maxUsdcDeployed;
-        config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-        updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+        // Grow capital (idempotent per sellOrderId — issue #210-B)
+        const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
 
         if (isPartial) {
           // PARTIAL FILL: reduce body size, keep body active, re-place TP for remaining
@@ -2952,9 +2982,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             positionState.assetOnOrder = 0;
           positionState.cyclesCompleted += 1;
 
-          const prevMaxUsdc = config.maxUsdcDeployed;
-          config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
-          updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
+          const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
 
           console.log(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
@@ -3507,6 +3535,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             const bodies = positionState.celestialBodies || [];
             if (bodies.length > 0) {
               celestialHierarchy.syncPositionState(positionState, bodies);
+            }
+            // rebuildPositionFromFills excludes body-owned buys, so the cycleBuys
+            // copied above is 0 in celestial mode — restore it from the all-buys
+            // count so a reconcile-triggered rebuild doesn't wipe the live counter
+            // and re-open per-cycle step exposure (issue #210-A).
+            if (config.celestialEnabled !== false) {
+              positionState.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
             }
             console.log(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies, lifecycle=${positionState.lifecycle || 'n/a'} preserved)`);
           }

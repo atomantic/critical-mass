@@ -1610,4 +1610,127 @@ describe('Fill Ledger', () => {
       assert.notStrictEqual(a, b, 'missing-file funds must not be cached (fresh instance each call)');
     });
   });
+
+  // =======================================================================
+  // getCurrentCycleAllBuysCount — celestial-mode cycleBuys survival (#210-A)
+  // =======================================================================
+  describe('getCurrentCycleAllBuysCount (issue #210-A)', () => {
+    it('counts body-owned buys that getCurrentCycleBuysCount excludes', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      // Two body-owned buys (celestial mode) + one plain core buy, all this cycle.
+      // Body ownership is stamped via annotateFillsByOrderId post-ingest, exactly
+      // as the engine does when it commits a buy to a body.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'b1', orderId: 'body-buy-1' }));
+      ledger.annotateFillsByOrderId('body-buy-1', { isBodyOwned: true, bodyId: 'body-A' });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'b2', orderId: 'body-buy-2' }));
+      ledger.annotateFillsByOrderId('body-buy-2', { isBodyOwned: true, bodyId: 'body-A' });
+      ledger.ingestFill(makeBuyFill({ tradeId: 'b3', orderId: 'core-buy-1' }));
+
+      // The body-excluding count (used by the non-celestial core path) drops the
+      // two body-owned buys — the exact bug that zeroed cycleBuys on restart.
+      assert.equal(ledger.getCurrentCycleBuysCount(), 1, 'body-excluding count sees only the core buy');
+      // The all-buys count matches the live commitBuyCounter (one per unique buy order).
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 3, 'all-buys count survives celestial mode');
+    });
+
+    it('dedupes partial fills of the same buy order', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'p1', orderId: 'body-buy-1', size: '0.0005' }));
+      ledger.ingestFill(makeBuyFill({ tradeId: 'p2', orderId: 'body-buy-1', size: '0.0005' }));
+      ledger.annotateFillsByOrderId('body-buy-1', { isBodyOwned: true, bodyId: 'b' });
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 1, 'two partials of one order count once');
+    });
+
+    it('excludes buys from prior cycles', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'old', orderId: 'body-buy-old' }));
+      ledger.annotateFillsByOrderId('body-buy-old', { isBodyOwned: true, bodyId: 'b' });
+      ledger.startNewCycle(); // cycle rolls over (matches resetCycle)
+      ledger.ingestFill(makeBuyFill({ tradeId: 'new', orderId: 'body-buy-new' }));
+      ledger.annotateFillsByOrderId('body-buy-new', { isBodyOwned: true, bodyId: 'b' });
+      assert.equal(ledger.getCurrentCycleAllBuysCount(), 1, 'only current-cycle buys count');
+    });
+  });
+
+  // =======================================================================
+  // claimCapitalCredit — capital-growth idempotency (#210-B)
+  // =======================================================================
+  describe('claimCapitalCredit (issue #210-B)', () => {
+    it('allows the first credit and refuses a replay of the same sell order', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A' }));
+
+      assert.equal(ledger.claimCapitalCredit('sell-A'), true, 'first credit is allowed');
+      assert.equal(ledger.claimCapitalCredit('sell-A'), false, 'a crash-replay of the same sell is refused');
+    });
+
+    it('stamps every fill row of the sell order so the marker survives a reload', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', size: '0.0005' }));
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-A', size: '0.0005' }));
+      ledger.claimCapitalCredit('sell-A');
+
+      const rows = ledger.getFillsForOrder('sell-A');
+      assert.equal(rows.length, 2);
+      assert.ok(rows.every(r => r.capitalCredited === true), 'all partial rows marked credited');
+
+      // A fresh ledger loading the persisted file must still refuse the replay.
+      const reloaded = createTestLedger();
+      assert.equal(reloaded.claimCapitalCredit('sell-A'), false, 'persisted marker survives reload');
+    });
+
+    it('treats distinct sell orders independently', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A' }));
+      ledger.ingestFill(makeSellFill({ tradeId: 's2', orderId: 'sell-B' }));
+      assert.equal(ledger.claimCapitalCredit('sell-A'), true);
+      assert.equal(ledger.claimCapitalCredit('sell-B'), true, 'a different sell is credited independently');
+      assert.equal(ledger.claimCapitalCredit('sell-A'), false);
+    });
+  });
+
+  // =======================================================================
+  // ingestFill fee mapping — synthetic-fill fee retention (#210-C)
+  // =======================================================================
+  describe('ingestFill honors explicit/synthetic fees (issue #210-C)', () => {
+    it('persists netFee from a synthetic fill built off order status', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      // Shape produced by the Coinbase eventual-consistency synthetic-fill fallback.
+      const result = ledger.ingestFill({
+        tradeId: 'synthetic-sell-A',
+        orderId: 'sell-A',
+        side: 'sell',
+        price: 105000,
+        size: 0.001,
+        quoteAmount: 105,
+        totalFees: 1.20,
+        netFee: 1.20,
+      });
+      assert.equal(result.fill.netFee, 1.20, 'synthetic netFee must be persisted (not defaulted to 0)');
+      assert.equal(result.fill.fee, 1.20, 'gross fee resolves from totalFees too');
+    });
+
+    it('still derives netFee from totalCommission minus rebate for normal fills', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      const result = ledger.ingestFill(makeSellFill({ tradeId: 's1', orderId: 'sell-A', totalCommission: '0.50', rebate: '0.10' }));
+      assert.equal(result.fill.fee, 0.5);
+      assert.equal(result.fill.netFee, 0.4, 'netFee = gross − rebate when no explicit netFee given');
+    });
+
+    it('maps a plain fee field when neither totalCommission nor totalFees is present', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      const result = ledger.ingestFill({ tradeId: 'x', orderId: 'o', side: 'buy', price: 100, size: 1, fee: 0.25 });
+      assert.equal(result.fill.fee, 0.25);
+      assert.equal(result.fill.netFee, 0.25);
+    });
+  });
 });
