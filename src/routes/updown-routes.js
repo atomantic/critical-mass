@@ -16,6 +16,42 @@ const { validateEndpointUrl, safeFetch } = require('../url-validator');
 
 const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
+// Hard cap on the raw screenshot body read from the request stream. A
+// screenshot is a single PNG/JPEG frame — 25MB is generous headroom while
+// still bounding worst-case memory use per request (issue #215-B).
+const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Read a request body stream into a Buffer, aborting once `maxBytes` is
+ * exceeded instead of buffering an unbounded amount of attacker-controlled
+ * data into memory (issue #215-B: unbounded body read -> memory-exhaustion
+ * DoS on the process that also runs the trade scheduler).
+ * @param {import('http').IncomingMessage} req
+ * @param {number} maxBytes
+ * @returns {Promise<Buffer>}
+ */
+async function readBodyWithLimit(req, maxBytes) {
+  const declaredLength = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    const err = new Error(`Request body exceeds maximum of ${maxBytes} bytes`);
+    err.status = 413;
+    throw err;
+  }
+
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const err = new Error(`Request body exceeds maximum of ${maxBytes} bytes`);
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 const ALLOWED_EXTRACTED_KEYS = new Set([
   'screenType', 'currentPrice', 'direction', 'range', 'target', 'stop',
   'expiresIn', 'upPrice', 'downPrice', 'maxProfit', 'maxLoss',
@@ -127,10 +163,17 @@ module.exports = (app, deps) => {
     const { providerId, model } = req.query;
     if (!providerId) return res.status(400).json({ success: false, error: 'providerId query param required' });
 
-    // Read raw image body
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const imageBuffer = Buffer.concat(chunks);
+    // Read raw image body, capped to avoid unbounded memory growth (issue #215-B).
+    let imageBuffer;
+    try {
+      imageBuffer = await readBodyWithLimit(req, MAX_SCREENSHOT_BYTES);
+    } catch (err) {
+      if (err.status === 413) {
+        log('WARN', `📸 UpDown screenshot rejected: body exceeds ${MAX_SCREENSHOT_BYTES} bytes`);
+        return res.status(413).json({ success: false, error: 'Image body too large' });
+      }
+      throw err;
+    }
     if (!imageBuffer.length) return res.status(400).json({ success: false, error: 'Empty image body' });
 
     // Validate and save screenshot
@@ -738,3 +781,9 @@ module.exports = (app, deps) => {
     res.json({ success: true });
   });
 };
+
+// Exposed for direct unit testing (issue #215-B) alongside the default
+// route-registration export; callers that only need `registerUpdownRoutes(app, deps)`
+// are unaffected.
+module.exports.readBodyWithLimit = readBodyWithLimit;
+module.exports.MAX_SCREENSHOT_BYTES = MAX_SCREENSHOT_BYTES;
