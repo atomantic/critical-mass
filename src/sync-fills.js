@@ -26,16 +26,17 @@ const groupFillsByOrder = (fills) => {
  * Fetch all Coinbase fills since a timestamp using paginated brokerage API
  * @param {Object} adapter - Coinbase adapter (used for credentials)
  * @param {number} startTimestampMs
+ * @param {string} [productId] - Coinbase product id (e.g. 'ETH-USDC'). Defaults to 'BTC-USDC' for backward compatibility.
  * @returns {Promise<Array>}
  */
-const fetchAllCoinbaseFills = async (adapter, startTimestampMs) => {
+const fetchAllCoinbaseFills = async (adapter, startTimestampMs, productId = 'BTC-USDC') => {
   const { apiKey, apiSecret } = adapter.loadCredentials();
   const allFills = [];
   let cursor = null;
   const startISO = new Date(startTimestampMs).toISOString();
 
   for (let page = 0; page < 50; page++) {
-    let apiPath = `/api/v3/brokerage/orders/historical/fills?product_id=BTC-USDC&start_sequence_timestamp=${startISO}&limit=500`;
+    let apiPath = `/api/v3/brokerage/orders/historical/fills?product_id=${productId}&start_sequence_timestamp=${startISO}&limit=500`;
     if (cursor) apiPath += `&cursor=${cursor}`;
 
     const headers = getAuthHeaders(apiKey, apiSecret, 'GET', apiPath);
@@ -130,12 +131,13 @@ const normalizeFills = (exchange, rawFills) => {
  * @param {Object} fillLedger - Fill ledger instance
  * @param {Object} [options]
  * @param {boolean} [options.dryRun] - If true, don't persist changes
+ * @param {string} [options.pair] - Fund pair/productId (e.g. 'ETH-USDC', 'ETHUSD'). Defaults to the legacy BTC pair for backward compatibility.
  * @returns {Promise<Object>} Sync result
  */
 const syncFills = async (exchange, fillLedger, options = {}) => {
-  const { dryRun = false } = options;
+  const { dryRun = false, pair } = options;
   const adapter = getAdapter(exchange);
-  const state = loadRegimeState(exchange);
+  const state = loadRegimeState(exchange, pair);
   const engineStart = state.position?.engineStartTime;
 
   if (!engineStart) {
@@ -147,9 +149,9 @@ const syncFills = async (exchange, fillLedger, options = {}) => {
   let rawFills;
   try {
     if (exchange === 'gemini') {
-      rawFills = await adapter.getAllTrades('btcusd', engineStart);
+      rawFills = await adapter.getAllTrades(pair ? pair.toLowerCase() : 'btcusd', engineStart);
     } else if (exchange === 'coinbase') {
-      rawFills = await fetchAllCoinbaseFills(adapter, engineStart);
+      rawFills = await fetchAllCoinbaseFills(adapter, engineStart, pair || 'BTC-USDC');
     } else {
       return { success: false, error: `Sync not yet supported for ${exchange}` };
     }
@@ -270,10 +272,11 @@ const syncFills = async (exchange, fillLedger, options = {}) => {
  * @param {Object} manualTradeStore - Manual trade store instance
  * @param {Object} options
  * @param {string} options.startDate - Required ISO date string
+ * @param {string} [options.pair] - Fund pair/productId (e.g. 'ETH-USDC', 'ETHUSD'). Defaults to the legacy BTC pair for backward compatibility.
  * @returns {Promise<Object>} Unaccounted fills grouped by orderId
  */
 const getUnaccountedFills = async (exchange, fillLedger, manualTradeStore, options = {}) => {
-  const { startDate } = options;
+  const { startDate, pair } = options;
   if (!startDate) {
     return { success: false, error: 'startDate is required' };
   }
@@ -288,9 +291,9 @@ const getUnaccountedFills = async (exchange, fillLedger, manualTradeStore, optio
   let rawFills;
   try {
     if (exchange === 'coinbase') {
-      rawFills = await fetchAllCoinbaseFills(adapter, startTimestampMs);
+      rawFills = await fetchAllCoinbaseFills(adapter, startTimestampMs, pair || 'BTC-USDC');
     } else if (exchange === 'gemini') {
-      rawFills = await adapter.getAllTrades('btcusd', startTimestampMs);
+      rawFills = await adapter.getAllTrades(pair ? pair.toLowerCase() : 'btcusd', startTimestampMs);
     } else {
       return { success: false, error: `Not supported for ${exchange}` };
     }
