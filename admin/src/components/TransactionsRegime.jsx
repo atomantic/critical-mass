@@ -3,6 +3,7 @@ import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import ManualTrades from './ManualTrades'
+import { computeFillsWithPnL } from './transactionsRegimePnl'
 
 function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [fills, setFills] = useState([])
@@ -59,15 +60,19 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   // Get unique cycle IDs for filtering
   const cycleIds = [...new Set(fills.map(f => f.cycleId || 'current'))].sort().reverse()
 
-  // Filter fills
-  const filteredFills = fills.filter(fill => {
+  // Filter predicate shared by the raw fill list and the P&L-enriched list
+  // below, so both stay in sync without relying on object-identity checks.
+  const passesFilter = (fill) => {
     if (filter !== 'all' && fill.side !== filter) return false
     if (cycleFilter !== 'all') {
       const fillCycle = fill.cycleId || 'current'
       if (fillCycle !== cycleFilter) return false
     }
     return true
-  })
+  }
+
+  // Filter fills
+  const filteredFills = fills.filter(passesFilter)
 
   // Sort fills
   const sortedFills = [...filteredFills].sort((a, b) => {
@@ -90,107 +95,11 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
     }
   }
 
-  // Calculate P&L for sell fills using buy-sell linkage (sellOrderId) and running avg fallback
-  const fillsWithPnL = (() => {
-    // Use ALL fills for P&L calculation (not filtered) so running avg is correct
-    const chronological = [...fills].sort((a, b) => a.timestamp - b.timestamp)
-
-    // Build buy→sell linkage map: buys annotated with sellOrderId point to their matching sell
-    const buysBySellId = new Map()
-    for (const fill of chronological) {
-      if (fill.side === 'buy' && fill.sellOrderId) {
-        if (!buysBySellId.has(fill.sellOrderId)) buysBySellId.set(fill.sellOrderId, [])
-        buysBySellId.get(fill.sellOrderId).push(fill)
-      }
-    }
-
-    // Pre-compute total sell value per orderId for proportional P&L on multi-fill orders
-    const sellTotalsByOrderId = new Map()
-    for (const fill of chronological) {
-      if (fill.side !== 'sell') continue
-      const prev = sellTotalsByOrderId.get(fill.orderId)
-      if (prev) {
-        prev.totalQuote += fill.quoteAmount || fill.size * fill.price
-        prev.totalFee += fill.netFee || fill.fee || 0
-      } else {
-        sellTotalsByOrderId.set(fill.orderId, {
-          totalQuote: fill.quoteAmount || fill.size * fill.price,
-          totalFee: fill.netFee || fill.fee || 0,
-        })
-      }
-    }
-
-    let totalBtc = 0
-    let totalCost = 0
-    const pnlMap = new Map()
-
-    for (let i = 0; i < chronological.length; i++) {
-      const fill = chronological[i]
-      if (fill.side === 'buy') {
-        const isBody = fill.isBodyOwned || fill.isSatellite || fill.bodyId
-        if (!isBody) {
-          totalBtc += fill.size
-          totalCost += (fill.quoteAmount || fill.size * fill.price) + (fill.netFee || fill.fee || 0)
-        }
-        pnlMap.set(i, { pnl: null, holdbackAsset: null, holdbackValue: null, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0 })
-        continue
-      }
-      // Sell fill
-      const isBody = fill.isBodyOwned || fill.isSatellite || fill.bodyId
-      const annotatedPnl = fill.bodyPnl ?? fill.satellitePnl
-      let pnl
-
-      if (annotatedPnl != null) {
-        // 1. Server-annotated P&L (most trusted)
-        pnl = annotatedPnl
-      } else {
-        // 2. Try buy-sell linkage via sellOrderId
-        const linkedBuys = buysBySellId.get(fill.orderId)
-        if (linkedBuys && linkedBuys.length > 0) {
-          const buyCost = linkedBuys.reduce((s, b) => s + (b.quoteAmount || b.size * b.price) + (b.netFee || b.fee || 0), 0)
-          const orderTotals = sellTotalsByOrderId.get(fill.orderId)
-          const totalSellProceeds = orderTotals.totalQuote - orderTotals.totalFee
-          const totalPnl = totalSellProceeds - buyCost
-          // Distribute proportionally for multi-fill orders
-          const fillValue = fill.quoteAmount || fill.size * fill.price
-          pnl = totalPnl * (fillValue / orderTotals.totalQuote)
-        } else if (isBody && (fill.bodyCostBasis ?? fill.satelliteCostBasis)) {
-          // 3. Body/satellite sell with cost basis annotation but no P&L
-          const costBasis = fill.bodyCostBasis ?? fill.satelliteCostBasis
-          pnl = (fill.quoteAmount - (fill.netFee || fill.fee || 0)) - costBasis
-        } else {
-          // 4. Fallback: running avg for truly unlinked core sells
-          const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
-          const proceeds = (fill.quoteAmount || fill.size * fill.price) - (fill.netFee || fill.fee || 0)
-          pnl = proceeds - avgCost * fill.size
-        }
-      }
-
-      const holdbackAsset = fill.bodyHoldbackAsset ?? fill.satelliteHoldbackAsset ?? null
-      const holdbackValue = holdbackAsset != null && holdbackAsset > 0 ? holdbackAsset * fill.price : 0
-
-      // Update running position for non-body sells without linkage (core TP)
-      if (!isBody && !buysBySellId.has(fill.orderId)) {
-        const remainingBtc = totalBtc - fill.size
-        if (remainingBtc > 0) {
-          const avgCost = totalBtc > 0 ? totalCost / totalBtc : 0
-          totalBtc = remainingBtc
-          totalCost = avgCost * remainingBtc
-        } else {
-          totalBtc = 0
-          totalCost = 0
-        }
-      }
-
-      pnlMap.set(i, { pnl, holdbackAsset: holdbackAsset != null && holdbackAsset > 0 ? holdbackAsset : null, holdbackValue: holdbackValue > 0 ? holdbackValue : null, avgCost: totalBtc > 0 ? totalCost / totalBtc : 0 })
-    }
-
-    // Map back to filtered fills with their P&L
-    const filteredSet = new Set(filteredFills)
-    return chronological
-      .map((fill, i) => filteredSet.has(fill) ? { ...fill, ...pnlMap.get(i) } : null)
-      .filter(Boolean)
-  })()
+  // Calculate P&L for sell fills using buy-sell linkage (sellOrderId), running
+  // avg fallback, and orderId-deduped/prorated server annotations. Uses ALL
+  // fills (not just filteredFills) so the running avg and orderId aggregation
+  // are correct, then narrows to the currently-filtered rows for display.
+  const fillsWithPnL = computeFillsWithPnL(fills).filter(passesFilter)
 
   // Re-sort based on user preference
   const displayFills = [...fillsWithPnL].sort((a, b) => {
