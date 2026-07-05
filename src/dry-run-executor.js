@@ -164,9 +164,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
    * @param {number} currentAsk - Current best ask
    * @param {number} [retryCount=0] - Current retry attempt (unused in dry-run, for API compatibility)
    * @param {number} [effectiveOffsetBps] - Optional dynamic offset (defaults to config.entryOffsetBps)
+   * @param {number} [staleMs] - Optional per-order adaptive stale timeout (matches live executor)
    * @returns {Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>}
    */
-  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null) => {
+  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null, staleMs = null) => {
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
     const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
     const offsetMultiplier = 1 - (offsetBps / BASIS_POINTS_DIVISOR);
@@ -193,6 +194,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       status: 'open',
       filledAt: null,
       fillPrice: null,
+      staleMs: staleMs ?? null,
     };
 
     pendingOrders.set(orderId, order);
@@ -205,7 +207,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       offsetBps,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc}) offset=${offsetBps}bps`);
+    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc}) offset=${offsetBps}bps stale=${Math.round((staleMs ?? config.orderStaleMs) / 1000)}s`);
 
     // Entry fills are checked continuously via checkEntryFills() called from regime engine
 
@@ -328,7 +330,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
         // so dry-run fills are not asymmetrically optimistic about entries. (#154)
         if (currentPrice <= order.price) {
           simulateFill(orderId, order.price);
-        } else if (now - order.placedAt > config.orderStaleMs) {
+        } else if (now - order.placedAt > (order.staleMs ?? config.orderStaleMs)) {
           // Cancel stale entries that haven't filled
           order.status = 'cancelled';
           pendingOrders.delete(orderId);
@@ -906,7 +908,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
 
     for (const [orderId, order] of pendingOrders) {
       if (order.type === 'entry' && order.status === 'open') {
-        if (now - order.placedAt > config.orderStaleMs) {
+        if (now - order.placedAt > (order.staleMs ?? config.orderStaleMs)) {
           order.status = 'cancelled';
           pendingOrders.delete(orderId);
           refreshed++;

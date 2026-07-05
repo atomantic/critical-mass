@@ -232,9 +232,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
    * @param {number} currentAsk - Current best ask
    * @param {number} [retryCount=0] - Current retry attempt
    * @param {number} [effectiveOffsetBps] - Optional dynamic offset (defaults to config.entryOffsetBps)
+   * @param {number} [staleMs] - Optional per-order stale timeout (ATR/offset-adaptive, computed by the engine); defaults to the regime-adjusted global timeout
    * @returns {Promise<{success: boolean, orderId?: string, price?: number, assetQty?: number, errorMessage?: string}>}
    */
-  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null) => {
+  const placeEntryBid = async (sizeUsdc, currentBid, currentAsk, retryCount = 0, effectiveOffsetBps = null, staleMs = null) => {
     // Calculate bid price with offset below current bid (use dynamic offset if provided)
     const offsetBps = effectiveOffsetBps ?? config.entryOffsetBps;
     const offsetMultiplier = 1 - (offsetBps / BASIS_POINTS_DIVISOR);
@@ -248,7 +249,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     bidPrice = roundPrice(bidPrice, priceIncrement);
     const assetQty = roundAsset(sizeUsdc / bidPrice);
 
-    console.log(`📝 [${exchange}] Placing entry bid: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
+    console.log(`📝 [${exchange}] Placing entry bid: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc}, offset=${offsetBps}bps, stale=${Math.round((staleMs ?? getEffectiveStaleMs()) / 1000)}s)${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
 
     // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
     // follow-up) instead of treating a network error as a clean failure — a
@@ -267,8 +268,9 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         size: assetQty,
         sizeUsdc,
         placedAt: Date.now(),
+        staleMs: staleMs ?? null,
       });
-      scheduleStaleOrderTimeout(result.orderId);
+      scheduleStaleOrderTimeout(result.orderId, staleMs);
 
       // Verify order is actually open on exchange (post-only orders can be immediately cancelled).
       // Brief delay lets the order propagate; only treat as cancelled when Coinbase explicitly
@@ -284,9 +286,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         if (retryCount < maxRetries) {
           console.log(`🔄 [${exchange}] Retrying with fresh prices (retry ${retryCount + 1}/${maxRetries})`);
           const freshPrices = await adapter.getBidAsk(productId);
-          // Preserve the dynamic (momentum-adjusted) offset across retries —
-          // dropping the 5th arg silently reverts to config.entryOffsetBps.
-          return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps);
+          // Preserve the dynamic (momentum-adjusted) offset and adaptive stale
+          // timeout across retries — dropping the args silently reverts to
+          // config.entryOffsetBps / the global stale timeout.
+          return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps, staleMs);
         }
 
         return {
@@ -309,8 +312,8 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       console.log(`🔄 [${exchange}] Post-only rejected (market moved), fetching fresh prices (retry ${retryCount + 1}/${maxRetries})`);
 
       const freshPrices = await adapter.getBidAsk(productId);
-      // Preserve the dynamic offset across retries (see note above).
-      return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps);
+      // Preserve the dynamic offset and stale timeout across retries (see note above).
+      return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps, staleMs);
     }
 
     console.log(`❌ [${exchange}] Entry bid failed: ${result.errorMessage || 'unknown error'} (${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)})`);
@@ -543,11 +546,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
   /**
    * Schedule stale order timeout for entry order
-   * Uses orderStaleMs * staleTimeoutMultiplier for regime-aware timeout
+   * Uses the per-order adaptive timeout when provided (already ATR-scaled, so
+   * the regime multiplier is deliberately NOT applied on top of it), otherwise
+   * orderStaleMs * staleTimeoutMultiplier for regime-aware timeout
    * @param {string} orderId - Order ID to check
+   * @param {number} [staleMsOverride] - Per-order adaptive timeout in ms
    */
-  const scheduleStaleOrderTimeout = (orderId) => {
-    const staleMs = getEffectiveStaleMs();
+  const scheduleStaleOrderTimeout = (orderId, staleMsOverride = null) => {
+    const staleMs = staleMsOverride ?? getEffectiveStaleMs();
     const timer = setTimeout(() => {
       staleTimers.delete(timer);
       const order = pendingOrders.get(orderId);
@@ -598,8 +604,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const isPersistentType = (type) => type === 'take_profit' || type === 'body_tp' || type === 'ladder_entry';
     const effectiveStaleMs = getEffectiveStaleMs();
     for (const [orderId, order] of pendingOrders) {
-      // Check if order is stale (using regime-adjusted timeout)
-      if (now - order.placedAt > effectiveStaleMs) {
+      // Check if order is stale — honor the per-order adaptive timeout when the
+      // entry was placed with one (this sweep is the backstop for the setTimeout
+      // path; using the shorter global timeout here would cancel deep
+      // momentum-down bids early and defeat the adaptive window)
+      if (now - order.placedAt > (order.staleMs ?? effectiveStaleMs)) {
         // Rate limit cancels (only relevant for non-persistent orders)
         if (!isPersistentType(order.type) && now - lastCancelTime < config.cancelRateLimitMs) {
           continue;

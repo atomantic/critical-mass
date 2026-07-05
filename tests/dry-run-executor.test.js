@@ -266,3 +266,51 @@ describe('dry-run entry fills only at or below the limit price (#154)', () => {
     );
   });
 });
+
+describe('dry-run per-order adaptive stale timeout', () => {
+  it('checkEntryFills honors order.staleMs over config.orderStaleMs', async () => {
+    const config = baseConfig(); // orderStaleMs: 60_000
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    const bid = 100_000;
+    // Deep momentum-down bid placed with a 5-minute adaptive window.
+    const placed = await exec.placeEntryBid(1000, bid, bid * 1.0001, 0, 18, 300_000);
+    assert.ok(placed.success);
+
+    // Backdate past the 60s global timeout but inside the adaptive window.
+    const order = exec.getPendingEntries().get(placed.orderId);
+    order.placedAt = Date.now() - 120_000;
+    exec.checkEntryFills(placed.price * 1.001); // price above limit — no fill
+    assert.ok(
+      exec.getPendingEntries().has(placed.orderId),
+      'order with adaptive staleMs must survive past the global timeout',
+    );
+
+    // Backdate past the adaptive window — now it goes stale.
+    order.placedAt = Date.now() - 400_000;
+    exec.checkEntryFills(placed.price * 1.001);
+    assert.ok(
+      !exec.getPendingEntries().has(placed.orderId),
+      'order must be cancelled once its adaptive window elapses',
+    );
+  });
+
+  it('falls back to config.orderStaleMs when no per-order timeout was given', async () => {
+    const config = baseConfig(); // orderStaleMs: 60_000
+    const exec = createDryRunExecutor('coinbase', config, marketState(), {}, 'BTC-USD');
+    exec.setPriceIncrement(0.01);
+
+    const bid = 100_000;
+    const placed = await exec.placeEntryBid(1000, bid, bid * 1.0001);
+    assert.ok(placed.success);
+
+    const order = exec.getPendingEntries().get(placed.orderId);
+    order.placedAt = Date.now() - 120_000;
+    exec.checkEntryFills(placed.price * 1.001);
+    assert.ok(
+      !exec.getPendingEntries().has(placed.orderId),
+      'order without staleMs must expire on the global timeout',
+    );
+  });
+});

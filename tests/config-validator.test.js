@@ -107,7 +107,8 @@ describe('validateConfigUpdate', () => {
   it('AGGRESSIVENESS_SCHEMA includes all preset fields', () => {
     const expected = [
       'kFactor', 'minIntervalMs', 'maxIntervalMs',
-      'entryOffsetBps', 'cautionScale', 'trendScale', 'maxCycleBuys',
+      'entryOffsetBps', 'entryOffsetUpBps', 'entryOffsetDownBps', 'orderStaleMs',
+      'cautionScale', 'trendScale', 'maxCycleBuys',
     ];
     for (const field of expected) {
       assert.ok(AGGRESSIVENESS_SCHEMA[field], `missing field: ${field}`);

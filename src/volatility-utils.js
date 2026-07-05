@@ -370,6 +370,47 @@ const clamp = (value, min, max) => {
   return Math.max(min, Math.min(max, value));
 };
 
+// Empirically calibrated on 30 days of BTC-USDC 1m candles (2026-06→07,
+// median 1m TR ≈ 6bps): a bid offset ≈ 1×ATR below mid reaches ~50-60% fill
+// probability in ~4 minutes, and touch time scales quadratically with
+// offset/ATR (validated 5→25bps). See docs/adaptive-stale-timeout.md.
+const TOUCH_TIME_BASE_MS = 4 * 60000;
+
+/**
+ * Compute an adaptive stale timeout for a reactive entry bid.
+ *
+ * A resting bid `offsetBps` below mid needs time proportional to
+ * (offsetBps / ATRbps)² for price to plausibly reach it — a deep
+ * momentum-down bid (e.g. 15-18bps) cancelled on the same fixed timer as a
+ * tight 5bps bid gets pulled long before price can touch it (~8% fill at
+ * 120s vs ~50% given its full window), defeating the catch-the-dip intent.
+ *
+ * Floor: config.orderStaleMs (the operator's configured repricing cadence —
+ * high volatility can only shorten toward it, never below). Cap:
+ * config.maxIntervalMs, because a resting entry blocks new reactive entries
+ * (pending-entry guard), so a longer timeout would starve the buy cadence.
+ * The regime stale multiplier (TREND 0.5x etc.) must NOT be applied on top:
+ * regime speed is already encoded in the ATR term.
+ *
+ * @param {number} offsetBps - Entry offset in basis points actually used for the bid
+ * @param {number} atr - 1-minute ATR in price units (e.g. marketState.atr1m)
+ * @param {number} price - Current price (converts ATR to bps)
+ * @param {{orderStaleMs?: number, maxIntervalMs?: number}} config - Regime config
+ * @returns {number} Stale timeout in ms
+ */
+const computeAdaptiveStaleMs = (offsetBps, atr, price, config = {}) => {
+  const base = config.orderStaleMs || 30000;
+  if (!Number.isFinite(offsetBps) || offsetBps <= 0 ||
+      !Number.isFinite(atr) || atr <= 0 ||
+      !Number.isFinite(price) || price <= 0) {
+    return base;
+  }
+  const cap = Math.max(base, config.maxIntervalMs || base);
+  const atrBps = (atr / price) * 10000;
+  const expectedMs = TOUCH_TIME_BASE_MS * Math.pow(offsetBps / atrBps, 2);
+  return Math.round(clamp(expectedMs, base, cap));
+};
+
 /**
  * Round to BTC precision (8 decimals)
  * @param {number} amount - Amount to round
@@ -411,6 +452,7 @@ module.exports = {
   calculateVolExpansion,
   calculateVWAPDistance,
   calculateEMA,
+  computeAdaptiveStaleMs,
   clamp,
   roundAsset,
   roundUSDC,

@@ -483,3 +483,47 @@ describe('order-executor placement paths — unknown-outcome reconciliation (iss
     assert.equal(result.success, false);
   });
 });
+
+describe('refreshStaleOrders — per-order adaptive stale timeout', () => {
+  it('honors order.staleMs over the global regime-adjusted timeout', async () => {
+    const cancelled = [];
+    const adapter = {
+      getOrder: async () => ({ status: 'OPEN', filledSize: 0, completionPercentage: 0 }),
+      cancelOrder: async (orderId) => { cancelled.push(orderId); },
+      placeLimitBuy: async () => { throw new Error('placeLimitBuy should not be called'); },
+      placeLimitSell: async () => { throw new Error('placeLimitSell should not be called'); },
+      getOrderFills: async () => [],
+    };
+    const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
+
+    // Deep bid with a 5-minute adaptive window, aged past the 60s global timeout.
+    exec.restorePendingOrder('adaptive-entry', {
+      type: 'entry',
+      price: 62_000,
+      size: 0.01,
+      sizeUsdc: 620,
+      placedAt: Date.now() - 120_000,
+      staleMs: 300_000,
+    });
+    // Tight bid without a per-order timeout, aged the same — expires on the global 60s.
+    exec.restorePendingOrder('default-entry', {
+      type: 'entry',
+      price: 62_900,
+      size: 0.01,
+      sizeUsdc: 629,
+      placedAt: Date.now() - 120_000,
+    });
+
+    const refreshed = await exec.refreshStaleOrders();
+
+    assert.equal(refreshed, 1, 'only the default-timeout order goes stale');
+    assert.deepStrictEqual(cancelled, ['default-entry']);
+    assert.ok(exec.getPendingEntries().has('adaptive-entry'), 'adaptive order must keep resting');
+
+    // Once the adaptive window elapses, the same sweep cancels it.
+    exec.getPendingEntries().get('adaptive-entry').placedAt = Date.now() - 400_000;
+    const secondPass = await exec.refreshStaleOrders();
+    assert.equal(secondPass, 1);
+    assert.deepStrictEqual(cancelled, ['default-entry', 'adaptive-entry']);
+  });
+});

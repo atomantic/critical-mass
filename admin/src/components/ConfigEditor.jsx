@@ -973,8 +973,10 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             <SectionCard title="Order Execution">
               <div className="grid grid-cols-2 gap-3">
                 <FormInput label="Entry Offset (bps)" hint="Place limit buy this many bps below market" value={regimeConfig.entryOffsetBps || 10} onChange={(v) => handleRegimeChange('entryOffsetBps', v)} type="number" />
+                <FormInput label="Entry Offset Up (bps)" hint="Offset when momentum is UP (tighter to fill before rise)" value={regimeConfig.entryOffsetUpBps || 5} onChange={(v) => handleRegimeChange('entryOffsetUpBps', v)} type="number" />
+                <FormInput label="Entry Offset Down (bps)" hint="Offset when momentum is DOWN (deeper to catch the dip)" value={regimeConfig.entryOffsetDownBps || 15} onChange={(v) => handleRegimeChange('entryOffsetDownBps', v)} type="number" />
                 <FormInput label="Entry Max Retries" hint="Retry cancelled entries up to this many times" value={regimeConfig.entryMaxRetries || 3} onChange={(v) => handleRegimeChange('entryMaxRetries', v)} type="number" />
-                <FormInput label="Order Stale (ms)" hint="Cancel unfilled entries after this duration" value={regimeConfig.orderStaleMs || 30000} onChange={(v) => handleRegimeChange('orderStaleMs', v)} type="number" />
+                <FormInput label="Order Stale Floor (ms)" hint="Min entry timeout; actual scales with offset²/ATR², capped at Max Interval" value={regimeConfig.orderStaleMs || 30000} onChange={(v) => handleRegimeChange('orderStaleMs', v)} type="number" />
                 <FormInput label="Cancel Rate Limit (ms)" hint="Min wait between cancel API calls" value={regimeConfig.cancelRateLimitMs || 1000} onChange={(v) => handleRegimeChange('cancelRateLimitMs', v)} type="number" />
                 <FormInput label="Max Open Orders" hint="Max simultaneous entry orders allowed" value={regimeConfig.maxOpenOrders || 3} onChange={(v) => handleRegimeChange('maxOpenOrders', v)} type="number" />
                 <FormInput label="TP Update Threshold %" hint="Min price change before updating TP order" value={regimeConfig.tpUpdateThresholdPct || 0.5} onChange={(v) => handleRegimeChange('tpUpdateThresholdPct', v)} type="number" />
@@ -1061,6 +1063,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                               <FormInput label="Min Interval (ms)" value={params.minIntervalMs} onChange={(v) => handlePresetParamChange(id, 'minIntervalMs', v)} type="number" />
                               <FormInput label="Max Interval (ms)" value={params.maxIntervalMs} onChange={(v) => handlePresetParamChange(id, 'maxIntervalMs', v)} type="number" />
                               <FormInput label="Entry Offset (bps)" value={params.entryOffsetBps} onChange={(v) => handlePresetParamChange(id, 'entryOffsetBps', v)} type="number" />
+                              <FormInput label="Entry Offset Up (bps)" value={params.entryOffsetUpBps} onChange={(v) => handlePresetParamChange(id, 'entryOffsetUpBps', v)} type="number" />
+                              <FormInput label="Entry Offset Down (bps)" value={params.entryOffsetDownBps} onChange={(v) => handlePresetParamChange(id, 'entryOffsetDownBps', v)} type="number" />
+                              <FormInput label="Order Stale Floor (ms)" value={params.orderStaleMs} onChange={(v) => handlePresetParamChange(id, 'orderStaleMs', v)} type="number" />
                               <FormInput label="Caution Scale" value={params.cautionScale} onChange={(v) => handlePresetParamChange(id, 'cautionScale', v)} type="number" />
                               <FormInput label="Trend Scale" value={params.trendScale} onChange={(v) => handlePresetParamChange(id, 'trendScale', v)} type="number" />
                               <FormInput label="Max Cycle Buys" value={params.maxCycleBuys} onChange={(v) => handlePresetParamChange(id, 'maxCycleBuys', v)} type="number" />

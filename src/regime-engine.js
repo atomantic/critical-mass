@@ -30,7 +30,7 @@ const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
 const { createSizeOptimizer } = require('./size-optimizer');
 const { createLadderCalculator } = require('./ladder-calculator');
-const { calculateAllMetrics, clamp, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
+const { calculateAllMetrics, clamp, computeAdaptiveStaleMs, roundAsset, roundUSDC, roundPrice } = require('./volatility-utils');
 const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
@@ -3973,6 +3973,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Apply macro regime offset multiplier
     effectiveOffsetBps = Math.round(effectiveOffsetBps * macroMult.offsetMult);
 
+    // Give the bid time proportional to how far below mid it rests: a deep
+    // momentum-down bid on the fixed orderStaleMs timer gets cancelled long
+    // before price can plausibly reach it (~8% fill at 18bps/120s), defeating
+    // the catch-the-dip intent. Floor orderStaleMs, cap maxIntervalMs.
+    const entryStaleMs = computeAdaptiveStaleMs(effectiveOffsetBps, marketState.atr1m, marketState.lastPrice, config);
+
     // Place entry with dynamic offset
     let result;
     const isInsufficientFundsMessage = (msg) => {
@@ -3988,7 +3994,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     };
 
     try {
-      result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps);
+      result = await orderExecutor.placeEntryBid(sizing.sizeUsdc, marketState.bid, marketState.ask, 0, effectiveOffsetBps, entryStaleMs);
     } catch (err) {
       if (isInsufficientFundsMessage(err.message) || err.status === 406) {
         const cooldownMs = config.insufficientFundsCooldownMs || 60000;

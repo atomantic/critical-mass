@@ -279,6 +279,16 @@ const NOTIFICATION_DEFAULTS = {
 /**
  * Default aggressiveness preset definitions
  * These define the parameter values for each aggressiveness level.
+ *
+ * Momentum offsets follow the documented DEFAULTS ratio (up = 0.5x neutral,
+ * down = 1.5x neutral) — before they were preset-scaled, every level inherited
+ * the global 5/15 defaults, so a conservative fund with up-momentum bid
+ * TIGHTER (5bps) than its own neutral offset (25bps), inverting the intent.
+ *
+ * orderStaleMs is the FLOOR for the ATR-adaptive per-order stale timeout
+ * (see computeAdaptiveStaleMs) and scales with the offset: a 25bps bid needs
+ * far longer for price to plausibly reach it than a 5bps bid (empirically
+ * ~1% vs ~40% fill within 2min at median BTC vol).
  */
 const DEFAULT_AGGRESSIVENESS_PRESETS = {
   conservative: {
@@ -286,6 +296,9 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     minIntervalMs: 180000,
     maxIntervalMs: 7200000,
     entryOffsetBps: 25,
+    entryOffsetUpBps: 13,
+    entryOffsetDownBps: 38,
+    orderStaleMs: 300000,
     cautionScale: 0.15,
     trendScale: 0,
     maxCycleBuys: 10,
@@ -296,6 +309,9 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     minIntervalMs: 120000,
     maxIntervalMs: 3600000,
     entryOffsetBps: 18,
+    entryOffsetUpBps: 9,
+    entryOffsetDownBps: 27,
+    orderStaleMs: 180000,
     cautionScale: 0.35,
     trendScale: 0.1,
     maxCycleBuys: 15,
@@ -306,6 +322,9 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     minIntervalMs: 90000,
     maxIntervalMs: 2400000,
     entryOffsetBps: 12,
+    entryOffsetUpBps: 6,
+    entryOffsetDownBps: 18,
+    orderStaleMs: 120000,
     cautionScale: 0.6,
     trendScale: 0.25,
     maxCycleBuys: 25,
@@ -316,6 +335,9 @@ const DEFAULT_AGGRESSIVENESS_PRESETS = {
     minIntervalMs: 60000,
     maxIntervalMs: 1200000,
     entryOffsetBps: 5,
+    entryOffsetUpBps: 3,
+    entryOffsetDownBps: 8,
+    orderStaleMs: 60000,
     cautionScale: 1.0,
     trendScale: 0.5,
     maxCycleBuys: 50,

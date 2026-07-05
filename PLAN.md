@@ -15,6 +15,7 @@ For completed work, see [DONE.md](./DONE.md).
 - [ ] Complete `src/routes/async-handler.js` adoption — file exists but is not imported in any route
 - [ ] Evict `dustWaitLoggedQty` entries (`src/regime-engine.js:499`) when a dust body is merged/closed — the throttle map is keyed by `bodyId` and never pruned, a slow uptime-bounded memory creep (one small entry per dust body ever seen). Found in the v2.21.0 release review (non-blocking).
 - [ ] Make the gemini `makeRestRequest` 429 backoff injectable (`src/adapters/gemini/api.js:177`) like `createRestThrottle`'s `sleep`, so the 429 integration tests can use fake timers instead of ~2s of real sleep (review #194/codex finding #3 — test ergonomics only, no production bug)
+- [ ] Dashboard "Timeout" readout (`admin/src/components/RegimeDashboard.jsx:1706`, fed by `status.effectiveStaleMs` at `src/regime-engine.js:4706`) still shows the global regime-adjusted stale timeout; with per-order adaptive timeouts (docs/adaptive-stale-timeout.md) a resting entry's actual window can be much longer — expose the pending entry's `order.staleMs` in status and show that instead (display accuracy only)
 
 ## Future / Ideas
 

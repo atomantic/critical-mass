@@ -80,9 +80,12 @@ const AGGRESSIVENESS_SCHEMA = {
   maxMarkup: { type: 'number', min: 0, max: 1 },
   sizeMultiplier: { type: 'number', min: 0.1, max: 10 },
   entryOffsetBps: { type: 'number', min: 0, max: 1000 },
+  entryOffsetUpBps: { type: 'number', min: 0, max: 1000 },
+  entryOffsetDownBps: { type: 'number', min: 0, max: 1000 },
+  orderStaleMs: { type: 'number', min: 5000, max: 3600000 },
   cautionScale: { type: 'number', min: 0, max: 10 },
   trendScale: { type: 'number', min: 0, max: 10 },
-  maxCycleBuys: { type: 'number', min: 1, max: 100 },
+  maxCycleBuys: { type: 'number', min: 1, max: 1000 },
 };
 
 module.exports = {
