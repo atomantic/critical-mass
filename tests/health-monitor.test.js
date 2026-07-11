@@ -149,6 +149,70 @@ describe('SAFE mode transitions', () => {
 });
 
 // ============================================================================
+// AUTH_DENIED (API key / IP-allowlist denial)
+// ============================================================================
+describe('AUTH_DENIED transitions', () => {
+  let monitor;
+  let authReasons;
+  let activeModeCount;
+
+  beforeEach(() => {
+    authReasons = [];
+    activeModeCount = 0;
+    monitor = createHealthMonitor('test-exchange', createTestConfig(), {
+      onAuthDenied: (reason) => authReasons.push(reason),
+      onActiveMode: () => activeModeCount++,
+    });
+  });
+
+  it('recordAuthDenied transitions to AUTH_DENIED and fires callback', () => {
+    monitor.recordAuthDenied('IP_ILLEGAL (code: 40103)');
+    const state = monitor.getState();
+    assert.equal(state.mode, 'AUTH_DENIED');
+    assert.equal(state.reason, 'IP_ILLEGAL (code: 40103)');
+    assert.deepEqual(authReasons, ['IP_ILLEGAL (code: 40103)']);
+  });
+
+  it('recordAuthDenied is idempotent when already AUTH_DENIED', () => {
+    monitor.recordAuthDenied('first');
+    monitor.recordAuthDenied('second');
+    assert.equal(monitor.getState().reason, 'first');
+    assert.equal(authReasons.length, 1);
+  });
+
+  it('canPlaceEntry blocks entries in AUTH_DENIED mode', () => {
+    monitor.recordAuthDenied('denied');
+    const result = monitor.canPlaceEntry();
+    assert.equal(result.allowed, false);
+    assert.equal(result.reason, 'system_auth_denied');
+  });
+
+  it('checkHealth does not auto-transition out of AUTH_DENIED', () => {
+    monitor.recordAuthDenied('denied');
+    // Even with a healthy websocket, AUTH_DENIED must persist — it won't self-heal.
+    monitor.recordWsStatus(true);
+    monitor.recordTickerUpdate();
+    const state = monitor.checkHealth({ openOrderCount: 0 });
+    assert.equal(state.mode, 'AUTH_DENIED');
+  });
+
+  it('clearAuthDenied returns to ACTIVE and fires onActiveMode', () => {
+    monitor.recordAuthDenied('denied');
+    monitor.clearAuthDenied();
+    const state = monitor.getState();
+    assert.equal(state.mode, 'ACTIVE');
+    assert.equal(state.reason, null);
+    assert.equal(activeModeCount, 1);
+  });
+
+  it('clearAuthDenied is a no-op when not AUTH_DENIED', () => {
+    monitor.clearAuthDenied();
+    assert.equal(monitor.getState().mode, 'ACTIVE');
+    assert.equal(activeModeCount, 0);
+  });
+});
+
+// ============================================================================
 // WebSocket status recording
 // ============================================================================
 describe('WebSocket status recording', () => {

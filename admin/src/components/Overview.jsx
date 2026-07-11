@@ -30,6 +30,7 @@ const HEALTH_COLORS = {
   ACTIVE: 'text-green-400',
   SAFE: 'text-yellow-400',
   PAUSED: 'text-gray-400',
+  AUTH_DENIED: 'text-red-300',
   STOPPED: 'text-red-400',
   ENGINE_DOWN: 'text-orange-400',
 }

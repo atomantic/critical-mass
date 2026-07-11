@@ -374,11 +374,14 @@
  */
 
 /**
- * @typedef {'ACTIVE' | 'SAFE' | 'PAUSED'} HealthMode
+ * @typedef {'ACTIVE' | 'SAFE' | 'PAUSED' | 'AUTH_DENIED'} HealthMode
  * System health states:
  * - ACTIVE: Normal operation, entries allowed
  * - SAFE: Degraded conditions, entries blocked, TP orders maintained
  * - PAUSED: Manually paused by operator
+ * - AUTH_DENIED: Exchange rejected the API key (e.g. IP not allowlisted);
+ *   entries blocked, no auto-recovery timer — clears when an authenticated
+ *   call succeeds again or the operator resumes
  */
 
 /**

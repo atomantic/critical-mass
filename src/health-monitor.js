@@ -10,6 +10,7 @@
  * - Rate limit events
  * - Latency spikes
  * - WebSocket disconnection
+ * - API key / IP-allowlist denial (AUTH_DENIED — does NOT self-heal on a timer)
  */
 
 /**
@@ -165,6 +166,50 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
   };
 
   /**
+   * Record an authentication / authorization denial from the exchange — a
+   * rejected API key or (most commonly here) a server IP that is not on the
+   * key's allowlist. Unlike ws/latency/rate-limit issues, this will NOT
+   * self-heal on a timer: it stays broken until the operator fixes the key or
+   * allowlists the IP. So we enter a dedicated AUTH_DENIED mode that
+   * checkHealth() never auto-exits. Recovery is via clearAuthDenied() (a later
+   * authenticated REST call succeeding) or a manual resume().
+   * @param {string} [reason] - Raw error detail for operator display
+   */
+  const recordAuthDenied = (reason = 'api_key_denied') => {
+    if (state.mode === 'AUTH_DENIED') return;
+
+    state.mode = 'AUTH_DENIED';
+    state.since = Date.now();
+    state.reason = reason;
+    lastHealthyTimestamp = 0;
+
+    console.log(`🔑 [${exchange}] API key denied — entering AUTH_DENIED (halting new orders): ${reason}`);
+
+    if (callbacks.onAuthDenied) {
+      callbacks.onAuthDenied(reason);
+    }
+  };
+
+  /**
+   * Clear AUTH_DENIED once access is restored (an authenticated REST call
+   * succeeded again — e.g. the IP was re-allowlisted). No-op in any other mode.
+   */
+  const clearAuthDenied = () => {
+    if (state.mode !== 'AUTH_DENIED') return;
+
+    state.mode = 'ACTIVE';
+    state.since = Date.now();
+    state.reason = null;
+    lastHealthyTimestamp = Date.now();
+
+    console.log(`✅ [${exchange}] API access restored — exiting AUTH_DENIED, returning to ACTIVE`);
+
+    if (callbacks.onActiveMode) {
+      callbacks.onActiveMode();
+    }
+  };
+
+  /**
    * Pause system (manual)
    * @param {string} [reason] - Reason for pause
    */
@@ -204,8 +249,10 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     const now = Date.now();
     const { openOrderCount } = opts;
 
-    // If manually paused, don't auto-transition
-    if (state.mode === 'PAUSED') {
+    // If manually paused or blocked on an auth denial, don't auto-transition.
+    // AUTH_DENIED won't self-heal — it clears only via clearAuthDenied()
+    // (an authenticated REST call succeeded) or a manual resume().
+    if (state.mode === 'PAUSED' || state.mode === 'AUTH_DENIED') {
       return state;
     }
 
@@ -334,6 +381,8 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     recordRateLimit,
     enterSafeMode,
     exitSafeMode,
+    recordAuthDenied,
+    clearAuthDenied,
     pause,
     resume,
     checkHealth,

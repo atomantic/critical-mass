@@ -337,6 +337,44 @@ const isRateLimitError = (err) =>
   /\b429\b|rate.?limit/i.test(err?.message || '');
 
 /**
+ * Subset of INSTRUMENTED_REST_METHODS that require a valid API key. A SUCCESS on
+ * one of these proves auth is working again, so it's the only signal allowed to
+ * auto-clear AUTH_DENIED. Public methods (getCandles/getCurrentPrice/getBidAsk/
+ * getProductDetails) succeed even while the key's IP is blocked, so a success
+ * there must NOT clear the denial.
+ */
+const AUTHENTICATED_REST_METHODS = new Set([
+  'getOrder', 'getOpenOrders', 'getOrderFills', 'getOrderFillSummary',
+  'placeMarketBuy', 'placeLimitBuy', 'placeLimitSell', 'placeMarketSell', 'placeStopLimitSell',
+  'cancelOrder', 'getAccountBalance',
+]);
+
+/**
+ * Detect an authentication / authorization denial from a thrown adapter error:
+ * a rejected API key or (the common case here) a server IP that is not on the
+ * exchange's allowlist. Distinct from a transient error — it won't self-heal,
+ * so it drives the engine into AUTH_DENIED (pause + notify) rather than SAFE.
+ *
+ * Matches HTTP 401/403 and Crypto.com auth error codes 40101 (UNAUTHORIZED),
+ * 40103 (IP_ILLEGAL / IP not whitelisted) and 40104 (BAD_API_KEY_STATUS),
+ * whether surfaced on err.status, err.responseData.code, or embedded in the
+ * message. Deliberately does NOT match 40401 NOT_FOUND (a routine
+ * order-not-found), which would otherwise pause the engine on every stale
+ * cancel.
+ * @param {any} err
+ * @returns {boolean}
+ */
+const isAuthDeniedError = (err) => {
+  const httpStatus = err?.status ?? err?.statusCode ?? err?.response?.status;
+  if (httpStatus === 401 || httpStatus === 403) return true;
+  const code = Number(err?.responseData?.code ?? err?.code);
+  if (code === 40101 || code === 40103 || code === 40104) return true;
+  const msg = err?.message || '';
+  if (/\bcode:\s*4010[134]\b/.test(msg)) return true;
+  return /unauthorized|not\s*authenticated|ip[_\s-]*illegal|ip\s*address\s*not\s*(?:whitelist|allow)|not\s*(?:whitelist|allow)listed|invalid\s*api[_\s-]*key/i.test(msg);
+};
+
+/**
  * Wrap an adapter's REST methods so every call feeds the health monitor's
  * latency / error / rate-limit SAFE-mode triggers (issue #211-B). Non-REST
  * methods (WS, credentials) pass through untouched. Pure functional wrapper —
@@ -356,11 +394,19 @@ const instrumentAdapterForHealth = (adapter, healthMonitor) => {
       return Promise.resolve(fn.apply(adapter, args))
         .then((result) => {
           healthMonitor.recordRestLatency(Date.now() - startedAt);
+          // A successful authenticated call means access is back — auto-clear a
+          // prior AUTH_DENIED (e.g. the IP was re-allowlisted). No-op otherwise.
+          if (AUTHENTICATED_REST_METHODS.has(name)) healthMonitor.clearAuthDenied();
           return result;
         })
         .catch((err) => {
           healthMonitor.recordRestLatency(Date.now() - startedAt);
-          if (isRateLimitError(err)) healthMonitor.recordRateLimit();
+          // Auth/IP-allowlist denial is terminal until an operator fixes it —
+          // route it to AUTH_DENIED (pause + notify) instead of the transient
+          // SAFE-mode error counters, so it neither self-heals nor hammers the
+          // blocked API.
+          if (isAuthDeniedError(err)) healthMonitor.recordAuthDenied(err.message);
+          else if (isRateLimitError(err)) healthMonitor.recordRateLimit();
           else healthMonitor.recordRestError();
           throw err;
         });
@@ -434,6 +480,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     onActiveMode: () => {
       if (callbacks.onHealthChange) {
         callbacks.onHealthChange('ACTIVE', null);
+      }
+    },
+    onAuthDenied: (reason) => {
+      console.log(`🔑 [${exchange}] API key denied (check IP allowlist) — trading paused until access restored: ${reason}`);
+      tradeEvents.emitTradeEvent('api_key_denied', exchange,
+        `API key denied — trading paused (check IP allowlist): ${reason}`, { reason });
+      // Deliberately NOT cancelling open orders here: cancelOrder is itself an
+      // authenticated call that would fail (same IP block) and just churn. Live
+      // orders are left untouched; new entries are blocked via canPlaceEntry.
+      if (callbacks.onHealthChange) {
+        callbacks.onHealthChange('AUTH_DENIED', reason);
       }
     },
   });
@@ -5667,4 +5724,5 @@ module.exports = {
   isStrandedDustBody,
   instrumentAdapterForHealth,
   isRateLimitError,
+  isAuthDeniedError,
 };

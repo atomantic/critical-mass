@@ -64,6 +64,7 @@ const HEALTH_COLORS = {
   ACTIVE: { bg: 'bg-green-900/50', text: 'text-green-400', icon: '●' },
   SAFE: { bg: 'bg-yellow-900/50', text: 'text-yellow-400', icon: '◐' },
   PAUSED: { bg: 'bg-gray-700', text: 'text-gray-400', icon: '○' },
+  AUTH_DENIED: { bg: 'bg-red-900/50', text: 'text-red-300', icon: '🔑' },
   STOPPED: { bg: 'bg-red-900/30', text: 'text-red-400', icon: '■' },
   ENGINE_DOWN: { bg: 'bg-orange-900/40', text: 'text-orange-400', icon: '⚠' },
 }
@@ -663,6 +664,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [rollingUp, setRollingUp] = useState(false)
   const [collapseAllConfirm, setCollapseAllConfirm] = useState(false)
   const [drawdownResumeConfirm, setDrawdownResumeConfirm] = useState(false)
+  const [resumingAuth, setResumingAuth] = useState(false)
   const [collapsingAll, setCollapsingAll] = useState(false)
   const [resetCycleConfirm, setResetCycleConfirm] = useState(false)
   const [resettingCycle, setResettingCycle] = useState(false)
@@ -911,6 +913,26 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       else addToast({ type: 'error', title: 'Resume failed', message: `HTTP ${res.status}` })
     } catch (err) {
       addToast({ type: 'error', title: 'Resume failed', message: err.message || 'Network error' })
+    }
+  }
+
+  // Resume after an API-key/IP-allowlist denial. The engine also auto-resumes
+  // once an authenticated call succeeds, but this lets the operator retry
+  // immediately after fixing the allowlist.
+  const handleResumeFromAuthDenied = async () => {
+    setResumingAuth(true)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/resume${pairQuery}`, { method: 'POST' })
+      if (res.ok) {
+        await fetchStatus()
+        addToast({ type: 'success', title: 'Resumed', message: 'Engine resumed — retrying API access' })
+      } else {
+        addToast({ type: 'error', title: 'Resume failed', message: `HTTP ${res.status}` })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Resume failed', message: err.message || 'Network error' })
+    } finally {
+      setResumingAuth(false)
     }
   }
 
@@ -1261,6 +1283,35 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             </div>
           </div>
         )
+      )}
+
+      {/* API-key-denied banner: the exchange rejected the key (commonly the
+          server IP is not on the key's allowlist). New orders are halted until
+          access is restored; live orders are left untouched. */}
+      {health.mode === 'AUTH_DENIED' && (
+        <div className="bg-red-900/40 border border-red-600/60 rounded-lg px-4 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="text-red-400 text-xl">🔑</span>
+            <div>
+              <div className="text-red-300 font-medium text-sm">
+                API key denied — trading paused
+              </div>
+              <div className="text-gray-400 text-xs mt-0.5">
+                The exchange rejected the API key (commonly the server IP is not on the key's allowlist). New orders are halted; existing orders are left untouched. Allowlist the IP, then resume — the engine also auto-resumes once an API call succeeds again.
+              </div>
+              {health.reason && (
+                <div className="text-red-400/80 text-[11px] mt-1 font-mono break-all">{health.reason}</div>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={handleResumeFromAuthDenied}
+            disabled={resumingAuth}
+            className="shrink-0 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
+          >
+            {resumingAuth ? 'Resuming…' : 'Resume'}
+          </button>
+        </div>
       )}
 
       {/* Buys-paused banner: cycle buy-limit reached, new entries paused */}

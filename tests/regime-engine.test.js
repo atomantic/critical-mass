@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody, instrumentAdapterForHealth, isRateLimitError } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody, instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/regime-engine');
 
 describe('cancelPartialFillOrder', () => {
   const makeDeps = ({ cancelOrder, exchange = 'gemini' } = {}) => {
@@ -240,13 +240,15 @@ describe('isStrandedDustBody (issue #189)', () => {
 // ---------------------------------------------------------------------------
 describe('instrumentAdapterForHealth (issue #211-B)', () => {
   const makeHealthSpy = () => {
-    const calls = { latency: [], error: 0, rateLimit: 0 };
+    const calls = { latency: [], error: 0, rateLimit: 0, authDenied: 0, authCleared: 0 };
     return {
       spy: calls,
       monitor: {
         recordRestLatency: (ms) => calls.latency.push(ms),
         recordRestError: () => { calls.error += 1; },
         recordRateLimit: () => { calls.rateLimit += 1; },
+        recordAuthDenied: () => { calls.authDenied += 1; },
+        clearAuthDenied: () => { calls.authCleared += 1; },
       },
     };
   };
@@ -278,6 +280,29 @@ describe('instrumentAdapterForHealth (issue #211-B)', () => {
     assert.equal(spy.error, 0, 'a 429 must not double-count as a rest error');
   });
 
+  it('classifies an auth/IP-allowlist denial as authDenied, not a generic error', async () => {
+    const { spy, monitor } = makeHealthSpy();
+    const err = Object.assign(new Error('Crypto.com API error: IP_ILLEGAL (code: 40103)'), { status: 401 });
+    const adapter = instrumentAdapterForHealth({ cancelOrder: async () => { throw err; } }, monitor);
+    await assert.rejects(() => adapter.cancelOrder('id'));
+    assert.equal(spy.authDenied, 1, 'an auth denial records recordAuthDenied');
+    assert.equal(spy.error, 0, 'an auth denial must not double-count as a rest error');
+  });
+
+  it('auto-clears AUTH_DENIED on a successful authenticated call', async () => {
+    const { spy, monitor } = makeHealthSpy();
+    const adapter = instrumentAdapterForHealth({ getOrder: async () => ({ ok: true }) }, monitor);
+    await adapter.getOrder('id');
+    assert.equal(spy.authCleared, 1, 'a successful authed call clears any prior AUTH_DENIED');
+  });
+
+  it('does NOT auto-clear AUTH_DENIED on a successful public call', async () => {
+    const { spy, monitor } = makeHealthSpy();
+    const adapter = instrumentAdapterForHealth({ getCandles: async () => [] }, monitor);
+    await adapter.getCandles('BTC-USD', 0, 1, 'ONE_MINUTE');
+    assert.equal(spy.authCleared, 0, 'a public call succeeds even while IP-blocked — must not clear');
+  });
+
   it('passes non-REST methods through untouched', () => {
     const { monitor } = makeHealthSpy();
     const ws = () => 'connected';
@@ -305,5 +330,33 @@ describe('isRateLimitError (issue #211-B)', () => {
     assert.equal(isRateLimitError({ status: 500, message: 'server error' }), false);
     assert.equal(isRateLimitError(new Error('timeout')), false);
     assert.equal(isRateLimitError(null), false);
+  });
+});
+
+describe('isAuthDeniedError (API key / IP allowlist)', () => {
+  it('detects HTTP 401/403 across common error shapes', () => {
+    assert.equal(isAuthDeniedError({ status: 401 }), true);
+    assert.equal(isAuthDeniedError({ statusCode: 403 }), true);
+    assert.equal(isAuthDeniedError({ response: { status: 401 } }), true);
+  });
+
+  it('detects Crypto.com auth error codes (40101/40103/40104)', () => {
+    assert.equal(isAuthDeniedError({ responseData: { code: 40103 } }), true);
+    assert.equal(isAuthDeniedError({ message: 'Crypto.com API error: UNAUTHORIZED (code: 40101)' }), true);
+    assert.equal(isAuthDeniedError({ message: 'Crypto.com API error: IP_ILLEGAL (code: 40103)' }), true);
+    assert.equal(isAuthDeniedError({ message: 'BAD_API_KEY_STATUS (code: 40104)' }), true);
+  });
+
+  it('detects auth phrasing in the message', () => {
+    assert.equal(isAuthDeniedError({ message: 'Unauthorized' }), true);
+    assert.equal(isAuthDeniedError({ message: 'IP address not whitelisted' }), true);
+    assert.equal(isAuthDeniedError({ message: 'invalid api key' }), true);
+  });
+
+  it('does NOT match a routine order-not-found (40401) or other errors', () => {
+    assert.equal(isAuthDeniedError({ message: 'Crypto.com API error: NOT_FOUND (code: 40401)' }), false);
+    assert.equal(isAuthDeniedError({ status: 500, message: 'server error' }), false);
+    assert.equal(isAuthDeniedError({ status: 'network', message: 'network timeout' }), false);
+    assert.equal(isAuthDeniedError(null), false);
   });
 });
