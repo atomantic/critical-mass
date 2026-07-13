@@ -406,9 +406,26 @@ const isFilledStatus = (order) =>
   !!order &&
   (String(order.status || '').toUpperCase() === 'FILLED' || order.completionPercentage >= 100);
 
+/**
+ * True only when a getOrder failure definitively means the order does not
+ * exist on the exchange. Network errors, 5xx, auth/IP-allowlist denials, and
+ * rate limits all throw too — treating those as "order gone" orphans a live
+ * order and lets the engine place a duplicate (2026-07-11 cryptocom incident:
+ * a flaky-network startup nulled 4 live body TPs and duplicated 2 of them).
+ *
+ * @param {Error & {response?: {status?: number, data?: {code?: number}}}} err
+ * @returns {boolean}
+ */
+const isOrderNotFoundError = (err) =>
+  !!err &&
+  (err.message?.includes('not found') ||
+    err.response?.status === 404 ||
+    err.response?.data?.code === 40003);
+
 module.exports = {
   BASIS_POINTS_DIVISOR,
   isFilledStatus,
+  isOrderNotFoundError,
   readJSON,
   writeJSON,
   parseTSV,

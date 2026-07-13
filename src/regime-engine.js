@@ -37,7 +37,7 @@ const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
 const celestialHierarchy = require('./celestial-hierarchy');
-const { fmtCurrency: fmtPrice, isFilledStatus, floorToIncrement } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, isFilledStatus, isOrderNotFoundError, floorToIncrement } = require('./shared-utils');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -1346,17 +1346,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // codebase: order-manager / order-executor / market-data-service all
       // treat EXPIRED as terminal-cancelled.
       if (positionState.activeTpOrderId) {
-        const tpOrderStatus = await adapter.getOrder(positionState.activeTpOrderId).catch(() => null);
-        const tpOrderExists = tpOrderStatus
+        let tpOrderStatus = null;
+        let tpLookupFailed = false;
+        try {
+          tpOrderStatus = await adapter.getOrder(positionState.activeTpOrderId);
+        } catch (err) {
+          // Same rule as the body-TP restore below: only definitive not-found
+          // clears tracking; transient failures must not orphan a live order.
+          tpLookupFailed = !isOrderNotFoundError(err);
+        }
+        const tpOrderExists = tpLookupFailed || (tpOrderStatus
           && tpOrderStatus.status !== 'CANCELLED'
           && tpOrderStatus.status !== 'FAILED'
-          && tpOrderStatus.status !== 'EXPIRED';
+          && tpOrderStatus.status !== 'EXPIRED');
 
         if (tpOrderExists && orderExecutor.restorePendingOrder) {
           // Check if a celestial body owns this TP — restore as body_tp if so
           const bodyOwner = (positionState.celestialBodies || []).find(b => b.tpOrderId === positionState.activeTpOrderId);
           if (bodyOwner && orderExecutor.restoreBodyTpOrder) {
-            const placedAt = tpOrderStatus.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now());
+            const placedAt = tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now());
             orderExecutor.restoreBodyTpOrder(bodyOwner.id, positionState.activeTpOrderId, bodyOwner.assetQty, positionState.lastTpPrice, placedAt);
             console.log(`📋 [${exchange}] Restored legacy TP as body_tp: ${positionState.activeTpOrderId.slice(0, 8)} → body ${bodyOwner.id.slice(-8)}`);
             positionState.activeTpOrderId = null;
@@ -1368,7 +1376,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               price: positionState.lastTpPrice,
               size: positionState.assetOnOrder || positionState.totalAsset,
               sizeUsdc: (positionState.lastTpPrice || 0) * (positionState.assetOnOrder || positionState.totalAsset),
-              placedAt: tpOrderStatus.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
+              placedAt: tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
               status: 'open',
             });
             console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
@@ -1463,12 +1471,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         for (const body of [...savedBodies]) {
           if (!body.tpOrderId) continue;
 
-          const bodyStatus = await adapter.getOrder(body.tpOrderId).catch(() => null);
+          let bodyStatus = null;
+          let bodyLookupFailed = false;
+          try {
+            bodyStatus = await adapter.getOrder(body.tpOrderId);
+          } catch (err) {
+            // Only a definitive not-found means the order is gone. Network/
+            // API failures keep the saved tpOrderId and restore tracking from
+            // saved state below; the interval reconciler re-checks once
+            // connectivity returns (see isOrderNotFoundError).
+            bodyLookupFailed = !isOrderNotFoundError(err);
+          }
           // Mirror the core-TP exists check: EXPIRED is terminal cancellation.
-          const bodyExists = bodyStatus
+          const bodyExists = bodyLookupFailed || (bodyStatus
             && bodyStatus.status !== 'CANCELLED'
             && bodyStatus.status !== 'FAILED'
-            && bodyStatus.status !== 'EXPIRED';
+            && bodyStatus.status !== 'EXPIRED');
 
           if (bodyExists && isFilledStatus(bodyStatus)) {
             // Body filled while offline — handled in checkOfflineOrderFills above
@@ -1476,7 +1494,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }
 
           if (bodyExists && orderExecutor.restoreBodyTpOrder) {
-            const bodyPlacedAt = bodyStatus.createdTime ? new Date(bodyStatus.createdTime).getTime() : Date.now();
+            const bodyPlacedAt = bodyStatus?.createdTime ? new Date(bodyStatus.createdTime).getTime() : Date.now();
             orderExecutor.restoreBodyTpOrder(
               body.id,
               body.tpOrderId,
@@ -3544,8 +3562,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           })
           .catch(err => {
             // Order not found might mean it was cancelled or doesn't exist
-            const errCode = err.response?.data?.code;
-            if (err.message?.includes('not found') || err.response?.status === 404 || errCode === 40003) {
+            if (isOrderNotFoundError(err)) {
               console.log(`⚠️ [${exchange}] TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
               const cancelledTpId = positionState.activeTpOrderId;
               positionState.activeTpOrderId = null;
@@ -3625,9 +3642,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             })
             .catch(async (err) => {
               // Order not found or invalid — likely cancelled externally or ID no longer valid
-              const errCode = err.response?.data?.code;
-              const isNotFound = err.message?.includes('not found') || err.response?.status === 404 || errCode === 40003;
-              if (isNotFound) {
+              if (isOrderNotFoundError(err)) {
                 console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} not found on exchange — clearing for re-placement`);
                 orderExecutor.removeBodyTracking(body.tpOrderId);
                 body.tpOrderId = null;
