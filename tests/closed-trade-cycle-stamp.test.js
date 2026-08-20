@@ -23,6 +23,15 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// The size optimizer persists its output per-pair into the SHARED
+// data/config.json, so constructing an engine on a throwaway pair would
+// register that pair as a real fund in a production install (and race a
+// running engine's own config writes). Neutralize the write BEFORE
+// regime-engine is required — it destructures updateRegimeConfig at load.
+const configUtils = require('../src/config-utils');
+const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
+configUtils.updateRegimeConfig = () => {};
+
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__testcyclestamp__';
@@ -33,6 +42,7 @@ const engines = [];
 after(() => {
   for (const eng of engines) eng._test.clearTimers();
   fs.rmSync(JUNK_DIR, { recursive: true, force: true });
+  configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
 });
 
 const PRODUCT_DETAILS = { baseMinSize: '0.0001', baseIncrement: '0.00000001' };
