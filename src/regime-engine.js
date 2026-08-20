@@ -37,7 +37,7 @@ const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
 const celestialHierarchy = require('./celestial-hierarchy');
-const { fmtCurrency: fmtPrice, isFilledStatus, isOrderNotFoundError, floorToIncrement } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, isFilledStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -3603,13 +3603,30 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   orderExecutor.markSettled(body.tpOrderId);
                   await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
                 } else {
-                  console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`);
-                  orderExecutor.removeBodyTracking(body.tpOrderId);
-                  body.tpOrderId = null;
-                  body.tpPrice = 0;
-                  body.assetOnOrder = 0;
-                  saveLiveState();
-                  await placeBodyTp(body);
+                  // A freshly-placed TP can transiently read CANCELLED/FAILED from
+                  // Coinbase's eventually-consistent historical-order endpoint
+                  // (getOrder), even while the order is genuinely live on the book.
+                  // Trusting that single read here clears tracking AND re-places —
+                  // orphaning the live order and leaving a duplicate sell (the
+                  // 0824cc36 incident: getOrder said CANCELLED 6s after placement,
+                  // order stayed open for days). The startup path is immune because
+                  // it cross-checks getOpenOrders (openOrderIds) first; mirror that
+                  // here before acting on a terminal status.
+                  const openOrders = await adapter.getOpenOrders(productId).catch(() => null);
+                  // openOrders === null → getOpenOrders failed; treat as
+                  // inconclusive and keep the order (never orphan on a failed check).
+                  const stillOpen = openOrders === null || isOrderStillOpen(openOrders, body.tpOrderId);
+                  if (stillOpen) {
+                    console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} read ${bodyStatus.status} but still OPEN on exchange — ignoring false terminal status`);
+                  } else {
+                    console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`);
+                    orderExecutor.removeBodyTracking(body.tpOrderId);
+                    body.tpOrderId = null;
+                    body.tpPrice = 0;
+                    body.assetOnOrder = 0;
+                    saveLiveState();
+                    await placeBodyTp(body);
+                  }
                 }
               } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING') {
                 if (bodyStatus.filledSize > 0) {

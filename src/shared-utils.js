@@ -422,10 +422,29 @@ const isOrderNotFoundError = (err) =>
     err.response?.status === 404 ||
     err.response?.data?.code === 40003);
 
+/**
+ * True when `orderId` is present in an open-orders listing. Used to reject a
+ * FALSE terminal status: a freshly-placed order can transiently read
+ * CANCELLED/FAILED from an eventually-consistent getOrder endpoint while it is
+ * still live on the book. Acting on that read clears tracking and re-places,
+ * orphaning the live order and leaving a duplicate sell (2026-07-15 coinbase
+ * incident: TP 0824cc36 read CANCELLED 6s after placement, stayed open for
+ * days). Cross-check the authoritative open-orders list before trusting a
+ * terminal status. A null/undefined/non-array listing (e.g. getOpenOrders
+ * failed) is treated as inconclusive by the caller, never as "gone".
+ *
+ * @param {Array<{orderId?: string}>|null|undefined} openOrders - getOpenOrders result
+ * @param {string} orderId
+ * @returns {boolean}
+ */
+const isOrderStillOpen = (openOrders, orderId) =>
+  Array.isArray(openOrders) && openOrders.some(o => o && o.orderId === orderId);
+
 module.exports = {
   BASIS_POINTS_DIVISOR,
   isFilledStatus,
   isOrderNotFoundError,
+  isOrderStillOpen,
   readJSON,
   writeJSON,
   parseTSV,
