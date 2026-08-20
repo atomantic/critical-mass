@@ -716,17 +716,35 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   /**
    * Calculate aggregate stats for fills
    * @param {Fill[]} fillsToAggregate - Fills to aggregate
-   * @returns {{totalSize: number, totalValue: number, totalFees: number, avgPrice: number}}
+   * @returns {{totalSize: number, totalValue: number, totalFees: number, avgPrice: number, cycleId: string|null, lastTimestamp: number}}
    */
   const aggregateFills = (fillsToAggregate) => {
     let totalSize = 0;
     let totalValue = 0;
     let totalFees = 0;
+    // `cycleId` is taken from the EARLIEST fill and `lastTimestamp` from the
+    // latest, so a closed trade can be stamped with the cycle/time the sell
+    // actually belongs to. Callers must NOT substitute getCurrentCycleId() or
+    // Date.now(): resetCycle() advances the cycle counter before the closed
+    // trade is recorded, and the offline-fill paths record a fill that may
+    // have happened days earlier. Reading live values there misfiles the
+    // trade under a later cycle and dates it to engine-restart time (the
+    // 612c14ce incident: a cycle-18 sell recorded as cycle-21). Earliest —
+    // not latest — cycle so a partial fill straddling a cycle reset can't
+    // drift the trade forward into the new cycle.
+    let earliestTs = Infinity;
+    let latestTs = 0;
+    let cycleId = null;
 
     for (const fill of fillsToAggregate) {
       totalSize += fill.size;
       totalValue += fill.quoteAmount;
       totalFees += fill.netFee;
+      if (fill.timestamp <= earliestTs) {
+        earliestTs = fill.timestamp;
+        cycleId = fill.cycleId ?? null;
+      }
+      if (fill.timestamp > latestTs) latestTs = fill.timestamp;
     }
 
     return {
@@ -734,6 +752,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       totalValue: roundUSDC(totalValue),
       totalFees: roundUSDC(totalFees),
       avgPrice: totalSize > 0 ? totalValue / totalSize : 0,
+      cycleId,
+      lastTimestamp: latestTs,
     };
   };
 

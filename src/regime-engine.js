@@ -469,6 +469,28 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // Create all component instances
   const fillLedger = createFillLedger(exchange, productId, pair);
   const closedTrades = createClosedTrades(exchange, pair);
+
+  /**
+   * Identity fields for a closed trade, derived from the SELL's own fills.
+   *
+   * Every closedTrades.record() site must spread this instead of stamping
+   * ad hoc. Reading live engine state at record time is wrong twice over:
+   * resetCycle() advances the cycle counter BEFORE the trade is recorded
+   * (filing it under a later cycle), and the offline-fill paths book a fill
+   * that may have happened days earlier (dating it to engine-restart time).
+   * The 612c14ce incident hit both — a cycle-18 sell written as cycle-21.
+   * Live values remain as fallbacks only for a summary with no usable fills.
+   *
+   * `recordedAt` is deliberately NOT included: it means "when the engine
+   * booked this", so Date.now() is correct for it.
+   *
+   * @param {{cycleId: string|null, lastTimestamp: number}} summary - aggregateFills result for the sell
+   * @returns {{timestamp: number, cycleId: string|null}}
+   */
+  const sellTradeStamp = (summary) => ({
+    timestamp: summary.lastTimestamp || Date.now(),
+    cycleId: summary.cycleId ?? fillLedger.getCurrentCycleId(),
+  });
   const healthMonitor = createHealthMonitor(exchange, config, {
     onSafeMode: async (reason) => {
       console.log(`⚠️ [${exchange}] SAFE mode: ${reason}`);
@@ -973,7 +995,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         closedTrades.record({
           sellOrderId: positionState.activeTpOrderId,
-          timestamp: Date.now(),
+          ...sellTradeStamp(summary),
           recordedAt: Date.now(),
           qtySold: summary.totalSize,
           sellProceeds: roundUSDC(proceeds),
@@ -985,7 +1007,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           isPartial: false,
           bodyId: null,
           bodyTier: null,
-          cycleId: fillLedger.getCurrentCycleId(),
           buyOrderIds: [],
           source: 'offline',
         });
@@ -1105,7 +1126,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
           closedTrades.record({
             sellOrderId: body.tpOrderId,
-            timestamp: Date.now(),
+            ...sellTradeStamp(summary),
             recordedAt: Date.now(),
             qtySold: summary.totalSize,
             sellProceeds: roundUSDC(proceeds),
@@ -1117,7 +1138,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             isPartial: false,
             bodyId: body.id,
             bodyTier: body.tier,
-            cycleId: fillLedger.getCurrentCycleId(),
             buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
             source: 'offline',
           });
@@ -3088,7 +3108,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Record immutable closed trade
         closedTrades.record({
           sellOrderId: fillData.orderId,
-          timestamp: Date.now(),
+          ...sellTradeStamp(summary),
           recordedAt: Date.now(),
           qtySold: summary.totalSize,
           sellProceeds: roundUSDC(proceeds),
@@ -3100,7 +3120,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           isPartial,
           bodyId: body.id,
           bodyTier: body.tier,
-          cycleId: fillLedger.getCurrentCycleId(),
           buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
           source: 'live',
         });

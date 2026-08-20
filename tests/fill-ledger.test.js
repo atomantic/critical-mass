@@ -566,6 +566,42 @@ describe('Fill Ledger', () => {
   });
 
   // =======================================================================
+  // 22c. aggregateFills — carries the fills' own cycleId, not the live cycle
+  // =======================================================================
+  it('aggregateFills reports the cycleId of the aggregated fills, not the ledger current cycle', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle(); // cycle-1 — the cycle the sell actually belongs to
+    ledger.ingestFill(makeSellFill({ tradeId: 'cyc-own-1', orderId: 'sell-own' }));
+    const sellFills = ledger.getFillsForOrder('sell-own');
+
+    // Cycle advances AFTER the sell fills (resetCycle runs before the closed
+    // trade is recorded), so reading the live cycle would misfile the trade.
+    ledger.startNewCycle(); // cycle-2
+
+    const agg = ledger.aggregateFills(sellFills);
+
+    assert.equal(agg.cycleId, 'cycle-1');
+    assert.equal(ledger.getCurrentCycleId(), 'cycle-2');
+  });
+
+  // =======================================================================
+  // 22d. aggregateFills — reports the last exchange fill time
+  // =======================================================================
+  it('aggregateFills reports the last exchange fill timestamp, not the current time', () => {
+    const ledger = createTestLedger();
+    ledger.startNewCycle();
+
+    const first = new Date('2026-08-19T15:27:30.000Z');
+    const last = new Date('2026-08-19T15:27:35.000Z');
+    ledger.ingestFill(makeSellFill({ tradeId: 'ts-1', orderId: 'sell-ts', tradeTime: first.toISOString() }));
+    ledger.ingestFill(makeSellFill({ tradeId: 'ts-2', orderId: 'sell-ts', tradeTime: last.toISOString() }));
+
+    const agg = ledger.aggregateFills(ledger.getFillsForOrder('sell-ts'));
+
+    assert.equal(agg.lastTimestamp, last.getTime());
+  });
+
+  // =======================================================================
   // 22b. aggregateFills — low-priced asset preserves avgPrice precision
   // =======================================================================
   it('aggregateFills preserves avgPrice precision for low-priced assets', () => {
