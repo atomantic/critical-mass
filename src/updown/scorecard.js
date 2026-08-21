@@ -18,6 +18,9 @@ const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SAMPLE_INTERVAL_MS = 60_000
 const EVAL_WINDOWS = [60_000, 300_000, 900_000, 3_600_000]
 const WINDOW_LABELS = { 60000: '1m', 300000: '5m', 900000: '15m', 3600000: '1h' }
+const WINDOW_MS = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000 }
+/** Tick-to-tick products (CDC Up options, Coinbase perp flips) live on 1m/5m. */
+const PRIMARY_WINDOWS = ['1m', '5m']
 const DIRECTION_THRESHOLD = 15 // aligned with signal-engine's neutralThreshold for BUY signals
 const BUFFER_SIZE = 2000
 const EMIT_THROTTLE_MS = 5_000
@@ -128,16 +131,24 @@ const appendRecord = async (record) => {
 
 /**
  * Evaluate if a directional prediction was correct.
- * Requires a minimum price move (noise floor) to avoid counting 1-tick fluctuations.
+ *
+ * Two products, two treatments of "didn't move":
+ *  - `options` (default): no-move is a miss. A Crypto.com Up option that expires
+ *    unchanged is out of the money.
+ *  - `perp`: no-move is a scratch (null). A Coinbase perp flip that never reaches
+ *    the noise floor is not a win or a loss — just not a trade.
+ *
  * Pure/module-level so it can back both live evaluation and restart backfill (issue #212E).
  * @param {'up' | 'down' | 'neutral'} direction
  * @param {number} priceChangeBps
  * @param {number} [windowMs=300000] - Evaluation window in ms (determines noise floor)
- * @returns {boolean | null} null if neutral (skipped)
+ * @param {'options' | 'perp'} [mode='options']
+ * @returns {boolean | null} null if skipped (neutral, or perp scratch)
  */
-const evaluateDirection = (direction, priceChangeBps, windowMs = 300000) => {
+const evaluateDirection = (direction, priceChangeBps, windowMs = 300000, mode = 'options') => {
   if (direction === 'neutral') return null
   const noiseBps = EVAL_NOISE_FLOORS_BPS[windowMs] ?? 10
+  if (mode === 'perp' && Math.abs(priceChangeBps) <= noiseBps) return null
   if (direction === 'up') return priceChangeBps > noiseBps
   return priceChangeBps < -noiseBps
 }
@@ -154,9 +165,12 @@ const evaluateDirection = (direction, priceChangeBps, windowMs = 300000) => {
  */
 const buildOutcomeRecord = (prediction, windowMs, exitPrice) => {
   const priceChangeBps = ((exitPrice - prediction.price) / prediction.price) * 10000
-  const compositeCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs)
+  // compositeCorrect = options (flat = miss). perpCorrect = scratch on no-move.
+  const compositeCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs, 'options')
+  const perpCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs, 'perp')
 
-  // Per-timeframe evaluation
+  // Per-timeframe / per-indicator use perp mode so adaptive weights skip chops
+  // instead of treating every no-move as "every indicator was wrong."
   const tfResults = {}
   for (const tf of ALL_TFS) {
     const tfData = prediction.timeframes?.[tf]
@@ -164,11 +178,10 @@ const buildOutcomeRecord = (prediction, windowMs, exitPrice) => {
     const direction = getDirection(tfData.score)
     tfResults[tf] = {
       direction,
-      correct: evaluateDirection(direction, priceChangeBps, windowMs),
+      correct: evaluateDirection(direction, priceChangeBps, windowMs, 'perp'),
     }
   }
 
-  // Per-indicator evaluation (across all timeframes)
   const indicatorResults = {}
   for (const ind of INDICATORS) {
     let predictions = 0
@@ -179,8 +192,10 @@ const buildOutcomeRecord = (prediction, windowMs, exitPrice) => {
       if (indScore == null) continue
       const direction = getDirection(indScore)
       if (direction === 'neutral') continue
+      const hit = evaluateDirection(direction, priceChangeBps, windowMs, 'perp')
+      if (hit == null) continue
       predictions++
-      if (evaluateDirection(direction, priceChangeBps, windowMs)) correct++
+      if (hit) correct++
     }
     indicatorResults[ind] = {
       predictions,
@@ -216,6 +231,7 @@ const buildOutcomeRecord = (prediction, windowMs, exitPrice) => {
     compositeScore: prediction.compositeScore ?? 0,
     compositeDirection: prediction.compositeDirection,
     compositeCorrect,
+    perpCorrect,
     tfResults,
     indicatorResults,
     contractOutcome,
@@ -244,10 +260,9 @@ const evaluateContractOutcome = (contractSnapshot, exitPrice) => {
  * Tally hydrated JSONL records into outcomes + prediction counts.
  *
  * Mirrors the live `recordPrediction` counting so a restart that hydrates from
- * disk matches the running totals: a neutral prediction is a *skip*, not a
- * prediction, so it counts toward `skipCount` and is excluded from
- * `totalPredictions`. Counting every prediction record (neutrals included)
- * double-categorizes neutrals — they're in both totals (issue #158).
+ * disk matches the running totals. Only UP calls are longs we score: NEUTRAL
+ * and DOWN are skips (issue #158, UP-only). Counting every prediction record
+ * (neutrals/downs included) double-categorizes them into both totals.
  *
  * @param {Array<Object|null>} records - parsed JSONL records
  * @returns {{outcomes: Object[], predCount: number, skipCount: number, totalPredictions: number}}
@@ -258,11 +273,12 @@ const tallyHistory = (records) => {
   let skipCount = 0
   for (const record of records) {
     if (!record) continue
-    if (record.type === 'outcome' && record.compositeCorrect != null) {
+    if (record.type === 'outcome' && record.compositeCorrect != null && record.compositeDirection !== 'down') {
       outcomes.push(record)
     } else if (record.type === 'prediction') {
       predCount++
-      if (record.compositeDirection === 'neutral') skipCount++
+      // UP-only: DOWN is not a trade we score — same skip bucket as NEUTRAL.
+      if (record.compositeDirection !== 'up') skipCount++
     }
   }
   return { outcomes, predCount, skipCount, totalPredictions: predCount - skipCount }
@@ -299,11 +315,15 @@ const findUnsettledPredictions = (records, now) => {
 
   for (const record of records) {
     if (!record) continue
-    if (record.type === 'prediction' && record.compositeDirection && record.compositeDirection !== 'neutral') {
+    if (record.type === 'prediction') {
       const ts = Date.parse(record.ts)
       if (Number.isNaN(ts)) continue
-      predictions.push({ ...record, _ts: ts })
+      // Every sample's price feeds backfill, including DOWN/NEUTRAL journals.
+      // Only UP calls are unsettled (the ones we actually schedule live).
       if (record.price) priceTimeline.push({ ts, price: record.price })
+      if (record.compositeDirection === 'up') {
+        predictions.push({ ...record, _ts: ts })
+      }
     } else if (record.type === 'outcome') {
       if (record.predictionId && record.window) settledKeys.add(`${record.predictionId}:${record.window}`)
       const ts = Date.parse(record.ts)
@@ -507,9 +527,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       lastSampleTs = Date.now()
     }
 
-    if (prediction.compositeDirection === 'neutral') {
+    if (prediction.compositeDirection !== 'up') {
       totalSkipped++
-      // Still log to JSONL for analysis, but don't schedule evaluations
+      // DOWN and NEUTRAL are not longs we score. Still journal them.
       appendRecord(prediction).catch(() => {})
       return
     }
@@ -541,10 +561,27 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
    * Compute aggregate metrics from the outcome buffer
    * @returns {Object}
    */
+  /**
+   * Perp correctness: explicit field on new outcomes, derived from noise floor
+   * for JSONL rows persisted before perpCorrect existed.
+   * @param {Object} o
+   * @returns {boolean | null}
+   */
+  const resolvePerpCorrect = (o) => {
+    if (o.perpCorrect !== undefined) return o.perpCorrect
+    if (o.compositeCorrect == null) return null
+    const floor = EVAL_NOISE_FLOORS_BPS[WINDOW_MS[o.window]] ?? 10
+    if (Math.abs(o.priceChangeBps ?? 0) <= floor) return null
+    return o.compositeCorrect
+  }
+
   const getMetrics = () => {
-    const evaluated = outcomeBuffer.filter(o => o.compositeCorrect != null)
+    const scored = outcomeBuffer.filter(o => o.compositeDirection !== 'down')
+    const evaluated = scored.filter(o => o.compositeCorrect != null)
     const correct = evaluated.filter(o => o.compositeCorrect === true)
     const incorrect = evaluated.filter(o => o.compositeCorrect === false)
+    const perpEvaluated = scored.filter(o => resolvePerpCorrect(o) != null)
+    const perpCorrectHits = perpEvaluated.filter(o => resolvePerpCorrect(o) === true)
 
     // Streak (consecutive correct/incorrect from most recent)
     let streak = 0
@@ -572,13 +609,19 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     // By window
     const byWindow = {}
     for (const label of Object.values(WINDOW_LABELS)) {
-      const windowOutcomes = outcomeBuffer.filter(o => o.window === label && o.compositeCorrect != null)
+      const windowOutcomes = scored.filter(o => o.window === label && o.compositeCorrect != null)
       const wCorrect = windowOutcomes.filter(o => o.compositeCorrect === true).length
+      const perpWindow = scored.filter(o => o.window === label && resolvePerpCorrect(o) != null)
+      const perpHits = perpWindow.filter(o => resolvePerpCorrect(o) === true).length
       byWindow[label] = {
         accuracy: windowOutcomes.length > 0 ? Math.round(wCorrect / windowOutcomes.length * 10000) / 100 : null,
         correct: wCorrect,
         incorrect: windowOutcomes.length - wCorrect,
         total: windowOutcomes.length,
+        perpAccuracy: perpWindow.length > 0 ? Math.round(perpHits / perpWindow.length * 10000) / 100 : null,
+        perpCorrect: perpHits,
+        perpTotal: perpWindow.length,
+        primary: PRIMARY_WINDOWS.includes(label),
       }
     }
 
@@ -587,7 +630,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     for (const tf of ALL_TFS) {
       let tfTotal = 0
       let tfCorrect = 0
-      for (const o of outcomeBuffer) {
+      for (const o of scored) {
         const tfResult = o.tfResults?.[tf]
         if (tfResult?.correct == null) continue
         tfTotal++
@@ -606,7 +649,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       let indTotal = 0
       let indCorrect = 0
       let rawCount = 0
-      for (const o of outcomeBuffer) {
+      for (const o of scored) {
         const indResult = o.indicatorResults?.[ind]
         if (!indResult || indResult.predictions === 0) continue
         // Weight by signal strength; records without compositeScore default to 1x (backward compat)
@@ -623,10 +666,10 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       }
     }
 
-    const byHour = computeByHour(outcomeBuffer)
+    const byHour = computeByHour(scored)
 
     // Contract-aware accuracy
-    const contractOutcomes = outcomeBuffer.filter(o => o.contractOutcome != null)
+    const contractOutcomes = scored.filter(o => o.contractOutcome != null)
     const contractWins = contractOutcomes.filter(o => o.contractOutcome === 'win').length
     const contractLosses = contractOutcomes.filter(o => o.contractOutcome === 'loss').length
     const contractAware = contractOutcomes.length > 0 ? {
@@ -652,7 +695,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     }
 
     // Last prediction info
-    const lastPred = outcomeBuffer.length > 0 ? outcomeBuffer[outcomeBuffer.length - 1] : null
+    const lastPred = scored.length > 0 ? scored[scored.length - 1] : null
 
     return {
       totalPredictions,
@@ -666,6 +709,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
         avgCorrectBps,
         avgIncorrectBps,
       },
+      overallPerp: {
+        accuracy: perpEvaluated.length > 0 ? Math.round(perpCorrectHits.length / perpEvaluated.length * 10000) / 100 : null,
+        correct: perpCorrectHits.length,
+        incorrect: perpEvaluated.length - perpCorrectHits.length,
+        total: perpEvaluated.length,
+      },
+      primaryWindows: PRIMARY_WINDOWS,
       byWindow,
       byTimeframe,
       byIndicator,
@@ -813,7 +863,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     // Daily prune of old scorecard files (every 24h)
     pruneTimer = setInterval(() => pruneHistory(30).catch(() => {}), 24 * 60 * 60 * 1000)
 
-    log('INFO', '📊 Scorecard started interval=60s windows=[1m,5m,15m,1h]')
+    log('INFO', '📊 Scorecard started interval=60s windows=[1m,5m,15m,1h] primary=[1m,5m] upOnly=true')
   }
 
   /**
@@ -848,4 +898,5 @@ module.exports = {
   buildOutcomeRecord,
   findUnsettledPredictions,
   computeByHour,
+  PRIMARY_WINDOWS,
 }

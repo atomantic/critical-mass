@@ -292,8 +292,8 @@ const main = () => {
     }
     appendLine(dateStr, prediction)
 
-    // Skip outcome evaluation for neutral predictions
-    if (compositeDirection === 'neutral') {
+    // UP-only: skip outcome evaluation for NEUTRAL and DOWN
+    if (compositeDirection !== 'up') {
       processed++
       continue
     }

@@ -62,7 +62,8 @@ export default function ScorecardPanel({ scorecard }) {
     )
   }
 
-  const { overall, byWindow, byTimeframe, byIndicator, adaptiveWeights, totalPredictions, totalEvaluated, totalSkipped, contractAware } = scorecard
+  const { overall, overallPerp, byWindow, byTimeframe, byIndicator, adaptiveWeights, totalPredictions, totalEvaluated, totalSkipped, contractAware, primaryWindows } = scorecard
+  const primarySet = new Set(primaryWindows || ['1m', '5m'])
 
   const StreakIcon = overall?.streak > 0 ? TrendingUp : overall?.streak < 0 ? TrendingDown : Minus
   const streakColor = overall?.streak > 0 ? 'text-green-400' : overall?.streak < 0 ? 'text-red-400' : 'text-gray-400'
@@ -75,18 +76,26 @@ export default function ScorecardPanel({ scorecard }) {
         <h3 className="text-sm font-semibold">Prediction Scorecard</h3>
       </div>
 
-      {/* Overall Accuracy */}
+      {/* Overall Accuracy — options (flat = miss) is the headline for CDC Up options */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
-          <span className={`text-2xl font-bold font-mono ${accuracyColor(overall?.accuracy)}`}>
-            {overall?.accuracy != null ? `${overall.accuracy.toFixed(1)}%` : '---'}
-          </span>
+          <span className="text-[10px] uppercase tracking-wide text-gray-500">UP precision (options)</span>
           <div className="flex items-center gap-1">
             <StreakIcon size={14} className={streakColor} />
             <span className={`text-xs font-mono ${streakColor}`}>
               {overall?.streak > 0 ? `+${overall.streak}` : overall?.streak ?? 0}
             </span>
           </div>
+        </div>
+        <div className="flex items-center justify-between mb-1">
+          <span className={`text-2xl font-bold font-mono ${accuracyColor(overall?.accuracy)}`}>
+            {overall?.accuracy != null ? `${overall.accuracy.toFixed(1)}%` : '---'}
+          </span>
+          {overallPerp?.accuracy != null && (
+            <span className={`text-sm font-mono ${accuracyColor(overallPerp.accuracy)}`} title="Perp flips: no-move is a scratch, not a loss">
+              perp {overallPerp.accuracy.toFixed(1)}%
+            </span>
+          )}
         </div>
         <div className="w-full bg-gray-700 rounded-full h-2 mb-1">
           <div
@@ -95,7 +104,7 @@ export default function ScorecardPanel({ scorecard }) {
           />
         </div>
         <div className="flex justify-between text-xs text-gray-500">
-          <span>{totalPredictions} predictions</span>
+          <span>{totalPredictions} UP calls</span>
           <span className="text-green-500">{overall?.correct ?? 0}W</span>
           <span className="text-red-500">{overall?.incorrect ?? 0}L</span>
           <span>{totalSkipped} skip</span>
@@ -130,16 +139,18 @@ export default function ScorecardPanel({ scorecard }) {
       {/* Window Accuracy */}
       {totalEvaluated > 0 && (
         <div className="mb-4">
-          <div className="text-xs text-gray-500 mb-1.5 font-medium">By Window</div>
+          <div className="text-xs text-gray-500 mb-1.5 font-medium">By Window <span className="font-normal text-gray-600">(* 1m/5m tick-to-tick)</span></div>
           <div className="space-y-1">
             {WINDOW_ORDER.map(w => {
               const data = byWindow?.[w]
+              const isPrimary = primarySet.has(w)
+              const perpDetail = data?.perpTotal > 0 ? ` p${data.perpCorrect}/${data.perpTotal}` : ''
               return (
                 <AccuracyBar
                   key={w}
-                  label={w}
+                  label={isPrimary ? `${w}*` : w}
                   accuracy={data?.accuracy}
-                  detail={data?.total > 0 ? `${data.correct}/${data.total}` : null}
+                  detail={data?.total > 0 ? `${data.correct}/${data.total}${perpDetail}` : null}
                 />
               )
             })}

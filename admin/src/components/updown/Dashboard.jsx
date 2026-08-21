@@ -148,7 +148,7 @@ export default function UpDownDashboard() {
             <div>
               <h2 className="text-lg font-bold">UpDown BTC Options</h2>
               <div className="text-xs text-gray-400">
-                Signal-assisted binary options trading
+                UP-only BTC signals — Crypto.com Up options & Coinbase perp flips
               </div>
             </div>
             <Link
@@ -228,7 +228,7 @@ export default function UpDownDashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <div className="flex flex-col gap-4">
           <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
-          <SignalPanel signal={signal || status?.latestSignal} indicators={rawIndicators} />
+          <SignalPanel signal={signal || status?.latestSignal} indicators={rawIndicators} position={status?.position} />
           <TradeHistory />
         </div>
         <div className="lg:col-span-2 flex flex-col gap-4">
@@ -246,6 +246,7 @@ export default function UpDownDashboard() {
             signal={signal || status?.latestSignal}
             indicators={rawIndicators}
             timeRemaining={msLeft}
+            position={status?.position}
           />
           <ScorecardPanel scorecard={socketScorecard || status?.scorecard} />
           <ContractSetup initialContract={status?.contract} onPositionSet={fetchStatus} />

@@ -29,3 +29,16 @@ export const signalIcons = {
 
 export const getSignalColor = (type) => signalBadgeColors[type] || signalBadgeColors.NEUTRAL
 export const getSignalIcon = (type) => signalIcons[type] || Minus
+
+/** UP-only: SELL is EXIT (held long) or STAND ASIDE (flat) — never BUY DOWN. */
+export const getActionLabel = (type, heldPosition) => {
+  if (!type) return 'CALCULATING...'
+  if (type === 'NO_TRADE_ZONE') return 'NO TRADE'
+  if (type === 'STRONG_BUY') return 'STRONG BUY UP'
+  if (type === 'BUY') return 'BUY UP'
+  if (type === 'SELL' || type === 'STRONG_SELL') {
+    return heldPosition?.direction === 'up' ? 'EXIT' : 'STAND ASIDE'
+  }
+  if (type === 'NEUTRAL') return 'HOLD'
+  return type.replace(/_/g, ' ')
+}

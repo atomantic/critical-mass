@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Signal, Minus } from 'lucide-react'
-import { signalBadgeColors, getSignalIcon } from '../../constants/signals'
+import { signalBadgeColors, getSignalIcon, getActionLabel } from '../../constants/signals'
 
 function ConfidenceBar({ value }) {
   const pct = Math.max(0, Math.min(100, (value ?? 0) * 100))
@@ -15,7 +15,7 @@ function ConfidenceBar({ value }) {
   )
 }
 
-export default function SignalPanel({ signal, indicators }) {
+export default function SignalPanel({ signal, indicators, position }) {
   const [history, setHistory] = useState([])
 
   useEffect(() => {
@@ -57,7 +57,7 @@ export default function SignalPanel({ signal, indicators }) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Icon size={18} />
-            <span className="text-lg font-bold">{type ? type.replace(/_/g, ' ') : 'CALCULATING...'}</span>
+            <span className="text-lg font-bold">{getActionLabel(type, position)}</span>
           </div>
           {type && liveConfidence != null && (
             <span className="text-sm font-mono">{(liveConfidence * 100).toFixed(0)}%</span>
@@ -90,7 +90,7 @@ export default function SignalPanel({ signal, indicators }) {
                   <span className="text-gray-500">
                     {h.timestamp ? new Date(h.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '---'}
                   </span>
-                  <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{hType.replace(/_/g, ' ')}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{getActionLabel(hType, position)}</span>
                   {h.confidence != null && (
                     <span className="text-gray-400 font-mono">{(h.confidence * 100).toFixed(0)}%</span>
                   )}

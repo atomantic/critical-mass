@@ -8,7 +8,7 @@
  */
 
 const path = require('path');
-const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType } = require('./signal-engine');
+const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType, applyUpOnlyGate } = require('./signal-engine');
 const { createScorecard } = require('./scorecard');
 const { log } = require('../logger');
 
@@ -212,7 +212,8 @@ const createUpDownService = (io, deps) => {
       // preserving exit-signal surfacing for a held position in the no-trade
       // zone (issue #108) — same rule as the signal engine.
       const adjustedRaw = scoreToSignalDynamic(result.score, result.volatility?.ratio ?? 1);
-      result.type = resolveNoTradeZoneType(adjustedRaw, result.noTradeZone, position);
+      const gated = applyUpOnlyGate(adjustedRaw, result.trendGate?.open !== false);
+      result.type = resolveNoTradeZoneType(gated, result.noTradeZone, position);
       result.confidence = Math.round(Math.min(1, Math.abs(result.score) / 60) * 100) / 100;
     }
 
@@ -235,6 +236,7 @@ const createUpDownService = (io, deps) => {
       volatility: result.volatility,
       pivotPoints: result.pivotPoints,
       confluence: result.confluence,
+      trendGate: result.trendGate,
     });
 
     // Emit signal change event only when signal changes
@@ -279,6 +281,7 @@ const createUpDownService = (io, deps) => {
         volatility: result.volatility,
         pivotPoints: result.pivotPoints,
         horizonPrediction: result.horizonPrediction,
+        trendGate: result.trendGate,
       });
     }
   };

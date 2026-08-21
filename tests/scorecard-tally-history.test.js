@@ -10,7 +10,7 @@ const { tallyHistory } = require('../src/updown/scorecard');
 // prediction record (neutrals included) double-categorizes neutrals.
 // ============================================================================
 describe('tallyHistory', () => {
-  it('excludes neutral predictions from totalPredictions', () => {
+  it('excludes neutral and DOWN predictions from totalPredictions (UP-only)', () => {
     const records = [
       { type: 'prediction', compositeDirection: 'up' },
       { type: 'prediction', compositeDirection: 'down' },
@@ -22,15 +22,14 @@ describe('tallyHistory', () => {
     const { predCount, skipCount, totalPredictions } = tallyHistory(records);
 
     assert.equal(predCount, 5, 'predCount counts every prediction record');
-    assert.equal(skipCount, 2, 'skipCount counts only neutral predictions');
-    // The bug set totalPredictions = predCount (5); correct value excludes neutrals.
-    assert.equal(totalPredictions, 3, 'totalPredictions = predCount - skipCount');
+    assert.equal(skipCount, 3, 'skipCount counts DOWN + NEUTRAL');
+    assert.equal(totalPredictions, 2, 'totalPredictions is UP calls only');
   });
 
-  it('keeps totalPredictions === predCount when there are no neutrals', () => {
+  it('keeps totalPredictions === predCount when every record is UP', () => {
     const records = [
       { type: 'prediction', compositeDirection: 'up' },
-      { type: 'prediction', compositeDirection: 'down' },
+      { type: 'prediction', compositeDirection: 'up' },
     ];
 
     const { predCount, skipCount, totalPredictions } = tallyHistory(records);
@@ -38,6 +37,17 @@ describe('tallyHistory', () => {
     assert.equal(skipCount, 0);
     assert.equal(predCount, 2);
     assert.equal(totalPredictions, 2);
+  });
+
+  it('excludes DOWN outcomes from the scored set (UP-only)', () => {
+    const records = [
+      { type: 'outcome', compositeCorrect: true, compositeDirection: 'up' },
+      { type: 'outcome', compositeCorrect: false, compositeDirection: 'down' },
+      { type: 'outcome', compositeCorrect: true, compositeDirection: 'down' },
+    ];
+    const { outcomes } = tallyHistory(records);
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].compositeDirection, 'up');
   });
 
   it('collects only outcomes that have a resolved compositeCorrect', () => {

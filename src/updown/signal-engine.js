@@ -32,12 +32,10 @@ const TIMEFRAME_WEIGHTS = {
 
 const ALL_SIGNAL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w'];
 
-// Short timeframes use neutral scoring so they can detect short-term reversals
-// even when the higher-timeframe trend is bullish/bearish
-const SHORT_TFS = new Set(['1m', '3m', '5m']);
-
 const NO_TRADE_ZONE_MS = 6 * 60 * 60 * 1000;
 const WARNING_ZONE_MS = 8 * 60 * 60 * 1000;
+/** 15m/1h MACD+OBV average at or below this closes the UP-only long gate. */
+const TREND_GATE_BEARISH_THRESHOLD = -10;
 
 /**
  * Score RSI indicator (-100 to +100)
@@ -563,6 +561,55 @@ const resolveNoTradeZoneType = (rawType, noTradeZone, heldPosition) => {
 };
 
 /**
+ * UP-only long gate: closed when the higher-TF tape is bearish so we never
+ * publish BUY against it. SELL still passes (that's EXIT for a held long).
+ * @param {{trendBias?: string}|null} trendFilter
+ * @param {Record<string, {scores?: Record<string, number>}>|null} timeframes
+ * @returns {{open: boolean, reason: string, macdObvAvg: number}}
+ */
+const computeTrendGate = (trendFilter, timeframes) => {
+  const macd1h = timeframes?.['1h']?.scores?.macd ?? 0;
+  const obv1h = timeframes?.['1h']?.scores?.obv ?? 0;
+  const macd15 = timeframes?.['15m']?.scores?.macd ?? 0;
+  const obv15 = timeframes?.['15m']?.scores?.obv ?? 0;
+  const macdObvAvg = (macd1h + obv1h + macd15 + obv15) / 4;
+  if (trendFilter?.trendBias === 'bearish') {
+    return { open: false, reason: 'ema-bearish', macdObvAvg };
+  }
+  if (macdObvAvg < TREND_GATE_BEARISH_THRESHOLD) {
+    return { open: false, reason: 'macd-obv-bearish', macdObvAvg };
+  }
+  return { open: true, reason: 'open', macdObvAvg };
+};
+
+/**
+ * Cap new longs when the higher-TF tape is bearish. Exits (SELL) always pass.
+ * @param {string} rawType
+ * @param {boolean} trendGateOpen
+ * @returns {string}
+ */
+const applyUpOnlyGate = (rawType, trendGateOpen) => {
+  if (!trendGateOpen && (rawType === 'BUY' || rawType === 'STRONG_BUY')) return 'NEUTRAL';
+  return rawType;
+};
+
+/**
+ * Operator-facing action for the UP-only dashboard. SELL is never "BUY DOWN".
+ * @param {string} type
+ * @param {{direction?: string}|null} [heldPosition]
+ * @returns {string}
+ */
+const resolveActionLabel = (type, heldPosition = null) => {
+  if (type === 'NO_TRADE_ZONE') return 'NO TRADE';
+  if (type === 'STRONG_BUY') return 'STRONG BUY UP';
+  if (type === 'BUY') return 'BUY UP';
+  if (type === 'SELL' || type === 'STRONG_SELL') {
+    return heldPosition?.direction === 'up' ? 'EXIT' : 'STAND ASIDE';
+  }
+  return 'HOLD';
+};
+
+/**
  * Map composite score to signal label (original fixed thresholds)
  * @param {number} score
  * @returns {'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL'}
@@ -779,8 +826,9 @@ const createSignalEngine = (candleAggregator) => {
 
     for (const tf of ALL_SIGNAL_TFS) {
       const candles = candleAggregator.getCandles(tf);
-      const tfTrendBias = SHORT_TFS.has(tf) ? 'neutral' : trendFilter.trendBias;
-      const result = computeTimeframeSignals(candles, prevIndicators[tf], currentIndicatorWeights, tfTrendBias);
+      // 1m/3m/5m inherit the 1h EMA bias so overbought-in-uptrend is confirmation
+      // (not a fade). UP-only: we buy dips in an uptrend, we do not short rips.
+      const result = computeTimeframeSignals(candles, prevIndicators[tf], currentIndicatorWeights, trendFilter.trendBias);
 
       // Store indicators for next round's crossover detection
       if (result.indicators && Object.keys(result.indicators).length > 0) {
@@ -894,9 +942,11 @@ const createSignalEngine = (candleAggregator) => {
     const candles5m = candleAggregator.getCandles('5m');
     const volatility = computeVolatilityContext(candles5m);
     const rawType = scoreToSignalDynamic(compositeScore, volatility.ratio);
-    // NO_TRADE_ZONE suppresses entries near expiry but must surface exit signals
-    // for a held position (issue #108) — see resolveNoTradeZoneType.
-    const type = resolveNoTradeZoneType(rawType, noTradeZone, heldPosition);
+    // UP-only: never publish BUY against a bearish 15m/1h tape. SELL still
+    // passes so a held long can EXIT (issue #108 / resolveNoTradeZoneType).
+    const trendGate = computeTrendGate(trendFilter, timeframes);
+    const gatedType = applyUpOnlyGate(rawType, trendGate.open);
+    const type = resolveNoTradeZoneType(gatedType, noTradeZone, heldPosition);
 
     // Multi-factor confidence: score magnitude (0-0.5) + TF agreement (0-0.3) + ADX regime (0-0.2)
     const scoreFactor = Math.min(0.5, Math.abs(compositeScore) / 100);
@@ -928,6 +978,7 @@ const createSignalEngine = (candleAggregator) => {
       confluence,
       todMultiplier,
       horizonPrediction,
+      trendGate,
     };
   };
 
@@ -939,6 +990,9 @@ module.exports = {
   scoreToSignal,
   scoreToSignalDynamic,
   resolveNoTradeZoneType,
+  computeTrendGate,
+  applyUpOnlyGate,
+  resolveActionLabel,
   scoreRSI,
   scoreStochastic,
   scoreMACD,

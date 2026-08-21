@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { TrendingUp, TrendingDown, Minus, ShieldAlert, Clock } from 'lucide-react'
 import { formatCountdown } from './TimeWarningBanner'
+import { getActionLabel } from '../../constants/signals'
 
 const BANNER_COLORS = {
   STRONG_BUY: 'bg-green-900/40 border-green-600/50',
@@ -38,22 +39,13 @@ const SIGNAL_ICONS = {
   NO_TRADE_ZONE: ShieldAlert,
 }
 
-const getActionLabel = (score, type) => {
-  if (type === 'NO_TRADE_ZONE') return 'NO TRADE'
-  if (type === 'STRONG_BUY') return 'STRONG BUY UP'
-  if (type === 'BUY') return 'BUY UP'
-  if (type === 'STRONG_SELL') return 'STRONG BUY DOWN'
-  if (type === 'SELL') return 'BUY DOWN'
-  return 'HOLD'
-}
-
 const getHorizonArrow = (score) => {
   if (score > 20) return { icon: TrendingUp, label: 'text-green-400' }
   if (score < -20) return { icon: TrendingDown, label: 'text-red-400' }
   return { icon: Minus, label: 'text-gray-400' }
 }
 
-export default function SignalBanner({ signal, indicators, timeRemaining }) {
+export default function SignalBanner({ signal, indicators, timeRemaining, position }) {
   // Show loading state until live indicators arrive to avoid displaying stale signals
   const liveReady = !!indicators?.type || !!indicators?.timeframes
   const type = liveReady ? (indicators?.type || signal?.type || 'NEUTRAL') : null
@@ -80,7 +72,8 @@ export default function SignalBanner({ signal, indicators, timeRemaining }) {
     ]
   }, [indicators?.timeframes])
 
-  const actionLabel = type ? getActionLabel(score, type) : 'CALCULATING...'
+  const actionLabel = type ? getActionLabel(type, position) : 'CALCULATING...'
+  const trendGate = indicators?.trendGate
   const confPct = Math.max(0, Math.min(100, confidence * 100))
   const bannerColor = type ? (BANNER_COLORS[type] || BANNER_COLORS.NEUTRAL) : 'bg-gray-800 border-gray-600/40'
   const labelColor = type ? (LABEL_COLORS[type] || LABEL_COLORS.NEUTRAL) : 'text-gray-500'
@@ -158,6 +151,14 @@ export default function SignalBanner({ signal, indicators, timeRemaining }) {
         )}
         {trendFilter?.trendBias === 'neutral' && (
           <div className="px-2 py-1 rounded text-xs font-bold bg-gray-700/40 text-gray-500" title="Trend: EMA(50) ≈ EMA(200) on 1h candles — no trend bias applied">FLAT</div>
+        )}
+        {trendGate && !trendGate.open && (
+          <div
+            className="px-2 py-1 rounded text-xs font-bold bg-yellow-900/40 text-yellow-400"
+            title={`Long gate closed (${trendGate.reason}) — 15m/1h tape is bearish, no new UP entries`}
+          >
+            GATE CLOSED
+          </div>
         )}
 
         {/* Daily SMA trend pill */}
