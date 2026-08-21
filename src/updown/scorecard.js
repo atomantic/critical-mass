@@ -109,20 +109,26 @@ const getDirection = (score) => {
 }
 
 /**
- * Direction the scorecard journals. A raw +score that the UP-only gate
- * suppressed (trendGate.open === false) is a skip, not an UP call — otherwise
- * GATE CLOSED / HOLD ticks inflate UP precision with longs we never published.
- * @param {{score?: number, trendGate?: {open?: boolean}}|null} result
+ * Direction the scorecard journals. A raw +score that never printed BUY is a
+ * skip, not an UP call — otherwise GATE CLOSED / HOLD / NO_TRADE_ZONE ticks
+ * inflate UP precision with longs we never published. High-vol BUY uses a
+ * lowered threshold (12), so the published type is the source of truth, not
+ * getDirection's fixed 15.
+ * @param {{score?: number, type?: string, trendGate?: {open?: boolean}}|null} result
  * @returns {'up' | 'down' | 'neutral'}
  */
 const scorecardDirection = (result) => {
-  const raw = getDirection(result?.score)
-  if (raw !== 'up') return raw
-  if (result?.trendGate?.open === false) return 'neutral'
-  // Published type is the operator-facing call. A +score that never printed
-  // BUY (NO_TRADE_ZONE, NEUTRAL from vol-widened thresholds) is not an UP call.
-  if (result?.type === 'NO_TRADE_ZONE' || result?.type === 'NEUTRAL') return 'neutral'
-  return 'up'
+  if (result?.trendGate?.open === false) {
+    return getDirection(result?.score) === 'down' ? 'down' : 'neutral'
+  }
+  // Vol-lowered BUY (score 12–15) still printed BUY UP on the banner.
+  if (result?.type === 'BUY' || result?.type === 'STRONG_BUY') return 'up'
+  if (result?.type) {
+    // Any other published type (SELL, NEUTRAL, NO_TRADE_ZONE) is not an UP call.
+    const raw = getDirection(result?.score)
+    return raw === 'up' ? 'neutral' : raw
+  }
+  return getDirection(result?.score)
 }
 
 /**
@@ -178,9 +184,12 @@ const evaluateDirection = (direction, priceChangeBps, windowMs = 300000, mode = 
  * @param {Object} prediction - Prediction record (live object or JSONL-hydrated)
  * @param {number} windowMs
  * @param {number} exitPrice
+ * @param {{ts?: string}} [opts] - Historical backfill must pass the settlement
+ *   candle's ISO timestamp. Default `new Date()` is wall-clock now, which
+ *   collapses accuracyOverTime into the hour the script ran.
  * @returns {Object} Outcome record
  */
-const buildOutcomeRecord = (prediction, windowMs, exitPrice) => {
+const buildOutcomeRecord = (prediction, windowMs, exitPrice, opts = {}) => {
   const priceChangeBps = ((exitPrice - prediction.price) / prediction.price) * 10000
   // compositeCorrect = options (flat = miss). perpCorrect = scratch on no-move.
   const compositeCorrect = evaluateDirection(prediction.compositeDirection, priceChangeBps, windowMs, 'options')
@@ -236,7 +245,7 @@ const buildOutcomeRecord = (prediction, windowMs, exitPrice) => {
   return {
     type: 'outcome',
     predictionId: prediction.id,
-    ts: new Date().toISOString(),
+    ts: opts.ts ?? new Date().toISOString(),
     // predictionTs (issue #212D): byHour must bucket by the hour the PREDICTION was
     // made, not the settlement/evaluation hour (`ts` above, up to 1h later) — the
     // time-of-day multiplier in signal-engine.js applies byHour[predictionHour].

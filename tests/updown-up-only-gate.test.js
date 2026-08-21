@@ -46,6 +46,18 @@ describe('computeTrendGate (UP-only long gate)', () => {
     assert.equal(gate.open, false);
     assert.equal(gate.reason, 'macd-obv-bearish');
   });
+
+  it('fails closed when 15m/1h MACD+OBV tape is missing (cold start)', () => {
+    const empty = computeTrendGate({ trendBias: 'bullish' }, {});
+    assert.equal(empty.open, false);
+    assert.equal(empty.reason, 'insufficient-data');
+    const partial = computeTrendGate(
+      { trendBias: 'bullish' },
+      { '15m': tf(50, 40), '1h': { scores: { macd: 40 } } },
+    );
+    assert.equal(partial.open, false);
+    assert.equal(partial.reason, 'insufficient-data');
+  });
 });
 
 describe('applyUpOnlyGate', () => {
@@ -113,12 +125,15 @@ describe('short timeframes inherit the higher-TF trend bias', () => {
 
     // 220 steadily-rising 1h candles → EMA50 > EMA200 → bullish trendFilter.
     const hourly = makeCandles(220, 50_000, 50, 3_600_000);
+    // 15m tape so the long gate has MACD+OBV to confirm (fail-closed without it).
+    const fifteen = makeCandles(80, 55_000, 20, 900_000);
     // 40 steadily-rising 1m candles → RSI well above 70 (overbought).
     const minute = makeCandles(40, 60_000, 80, 60_000);
 
     const engine = createSignalEngine({
       getCandles: (tf) => {
         if (tf === '1h') return hourly;
+        if (tf === '15m') return fifteen;
         if (tf === '1m') return minute;
         return [];
       },

@@ -18,6 +18,13 @@ describe('scorecardDirection treats a gated long as a skip, not an UP call', () 
     assert.equal(scorecardDirection({ score: 40, type: 'NO_TRADE_ZONE' }), 'neutral')
     assert.equal(scorecardDirection({ score: 18, type: 'NEUTRAL', trendGate: { open: true } }), 'neutral')
   })
+  it('journals a vol-lowered BUY (score 12–15) as UP — published type wins over getDirection 15', () => {
+    assert.equal(scorecardDirection({ score: 13, type: 'BUY', trendGate: { open: true } }), 'up')
+    assert.equal(scorecardDirection({ score: 13, type: 'STRONG_BUY', trendGate: { open: true } }), 'up')
+  })
+  it('does not journal a +score SELL as an UP call', () => {
+    assert.equal(scorecardDirection({ score: 20, type: 'SELL', trendGate: { open: true } }), 'neutral')
+  })
 })
 
 describe('evaluateDirection options vs perp (UP-only products)', () => {
@@ -73,6 +80,13 @@ describe('buildOutcomeRecord records both options and perp correctness', () => {
     const outcome = buildOutcomeRecord(upPred, 60_000, 100.20); // +20 bps
     assert.equal(outcome.compositeCorrect, true);
     assert.equal(outcome.perpCorrect, true);
+  });
+
+  it('accepts an explicit settlement timestamp so historical backfill does not stamp wall-clock now', () => {
+    const settled = '2026-01-01T00:05:00.000Z';
+    const outcome = buildOutcomeRecord(upPred, 300_000, 101, { ts: settled });
+    assert.equal(outcome.ts, settled);
+    assert.equal(outcome.predictionTs, upPred.ts);
   });
 });
 

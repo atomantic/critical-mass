@@ -114,6 +114,43 @@ describe('POST /api/updown/trades rejects non-numeric values (issue #151)', () =
   });
 });
 
+describe('POST /api/updown/trades does not infer DOWN from a SELL signal (UP-only)', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('leaves direction null when the latest signal is SELL (EXIT / STAND ASIDE)', async () => {
+    const app = createFakeApp();
+    mock.method(fs, 'writeFileSync', () => {});
+    registerUpdownRoutes(app, {
+      updownService: {
+        getTradeContext: () => ({ latestSignal: { type: 'SELL', score: -20, confidence: 50 } }),
+      },
+      candleCache: { getAllCandles: () => [] },
+      readJSON: () => ({ trades: [], nextId: 1 }),
+      DATA_DIR: '/tmp/updown-test',
+    });
+    const res = await invoke(app, 'POST /api/updown/trades', { body: { cost: 50, returnAmount: 80 } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.trade.direction, null);
+    assert.equal(res.body.trade.manualOverride, false);
+  });
+
+  it('infers up from a BUY signal', async () => {
+    const app = createFakeApp();
+    mock.method(fs, 'writeFileSync', () => {});
+    registerUpdownRoutes(app, {
+      updownService: {
+        getTradeContext: () => ({ latestSignal: { type: 'BUY', score: 20, confidence: 50 } }),
+      },
+      candleCache: { getAllCandles: () => [] },
+      readJSON: () => ({ trades: [], nextId: 1 }),
+      DATA_DIR: '/tmp/updown-test',
+    });
+    const res = await invoke(app, 'POST /api/updown/trades', { body: { cost: 50, returnAmount: 80 } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.trade.direction, 'up');
+  });
+});
+
 describe('PUT /api/updown/trades/:id rejects non-numeric updates (issue #151)', () => {
   afterEach(() => mock.restoreAll());
 

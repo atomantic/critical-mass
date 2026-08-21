@@ -568,10 +568,15 @@ const resolveNoTradeZoneType = (rawType, noTradeZone, heldPosition) => {
  * @returns {{open: boolean, reason: string, macdObvAvg: number}}
  */
 const computeTrendGate = (trendFilter, timeframes) => {
-  const macd1h = timeframes?.['1h']?.scores?.macd ?? 0;
-  const obv1h = timeframes?.['1h']?.scores?.obv ?? 0;
-  const macd15 = timeframes?.['15m']?.scores?.macd ?? 0;
-  const obv15 = timeframes?.['15m']?.scores?.obv ?? 0;
+  const macd1h = timeframes?.['1h']?.scores?.macd;
+  const obv1h = timeframes?.['1h']?.scores?.obv;
+  const macd15 = timeframes?.['15m']?.scores?.macd;
+  const obv15 = timeframes?.['15m']?.scores?.obv;
+  // Fail closed when 15m/1h tape is missing — coalescing to 0 opened the
+  // long gate on a cold start with an empty candle cache.
+  if (macd1h == null || obv1h == null || macd15 == null || obv15 == null) {
+    return { open: false, reason: 'insufficient-data', macdObvAvg: 0 };
+  }
   const macdObvAvg = (macd1h + obv1h + macd15 + obv15) / 4;
   if (trendFilter?.trendBias === 'bearish') {
     return { open: false, reason: 'ema-bearish', macdObvAvg };

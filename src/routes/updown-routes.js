@@ -706,9 +706,8 @@ module.exports = (app, deps) => {
 
     // Auto-capture trade context from service
     const ctx = updownService.getTradeContext?.() ?? {};
-    const signalDirection = ctx.latestSignal?.type?.includes('BUY') ? 'up'
-      : ctx.latestSignal?.type?.includes('SELL') ? 'down'
-      : null;
+    // UP-only: SELL is EXIT / STAND ASIDE, never a DOWN entry.
+    const signalDirection = ctx.latestSignal?.type?.includes('BUY') ? 'up' : null;
     const inferredDirection = bodyDirection || ctx.position?.direction || ctx.contract?.direction || signalDirection;
     const manualOverride = bodyDirection && signalDirection ? bodyDirection !== signalDirection : false;
 

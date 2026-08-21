@@ -23,8 +23,10 @@ const { DATA_DIR } = require('../src/paths')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const SCORECARD_DIR = path.join(DATA_DIR, 'updown', 'scorecard')
 
+// No 1m candle file (FILE_MAP is 5m+). Scoring a "1m" window against the next
+// 5m close with the 1m noise floor (5 bps) overstates 1m accuracy — drop it
+// rather than mislabel. Live scorecard still journals real 1m ticks.
 const EVAL_WINDOWS = [
-  { label: '1m', candles5m: 1, windowMs: 60_000 },
   { label: '5m', candles5m: 1, windowMs: 300_000 },
   { label: '15m', candles5m: 3, windowMs: 900_000 },
   { label: '1h', candles5m: 12, windowMs: 3_600_000 },
@@ -293,7 +295,9 @@ const main = () => {
       if (futureIdx >= candles5m.length) continue
 
       const exitPrice = candles5m[futureIdx].close
-      const outcome = buildOutcomeRecord(prediction, w.windowMs, exitPrice)
+      const outcome = buildOutcomeRecord(prediction, w.windowMs, exitPrice, {
+        ts: new Date(candles5m[futureIdx].timestamp).toISOString(),
+      })
       outcome.backfilled = true
       appendLine(dateStr, outcome)
 
