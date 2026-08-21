@@ -14,6 +14,10 @@ describe('scorecardDirection treats a gated long as a skip, not an UP call', () 
   it('does not rewrite a DOWN score', () => {
     assert.equal(scorecardDirection({ score: -25, trendGate: { open: false } }), 'down')
   })
+  it('maps a published NEUTRAL / NO_TRADE_ZONE +score to a skip', () => {
+    assert.equal(scorecardDirection({ score: 40, type: 'NO_TRADE_ZONE' }), 'neutral')
+    assert.equal(scorecardDirection({ score: 18, type: 'NEUTRAL', trendGate: { open: true } }), 'neutral')
+  })
 })
 
 describe('evaluateDirection options vs perp (UP-only products)', () => {

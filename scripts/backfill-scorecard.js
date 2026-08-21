@@ -17,18 +17,17 @@ const fs = require('fs')
 const path = require('path')
 const { createCandleAggregator } = require('../src/candle-aggregator')
 const { createSignalEngine } = require('../src/updown/signal-engine')
-const { computeAdaptiveWeights } = require('../src/updown/scorecard')
+const { computeAdaptiveWeights, buildOutcomeRecord, scorecardDirection } = require('../src/updown/scorecard')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('../src/updown/indicator-config')
 const { DATA_DIR } = require('../src/paths')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const SCORECARD_DIR = path.join(DATA_DIR, 'updown', 'scorecard')
 
-const DIRECTION_THRESHOLD = 10
 const EVAL_WINDOWS = [
-  { label: '1m', candles5m: 1 },   // ~5m forward
-  { label: '5m', candles5m: 1 },   // same (5m resolution)
-  { label: '15m', candles5m: 3 },
-  { label: '1h', candles5m: 12 },
+  { label: '1m', candles5m: 1, windowMs: 60_000 },
+  { label: '5m', candles5m: 1, windowMs: 300_000 },
+  { label: '15m', candles5m: 3, windowMs: 900_000 },
+  { label: '1h', candles5m: 12, windowMs: 3_600_000 },
 ]
 const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']
 const BASE_WEIGHTS = INDICATOR_WEIGHTS
@@ -48,18 +47,6 @@ const TF_INTERVAL = {
   '1m': 60_000, '3m': 180_000, '5m': 300_000, '10m': 600_000,
   '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000,
   '2h': 7_200_000, '4h': 14_400_000, '1d': 86_400_000,
-}
-
-const getDirection = (score) => {
-  if (score > DIRECTION_THRESHOLD) return 'up'
-  if (score < -DIRECTION_THRESHOLD) return 'down'
-  return 'neutral'
-}
-
-const evaluateDirection = (direction, priceChangeBps) => {
-  if (direction === 'neutral') return null
-  if (direction === 'up') return priceChangeBps > 0
-  return priceChangeBps < 0
 }
 
 /**
@@ -261,7 +248,7 @@ const main = () => {
 
     // Compute signal
     const result = engine.computeSignals(null, null)
-    const compositeDirection = getDirection(result.score)
+    const compositeDirection = scorecardDirection(result)
     predCounter++
 
     const predId = `backfill_${evalTs}_${predCounter}`
@@ -306,61 +293,11 @@ const main = () => {
       if (futureIdx >= candles5m.length) continue
 
       const exitPrice = candles5m[futureIdx].close
-      const priceChangeBps = ((exitPrice - price) / price) * 10000
-      const compositeCorrect = evaluateDirection(compositeDirection, priceChangeBps)
-
-      // Per-timeframe evaluation
-      const tfResults = {}
-      for (const tf of ALL_TFS) {
-        const tfData = timeframes[tf]
-        if (!tfData) continue
-        const direction = getDirection(tfData.score)
-        tfResults[tf] = {
-          direction,
-          correct: evaluateDirection(direction, priceChangeBps),
-        }
-      }
-
-      // Per-indicator evaluation
-      const indicatorResults = {}
-      for (const ind of INDICATORS) {
-        let preds = 0, correct = 0
-        for (const tf of ALL_TFS) {
-          const indScore = timeframes[tf]?.scores?.[ind]
-          if (indScore == null) continue
-          const direction = getDirection(indScore)
-          if (direction === 'neutral') continue
-          preds++
-          if (evaluateDirection(direction, priceChangeBps)) correct++
-        }
-        indicatorResults[ind] = {
-          predictions: preds,
-          correct,
-          accuracy: preds > 0 ? correct / preds : null,
-        }
-      }
-
-      // Determine outcome date for file placement
-      const outcomeTs = new Date(candles5m[futureIdx].timestamp).toISOString()
-      const outcomeDateStr = outcomeTs.slice(0, 10)
-
-      const outcome = {
-        type: 'outcome',
-        predictionId: predId,
-        ts: outcomeTs,
-        window: w.label,
-        entryPrice: price,
-        exitPrice,
-        priceChangeBps: Math.round(priceChangeBps * 100) / 100,
-        compositeDirection,
-        compositeCorrect,
-        tfResults,
-        indicatorResults,
-      }
+      const outcome = buildOutcomeRecord(prediction, w.windowMs, exitPrice)
+      outcome.backfilled = true
       appendLine(dateStr, outcome)
 
-      // Track for adaptive weights
-      if (compositeCorrect != null) {
+      if (outcome.compositeCorrect != null) {
         outcomeBuffer.push(outcome)
         if (outcomeBuffer.length > 500) {
           outcomeBuffer.splice(0, outcomeBuffer.length - 500)

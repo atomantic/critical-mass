@@ -350,7 +350,7 @@ module.exports = (app, deps) => {
 
     const records = readJSONLFiles(from, to);
     const predictions = records.filter(r => r.type === 'prediction');
-    const outcomes = records.filter(r => r.type === 'outcome');
+    const outcomes = records.filter(r => r.type === 'outcome' && r.compositeDirection !== 'down');
     const weights = records.filter(r => r.type === 'weights');
 
     // --- accuracyOverTime: hourly accuracy buckets ---

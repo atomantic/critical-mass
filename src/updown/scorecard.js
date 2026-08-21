@@ -117,8 +117,12 @@ const getDirection = (score) => {
  */
 const scorecardDirection = (result) => {
   const raw = getDirection(result?.score)
-  if (raw === 'up' && result?.trendGate?.open === false) return 'neutral'
-  return raw
+  if (raw !== 'up') return raw
+  if (result?.trendGate?.open === false) return 'neutral'
+  // Published type is the operator-facing call. A +score that never printed
+  // BUY (NO_TRADE_ZONE, NEUTRAL from vol-widened thresholds) is not an UP call.
+  if (result?.type === 'NO_TRADE_ZONE' || result?.type === 'NEUTRAL') return 'neutral'
+  return 'up'
 }
 
 /**
