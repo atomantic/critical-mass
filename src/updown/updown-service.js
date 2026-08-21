@@ -212,7 +212,7 @@ const createUpDownService = (io, deps) => {
       // preserving exit-signal surfacing for a held position in the no-trade
       // zone (issue #108) — same rule as the signal engine.
       const adjustedRaw = scoreToSignalDynamic(result.score, result.volatility?.ratio ?? 1);
-      const gated = applyUpOnlyGate(adjustedRaw, result.trendGate?.open !== false);
+      const gated = applyUpOnlyGate(adjustedRaw, result.trendGate?.open !== false, position);
       result.type = resolveNoTradeZoneType(gated, result.noTradeZone, position);
       result.confidence = Math.round(Math.min(1, Math.abs(result.score) / 60) * 100) / 100;
     }

@@ -90,7 +90,7 @@ export default function SignalPanel({ signal, indicators, position }) {
                   <span className="text-gray-500">
                     {h.timestamp ? new Date(h.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '---'}
                   </span>
-                  <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{getActionLabel(hType, position)}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{getActionLabel(hType, null)}</span>
                   {h.confidence != null && (
                     <span className="text-gray-400 font-mono">{(h.confidence * 100).toFixed(0)}%</span>
                   )}

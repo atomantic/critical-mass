@@ -2,7 +2,19 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { evaluateDirection, buildOutcomeRecord, tallyHistory, findUnsettledPredictions } = require('../src/updown/scorecard');
+const { evaluateDirection, buildOutcomeRecord, tallyHistory, findUnsettledPredictions, scorecardDirection } = require('../src/updown/scorecard');
+
+describe('scorecardDirection treats a gated long as a skip, not an UP call', () => {
+  it('maps score=+25 with a closed trend gate to neutral', () => {
+    assert.equal(scorecardDirection({ score: 25, trendGate: { open: false } }), 'neutral')
+  })
+  it('keeps score=+25 as up when the gate is open', () => {
+    assert.equal(scorecardDirection({ score: 25, trendGate: { open: true } }), 'up')
+  })
+  it('does not rewrite a DOWN score', () => {
+    assert.equal(scorecardDirection({ score: -25, trendGate: { open: false } }), 'down')
+  })
+})
 
 describe('evaluateDirection options vs perp (UP-only products)', () => {
   it('options mode: a no-move is a miss (Crypto.com Up option expires OTM on a tie)', () => {

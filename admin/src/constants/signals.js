@@ -40,5 +40,5 @@ export const getActionLabel = (type, heldPosition) => {
     return heldPosition?.direction === 'up' ? 'EXIT' : 'STAND ASIDE'
   }
   if (type === 'NEUTRAL') return 'HOLD'
-  return type.replace(/_/g, ' ')
+  return 'HOLD'
 }

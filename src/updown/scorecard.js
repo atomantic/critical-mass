@@ -109,6 +109,19 @@ const getDirection = (score) => {
 }
 
 /**
+ * Direction the scorecard journals. A raw +score that the UP-only gate
+ * suppressed (trendGate.open === false) is a skip, not an UP call — otherwise
+ * GATE CLOSED / HOLD ticks inflate UP precision with longs we never published.
+ * @param {{score?: number, trendGate?: {open?: boolean}}|null} result
+ * @returns {'up' | 'down' | 'neutral'}
+ */
+const scorecardDirection = (result) => {
+  const raw = getDirection(result?.score)
+  if (raw === 'up' && result?.trendGate?.open === false) return 'neutral'
+  return raw
+}
+
+/**
  * Get today's JSONL file path
  * @returns {string}
  */
@@ -429,7 +442,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     const price = lastPriceFn()
     if (!price) return null
 
-    const compositeDirection = getDirection(result.score)
+    const compositeDirection = scorecardDirection(result)
     const id = `pred_${Date.now()}_${++predictionCounter}`
 
     const timeframes = {}
@@ -666,7 +679,14 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       }
     }
 
-    const byHour = computeByHour(scored)
+    // Time-of-day multiplier in signal-engine assumes 50% = coin-flip. Options
+    // mode (flat = miss) sits well below 50% on 1m/5m, so every hour would
+    // clamp to the 0.90 floor. Perp correctness (flat = scratch) restores that
+    // 50% baseline — same switch already applied to byIndicator.
+    const byHour = computeByHour(scored.map(o => ({
+      ...o,
+      compositeCorrect: resolvePerpCorrect(o),
+    })))
 
     // Contract-aware accuracy
     const contractOutcomes = scored.filter(o => o.contractOutcome != null)
@@ -899,4 +919,5 @@ module.exports = {
   findUnsettledPredictions,
   computeByHour,
   PRIMARY_WINDOWS,
+  scorecardDirection,
 }

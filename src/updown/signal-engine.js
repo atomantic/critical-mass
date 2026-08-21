@@ -34,7 +34,7 @@ const ALL_SIGNAL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h',
 
 const NO_TRADE_ZONE_MS = 6 * 60 * 60 * 1000;
 const WARNING_ZONE_MS = 8 * 60 * 60 * 1000;
-/** 15m/1h MACD+OBV average at or below this closes the UP-only long gate. */
+/** 15m/1h MACD+OBV average strictly below this closes the UP-only long gate. */
 const TREND_GATE_BEARISH_THRESHOLD = -10;
 
 /**
@@ -583,12 +583,18 @@ const computeTrendGate = (trendFilter, timeframes) => {
 };
 
 /**
- * Cap new longs when the higher-TF tape is bearish. Exits (SELL) always pass.
+ * Cap new longs when the higher-TF tape is bearish. Exits always pass:
+ * SELL for a held long, BUY for a held DOWN (issue #108).
  * @param {string} rawType
  * @param {boolean} trendGateOpen
+ * @param {{direction?: string}|null} [heldPosition]
  * @returns {string}
  */
-const applyUpOnlyGate = (rawType, trendGateOpen) => {
+const applyUpOnlyGate = (rawType, trendGateOpen, heldPosition = null) => {
+  // Issue #108: a BUY while holding DOWN is an EXIT, not a new long — never gate it.
+  if (heldPosition?.direction === 'down' && (rawType === 'BUY' || rawType === 'STRONG_BUY')) {
+    return rawType;
+  }
   if (!trendGateOpen && (rawType === 'BUY' || rawType === 'STRONG_BUY')) return 'NEUTRAL';
   return rawType;
 };
@@ -945,7 +951,7 @@ const createSignalEngine = (candleAggregator) => {
     // UP-only: never publish BUY against a bearish 15m/1h tape. SELL still
     // passes so a held long can EXIT (issue #108 / resolveNoTradeZoneType).
     const trendGate = computeTrendGate(trendFilter, timeframes);
-    const gatedType = applyUpOnlyGate(rawType, trendGate.open);
+    const gatedType = applyUpOnlyGate(rawType, trendGate.open, heldPosition);
     const type = resolveNoTradeZoneType(gatedType, noTradeZone, heldPosition);
 
     // Multi-factor confidence: score magnitude (0-0.5) + TF agreement (0-0.3) + ADX regime (0-0.2)

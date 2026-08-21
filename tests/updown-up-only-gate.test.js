@@ -64,6 +64,11 @@ describe('applyUpOnlyGate', () => {
     assert.equal(applyUpOnlyGate('STRONG_SELL', false), 'STRONG_SELL');
     assert.equal(applyUpOnlyGate('NEUTRAL', false), 'NEUTRAL');
   });
+
+  it('does not swallow a BUY that is the exit for a held DOWN position when the gate is closed', () => {
+    assert.equal(applyUpOnlyGate('BUY', false, { direction: 'down' }), 'BUY');
+    assert.equal(applyUpOnlyGate('STRONG_BUY', false, { direction: 'down' }), 'STRONG_BUY');
+  });
 });
 
 describe('resolveActionLabel (UP-only display)', () => {
