@@ -11,7 +11,7 @@ const TIMEFRAMES = {
   '3m': { intervalMs: 180_000, maxCandles: 160 },
   '5m': { intervalMs: 300_000, maxCandles: 180 },
   '15m': { intervalMs: 900_000, maxCandles: 180 },
-  '1h':  { intervalMs: 3_600_000,   maxCandles: 200 },
+  '1h':  { intervalMs: 3_600_000,   maxCandles: 220 },
   '10m': { intervalMs: 600_000,      maxCandles: 180 },
   '30m': { intervalMs: 1_800_000,    maxCandles: 120 },
   '2h':  { intervalMs: 7_200_000,    maxCandles: 100 },
