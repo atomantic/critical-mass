@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Bar } from 'recharts'
 import { formatCurrency, formatPrice, formatPriceCompact } from './charts/chartUtils'
+import { pairQuery } from '../utils/api'
 
 const INTERVAL_OPTIONS = [
   { value: '1min', label: '1 min' },
@@ -123,11 +124,12 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
     }
   }, [summary?.config])
 
-  // Reset configLoaded when exchange changes
+  // Reset fund-specific state whenever the route changes.
   useEffect(() => {
     setConfigLoaded(false)
     setResults(null)
-  }, [exchange])
+    setError(null)
+  }, [exchange, pair])
 
   // formatCurrency for balances/totals (fixed 2 decimals)
   // formatPrice for prices (smart decimals based on magnitude)
@@ -138,7 +140,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api/${exchange}/backtest/run`, {
+      const res = await fetch(`/api/${exchange}/backtest/run${pairQuery(pair)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params)

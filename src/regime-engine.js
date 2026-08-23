@@ -36,6 +36,7 @@ const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initi
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
+const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { fmtCurrency: fmtPrice, isFilledStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 
@@ -100,6 +101,18 @@ const buildPartialFillData = (orderId, side, orderStatus, extras = {}) => ({
   isPartialFill: true,
   ...extras,
 });
+
+/**
+ * Build the shared in-memory dedup key used by WS and polling fill callbacks.
+ * Partial fills are keyed by cumulative size so each advance is processed once;
+ * terminal fills remain keyed by order ID.
+ * @param {string} orderId
+ * @param {boolean} isPartialFill
+ * @param {number} [filledSize]
+ * @returns {string}
+ */
+const makeFillDedupKey = (orderId, isPartialFill, filledSize = 0) =>
+  isPartialFill ? `${orderId}:${(filledSize || 0).toFixed(8)}` : orderId;
 
 /**
  * Decide how much USDC an entry can actually spend, given the requested size,
@@ -1834,7 +1847,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Load corrective buy order IDs to avoid cancelling them as orphans
       const correctiveBuyIds = new Set();
       try {
-        const cbPath = require('path').join(__dirname, '..', 'data', exchange, 'pending-corrective-buys.json');
+        const cbPath = require('path').join(resolveFundDataDir(exchange, pair), 'pending-corrective-buys.json');
         const cbData = JSON.parse(require('fs').readFileSync(cbPath, 'utf8'));
         for (const cb of cbData) {
           if (!cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
@@ -1843,7 +1856,6 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       // Load manual trade recovery buy order IDs to avoid cancelling them as orphans
       try {
-        const { resolveFundDataDir } = require('./migration');
         const mtPath = require('path').join(resolveFundDataDir(exchange, pair), 'manual-trades.json');
         const mtData = JSON.parse(require('fs').readFileSync(mtPath, 'utf8'));
         for (const mt of (mtData.trades || [])) {
@@ -2839,9 +2851,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     } else if (fillData.side.toLowerCase() === 'sell') {
       // Sell-fill dedup: skip if already processed (prevents double-processing across WS/reconcile/polling)
       // For partial fills, use a composite key with filled size to allow incremental processing
-      const dedupKey = fillData.isPartialFill
-        ? `${fillData.orderId}:${(fillData.filledSize || 0).toFixed(8)}`
-        : fillData.orderId;
+      const dedupKey = makeFillDedupKey(fillData.orderId, fillData.isPartialFill, fillData.filledSize);
       if (recentlyProcessedSellFills.has(dedupKey)) {
         console.log(`⏭️ [${exchange}] Sell fill already processed, skipping: ${dedupKey}`);
         return;
@@ -4735,9 +4745,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // (e.g. 0.02 → 0.05 → 0.08) is processed once per advance instead
       // of being swallowed by orderId-only dedup. Terminal full-fill
       // callbacks keep orderId-only dedup since filledSize is final.
-      const dedupKey = status.isPartialFill
-        ? `${orderId}:${(status.filledSize || 0).toFixed(8)}`
-        : orderId;
+      const dedupKey = makeFillDedupKey(orderId, status.isPartialFill, status.filledSize);
       if (recentlyProcessedFills.has(dedupKey)) {
         console.log(`⚠️ [${exchange}] Duplicate fill callback for ${dedupKey}, skipping`);
         return;
@@ -5769,6 +5777,7 @@ module.exports = {
   createInitialPositionState,
   cancelPartialFillOrder,
   buildPartialFillData,
+  makeFillDedupKey,
   resolveEntryBudget,
   isBuyAlreadyCommitted,
   shouldSkipBuyRecommit,
