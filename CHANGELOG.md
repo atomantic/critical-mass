@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - **UpDown hysteresis survives process restart** - published BUY/SELL state is persisted with the rest of updown-state.json, so a PM2 bounce no longer dumps a live clip to HOLD.
 
 ### Changed
+- **DCA conversion backup preparation is shared across replace and merge modes** - Both paths now use one tested helper while retaining their mode-specific operator logs (#254)
 - **UpDown engine is UP-only and tick-to-tick** — 1m/3m/5m now inherit the 1h EMA trend (overbought in an uptrend is confirmation, not a fade). A 15m/1h MACD+OBV / EMA bearish gate caps new BUY signals at NEUTRAL. SELL is EXIT (held long) or STAND ASIDE (flat) — never "BUY DOWN". Scorecard scores only UP calls; 1m/5m are the primary windows; options accuracy treats a no-move as a miss (CDC Up option) while perp accuracy treats it as a scratch (Coinbase flip).
 
 ### Added
