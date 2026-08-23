@@ -9,7 +9,6 @@
 const { getAdapter } = require('../src/adapters');
 const { createFillLedger } = require('../src/fill-ledger');
 const { createManualTradeStore } = require('../src/manual-trades');
-const { fetchAllCoinbaseFills, normalizeFills } = require('../src/sync-fills');
 
 const EXCHANGE = 'coinbase';
 const PAIR = 'BTC-USDC';
@@ -47,10 +46,10 @@ const groupFillsByOrder = (fills) => {
   const startTimestampMs = new Date(START_DATE).getTime();
 
   console.log(`🔄 Fetching fills from ${EXCHANGE} since ${START_DATE}...`);
-  const rawFills = await fetchAllCoinbaseFills(adapter, startTimestampMs);
-  console.log(`📥 Got ${rawFills.length} raw fills from exchange`);
+  const normalizedFills = await adapter.getReconciliationFills(PAIR, startTimestampMs);
+  console.log(`📥 Got ${normalizedFills.length} normalized fills from exchange`);
 
-  const exchangeFills = normalizeFills(EXCHANGE, rawFills);
+  const exchangeFills = new Map(normalizedFills.map(fill => [fill.tradeId, fill]));
   console.log(`🔢 ${exchangeFills.size} unique fills after normalization`);
 
   // Filter to unaccounted fills
