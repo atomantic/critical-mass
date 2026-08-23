@@ -24,10 +24,11 @@ const MAX_SEEN_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
  * @param {Function} deps.writeJSON - Write JSON file
  * @param {string} deps.DATA_DIR - Data directory path
  * @param {Function} deps.getSentinelConfig - Get sentinel config
+ * @param {Function} [deps.fetchAllFeeds] - Feed fetcher override for tests
  * @returns {Object}
  */
 const createSentinelService = (io, deps) => {
-  const { readJSON, writeJSON, DATA_DIR, getSentinelConfig } = deps;
+  const { readJSON, writeJSON, DATA_DIR, getSentinelConfig, fetchAllFeeds: fetchFeeds = fetchAllFeeds } = deps;
   const stateFilePath = path.join(DATA_DIR, STATE_FILE);
 
   /** @type {NodeJS.Timeout | null} */
@@ -35,6 +36,12 @@ const createSentinelService = (io, deps) => {
   /** @type {NodeJS.Timeout | null} */
   let initialPollTimeout = null;
   let running = false;
+  let lifecycleGeneration = 0;
+  /** @type {Promise<void>|null} */
+  let activePoll = null;
+  let activePollGeneration = -1;
+  /** @type {Promise<void>|null} */
+  let queuedPoll = null;
 
   /** @type {Array<Object>} */
   let alerts = [];
@@ -123,20 +130,28 @@ const createSentinelService = (io, deps) => {
   /**
    * Run a poll cycle
    */
-  const poll = async () => {
+  const runPoll = async (generation, allowStopped = false) => {
     const config = getSentinelConfig();
-    if (!config.enabled) return;
+    const isCurrent = () => generation === lifecycleGeneration && (running || allowStopped);
+    if (!config.enabled || !isCurrent()) return;
 
     try {
-      const items = await fetchAllFeeds(config.feeds || []);
+      const items = await fetchFeeds(config.feeds || []);
+      if (!isCurrent()) return;
       let newAlerts = 0;
 
       for (const item of items) {
+        if (!isCurrent()) return;
         const guid = item.guid;
         if (seenGuids.has(guid)) continue;
-        seenGuids.set(guid, Date.now());
 
         const alert = await processItem(item, config);
+        if (!isCurrent()) return;
+
+        // Mark the item seen only after its asynchronous classification
+        // finishes under the current lifecycle. stop() can then persist safely
+        // without recording an item whose alert was never committed.
+        seenGuids.set(guid, Date.now());
         if (!alert) continue;
 
         alerts.push(alert);
@@ -182,9 +197,43 @@ const createSentinelService = (io, deps) => {
       // Emit status update
       io.to('sentinel').emit('sentinel:status', getStatus());
     } catch (err) {
+      if (!isCurrent()) return;
       errorCount++;
       log('ERROR', `Sentinel poll error: ${err.message}`);
     }
+  };
+
+  /**
+   * Coalesce polls within one lifecycle. If stop/start supersedes an in-flight
+   * poll, queue exactly one current-generation poll behind the fenced old one.
+   * @returns {Promise<void>}
+   */
+  const poll = ({ allowStopped = false } = {}) => {
+    const generation = lifecycleGeneration;
+    if (!running && !allowStopped) return activePoll || Promise.resolve();
+    if (activePoll) {
+      if (activePollGeneration === generation) return activePoll;
+      if (!queuedPoll) {
+        queuedPoll = activePoll.then(() => {
+          queuedPoll = null;
+          const lifecycleIsCurrent = generation === lifecycleGeneration;
+          return lifecycleIsCurrent && (running || allowStopped)
+            ? poll({ allowStopped })
+            : undefined;
+        });
+      }
+      return queuedPoll;
+    }
+
+    activePollGeneration = generation;
+    const trackedPoll = runPoll(generation, allowStopped).finally(() => {
+      if (activePoll === trackedPoll) {
+        activePoll = null;
+        activePollGeneration = -1;
+      }
+    });
+    activePoll = trackedPoll;
+    return trackedPoll;
   };
 
   /**
@@ -199,6 +248,7 @@ const createSentinelService = (io, deps) => {
     if (running) return;
 
     running = true;
+    lifecycleGeneration++;
     const interval = config.pollIntervalMs || 300000;
     pollInterval = setInterval(poll, interval);
 
@@ -213,6 +263,7 @@ const createSentinelService = (io, deps) => {
    */
   const stop = () => {
     running = false;
+    lifecycleGeneration++;
     if (pollInterval) {
       clearInterval(pollInterval);
       pollInterval = null;
@@ -257,7 +308,7 @@ const createSentinelService = (io, deps) => {
    * Force an immediate poll
    */
   const forcePoll = async () => {
-    await poll();
+    await poll({ allowStopped: true });
   };
 
   /**
