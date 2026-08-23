@@ -48,6 +48,7 @@ runMigrationIfNeeded();
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5563;
+const HOST = process.env.HOST || '127.0.0.1';
 
 // CORS allowlist -- only local dev and the server itself
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5564`).split(',').map(s => s.trim());
@@ -474,12 +475,12 @@ const checkAndRunIntervalTrade = () => {
 
 // ============ Start Server ============
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const enabledExchanges = getEnabledExchanges();
 
   const { version } = require('./package.json');
   log('INFO', `\n⚛  Critical Mass v${version}\n·  ·  · ◉ ·  ·  ·\nBTC Accumulation Engine\n`);
-  log('INFO', `Critical Mass running on http://localhost:${PORT}`);
+  log('INFO', `Critical Mass running on http://${HOST}:${PORT}`);
   log('INFO', `Configured exchanges: ${getConfiguredExchanges().join(', ')}`);
   log('INFO', `Enabled exchanges: ${enabledExchanges.length > 0 ? enabledExchanges.join(', ') : 'none'}`);
 

@@ -1,6 +1,7 @@
 // @ts-check
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const {
   normalizeConfig,
   getRunIdentifier,
@@ -47,9 +48,14 @@ const LIFECYCLE = Object.freeze({
  * @param {string} data - Data to write
  */
 const atomicWriteSync = (filePath, data) => {
-  const tmpPath = filePath + '.tmp';
-  fs.writeFileSync(tmpPath, data);
-  fs.renameSync(tmpPath, filePath);
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, data, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    throw err;
+  }
 };
 
 /** @type {Map<string, number>} In-memory save version per file */

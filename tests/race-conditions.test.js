@@ -288,9 +288,31 @@ describe('Race 2: Atomic writes and version locking', () => {
     atomicWriteSync(filePath, JSON.stringify({ test: true }));
 
     assert.ok(fs.existsSync(filePath));
-    assert.ok(!fs.existsSync(filePath + '.tmp'));
+    assert.deepEqual(fs.readdirSync(tmpDir).filter(name => name.endsWith('.tmp')), []);
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     assert.equal(data.test, true);
+  });
+
+  it('atomicWriteSync restricts both temporary and target files to owner access', () => {
+    const { atomicWriteSync } = require('../src/state-tracker');
+    const filePath = path.join(tmpDir, 'test-private-state.json');
+    const originalRenameSync = fs.renameSync;
+    let temporaryMode;
+
+    fs.writeFileSync(filePath, 'old data', { mode: 0o644 });
+    fs.renameSync = (source, target) => {
+      temporaryMode = fs.statSync(source).mode & 0o777;
+      return originalRenameSync(source, target);
+    };
+
+    try {
+      atomicWriteSync(filePath, JSON.stringify({ private: true }));
+    } finally {
+      fs.renameSync = originalRenameSync;
+    }
+
+    assert.equal(temporaryMode, 0o600);
+    assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
   });
 
   it('atomicWriteSync preserves file integrity on overwrite', () => {
@@ -304,7 +326,7 @@ describe('Race 2: Atomic writes and version locking', () => {
 
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     assert.equal(data.version, 2);
-    assert.ok(!fs.existsSync(filePath + '.tmp'));
+    assert.deepEqual(fs.readdirSync(tmpDir).filter(name => name.endsWith('.tmp')), []);
   });
 
   it('saveRegimeState increments _saveVersion on each save', () => {
