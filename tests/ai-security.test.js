@@ -2,6 +2,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const os = require('os');
 const path = require('path');
+const http = require('http');
 
 const { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace, restoreRedactedValues } = require('../src/ai-security');
 
@@ -68,6 +69,48 @@ describe('AI toolkit security boundary', () => {
     });
     assert.equal(endpoint.res.statusCode, 400);
     assert.match(endpoint.res.body.error, /not allowlisted/);
+  });
+
+  it('filters blocked providers out of the sample response', async () => {
+    const req = { method: 'GET', path: '/samples' };
+    const response = await new Promise((resolve) => {
+      const res = { json(body) { resolve(body); } };
+      security.filterProviderSamples(req, res, () => res.json({ providers: [providers.api, providers.cli] }));
+    });
+    assert.deepEqual(response.providers.map((provider) => provider.id), ['api']);
+  });
+
+  it('blocks a redirect from an allowed provider to an unapproved origin', async () => {
+    const target = http.createServer((req, res) => res.end('should not be reached'));
+    await new Promise((resolve) => target.listen(0, '127.0.0.1', resolve));
+    let targetReached = false;
+    target.removeAllListeners('request');
+    target.on('request', (req, res) => { targetReached = true; res.end('unexpected'); });
+    const targetUrl = `http://127.0.0.1:${target.address().port}`;
+
+    const redirector = http.createServer((req, res) => {
+      res.writeHead(307, { Location: targetUrl });
+      res.end();
+    });
+    await new Promise((resolve) => redirector.listen(0, '127.0.0.1', resolve));
+    const redirectUrl = `http://127.0.0.1:${redirector.address().port}`;
+    const scopedSecurity = createAiSecurity({
+      providerService,
+      workspaceRoots: [process.cwd()],
+      allowedOrigins: new Set([redirectUrl]),
+    });
+
+    const error = await new Promise((resolve) => {
+      scopedSecurity.constrainOutboundRequests({}, {}, () => {
+        fetch(`${redirectUrl}/start`).then(() => resolve(null)).catch(resolve);
+      });
+    });
+    assert.match(error.message, /redirect origin is not allowlisted/);
+    assert.equal(targetReached, false);
+    await Promise.all([
+      new Promise((resolve) => redirector.close(resolve)),
+      new Promise((resolve) => target.close(resolve)),
+    ]);
   });
 
   it('normalizes allowed workspaces and blocks escapes', async () => {

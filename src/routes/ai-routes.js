@@ -54,8 +54,8 @@ module.exports = (app, sharedDeps) => {
 
     const security = createAiSecurity({ providerService: toolkit.services.providers });
 
-    aiRouter.use('/providers', security.redactJsonResponses, security.guardProviderMutation, security.guardProviderExecution, toolkit.routes.providers);
-    aiRouter.use('/runs', security.guardRun, toolkit.routes.runs);
+    aiRouter.use('/providers', security.constrainOutboundRequests, security.filterProviderSamples, security.redactJsonResponses, security.guardProviderMutation, security.guardProviderExecution, toolkit.routes.providers);
+    aiRouter.use('/runs', security.constrainOutboundRequests, security.guardRun, toolkit.routes.runs);
     aiRouter.use('/prompts', toolkit.routes.prompts);
 
     log('INFO', `[${ts()}] 🤖 AI toolkit routes mounted at /api/providers, /api/runs, /api/prompts`);

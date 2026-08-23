@@ -1,8 +1,51 @@
 const fs = require('fs');
 const path = require('path');
+const { AsyncLocalStorage } = require('async_hooks');
 
 const REDACTED = '[REDACTED]';
 const SECRET_KEYS = /(api[-_]?key|authorization|credential|password|private[-_]?key|secret|token)$/i;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const outboundPolicy = new AsyncLocalStorage();
+const nativeFetch = globalThis.fetch;
+let fetchGuardInstalled = false;
+
+const installFetchGuard = () => {
+  if (fetchGuardInstalled) return;
+  globalThis.fetch = async (input, init = {}) => {
+    const policy = outboundPolicy.getStore();
+    if (!policy) return nativeFetch(input, init);
+
+    let url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+    let options = { ...init, redirect: 'manual' };
+    for (let redirects = 0; redirects <= 5; redirects += 1) {
+      if (!policy.allowedOrigins.has(url.origin)) {
+        throw new Error(`AI provider redirect origin is not allowlisted: ${url.origin}`);
+      }
+      const response = await nativeFetch(url, options);
+      if (!REDIRECT_STATUSES.has(response.status)) return response;
+      const location = response.headers.get('location');
+      if (!location) return response;
+      if (redirects === 5) throw new Error('AI provider exceeded the redirect limit');
+
+      const nextUrl = new URL(location, url);
+      if (!policy.allowedOrigins.has(nextUrl.origin)) {
+        throw new Error(`AI provider redirect origin is not allowlisted: ${nextUrl.origin}`);
+      }
+      if (response.status === 303 || ((response.status === 301 || response.status === 302) && options.method === 'POST')) {
+        options = { ...options, method: 'GET' };
+        delete options.body;
+      }
+      if (nextUrl.origin !== url.origin && options.headers) {
+        const headers = new Headers(options.headers);
+        headers.delete('authorization');
+        options = { ...options, headers };
+      }
+      url = nextUrl;
+    }
+    throw new Error('AI provider exceeded the redirect limit');
+  };
+  fetchGuardInstalled = true;
+};
 
 const redactSecrets = (value) => {
   if (Array.isArray(value)) return value.map(redactSecrets);
@@ -53,6 +96,7 @@ const createAiSecurity = ({
   workspaceRoots = (process.env.AI_WORKSPACE_ROOTS || process.cwd()).split(','),
   allowedOrigins = parseAllowedOrigins(),
 } = {}) => {
+  installFetchGuard();
   const roots = workspaceRoots
     .map((root) => path.resolve(root.trim()))
     .filter((root) => fs.existsSync(root))
@@ -68,6 +112,20 @@ const createAiSecurity = ({
     const origin = endpoint.origin;
     if (!allowedOrigins.has(origin)) return `Provider endpoint origin is not allowlisted: ${origin}`;
     return null;
+  };
+
+  const constrainOutboundRequests = (req, res, next) => outboundPolicy.run({ allowedOrigins }, next);
+
+  const filterProviderSamples = (req, res, next) => {
+    if (req.method !== 'GET' || req.path !== '/samples') return next();
+    const json = res.json.bind(res);
+    res.json = (body) => json({
+      ...body,
+      providers: Array.isArray(body?.providers)
+        ? body.providers.filter((provider) => !validateProvider(provider))
+        : body?.providers,
+    });
+    next();
   };
 
   const guardProviderMutation = (req, res, next) => {
@@ -108,7 +166,7 @@ const createAiSecurity = ({
     }).catch(next);
   };
 
-  return { guardProviderExecution, guardProviderMutation, guardRun, redactJsonResponses, validateProvider };
+  return { constrainOutboundRequests, filterProviderSamples, guardProviderExecution, guardProviderMutation, guardRun, redactJsonResponses, validateProvider };
 };
 
 module.exports = { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace, restoreRedactedValues };
