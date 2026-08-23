@@ -4,8 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **UpDown published signals no longer chatter around the ±15 line** - BUY/SELL now require 60s/15s of raw agreement before printing, stay printed through 14.x fade (drop BUY only below score 12, or after 60s of HOLD), and 5s −20 SELL flashes are ignored. Tick-momentum may still boost a live score but cannot create or cancel a type, and cannot shove HOLD across the BUY line. 1h EMA trend filter accepts 199 completed hours (the live steady state with one hour still forming) instead of forcing FLAT/ema=0. Replay of 2026-08-21's journal: 59 raw BUY episodes → 3 stable clips.
+- **UpDown scorecard no longer journals a BUY the banner never showed** - the 60s sampler has its own hysteresis clock, so two interval ticks could confirm BUY while the live 5s engine stayed HOLD. Journal type is now aligned to the live published signal.
+- **UpDown hysteresis survives process restart** - published BUY/SELL state is persisted with the rest of updown-state.json, so a PM2 bounce no longer dumps a live clip to HOLD.
+
 ### Changed
 - **Critical trading alerts now carry structured context** — Order failures, WebSocket faults, safety pauses, and recovery/reconciliation events retain their familiar operator messages while adding exchange, pair, order, and error metadata through the centralized logger (#253)
+- **DCA conversion backup preparation is shared across replace and merge modes** - Both paths now use one tested helper while retaining their mode-specific operator logs (#254)
 - **UpDown engine is UP-only and tick-to-tick** — 1m/3m/5m now inherit the 1h EMA trend (overbought in an uptrend is confirmation, not a fade). A 15m/1h MACD+OBV / EMA bearish gate caps new BUY signals at NEUTRAL. SELL is EXIT (held long) or STAND ASIDE (flat) — never "BUY DOWN". Scorecard scores only UP calls; 1m/5m are the primary windows; options accuracy treats a no-move as a miss (CDC Up option) while perp accuracy treats it as a scratch (Coinbase flip).
 
 ### Added
