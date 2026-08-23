@@ -385,13 +385,15 @@ const createGeminiAdapter = (keysPath = null) => {
   };
 
   /**
-   * Place a limit sell order
-   * @param {string} productId - Product ID
-   * @param {number} baseAmount - Amount of base currency to sell
-   * @param {number} price - Limit price
-   * @returns {Promise<LimitSellResult>} Order result
+   * Place a limit buy or sell order through Gemini's shared order/new shape.
+   * @param {'buy'|'sell'} side
+   * @param {string} productId
+   * @param {number} baseAmount
+   * @param {number} price
+   * @param {{postOnly?: boolean}} [options]
+   * @returns {Promise<LimitSellResult|LimitBuyResult>}
    */
-  adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
+  const placeLimitOrder = async (side, productId, baseAmount, price, options = {}) => {
     const symbol = toGeminiSymbol(productId);
     const clientOrderId = crypto.randomUUID().replace(/-/g, '');
     const postOnly = options.postOnly !== false; // Default to true
@@ -422,7 +424,7 @@ const createGeminiAdapter = (keysPath = null) => {
       symbol,
       amount: roundedAmount.toFixed(baseDecimals),
       price: roundedPrice.toFixed(quoteDecimals),
-      side: 'sell',
+      side,
       type: 'exchange limit',
       client_order_id: clientOrderId,
       options: postOnly ? ['maker-or-cancel'] : [],
@@ -443,6 +445,16 @@ const createGeminiAdapter = (keysPath = null) => {
   };
 
   /**
+   * Place a limit sell order
+   * @param {string} productId - Product ID
+   * @param {number} baseAmount - Amount of base currency to sell
+   * @param {number} price - Limit price
+   * @returns {Promise<LimitSellResult>} Order result
+   */
+  adapter.placeLimitSell = (productId, baseAmount, price, options = {}) =>
+    placeLimitOrder('sell', productId, baseAmount, price, options);
+
+  /**
    * Place a post-only limit buy order (maker-prefer)
    * @param {string} productId - Product ID
    * @param {number} baseAmount - Amount of base currency to buy
@@ -451,56 +463,8 @@ const createGeminiAdapter = (keysPath = null) => {
    * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
    * @returns {Promise<LimitBuyResult>} Order result
    */
-  adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
-    const symbol = toGeminiSymbol(productId);
-    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
-    const postOnly = options.postOnly !== false; // Default to true
-
-    // Get product details for proper rounding
-    const product = await adapter.getProductDetails(productId);
-    const baseIncrement = parseFloat(product.baseIncrement);
-    const quoteIncrement = parseFloat(product.quoteIncrement);
-    const baseDecimals = incrementToDecimals(product.baseIncrement);
-    const quoteDecimals = incrementToDecimals(product.quoteIncrement);
-
-    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
-    const roundedPrice = floorToIncrement(price, quoteIncrement);
-
-    const baseMinSize = parseFloat(product.baseMinSize) || baseIncrement;
-    if (roundedAmount < baseMinSize) {
-      return {
-        orderId: '',
-        clientOrderId,
-        success: false,
-        errorMessage: `Order quantity ${baseAmount} rounds to ${roundedAmount}, below minimum ${baseMinSize}`,
-        baseSize: roundedAmount,
-        limitPrice: roundedPrice,
-      };
-    }
-
-    const orderPayload = {
-      symbol,
-      amount: roundedAmount.toFixed(baseDecimals),
-      price: roundedPrice.toFixed(quoteDecimals),
-      side: 'buy',
-      type: 'exchange limit',
-      client_order_id: clientOrderId,
-      options: postOnly ? ['maker-or-cancel'] : [],
-    };
-
-    const result = await makeRestRequest('/v1/order/new', orderPayload, { retryRateLimit: false });
-
-    const success = !result.is_cancelled && result.order_id;
-
-    return {
-      orderId: result.order_id,
-      clientOrderId,
-      success,
-      errorMessage: result.reason || (result.is_cancelled ? 'Order was cancelled (maker-or-cancel rejected)' : null),
-      baseSize: roundedAmount,
-      limitPrice: roundedPrice,
-    };
-  };
+  adapter.placeLimitBuy = (productId, baseAmount, price, options = {}) =>
+    placeLimitOrder('buy', productId, baseAmount, price, options);
 
   /**
    * Get order status
