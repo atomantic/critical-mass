@@ -607,8 +607,15 @@ const createCoinbaseAdapter = (keysPath = null) => {
       const data = await makeRequest('GET', apiPath);
       rawFills.push(...(data.fills || []));
 
-      const nextCursor = data.has_next === false ? null : data.cursor;
-      if (!nextCursor || seenCursors.has(nextCursor)) break;
+      if (data.has_next === false) break;
+
+      const nextCursor = data.cursor;
+      if (!nextCursor) {
+        throw new Error(`Coinbase reconciliation response for ${normalizedProductId} has more pages but no cursor`);
+      }
+      if (seenCursors.has(nextCursor)) {
+        throw new Error(`Coinbase reconciliation cursor repeated for ${normalizedProductId}; refusing to return incomplete fills`);
+      }
       seenCursors.add(nextCursor);
       cursor = nextCursor;
     }

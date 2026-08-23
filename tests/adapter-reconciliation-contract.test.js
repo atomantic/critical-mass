@@ -148,6 +148,25 @@ describe('adapter fill reconciliation contract (issue #252)', () => {
     assert.equal(fills.length, 51);
   });
 
+  it('coinbase rejects a repeated cursor instead of returning incomplete fills', async () => {
+    let page = 0;
+    global.fetch = async () => {
+      page++;
+      return jsonResponse({
+        fills: [],
+        cursor: 'stuck-cursor',
+        has_next: true,
+      });
+    };
+
+    const adapter = createCoinbaseAdapter(writeKeys('coinbase'));
+    await assert.rejects(
+      adapter.getReconciliationFills('BTC-USDC', Date.now() - 1000),
+      /cursor repeated/,
+    );
+    assert.equal(page, 2);
+  });
+
   it('cryptocom splits saturated windows until every response is below the API cap', async () => {
     const now = Date.parse('2026-08-23T02:00:00.000Z');
     Date.now = () => now;
