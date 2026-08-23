@@ -130,6 +130,60 @@ describe('PUT/GET /api/:exchange/regime/config dryRun round-trip', () => {
     assert.equal(getRes.body.config.dryRun, false, 'dryRun must persist alongside regime updates');
     assert.equal(getRes.body.config.baseSizeUsdc, 25, 'regime field must still persist');
   });
+
+  it('drops unknown regime keys from persistence and live IPC propagation', async () => {
+    setupFsMocks(BASE_CONFIG);
+    let ipcPayload;
+    const app = createFakeApp();
+    registerRegimeRoutes(app, {
+      exchangeIPCMap: { cryptocom: { request: (_op, payload) => { ipcPayload = payload; return Promise.resolve({ success: true }); } } },
+    });
+
+    const res = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor({
+      dryRun: false,
+      baseSizeUsdc: 25,
+      obsoleteThreshold: 999,
+    }));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.config.baseSizeUsdc, 25);
+    assert.equal(res.body.config.obsoleteThreshold, undefined);
+    assert.deepStrictEqual(ipcPayload, { baseSizeUsdc: 25, dryRun: false });
+    const getRes = await invoke(app, 'GET /api/:exchange/regime/config', reqFor({}));
+    assert.equal(getRes.body.config.obsoleteThreshold, undefined);
+  });
+
+  it('reports persisted-but-not-applied when live config propagation fails', async () => {
+    setupFsMocks(BASE_CONFIG);
+    const app = createFakeApp();
+    registerRegimeRoutes(app, {
+      exchangeIPCMap: { cryptocom: { request: () => Promise.reject(new Error('engine offline')) } },
+    });
+
+    const res = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor({ dryRun: false }));
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.success, false);
+    assert.equal(res.body.persisted, true);
+    assert.equal(res.body.applied, false);
+    assert.match(res.body.error, /engine offline/);
+
+    const getRes = await invoke(app, 'GET /api/:exchange/regime/config', reqFor({}));
+    assert.equal(getRes.body.config.dryRun, false, 'the response must accurately report that disk persistence succeeded');
+  });
+
+  it('never falls back to the Coinbase IPC client when the requested engine is missing', async () => {
+    setupFsMocks(BASE_CONFIG);
+    let coinbaseCalls = 0;
+    const app = createFakeApp();
+    registerRegimeRoutes(app, {
+      exchangeIPCMap: { coinbase: { request: () => { coinbaseCalls += 1; return Promise.resolve({ success: true }); } } },
+    });
+
+    const res = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor({ dryRun: false }));
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.applied, false);
+    assert.equal(coinbaseCalls, 0, 'a Crypto.com request must never execute against Coinbase');
+  });
 });
 
 describe('POST /api/:exchange/regime/reset-cycle (#232)', () => {

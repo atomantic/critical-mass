@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const {
   validateConfigUpdate,
+  sanitizeRegimeConfig,
   EXCHANGE_CONFIG_SCHEMA,
   AGGRESSIVENESS_SCHEMA,
 } = require('../src/config-validator');
@@ -127,5 +128,18 @@ describe('validateConfigUpdate', () => {
     assert.equal(value.kFactor, 0.5);
     assert.equal(value.entryOffsetBps, 50);
     assert.equal(value.maxCycleBuys, 10);
+  });
+});
+
+describe('sanitizeRegimeConfig', () => {
+  it('keeps canonical regime fields and reports stale keys', () => {
+    const result = sanitizeRegimeConfig({ enabled: true, baseSizeUsdc: 25, obsoleteField: 1 });
+    assert.deepStrictEqual(result.value, { enabled: true, baseSizeUsdc: 25 });
+    assert.deepStrictEqual(result.droppedKeys, ['obsoleteField']);
+  });
+
+  it('returns an empty sanitized object for non-object input', () => {
+    assert.deepStrictEqual(sanitizeRegimeConfig(null), { value: {}, droppedKeys: [] });
+    assert.deepStrictEqual(sanitizeRegimeConfig([]), { value: {}, droppedKeys: [] });
   });
 });

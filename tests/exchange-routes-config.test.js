@@ -176,13 +176,13 @@ const MULTI_EXCHANGE_CONFIG = {
 describe('PUT /api/:exchange/config refuses a cross-market productId', () => {
   afterEach(() => mock.restoreAll());
 
-  const setup = () => {
+  const setup = (geminiRequest = () => Promise.resolve({ success: true })) => {
     const fsMocks = setupFsMocks(MULTI_EXCHANGE_CONFIG);
     const app = createFakeApp();
     registerExchangeRoutes(app, {
       exchangeIPCMap: {
         coinbase: { request: () => Promise.resolve({ success: true }) },
-        gemini: { request: () => Promise.resolve({ success: true }) },
+        gemini: { request: geminiRequest },
       },
       parseTSV: () => [],
       calculateCostBasis: () => ({}),
@@ -218,5 +218,22 @@ describe('PUT /api/:exchange/config refuses a cross-market productId', () => {
     assert.equal(res.statusCode, 200, `same-asset save must succeed (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
     const after = await invoke(app, 'GET /api/:exchange/config', geminiReq({}));
     assert.equal(after.body.totalAllocation, 12000, 'legitimate field change must persist');
+  });
+
+  it('propagates fund-level live settings and surfaces an engine rejection', async () => {
+    let seenPayload = null;
+    const { app } = setup((_op, payload) => {
+      seenPayload = payload;
+      return Promise.reject(new Error('engine unavailable'));
+    });
+
+    const res = await invoke(app, 'PUT /api/:exchange/config', geminiReq({ dryRun: true, productId: 'ETHUSD' }));
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.persisted, true);
+    assert.equal(res.body.applied, false);
+    assert.deepStrictEqual(seenPayload, { dryRun: true, productId: 'ETHUSD' });
+
+    const after = await invoke(app, 'GET /api/:exchange/config', geminiReq({}));
+    assert.equal(after.body.dryRun, true, 'disk state must match the persisted:true response');
   });
 });
