@@ -589,6 +589,57 @@ const createCoinbaseAdapter = (keysPath = null) => {
   };
 
   /**
+   * Fetch and normalize every fill used by the ledger reconciliation tools.
+   * @param {string|undefined} productId
+   * @param {number} startTimestampMs
+   * @returns {Promise<import('../../types').ReconciliationFill[]>}
+   */
+  adapter.getReconciliationFills = async (productId, startTimestampMs) => {
+    const normalizedProductId = productId || 'BTC-USDC';
+    const startISO = new Date(startTimestampMs).toISOString();
+    const basePath = `/api/v3/brokerage/orders/historical/fills?product_id=${encodeURIComponent(normalizedProductId)}&start_sequence_timestamp=${encodeURIComponent(startISO)}&limit=500`;
+    const rawFills = [];
+    const seenCursors = new Set();
+    let cursor = null;
+
+    for (let page = 0; page < 50; page++) {
+      const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
+      const data = await makeRequest('GET', apiPath);
+      rawFills.push(...(data.fills || []));
+
+      const nextCursor = data.has_next === false ? null : data.cursor;
+      if (!nextCursor || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    const seenTrades = new Set();
+    return rawFills.flatMap(raw => {
+      const tradeId = String(raw.trade_id || '');
+      if (!tradeId || seenTrades.has(tradeId)) return [];
+      seenTrades.add(tradeId);
+      const price = parseFloat(raw.price || 0);
+      const rawSize = parseFloat(raw.size || 0);
+      const sizeInQuote = raw.size_in_quote === true || raw.size_in_quote === 'true';
+      const size = sizeInQuote && price > 0 ? rawSize / price : rawSize;
+      return [{
+        tradeId,
+        orderId: String(raw.order_id || ''),
+        side: String(raw.side || '').toLowerCase(),
+        price,
+        size,
+        quoteAmount: sizeInQuote ? rawSize : price * size,
+        fee: parseFloat(raw.commission || 0),
+        feeCurrency: normalizedProductId.split('-')[1] || 'USDC',
+        timestamp: new Date(raw.trade_time).getTime(),
+        liquidityIndicator: raw.liquidity_indicator || 'TAKER',
+      }];
+    });
+  };
+
+  adapter.capabilities.fillReconciliation = true;
+
+  /**
    * Get historical price candles
    * @param {string} productId - Product ID
    * @param {number} start - Start timestamp (seconds)

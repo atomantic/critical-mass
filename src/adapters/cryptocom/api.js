@@ -690,6 +690,64 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
+   * Fetch and normalize every fill used by the ledger reconciliation tools.
+   * Crypto.com's trade endpoint caps responses at 100 rows, so walk backward
+   * in daily windows and halve any saturated window before accepting it.
+   * @param {string|undefined} productId
+   * @param {number} startTimestampMs
+   * @returns {Promise<import('../../types').ReconciliationFill[]>}
+   */
+  adapter.getReconciliationFills = async (productId, startTimestampMs) => {
+    const normalizedProductId = productId || 'BTC_USDT';
+    const instrument = toCryptocomSymbol(normalizedProductId);
+    const endTimestampMs = Date.now();
+    const rawFills = [];
+    let cursor = endTimestampMs;
+
+    while (cursor > startTimestampMs) {
+      let span = Math.min(24 * 60 * 60 * 1000, cursor - startTimestampMs);
+      let trades = [];
+      let halvings = 0;
+      while (true) {
+        const result = await makePrivateRequest('private/get-trades', {
+          instrument_name: instrument,
+          start_time: String(cursor - span),
+          end_time: String(cursor),
+        });
+        trades = result?.data || [];
+        if (trades.length < 100 || span <= 60_000 || halvings >= 10) break;
+        span = Math.floor(span / 2);
+        halvings++;
+      }
+      rawFills.push(...trades);
+      cursor -= span;
+    }
+
+    const seenTrades = new Set();
+    return rawFills.flatMap(raw => {
+      const tradeId = String(raw.trade_id || '');
+      if (!tradeId || seenTrades.has(tradeId)) return [];
+      seenTrades.add(tradeId);
+      const price = parseFloat(raw.traded_price || raw.price || 0);
+      const size = parseFloat(raw.traded_quantity || raw.quantity || 0);
+      return [{
+        tradeId,
+        orderId: String(raw.order_id || ''),
+        side: String(raw.side || '').toLowerCase(),
+        price,
+        size,
+        quoteAmount: price * size,
+        fee: parseFloat(raw.fee || 0),
+        feeCurrency: raw.fee_currency || getQuoteCurrency(normalizedProductId),
+        timestamp: Number(raw.create_time || raw.trade_time || 0),
+        liquidityIndicator: raw.liquidity_indicator || 'TAKER',
+      }];
+    });
+  };
+
+  adapter.capabilities.fillReconciliation = true;
+
+  /**
    * Get historical price candles
    * @param {string} productId - Product ID
    * @param {number} start - Start timestamp (seconds)
