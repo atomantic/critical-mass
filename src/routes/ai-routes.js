@@ -12,6 +12,7 @@ const { Router } = require('express');
 const path = require('path');
 const { log } = require('../logger');
 const { ts } = require('../time-utils');
+const { createAiSecurity } = require('../ai-security');
 
 module.exports = (app, sharedDeps) => {
   const { io } = sharedDeps;
@@ -38,7 +39,9 @@ module.exports = (app, sharedDeps) => {
       sampleProvidersFile,
       io,
       maxConcurrentRuns: 3,
-      enableProviderStatus: true,
+      // 0.8.4 can silently fall back to a different provider during a run,
+      // bypassing endpoint validation for the provider the operator selected.
+      enableProviderStatus: false,
       hooks: {
         onRunCompleted: (metadata) => {
           log('INFO', `[${ts()}] 🤖 AI run completed: ${metadata.providerName}/${metadata.model} (${(metadata.duration / 1000).toFixed(1)}s)`);
@@ -49,12 +52,10 @@ module.exports = (app, sharedDeps) => {
       }
     });
 
-    // Mount providerStatus before providers (so /providers/status isn't caught as a param)
-    if (toolkit.routes.providerStatus) {
-      aiRouter.use('/providers/status', toolkit.routes.providerStatus);
-    }
-    aiRouter.use('/providers', toolkit.routes.providers);
-    aiRouter.use('/runs', toolkit.routes.runs);
+    const security = createAiSecurity({ providerService: toolkit.services.providers });
+
+    aiRouter.use('/providers', security.redactJsonResponses, security.guardProviderMutation, security.guardProviderExecution, toolkit.routes.providers);
+    aiRouter.use('/runs', security.guardRun, toolkit.routes.runs);
     aiRouter.use('/prompts', toolkit.routes.prompts);
 
     log('INFO', `[${ts()}] 🤖 AI toolkit routes mounted at /api/providers, /api/runs, /api/prompts`);
