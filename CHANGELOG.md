@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- **Safer local service and automation boundaries** — The gateway now binds to loopback by default, Docker host publishing is loopback-only, state files are atomically replaced with owner-only permissions, CI actions use immutable revisions, and startup refuses foreign port occupants instead of killing them. The vulnerable development dependency chain was also removed.
+
 ### Changed
 - **UpDown engine is UP-only and tick-to-tick** — 1m/3m/5m now inherit the 1h EMA trend (overbought in an uptrend is confirmation, not a fade). A 15m/1h MACD+OBV / EMA bearish gate caps new BUY signals at NEUTRAL. SELL is EXIT (held long) or STAND ASIDE (flat) — never "BUY DOWN". Scorecard scores only UP calls; 1m/5m are the primary windows; options accuracy treats a no-move as a miss (CDC Up option) while perp accuracy treats it as a scratch (Coinbase flip).
 
