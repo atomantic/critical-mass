@@ -558,8 +558,8 @@ const createCoinbaseAdapter = (keysPath = null) => {
       // Coinbase returns `size_in_quote` as a boolean flag (not a numeric size).
       // When true (e.g. market-buy fills), `size` is denominated in quote
       // currency (USDC), so convert it to base currency and derive the quote
-      // notional separately — mirroring normalizeFills() in sync-fills.js and
-      // the gemini/cryptocom adapters, where `size` is base currency and
+      // notional separately — mirroring the reconciliation contract and the
+      // Gemini/Crypto.com adapters, where `size` is base currency and
       // `sizeInQuote` is the quote-currency amount.
       const price = parseFloat(fill.price);
       const rawSize = parseFloat(fill.size);
@@ -602,7 +602,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
     const seenCursors = new Set();
     let cursor = null;
 
-    for (let page = 0; page < 50; page++) {
+    while (true) {
       const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
       const data = await makeRequest('GET', apiPath);
       rawFills.push(...(data.fills || []));

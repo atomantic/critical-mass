@@ -700,24 +700,29 @@ const createCryptocomAdapter = (keysPath = null) => {
   adapter.getReconciliationFills = async (productId, startTimestampMs) => {
     const normalizedProductId = productId || 'BTC_USDT';
     const instrument = toCryptocomSymbol(normalizedProductId);
-    const endTimestampMs = Date.now();
+    const NS_PER_MS = 1_000_000n;
+    const DAY_NS = 24n * 60n * 60n * 1000n * NS_PER_MS;
+    const startTimestampNs = BigInt(Math.trunc(startTimestampMs)) * NS_PER_MS;
+    const endTimestampNs = BigInt(Date.now()) * NS_PER_MS;
     const rawFills = [];
-    let cursor = endTimestampMs;
+    let cursor = endTimestampNs;
 
-    while (cursor > startTimestampMs) {
-      let span = Math.min(24 * 60 * 60 * 1000, cursor - startTimestampMs);
+    while (cursor > startTimestampNs) {
+      let span = cursor - startTimestampNs < DAY_NS ? cursor - startTimestampNs : DAY_NS;
       let trades = [];
-      let halvings = 0;
       while (true) {
         const result = await makePrivateRequest('private/get-trades', {
           instrument_name: instrument,
           start_time: String(cursor - span),
           end_time: String(cursor),
+          limit: 100,
         });
         trades = result?.data || [];
-        if (trades.length < 100 || span <= 60_000 || halvings >= 10) break;
-        span = Math.floor(span / 2);
-        halvings++;
+        if (trades.length < 100) break;
+        if (span <= 1n) {
+          throw new Error(`Crypto.com reconciliation window is still saturated at 1ns for ${instrument}; refusing to return incomplete fills`);
+        }
+        span /= 2n;
       }
       rawFills.push(...trades);
       cursor -= span;
@@ -730,6 +735,9 @@ const createCryptocomAdapter = (keysPath = null) => {
       seenTrades.add(tradeId);
       const price = parseFloat(raw.traded_price || raw.price || 0);
       const size = parseFloat(raw.traded_quantity || raw.quantity || 0);
+      const fee = raw.fees !== undefined
+        ? -parseFloat(raw.fees || 0)
+        : parseFloat(raw.fee || 0);
       return [{
         tradeId,
         orderId: String(raw.order_id || ''),
@@ -737,10 +745,10 @@ const createCryptocomAdapter = (keysPath = null) => {
         price,
         size,
         quoteAmount: price * size,
-        fee: parseFloat(raw.fee || 0),
-        feeCurrency: raw.fee_currency || getQuoteCurrency(normalizedProductId),
+        fee,
+        feeCurrency: raw.fee_instrument_name || raw.fee_currency || getQuoteCurrency(normalizedProductId),
         timestamp: Number(raw.create_time || raw.trade_time || 0),
-        liquidityIndicator: raw.liquidity_indicator || 'TAKER',
+        liquidityIndicator: raw.taker_side || raw.liquidity_indicator || 'TAKER',
       }];
     });
   };

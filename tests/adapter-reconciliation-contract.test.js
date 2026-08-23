@@ -11,6 +11,7 @@ const { createGeminiAdapter } = require('../src/adapters/gemini/api');
 const { createCryptocomAdapter } = require('../src/adapters/cryptocom/api');
 
 let originalFetch;
+let originalDateNow;
 let tempDir;
 
 const jsonResponse = (body) => ({
@@ -23,11 +24,13 @@ const jsonResponse = (body) => ({
 
 beforeEach(() => {
   originalFetch = global.fetch;
+  originalDateNow = Date.now;
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reconciliation-contract-'));
 });
 
 afterEach(() => {
   global.fetch = originalFetch;
+  Date.now = originalDateNow;
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -86,8 +89,8 @@ const cases = [
     create: createCryptocomAdapter,
     response: { code: 0, result: { data: [{
       trade_id: 'cdc-trade', order_id: 'cdc-order', side: 'BUY', traded_price: '0.08',
-      traded_quantity: '5000', fee: '2.5', fee_currency: 'USDT',
-      create_time: Date.parse('2026-08-23T00:00:00.000Z'), liquidity_indicator: 'MAKER',
+      traded_quantity: '5000', fees: '-2.5', fee_instrument_name: 'USDT',
+      create_time: Date.parse('2026-08-23T00:00:00.000Z'), taker_side: 'MAKER',
     }] } },
     expected: {
       tradeId: 'cdc-trade', orderId: 'cdc-order', side: 'buy', price: 0.08,
@@ -124,4 +127,50 @@ describe('adapter fill reconciliation contract (issue #252)', () => {
       }
     });
   }
+
+  it('coinbase follows more than 50 cursors without silently truncating', async () => {
+    let page = 0;
+    global.fetch = async () => {
+      page++;
+      return jsonResponse({
+        fills: [{
+          trade_id: `trade-${page}`, order_id: `order-${page}`, side: 'BUY',
+          price: '1', size: '1', commission: '0', trade_time: '2026-08-23T00:00:00Z',
+        }],
+        cursor: page < 51 ? `cursor-${page}` : '',
+        has_next: page < 51,
+      });
+    };
+
+    const adapter = createCoinbaseAdapter(writeKeys('coinbase'));
+    const fills = await adapter.getReconciliationFills('BTC-USDC', Date.now() - 1000);
+    assert.equal(page, 51);
+    assert.equal(fills.length, 51);
+  });
+
+  it('cryptocom splits saturated windows until every response is below the API cap', async () => {
+    const now = Date.parse('2026-08-23T02:00:00.000Z');
+    Date.now = () => now;
+    let call = 0;
+    global.fetch = async (_url, options = {}) => {
+      call++;
+      const body = JSON.parse(options.body);
+      const spanNs = BigInt(body.params.end_time) - BigInt(body.params.start_time);
+      const hourNs = 60n * 60n * 1000n * 1_000_000n;
+      const data = spanNs >= hourNs
+        ? Array.from({ length: 100 }, (_, index) => ({ trade_id: `saturated-${call}-${index}` }))
+        : [{
+          trade_id: `trade-${body.params.start_time}`, order_id: `order-${call}`, side: 'SELL',
+          traded_price: '2', traded_quantity: '3', fees: '-0.25', fee_instrument_name: 'USDT',
+          create_time: now, taker_side: 'TAKER',
+        }];
+      return jsonResponse({ code: 0, result: { data } });
+    };
+
+    const adapter = createCryptocomAdapter(writeKeys('cryptocom'));
+    const fills = await adapter.getReconciliationFills('CRO-USDT', now - 2 * 60 * 60 * 1000);
+    assert.ok(call > 2, 'the saturated range should be subdivided');
+    assert.ok(fills.length > 1);
+    assert.ok(fills.every(fill => fill.fee === 0.25));
+  });
 });
