@@ -13,6 +13,7 @@
 
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { getBaseCurrency, getQuoteCurrency } = require('./config-utils');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {import('./types').ExchangeAdapter} ExchangeAdapter
@@ -28,6 +29,7 @@ const { getBaseCurrency, getQuoteCurrency } = require('./config-utils');
  * @returns {Object} Recovery module instance
  */
 const createRecoveryModule = (exchange, adapter, productId) => {
+  const logger = createContextLogger({ exchange, pair: productId });
   /**
    * Recover full state from exchange
    * @param {Object} fillLedger - Fill ledger instance
@@ -35,16 +37,16 @@ const createRecoveryModule = (exchange, adapter, productId) => {
    * @returns {Promise<{position: RegimePositionState, openOrders: Map<string, PendingOrder>, discrepancies: string[]}>}
    */
   const recoverState = async (fillLedger, orderExecutor) => {
-    console.log(`🔄 [${exchange}] Starting state recovery from exchange...`);
+    logger.info(`🔄 [${exchange}] Starting state recovery from exchange...`, { event: 'recovery_started' });
     const discrepancies = [];
 
     // 1. Fetch all open orders from exchange
     const openOrders = await adapter.getOpenOrders(productId);
-    console.log(`📋 [${exchange}] Found ${openOrders.length} open orders`);
+    logger.info(`📋 [${exchange}] Found ${openOrders.length} open orders`, { openOrderCount: openOrders.length });
 
     // 2. Fetch recent fills (last 24h)
     const recentFills = await getRecentFills();
-    console.log(`📋 [${exchange}] Found ${recentFills.length} recent fills`);
+    logger.info(`📋 [${exchange}] Found ${recentFills.length} recent fills`, { recentFillCount: recentFills.length });
 
     // 3. Fetch current balances
     const baseCurrency = getBaseCurrency(productId);
@@ -52,7 +54,12 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     const baseBalance = await adapter.getAccountBalance(baseCurrency);
     const quoteBalance = await adapter.getAccountBalance(quoteCurrency);
 
-    console.log(`💰 [${exchange}] Balances: ${baseCurrency}=${baseBalance.available}, ${quoteCurrency}=${quoteBalance.available}`);
+    logger.info(`💰 [${exchange}] Balances: ${baseCurrency}=${baseBalance.available}, ${quoteCurrency}=${quoteBalance.available}`, {
+      baseCurrency,
+      baseAvailable: baseBalance.available,
+      quoteCurrency,
+      quoteAvailable: quoteBalance.available,
+    });
 
     // 4. Ingest all fills into ledger (idempotent)
     let newFillsIngested = 0;
@@ -62,19 +69,19 @@ const createRecoveryModule = (exchange, adapter, productId) => {
         newFillsIngested++;
       }
     }
-    console.log(`📝 [${exchange}] Ingested ${newFillsIngested} new fills`);
+    logger.info(`📝 [${exchange}] Ingested ${newFillsIngested} new fills`, { ingestedFillCount: newFillsIngested });
 
     // 5. Rebuild position state from fill ledger
     // Use CURRENT CYCLE fills only - completed cycles should not affect current position
     // The fill ledger tracks cycle IDs, so getCurrentCycleFills() returns only active cycle
     const currentCycleFills = fillLedger.getCurrentCycleFills();
     const position = fillLedger.rebuildPositionFromFills(currentCycleFills);
-    console.log(`📊 [${exchange}] Rebuilt position from ${currentCycleFills.length} current cycle fills`);
+    logger.info(`📊 [${exchange}] Rebuilt position from ${currentCycleFills.length} current cycle fills`, { currentCycleFillCount: currentCycleFills.length });
 
     // 6. Note: We do NOT restore all exchange orders to the order executor
     // The regime engine should only track orders IT places, not orders from other engines (like DCA)
     // Exchange open orders are used only for validation and offline fill detection
-    console.log(`📋 [${exchange}] Exchange has ${openOrders.length} open orders (regime engine tracks its own orders separately)`);
+    logger.info(`📋 [${exchange}] Exchange has ${openOrders.length} open orders (regime engine tracks its own orders separately)`, { openOrderCount: openOrders.length });
 
     // 7. Compare position against base balance (informational only)
     // NOTE: Account may have asset from other sources - we only track what regime engine traded
@@ -82,13 +89,25 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     const accountAsset = baseBalance.available + baseBalance.hold;
 
     if (accountAsset > trackedAsset + 0.00001) {
-      console.log(`ℹ️ [${exchange}] Account has ${accountAsset.toFixed(8)} ${baseCurrency}, regime engine tracking ${trackedAsset.toFixed(8)} ${baseCurrency} (other holdings not tracked)`);
+      logger.info(`ℹ️ [${exchange}] Account has ${accountAsset.toFixed(8)} ${baseCurrency}, regime engine tracking ${trackedAsset.toFixed(8)} ${baseCurrency} (other holdings not tracked)`, {
+        baseCurrency,
+        accountAsset,
+        trackedAsset,
+      });
     } else if (trackedAsset > accountAsset + 0.00001) {
       discrepancies.push(`${baseCurrency} tracking error: tracking ${trackedAsset.toFixed(8)} but only ${accountAsset.toFixed(8)} in account`);
-      console.log(`⚠️ [${exchange}] ${discrepancies[discrepancies.length - 1]}`);
+      logger.warn(`⚠️ [${exchange}] ${discrepancies[discrepancies.length - 1]}`, {
+        discrepancy: discrepancies[discrepancies.length - 1],
+        accountAsset,
+        trackedAsset,
+      });
     }
 
-    console.log(`✅ [${exchange}] Recovery complete: ${position.totalAsset} ${baseCurrency} tracked position`);
+    logger.info(`✅ [${exchange}] Recovery complete: ${position.totalAsset} ${baseCurrency} tracked position`, {
+      baseCurrency,
+      trackedAsset: position.totalAsset,
+      discrepancyCount: discrepancies.length,
+    });
 
     return {
       position,
@@ -137,7 +156,12 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     // Skip validation if exchange returned 0 balance but we have tracked position
     // (likely a flaky API response — don't nuke state based on it)
     if (trackedAsset > 0 && accountAsset === 0) {
-      console.log(`⚠️ [${exchange}] Balance API returned 0 ${baseCurrency} but tracking ${trackedAsset.toFixed(8)} — skipping reconciliation (possible API issue)`);
+      logger.warn(`⚠️ [${exchange}] Balance API returned 0 ${baseCurrency} but tracking ${trackedAsset.toFixed(8)} — skipping reconciliation (possible API issue)`, {
+        baseCurrency,
+        accountAsset,
+        trackedAsset,
+        reconciliationSkipped: true,
+      });
       return { valid: true, discrepancies: [] };
     }
 
@@ -163,7 +187,9 @@ const createRecoveryModule = (exchange, adapter, productId) => {
     const validation = await validateState(position);
 
     if (!validation.valid) {
-      console.log(`⚠️ [${exchange}] Reconciliation found discrepancies: ${validation.discrepancies.join(', ')}`);
+      logger.warn(`⚠️ [${exchange}] Reconciliation found discrepancies: ${validation.discrepancies.join(', ')}`, {
+        discrepancies: validation.discrepancies,
+      });
 
       // Rebuild from fills only - don't use exchange balance as it may include other holdings
       const rebuiltPosition = fillLedger.rebuildPositionFromFills();
