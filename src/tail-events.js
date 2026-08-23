@@ -10,6 +10,8 @@
  * Implements pause logic and cooldown periods.
  */
 
+const { createContextLogger } = require('./logger');
+
 /**
  * @typedef {import('./types').PauseState} PauseState
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -40,6 +42,7 @@ const createInitialPauseState = () => ({
  * @returns {Object} Tail events monitor instance
  */
 const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
+  const logger = createContextLogger({ exchange, pair: config.productId });
   /** @type {PauseState} */
   let pauseState = createInitialPauseState();
 
@@ -90,7 +93,11 @@ const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
     pauseState.spreadPausedUntil = Date.now() + config.spreadPauseMs;
     pauseState.lastSpreadBps = spreadBps;
 
-    console.log(`⏸️ [${exchange}] Spread pause: ${spreadBps.toFixed(1)} bps > ${config.maxSpreadBps} bps, pausing for ${config.spreadPauseMs / 1000}s`);
+    logger.warn(`⏸️ [${exchange}] Spread pause: ${spreadBps.toFixed(1)} bps > ${config.maxSpreadBps} bps, pausing for ${config.spreadPauseMs / 1000}s`, {
+      spreadBps,
+      maxSpreadBps: config.maxSpreadBps,
+      pauseMs: config.spreadPauseMs,
+    });
 
     if (callbacks.onSpreadPause) {
       callbacks.onSpreadPause(spreadBps);
@@ -126,7 +133,11 @@ const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
     pauseState.depthPaused = true;
     pauseState.depthPausedUntil = Date.now() + config.depthPauseMs;
 
-    console.log(`⏸️ [${exchange}] Depth pause: $${depth} < $${config.minDepthUsdc} threshold, pausing for ${config.depthPauseMs / 1000}s`);
+    logger.warn(`⏸️ [${exchange}] Depth pause: $${depth} < $${config.minDepthUsdc} threshold, pausing for ${config.depthPauseMs / 1000}s`, {
+      depthUsdc: depth,
+      minDepthUsdc: config.minDepthUsdc,
+      pauseMs: config.depthPauseMs,
+    });
 
     if (callbacks.onDepthPause) {
       callbacks.onDepthPause(depth);
@@ -165,7 +176,7 @@ const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
    * @param {number} multiple - ATR multiple
    */
   const handleFlashMove = (delta, atr, multiple) => {
-    console.log(`⚡ [${exchange}] Flash move detected: ${delta.toFixed(2)} = ${multiple.toFixed(1)}x ATR`);
+    logger.warn(`⚡ [${exchange}] Flash move detected: ${delta.toFixed(2)} = ${multiple.toFixed(1)}x ATR`, { delta, atr, multiple });
 
     // Disable scaling for this cycle
     scalingDisabled = true;
@@ -189,7 +200,7 @@ const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
     scalingReenableTimeout = setTimeout(() => {
       scalingDisabled = false;
       scalingDisabledReason = null;
-      console.log(`✅ [${exchange}] Flash move cooldown complete, scaling re-enabled`);
+      logger.info(`✅ [${exchange}] Flash move cooldown complete, scaling re-enabled`, { event: 'flash_move_cooldown_complete' });
     }, config.flashCooldownMs);
   };
 
@@ -201,12 +212,12 @@ const createTailEventsMonitor = (exchange, config, callbacks = {}) => {
 
     if (pauseState.spreadPaused && now >= pauseState.spreadPausedUntil) {
       pauseState.spreadPaused = false;
-      console.log(`✅ [${exchange}] Spread pause expired`);
+      logger.info(`✅ [${exchange}] Spread pause expired`, { event: 'spread_pause_expired' });
     }
 
     if (pauseState.depthPaused && now >= pauseState.depthPausedUntil) {
       pauseState.depthPaused = false;
-      console.log(`✅ [${exchange}] Depth pause expired`);
+      logger.info(`✅ [${exchange}] Depth pause expired`, { event: 'depth_pause_expired' });
     }
   };
 
