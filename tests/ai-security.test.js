@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const os = require('os');
 const path = require('path');
 
-const { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace } = require('../src/ai-security');
+const { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace, restoreRedactedValues } = require('../src/ai-security');
 
 const callMiddleware = (middleware, req) => new Promise((resolve, reject) => {
   const res = {
@@ -17,7 +17,7 @@ const callMiddleware = (middleware, req) => new Promise((resolve, reject) => {
 
 describe('AI toolkit security boundary', () => {
   const providers = {
-    api: { id: 'api', type: 'api', endpoint: 'https://api.example.com/v1', apiKey: 'secret' },
+    api: { id: 'api', type: 'api', endpoint: 'https://api.example.com/v1', apiKey: 'secret', envVars: { SERVICE_CREDENTIAL: 'real' } },
     cli: { id: 'cli', type: 'cli', command: 'codex' },
   };
   const providerService = { getProviderById: async (id) => providers[id] || null };
@@ -28,10 +28,31 @@ describe('AI toolkit security boundary', () => {
   });
 
   it('redacts provider secrets recursively', () => {
-    assert.deepEqual(redactSecrets({ provider: { apiKey: 'secret', envVars: { OPENAI_API_KEY: 'nested' }, name: 'safe' }, token: 'other' }), {
-      provider: { apiKey: REDACTED, envVars: { OPENAI_API_KEY: REDACTED }, name: 'safe' },
+    assert.deepEqual(redactSecrets({ provider: { apiKey: 'secret', secretEnvVars: ['SERVICE_CREDENTIAL'], envVars: { OPENAI_API_KEY: 'nested', SERVICE_CREDENTIAL: 'declared', SAFE_MODE: '1' }, name: 'safe' }, token: 'other' }), {
+      provider: { apiKey: REDACTED, secretEnvVars: ['SERVICE_CREDENTIAL'], envVars: { OPENAI_API_KEY: REDACTED, SERVICE_CREDENTIAL: REDACTED, SAFE_MODE: '1' }, name: 'safe' },
       token: REDACTED,
     });
+  });
+
+  it('restores redacted nested values before provider updates', () => {
+    const existing = { apiKey: 'real-key', envVars: { SERVICE_CREDENTIAL: 'real-credential', SAFE_MODE: '1' } };
+    const incoming = { apiKey: REDACTED, envVars: { SERVICE_CREDENTIAL: REDACTED, SAFE_MODE: '0' } };
+    assert.deepEqual(restoreRedactedValues(incoming, existing), {
+      apiKey: 'real-key',
+      envVars: { SERVICE_CREDENTIAL: 'real-credential', SAFE_MODE: '0' },
+    });
+  });
+
+  it('preserves redacted credentials through provider update middleware', async () => {
+    const req = {
+      method: 'PUT',
+      path: '/api',
+      body: { type: 'api', endpoint: 'https://api.example.com/v1', apiKey: REDACTED, envVars: { SERVICE_CREDENTIAL: REDACTED } },
+    };
+    const result = await callMiddleware(security.guardProviderMutation, req);
+    assert.equal(result.next, true);
+    assert.equal(req.body.apiKey, 'secret');
+    assert.equal(req.body.envVars.SERVICE_CREDENTIAL, 'real');
   });
 
   it('rejects CLI execution and unapproved outbound origins', async () => {

@@ -7,9 +7,25 @@ const SECRET_KEYS = /(api[-_]?key|authorization|credential|password|private[-_]?
 const redactSecrets = (value) => {
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (!value || typeof value !== 'object') return value;
+  const declaredSecrets = new Set(Array.isArray(value.secretEnvVars) ? value.secretEnvVars : []);
   return Object.fromEntries(Object.entries(value).map(([key, nested]) => [
     key,
-    SECRET_KEYS.test(key) && nested ? REDACTED : redactSecrets(nested),
+    key === 'envVars' && nested && typeof nested === 'object'
+      ? Object.fromEntries(Object.entries(nested).map(([envKey, envValue]) => [
+        envKey,
+        (declaredSecrets.has(envKey) || SECRET_KEYS.test(envKey)) && envValue ? REDACTED : redactSecrets(envValue),
+      ]))
+      : SECRET_KEYS.test(key) && nested ? REDACTED : redactSecrets(nested),
+  ]));
+};
+
+const restoreRedactedValues = (incoming, existing) => {
+  if (incoming === REDACTED) return existing;
+  if (Array.isArray(incoming)) return incoming.map((value, index) => restoreRedactedValues(value, existing?.[index]));
+  if (!incoming || typeof incoming !== 'object') return incoming;
+  return Object.fromEntries(Object.entries(incoming).map(([key, value]) => [
+    key,
+    restoreRedactedValues(value, existing?.[key]),
   ]));
 };
 
@@ -62,7 +78,7 @@ const createAiSecurity = ({
     const providerId = updatesProvider ? segments[0] : null;
     const existingPromise = providerId ? providerService.getProviderById(providerId) : Promise.resolve(null);
     existingPromise.then((existing) => {
-      if (req.body?.apiKey === REDACTED) delete req.body.apiKey;
+      req.body = restoreRedactedValues(req.body || {}, existing || {});
       const provider = { ...existing, ...req.body };
       const error = validateProvider(provider);
       if (error) return res.status(400).json({ error });
@@ -95,4 +111,4 @@ const createAiSecurity = ({
   return { guardProviderExecution, guardProviderMutation, guardRun, redactJsonResponses, validateProvider };
 };
 
-module.exports = { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace };
+module.exports = { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace, restoreRedactedValues };
