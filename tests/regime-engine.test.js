@@ -98,15 +98,32 @@ describe('cancelPartialFillOrder', () => {
     assert.match(logs[0], /\[coinbase\]/);
   });
 
-  it('falls back to console.log when no log is injected', async () => {
-    // Just verifies the default; we don't assert on stdout, only that the
-    // function doesn't throw without an injected logger.
-    const cancelOrder = async () => ({ success: true });
-    const result = await cancelPartialFillOrder(
-      { adapter: { cancelOrder }, exchange: 'gemini' },
-      'order-default-log'
-    );
-    assert.equal(result.cancelled, true);
+  it('uses the canonical contextual logger when no log is injected', async () => {
+    const lines = [];
+    const originalLog = console.log;
+    console.log = line => lines.push(line);
+
+    try {
+      const cancelOrder = async () => ({ success: false });
+      const result = await cancelPartialFillOrder(
+        { adapter: { cancelOrder }, exchange: 'gemini', pair: 'BTC-USD' },
+        'order-default-log'
+      );
+      assert.equal(result.cancelled, false);
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /^⚠️ \[gemini\] cancelOrder did not confirm for partial TP order-default-log/);
+    const contextStart = lines[0].lastIndexOf(' {');
+    assert.notEqual(contextStart, -1);
+    assert.deepEqual(JSON.parse(lines[0].slice(contextStart + 1)), {
+      exchange: 'gemini',
+      pair: 'BTC-USD',
+      orderId: 'order-default-log',
+      orderType: 'body_tp',
+    });
   });
 });
 

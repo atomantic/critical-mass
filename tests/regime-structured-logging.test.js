@@ -1,5 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { createMacroRegime } = require('../src/macro-regime');
 const { createRegimeDetector } = require('../src/regime-detector');
@@ -17,6 +19,12 @@ const contextFor = (lines, prefix) => {
 };
 
 describe('regime stack structured logging', () => {
+  it('keeps regime orchestration off direct console calls', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../src/regime-engine.js'), 'utf8');
+    assert.doesNotMatch(source, /\bconsole\.(?:log|warn|error)\b/);
+    assert.match(source, /createContextLogger\(\{ exchange, pair \}\)/);
+  });
+
   it('preserves operator messages and appends fund-specific event context', () => {
     const lines = [];
     const originalLog = console.log;
