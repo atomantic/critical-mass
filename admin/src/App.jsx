@@ -1008,7 +1008,7 @@ function AppContent() {
               {/* AI Provider management */}
               <Route path="/ai" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><AIProviders /></Suspense>} />
 
-              {/* UpDown BTC Options dashboard */}
+              {/* UpDown BTC perp-long dashboard */}
               <Route path="/updown/analysis" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><ScorecardAnalysis /></Suspense>} />
               <Route path="/updown" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><UpDownDashboard /></Suspense>} />
 

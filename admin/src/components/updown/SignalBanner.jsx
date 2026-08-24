@@ -1,42 +1,34 @@
 import { useMemo } from 'react'
-import { TrendingUp, TrendingDown, Minus, ShieldAlert, Clock } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, Plus, CircleDot, Clock } from 'lucide-react'
 import { formatCountdown } from './TimeWarningBanner'
 import { getActionLabel } from '../../constants/signals'
 
 const BANNER_COLORS = {
-  STRONG_BUY: 'bg-green-900/40 border-green-600/50',
-  BUY: 'bg-green-900/30 border-green-700/40',
-  NEUTRAL: 'bg-gray-800 border-gray-600/40',
-  SELL: 'bg-red-900/30 border-red-700/40',
-  STRONG_SELL: 'bg-red-900/40 border-red-600/50',
-  NO_TRADE_ZONE: 'bg-yellow-900/30 border-yellow-700/40',
+  OPEN: 'bg-green-900/40 border-green-600/50',
+  ADD: 'bg-teal-900/40 border-teal-600/50',
+  HOLD: 'bg-gray-800 border-gray-600/40',
+  CLOSE: 'bg-red-900/40 border-red-600/50',
 }
 
 const LABEL_COLORS = {
-  STRONG_BUY: 'text-green-300',
-  BUY: 'text-green-400',
-  NEUTRAL: 'text-gray-400',
-  SELL: 'text-red-400',
-  STRONG_SELL: 'text-red-300',
-  NO_TRADE_ZONE: 'text-yellow-400',
+  OPEN: 'text-green-300',
+  ADD: 'text-teal-300',
+  HOLD: 'text-gray-400',
+  CLOSE: 'text-red-300',
 }
 
 const CONFIDENCE_BAR_COLORS = {
-  STRONG_BUY: 'bg-green-500',
-  BUY: 'bg-green-500',
-  NEUTRAL: 'bg-gray-500',
-  SELL: 'bg-red-500',
-  STRONG_SELL: 'bg-red-500',
-  NO_TRADE_ZONE: 'bg-yellow-500',
+  OPEN: 'bg-green-500',
+  ADD: 'bg-teal-500',
+  HOLD: 'bg-gray-500',
+  CLOSE: 'bg-red-500',
 }
 
 const SIGNAL_ICONS = {
-  STRONG_BUY: TrendingUp,
-  BUY: TrendingUp,
-  NEUTRAL: Minus,
-  SELL: TrendingDown,
-  STRONG_SELL: TrendingDown,
-  NO_TRADE_ZONE: ShieldAlert,
+  OPEN: CircleDot,
+  ADD: Plus,
+  HOLD: Minus,
+  CLOSE: TrendingDown,
 }
 
 const getHorizonArrow = (score) => {
@@ -51,7 +43,11 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
   const type = liveReady ? (indicators?.type || signal?.type || 'NEUTRAL') : null
   const score = indicators?.score ?? signal?.score ?? 0
   const confidence = indicators?.confidence ?? signal?.confidence ?? 0
-  const Icon = type ? (SIGNAL_ICONS[type] || Minus) : Clock
+  const held = indicators?.perp || signal?.perp || position
+  const action = liveReady
+    ? (indicators?.action || signal?.action || getActionLabel(type, held))
+    : null
+  const Icon = action ? (SIGNAL_ICONS[action] || Minus) : Clock
 
   const trendFilter = indicators?.trendFilter
   const volatility = indicators?.volatility
@@ -72,12 +68,12 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
     ]
   }, [indicators?.timeframes])
 
-  const actionLabel = type ? getActionLabel(type, position) : 'CALCULATING...'
+  const actionLabel = action || 'CALCULATING...'
   const trendGate = indicators?.trendGate
   const confPct = Math.max(0, Math.min(100, confidence * 100))
-  const bannerColor = type ? (BANNER_COLORS[type] || BANNER_COLORS.NEUTRAL) : 'bg-gray-800 border-gray-600/40'
-  const labelColor = type ? (LABEL_COLORS[type] || LABEL_COLORS.NEUTRAL) : 'text-gray-500'
-  const barColor = type ? (CONFIDENCE_BAR_COLORS[type] || CONFIDENCE_BAR_COLORS.NEUTRAL) : 'bg-gray-600'
+  const bannerColor = action ? (BANNER_COLORS[action] || BANNER_COLORS.HOLD) : 'bg-gray-800 border-gray-600/40'
+  const labelColor = action ? (LABEL_COLORS[action] || LABEL_COLORS.HOLD) : 'text-gray-500'
+  const barColor = action ? (CONFIDENCE_BAR_COLORS[action] || CONFIDENCE_BAR_COLORS.HOLD) : 'bg-gray-600'
 
   const hasTime = Number.isFinite(timeRemaining) && timeRemaining > 0
 
@@ -85,7 +81,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
     <div className={`rounded-lg border p-3 transition-colors duration-500 ${bannerColor}`}>
       <div className="flex items-center gap-4 flex-wrap">
         {/* Left: Signal + action label + confidence */}
-        <div className="flex items-center gap-3 min-w-0" title={`Composite score: ${score.toFixed(1)} — Signal: ${(type || 'LOADING').replace(/_/g, ' ')}`}>
+        <div className="flex items-center gap-3 min-w-0" title={`Composite score: ${score.toFixed(1)} — Action: ${actionLabel} — Engine: ${(type || 'LOADING').replace(/_/g, ' ')}`}>
           <Icon size={22} className={labelColor} />
           <span className={`text-lg font-bold whitespace-nowrap ${labelColor}`}>
             {actionLabel}

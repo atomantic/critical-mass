@@ -4,7 +4,7 @@ import { io } from 'socket.io-client'
 const THROTTLE_MS = 250
 
 /**
- * Socket.IO hook for UpDown BTC Options signal data.
+ * Socket.IO hook for UpDown BTC perp-long signal data.
  * Throttles state updates to avoid render storms from high-frequency WebSocket data.
  */
 export const useUpDownSocket = (options = {}) => {

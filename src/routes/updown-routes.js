@@ -2,7 +2,7 @@
 /**
  * UpDown Dashboard API Routes
  *
- * REST endpoints for the UpDown BTC Options Signal Dashboard.
+ * REST endpoints for the UpDown BTC perp-long signal dashboard.
  * Controls contract config, position tracking, signal engine lifecycle.
  */
 
@@ -352,6 +352,7 @@ module.exports = (app, deps) => {
     const predictions = records.filter(r => r.type === 'prediction');
     const outcomes = records.filter(r => r.type === 'outcome' && r.compositeDirection !== 'down');
     const weights = records.filter(r => r.type === 'weights');
+    const perpFills = records.filter(r => r.type === 'perp_fill');
 
     // --- accuracyOverTime: hourly accuracy buckets ---
     const hourlyBuckets = {};
@@ -540,6 +541,22 @@ module.exports = (app, deps) => {
       byRange: contractByRange,
     } : null;
 
+    const closedRounds = perpFills.filter(f => f.action === 'CLOSE' && f.trade)
+    const perpWins = closedRounds.filter(f => (f.trade?.pnl ?? f.pnl ?? 0) > 0)
+    const perpLosses = closedRounds.filter(f => (f.trade?.pnl ?? f.pnl ?? 0) <= 0)
+    const perpRealized = closedRounds.reduce((s, f) => s + (f.trade?.pnl ?? f.pnl ?? 0), 0)
+    const perpAnalysis = perpFills.length > 0 ? {
+      opens: perpFills.filter(f => f.action === 'OPEN').length,
+      adds: perpFills.filter(f => f.action === 'ADD').length,
+      closes: closedRounds.length,
+      wins: perpWins.length,
+      losses: perpLosses.length,
+      winRate: closedRounds.length > 0
+        ? Math.round(perpWins.length / closedRounds.length * 10000) / 100
+        : null,
+      realizedPnl: Math.round(perpRealized * 100) / 100,
+    } : null
+
     res.json({
       success: true,
       accuracyOverTime,
@@ -548,6 +565,7 @@ module.exports = (app, deps) => {
       weightEvolution,
       failurePatterns,
       contractAnalysis,
+      perpAnalysis,
       summary: {
         accuracy: overallAccuracy,
         predictions: predictions.length,
@@ -556,6 +574,9 @@ module.exports = (app, deps) => {
         worstIndicator,
         bestTimeframe,
         bestWindow,
+        perpRealizedPnl: perpAnalysis?.realizedPnl ?? null,
+        perpWinRate: perpAnalysis?.winRate ?? null,
+        perpRounds: perpAnalysis?.closes ?? 0,
       },
     });
   });
@@ -706,7 +727,7 @@ module.exports = (app, deps) => {
 
     // Auto-capture trade context from service
     const ctx = updownService.getTradeContext?.() ?? {};
-    // UP-only: SELL is EXIT / STAND ASIDE, never a DOWN entry.
+    // UP-only: SELL is CLOSE, never a DOWN entry.
     const signalDirection = ctx.latestSignal?.type?.includes('BUY') ? 'up' : null;
     const inferredDirection = bodyDirection || ctx.position?.direction || ctx.contract?.direction || signalDirection;
     const manualOverride = bodyDirection && signalDirection ? bodyDirection !== signalDirection : false;

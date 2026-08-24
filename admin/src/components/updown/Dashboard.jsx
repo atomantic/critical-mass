@@ -48,10 +48,10 @@ export default function UpDownDashboard() {
       if (!seededRef.current && data.signalHistory?.length) {
         seededRef.current = true
         setSignalAnnotations(data.signalHistory
-          .filter(s => s.type !== 'NEUTRAL' && s.type !== 'NO_TRADE_ZONE')
+          .filter(s => s.action ? s.action !== 'HOLD' : (s.type !== 'NEUTRAL' && s.type !== 'NO_TRADE_ZONE'))
           .map(s => ({
             timestamp: s.timestamp,
-            type: s.type,
+            type: s.action || s.type,
             score: s.score ?? 0,
           })))
       }
@@ -71,22 +71,24 @@ export default function UpDownDashboard() {
     if (signal.type === prevSignalRef.current) return
     prevSignalRef.current = signal.type
 
-    // Record all directional changes (skip NEUTRAL and NO_TRADE_ZONE only)
-    if (signal.type !== 'NEUTRAL' && signal.type !== 'NO_TRADE_ZONE') {
+    const action = signal.action
+    const isFillAction = !!signal.filled && (action === 'OPEN' || action === 'ADD' || action === 'CLOSE')
+    const isLegacyDirectional = !action && signal.type !== 'NEUTRAL' && signal.type !== 'NO_TRADE_ZONE'
+    if (isFillAction || isLegacyDirectional) {
       setSignalAnnotations(prev => {
-        const entry = { timestamp: signal.timestamp || Date.now(), type: signal.type, score: signal.score ?? 0 }
+        const entry = { timestamp: signal.timestamp || Date.now(), type: action || signal.type, score: signal.score ?? 0 }
         return [...prev, entry].slice(-100)
       })
     }
 
-    // Audio alert for strong signals
-    if (audioEnabled && (signal.type === 'STRONG_BUY' || signal.type === 'STRONG_SELL')) {
+    // Audio alert for Open / Add / Close
+    if (audioEnabled && isFillAction) {
       const ctx = new (window.AudioContext || window.webkitAudioContext)()
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
       osc.connect(gain)
       gain.connect(ctx.destination)
-      osc.frequency.value = signal.type === 'STRONG_BUY' ? 880 : 440
+      osc.frequency.value = action === 'CLOSE' ? 440 : 880
       gain.gain.value = 0.1
       osc.start()
       osc.stop(ctx.currentTime + 0.2)
@@ -146,9 +148,9 @@ export default function UpDownDashboard() {
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <div className="flex items-center gap-3">
             <div>
-              <h2 className="text-lg font-bold">UpDown BTC Options</h2>
+              <h2 className="text-lg font-bold">UpDown BTC Perp Longs</h2>
               <div className="text-xs text-gray-400">
-                UP-only BTC signals — Crypto.com Up options & Coinbase perp flips
+                Open / Add / Hold / Close — 1 BTC perpetual long per Open or Add
               </div>
             </div>
             <Link
@@ -248,7 +250,10 @@ export default function UpDownDashboard() {
             timeRemaining={msLeft}
             position={status?.position}
           />
-          <ScorecardPanel scorecard={socketScorecard || status?.scorecard} />
+          <ScorecardPanel
+            scorecard={socketScorecard || status?.scorecard}
+            perp={rawIndicators?.perp || tick?.perp || status?.perp}
+          />
           <ContractSetup initialContract={status?.contract} onPositionSet={fetchStatus} />
           <PositionTracker initialPosition={status?.position} tick={tick} />
         </div>

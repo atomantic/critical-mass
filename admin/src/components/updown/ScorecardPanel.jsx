@@ -49,7 +49,7 @@ function AccuracyBar({ accuracy, label, detail }) {
   )
 }
 
-export default function ScorecardPanel({ scorecard }) {
+export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
   if (!scorecard) {
     return (
       <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -62,11 +62,21 @@ export default function ScorecardPanel({ scorecard }) {
     )
   }
 
-  const { overall, overallPerp, byWindow, byTimeframe, byIndicator, adaptiveWeights, totalPredictions, totalEvaluated, totalSkipped, contractAware, primaryWindows } = scorecard
+  const { overall, overallPerp, byWindow, byTimeframe, byIndicator, adaptiveWeights, totalPredictions, totalEvaluated, totalSkipped, contractAware, primaryWindows, perp: scorecardPerp } = scorecard
+  const perp = perpOverride || scorecardPerp
   const primarySet = new Set(primaryWindows || ['1m', '5m'])
 
   const StreakIcon = overall?.streak > 0 ? TrendingUp : overall?.streak < 0 ? TrendingDown : Minus
   const streakColor = overall?.streak > 0 ? 'text-green-400' : overall?.streak < 0 ? 'text-red-400' : 'text-gray-400'
+  const pnlColor = (n) => n > 0 ? 'text-green-400' : n < 0 ? 'text-red-400' : 'text-gray-300'
+  const formatUsd = (n) => {
+    if (n == null || !Number.isFinite(n)) return '---'
+    const abs = Math.abs(n)
+    const formatted = abs >= 1000
+      ? abs.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+      : abs.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+    return n < 0 ? `-${formatted}` : formatted
+  }
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -76,7 +86,38 @@ export default function ScorecardPanel({ scorecard }) {
         <h3 className="text-sm font-semibold">Prediction Scorecard</h3>
       </div>
 
-      {/* Overall Accuracy — options (flat = miss) is the headline for CDC Up options */}
+      {/* Perp long paper book — 1 BTC per Open/Add, flatten on Close */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] uppercase tracking-wide text-gray-500">Perp long P&amp;L (1 BTC / fill)</span>
+          {perp?.contracts > 0 && (
+            <span className="text-[10px] font-mono text-teal-400">{perp.contracts} open @ {formatUsd(perp.avgEntry)}</span>
+          )}
+        </div>
+        <div className="flex items-center justify-between mb-1">
+          <span className={`text-2xl font-bold font-mono ${pnlColor(perp?.totalPnl ?? 0)}`}>
+            {formatUsd(perp?.totalPnl ?? 0)}
+          </span>
+          <span className="text-xs text-gray-500" title="Realized from closed rounds + mark-to-market on open lots">
+            {formatUsd(perp?.realizedPnl ?? 0)} real
+            {perp?.contracts > 0 && <span className={`ml-1 ${pnlColor(perp.unrealizedPnl)}`}>{formatUsd(perp.unrealizedPnl)} mtm</span>}
+          </span>
+        </div>
+        <div className="flex justify-between text-xs text-gray-500">
+          <span>{perp?.rounds ?? 0} rounds</span>
+          <span className="text-green-500">{perp?.wins ?? 0}W</span>
+          <span className="text-red-500">{perp?.losses ?? 0}L</span>
+          <span>{perp?.winRate != null ? `${perp.winRate.toFixed(0)}%` : '---'}</span>
+        </div>
+        {(perp?.avgWin !== 0 || perp?.avgLoss !== 0) && (
+          <div className="flex justify-between text-xs text-gray-500 mt-0.5">
+            <span>Avg win: <span className="text-green-400 font-mono">{formatUsd(perp.avgWin)}</span></span>
+            <span>Avg loss: <span className="text-red-400 font-mono">{formatUsd(perp.avgLoss)}</span></span>
+          </div>
+        )}
+      </div>
+
+      {/* Directional accuracy — still used for adaptive indicator weights */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
           <span className="text-[10px] uppercase tracking-wide text-gray-500">UP precision (options)</span>
@@ -88,12 +129,12 @@ export default function ScorecardPanel({ scorecard }) {
           </div>
         </div>
         <div className="flex items-center justify-between mb-1">
-          <span className={`text-2xl font-bold font-mono ${accuracyColor(overall?.accuracy)}`}>
+          <span className={`text-xl font-bold font-mono ${accuracyColor(overall?.accuracy)}`}>
             {overall?.accuracy != null ? `${overall.accuracy.toFixed(1)}%` : '---'}
           </span>
           {overallPerp?.accuracy != null && (
             <span className={`text-sm font-mono ${accuracyColor(overallPerp.accuracy)}`} title="Perp flips: no-move is a scratch, not a loss">
-              perp {overallPerp.accuracy.toFixed(1)}%
+              dir {overallPerp.accuracy.toFixed(1)}%
             </span>
           )}
         </div>

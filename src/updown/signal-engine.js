@@ -22,6 +22,7 @@ const { detectDivergence, detectMACDDivergence } = require('./divergence');
 const { calculatePivotPoints, computePivotDampening } = require('./pivot-points');
 const { INDICATOR_WEIGHTS } = require('./indicator-config');
 const { createStabilityState, stabilizeSignal } = require('./signal-stability');
+const { resolveActionLabel } = require('./signal-actions');
 
 const TIMEFRAME_WEIGHTS = {
   '1m': 0.10,
@@ -608,21 +609,7 @@ const applyUpOnlyGate = (rawType, trendGateOpen, heldPosition = null) => {
   return rawType;
 };
 
-/**
- * Operator-facing action for the UP-only dashboard. SELL is never "BUY DOWN".
- * @param {string} type
- * @param {{direction?: string}|null} [heldPosition]
- * @returns {string}
- */
-const resolveActionLabel = (type, heldPosition = null) => {
-  if (type === 'NO_TRADE_ZONE') return 'NO TRADE';
-  if (type === 'STRONG_BUY') return 'STRONG BUY UP';
-  if (type === 'BUY') return 'BUY UP';
-  if (type === 'SELL' || type === 'STRONG_SELL') {
-    return heldPosition?.direction === 'up' ? 'EXIT' : 'STAND ASIDE';
-  }
-  return 'HOLD';
-};
+// resolveActionLabel lives in signal-actions.js (OPEN / ADD / HOLD / CLOSE).
 
 /**
  * Map composite score to signal label (original fixed thresholds)

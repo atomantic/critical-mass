@@ -83,26 +83,28 @@ describe('applyUpOnlyGate', () => {
   });
 });
 
-describe('resolveActionLabel (UP-only display)', () => {
-  it('labels BUY as BUY UP, never BUY DOWN', () => {
-    assert.equal(resolveActionLabel('BUY'), 'BUY UP');
-    assert.equal(resolveActionLabel('STRONG_BUY'), 'STRONG BUY UP');
+describe('resolveActionLabel (perp long Open/Add/Hold/Close)', () => {
+  it('labels BUY as OPEN when flat and ADD when a long is held', () => {
+    assert.equal(resolveActionLabel('BUY'), 'OPEN');
+    assert.equal(resolveActionLabel('STRONG_BUY'), 'OPEN');
+    assert.equal(resolveActionLabel('BUY', { direction: 'up' }), 'ADD');
+    assert.equal(resolveActionLabel('STRONG_BUY', { contracts: 1 }), 'ADD');
   });
 
-  it('labels SELL as EXIT when a long is held', () => {
-    assert.equal(resolveActionLabel('SELL', { direction: 'up' }), 'EXIT');
-    assert.equal(resolveActionLabel('STRONG_SELL', { direction: 'up' }), 'EXIT');
+  it('labels SELL as CLOSE when a long is held', () => {
+    assert.equal(resolveActionLabel('SELL', { direction: 'up' }), 'CLOSE');
+    assert.equal(resolveActionLabel('STRONG_SELL', { direction: 'up' }), 'CLOSE');
   });
 
-  it('labels SELL as STAND ASIDE when flat (no short / no BUY DOWN)', () => {
-    assert.equal(resolveActionLabel('SELL', null), 'STAND ASIDE');
-    assert.equal(resolveActionLabel('STRONG_SELL', undefined), 'STAND ASIDE');
-    assert.equal(resolveActionLabel('SELL', { direction: 'down' }), 'STAND ASIDE');
+  it('labels SELL as HOLD when flat (no short)', () => {
+    assert.equal(resolveActionLabel('SELL', null), 'HOLD');
+    assert.equal(resolveActionLabel('STRONG_SELL', undefined), 'HOLD');
+    assert.equal(resolveActionLabel('SELL', { direction: 'down' }), 'HOLD');
   });
 
-  it('keeps HOLD / NO TRADE for non-directional types', () => {
+  it('keeps HOLD for non-directional types', () => {
     assert.equal(resolveActionLabel('NEUTRAL'), 'HOLD');
-    assert.equal(resolveActionLabel('NO_TRADE_ZONE'), 'NO TRADE');
+    assert.equal(resolveActionLabel('NO_TRADE_ZONE'), 'HOLD');
   });
 });
 
