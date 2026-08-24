@@ -4,14 +4,10 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, REGIME_DEFAULTS } = require('../config-utils');
+const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
 const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
 const { log, getLogFile } = require('../logger');
-const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
-
-// --- Security: regime sub-object allowlist ---
-// Derived from REGIME_DEFAULTS so it automatically stays in sync as config-utils evolves.
-const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
+const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 
 /**
  * @param {import('express').Express} app
@@ -42,15 +38,7 @@ module.exports = (app, deps) => {
     // permanently unsaveable. Dropping keeps the security intent — unknown keys never
     // enter the saved overrides or reach the engine — while letting the save succeed.
     if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
-      const sanitizedRegime = {};
-      const droppedKeys = [];
-      for (const key of Object.keys(req.body.regime)) {
-        if (REGIME_ALLOWED_KEYS.has(key)) {
-          sanitizedRegime[key] = req.body.regime[key];
-        } else {
-          droppedKeys.push(key);
-        }
-      }
+      const { value: sanitizedRegime, droppedKeys } = sanitizeRegimeConfig(req.body.regime);
       if (droppedKeys.length > 0) {
         log('WARN', `🧹 [coinbase] Dropped ${droppedKeys.length} unknown regime key(s) on legacy config save: ${droppedKeys.join(', ')}`);
       }

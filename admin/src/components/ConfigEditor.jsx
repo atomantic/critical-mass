@@ -228,13 +228,25 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
       })
+      const result = await res.json().catch(() => ({}))
       if (res.ok) {
+        if (result.config) setConfig(result.config)
         setMessage({ type: 'success', text: 'Configuration saved!' })
         setIsDirty(false)
         onSave?.()
+      } else if (result.persisted === true) {
+        // Persistence succeeded even though the live engine rejected or missed
+        // propagation. Keep the authoritative saved value and tell the operator
+        // that a restart is required; reverting here would display stale state.
+        if (result.config) setConfig(result.config)
+        setIsDirty(false)
+        setMessage({
+          type: 'warning',
+          text: 'Configuration saved, but the live engine is still using the previous settings. Restart the engine to apply it.',
+        })
+        onSave?.()
       } else {
-        const error = await res.json().catch(() => ({}))
-        setMessage({ type: 'error', text: error.error || 'Failed to save' })
+        setMessage({ type: 'error', text: result.error || 'Failed to save' })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to save' })
@@ -252,29 +264,40 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   }
 
   // Persist a single toggle immediately (no full-form Save). Optimistically flips
-  // local state, then reverts if the request fails so the switch never lies about
-  // the saved state. `enabled`/`dryRun` write to the same place the Save button
+  // local state, then reverts if persistence fails so the switch never lies about
+  // the saved state. A persisted-but-not-live response keeps the saved value and
+  // surfaces the required restart. `enabled`/`dryRun` write where the Save button
   // does — see the PATCH /api/:exchange/config and PUT regime/config handlers.
   // Serialized via togglePendingRef (see the click guard in the handlers): only
   // one toggle save is ever in flight, so out-of-order responses can't persist
   // the opposite of the final UI state. try/finally is required here — a network
   // rejection must still decrement the ref, or the sync effect stays blocked
   // forever and the toggle is stuck showing an unsaved value.
-  const persistToggle = async (label, doFetch, optimistic, revert) => {
+  const persistToggle = async (label, doFetch, optimistic, revert, adoptPersisted) => {
     togglePendingRef.current += 1
     setToggleBusy(true)
     optimistic()
     try {
       const res = await doFetch()
+      const result = await res.json().catch(() => ({}))
       if (res.ok) {
         setMessage({ type: 'success', text: `${label} saved` })
         // restartNeeded is derived from engine vs saved state — the optimistic
         // config update plus onSave's refetch drive the banner; nothing to set.
         onSave?.()
+      } else if (result.persisted === true) {
+        // The optimistic value is the saved value. Adopt the response payload
+        // when available and refetch the parent config, but never roll back to
+        // the stale pre-request value merely because live IPC propagation failed.
+        adoptPersisted?.(result.config)
+        setMessage({
+          type: 'warning',
+          text: `${label} saved, but the live engine is still using the previous setting. Restart the engine to apply it.`,
+        })
+        onSave?.()
       } else {
         revert()
-        const err = await res.json().catch(() => ({}))
-        setMessage({ type: 'error', text: err.error || `Failed to save ${label}` })
+        setMessage({ type: 'error', text: result.error || `Failed to save ${label}` })
       }
     } catch {
       revert()
@@ -323,6 +346,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       }),
       () => setConfig(prev => ({ ...prev, dryRun: next })),
       () => setConfig(prev => ({ ...prev, dryRun: !next })),
+      saved => saved && setConfig(saved),
     )
   }
 
@@ -341,6 +365,15 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         }),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: next } })),
         () => setConfig(prev => ({ ...prev, regime: { ...prev.regime, enabled: !next } })),
+        saved => saved && setConfig(prev => {
+          const { dryRun, productId, ...savedRegime } = saved
+          return {
+            ...prev,
+            ...(dryRun !== undefined ? { dryRun } : {}),
+            ...(productId !== undefined ? { productId } : {}),
+            regime: { ...prev.regime, ...savedRegime },
+          }
+        }),
       )
     } else {
       const next = !config.enabled
@@ -353,6 +386,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         }),
         () => setConfig(prev => ({ ...prev, enabled: next })),
         () => setConfig(prev => ({ ...prev, enabled: !next })),
+        saved => saved && setConfig(saved),
       )
     }
   }
@@ -447,7 +481,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
           <div className={`mb-3 p-2 rounded text-sm ${
             message.type === 'success'
               ? 'bg-green-900/50 border border-green-700 text-green-200'
-              : 'bg-red-900/50 border border-red-700 text-red-200'
+              : message.type === 'warning'
+                ? 'bg-amber-900/40 border border-amber-700 text-amber-200'
+                : 'bg-red-900/50 border border-red-700 text-red-200'
           }`}>
             {message.text}
           </div>
