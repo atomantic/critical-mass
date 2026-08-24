@@ -227,12 +227,43 @@ const LOG_EMOJI = {
  * @param {'INFO' | 'WARN' | 'ERROR'} level - Log level
  * @param {string} message - Log message
  * @param {Object|null} [data] - Optional data to include
+ * @param {{preserveMessage?: boolean}} [options] - Formatting options
  * @returns {void}
  */
-const log = (level, message, data = null) => {
+const log = (level, message, data = null, options = {}) => {
   const emoji = LOG_EMOJI[level] || 'ℹ️';
-  const output = data ? `${emoji} ${message} ${JSON.stringify(data)}` : `${emoji} ${message}`;
+  const formattedMessage = options.preserveMessage ? message : `${emoji} ${message}`;
+  const output = data ? `${formattedMessage} ${JSON.stringify(data)}` : formattedMessage;
   console.log(output);
+};
+
+/**
+ * Create a structured logger that merges stable module context into every event.
+ * preserveMessage keeps existing operator-facing prefixes intact during migrations.
+ *
+ * @param {Object} baseContext - Stable context such as exchange and pair
+ * @returns {{
+ *   info: (message: string, data?: Object) => void,
+ *   warn: (message: string, data?: Object) => void,
+ *   error: (message: string, data?: Object) => void,
+ * }} Context-aware logger
+ */
+const createContextLogger = (baseContext = {}) => {
+  /**
+   * @param {'INFO' | 'WARN' | 'ERROR'} level
+   * @param {string} message
+   * @param {Object} [data]
+   * @returns {void}
+   */
+  const write = (level, message, data = {}) => {
+    log(level, message, { ...baseContext, ...data }, { preserveMessage: true });
+  };
+
+  return {
+    info: (message, data) => write('INFO', message, data),
+    warn: (message, data) => write('WARN', message, data),
+    error: (message, data) => write('ERROR', message, data),
+  };
 };
 
 /**
@@ -322,6 +353,7 @@ module.exports = {
   logConsolidation,
   loadTransactionHistory,
   log,
+  createContextLogger,
   getLogFile,
   // Fibonacci logging
   logFibBuy,

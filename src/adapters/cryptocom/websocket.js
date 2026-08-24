@@ -15,6 +15,7 @@
  */
 
 const WebSocket = require('ws');
+const { createContextLogger } = require('../../logger');
 
 const CRYPTOCOM_WS_URL = 'wss://stream.crypto.com/exchange/v1/market';
 const HEARTBEAT_INTERVAL = 30000;
@@ -47,6 +48,7 @@ const toInstrumentName = (productId) =>
  * @returns {{ connect: Function, disconnect: Function, isActive: Function, getStatus: Function }}
  */
 const createCryptocomWebSocketFeed = (exchange, config) => {
+  const logger = createContextLogger({ exchange, pair: config.productId });
   let ws = null;
   let isConnected = false;
   let shouldReconnect = true;
@@ -92,7 +94,7 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('error', (error) => {
-      console.log(`❌ [${exchange}] Crypto.com WebSocket error: ${error.message}`);
+      logger.error(`❌ [${exchange}] Crypto.com WebSocket error: ${error.message}`, { error: error.message });
       config.onError?.(error);
     });
 
@@ -146,7 +148,7 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
     // Handle subscription errors (successful subscribes carry data in result, so fall through)
     if (message.method === 'subscribe' && message.code !== 0) {
       const errorMsg = message.message || `Subscription error code ${message.code}`;
-      console.log(`❌ [${exchange}] Crypto.com subscription error: ${errorMsg}`);
+      logger.error(`❌ [${exchange}] Crypto.com subscription error: ${errorMsg}`, { error: errorMsg, channel: 'subscription' });
       config.onError?.(new Error(errorMsg));
       return;
     }
@@ -249,7 +251,10 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
       if (ws?.readyState !== WebSocket.OPEN) return;
 
       if (missedPongs >= MAX_MISSED_PONGS) {
-        console.log(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`);
+        logger.error(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`, {
+          missedPongs,
+          elapsedMs: missedPongs * HEARTBEAT_INTERVAL,
+        });
         ws.terminate();
         return;
       }
