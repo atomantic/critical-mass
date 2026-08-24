@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, lazy, Suspense } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom'
 import Dashboard from './components/Dashboard'
 import ConfigEditor from './components/ConfigEditor'
@@ -156,10 +156,66 @@ function AppContent() {
   const currentStrategy = resolveStrategy(currentExchangeConfig)
   const currentPair = urlPair || currentExchangeConfig?.productId || 'BTC-USDC'
 
-  // Latest selected fund, readable from inside in-flight fetch callbacks so a
-  // slow response for a previous fund can be discarded (fund-switch race, #111).
-  const activeFundRef = useRef(`${currentExchange}::${currentPair}`)
-  activeFundRef.current = `${currentExchange}::${currentPair}`
+  // Committed navigation and request generations. These refs are only advanced
+  // in event handlers or layout effects: an abandoned concurrent render must
+  // never invalidate requests belonging to the still-committed screen.
+  const selectedFund = `${currentExchange}::${currentPair}`
+  const committedFundRef = useRef(selectedFund)
+  const actionFenceRef = useRef({ navigationGeneration: 0, actionGeneration: 0 })
+  const summaryRequestRef = useRef({ generation: 0, controller: null })
+  const statusRequestRef = useRef({ generation: 0, controller: null })
+
+  const invalidateStatusRead = () => {
+    statusRequestRef.current.generation += 1
+    statusRequestRef.current.controller?.abort()
+    statusRequestRef.current.controller = null
+  }
+
+  useLayoutEffect(() => {
+    if (committedFundRef.current !== selectedFund) {
+      committedFundRef.current = selectedFund
+      actionFenceRef.current.navigationGeneration += 1
+      actionFenceRef.current.actionGeneration += 1
+
+      summaryRequestRef.current.generation += 1
+      summaryRequestRef.current.controller?.abort()
+      summaryRequestRef.current.controller = null
+      invalidateStatusRead()
+
+      setStarting(false)
+      setStopping(false)
+      setClosing(false)
+      setReopening(false)
+      setResetting(false)
+    }
+
+    return () => {
+      summaryRequestRef.current.controller?.abort()
+      statusRequestRef.current.controller?.abort()
+    }
+  }, [selectedFund])
+
+  const beginFundAction = (setPending) => {
+    // A control result is authoritative over any status read begun before it.
+    // This specifically prevents an old Start refresh from overwriting a Stop.
+    invalidateStatusRead()
+    const token = {
+      navigationGeneration: actionFenceRef.current.navigationGeneration,
+      actionGeneration: ++actionFenceRef.current.actionGeneration,
+    }
+    // A newer action owns the controls now. Clear flags left by any superseded
+    // request before marking this action pending.
+    setStarting(false)
+    setStopping(false)
+    setClosing(false)
+    setReopening(false)
+    setResetting(false)
+    setPending(true)
+    return token
+  }
+  const isCurrentFundAction = (token) =>
+    actionFenceRef.current.navigationGeneration === token.navigationGeneration &&
+    actionFenceRef.current.actionGeneration === token.actionGeneration
 
   // WebSocket connection for regime strategy
   const { connected: wsConnected } = useRegimeEvents(
@@ -220,61 +276,115 @@ function AppContent() {
     // newer fund's summary (stale data shown for up to 30s, and ConfigEditor
     // would adopt the wrong baseline) (#111).
     const reqFund = `${currentExchange}::${currentPair}`
+    const navigationGeneration = actionFenceRef.current.navigationGeneration
+    const controller = new AbortController()
+    summaryRequestRef.current.controller?.abort()
+    const requestGeneration = ++summaryRequestRef.current.generation
+    summaryRequestRef.current.controller = controller
     setLoading(true)
     setError(null)
-    const res = await fetch(`/api/${currentExchange}/summary${pairQuery()}`)
-    if (activeFundRef.current !== reqFund) return // fund switched mid-flight — discard
-    if (!res.ok) {
-      setError('Failed to fetch data')
+    const isCurrent = () =>
+      committedFundRef.current === reqFund &&
+      actionFenceRef.current.navigationGeneration === navigationGeneration &&
+      summaryRequestRef.current.generation === requestGeneration
+    try {
+      const res = await fetch(`/api/${currentExchange}/summary${pairQuery()}`, { signal: controller.signal })
+      if (!isCurrent()) return
+      if (!res.ok) {
+        setError('Failed to fetch data')
+        setLoading(false)
+        return
+      }
+      const data = await res.json()
+      if (!isCurrent()) return
+      setSummary(data)
       setLoading(false)
-      return
-    }
-    const data = await res.json()
-    if (activeFundRef.current !== reqFund) return
-    setSummary(data)
-    setLoading(false)
 
-    // Also refresh exchanges list to update badges (enabled/dryRun status)
-    fetchExchanges()
+      // Also refresh exchanges list to update badges (enabled/dryRun status)
+      fetchExchanges()
+    } catch (err) {
+      if (err?.name !== 'AbortError' && isCurrent()) {
+        setError('Failed to fetch data')
+        setLoading(false)
+      }
+    } finally {
+      if (summaryRequestRef.current.controller === controller) summaryRequestRef.current.controller = null
+    }
   }
 
   // Fetch regime status (for header controls)
   const fetchRegimeStatus = async () => {
     if (currentStrategy !== 'regime') return
     const reqFund = `${currentExchange}::${currentPair}`
-    const res = await fetch(`/api/${currentExchange}/regime/status${pairQuery()}`)
-    if (activeFundRef.current !== reqFund) return // fund switched mid-flight — discard
-    if (res.ok) {
+    const navigationGeneration = actionFenceRef.current.navigationGeneration
+    const controller = new AbortController()
+    statusRequestRef.current.controller?.abort()
+    const requestGeneration = ++statusRequestRef.current.generation
+    statusRequestRef.current.controller = controller
+    const isCurrent = () =>
+      committedFundRef.current === reqFund &&
+      actionFenceRef.current.navigationGeneration === navigationGeneration &&
+      statusRequestRef.current.generation === requestGeneration
+    try {
+      const res = await fetch(`/api/${currentExchange}/regime/status${pairQuery()}`, { signal: controller.signal })
+      if (!isCurrent() || !res.ok) return
       const data = await res.json()
-      if (activeFundRef.current !== reqFund) return
+      if (!isCurrent()) return
       setRegimeRunning(data.status?.isRunning || false)
       setRegimeDryRun(data.status?.isDryRun || false)
       setRegimeLifecycle(data.status?.lifecycle?.lifecycle || 'active')
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        // Status polling is best-effort; the existing displayed state remains.
+      }
+    } finally {
+      if (statusRequestRef.current.controller === controller) statusRequestRef.current.controller = null
     }
   }
 
   // Start regime engine
   const handleStartRegime = async () => {
-    setStarting(true)
-    const res = await fetch(`/api/${currentExchange}/regime/start${pairQuery()}`, { method: 'POST' })
-    if (res.ok) {
-      setRegimeRunning(true)
-      fetchRegimeStatus()
-    } else {
-      const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Failed to start regime engine', message: err.error || 'Unknown error' })
+    const actionGeneration = beginFundAction(setStarting)
+    try {
+      const res = await fetch(`/api/${currentExchange}/regime/start${pairQuery()}`, { method: 'POST' })
+      if (!isCurrentFundAction(actionGeneration)) return
+      if (res.ok) {
+        invalidateStatusRead()
+        setRegimeRunning(true)
+        fetchRegimeStatus()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        if (!isCurrentFundAction(actionGeneration)) return
+        addToast({ type: 'error', title: 'Failed to start regime engine', message: err.error || 'Unknown error' })
+      }
+    } catch (err) {
+      if (!isCurrentFundAction(actionGeneration)) return
+      addToast({ type: 'error', title: 'Failed to start regime engine', message: err.message || 'Network error' })
+    } finally {
+      if (isCurrentFundAction(actionGeneration)) setStarting(false)
     }
-    setStarting(false)
   }
 
   // Stop regime engine
   const handleStopRegime = async () => {
-    setStopping(true)
-    const res = await fetch(`/api/${currentExchange}/regime/stop${pairQuery()}`, { method: 'POST' })
-    if (res.ok) {
-      setRegimeRunning(false)
+    const actionGeneration = beginFundAction(setStopping)
+    try {
+      const res = await fetch(`/api/${currentExchange}/regime/stop${pairQuery()}`, { method: 'POST' })
+      if (!isCurrentFundAction(actionGeneration)) return
+      if (res.ok) {
+        invalidateStatusRead()
+        setRegimeRunning(false)
+      } else {
+        const err = await res.json().catch(() => ({}))
+        if (!isCurrentFundAction(actionGeneration)) return
+        addToast({ type: 'error', title: 'Failed to stop regime engine', message: err.error || 'Unknown error' })
+      }
+    } catch (err) {
+      if (!isCurrentFundAction(actionGeneration)) return
+      addToast({ type: 'error', title: 'Failed to stop regime engine', message: err.message || 'Network error' })
+    } finally {
+      if (isCurrentFundAction(actionGeneration)) setStopping(false)
     }
-    setStopping(false)
   }
 
   // Open the Close Fund confirmation dialog
@@ -285,27 +395,36 @@ function AppContent() {
 
   // Submit close — drain current cycle, then auto-stop
   const submitCloseFund = async () => {
-    setClosing(true)
-    const res = await fetch(`/api/${currentExchange}/regime/close${pairQuery()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: closeFundReason || undefined }),
-    })
-    if (res.ok) {
-      setRegimeLifecycle('draining')
-      setCloseFundDialogOpen(false)
-      fetchRegimeStatus()
-      fetchExchanges()
-      addToast({
-        type: 'success',
-        title: `Draining ${currentExchange}/${currentPair}`,
-        message: 'New entries blocked. Fund will close after the current cycle\'s TP fills.',
+    const actionGeneration = beginFundAction(setClosing)
+    try {
+      const res = await fetch(`/api/${currentExchange}/regime/close${pairQuery()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: closeFundReason || undefined }),
       })
-    } else {
-      const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Failed to close fund', message: err.error || 'Unknown error' })
+      if (!isCurrentFundAction(actionGeneration)) return
+      if (res.ok) {
+        invalidateStatusRead()
+        setRegimeLifecycle('draining')
+        setCloseFundDialogOpen(false)
+        fetchRegimeStatus()
+        fetchExchanges()
+        addToast({
+          type: 'success',
+          title: `Draining ${currentExchange}/${currentPair}`,
+          message: 'New entries blocked. Fund will close after the current cycle\'s TP fills.',
+        })
+      } else {
+        const err = await res.json().catch(() => ({}))
+        if (!isCurrentFundAction(actionGeneration)) return
+        addToast({ type: 'error', title: 'Failed to close fund', message: err.error || 'Unknown error' })
+      }
+    } catch (err) {
+      if (!isCurrentFundAction(actionGeneration)) return
+      addToast({ type: 'error', title: 'Failed to close fund', message: err.message || 'Network error' })
+    } finally {
+      if (isCurrentFundAction(actionGeneration)) setClosing(false)
     }
-    setClosing(false)
   }
 
   // Open the Reopen confirmation dialog
@@ -315,30 +434,53 @@ function AppContent() {
 
   // Submit reopen — lifecycle 'closed' → 'active'. Does NOT restart the engine.
   const submitReopenFund = async () => {
-    setReopening(true)
-    const res = await fetch(`/api/${currentExchange}/regime/reopen${pairQuery()}`, { method: 'POST' })
-    if (res.ok) {
-      setRegimeLifecycle('active')
-      setReopenFundDialogOpen(false)
-      fetchRegimeStatus()
-      fetchExchanges()
-      addToast({
-        type: 'success',
-        title: `Reopened ${currentExchange}/${currentPair}`,
-        message: 'Fund lifecycle restored to active. Click Start to resume trading.',
-      })
-    } else {
-      const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Failed to reopen fund', message: err.error || 'Unknown error' })
+    const actionGeneration = beginFundAction(setReopening)
+    try {
+      const res = await fetch(`/api/${currentExchange}/regime/reopen${pairQuery()}`, { method: 'POST' })
+      if (!isCurrentFundAction(actionGeneration)) return
+      if (res.ok) {
+        invalidateStatusRead()
+        setRegimeLifecycle('active')
+        setReopenFundDialogOpen(false)
+        fetchRegimeStatus()
+        fetchExchanges()
+        addToast({
+          type: 'success',
+          title: `Reopened ${currentExchange}/${currentPair}`,
+          message: 'Fund lifecycle restored to active. Click Start to resume trading.',
+        })
+      } else {
+        const err = await res.json().catch(() => ({}))
+        if (!isCurrentFundAction(actionGeneration)) return
+        addToast({ type: 'error', title: 'Failed to reopen fund', message: err.error || 'Unknown error' })
+      }
+    } catch (err) {
+      if (!isCurrentFundAction(actionGeneration)) return
+      addToast({ type: 'error', title: 'Failed to reopen fund', message: err.message || 'Network error' })
+    } finally {
+      if (isCurrentFundAction(actionGeneration)) setReopening(false)
     }
-    setReopening(false)
   }
 
   // Reset dry-run state
   const handleResetDryRun = async () => {
-    setResetting(true)
-    await fetch(`/api/${currentExchange}/regime/dry-run/reset${pairQuery()}`, { method: 'POST' })
-    setResetting(false)
+    const actionGeneration = beginFundAction(setResetting)
+    try {
+      const res = await fetch(`/api/${currentExchange}/regime/dry-run/reset${pairQuery()}`, { method: 'POST' })
+      if (!isCurrentFundAction(actionGeneration)) return
+      if (res.ok) {
+        invalidateStatusRead()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        if (!isCurrentFundAction(actionGeneration)) return
+        addToast({ type: 'error', title: 'Failed to reset dry-run state', message: err.error || 'Unknown error' })
+      }
+    } catch (err) {
+      if (!isCurrentFundAction(actionGeneration)) return
+      addToast({ type: 'error', title: 'Failed to reset dry-run state', message: err.message || 'Network error' })
+    } finally {
+      if (isCurrentFundAction(actionGeneration)) setResetting(false)
+    }
   }
 
   // Initial load of exchanges (with auto-select on first load)
@@ -406,7 +548,7 @@ function AppContent() {
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
           <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-2 md:py-4">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-3">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2 lg:gap-3">
               {/* Top row: Title + Exchange selector */}
               <div className="flex items-center justify-between">
                 <Link to="/" className="text-lg md:text-2xl font-bold text-white hover:text-gray-200 flex items-center gap-2 whitespace-nowrap min-w-0 shrink">
@@ -431,11 +573,11 @@ function AppContent() {
                   </svg>
                   Critical Mass
                 </Link>
-                <div className="flex items-center gap-1.5 md:hidden shrink-0">
+                <div className="flex items-center gap-1.5 lg:hidden shrink-0">
                   {/* Hamburger menu button for mobile */}
                   <button
                     onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                    className="p-2 text-gray-400 hover:text-white transition-colors"
+                    className="min-h-11 min-w-11 p-2 text-gray-400 hover:text-white transition-colors inline-flex items-center justify-center"
                     aria-label="Toggle menu"
                   >
                     {mobileMenuOpen ? (
@@ -452,52 +594,52 @@ function AppContent() {
               </div>
 
               {/* Bottom row on mobile / Right side on desktop */}
-              <div className="flex items-center justify-between md:justify-end gap-1.5 md:gap-4">
+              <div className="hidden lg:flex items-center justify-end gap-4">
                 <Link
                   to="/"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   DCA
                 </Link>
                 <Link
                   to="/notifications"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Notifications
                 </Link>
                 <Link
                   to="/backups"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Backups
                 </Link>
                 <Link
                   to="/systems"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Systems
                 </Link>
                 <Link
                   to="/updown"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   UpDown
                 </Link>
                 <Link
                   to="/sentinel"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Sentinel
                 </Link>
                 <Link
                   to="/ai"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   AI
                 </Link>
                 <Link
                   to="/gateway/logs"
-                  className="hidden md:block px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
+                  className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Gateway
                 </Link>
@@ -506,60 +648,60 @@ function AppContent() {
 
             {/* Mobile menu dropdown */}
             {mobileMenuOpen && (
-              <div className="md:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
+              <div className="lg:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
                 <Link
                   to="/"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
                   DCA
                 </Link>
                 <Link
                   to="/notifications"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
                   Notifications
                 </Link>
                 <Link
                   to="/backups"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
                   Backups
                 </Link>
                 <Link
                   to="/systems"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
                   Systems
                 </Link>
                 <Link
                   to="/updown"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
                   UpDown
                 </Link>
                 <Link
                   to="/sentinel"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
                   Sentinel
                 </Link>
                 <Link
                   to="/ai"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
                   AI Providers
                 </Link>
                 <Link
                   to="/gateway/logs"
                   onClick={() => setMobileMenuOpen(false)}
-                  className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                  className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
                   Gateway
                 </Link>
@@ -844,8 +986,8 @@ function AppContent() {
 
               {/* DCA-only routes (backtest, optimizer) */}
               {simpleDcaEnabled && currentStrategy !== 'regime' && <>
-              <Route path="/:exchange/:pair/backtest" element={<Backtest summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
-              <Route path="/:exchange/:pair/optimizer" element={<Optimizer exchange={currentExchange} pair={currentPair} />} />
+              <Route path="/:exchange/:pair/backtest" element={<Backtest key={`${currentExchange}:${currentPair}`} summary={summary} exchange={currentExchange} pair={currentPair} quoteCurrency={getQuoteCurrency(summary?.config?.productId)} />} />
+              <Route path="/:exchange/:pair/optimizer" element={<Optimizer key={`${currentExchange}:${currentPair}`} exchange={currentExchange} pair={currentPair} />} />
               </>}
 
               {/* API Keys - in sub-nav tabs */}
