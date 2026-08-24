@@ -39,6 +39,7 @@ const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker
 const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { fmtCurrency: fmtPrice, isFilledStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
+const { createContextLogger } = require('./logger');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
@@ -61,19 +62,25 @@ const METRICS_INTERVAL_MS = 60000;
  * getOrderFills, which will see the additional fills now that the order
  * is frozen.
  *
- * @param {{adapter: {cancelOrder: Function}, exchange: string, log?: Function}} deps
+ * @param {{adapter: {cancelOrder: Function}, exchange: string, pair?: string, log?: Function}} deps
  * @param {string} orderId
  * @returns {Promise<{cancelled: boolean, error?: Error}>}
  */
 const cancelPartialFillOrder = async (deps, orderId) => {
-  const { adapter, exchange, log = console.log } = deps;
+  const { adapter, exchange, pair, log = createContextLogger({ exchange, pair }).warn } = deps;
   try {
     const result = await adapter.cancelOrder(orderId);
     if (result?.success) return { cancelled: true };
-    log(`⚠️ [${exchange}] cancelOrder did not confirm for partial TP ${orderId} — likely already terminal; proceeding with fill ingest`);
+    log(
+      `⚠️ [${exchange}] cancelOrder did not confirm for partial TP ${orderId} — likely already terminal; proceeding with fill ingest`,
+      { orderId, orderType: 'body_tp' }
+    );
     return { cancelled: false };
   } catch (err) {
-    log(`⚠️ [${exchange}] cancelOrder failed for partial TP ${orderId}: ${err.message} — proceeding; old order may keep filling on exchange`);
+    log(
+      `⚠️ [${exchange}] cancelOrder failed for partial TP ${orderId}: ${err.message} — proceeding; old order may keep filling on exchange`,
+      { orderId, orderType: 'body_tp', error: err.message }
+    );
     return { cancelled: false, error: err };
   }
 };
@@ -461,6 +468,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const { productId } = exchangeConfig;
   const config = getRegimeConfig(exchange, pair);
   const baseCurrency = getBaseCurrency(productId);
+  const logger = createContextLogger({ exchange, pair });
 
   // Prefix used in log lines and trade events to identify this fund
   const fundLabel = `${exchange}/${pair}`;
@@ -506,7 +514,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   });
   const healthMonitor = createHealthMonitor(exchange, config, {
     onSafeMode: async (reason) => {
-      console.log(`⚠️ [${exchange}] SAFE mode: ${reason}`);
+      logger.warn(`⚠️ [${exchange}] SAFE mode: ${reason}`, { reason });
       await orderExecutor.cancelAllEntries();
       if (callbacks.onHealthChange) {
         callbacks.onHealthChange('SAFE', reason);
@@ -518,7 +526,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     },
     onAuthDenied: (reason) => {
-      console.log(`🔑 [${exchange}] API key denied (check IP allowlist) — trading paused until access restored: ${reason}`);
+      logger.warn(
+        `🔑 [${exchange}] API key denied (check IP allowlist) — trading paused until access restored: ${reason}`,
+        { reason }
+      );
       tradeEvents.emitTradeEvent('api_key_denied', exchange,
         `API key denied — trading paused (check IP allowlist): ${reason}`, { reason });
       // Deliberately NOT cancelling open orders here: cancelOrder is itself an
@@ -606,14 +617,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // Create TP optimizer for dynamic TP adjustment
   const tpOptimizer = createTpOptimizer(exchange, config, {
     onAdjustment: (adjustment) => {
-      console.log(`📊 [${exchange}] ${modeLabel}TP auto-adjusted: min=${adjustment.tpMinPercent}% max=${adjustment.tpMaxPercent}% holdbackRatio=${adjustment.holdbackRatio}`);
+      logger.info(
+        `📊 [${exchange}] ${modeLabel}TP auto-adjusted: min=${adjustment.tpMinPercent}% max=${adjustment.tpMaxPercent}% holdbackRatio=${adjustment.holdbackRatio}`,
+        adjustment
+      );
     },
   }, productId);
 
   // Create Size optimizer for dynamic position sizing
   const sizeOptimizer = createSizeOptimizer(exchange, config, {
     onAdjustment: (adjustment) => {
-      console.log(`📊 [${exchange}] ${modeLabel}Size auto-adjusted: ${adjustment.reason}`);
+      logger.info(`📊 [${exchange}] ${modeLabel}Size auto-adjusted: ${adjustment.reason}`, adjustment);
     },
   }, productId);
 
@@ -825,7 +839,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ? `APY from ${new Date(positionState.engineStartTime).toISOString()}`
       : 'APY not tracked yet';
 
-    console.log(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, PnL=$${positionState.realizedPnL.toFixed(2)}, ${apyStatus}`);
+    logger.info(`📂 [${exchange}] [DRY-RUN] Restored state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, PnL=$${positionState.realizedPnL.toFixed(2)}, ${apyStatus}`);
     return true;
   };
 
@@ -903,7 +917,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       || pos.realizedPnL > 0
     );
     if (!hasMeaningfulState) {
-      console.log(`ℹ️ [${exchange}] No saved live state or empty position`);
+      logger.info(`ℹ️ [${exchange}] No saved live state or empty position`);
       // Still restore optimizer states even if no position
       if (savedState.tpOptimizer) {
         tpOptimizer.importState(savedState.tpOptimizer);
@@ -925,7 +939,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       sizeOptimizer.importState(savedState.sizeOptimizer);
     }
 
-    console.log(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, ${positionState.totalAsset.toFixed(6)} ${baseCurrency}`);
+    logger.info(`📂 [${exchange}] Loaded saved state: ${positionState.cyclesCompleted} cycles, buys ${positionState.cycleBuys}, ${positionState.totalAsset.toFixed(6)} ${baseCurrency}`);
     return true;
   };
 
@@ -941,7 +955,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const creditCapitalGrowth = (sellOrderId, pnl) => {
     const prevMaxUsdc = config.maxUsdcDeployed;
     if (!fillLedger.claimCapitalCredit(sellOrderId)) {
-      console.log(`ℹ️ [${exchange}] Capital growth for ${sellOrderId?.slice(0, 8)} already credited — skipping re-apply (crash-replay idempotency #210-B)`);
+      logger.info(
+        `ℹ️ [${exchange}] Capital growth for ${sellOrderId?.slice(0, 8)} already credited — skipping re-apply (crash-replay idempotency #210-B)`,
+        { orderId: sellOrderId }
+      );
       return prevMaxUsdc;
     }
     config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
@@ -969,7 +986,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // and the TP is restored as open by the path further down.
       const orderStatus = await adapter.getOrder(positionState.activeTpOrderId);
       if (isFilledStatus(orderStatus)) {
-        console.log(`✅ [${exchange}] TP order ${positionState.activeTpOrderId} filled while offline`);
+        logger.info(
+          `✅ [${exchange}] TP order ${positionState.activeTpOrderId} filled while offline`,
+          { orderId: positionState.activeTpOrderId, orderType: 'take_profit', status: orderStatus.status }
+        );
         tpFilled = true;
 
         // Get fill details
@@ -996,7 +1016,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // accumulating here would double-count.
         positionState.cyclesCompleted += 1;
 
-        console.log(`💰 [${exchange}] Offline TP fill: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}`);
+        logger.info(`💰 [${exchange}] Offline TP fill: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}`);
 
         tradeEvents.emitTradeEvent('tp_filled', exchange, `[OFFLINE] ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
           assetAmount: summary.totalSize,
@@ -1051,7 +1071,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // this too, but only after reconcileIntervalMs.
         if (orderStatus && (orderStatus.status === 'CANCELLED' || orderStatus.status === 'FAILED') && orderStatus.filledSize > 0) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-          console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} ${orderStatus.status} while offline with ${orderStatus.filledSize} partial fill — routing through handleOrderFill`);
+          logger.info(
+            `${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} ${orderStatus.status} while offline with ${orderStatus.filledSize} partial fill — routing through handleOrderFill`,
+            { bodyId: body.id, orderId: body.tpOrderId, status: orderStatus.status, filledSize: orderStatus.filledSize }
+          );
           orderExecutor.markSettled(body.tpOrderId);
           await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', orderStatus));
           continue;
@@ -1061,7 +1084,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // places a fresh TP on first tick. Without this, body.tpOrderId points
         // at a dead order and placeBodyTp would skip (it gates on !tpOrderId).
         if (orderStatus && (orderStatus.status === 'CANCELLED' || orderStatus.status === 'FAILED')) {
-          console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${orderStatus.status} while offline (no partials) — clearing for re-placement`);
+          logger.warn(
+            `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${orderStatus.status} while offline (no partials) — clearing for re-placement`,
+            { bodyId: body.id, orderId: body.tpOrderId, status: orderStatus.status }
+          );
           if (orderExecutor.removeBodyTracking) {
             orderExecutor.removeBodyTracking(body.tpOrderId);
           }
@@ -1074,7 +1100,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Same FILLED-or-completion=100 pattern as the core TP path above.
         if (isFilledStatus(orderStatus)) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-          console.log(`${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} filled while offline`);
+          logger.info(
+            `${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} filled while offline`,
+            { bodyId: body.id, orderId: body.tpOrderId, status: orderStatus.status }
+          );
 
           const rawFills = await adapter.getOrderFills(body.tpOrderId);
           const ingestedFills = [];
@@ -1155,7 +1184,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             source: 'offline',
           });
 
-          console.log(`${tierCfg.emoji} [${exchange}] Offline body fill: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+          logger.info(`${tierCfg.emoji} [${exchange}] Offline body fill: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
           tradeEvents.emitTradeEvent('body_tp_filled', exchange, `[OFFLINE] ${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
             assetAmount: summary.totalSize,
@@ -1176,7 +1205,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (!openOrderIds.has(orderId)) {
         const orderStatus = await adapter.getOrder(orderId);
         if (orderStatus.status === 'FILLED') {
-          console.log(`✅ [${exchange}] Entry order ${orderId} filled while offline`);
+          logger.info(
+            `✅ [${exchange}] Entry order ${orderId} filled while offline`,
+            { orderId, orderType: 'entry', status: orderStatus.status }
+          );
           entriesFilled++;
 
           // Get and ingest fills
@@ -1235,7 +1267,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const reEvaluateAfterDowntime = (currentPrice) => {
     if (positionState.totalAsset <= 0) {
-      console.log(`ℹ️ [${exchange}] No position to re-evaluate`);
+      logger.info(`ℹ️ [${exchange}] No position to re-evaluate`);
       return;
     }
 
@@ -1245,20 +1277,20 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const priceChange = ((currentPrice - lastEntryPrice) / lastEntryPrice) * 100;
     const priceChangeAbs = Math.abs(priceChange);
 
-    console.log(`📊 [${exchange}] Re-evaluating position: price moved ${priceChange.toFixed(2)}% since last entry (${fmtPrice(lastEntryPrice)} -> ${fmtPrice(currentPrice)})`);
+    logger.info(`📊 [${exchange}] Re-evaluating position: price moved ${priceChange.toFixed(2)}% since last entry (${fmtPrice(lastEntryPrice)} -> ${fmtPrice(currentPrice)})`);
 
     // Re-anchor price for volatility triggers
     positionState.anchorPrice = currentPrice;
-    console.log(`⚓ [${exchange}] Re-anchored price to ${fmtPrice(currentPrice)}`);
+    logger.info(`⚓ [${exchange}] Re-anchored price to ${fmtPrice(currentPrice)}`);
 
     // If price dropped significantly (>5%), consider the position may need attention
     if (priceChange < -5) {
-      console.log(`⚠️ [${exchange}] Price dropped ${priceChangeAbs.toFixed(2)}% while offline - position unrealized P&L affected`);
+      logger.warn(`⚠️ [${exchange}] Price dropped ${priceChangeAbs.toFixed(2)}% while offline - position unrealized P&L affected`);
     }
 
     // If price rose significantly and we have a position, TP might need updating
     if (priceChange > 3 && positionState.totalAsset > 0) {
-      console.log(`📈 [${exchange}] Price rose ${priceChangeAbs.toFixed(2)}% while offline - TP order may need adjustment`);
+      logger.info(`📈 [${exchange}] Price rose ${priceChangeAbs.toFixed(2)}% while offline - TP order may need adjustment`);
       // TP order will be re-evaluated naturally on next metrics update
     }
   };
@@ -1276,16 +1308,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    * @returns {Promise<{success: boolean, error?: string}>}
    */
   const startImpl = async () => {
-    console.log(`🚀 [${exchange}] ${modeLabel}Starting regime engine for ${productId}`);
+    logger.info(`🚀 [${exchange}] ${modeLabel}Starting regime engine for ${productId}`);
 
     // Fetch product details for price tick size (affects TP price rounding)
     productDetails = await adapter.getProductDetails(productId).catch((err) => {
-      console.log(`⚠️ [${exchange}] Could not fetch product details: ${err.message}, using default price increment`);
+      logger.warn(
+        `⚠️ [${exchange}] Could not fetch product details: ${err.message}, using default price increment`,
+        { error: err.message, productId }
+      );
       return null;
     });
     if (productDetails?.quoteIncrement) {
       priceIncrement = parseFloat(productDetails.quoteIncrement) || 0.01;
-      console.log(`📏 [${exchange}] Price increment: ${priceIncrement}`);
+      logger.info(`📏 [${exchange}] Price increment: ${priceIncrement}`);
     }
     if (orderExecutor.setPriceIncrement) {
       orderExecutor.setPriceIncrement(priceIncrement);
@@ -1321,7 +1356,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         && !fillLedgerHasBuys;
 
       if (cycleWasCompleted) {
-        console.log(`ℹ️ [${exchange}] Saved state shows completed cycle (${savedCyclesCompleted} cycles, 0 ${baseCurrency} position) - trusting saved state over recovery`);
+        logger.info(`ℹ️ [${exchange}] Saved state shows completed cycle (${savedCyclesCompleted} cycles, 0 ${baseCurrency} position) - trusting saved state over recovery`);
       }
 
       positionState = {
@@ -1349,17 +1384,17 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         ? fillLedger.getCurrentCycleAllBuysCount()
         : fillLedger.getCurrentCycleBuysCount();
       if (positionState.cycleBuys !== actualCycleBuys) {
-        console.log(`🔧 [${exchange}] Auto-correcting cycleBuys: ${positionState.cycleBuys} -> ${actualCycleBuys} (from fill ledger)`);
+        logger.info(`🔧 [${exchange}] Auto-correcting cycleBuys: ${positionState.cycleBuys} -> ${actualCycleBuys} (from fill ledger)`);
         positionState.cycleBuys = actualCycleBuys;
       }
 
       // Check for orders that filled while we were offline (non-critical, continue on error)
       const offlineFills = await checkOfflineOrderFills().catch(err => {
-        console.log(`⚠️ [${exchange}] Failed to check offline fills: ${err.message}`);
+        logger.warn(`⚠️ [${exchange}] Failed to check offline fills: ${err.message}`, { error: err.message });
         return { tpFilled: false, entriesFilled: 0 };
       });
       if (offlineFills.tpFilled || offlineFills.entriesFilled > 0) {
-        console.log(`📋 [${exchange}] Processed offline fills: TP=${offlineFills.tpFilled}, entries=${offlineFills.entriesFilled}`);
+        logger.info(`📋 [${exchange}] Processed offline fills: TP=${offlineFills.tpFilled}, entries=${offlineFills.entriesFilled}`);
       }
 
       // Get current price and re-evaluate position
@@ -1370,7 +1405,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       // If we have position but no TP order, place one
       if (positionState.totalAsset > 0 && !positionState.activeTpOrderId) {
-        console.log(`📝 [${exchange}] Position exists but no TP order, will place after metrics update`);
+        logger.info(`📝 [${exchange}] Position exists but no TP order, will place after metrics update`);
       }
 
       // Restore TP order tracking if we have an active TP order ID - but validate it exists first.
@@ -1400,7 +1435,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (bodyOwner && orderExecutor.restoreBodyTpOrder) {
             const placedAt = tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now());
             orderExecutor.restoreBodyTpOrder(bodyOwner.id, positionState.activeTpOrderId, bodyOwner.assetQty, positionState.lastTpPrice, placedAt);
-            console.log(`📋 [${exchange}] Restored legacy TP as body_tp: ${positionState.activeTpOrderId.slice(0, 8)} → body ${bodyOwner.id.slice(-8)}`);
+            logger.info(`📋 [${exchange}] Restored legacy TP as body_tp: ${positionState.activeTpOrderId.slice(0, 8)} → body ${bodyOwner.id.slice(-8)}`);
             positionState.activeTpOrderId = null;
             positionState.lastTpPrice = 0;
             positionState.assetOnOrder = 0;
@@ -1413,7 +1448,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               placedAt: tpOrderStatus?.createdTime ? new Date(tpOrderStatus.createdTime).getTime() : (positionState.lastEntryTime || Date.now()),
               status: 'open',
             });
-            console.log(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
+            logger.info(`📋 [${exchange}] Restored TP order tracking: ${positionState.activeTpOrderId} @ ${fmtPrice(positionState.lastTpPrice)}`);
           }
         } else {
           // TP order no longer exists on exchange - clear tracking so a new one gets placed.
@@ -1443,7 +1478,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // while the engine is stopped. Engine-side recovery on startup +
           // disk-persisted retry markers are deferred; do not extend this
           // branch to ingest fills until that bookkeeping is in place.
-          console.log(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
+          logger.warn(`⚠️ [${exchange}] Saved TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
           positionState.activeTpOrderId = null;
           positionState.lastTpPrice = 0;
           positionState.assetOnOrder = 0;
@@ -1455,13 +1490,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         for (const staleOrderId of [...positionState._cancelOnStartup]) {
           const cancelResult = await adapter.cancelOrder(staleOrderId).catch(() => ({ success: false }));
           if (cancelResult.success) {
-            console.log(`🗑️ [${exchange}] Cancelled stale order from _cancelOnStartup: ${staleOrderId}`);
+            logger.info(`🗑️ [${exchange}] Cancelled stale order from _cancelOnStartup: ${staleOrderId}`);
           } else {
             const status = await adapter.getOrder(staleOrderId).catch(() => null);
             if (status && (status.status === 'FILLED' || status.status === 'CANCELLED')) {
-              console.log(`ℹ️ [${exchange}] Stale order ${staleOrderId} already ${status.status}`);
+              logger.info(`ℹ️ [${exchange}] Stale order ${staleOrderId} already ${status.status}`);
             } else {
-              console.log(`⚠️ [${exchange}] Failed to cancel stale order ${staleOrderId}`);
+              logger.warn(`⚠️ [${exchange}] Failed to cancel stale order ${staleOrderId}`);
               continue; // Keep failed IDs for next startup
             }
           }
@@ -1496,7 +1531,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (body.assetQty > 0 && body.costBasis > 0) {
             const correctedAvg = body.costBasis / body.assetQty;
             if (Math.abs(correctedAvg - body.avgPrice) / correctedAvg > 0.001) {
-              console.log(`🔧 [${exchange}] correcting body avgPrice bodyId=${body.id} old=${body.avgPrice} new=${correctedAvg}`);
+              logger.info(`🔧 [${exchange}] correcting body avgPrice bodyId=${body.id} old=${body.avgPrice} new=${correctedAvg}`);
               body.avgPrice = correctedAvg;
             }
           }
@@ -1555,8 +1590,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }
         }
 
-        if (restoredBodies > 0) console.log(`🌌 [${exchange}] Restored ${restoredBodies} celestial body TP orders`);
-        if (expiredBodies > 0) console.log(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
+        if (restoredBodies > 0) logger.info(`🌌 [${exchange}] Restored ${restoredBodies} celestial body TP orders`);
+        if (expiredBodies > 0) logger.warn(`⚠️ [${exchange}] ${expiredBodies} body TP orders need re-placement`);
 
         // Reprice any restored body TPs whose TP% exceeds the effective max
         // (fixes bodies that were placed with uncapped holdback floor)
@@ -1569,7 +1604,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const bTierCfg = celestialHierarchy.getTierConfig(body.tier);
           const bEffectiveMax = config.tpMaxPercent * (bTierCfg.tpMaxScale || 1);
           if (currentTpPct > bEffectiveMax * 1.01) {
-            console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}% — cancelling and repricing`);
+            logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP% ${currentTpPct.toFixed(2)}% exceeds max ${bEffectiveMax.toFixed(2)}% — cancelling and repricing`);
             const cancelResult = await adapter.cancelOrder(body.tpOrderId);
             if (cancelResult.success) {
               if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(body.tpOrderId);
@@ -1580,9 +1615,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             } else {
               const status = await adapter.getOrder(body.tpOrderId).catch(() => null);
               if (isFilledStatus(status)) {
-                console.log(`📋 [${exchange}] Overpriced body TP ${body.tpOrderId.slice(0, 8)} already filled — polling will process`);
+                logger.info(`📋 [${exchange}] Overpriced body TP ${body.tpOrderId.slice(0, 8)} already filled — polling will process`);
               } else {
-                console.log(`⚠️ [${exchange}] Failed to cancel overpriced body TP ${body.tpOrderId}: ${cancelResult.errorMessage || 'unknown'}`);
+                logger.warn(
+                  `⚠️ [${exchange}] Failed to cancel overpriced body TP ${body.tpOrderId}: ${cancelResult.errorMessage || 'unknown'}`,
+                  { bodyId: body.id, orderId: body.tpOrderId, error: cancelResult.errorMessage || 'unknown' }
+                );
               }
             }
           }
@@ -1604,7 +1642,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // is unsafe — it can sell non-engine assets (user holdings, other bots).
       if (orphanedSells.length > 0) {
         for (const order of orphanedSells) {
-          console.log(`⚠️ [${exchange}] Untracked sell order on exchange: ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} ${baseCurrency} @ ${fmtPrice(order.price)} — NOT adopting (manual review required)`);
+          logger.warn(`⚠️ [${exchange}] Untracked sell order on exchange: ${order.orderId.slice(0, 8)} ${order.size.toFixed(8)} ${baseCurrency} @ ${fmtPrice(order.price)} — NOT adopting (manual review required)`);
         }
       }
 
@@ -1669,7 +1707,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             }
           }
           if (!target) {
-            console.log(`⚠️ [${exchange}] Orphan buy ${orderId.slice(0, 8)} (${summary.totalSize.toFixed(8)} ${baseCurrency}): no eligible body to merge into, leaving unattributed`);
+            logger.warn(`⚠️ [${exchange}] Orphan buy ${orderId.slice(0, 8)} (${summary.totalSize.toFixed(8)} ${baseCurrency}): no eligible body to merge into, leaving unattributed`);
             continue;
           }
 
@@ -1686,14 +1724,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           fillLedger.annotateFillsByOrderId(orderId, annotation);
 
           const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
-          console.log(`🔧 [${exchange}] Recovered orphan buy ${orderId.slice(0, 8)} (${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}) → body ${merged.id.slice(-8)} ${tierCfg.emoji} ${merged.tier}`);
+          logger.info(`🔧 [${exchange}] Recovered orphan buy ${orderId.slice(0, 8)} (${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}) → body ${merged.id.slice(-8)} ${tierCfg.emoji} ${merged.tier}`);
           recoveredCount++;
         }
 
         if (recoveredCount > 0) {
           celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
           celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-          console.log(`🔧 [${exchange}] Recovered ${recoveredCount} orphan buy order(s) into bodies; reconcile loop will re-place affected TPs`);
+          logger.info(`🔧 [${exchange}] Recovered ${recoveredCount} orphan buy order(s) into bodies; reconcile loop will re-place affected TPs`);
         }
 
         // 1. Annotate buy fills for active celestial bodies (use both sourceOrderIds and buyOrders)
@@ -1764,12 +1802,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               });
               fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isBodyOwned: true, sellOrderId: sellFill.orderId });
               annotatedCount += 2;
-              console.log(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency}`);
+              logger.info(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency}`);
             } else {
               // Mark as body-owned but without computed values (dashboard will show raw data)
               fillLedger.annotateFillsByOrderId(sellFill.orderId, { isBodyOwned: true });
               annotatedCount++;
-              console.log(`⚠️ [${exchange}] Marked body sell ${sellFill.orderId.slice(0, 8)} (no matching buy found with valid PnL)`);
+              logger.warn(`⚠️ [${exchange}] Marked body sell ${sellFill.orderId.slice(0, 8)} (no matching buy found with valid PnL)`);
             }
           }
         }
@@ -1787,13 +1825,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             const oldCycleId = fill.cycleId;
             fillLedger.updateFillCycleId(fill.tradeId, currentCycleId);
             annotatedCount++;
-            console.log(`🔧 [${exchange}] Moved fill ${fill.tradeId.slice(0, 8)} from ${oldCycleId} to ${currentCycleId}`);
+            logger.info(`🔧 [${exchange}] Moved fill ${fill.tradeId.slice(0, 8)} from ${oldCycleId} to ${currentCycleId}`);
           }
         }
 
         if (annotatedCount > 0) {
           fillLedger.persist();
-          console.log(`🔧 [${exchange}] Annotated ${annotatedCount} satellite fills for correct tracking`);
+          logger.info(`🔧 [${exchange}] Annotated ${annotatedCount} satellite fills for correct tracking`);
         }
       }
 
@@ -1815,7 +1853,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (recalcResult.cyclesCompleted > 0 || recalcResult.orphansFixed > 0) {
         positionState.cyclesCompleted = recalcResult.cyclesCompleted;
         refreshRealizedFromCyclePairs();
-        console.log(`📋 [${exchange}] Cycle-pair realized: $${positionState.realizedPnL.toFixed(2)} USD, ${positionState.realizedAssetPnL.toFixed(6)} ${baseCurrency} reserves (${recalcResult.cyclesCompleted} cycles)`);
+        logger.info(`📋 [${exchange}] Cycle-pair realized: $${positionState.realizedPnL.toFixed(2)} USD, ${positionState.realizedAssetPnL.toFixed(6)} ${baseCurrency} reserves (${recalcResult.cyclesCompleted} cycles)`);
       }
 
       // Backfill APY tracking start time from earliest fill in ledger
@@ -1831,7 +1869,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (!positionState.originalCapital) {
             positionState.originalCapital = positionState.initialCapital;
           }
-          console.log(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}, original=$${positionState.originalCapital}`);
+          logger.info(`📊 [${exchange}] APY tracking backfilled to first fill: ${new Date(earliestFillTime).toISOString()}, original=$${positionState.originalCapital}`);
         }
       }
 
@@ -1853,7 +1891,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         for (const cb of cbData) {
           if (!cb.filled && !cb.cancelled) correctiveBuyIds.add(cb.buyOrderId);
         }
-      } catch (err) { if (err.code !== 'ENOENT') console.log('[regime-engine] Error reading pending-corrective-buys.json:', err.message); }
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          logger.error(
+            `[regime-engine] Error reading pending-corrective-buys.json: ${err.message}`,
+            { error: err.message, errorCode: err.code, path: 'pending-corrective-buys.json' }
+          );
+        }
+      }
 
       // Load manual trade recovery buy order IDs to avoid cancelling them as orphans
       try {
@@ -1862,7 +1907,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         for (const mt of (mtData.trades || [])) {
           if (mt.buyOrderId && mt.status === 'buy_pending') correctiveBuyIds.add(mt.buyOrderId);
         }
-      } catch (err) { if (err.code !== 'ENOENT') console.log('[regime-engine] Error reading manual-trades.json:', err.message); }
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          logger.error(
+            `[regime-engine] Error reading manual-trades.json: ${err.message}`,
+            { error: err.message, errorCode: err.code, path: 'manual-trades.json' }
+          );
+        }
+      }
 
       let restoredEntries = 0;
       let orphanedEntries = 0;
@@ -1880,12 +1932,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               placedAt: order.createdTime ? new Date(order.createdTime).getTime() : (savedEntry.placedAt || Date.now()),
             });
             restoredEntries++;
-            console.log(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
+            logger.info(`🔄 [${exchange}] Restored pending entry: ${order.orderId} @ ${fmtPrice(savedEntry.price)}`);
           }
 
           // Check if order has any fills while offline (partial fills)
           if (order.filledSize && order.filledSize > 0) {
-            console.log(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
+            logger.info(`✅ [${exchange}] Entry ${order.orderId} has partial fills (${order.filledSize})`);
             const rawFills = await adapter.getOrderFills(order.orderId);
             let orderHadNewFills = false;
             let lastFillPrice = 0;
@@ -1901,7 +1953,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 orderHadNewFills = true;
                 lastFillPrice = fill.price;
                 lastFillTime = fill.timestamp;
-                console.log(`📝 [${exchange}] Ingested partial fill: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
+                logger.info(`📝 [${exchange}] Ingested partial fill: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
               }
             }
             // Increment step once per order, not per fill
@@ -1912,11 +1964,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             }
           }
         } else if (correctiveBuyIds.has(order.orderId)) {
-          console.log(`📋 [${exchange}] Skipping corrective buy order ${order.orderId.slice(0, 8)} (tracked in pending-corrective-buys)`);
+          logger.info(`📋 [${exchange}] Skipping corrective buy order ${order.orderId.slice(0, 8)} (tracked in pending-corrective-buys)`);
         } else if (!savedLadderIds.has(order.orderId)) {
           // Check if this "orphan" has partial fills — if so, restore it instead of cancelling
           if (order.filledSize && order.filledSize > 0) {
-            console.log(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
+            logger.info(`📦 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} has partial fills (${order.filledSize} ${baseCurrency}) — restoring instead of cancelling`);
             if (orderExecutor.restorePendingOrder) {
               orderExecutor.restorePendingOrder(order.orderId, {
                 type: 'entry',
@@ -1942,7 +1994,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 orderHadNewFills = true;
                 lastFillPrice = fill.price;
                 lastFillTime = fill.timestamp;
-                console.log(`📝 [${exchange}] Ingested partial fill from orphan: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
+                logger.info(`📝 [${exchange}] Ingested partial fill from orphan: ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)}`);
               }
             }
             if (orderHadNewFills) {
@@ -1954,16 +2006,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           } else {
             // Orphan entry with no fills — cancel it
             orphanedEntries++;
-            console.log(`🧹 [${exchange}] Cancelling orphan entry order ${order.orderId} (not tracked by regime engine)`);
+            logger.info(`🧹 [${exchange}] Cancelling orphan entry order ${order.orderId} (not tracked by regime engine)`);
             const cancelResult = await adapter.cancelOrder(order.orderId);
             if (cancelResult.success) {
-              console.log(`✅ [${exchange}] Cancelled orphan entry ${order.orderId.slice(0, 8)}`);
+              logger.info(`✅ [${exchange}] Cancelled orphan entry ${order.orderId.slice(0, 8)}`);
             } else {
               const orphanStatus = await adapter.getOrder(order.orderId).catch(() => null);
               if (orphanStatus?.status === 'FILLED') {
-                console.log(`📋 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} already filled — recovery will process`);
+                logger.info(`📋 [${exchange}] Orphan entry ${order.orderId.slice(0, 8)} already filled — recovery will process`);
               } else {
-                console.log(`⚠️ [${exchange}] Failed to cancel orphan entry ${order.orderId.slice(0, 8)}: ${cancelResult.errorMessage || 'unknown'}`);
+                logger.warn(
+                  `⚠️ [${exchange}] Failed to cancel orphan entry ${order.orderId.slice(0, 8)}: ${cancelResult.errorMessage || 'unknown'}`,
+                  { orderId: order.orderId, orderType: 'entry', error: cancelResult.errorMessage || 'unknown' }
+                );
               }
             }
           }
@@ -1971,10 +2026,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
 
       if (restoredEntries > 0) {
-        console.log(`✅ [${exchange}] Restored ${restoredEntries} pending entry orders from state`);
+        logger.info(`✅ [${exchange}] Restored ${restoredEntries} pending entry orders from state`);
       }
       if (orphanedEntries > 0) {
-        console.log(`🧹 [${exchange}] Cancelled ${orphanedEntries} orphan entry orders`);
+        logger.info(`🧹 [${exchange}] Cancelled ${orphanedEntries} orphan entry orders`);
       }
 
       const allOpenIds = new Set(exchangeOpenOrders.map(o => o.orderId));
@@ -1994,14 +2049,19 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const savedEntry = terminalSavedEntries[i];
         const orderStatus = entryStatuses[i];
         if (!orderStatus || orderStatus.__err) {
-          if (orderStatus?.__err) console.log(`⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${orderStatus.__err.message}`);
+          if (orderStatus?.__err) {
+            logger.warn(
+              `⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${orderStatus.__err.message}`,
+              { orderId: savedEntry.orderId, error: orderStatus.__err.message }
+            );
+          }
           continue;
         }
         try {
           const isFullFilled = isFilledStatus(orderStatus);
           const partialSize = parseFloat(orderStatus.filledSize || 0);
           if (!isFullFilled && partialSize <= 0) continue; // truly empty cancel, ok to purge
-          console.log(`📥 [${exchange}] Catching up offline entry ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`);
+          logger.info(`📥 [${exchange}] Catching up offline entry ${savedEntry.orderId.slice(0, 8)}: status=${orderStatus.status}, filled=${partialSize}`);
           orderExecutor.markSettled(savedEntry.orderId);
           await handleOrderFill(buildPartialFillData(savedEntry.orderId, 'buy', orderStatus, {
             status: isFullFilled ? 'FILLED' : orderStatus.status,
@@ -2010,11 +2070,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           }));
           caughtUpEntries++;
         } catch (err) {
-          console.log(`⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${err.message}`);
+          logger.warn(
+            `⚠️ [${exchange}] Failed to catch up offline entry ${savedEntry.orderId.slice(0, 8)}: ${err.message}`,
+            { orderId: savedEntry.orderId, error: err.message }
+          );
         }
       }
       if (caughtUpEntries > 0) {
-        console.log(`📥 [${exchange}] Caught up ${caughtUpEntries} offline-terminal entries before purge`);
+        logger.info(`📥 [${exchange}] Caught up ${caughtUpEntries} offline-terminal entries before purge`);
       }
 
       // Remove saved pending entries that are no longer open on the exchange
@@ -2023,7 +2086,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.pendingEntryOrders = savedPendingEntries.filter(e => allOpenIds.has(e.orderId));
         const purged = savedPendingEntries.length - positionState.pendingEntryOrders.length;
         if (purged > 0) {
-          console.log(`🧹 [${exchange}] Purged ${purged} stale pending entry orders (filled/cancelled while offline)`);
+          logger.info(`🧹 [${exchange}] Purged ${purged} stale pending entry orders (filled/cancelled while offline)`);
         }
       }
 
@@ -2060,15 +2123,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           positionState.ladderActive = false;
         }
 
-        if (restoredLadder > 0) console.log(`✅ [${exchange}] Restored ${restoredLadder} pending ladder orders`);
-        if (cancelledLadder > 0) console.log(`ℹ️ [${exchange}] ${cancelledLadder} saved ladder orders no longer open on exchange`);
+        if (restoredLadder > 0) logger.info(`✅ [${exchange}] Restored ${restoredLadder} pending ladder orders`);
+        if (cancelledLadder > 0) logger.info(`ℹ️ [${exchange}] ${cancelledLadder} saved ladder orders no longer open on exchange`);
       }
 
       // Ensure all celestial bodies have TP orders
       // (covers bodies with null tpOrderId from saved state, e.g. after a cancelled TP wasn't re-placed)
       const bodiesNeedingTp = (positionState.celestialBodies || []).filter(b => !b.tpOrderId && b.assetQty > 0);
       if (bodiesNeedingTp.length > 0) {
-        console.log(`🔧 [${exchange}] ${bodiesNeedingTp.length} celestial bodies need TP orders`);
+        logger.info(`🔧 [${exchange}] ${bodiesNeedingTp.length} celestial bodies need TP orders`);
         for (const body of bodiesNeedingTp) {
           await placeBodyTp(body);
         }
@@ -2081,7 +2144,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const trackedBtc = allRecoveryBodies.reduce((sum, b) => sum + b.assetQty, 0);
         const untrackedAsset = roundAsset(positionState.totalAsset - trackedBtc);
         if (untrackedAsset > 0.00000100) {
-          console.log(`⚠️ [${exchange}] ${untrackedAsset.toFixed(8)} ${baseCurrency} in position not tracked by any body — manual review required`);
+          logger.warn(`⚠️ [${exchange}] ${untrackedAsset.toFixed(8)} ${baseCurrency} in position not tracked by any body — manual review required`);
         }
       }
 
@@ -2092,7 +2155,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         } else if (positionState.lastTpPrice > 0 && positionState.avgCostBasis > 0) {
           const currentTpPct = ((positionState.lastTpPrice - positionState.avgCostBasis) / positionState.avgCostBasis) * 100;
           if (currentTpPct < config.tpMinPercent) {
-            console.log(`⚠️ [${exchange}] TP has drifted below minimum: ${currentTpPct.toFixed(3)}% < ${config.tpMinPercent}% — rebuilding`);
+            logger.warn(`⚠️ [${exchange}] TP has drifted below minimum: ${currentTpPct.toFixed(3)}% < ${config.tpMinPercent}% — rebuilding`);
             await placeTakeProfitOrder({ forceUpdate: true });
           }
         }
@@ -2104,7 +2167,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Try to load saved dry-run state
       const loaded = loadDryRunState();
       if (!loaded) {
-        console.log(`🧪 [${exchange}] [DRY-RUN] No saved state, starting fresh`);
+        logger.info(`🧪 [${exchange}] [DRY-RUN] No saved state, starting fresh`);
         positionState = createInitialPositionState();
       }
     }
@@ -2126,12 +2189,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.lifecycle = LIFECYCLE.CLOSED;
         positionState.lifecycleChangedAt = Date.now();
         positionState.lifecycleClosedCycle = positionState.cyclesCompleted || 0;
-        console.log(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
+        logger.info(`🛑 [${exchange}] Draining fund has empty position — auto-closing`);
         if (!isDryRun) saveLiveState();
         if (callbacks.onLifecycleClosed) {
           setImmediate(() => {
             try { callbacks.onLifecycleClosed(); } catch (err) {
-              console.log(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`);
+              logger.warn(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`, { error: err.message });
             }
           });
         }
@@ -2172,16 +2235,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       adapter.startHeartbeat(fundLabel);
     }
 
-    console.log(`✅ [${exchange}] ${modeLabel}Regime engine started`);
+    logger.info(`✅ [${exchange}] ${modeLabel}Regime engine started`);
 
     // SIGUSR1: reload state from disk (for applying manual state fixes without restart)
     if (!isDryRun) {
       const reloadHandler = () => {
-        console.log(`🔄 [${exchange}] SIGUSR1 received — reloading state from disk`);
+        logger.info(`🔄 [${exchange}] SIGUSR1 received — reloading state from disk`);
         const savedState = loadRegimeState(exchange, pair);
         const diskPos = savedState.position;
         if (!diskPos) {
-          console.log(`⚠️ [${exchange}] No position in disk state, skipping reload`);
+          logger.warn(`⚠️ [${exchange}] No position in disk state, skipping reload`);
           return;
         }
         // Merge safe-to-reload fields from disk into in-memory state
@@ -2193,12 +2256,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           if (diskPos[field] !== undefined) {
             const old = positionState[field];
             positionState[field] = diskPos[field];
-            console.log(`   ${field}: ${JSON.stringify(old)} → ${JSON.stringify(diskPos[field])}`);
+            logger.info(`   ${field}: ${JSON.stringify(old)} → ${JSON.stringify(diskPos[field])}`);
           }
         }
         // Also reload fill ledger from disk
         fillLedger.load();
-        console.log(`✅ [${exchange}] State reloaded from disk`);
+        logger.info(`✅ [${exchange}] State reloaded from disk`);
         saveLiveState();
       };
       process.on('SIGUSR1', reloadHandler);
@@ -2225,7 +2288,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
    */
   const start = async () => {
     if (isRunning || isStarting) {
-      console.log(`⚠️ [${exchange}] ${modeLabel}Regime engine already ${isRunning ? 'running' : 'starting'}`);
+      logger.warn(`⚠️ [${exchange}] ${modeLabel}Regime engine already ${isRunning ? 'running' : 'starting'}`);
       return { success: false, error: 'Engine already running' };
     }
     isStarting = true;
@@ -2242,7 +2305,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const stop = async () => {
     if (!isRunning) return;
 
-    console.log(`🛑 [${exchange}] Stopping regime engine`);
+    logger.info(`🛑 [${exchange}] Stopping regime engine`);
 
     // Mark as not running FIRST to prevent callbacks from taking action
     isRunning = false;
@@ -2268,7 +2331,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // the corrupt file even though a recoverable in-memory ledger
       // existed. force=true rewrites the healthy snapshot unconditionally.
       fillLedger.persist({ force: true });
-      console.log(`💾 [${exchange}] Saved live state and fill ledger`);
+      logger.info(`💾 [${exchange}] Saved live state and fill ledger`);
       // Remove SIGUSR1 handler
       if (positionState._sigusr1Handler) {
         process.removeListener('SIGUSR1', positionState._sigusr1Handler);
@@ -2325,7 +2388,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       wsFeed = null;
     }
 
-    console.log(`✅ [${exchange}] Regime engine stopped`);
+    logger.info(`✅ [${exchange}] Regime engine stopped`);
   };
 
   /**
@@ -2340,7 +2403,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       apiSecret: credentials.apiSecret,
       onTicker: (data) => { if (isRunning) handleTicker(data); },
       onTrade: (data) => { if (isRunning) handleTrade(data); },
-      onOrderUpdate: (data) => { if (isRunning) handleOrderUpdate(data).catch(err => console.log(`❌ [${exchange}] handleOrderUpdate error: ${err.message}`)); },
+      onOrderUpdate: (data) => {
+        if (isRunning) {
+          handleOrderUpdate(data).catch(err => logger.error(
+            `❌ [${exchange}] handleOrderUpdate error: ${err.message}`,
+            { orderId: data.orderId, error: err.message }
+          ));
+        }
+      },
       onConnect: () => {
         if (isRunning) healthMonitor.recordWsStatus(true);
       },
@@ -2353,7 +2423,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       },
       onError: (error) => {
-        if (isRunning) console.log(`❌ [${exchange}] WebSocket error: ${error.message}`);
+        if (isRunning) logger.error(`❌ [${exchange}] WebSocket error: ${error.message}`, { error: error.message });
       },
     });
 
@@ -2380,7 +2450,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     tailEvents.processTicker(data, marketState.atr1m);
 
     // Evaluate entry trigger (fire-and-forget, catch to prevent unhandled rejection)
-    evaluateEntryTrigger().catch(err => console.log(`⚠️ [${exchange}] Entry evaluation failed: ${err.message}`));
+    evaluateEntryTrigger().catch(err => logger.warn(
+      `⚠️ [${exchange}] Entry evaluation failed: ${err.message}`,
+      { error: err.message }
+    ));
 
     // In dry-run mode, check if any orders should fill based on current price
     if (isDryRun) {
@@ -2451,7 +2524,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // as partial when it's genuinely under-filled. Mirrors the polling path,
         // which checks completionPercentage >= 100 before CANCELLED (issue #107).
         const fullyFilled = (data.completionPercentage || 0) >= 100;
-        console.log(`⚠️ [${exchange}] WS CANCELLED ${data.orderId} with ${data.filledSize} ${fullyFilled ? 'full' : 'partial'} fill — routing through handleOrderFill before dropping tracking`);
+        logger.warn(`⚠️ [${exchange}] WS CANCELLED ${data.orderId} with ${data.filledSize} ${fullyFilled ? 'full' : 'partial'} fill — routing through handleOrderFill before dropping tracking`);
         orderExecutor.markSettled?.(data.orderId);
         await handleOrderFill(fullyFilled
           ? { ...data, status: 'FILLED', isPartialFill: false }
@@ -2483,7 +2556,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // awaits (WS vs polling).
     // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
     if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
-      await cancelPartialFillOrder({ adapter, exchange }, fillData.orderId);
+      await cancelPartialFillOrder({ adapter, exchange, pair }, fillData.orderId);
     }
 
     let rawFills = await adapter.getOrderFills(fillData.orderId);
@@ -2491,7 +2564,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // If getOrderFills returns empty but we have fill data from order status (polling detection),
     // retry once after a short delay - Coinbase has eventual consistency
     if (rawFills.length === 0 && fillData.filledSize > 0) {
-      console.log(`⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`);
+      logger.info(
+        `⏳ [${exchange}] No fills yet for ${fillData.orderId}, retrying in 2s (status shows ${fillData.filledSize} filled)`,
+        { orderId: fillData.orderId, side: fillData.side, filledSize: fillData.filledSize, retryDelayMs: 2000 }
+      );
       await new Promise(r => setTimeout(r, 2000));
       rawFills = await adapter.getOrderFills(fillData.orderId);
     }
@@ -2520,7 +2596,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Last resort: if still no fills but order status has data, create synthetic fill
     // This handles Coinbase eventual consistency where fills API lags behind order status
     if (fillsToAggregate.length === 0 && fillData.filledSize > 0 && fillData.averageFilledPrice > 0) {
-      console.log(`⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: ${fillData.filledSize} @ ${fmtPrice(fillData.averageFilledPrice)}`);
+      logger.warn(
+        `⚠️ [${exchange}] Using order status data as fallback for ${fillData.orderId}: ${fillData.filledSize} @ ${fmtPrice(fillData.averageFilledPrice)}`,
+        {
+          orderId: fillData.orderId,
+          side: fillData.side,
+          filledSize: fillData.filledSize,
+          averageFilledPrice: fillData.averageFilledPrice,
+        }
+      );
       const syntheticFill = {
         tradeId: `synthetic-${fillData.orderId}`,
         orderId: fillData.orderId,
@@ -2552,7 +2636,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         ? `${fillData.orderId}:${(fillData.filledSize || 0).toFixed(8)}`
         : fillData.orderId;
       if (recentlyProcessedBuyFills.has(buyDedupKey)) {
-        console.log(`⏭️ [${exchange}] Buy fill already processed, skipping: ${buyDedupKey}`);
+        logger.info(`⏭️ [${exchange}] Buy fill already processed, skipping: ${buyDedupKey}`);
         return;
       }
       recentlyProcessedBuyFills.add(buyDedupKey);
@@ -2579,7 +2663,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // (which aggregates buys by orderId) under-reports its cost. Without this
       // gate the orderId-only guard would swallow every advancing partial.
       if (shouldSkipBuyRecommit(ingestedFills.length, positionState.celestialBodies, fillData.orderId)) {
-        console.log(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body and no new fills ingested — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
+        logger.info(`⏭️ [${exchange}] Buy ${fillData.orderId} already owned by a body and no new fills ingested — skipping re-commit (retry after partial failure); reconcile will repair any missing TP`);
         return;
       }
 
@@ -2653,7 +2737,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (mergeTarget && mergeTarget.tpOrderId) {
         const targetTpStatus = await adapter.getOrder(mergeTarget.tpOrderId).catch(() => null);
         if (targetTpStatus && targetTpStatus.filledSize > 0) {
-          console.log(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP partially filled (${targetTpStatus.filledSize} ${baseCurrency}) — routing buy to its own body (issue #201)`);
+          logger.warn(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP partially filled (${targetTpStatus.filledSize} ${baseCurrency}) — routing buy to its own body (issue #201)`);
           mergeTarget = null;
         }
       }
@@ -2666,7 +2750,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
         if (!cancelResult.cancelled) {
           if (mergeTarget.tpOrderId) pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
-          console.log(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
+          logger.warn(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
           mergeTarget = null;
         } else if (cancelResult.filledSize > 0) {
           // Partial-during-cancel race (issue #227): the pre-check above saw the
@@ -2678,7 +2762,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // clear the cancelled TP. The Race-3 snapshot below carries the sold
           // tranche to the merge-snapshot sell handler, which deducts it from the
           // target and re-places a correctly-sized TP.
-          console.log(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP filled ${cancelResult.filledSize} ${baseCurrency} during cancel — routing buy to its own body (issue #227)`);
+          logger.warn(`⚠️ [${exchange}] Merge target ${mergeTarget.id.slice(-8)} TP filled ${cancelResult.filledSize} ${baseCurrency} during cancel — routing buy to its own body (issue #227)`);
           const soldTp = mergeTarget.tpOrderId;
           if (soldTp) {
             pendingMergeTpOrders.delete(soldTp);
@@ -2708,7 +2792,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
               filledValue: cancelResult.filledValue,
               averageFilledPrice: cancelResult.averageFilledPrice,
             }, { totalFees: cancelResult.totalFees || 0 })).catch((err) => {
-              console.log(`⚠️ [${exchange}] Failed to book merge-target partial fill for ${soldTp.slice(0, 8)} immediately: ${err.message} — relying on a later WS/poll event`);
+              logger.warn(
+                `⚠️ [${exchange}] Failed to book merge-target partial fill for ${soldTp.slice(0, 8)} immediately: ${err.message} — relying on a later WS/poll event`,
+                { orderId: soldTp, error: err.message }
+              );
             });
           }
           mergeTarget = null;
@@ -2763,7 +2850,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             merged.assetQty, merged.avgPrice, merged.tpPrice, tierCfgCheck.holdbackScale
           );
           if (Math.abs(sellQty - merged.assetOnOrder) > 0.00000001) {
-            console.log(`⚠️ [${exchange}] Stale TP detected for body ${merged.id.slice(-8)}: onOrder=${merged.assetOnOrder}, expected=${sellQty} — cancelling for re-place`);
+            logger.warn(`⚠️ [${exchange}] Stale TP detected for body ${merged.id.slice(-8)}: onOrder=${merged.assetOnOrder}, expected=${sellQty} — cancelling for re-place`);
             const cancelResult = await orderExecutor.cancelBodyTpOrder(merged.id, merged.tpOrderId);
             if (cancelResult.cancelled) {
               orderExecutor.removeBodyTracking(merged.tpOrderId);
@@ -2776,7 +2863,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
 
         const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
-        console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy merged into ${merged.tier}: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${merged.id.slice(-8)} (${merged.assetQty.toFixed(6)} ${baseCurrency}, avg=${fmtPrice(merged.avgPrice)})`);
+        logger.info(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy merged into ${merged.tier}: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${merged.id.slice(-8)} (${merged.assetQty.toFixed(6)} ${baseCurrency}, avg=${fmtPrice(merged.avgPrice)})`);
 
         tradeEvents.emitTradeEvent('buy_filled', exchange, `${fillTypeLabel}${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)} [merged→${merged.tier}]`, {
           assetAmount: summary.totalSize,
@@ -2804,11 +2891,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const bodyTpPlaced = await placeBodyTp(body);
 
         if (!bodyTpPlaced) {
-          console.log(`⚠️ [${exchange}] Body TP placement failed for ${body.id.slice(-8)}, body persists without TP`);
+          logger.warn(`⚠️ [${exchange}] Body TP placement failed for ${body.id.slice(-8)}, body persists without TP`);
         }
 
         const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-        console.log(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy filled → created ${body.tier} body: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${body.id.slice(-8)}`);
+        logger.info(`${tierCfg.emoji} [${exchange}] ${fillTypeLabel}Buy filled → created ${body.tier} body: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, body=${body.id.slice(-8)}`);
 
         // Annotate buy fills with body metadata
         fillLedger.annotateFillsByOrderId(fillData.orderId, { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier });
@@ -2854,7 +2941,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // For partial fills, use a composite key with filled size to allow incremental processing
       const dedupKey = makeFillDedupKey(fillData.orderId, fillData.isPartialFill, fillData.filledSize);
       if (recentlyProcessedSellFills.has(dedupKey)) {
-        console.log(`⏭️ [${exchange}] Sell fill already processed, skipping: ${dedupKey}`);
+        logger.info(`⏭️ [${exchange}] Sell fill already processed, skipping: ${dedupKey}`);
         return;
       }
       recentlyProcessedSellFills.add(dedupKey);
@@ -2918,7 +3005,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           await placeBodyTp(liveMerged);
         }
 
-        console.log(`${tierCfg.emoji} [${exchange}] Merge-snapshot TP filled (${mergeSnapshot.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+        logger.info(`${tierCfg.emoji} [${exchange}] Merge-snapshot TP filled (${mergeSnapshot.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
         fillLedger.annotateFillsByOrderId(fillData.orderId, {
           isBodyOwned: true,
@@ -3027,7 +3114,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // Sync aggregate fields
           celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-          console.log(`${tierCfg.emoji} [${exchange}] Body TP PARTIAL fill (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, remaining=${remainingAsset} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+          logger.info(`${tierCfg.emoji} [${exchange}] Body TP PARTIAL fill (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, remaining=${remainingAsset} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
           tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)} [PARTIAL]`, {
             assetAmount: summary.totalSize,
@@ -3054,7 +3141,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
           const remaining = positionState.celestialBodies.length;
-          console.log(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
+          logger.info(`${tierCfg.emoji} [${exchange}] Body TP filled (${body.tier}): ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed} (${remaining} remaining)`);
 
           tradeEvents.emitTradeEvent('body_tp_filled', exchange, `${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
             assetAmount: summary.totalSize,
@@ -3150,7 +3237,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const existingFills = fillLedger.getFillsForOrder(fillData.orderId);
         const alreadyProcessedAsBody = existingFills.some(f => f.isBodyOwned || f.isSatellite);
         if (alreadyProcessedAsBody) {
-          console.log(`⏭️ [${exchange}] Sell ${fillData.orderId.slice(0,8)} already processed as body TP, skipping`);
+          logger.info(`⏭️ [${exchange}] Sell ${fillData.orderId.slice(0,8)} already processed as body TP, skipping`);
           return;
         }
 
@@ -3158,7 +3245,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // It's likely a duplicate/untracked satellite sell. Log and annotate but don't complete the cycle.
         const remainingBodies = (positionState.celestialBodies || []).length;
         if (remainingBodies > 0) {
-          console.log(`⚠️ [${exchange}] Untracked sell ${fillData.orderId.slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${remainingBodies} celestial bodies still active, skipping cycle completion`);
+          logger.warn(`⚠️ [${exchange}] Untracked sell ${fillData.orderId.slice(0,8)} (${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}) — ${remainingBodies} celestial bodies still active, skipping cycle completion`);
           fillLedger.annotateFillsByOrderId(fillData.orderId, { untrackedSell: true });
           saveLiveState();
           fillLedger.persist();
@@ -3173,7 +3260,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
           const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
 
-          console.log(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
+          logger.info(`✅ [${exchange}] TP filled (untracked): ${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
 
           // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
           const cycleFills = fillLedger.getCurrentCycleFills();
@@ -3235,7 +3322,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         await new Promise(resolve => setTimeout(resolve, 25));
       }
       if (mergeInProgress) {
-        console.log(`⚠️ [${exchange}] Fill ${fillData.orderId} proceeding after 15s wait — merge lock still held (possible stuck merge)`);
+        logger.warn(`⚠️ [${exchange}] Fill ${fillData.orderId} proceeding after 15s wait — merge lock still held (possible stuck merge)`);
       }
       return await handleOrderFillImpl(fillData, dedupRef);
     } catch (err) {
@@ -3283,7 +3370,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // process, so guard every invocation.
     const runMetrics = () =>
       updateMetrics().catch((err) =>
-        console.log(`❌ [${exchange}] Metrics update crashed: ${err.message}`)
+        logger.error(`❌ [${exchange}] Metrics update crashed: ${err.message}`, { error: err.message })
       );
     metricsInterval = setInterval(runMetrics, METRICS_INTERVAL_MS);
     // Initial update
@@ -3328,7 +3415,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         pages++;
         const startSec = endSec - (maxCandlesPerRequest * daySec);
         const batch = await adapter.getCandles(productId, startSec, endSec, 'ONE_DAY').catch(err => {
-          console.log(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`);
+          logger.warn(`⚠️ [${exchange}] Failed to fetch ATH data: ${err.message}`, { error: err.message });
           return null;
         });
 
@@ -3353,7 +3440,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       marketState.athLastUpdate = now;
 
       const distancePct = (Math.abs(athDistance) * 100).toFixed(1);
-      console.log(`📊 [${exchange}] ATH updated: ${fmtPrice(ath)} (${allCandles.length} candles), current price ${athDistance < 0 ? `${distancePct}% below` : `${distancePct}% above`} ATH`);
+      logger.info(`📊 [${exchange}] ATH updated: ${fmtPrice(ath)} (${allCandles.length} candles), current price ${athDistance < 0 ? `${distancePct}% below` : `${distancePct}% above`} ATH`);
     };
 
     await fetchAndComputeATH().finally(() => {
@@ -3382,7 +3469,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       candles1m = await adapter.getCandles(productId, oneHourAgo, now, 'ONE_MINUTE');
       candles5m = await adapter.getCandles(productId, fourHoursAgo, now, 'FIVE_MINUTE');
     })().catch(err => {
-      console.log(`⚠️ [${exchange}] Metrics update failed (using cached): ${err.message}`);
+      logger.warn(`⚠️ [${exchange}] Metrics update failed (using cached): ${err.message}`, { error: err.message });
       fetchFailed = true;
     });
 
@@ -3433,7 +3520,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     // Update ATH for ladder mode (daily refresh) - run async to avoid blocking metrics interval
-    updateATH().catch(err => console.log(`⚠️ [${exchange}] ATH update failed: ${err.message}`));
+    updateATH().catch(err => logger.warn(`⚠️ [${exchange}] ATH update failed: ${err.message}`, { error: err.message }));
 
     // Classify regime with updated metrics
     regimeDetector.classify(marketState);
@@ -3494,7 +3581,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const result = await manualMergeBody(dust.id, { targetId: target.id, label: 'Auto-consolidation (dust)' });
     if (!result.success) {
       dustMergeRetryAfter = Date.now() + 300000; // 5 min backoff (bounds failure re-log)
-      console.log(`⚠️ [${exchange}] Dust auto-consolidation deferred: ${result.message}`);
+      logger.warn(`⚠️ [${exchange}] Dust auto-consolidation deferred: ${result.message}`);
     }
   };
 
@@ -3515,7 +3602,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // the exchange min (see placeTakeProfitOrder) otherwise re-logs every cycle.
       const tpNeedKey = bodiesWithoutTp.map(b => b.id).sort().join(',');
       if (tpNeedKey !== lastTpNeedKey) {
-        console.log(`📝 [${exchange}] Position without TP order detected — bodies=${bodies.length} (${bodiesWithoutTp.length} need TP: ${bodiesWithoutTp.map(b => b.id.slice(-8)).join(',')}), avgCost=${fmtPrice(positionState.avgCostBasis)}, cycleBuys=${positionState.cycleBuys}`);
+        logger.info(`📝 [${exchange}] Position without TP order detected — bodies=${bodies.length} (${bodiesWithoutTp.length} need TP: ${bodiesWithoutTp.map(b => b.id.slice(-8)).join(',')}), avgCost=${fmtPrice(positionState.avgCostBasis)}, cycleBuys=${positionState.cycleBuys}`);
         lastTpNeedKey = tpNeedKey;
       }
       await placeTakeProfitOrder();
@@ -3560,11 +3647,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // dead WS feed + dead REST poll (issue #110 M6).
             if (result.polled > 0) healthMonitor.recordOrderUpdate();
             if (result.filled > 0 || result.cancelled > 0) {
-              console.log(`🔄 [${exchange}] Reconcile fill check: ${result.filled} filled, ${result.cancelled} cancelled`);
+              logger.info(`🔄 [${exchange}] Reconcile fill check: ${result.filled} filled, ${result.cancelled} cancelled`);
             }
           })
           .catch(err => {
-            console.log(`❌ [${exchange}] Fill check failed: ${err.message}`);
+            logger.error(`❌ [${exchange}] Fill check failed: ${err.message}`, { error: err.message });
           }));
       }
 
@@ -3576,7 +3663,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // flips to FILLED — match the rest of the codebase's fill detection so
             // the reconcile backstop acts during that window (issue #155).
             if (isFilledStatus(orderStatus)) {
-              console.log(`✅ [${exchange}] Reconcile detected TP order ${positionState.activeTpOrderId} filled (WebSocket missed)`);
+              logger.info(
+                `✅ [${exchange}] Reconcile detected TP order ${positionState.activeTpOrderId} filled (WebSocket missed)`,
+                { orderId: positionState.activeTpOrderId, orderType: 'take_profit', status: orderStatus.status }
+              );
               // Build fill data in the format handleOrderFill expects
               const fillData = {
                 orderId: positionState.activeTpOrderId,
@@ -3593,12 +3683,18 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           .catch(err => {
             // Order not found might mean it was cancelled or doesn't exist
             if (isOrderNotFoundError(err)) {
-              console.log(`⚠️ [${exchange}] TP order ${positionState.activeTpOrderId} not found on exchange, clearing`);
+              logger.warn(
+                `⚠️ [${exchange}] TP order ${positionState.activeTpOrderId} not found on exchange, clearing`,
+                { orderId: positionState.activeTpOrderId, orderType: 'take_profit', error: err.message }
+              );
               const cancelledTpId = positionState.activeTpOrderId;
               positionState.activeTpOrderId = null;
               orderExecutor.handleOrderCancel(cancelledTpId);
             } else {
-              console.log(`❌ [${exchange}] TP order check failed: ${err.message}`);
+              logger.error(
+                `❌ [${exchange}] TP order check failed: ${err.message}`,
+                { orderId: positionState.activeTpOrderId, orderType: 'take_profit', error: err.message }
+              );
             }
           }));
       }
@@ -3612,7 +3708,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             .then(async (bodyStatus) => {
               if (isFilledStatus(bodyStatus)) {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-                console.log(`${tierCfg.emoji} [${exchange}] Reconcile detected body TP ${body.tpOrderId} filled`);
+                logger.info(
+                  `${tierCfg.emoji} [${exchange}] Reconcile detected body TP ${body.tpOrderId} filled`,
+                  { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', status: bodyStatus.status }
+                );
                 const fillData = {
                   orderId: body.tpOrderId,
                   side: 'sell',
@@ -3629,7 +3728,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   // Route partials through handleOrderFill before re-placing — otherwise
                   // they're lost (Gemini has no order-events WS, and polling drops the
                   // order from pendingOrders once it sees CANCELLED).
-                  console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} with ${bodyStatus.filledSize} partial fill — routing through handleOrderFill`);
+                  logger.warn(
+                    `⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} with ${bodyStatus.filledSize} partial fill — routing through handleOrderFill`,
+                    {
+                      bodyId: body.id,
+                      orderId: body.tpOrderId,
+                      status: bodyStatus.status,
+                      filledSize: bodyStatus.filledSize,
+                    }
+                  );
                   orderExecutor.markSettled(body.tpOrderId);
                   await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
                 } else {
@@ -3647,9 +3754,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   // inconclusive and keep the order (never orphan on a failed check).
                   const stillOpen = openOrders === null || isOrderStillOpen(openOrders, body.tpOrderId);
                   if (stillOpen) {
-                    console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} read ${bodyStatus.status} but still OPEN on exchange — ignoring false terminal status`);
+                    logger.warn(
+                      `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} read ${bodyStatus.status} but still OPEN on exchange — ignoring false terminal status`,
+                      { bodyId: body.id, orderId: body.tpOrderId, status: bodyStatus.status, stillOpen: true }
+                    );
                   } else {
-                    console.log(`⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`);
+                    logger.warn(
+                      `⚠️ [${exchange}] Reconcile detected body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${bodyStatus.status} — clearing for re-placement`,
+                      { bodyId: body.id, orderId: body.tpOrderId, status: bodyStatus.status }
+                    );
                     orderExecutor.removeBodyTracking(body.tpOrderId);
                     body.tpOrderId = null;
                     body.tpPrice = 0;
@@ -3663,7 +3776,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                   // Route partials through handleOrderFill — cancelPartialFillOrder
                   // freezes the order and the partial-fill branch resizes the body,
                   // which also handles the stale-size case implicitly.
-                  console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} has ${bodyStatus.filledSize} partial fill while OPEN — routing through handleOrderFill`);
+                  logger.warn(
+                    `⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} has ${bodyStatus.filledSize} partial fill while OPEN — routing through handleOrderFill`,
+                    {
+                      bodyId: body.id,
+                      orderId: body.tpOrderId,
+                      status: bodyStatus.status,
+                      filledSize: bodyStatus.filledSize,
+                    }
+                  );
                   orderExecutor.markSettled(body.tpOrderId);
                   await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', bodyStatus));
                 } else {
@@ -3673,7 +3794,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                     body.assetQty, body.avgPrice, body.tpPrice, tierCfg.holdbackScale
                   );
                   if (Math.abs(sellQty - body.assetOnOrder) > 0.00000001) {
-                    console.log(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
+                    logger.warn(`⚠️ [${exchange}] Reconcile: body ${body.id.slice(-8)} TP stale (onOrder=${body.assetOnOrder}, expected=${sellQty}) — cancelling for re-place`);
                     const cancelResult = await orderExecutor.cancelBodyTpOrder(body.id, body.tpOrderId);
                     if (cancelResult.cancelled) {
                       orderExecutor.removeBodyTracking(body.tpOrderId);
@@ -3690,7 +3811,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             .catch(async (err) => {
               // Order not found or invalid — likely cancelled externally or ID no longer valid
               if (isOrderNotFoundError(err)) {
-                console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} not found on exchange — clearing for re-placement`);
+                logger.warn(
+                  `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} not found on exchange — clearing for re-placement`,
+                  { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', error: err.message }
+                );
                 orderExecutor.removeBodyTracking(body.tpOrderId);
                 body.tpOrderId = null;
                 body.tpPrice = 0;
@@ -3706,7 +3830,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             // crashes the process (Node ≥15) — the reconcile loop re-checks this
             // body on the next tick anyway (issue #99).
             .catch(err => {
-              console.log(`❌ [${exchange}] Body ${body.id.slice(-8)} TP reconcile handler error: ${err.message}`);
+              logger.error(
+                `❌ [${exchange}] Body ${body.id.slice(-8)} TP reconcile handler error: ${err.message}`,
+                { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', error: err.message }
+              );
             }));
         }
       }
@@ -3746,11 +3873,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             if (config.celestialEnabled !== false) {
               positionState.cycleBuys = fillLedger.getCurrentCycleAllBuysCount();
             }
-            console.log(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies, lifecycle=${positionState.lifecycle || 'n/a'} preserved)`);
+            logger.info(`🔄 [${exchange}] Position reconciled from exchange (${bodies.length} bodies, lifecycle=${positionState.lifecycle || 'n/a'} preserved)`);
           }
         })
         .catch(err => {
-          console.log(`❌ [${exchange}] Reconciliation failed: ${err.message}`);
+          logger.error(`❌ [${exchange}] Reconciliation failed: ${err.message}`, { error: err.message });
         }));
 
       // Release the lock only after every dispatched chain settles (#189 review).
@@ -3783,7 +3910,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const volThreshold = config.ladderAutoSwitchVolMult || 2.0;
       if (volExpansion >= volThreshold) {
         if (effectiveMode !== 'ladder') {
-          console.log(`🔀 [${exchange}] Auto-switch: reactive→ladder (volExpansion=${volExpansion.toFixed(2)}x >= ${volThreshold}x threshold, rVol=${marketState.realizedVol.toFixed(4)} baseline=${marketState.volBaseline.toFixed(4)})`);
+          logger.info(`🔀 [${exchange}] Auto-switch: reactive→ladder (volExpansion=${volExpansion.toFixed(2)}x >= ${volThreshold}x threshold, rVol=${marketState.realizedVol.toFixed(4)} baseline=${marketState.volBaseline.toFixed(4)})`);
         }
         effectiveMode = 'ladder';
       }
@@ -3913,7 +4040,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Quick sanity check - need at least 1 order worth of budget
       if (remainingBudget < config.baseSizeUsdc) {
         if (!budgetExhaustedWarningLogged) {
-          console.log(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} available (${quoteCurrency}=${availableQuote.toFixed(2)}) < $${config.baseSizeUsdc}`);
+          logger.info(`ℹ️ [${exchange}] Insufficient budget for ladder: $${remainingBudget.toFixed(2)} available (${quoteCurrency}=${availableQuote.toFixed(2)}) < $${config.baseSizeUsdc}`);
           budgetExhaustedWarningLogged = true;
         }
         return;
@@ -3936,7 +4063,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
         if (ladder.levels.length === 0) {
           if (!budgetExhaustedWarningLogged) {
-            console.log(`ℹ️ [${exchange}] Ladder build produced 0 levels for budget $${remainingBudget.toFixed(2)}`);
+            logger.info(`ℹ️ [${exchange}] Ladder build produced 0 levels for budget $${remainingBudget.toFixed(2)}`);
             budgetExhaustedWarningLogged = true;
           }
           return;
@@ -3947,11 +4074,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         const requiredSlots = ladder.levels.length + 1; // +1 for TP order
 
         if (pendingCounts.total + requiredSlots > config.maxOpenOrders) {
-          console.log(`⚠️ [${exchange}] Insufficient order slots for ladder: need ${requiredSlots}, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
+          logger.warn(`⚠️ [${exchange}] Insufficient order slots for ladder: need ${requiredSlots}, max=${config.maxOpenOrders}, current=${pendingCounts.total}`);
           return;
         }
 
-        console.log(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
+        logger.info(`📊 [${exchange}] Building ladder: ${ladderCalculator.getSummary(ladder)}`);
 
         // Place ladder orders
         const result = await orderExecutor.placeLadderOrders(ladder.levels);
@@ -3962,7 +4089,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         positionState.ladderLowerBound = ladder.lowerBound;
         positionState.pendingLadderOrders = result.orders;
 
-        console.log(`📊 [${exchange}] Ladder placed: ${result.orders.length} levels from ${fmtPrice(marketState.lastPrice)} to ${fmtPrice(ladder.lowerBound)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`);
+        logger.info(`📊 [${exchange}] Ladder placed: ${result.orders.length} levels from ${fmtPrice(marketState.lastPrice)} to ${fmtPrice(ladder.lowerBound)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`);
 
         tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to ${fmtPrice(ladder.lowerBound)}`, {
           levels: result.orders.length,
@@ -4022,7 +4149,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Handle cycle buys auto-reset (time-based reset after being at max limit)
     if (riskCheck.shouldResetCycleBuys) {
-      console.log(`🔄 [${exchange}] Cycle buys auto-reset triggered, resetting buys ${positionState.cycleBuys} -> 0`);
+      logger.info(`🔄 [${exchange}] Cycle buys auto-reset triggered, resetting buys ${positionState.cycleBuys} -> 0`);
       positionState.cycleBuys = 0;
       cycleBuysLimitWarningLogged = false;
     }
@@ -4033,7 +4160,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       const isUsdcCap = riskCheck.reason.startsWith('usdc_cap_exceeded');
       const shouldSkipLog = (isLadderLimit && cycleBuysLimitWarningLogged) || (isUsdcCap && usdcCapWarningLogged);
       if (!shouldSkipLog) {
-        console.log(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
+        logger.warn(`⚠️ [${exchange}] Entry blocked: ${riskCheck.reason}`);
         if (isLadderLimit) cycleBuysLimitWarningLogged = true;
         if (isUsdcCap) usdcCapWarningLogged = true;
       }
@@ -4043,7 +4170,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Check for zero/budget-exhausted (with spam protection)
     if (sizing.sizeUsdc <= 0) {
       if (!budgetExhaustedWarningLogged) {
-        console.log(`ℹ️ [${exchange}] Budget exhausted`);
+        logger.info(`ℹ️ [${exchange}] Budget exhausted`);
         budgetExhaustedWarningLogged = true;
       }
       return;
@@ -4067,7 +4194,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // pause re-fires each cycle while the wallet stays underfunded (#187). The
       // flag resets below once an entry can be funded again.
       if (!lowBalancePauseLogged) {
-        console.log(`⏸️ [${exchange}] Wallet ${quoteCurrency} balance $${(availableQuote || 0).toFixed(2)} below min order $${minSize} — pausing entries for ${cooldownMs / 1000}s`);
+        logger.info(`⏸️ [${exchange}] Wallet ${quoteCurrency} balance $${(availableQuote || 0).toFixed(2)} below min order $${minSize} — pausing entries for ${cooldownMs / 1000}s`);
         lowBalancePauseLogged = true;
       }
       return;
@@ -4118,7 +4245,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (isInsufficientFundsMessage(err.message) || err.status === 406) {
         const cooldownMs = config.insufficientFundsCooldownMs || 60000;
         insufficientFundsCooldownUntil = Date.now() + cooldownMs;
-        console.log(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
+        logger.info(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
         return;
       }
       throw err; // Re-throw other errors
@@ -4129,7 +4256,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (result && result.success === false && isInsufficientFundsMessage(result.errorMessage)) {
       const cooldownMs = config.insufficientFundsCooldownMs || 60000;
       insufficientFundsCooldownUntil = Date.now() + cooldownMs;
-      console.log(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
+      logger.info(`⏸️ [${exchange}] Insufficient funds — pausing entries for ${cooldownMs / 1000}s`);
       return;
     }
 
@@ -4151,7 +4278,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
 
       const macroLabel = macroRegime ? ` macro=${macroRegime.getMode()}(×${macroMult.sizeMult})` : '';
-      console.log(`📝 [${exchange}] Entry placed: regime=${regime}${macroLabel} buys=${positionState.cycleBuys} size=$${sizing.sizeUsdc} price=${fmtPrice(result.price)} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
+      logger.info(`📝 [${exchange}] Entry placed: regime=${regime}${macroLabel} buys=${positionState.cycleBuys} size=$${sizing.sizeUsdc} price=${fmtPrice(result.price)} trigger=${triggerType} momentum=${momentumDirection} offset=${effectiveOffsetBps}bps`);
 
       tradeEvents.emitTradeEvent('entry_placed', exchange, `$${sizing.sizeUsdc} @ ${fmtPrice(result.price)}`, {
         regime,
@@ -4202,13 +4329,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     delete body._overrideTpPct;
 
     if (body.tpOrderId) {
-      console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} already has TP ${body.tpOrderId.slice(0, 8)}, skipping duplicate placement`);
+      logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} already has TP ${body.tpOrderId.slice(0, 8)}, skipping duplicate placement`);
       return false;
     }
 
     // Prevent concurrent TP placement for the same body (race between fill handler and safety-net loop)
     if (tpPlacementInFlight.has(body.id)) {
-      console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP placement already in-flight, skipping`);
+      logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} TP placement already in-flight, skipping`);
       return false;
     }
 
@@ -4258,7 +4385,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Guard: never place a TP at or below the body's avg price (would realize a loss)
     if (tpPrice <= body.avgPrice) {
-      console.log(`🚫 [${exchange}] Body ${body.id.slice(-8)} TP price ${fmtPrice(tpPrice)} <= avgPrice ${fmtPrice(body.avgPrice)}, skipping placement to prevent negative P&L`);
+      logger.info(`🚫 [${exchange}] Body ${body.id.slice(-8)} TP price ${fmtPrice(tpPrice)} <= avgPrice ${fmtPrice(body.avgPrice)}, skipping placement to prevent negative P&L`);
       return false;
     }
 
@@ -4287,12 +4414,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const finalEstProceeds = sellQty * tpPrice * (1 - feeRatePerSide);
     const finalEstPnl = finalEstProceeds - body.costBasis;
     if (finalEstPnl < 0.01) {
-      console.log(`🚫 [${exchange}] Body ${body.id.slice(-8)} estimated PnL $${finalEstPnl.toFixed(4)} < $0.01 at TP ${fmtPrice(tpPrice)} (${finalTpPct.toFixed(3)}%), skipping to prevent negative P&L`);
+      logger.info(`🚫 [${exchange}] Body ${body.id.slice(-8)} estimated PnL $${finalEstPnl.toFixed(4)} < $0.01 at TP ${fmtPrice(tpPrice)} (${finalTpPct.toFixed(3)}%), skipping to prevent negative P&L`);
       return false;
     }
 
     if (sellQty <= 0) {
-      console.log(`⚠️ [${exchange}] Body ${body.id.slice(-8)} sell qty is 0 after holdback`);
+      logger.warn(`⚠️ [${exchange}] Body ${body.id.slice(-8)} sell qty is 0 after holdback`);
       return false;
     }
 
@@ -4312,11 +4439,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const fullProceeds = fullQty * tpPrice * (1 - feeRatePerSide);
           const fullPnl = fullProceeds - body.costBasis;
           if (fullPnl >= 0.01) {
-            console.log(`📏 [${exchange}] Body ${body.id.slice(-8)} sellQty ${sellQty} below exchange min ${baseMinSize}, selling full qty ${fullQty} (no holdback)`);
+            logger.info(`📏 [${exchange}] Body ${body.id.slice(-8)} sellQty ${sellQty} below exchange min ${baseMinSize}, selling full qty ${fullQty} (no holdback)`);
             sellQty = fullQty;
             holdbackQty = 0;
           } else {
-            console.log(`🚫 [${exchange}] Body ${body.id.slice(-8)} full qty ${fullQty} PnL $${fullPnl.toFixed(4)} < $0.01 even without holdback, skipping`);
+            logger.info(`🚫 [${exchange}] Body ${body.id.slice(-8)} full qty ${fullQty} PnL $${fullPnl.toFixed(4)} < $0.01 even without holdback, skipping`);
             return false;
           }
         } else {
@@ -4324,7 +4451,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // progress); otherwise a permanently-stranded dust body floods the
           // log every cycle (#187).
           if (dustWaitLoggedQty.get(body.id) !== roundedFullQty) {
-            console.log(`📏 [${exchange}] Body ${body.id.slice(-8)} assetQty ${fullQty} (rounded ${roundedFullQty}) below exchange min ${baseMinSize}, waiting for consolidation`);
+            logger.info(`📏 [${exchange}] Body ${body.id.slice(-8)} assetQty ${fullQty} (rounded ${roundedFullQty}) below exchange min ${baseMinSize}, waiting for consolidation`);
             dustWaitLoggedQty.set(body.id, roundedFullQty);
           }
           return false;
@@ -4344,7 +4471,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // cost basis on `body.costBasis` independently of order placement.
       result = await orderExecutor.placeBodyTpOrder(sellQty, tpPrice, body.id, body.avgPrice);
     } catch (err) {
-      console.log(`⚠️ [${exchange}] Body TP placement error for ${body.id.slice(-8)}: ${err.message}`);
+      logger.warn(
+        `⚠️ [${exchange}] Body TP placement error for ${body.id.slice(-8)}: ${err.message}`,
+        { bodyId: body.id, orderType: 'body_tp', error: err.message }
+      );
       return false;
     }
 
@@ -4371,7 +4501,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       }
 
-      console.log(`${tierCfg.emoji} [${exchange}] Body TP placed (${body.tier}): ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency}, body=${body.id.slice(-8)})`);
+      logger.info(`${tierCfg.emoji} [${exchange}] Body TP placed (${body.tier}): ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency}, body=${body.id.slice(-8)})`);
 
       tradeEvents.emitTradeEvent('body_tp_placed', exchange, `${tierCfg.emoji} ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)}`, {
         bodyId: body.id,
@@ -4387,7 +4517,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return true;
     }
 
-    console.log(`⚠️ [${exchange}] Failed to place body TP for ${body.id.slice(-8)}: ${result.errorMessage}`);
+    logger.warn(
+      `⚠️ [${exchange}] Failed to place body TP for ${body.id.slice(-8)}: ${result.errorMessage}`,
+      { bodyId: body.id, orderType: 'body_tp', error: result.errorMessage }
+    );
     return false;
 
     } finally {
@@ -4399,11 +4532,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const placeBodyTpWithRetry = async (body, context) => {
     let placed = await placeBodyTp(body);
     if (!placed && !body.tpOrderId) {
-      console.log(`⚠️ [${exchange}] ${context} TP placement failed for body ${body.id.slice(-8)}, retrying after 1s...`);
+      logger.warn(`⚠️ [${exchange}] ${context} TP placement failed for body ${body.id.slice(-8)}, retrying after 1s...`);
       await new Promise(r => setTimeout(r, 1000));
       placed = await placeBodyTp(body);
       if (!placed && !body.tpOrderId) {
-        console.log(`🚨 [${exchange}] ${context} TP retry failed for body ${body.id.slice(-8)} — body has no sell order, will re-place on next reconcile`);
+        logger.error(
+          `🚨 [${exchange}] ${context} TP retry failed for body ${body.id.slice(-8)} — body has no sell order, will re-place on next reconcile`,
+          { bodyId: body.id, orderType: 'body_tp', operation: context }
+        );
       }
     }
     return placed;
@@ -4422,7 +4558,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (positionState.activeTpOrderId) {
         const ownedByBody = positionState.celestialBodies.some(b => b.tpOrderId === positionState.activeTpOrderId);
         if (!ownedByBody) {
-          console.log(`🧹 [${exchange}] Cancelling legacy TP ${positionState.activeTpOrderId.substring(0, 8)} — celestial mode active`);
+          logger.info(`🧹 [${exchange}] Cancelling legacy TP ${positionState.activeTpOrderId.substring(0, 8)} — celestial mode active`);
           await orderExecutor.cancelTpOrder();
         }
         positionState.activeTpOrderId = null;
@@ -4458,7 +4594,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // The cancel-replace path already removed the order from pendingOrders, so the
       // engine's terminal handleOrderFill cleanup would log a spurious "orphan" warning
       // without this markSettled.
-      console.log(`📋 [${exchange}] TP filled during cancel-and-replace, routing to fill handler: ${result.filledOrderId}`);
+      logger.info(`📋 [${exchange}] TP filled during cancel-and-replace, routing to fill handler: ${result.filledOrderId}`);
       // placeTakeProfitOrder's cancel attempt already fetched this order's terminal
       // status to discover the fill — use those fields directly rather than
       // re-fetching via a second, redundant getOrder() call whose own failure
@@ -4497,7 +4633,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
 
       if (result.updated) {
-        console.log(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency} ≈$${profitAssetValue.toFixed(2)})`);
+        logger.info(`📝 [${exchange}] TP ${result.orderId ? 'updated' : 'placed'}: ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency} ≈$${profitAssetValue.toFixed(2)})`);
       }
     }
   };
@@ -4521,7 +4657,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const hasTrackedLadder = (positionState.pendingLadderOrders && positionState.pendingLadderOrders.length > 0) || executorLadderOrders.length > 0;
     if (positionState.ladderActive || hasTrackedLadder) {
       const { cancelled } = await orderExecutor.cancelAllLadderOrders();
-      if (cancelled > 0) console.log(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders`);
+      if (cancelled > 0) logger.info(`🧹 [${exchange}] Cancelled ${cancelled} unfilled ladder orders`);
     }
 
     // Reset ladder state
@@ -4563,7 +4699,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     const bodyCount = bodies.length;
     const bodyLabel = bodyCount > 0 ? `, ${bodyCount} celestial bodies preserved` : '';
-    console.log(`🔄 [${exchange}] Cycle reset, starting new cycle${bodyLabel}`);
+    logger.info(`🔄 [${exchange}] Cycle reset, starting new cycle${bodyLabel}`);
 
     // If the fund is draining, this cycle's TP fill is the trigger to close.
     // Defer the engine stop to next tick so the current call stack
@@ -4572,7 +4708,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.lifecycle = LIFECYCLE.CLOSED;
       positionState.lifecycleChangedAt = Date.now();
       positionState.lifecycleClosedCycle = positionState.cyclesCompleted;
-      console.log(`🛑 [${exchange}] Fund drained — closing engine after cycle ${positionState.cyclesCompleted}`);
+      logger.info(`🛑 [${exchange}] Fund drained — closing engine after cycle ${positionState.cyclesCompleted}`);
       tradeEvents.emitTradeEvent('fund_closed', exchange, `Fund closed after cycle ${positionState.cyclesCompleted}`, {
         cyclesCompleted: positionState.cyclesCompleted,
         reason: positionState.lifecycleReason,
@@ -4580,7 +4716,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (callbacks.onLifecycleClosed) {
         setImmediate(() => {
           try { callbacks.onLifecycleClosed(); } catch (err) {
-            console.log(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`);
+            logger.warn(`⚠️ [${exchange}] onLifecycleClosed callback error: ${err.message}`, { error: err.message });
           }
         });
       }
@@ -4595,7 +4731,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const counts = orderExecutor.getPendingCounts();
     const riskSummary = riskManager.getSummary(positionState);
 
-    console.log(
+    logger.info(
       `📊 [${exchange}] ${modeLabel}Hour: regime=${regime} entries=${counts.entries} ` +
       `exposure=${riskSummary} ` +
       `atr=${fmtPrice(marketState.atr1m)} vol=${marketState.realizedVol.toFixed(2)}%`
@@ -4622,7 +4758,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (mergeTarget) {
         const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
         if (!cancelResult.cancelled) {
-          console.log(`⚠️ [${exchange}] [DRY-RUN] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
+          logger.warn(`⚠️ [${exchange}] [DRY-RUN] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
           mergeTarget = null;
         } else {
           // Clear body TP fields so placeBodyTp can re-place after merge
@@ -4682,7 +4818,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         orderExecutor.removeBodyTracking(orderId);
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
-        console.log(`${tierCfg.emoji} [${exchange}] [DRY-RUN] Body TP filled (${body.tier}): ${assetQty} ${baseCurrency} @ ${fmtPrice(price)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc.toFixed(2)}→$${config.maxUsdcDeployed.toFixed(2)}`);
+        logger.info(`${tierCfg.emoji} [${exchange}] [DRY-RUN] Body TP filled (${body.tier}): ${assetQty} ${baseCurrency} @ ${fmtPrice(price)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc.toFixed(2)}→$${config.maxUsdcDeployed.toFixed(2)}`);
 
         tradeEvents.emitTradeEvent('body_tp_filled', exchange, `[DRY-RUN] ${tierCfg.emoji} ${assetQty} ${baseCurrency} @ ${fmtPrice(price)}, PnL=$${pnl.toFixed(2)}`, {
           assetAmount: assetQty, price, pnl, holdbackAsset,
@@ -4717,7 +4853,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         config.maxUsdcDeployed = roundUSDC(config.maxUsdcDeployed + pnl);
         updateRegimeConfig(exchange, pair, { maxUsdcDeployed: config.maxUsdcDeployed });
 
-        console.log(`💰 [${exchange}] [DRY-RUN] Capital growth: $${prevMaxUsdc.toFixed(2)} → $${config.maxUsdcDeployed.toFixed(2)} (+$${pnl.toFixed(2)})`);
+        logger.info(`💰 [${exchange}] [DRY-RUN] Capital growth: $${prevMaxUsdc.toFixed(2)} → $${config.maxUsdcDeployed.toFixed(2)} (+$${pnl.toFixed(2)})`);
 
         tradeEvents.emitTradeEvent('tp_filled', exchange, `[DRY-RUN] ${assetQty} ${baseCurrency} @ ${fmtPrice(price)}, PnL=$${pnl.toFixed(2)}`, {
           assetAmount: assetQty, price, pnl, holdbackAsset, isDryRun: true,
@@ -4748,13 +4884,13 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // callbacks keep orderId-only dedup since filledSize is final.
       const dedupKey = makeFillDedupKey(orderId, status.isPartialFill, status.filledSize);
       if (recentlyProcessedFills.has(dedupKey)) {
-        console.log(`⚠️ [${exchange}] Duplicate fill callback for ${dedupKey}, skipping`);
+        logger.warn(`⚠️ [${exchange}] Duplicate fill callback for ${dedupKey}, skipping`);
         return;
       }
       recentlyProcessedFills.add(dedupKey);
       const t2 = setTimeout(() => { recentlyProcessedFills.delete(dedupKey); ttlTimers.delete(t2); }, 60000);
       ttlTimers.add(t2);
-      console.log(`🔄 [${exchange}] Processing fill detected via polling: ${orderId} side=${status.side}${status.isPartialFill ? ' [PARTIAL]' : ''}`);
+      logger.info(`🔄 [${exchange}] Processing fill detected via polling: ${orderId} side=${status.side}${status.isPartialFill ? ' [PARTIAL]' : ''}`);
       // Convert status to the format handleOrderFill expects. isPartialFill
       // must propagate so handleOrderFill's cancelPartialFillOrder guard
       // (and partial-fill branch dedup) fires for polling-detected partials.
@@ -4785,7 +4921,10 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         await handleOrderFill(fillData);
       } catch (err) {
         recentlyProcessedFills.delete(dedupKey);
-        console.log(`❌ [${exchange}] Error processing polled fill ${orderId} (side=${status.side}): ${err.message} — will retry on next reconcile`);
+        logger.error(
+          `❌ [${exchange}] Error processing polled fill ${orderId} (side=${status.side}): ${err.message} — will retry on next reconcile`,
+          { orderId, side: status.side, error: err.message }
+        );
       }
     };
   }
@@ -4941,9 +5080,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Cancel pending entry orders so the order book doesn't keep stale buys.
     // TP orders are NOT touched — they're what drains the cycle.
     orderExecutor.cancelAllEntries().catch((err) => {
-      console.log(`⚠️ [${exchange}] Failed to cancel entries during close: ${err.message}`);
+      logger.warn(`⚠️ [${exchange}] Failed to cancel entries during close: ${err.message}`, { error: err.message });
     });
-    console.log(`🚦 [${exchange}] Fund draining${reason ? ` (${reason})` : ''} — new entries blocked, awaiting TP fill`);
+    logger.info(`🚦 [${exchange}] Fund draining${reason ? ` (${reason})` : ''} — new entries blocked, awaiting TP fill`);
     tradeEvents.emitTradeEvent('fund_draining', exchange, `Fund draining${reason ? `: ${reason}` : ''}`, {
       reason: reason || null,
       cyclesCompleted: positionState.cyclesCompleted,
@@ -4976,7 +5115,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Direct depositedCapital edit - sync to position state
     if (updates.depositedCapital !== undefined && updates.depositedCapital !== config.depositedCapital) {
       positionState.depositedCapital = updates.depositedCapital > 0 ? roundUSDC(updates.depositedCapital) : 0;
-      console.log(`💵 [${exchange}] Deposited capital set to $${updates.depositedCapital > 0 ? updates.depositedCapital.toFixed(2) : 'auto-derive'}`);
+      logger.info(`💵 [${exchange}] Deposited capital set to $${updates.depositedCapital > 0 ? updates.depositedCapital.toFixed(2) : 'auto-derive'}`);
       if (!isDryRun) saveLiveState();
       else saveDryRunState();
     }
@@ -4988,7 +5127,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // User added capital - update depositedCapital
         const prevDeposited = positionState.depositedCapital || positionState.originalCapital || config.maxUsdcDeployed;
         positionState.depositedCapital = roundUSDC(prevDeposited + capitalChange);
-        console.log(`💵 [${exchange}] Capital deposit: +$${capitalChange.toFixed(2)} (deposited: $${positionState.depositedCapital.toFixed(2)})`);
+        logger.info(`💵 [${exchange}] Capital deposit: +$${capitalChange.toFixed(2)} (deposited: $${positionState.depositedCapital.toFixed(2)})`);
         // Save state to persist the deposit tracking
         if (!isDryRun) saveLiveState();
         else saveDryRunState();
@@ -4996,7 +5135,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // User withdrew capital - reduce depositedCapital (but floor at 0)
         const prevDeposited = positionState.depositedCapital || positionState.originalCapital || config.maxUsdcDeployed;
         positionState.depositedCapital = roundUSDC(Math.max(0, prevDeposited + capitalChange));
-        console.log(`💸 [${exchange}] Capital withdrawal: $${Math.abs(capitalChange).toFixed(2)} (deposited: $${positionState.depositedCapital.toFixed(2)})`);
+        logger.info(`💸 [${exchange}] Capital withdrawal: $${Math.abs(capitalChange).toFixed(2)} (deposited: $${positionState.depositedCapital.toFixed(2)})`);
         if (!isDryRun) saveLiveState();
         else saveDryRunState();
       }
@@ -5008,7 +5147,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       macroRegime.updateConfig(updates);
     }
 
-    console.log(`🔧 [${exchange}] Regime engine config updated`);
+    logger.info(`🔧 [${exchange}] Regime engine config updated`);
   };
 
   /**
@@ -5077,7 +5216,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const currentEquity = currentValue - positionState.totalCostBasis;
 
     riskManager.forceResume(currentEquity);
-    console.log(`▶️ [${exchange}] Drawdown pause manually cleared, peak reset to $${currentEquity.toFixed(2)}`);
+    logger.info(`▶️ [${exchange}] Drawdown pause manually cleared, peak reset to $${currentEquity.toFixed(2)}`);
 
     return { success: true, message: `Resumed, peak reset to $${currentEquity.toFixed(2)}` };
   };
@@ -5092,7 +5231,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ...newPosition,
     };
     saveLiveState();
-    console.log(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, ${baseCurrency} reserves=${positionState.realizedAssetPnL}`);
+    logger.info(`🔄 [${exchange}] Position updated externally: buys=${positionState.cycleBuys}, cycles=${positionState.cyclesCompleted}, ${baseCurrency} reserves=${positionState.realizedAssetPnL}`);
   };
 
   /**
@@ -5177,7 +5316,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
     }
 
-    console.log(`🔗 [${exchange}] ${label}: merging body ${source.id.slice(-8)} (TP ${fmtPrice(source.tpPrice)}) → ${target.id.slice(-8)} (TP ${fmtPrice(target.tpPrice)})`);
+    logger.info(`🔗 [${exchange}] ${label}: merging body ${source.id.slice(-8)} (TP ${fmtPrice(source.tpPrice)}) → ${target.id.slice(-8)} (TP ${fmtPrice(target.tpPrice)})`);
 
     // Race 3: snapshot both bodies before cancelling TPs
     // If a TP fills between cancel and state removal, the fill handler uses the snapshot
@@ -5200,7 +5339,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (source.tpOrderId) pendingMergeTpOrders.delete(source.tpOrderId);
       if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
       const reason = srcCancel.filled ? 'already filled' : 'cancel failed';
-      console.log(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP ${reason}, aborting roll-up`);
+      logger.warn(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP ${reason}, aborting roll-up`);
       return { success: false, message: `Source TP ${reason}` };
     }
     // Clear source body TP fields after successful cancel
@@ -5215,7 +5354,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
       if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
       // Restore source TP to avoid leaving it dangling
-      console.log(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP cancel failed, restoring source TP`);
+      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP cancel failed, restoring source TP`);
       await placeBodyTp(source);
       saveLiveState();
       return { success: false, message: 'Target TP cancel failed, source restored' };
@@ -5269,7 +5408,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     fillLedger.persist();
 
     const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
-    console.log(`${tierCfg.emoji} [${exchange}] Roll-up complete: body ${merged.id.slice(-8)} now ${merged.tier} (${merged.assetQty.toFixed(6)} ${baseCurrency}, $${merged.costBasis.toFixed(2)}, ${merged.buyOrders?.length || 0} buys)`);
+    logger.info(`${tierCfg.emoji} [${exchange}] Roll-up complete: body ${merged.id.slice(-8)} now ${merged.tier} (${merged.assetQty.toFixed(6)} ${baseCurrency}, $${merged.costBasis.toFixed(2)}, ${merged.buyOrders?.length || 0} buys)`);
 
     tradeEvents.emitTradeEvent('body_rollup', exchange, `${tierCfg.emoji} Merged → ${merged.tier}: ${merged.assetQty.toFixed(6)} ${baseCurrency}`, {
       mergedBodyId: merged.id,
@@ -5339,7 +5478,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
     mergeInProgress = true;
     try {
-      console.log(`🔗 [${exchange}] Collapse-all triggered: ${startCount} bodies → 1`);
+      logger.info(`🔗 [${exchange}] Collapse-all triggered: ${startCount} bodies → 1`);
 
       let mergedCount = 0;
       let lastResult = null;
@@ -5413,7 +5552,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (positionState.activeTpOrderId) {
       return { success: false, message: 'A take-profit order is still resting — cancel or wait for it before resetting the cycle' };
     }
-    console.log(`🔄 [${exchange}] Operator reset-cycle: cycleBuys ${positionState.cycleBuys} -> 0, starting new cycle`);
+    logger.info(`🔄 [${exchange}] Operator reset-cycle: cycleBuys ${positionState.cycleBuys} -> 0, starting new cycle`);
     await resetCycle();
     await saveLiveState();
     return { success: true, message: 'Cycle reset — buying re-enabled', status: getStatus() };
@@ -5453,7 +5592,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     const tierCfg = celestialHierarchy.getTierConfig(body.tier);
-    console.log(`${tierCfg.emoji} [${exchange}] Manual TP% set: body ${body.id.slice(-8)} @ ${tpPct.toFixed(2)}% → ${fmtPrice(body.tpPrice)}`);
+    logger.info(`${tierCfg.emoji} [${exchange}] Manual TP% set: body ${body.id.slice(-8)} @ ${tpPct.toFixed(2)}% → ${fmtPrice(body.tpPrice)}`);
 
     saveLiveState();
     const state = getState();
@@ -5495,7 +5634,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (positionState.totalAsset <= 0) {
       return { success: false, message: 'No position to protect' };
     }
-    console.log(`🔄 [${exchange}] Manual TP rebuild requested for ${positionState.totalAsset.toFixed(8)} ${baseCurrency}`);
+    logger.info(`🔄 [${exchange}] Manual TP rebuild requested for ${positionState.totalAsset.toFixed(8)} ${baseCurrency}`);
     await placeTakeProfitOrder({ forceUpdate: true });
     return { success: true, message: `TP rebuilt for ${positionState.totalAsset.toFixed(8)} ${baseCurrency} @ ${fmtPrice(positionState.lastTpPrice)}` };
   };
@@ -5601,12 +5740,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, message: `Exchange ${quoteCurrency} balance ($${availableQuote.toFixed(2)}) below min order size ($${config.baseSizeUsdc || 50}). Budget says $${budgetRemaining} available but only $${availableQuote.toFixed(2)} ${quoteCurrency} on exchange. Deposit more ${quoteCurrency} or lower baseSizeUsdc.` };
     }
 
-    console.log(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)} (allocated=$${allocatedCapital.toFixed(2)})`);
+    logger.info(`🔄 [${exchange}] Manual ladder rebuild requested, budget=$${remainingBudget.toFixed(2)} (allocated=$${allocatedCapital.toFixed(2)})`);
 
     // Cancel existing ladder orders
     if (positionState.ladderActive) {
       const cancelResult = await orderExecutor.cancelAllLadderOrders();
-      console.log(`🧹 [${exchange}] Cancelled ${cancelResult.cancelled} existing ladder orders`);
+      logger.info(`🧹 [${exchange}] Cancelled ${cancelResult.cancelled} existing ladder orders`);
     }
 
     // Reset ladder state
@@ -5633,7 +5772,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: false, message: 'Ladder build produced 0 levels — price may be at or below floor' };
     }
 
-    console.log(`📊 [${exchange}] Rebuilding ladder: ${ladderCalculator.getSummary(ladder)}`);
+    logger.info(`📊 [${exchange}] Rebuilding ladder: ${ladderCalculator.getSummary(ladder)}`);
 
     // Place ladder orders
     const result = await orderExecutor.placeLadderOrders(ladder.levels);
@@ -5645,7 +5784,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     positionState.pendingLadderOrders = result.orders;
 
     const msg = `Ladder rebuilt: ${result.orders.length} levels from ${fmtPrice(marketState.lastPrice)} to ${fmtPrice(ladder.lowerBound)}${result.failedCount > 0 ? ` (${result.failedCount} failed)` : ''}`;
-    console.log(`📊 [${exchange}] ${msg}`);
+    logger.info(`📊 [${exchange}] ${msg}`);
 
     tradeEvents.emitTradeEvent('ladder_placed', exchange, `${result.orders.length} levels to ${fmtPrice(ladder.lowerBound)}`, {
       levels: result.orders.length,
@@ -5672,7 +5811,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (hadLadder) {
       const result = await orderExecutor.cancelAllLadderOrders();
       cancelled = result.cancelled;
-      console.log(`🧹 [${exchange}] Cancelled ${cancelled} ladder orders`);
+      logger.info(`🧹 [${exchange}] Cancelled ${cancelled} ladder orders`);
     }
 
     positionState.ladderActive = false;
@@ -5689,7 +5828,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     const msg = hadLadder
       ? `Cancelled ${cancelled} ladder orders, switched to reactive mode`
       : 'No active ladder — switched to reactive mode';
-    console.log(`🔄 [${exchange}] ${msg}`);
+    logger.info(`🔄 [${exchange}] ${msg}`);
     return { success: true, message: msg };
   };
 
@@ -5706,7 +5845,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
     const tpResult = await placeBodyTp(body);
     saveLiveState();
-    console.log(`📦 [${exchange}] Injected body ${body.id} (${body.tier}): ${body.assetQty} BTC @ $${body.avgPrice.toFixed(2)}, TP placed: ${!!tpResult}`);
+    logger.info(`📦 [${exchange}] Injected body ${body.id} (${body.tier}): ${body.assetQty} BTC @ $${body.avgPrice.toFixed(2)}, TP placed: ${!!tpResult}`);
     return { success: true, bodyId: body.id, tpPlaced: !!tpResult };
   };
 
