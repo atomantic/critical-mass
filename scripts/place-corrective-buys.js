@@ -18,11 +18,18 @@ const fs = require('fs');
 const path = require('path');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 const { createFillLedger } = require('../src/fill-ledger');
+const { getFundDataDir, resolveFundDataDir } = require('../src/migration');
 
 const PRODUCT_ID = 'BTC-USDC';
 const EXCHANGE = 'coinbase';
 const FEE_RATE = 0.0005; // 0.05% maker fee
-const PENDING_FILE = path.join(__dirname, '..', 'data', 'coinbase', 'pending-corrective-buys.json');
+const PENDING_FILENAME = 'pending-corrective-buys.json';
+
+const getPendingReadPath = (exchange = EXCHANGE, productId = PRODUCT_ID) =>
+  path.join(resolveFundDataDir(exchange, productId), PENDING_FILENAME);
+
+const getPendingWritePath = (exchange = EXCHANGE, productId = PRODUCT_ID) =>
+  path.join(getFundDataDir(exchange, productId), PENDING_FILENAME);
 
 // Orphan sell orders and their corrective buy parameters
 const CORRECTIONS = [
@@ -82,15 +89,16 @@ function calcMaxBuyPrice(originalAvgBuyPrice) {
   return Math.floor(raw * 100) / 100;
 }
 
-function loadPending() {
-  if (fs.existsSync(PENDING_FILE)) {
-    return JSON.parse(fs.readFileSync(PENDING_FILE, 'utf8'));
+function loadPending(exchange = EXCHANGE, productId = PRODUCT_ID) {
+  const pendingFile = getPendingReadPath(exchange, productId);
+  if (fs.existsSync(pendingFile)) {
+    return JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
   }
   return [];
 }
 
-function savePending(pending) {
-  fs.writeFileSync(PENDING_FILE, JSON.stringify(pending, null, 2));
+function savePending(pending, exchange = EXCHANGE, productId = PRODUCT_ID) {
+  fs.writeFileSync(getPendingWritePath(exchange, productId), JSON.stringify(pending, null, 2));
 }
 
 // ── Place orders (safe while engine is running) ──────────────────────
@@ -140,7 +148,7 @@ async function placeOrders(adapter) {
     savePending(pending);
   }
 
-  console.log(`\n📊 ${placed} order(s) placed. Mapping saved to ${PENDING_FILE}`);
+  console.log(`\n📊 ${placed} order(s) placed. Mapping saved to ${getPendingWritePath()}`);
   console.log('   Orders sit on the book as GTC limit buys.');
   console.log('   Run --status to check fill progress.');
   console.log('   Run --annotate after fills complete (with engine stopped).');
@@ -213,7 +221,10 @@ async function annotateFills(adapter) {
   console.log('⚠️  Make sure critical-mass engine is stopped before annotating!');
   console.log('   (pm2 stop critical-mass)\n');
 
-  const fillLedger = createFillLedger(EXCHANGE);
+  // createFillLedger's second argument controls display/base-currency metadata;
+  // the third is the persistence pair. Pass both explicitly so a different
+  // configured default fund cannot receive these BTC-USDC annotations.
+  const fillLedger = createFillLedger(EXCHANGE, PRODUCT_ID, PRODUCT_ID);
 
   for (const order of needsAnnotation) {
     console.log(`\n🔗 Processing buy ${order.buyOrderId.slice(0, 8)} → sell ${order.sellOrderId.slice(0, 8)}:`);
@@ -277,7 +288,17 @@ async function main() {
   else if (mode === 'annotate') await annotateFills(adapter);
 }
 
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  getPendingReadPath,
+  getPendingWritePath,
+  loadPending,
+  savePending,
+  annotateFills,
+};
