@@ -110,12 +110,12 @@ const createWebSocketFeed = (exchange, config) => {
       return;
     }
 
-    console.log(`🔌 [${exchange}] Connecting to WebSocket...`);
+    logger.info(`🔌 [${exchange}] Connecting to WebSocket...`, { lifecycle: 'connecting' });
 
     ws = new WebSocket(COINBASE_WS_URL);
 
     ws.on('open', () => {
-      console.log(`✅ [${exchange}] WebSocket connected`);
+      logger.info(`✅ [${exchange}] WebSocket connected`, { lifecycle: 'connected' });
       isConnected = true;
       reconnectAttempts = 0;
 
@@ -136,7 +136,11 @@ const createWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('close', (code, reason) => {
-      console.log(`🔌 [${exchange}] WebSocket closed: ${code} ${reason}`);
+      logger.info(`🔌 [${exchange}] WebSocket closed: ${code} ${reason}`, {
+        lifecycle: 'closed',
+        code,
+        reason: reason.toString(),
+      });
       handleDisconnect();
     });
 
@@ -188,13 +192,19 @@ const createWebSocketFeed = (exchange, config) => {
           jwt: jwtToken,
         };
         ws.send(JSON.stringify(userSub));
-        console.log(`📡 [${exchange}] Subscribed to ticker, market_trades, user channels for ${config.productId}`);
+        logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades, user channels for ${config.productId}`, {
+          channels: ['ticker', 'market_trades', 'user'],
+        });
       } catch (err) {
         logger.warn(`⚠️ [${exchange}] Failed to subscribe to user channel (JWT error): ${err.message}`, { error: err.message, channel: 'user' });
-        console.log(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`);
+        logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`, {
+          channels: ['ticker', 'market_trades'],
+        });
       }
     } else {
-      console.log(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`);
+      logger.info(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`, {
+        channels: ['ticker', 'market_trades'],
+      });
     }
   };
 
@@ -385,7 +395,11 @@ const createWebSocketFeed = (exchange, config) => {
       MAX_RECONNECT_DELAY
     );
 
-    console.log(`🔄 [${exchange}] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts + 1})`);
+    logger.info(`🔄 [${exchange}] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts + 1})`, {
+      lifecycle: 'reconnecting',
+      delayMs: delay,
+      reconnectAttempt: reconnectAttempts + 1,
+    });
 
     reconnectTimeout = setTimeout(() => {
       reconnectAttempts++;
@@ -448,7 +462,7 @@ const createWebSocketFeed = (exchange, config) => {
     }
 
     isConnected = false;
-    console.log(`🔌 [${exchange}] WebSocket disconnected`);
+    logger.info(`🔌 [${exchange}] WebSocket disconnected`, { lifecycle: 'disconnected' });
   };
 
   /**

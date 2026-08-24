@@ -186,7 +186,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // Cancel call rejected — check terminal state before deciding to retry
         const status = await adapter.getOrder(orderId).catch(() => null);
         if (isFilledStatus(status)) {
-          console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`);
+          logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} already filled (discovered during cancel)`, {
+            orderId,
+            status: status?.status || 'unknown',
+          });
           return { cancelled: false, filled: true, ...fillDetails(status, resolveFilledSize(status)) };
         }
         if (status && status.status === 'CANCELLED') {
@@ -218,12 +221,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         if (verified?.status === 'CANCELLED') {
           const filledSize = resolveFilledSize(verified);
           if (filledSize > 0) {
-            console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} cancelled with ${filledSize} partial fill`);
+            logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} cancelled with ${filledSize} partial fill`, {
+              orderId,
+              filledSize,
+            });
           }
           return { cancelled: true, filled: false, ...fillDetails(verified, filledSize) };
         }
         if (isFilledStatus(verified)) {
-          console.log(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`);
+          logger.info(`📋 [${exchange}] Order ${orderId.slice(0, 8)} filled between cancel and verify`, {
+            orderId,
+            status: verified?.status || 'unknown',
+          });
           return { cancelled: false, filled: true, ...fillDetails(verified, resolveFilledSize(verified)) };
         }
         // status OPEN, PENDING_CANCEL, null (fetch error), or unknown — keep polling
@@ -262,8 +271,18 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     bidPrice = roundPrice(bidPrice, priceIncrement);
     const assetQty = roundAsset(sizeUsdc / bidPrice);
+    const staleSeconds = Math.round((staleMs ?? getEffectiveStaleMs()) / 1000);
 
-    console.log(`📝 [${exchange}] Placing entry bid: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc}, offset=${offsetBps}bps, stale=${Math.round((staleMs ?? getEffectiveStaleMs()) / 1000)}s)${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`);
+    logger.info(`📝 [${exchange}] Placing entry bid: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc}, offset=${offsetBps}bps, stale=${staleSeconds}s)${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`, {
+      orderType: 'entry',
+      assetQty,
+      baseCurrency,
+      bidPrice,
+      sizeUsdc,
+      offsetBps,
+      staleSeconds,
+      retryCount,
+    });
 
     // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
     // follow-up) instead of treating a network error as a clean failure — a
@@ -271,7 +290,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitBuy(productId, assetQty, bidPrice, { postOnly: true }));
 
     if (result.success) {
-      console.log(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)}`);
+      logger.info(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)}`, {
+        orderId: result.orderId,
+        orderType: 'entry',
+        assetQty,
+        baseCurrency,
+        bidPrice,
+      });
 
       // Track first so WS fills/cancels can match even if the verify check below races
       // exchange propagation. Without this, getOrder returning 404 (eventual consistency)
@@ -298,7 +323,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
         const maxRetries = config.entryMaxRetries || 3;
         if (retryCount < maxRetries) {
-          console.log(`🔄 [${exchange}] Retrying with fresh prices (retry ${retryCount + 1}/${maxRetries})`);
+          logger.info(`🔄 [${exchange}] Retrying with fresh prices (retry ${retryCount + 1}/${maxRetries})`, {
+            orderId: result.orderId,
+            retryCount: retryCount + 1,
+            maxRetries,
+          });
           const freshPrices = await adapter.getBidAsk(productId);
           // Preserve the dynamic (momentum-adjusted) offset and adaptive stale
           // timeout across retries — dropping the args silently reverts to
@@ -323,7 +352,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // Retry on post-only rejection if we have retries remaining
     const maxRetries = config.entryMaxRetries || 3;
     if (retryCount < maxRetries && isPostOnlyRejection(result.errorMessage)) {
-      console.log(`🔄 [${exchange}] Post-only rejected (market moved), fetching fresh prices (retry ${retryCount + 1}/${maxRetries})`);
+      logger.info(`🔄 [${exchange}] Post-only rejected (market moved), fetching fresh prices (retry ${retryCount + 1}/${maxRetries})`, {
+        orderType: 'entry',
+        error: result.errorMessage,
+        retryCount: retryCount + 1,
+        maxRetries,
+      });
 
       const freshPrices = await adapter.getBidAsk(productId);
       // Preserve the dynamic offset and stale timeout across retries (see note above).
@@ -430,7 +464,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const roundedPrice = roundPrice(tpPrice, priceIncrement);
       const roundedQty = roundAsset(assetQty);
 
-      console.log(`📝 [${exchange}] Placing TP sell: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
+      logger.info(`📝 [${exchange}] Placing TP sell: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`, {
+        orderType: 'take_profit',
+        assetQty: roundedQty,
+        baseCurrency,
+        price: roundedPrice,
+      });
 
       let result;
       try {
@@ -442,7 +481,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // POST_ONLY_REJ means TP price is below current bid — price already passed TP level.
         // Retry without POST_ONLY so the order fills immediately as a taker.
         if (err.message && err.message.includes('POST_ONLY_REJ')) {
-          console.log(`⚡ [${exchange}] TP price ${fmtPrice(roundedPrice)} below bid — retrying as taker order`);
+          logger.info(`⚡ [${exchange}] TP price ${fmtPrice(roundedPrice)} below bid — retrying as taker order`, {
+            orderType: 'take_profit',
+            price: roundedPrice,
+            retryMode: 'taker',
+          });
           result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }));
         } else {
           throw err;
@@ -450,7 +493,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
 
       if (result.success) {
-        console.log(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
+        logger.info(`✅ [${exchange}] TP sell placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`, {
+          orderId: result.orderId,
+          orderType: 'take_profit',
+          assetQty: roundedQty,
+          baseCurrency,
+          price: roundedPrice,
+        });
         activeTpOrderId = result.orderId;
         lastTpPrice = roundedPrice;
         lastTpSize = roundedQty;
@@ -490,7 +539,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     const result = await safeCancelOrder(orderToCancel);
 
     if (result.cancelled) {
-      console.log(`🗑️ [${exchange}] Cancelled TP order: ${orderToCancel}`);
+      logger.info(`🗑️ [${exchange}] Cancelled TP order: ${orderToCancel}`, {
+        orderId: orderToCancel,
+        orderType: 'take_profit',
+        filledSize: result.filledSize || 0,
+      });
       pendingOrders.delete(orderToCancel);
       activeTpOrderId = null;
       lastTpSize = 0;
@@ -498,7 +551,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     }
 
     if (result.filled) {
-      console.log(`📋 [${exchange}] TP order ${orderToCancel.slice(0, 8)} filled during cancel attempt`);
+      logger.info(`📋 [${exchange}] TP order ${orderToCancel.slice(0, 8)} filled during cancel attempt`, {
+        orderId: orderToCancel,
+        orderType: 'take_profit',
+        filledSize: result.filledSize || 0,
+      });
       pendingOrders.delete(orderToCancel);
       activeTpOrderId = null;
       lastTpSize = 0;
@@ -557,7 +614,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   const handleCancelledOrder = (orderId, order, status, context) => {
     const trackedPartial = partialFillTracker.get(orderId) || 0;
     const filledSize = status.filledSize || trackedPartial;
-    console.log(`⏰ [${exchange}] ${context} found cancelled ${order.type} order ${orderId}${filledSize > 0 ? ` (with ${filledSize} partial fill)` : ''}`);
+    logger.info(`⏰ [${exchange}] ${context} found cancelled ${order.type} order ${orderId}${filledSize > 0 ? ` (with ${filledSize} partial fill)` : ''}`, {
+      orderId,
+      orderType: order.type,
+      status: status.status || 'CANCELLED',
+      reconciliationContext: context,
+      filledSize,
+    });
     if (filledSize > 0 && callbacks.onFillDetected) {
       markSettled(orderId);
       callbacks.onFillDetected(orderId, { ...status, filledSize, placedAt: order.placedAt, isPartialFill: true });
@@ -589,7 +652,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
           if (isFilledStatus(status)) {
             // Order filled but WebSocket missed it - notify regime engine
-            console.log(`✅ [${exchange}] Stale check detected filled order ${orderId} (WebSocket missed)`);
+            logger.info(`✅ [${exchange}] Stale check detected filled order ${orderId} (WebSocket missed)`, {
+              orderId,
+              orderType: order.type,
+              status: status.status || 'FILLED',
+              reconciliationContext: 'Stale check',
+            });
             // Capture placedAt BEFORE deleting from pendingOrders
             const placedAt = order.placedAt;
             pendingOrders.delete(orderId);
@@ -601,7 +669,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             handleCancelledOrder(orderId, order, status, 'Stale check');
           } else if (normalizedStatus === 'OPEN' && status.completionPercentage === 0) {
             // Not filled at all, cancel
-            console.log(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`);
+            logger.info(`⏰ [${exchange}] Stale order timeout, cancelling unfilled order ${orderId}`, {
+              orderId,
+              orderType: order.type,
+              status: normalizedStatus,
+              staleMs,
+            });
             return adapter.cancelOrder(orderId).then(() => {
               pendingOrders.delete(orderId);
               callbacks.onEntryCancelled?.(orderId);
@@ -641,7 +714,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const normalizedStatus = (status.status || '').toUpperCase();
 
         if (isFilledStatus(status)) {
-          console.log(`✅ [${exchange}] Refresh detected filled ${order.type} order ${orderId}`);
+          logger.info(`✅ [${exchange}] Refresh detected filled ${order.type} order ${orderId}`, {
+            orderId,
+            orderType: order.type,
+            status: status.status || 'FILLED',
+            reconciliationContext: 'Refresh',
+          });
           const placedAt = order.placedAt;
           pendingOrders.delete(orderId);
           markSettled(orderId);
@@ -685,7 +763,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const normalizedStatus = (status.status || '').toUpperCase();
 
       if (isFilledStatus(status)) {
-        console.log(`✅ [${exchange}] Fill check detected filled ${order.type} order ${orderId}`);
+        logger.info(`✅ [${exchange}] Fill check detected filled ${order.type} order ${orderId}`, {
+          orderId,
+          orderType: order.type,
+          status: status.status || 'FILLED',
+          reconciliationContext: 'Fill check',
+        });
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
         markSettled(orderId);
@@ -700,7 +783,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         const lastPartialSize = partialFillTracker.get(orderId) || 0;
         if (status.filledSize > lastPartialSize) {
           const placedAt = order.placedAt;
-          console.log(`📦 [${exchange}] Fill check detected partial fill on ${order.type} order ${orderId}: ${status.filledSize} filled (was ${lastPartialSize})`);
+          logger.info(`📦 [${exchange}] Fill check detected partial fill on ${order.type} order ${orderId}: ${status.filledSize} filled (was ${lastPartialSize})`, {
+            orderId,
+            orderType: order.type,
+            status: normalizedStatus,
+            filledSize: status.filledSize,
+            previousFilledSize: lastPartialSize,
+            reconciliationContext: 'Fill check',
+          });
           partialFillTracker.set(orderId, status.filledSize);
           if (callbacks.onFillDetected) {
             callbacks.onFillDetected(orderId, { ...status, placedAt, isPartialFill: true });
@@ -749,7 +839,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
 
     // If old order filled during cancel, do NOT place a new order (would create a naked sell)
     if (filledDuringCancel) {
-      console.log(`📋 [${exchange}] atomicReplace: old order ${oldOrderId.slice(0, 8)} filled during cancel, aborting replacement`);
+      logger.info(`📋 [${exchange}] atomicReplace: old order ${oldOrderId.slice(0, 8)} filled during cancel, aborting replacement`, {
+        orderId: oldOrderId,
+        operation: 'atomicReplace',
+        filledDuringCancel: true,
+      });
       pendingOrders.delete(oldOrderId);
       return { success: false, reason: 'filled_during_cancel', filledDuringCancel: true };
     }
@@ -852,7 +946,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const status = await adapter.getOrder(orderId).catch(() => null);
 
       if (isFilledStatus(status)) {
-        console.log(`📋 [${exchange}] Entry order ${orderId.slice(0, 8)} already filled (discovered during SAFE-mode cancel) — routing fill`);
+        logger.info(`📋 [${exchange}] Entry order ${orderId.slice(0, 8)} already filled (discovered during SAFE-mode cancel) — routing fill`, {
+          orderId,
+          orderType: order.type,
+          status: status.status || 'FILLED',
+          reconciliationContext: 'SAFE-mode cancel',
+        });
         const placedAt = order.placedAt;
         pendingOrders.delete(orderId);
         partialFillTracker.delete(orderId);
@@ -883,7 +982,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       });
     }
 
-    console.log(`🚫 [${exchange}] Cancelled ${cancelled} entry orders${filled > 0 ? ` (${filled} filled during cancel)` : ''}${failed > 0 ? ` (${failed} failed, still tracked)` : ''}`);
+    logger.info(`🚫 [${exchange}] Cancelled ${cancelled} entry orders${filled > 0 ? ` (${filled} filled during cancel)` : ''}${failed > 0 ? ` (${failed} failed, still tracked)` : ''}`, {
+      orderType: 'entry',
+      cancelled,
+      filled,
+      failed,
+    });
     return cancelled;
   };
 
@@ -1066,7 +1170,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const roundedPrice = roundPrice(tpPrice, priceIncrement);
       const roundedQty = roundAsset(assetQty);
 
-      console.log(`📝 [${exchange}] Placing body TP: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
+      logger.info(`📝 [${exchange}] Placing body TP: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`, {
+        bodyId,
+        orderType: 'body_tp',
+        assetQty: roundedQty,
+        baseCurrency,
+        price: roundedPrice,
+      });
 
       // Body TPs should not use post_only — when market reaches TP price, the order must fill.
       // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
@@ -1074,7 +1184,14 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }));
 
       if (result.success) {
-        console.log(`✅ [${exchange}] Body TP placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
+        logger.info(`✅ [${exchange}] Body TP placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`, {
+          bodyId,
+          orderId: result.orderId,
+          orderType: 'body_tp',
+          assetQty: roundedQty,
+          baseCurrency,
+          price: roundedPrice,
+        });
         bodyTpOrders.set(bodyId, {
           tpOrderId: result.orderId,
           assetQty: roundedQty,
@@ -1170,7 +1287,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         pendingOrders.delete(body.tpOrderId);
         cancelled++;
       } else if (result.filled) {
-        console.log(`📋 [${exchange}] Body TP ${body.tpOrderId.slice(0, 8)} filled during bulk cancel`);
+        logger.info(`📋 [${exchange}] Body TP ${body.tpOrderId.slice(0, 8)} filled during bulk cancel`, {
+          bodyId,
+          orderId: body.tpOrderId,
+          orderType: 'body_tp',
+          filledSize: result.filledSize || 0,
+        });
       }
       tpOrderToKey.delete(body.tpOrderId);
       bodyTpOrders.delete(bodyId);
@@ -1321,7 +1443,11 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         pendingOrders.delete(orderId);
         cancelled++;
       } else if (result.filled) {
-        console.log(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`);
+        logger.info(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`, {
+          orderId,
+          orderType: 'ladder_entry',
+          filledSize: result.filledSize || 0,
+        });
       } else {
         logger.warn(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId.slice(0, 8)}`, { orderId });
       }
