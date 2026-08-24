@@ -11,6 +11,7 @@
  */
 
 const { calculateVolExpansion, calculateVWAPDistance } = require('./volatility-utils');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {import('./types').RegimeMode} RegimeMode
@@ -39,9 +40,11 @@ const createInitialRegimeState = () => ({
  * @param {RegimeStrategyConfig} config - Configuration
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onTransition] - Called on regime transition
+ * @param {string} [productId] - Trading pair ID
  * @returns {Object} Regime detector instance
  */
-const createRegimeDetector = (exchange, config, callbacks = {}) => {
+const createRegimeDetector = (exchange, config, callbacks = {}, productId) => {
+  const logger = createContextLogger({ exchange, pair: productId });
   /** @type {RegimeState} */
   let state = createInitialRegimeState();
 
@@ -236,7 +239,9 @@ const createRegimeDetector = (exchange, config, callbacks = {}) => {
     state.since = Date.now();
     state.transitionCount++;
 
-    console.log(`📊 [${exchange}] Regime: ${prevMode} -> ${newMode} (${reason})`);
+    logger.info(`📊 [${exchange}] Regime: ${prevMode} -> ${newMode} (${reason})`, {
+      previousMode: prevMode, mode: newMode, reason,
+    });
 
     if (callbacks.onTransition) {
       callbacks.onTransition(prevMode, newMode, reason);
@@ -331,7 +336,9 @@ const createRegimeDetector = (exchange, config, callbacks = {}) => {
       since: Date.now(),
     };
 
-    console.log(`📂 [${exchange}] Restored regime state: mode=${state.mode}, transitions=${state.transitionCount}`);
+    logger.info(`📂 [${exchange}] Restored regime state: mode=${state.mode}, transitions=${state.transitionCount}`, {
+      mode: state.mode, transitionCount: state.transitionCount,
+    });
   };
 
   return {

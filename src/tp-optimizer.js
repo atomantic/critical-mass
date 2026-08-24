@@ -10,6 +10,7 @@
  * - Recommends new TP values with safety bounds and rate limiting
  */
 
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {Object} CycleRecord
@@ -88,9 +89,11 @@ const getBucketIndex = (value) => {
  * @param {Object} config - Regime configuration
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onAdjustment] - Called when TP values are adjusted
+ * @param {string} [productId] - Trading pair ID
  * @returns {Object} TP optimizer instance
  */
-const createTpOptimizer = (exchange, config, callbacks = {}) => {
+const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
+  const logger = createContextLogger({ exchange, pair: productId });
   /** @type {HistogramBucket[]} */
   let histogram = createEmptyHistogram();
 
@@ -569,7 +572,11 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
 
     percentileCacheValid = false;
 
-    console.log(`📊 [${exchange}] TP optimizer restored: ${totalSampleCount} cycle samples, ${totalVolSampleCount} vol samples, ${recentCycles.length} recent cycles`);
+    logger.info(`📊 [${exchange}] TP optimizer restored: ${totalSampleCount} cycle samples, ${totalVolSampleCount} vol samples, ${recentCycles.length} recent cycles`, {
+      cycleSampleCount: totalSampleCount,
+      volatilitySampleCount: totalVolSampleCount,
+      recentCycleCount: recentCycles.length,
+    });
   };
 
   /**
@@ -618,7 +625,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}) => {
     lastVolEvaluationTime = Date.now();
     cachedPercentiles = { p25: 0, p50: 0, p75: 0 };
     percentileCacheValid = false;
-    console.log(`📊 [${exchange}] TP optimizer reset`);
+    logger.info(`📊 [${exchange}] TP optimizer reset`, { lifecycle: 'reset' });
   };
 
   return {

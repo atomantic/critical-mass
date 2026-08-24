@@ -766,7 +766,7 @@ const createMarketDataService = (exchange, pair) => {
     }
 
     // Create regime detector for passive monitoring
-    regimeDetector = createRegimeDetector(exchange, config);
+    regimeDetector = createRegimeDetector(exchange, config, {}, resolvedPair || productId);
 
     // Load any tracked orders from saved regime state.
     const savedState = loadRegimeState(exchange, resolvedPair);

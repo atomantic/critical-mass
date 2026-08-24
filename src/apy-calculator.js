@@ -7,6 +7,7 @@
  */
 
 const { roundAsset, roundUSDC } = require('./volatility-utils');
+const { createContextLogger } = require('./logger');
 
 /**
  * Calculate APY and return metrics.
@@ -218,8 +219,10 @@ const calculateApyMetrics = (positionState, config, marketState) => {
  * @param {Object} config - Regime config
  * @param {string} exchange - Exchange name
  * @param {Function} [getFilledOrders] - Function to get filled orders from executor
+ * @param {string} [productId] - Trading pair ID
  */
-const initializeApyTracking = (positionState, config, exchange, getFilledOrders) => {
+const initializeApyTracking = (positionState, config, exchange, getFilledOrders, productId) => {
+  const logger = createContextLogger({ exchange, pair: productId });
   const filledOrders = getFilledOrders ? getFilledOrders() : [];
   let earliestOrderTime = Infinity;
 
@@ -240,6 +243,15 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
     }
   };
 
+  const logTrackingState = (trackingMode, message) => {
+    logger.info(message, {
+      trackingMode,
+      depositedCapital: positionState.depositedCapital,
+      maxUsdcDeployed: config.maxUsdcDeployed,
+      engineStartTime: positionState.engineStartTime,
+    });
+  };
+
   if (earliestOrderTime !== Infinity) {
     if (!positionState.engineStartTime || positionState.engineStartTime > earliestOrderTime) {
       positionState.engineStartTime = earliestOrderTime;
@@ -248,14 +260,20 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
         positionState.originalCapital = positionState.initialCapital;
       }
       ensureDepositedCapital();
-      console.log(`📊 [${exchange}] APY tracking backfilled: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
+      logTrackingState(
+        'backfilled',
+        `📊 [${exchange}] APY tracking backfilled: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`
+      );
       return;
     }
     if (!positionState.originalCapital) {
       positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
     }
     ensureDepositedCapital();
-    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
+    logTrackingState(
+      'restored',
+      `📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`
+    );
     return;
   }
 
@@ -264,7 +282,10 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
       positionState.originalCapital = positionState.initialCapital || config.maxUsdcDeployed || 10000;
     }
     ensureDepositedCapital();
-    console.log(`📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`);
+    logTrackingState(
+      'restored',
+      `📊 [${exchange}] APY tracking restored: deposited=$${Number(positionState.depositedCapital).toFixed(2)} max=$${Number(config.maxUsdcDeployed).toFixed(2)}`
+    );
     return;
   }
 
@@ -272,7 +293,10 @@ const initializeApyTracking = (positionState, config, exchange, getFilledOrders)
   positionState.initialCapital = config.maxUsdcDeployed || 10000;
   positionState.originalCapital = positionState.initialCapital;
   positionState.depositedCapital = positionState.initialCapital;
-  console.log(`📊 [${exchange}] APY tracking started fresh: deposited=$${Number(positionState.depositedCapital).toFixed(2)}`);
+  logTrackingState(
+    'fresh',
+    `📊 [${exchange}] APY tracking started fresh: deposited=$${Number(positionState.depositedCapital).toFixed(2)}`
+  );
 };
 
 module.exports = { calculateApyMetrics, initializeApyTracking };

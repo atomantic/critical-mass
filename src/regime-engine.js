@@ -550,7 +550,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         callbacks.onRegimeChange(prevMode, newMode, reason);
       }
     },
-  });
+  }, productId);
 
   const positionSizer = createPositionSizer(exchange, config);
   const riskManager = createRiskManager(exchange, config, productId);
@@ -608,14 +608,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     onAdjustment: (adjustment) => {
       console.log(`📊 [${exchange}] ${modeLabel}TP auto-adjusted: min=${adjustment.tpMinPercent}% max=${adjustment.tpMaxPercent}% holdbackRatio=${adjustment.holdbackRatio}`);
     },
-  });
+  }, productId);
 
   // Create Size optimizer for dynamic position sizing
   const sizeOptimizer = createSizeOptimizer(exchange, config, {
     onAdjustment: (adjustment) => {
       console.log(`📊 [${exchange}] ${modeLabel}Size auto-adjusted: ${adjustment.reason}`);
     },
-  });
+  }, productId);
 
   // Create Ladder calculator for pre-positioned liquidity ladder mode
   const ladderCalculator = createLadderCalculator(exchange, config);
@@ -1267,7 +1267,8 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const calculateApyMetrics = () => _calculateApyMetrics(positionState, config, marketState);
   const initializeApyTracking = () => _initializeApyTracking(
     positionState, config, exchange,
-    orderExecutor.getFilledOrders ? () => orderExecutor.getFilledOrders() : undefined
+    orderExecutor.getFilledOrders ? () => orderExecutor.getFilledOrders() : undefined,
+    productId
   );
 
   /**
