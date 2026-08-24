@@ -8,7 +8,6 @@
 const { getAdapter } = require('../src/adapters');
 const { createFillLedger } = require('../src/fill-ledger');
 const { createManualTradeStore } = require('../src/manual-trades');
-const { fetchAllCoinbaseFills, normalizeFills } = require('../src/sync-fills');
 
 const EXCHANGE = 'coinbase';
 const PAIR = 'BTC-USDC';
@@ -38,8 +37,8 @@ const matchedPairs = [
   // Fetch all fills in one batch
   const adapter = getAdapter(EXCHANGE);
   console.log(`🔄 Fetching all fills since ${START_DATE}...`);
-  const rawFills = await fetchAllCoinbaseFills(adapter, new Date(START_DATE).getTime());
-  const exchangeFills = normalizeFills(EXCHANGE, rawFills);
+  const normalizedFills = await adapter.getReconciliationFills(PAIR, new Date(START_DATE).getTime());
+  const exchangeFills = new Map(normalizedFills.map(fill => [fill.tradeId, fill]));
   console.log(`📥 ${exchangeFills.size} fills fetched\n`);
 
   // Index fills by orderId

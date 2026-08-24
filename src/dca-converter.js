@@ -16,6 +16,28 @@ const { setExchangeEnabled, getRegimeConfig, getExchangeConfig } = require('./co
 const { getExchangeDataDir } = require('./migration');
 const { log } = require('./logger');
 
+const CONVERSION_FILES = ['state.json', 'fill-ledger.json', 'regime-state.json'];
+
+/**
+ * Back up the state files involved in a DCA conversion.
+ * @param {string} dataDir
+ * @returns {{ backupSuffix: string, backedUpFiles: string[] }}
+ */
+const backupConversionFiles = (dataDir) => {
+  const backupSuffix = `.backup-dca-convert-${Date.now()}`;
+  const backedUpFiles = [];
+
+  for (const file of CONVERSION_FILES) {
+    const src = path.join(dataDir, file);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(dataDir, file + backupSuffix));
+      backedUpFiles.push(file);
+    }
+  }
+
+  return { backupSuffix, backedUpFiles };
+};
+
 /**
  * Categorize DCA orders into pending (open sells), filled (completed), and consolidated
  * @param {import('./types').TrackedOrder[]} orders
@@ -98,21 +120,10 @@ const previewConversion = (exchange) => {
  */
 const executeConversion = (exchange) => {
   const dataDir = getExchangeDataDir(exchange);
-  const timestamp = Date.now();
-  const backupSuffix = `.backup-dca-convert-${timestamp}`;
+  const { backupSuffix, backedUpFiles } = backupConversionFiles(dataDir);
 
   // 1. Backup existing state files
-  const filesToBackup = ['state.json', 'fill-ledger.json', 'regime-state.json'];
-  const backedUp = [];
-  for (const file of filesToBackup) {
-    const src = path.join(dataDir, file);
-    if (fs.existsSync(src)) {
-      const dest = path.join(dataDir, file + backupSuffix);
-      fs.copyFileSync(src, dest);
-      backedUp.push(file);
-    }
-  }
-  log('INFO', `💾 [${exchange}] DCA conversion backup: ${backedUp.join(', ')} → ${backupSuffix}`);
+  log('INFO', `💾 [${exchange}] DCA conversion backup: ${backedUpFiles.join(', ')} → ${backupSuffix}`);
 
   // 2. Disable DCA engine
   setExchangeEnabled(exchange, false);
@@ -305,7 +316,7 @@ const executeConversion = (exchange) => {
   return {
     success: true,
     backupDir: backupSuffix,
-    backedUpFiles: backedUp,
+    backedUpFiles,
     summary: {
       filledOrders: filledIngested,
       pendingOrders: pendingIngested,
@@ -327,21 +338,10 @@ const executeConversion = (exchange) => {
  */
 const mergeToRegime = (exchange) => {
   const dataDir = getExchangeDataDir(exchange);
-  const timestamp = Date.now();
-  const backupSuffix = `.backup-dca-convert-${timestamp}`;
+  const { backupSuffix, backedUpFiles } = backupConversionFiles(dataDir);
 
   // 1. Backup existing state files
-  const filesToBackup = ['state.json', 'fill-ledger.json', 'regime-state.json'];
-  const backedUp = [];
-  for (const file of filesToBackup) {
-    const src = path.join(dataDir, file);
-    if (fs.existsSync(src)) {
-      const dest = path.join(dataDir, file + backupSuffix);
-      fs.copyFileSync(src, dest);
-      backedUp.push(file);
-    }
-  }
-  log('INFO', `💾 [${exchange}] DCA merge backup: ${backedUp.join(', ')} → ${backupSuffix}`);
+  log('INFO', `💾 [${exchange}] DCA merge backup: ${backedUpFiles.join(', ')} → ${backupSuffix}`);
 
   // 2. Load existing regime state and DCA state
   const existingState = loadRegimeState(exchange);
@@ -511,7 +511,7 @@ const mergeToRegime = (exchange) => {
   return {
     success: true,
     backupDir: backupSuffix,
-    backedUpFiles: backedUp,
+    backedUpFiles,
     summary: {
       filledOrders: filledIngested,
       pendingOrders: pendingIngested,
@@ -526,6 +526,7 @@ const mergeToRegime = (exchange) => {
 };
 
 module.exports = {
+  backupConversionFiles,
   categorizeOrders,
   previewConversion,
   executeConversion,
