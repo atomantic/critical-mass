@@ -1,8 +1,27 @@
 // @ts-check
-const { describe, it } = require('node:test');
+const { describe, it, test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { categorizeOrders } = require('../src/dca-converter');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { backupConversionFiles, categorizeOrders } = require('../src/dca-converter');
+
+test('backupConversionFiles copies each existing conversion file with one suffix', (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'critical-mass-dca-backup-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+  fs.writeFileSync(path.join(dataDir, 'state.json'), '{"state":true}');
+  fs.writeFileSync(path.join(dataDir, 'regime-state.json'), '{"regime":true}');
+
+  const { backupSuffix, backedUpFiles } = backupConversionFiles(dataDir);
+
+  assert.match(backupSuffix, /^\.backup-dca-convert-\d+$/);
+  assert.deepEqual(backedUpFiles, ['state.json', 'regime-state.json']);
+  assert.equal(fs.readFileSync(path.join(dataDir, `state.json${backupSuffix}`), 'utf8'), '{"state":true}');
+  assert.equal(fs.readFileSync(path.join(dataDir, `regime-state.json${backupSuffix}`), 'utf8'), '{"regime":true}');
+  assert.equal(fs.existsSync(path.join(dataDir, `fill-ledger.json${backupSuffix}`)), false);
+});
 
 // issue #106 follow-up — a DCA→regime conversion must not silently drop
 // 'awaiting_sell' / 'sell_failed' rows. Those represent a REAL filled buy whose

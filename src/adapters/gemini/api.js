@@ -817,6 +817,38 @@ const createGeminiAdapter = (keysPath = null) => {
    */
   adapter.getAllTrades = (symbol, sinceTimestampMs) => fetchTradesSince(symbol, sinceTimestampMs);
 
+  /**
+   * Fetch and normalize every fill used by the ledger reconciliation tools.
+   * @param {string|undefined} productId
+   * @param {number} startTimestampMs
+   * @returns {Promise<import('../../types').ReconciliationFill[]>}
+   */
+  adapter.getReconciliationFills = async (productId, startTimestampMs) => {
+    const trades = await fetchTradesSince(productId ? toGeminiSymbol(productId) : 'btcusd', startTimestampMs);
+    const seenTrades = new Set();
+    return trades.flatMap(raw => {
+      const tradeId = String(raw.tid || '');
+      if (!tradeId || seenTrades.has(tradeId)) return [];
+      seenTrades.add(tradeId);
+      const price = parseFloat(raw.price || 0);
+      const size = parseFloat(raw.amount || 0);
+      return [{
+        tradeId,
+        orderId: String(raw.order_id || ''),
+        side: String(raw.type || '').toLowerCase(),
+        price,
+        size,
+        quoteAmount: price * size,
+        fee: parseFloat(raw.fee_amount || 0),
+        feeCurrency: raw.fee_currency || 'USD',
+        timestamp: Number(raw.timestampms || Number(raw.timestamp || 0) * 1000),
+        liquidityIndicator: raw.is_maker ? 'MAKER' : 'TAKER',
+      }];
+    });
+  };
+
+  adapter.capabilities.fillReconciliation = true;
+
   return adapter;
 };
 

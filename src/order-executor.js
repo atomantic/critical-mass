@@ -14,6 +14,7 @@ const { createMutex } = require('./async-mutex');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR, isFilledStatus } = require('./shared-utils');
 const { placeWithUnknownReconcile } = require('./order-manager');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -33,6 +34,7 @@ const { placeWithUnknownReconcile } = require('./order-manager');
  * @returns {Object} Order executor instance
  */
 const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {}) => {
+  const logger = createContextLogger({ exchange, pair: productId });
   /** @type {Map<string, PendingOrder>} */
   const pendingOrders = new Map();
   const baseCurrency = getBaseCurrency(productId);
@@ -191,11 +193,20 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           return { cancelled: true, filled: false, ...fillDetails(status, resolveFilledSize(status)) };
         }
         if (attempt < maxAckRetries) {
-          console.log(`⚠️ [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} (status=${status?.status || 'unknown'}) — retrying (${attempt + 1}/${maxAckRetries})`);
+          logger.warn(`⚠️ [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} (status=${status?.status || 'unknown'}) — retrying (${attempt + 1}/${maxAckRetries})`, {
+            orderId,
+            status: status?.status || 'unknown',
+            attempt: attempt + 1,
+            maxAttempts: maxAckRetries,
+          });
           await new Promise(r => setTimeout(r, pollDelayMs));
           continue;
         }
-        console.log(`🚨 [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} after ${maxAckRetries} retries, status=${status?.status || 'unknown'}`);
+        logger.error(`🚨 [${exchange}] Cancel rejected for ${orderId.slice(0, 8)} after ${maxAckRetries} retries, status=${status?.status || 'unknown'}`, {
+          orderId,
+          status: status?.status || 'unknown',
+          attempts: maxAckRetries,
+        });
         return { cancelled: false, filled: false, filledSize: 0 };
       }
 
@@ -218,7 +229,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // status OPEN, PENDING_CANCEL, null (fetch error), or unknown — keep polling
       }
 
-      console.log(`🚨 [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} never reported CANCELLED after ${maxPollAttempts} polls`);
+      logger.error(`🚨 [${exchange}] Cancel ack'd but order ${orderId.slice(0, 8)} never reported CANCELLED after ${maxPollAttempts} polls`, {
+        orderId,
+        pollAttempts: maxPollAttempts,
+      });
       return { cancelled: false, filled: false, filledSize: 0 };
     }
 
@@ -279,7 +293,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       const orderStatus = await adapter.getOrder(result.orderId).catch(() => null);
 
       if (orderStatus && orderStatus.status === 'CANCELLED' && orderStatus.filledSize === 0) {
-        console.log(`⚠️ [${exchange}] Order ${result.orderId} was immediately cancelled by exchange`);
+        logger.warn(`⚠️ [${exchange}] Order ${result.orderId} was immediately cancelled by exchange`, { orderId: result.orderId });
         pendingOrders.delete(result.orderId);
 
         const maxRetries = config.entryMaxRetries || 3;
@@ -316,7 +330,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       return placeEntryBid(sizeUsdc, freshPrices.bid, freshPrices.ask, retryCount + 1, effectiveOffsetBps, staleMs);
     }
 
-    console.log(`❌ [${exchange}] Entry bid failed: ${result.errorMessage || 'unknown error'} (${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)})`);
+    logger.error(`❌ [${exchange}] Entry bid failed: ${result.errorMessage || 'unknown error'} (${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)})`, {
+      orderId: result.orderId,
+      error: result.errorMessage || 'unknown error',
+      assetQty,
+      baseCurrency,
+      bidPrice,
+    });
 
     return {
       success: false,
@@ -384,7 +404,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         }
 
         if (!cancelResult.cancelled) {
-          console.log(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, keeping it tracked to avoid duplicate sells`);
+          logger.warn(`⚠️ [${exchange}] Failed to cancel old TP order ${oldTpId}, keeping it tracked to avoid duplicate sells`, { orderId: oldTpId });
           return {
             success: false,
             errorMessage: `Cannot place new TP: failed to cancel existing TP order ${oldTpId}`,
@@ -397,7 +417,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // that differs from what we entered with means a concurrent section
       // already placed a TP — abort rather than stack a second live sell.
       if (activeTpOrderId && activeTpOrderId !== entryTpId) {
-        console.log(`⚠️ [${exchange}] activeTpOrderId changed (${entryTpId || 'none'} → ${activeTpOrderId}) during TP placement — aborting to avoid duplicate TP sell`);
+        logger.warn(`⚠️ [${exchange}] activeTpOrderId changed (${entryTpId || 'none'} → ${activeTpOrderId}) during TP placement — aborting to avoid duplicate TP sell`, {
+          previousOrderId: entryTpId,
+          activeOrderId: activeTpOrderId,
+        });
         return {
           success: false,
           errorMessage: `Concurrent TP placement detected (activeTpOrderId=${activeTpOrderId})`,
@@ -490,7 +513,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       };
     }
 
-    console.log(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: unknown state`);
+    logger.warn(`⚠️ [${exchange}] Cancel TP failed for ${orderToCancel}: unknown state`, { orderId: orderToCancel, status: 'unknown' });
     return { cancelled: false, filled: false, filledSize: 0 };
   };
 
@@ -582,12 +605,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             return adapter.cancelOrder(orderId).then(() => {
               pendingOrders.delete(orderId);
               callbacks.onEntryCancelled?.(orderId);
-            }).catch(err => console.log(`❌ [${exchange}] Stale order cancel failed for ${orderId}: ${err.message}`));
+            }).catch(err => logger.error(`❌ [${exchange}] Stale order cancel failed for ${orderId}: ${err.message}`, { orderId, error: err.message }));
           }
           // Partially filled orders are left alone - WebSocket should handle incremental fills
         })
         .catch(err => {
-          console.log(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err.message}`);
+          logger.error(`❌ [${exchange}] Stale order check failed for ${orderId}: ${err.message}`, { orderId, error: err.message });
         });
     }, staleMs);
     staleTimers.add(timer);
@@ -704,7 +727,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   const atomicReplace = async (oldOrderId, newOrderParams) => {
     // Step 1: Cancel old order
     await adapter.cancelOrder(oldOrderId).catch(err => {
-      console.log(`❌ [${exchange}] atomicReplace cancel failed for ${oldOrderId}: ${err.message}`);
+      logger.error(`❌ [${exchange}] atomicReplace cancel failed for ${oldOrderId}: ${err.message}`, { orderId: oldOrderId, error: err.message });
       throw err;
     });
 
@@ -819,7 +842,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
 
       if (result.status === 'rejected') {
-        console.log(`⚠️ [${exchange}] Cancel threw for entry order ${orderId}: ${result.reason?.message || 'unknown'}`);
+        logger.warn(`⚠️ [${exchange}] Cancel threw for entry order ${orderId}: ${result.reason?.message || 'unknown'}`, {
+          orderId,
+          error: result.reason?.message || 'unknown',
+        });
       }
 
       // Refused cancel — inspect terminal state before dropping tracking.
@@ -851,7 +877,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // the order may still be live. Keep it tracked so the polling backstop
       // (checkPendingOrderFills) can still catch a later fill; do NOT delete.
       failed++;
-      console.log(`⚠️ [${exchange}] Entry order ${orderId} not cancelled (status=${normalizedStatus || 'unknown'}) — keeping tracked for polling backstop`);
+      logger.warn(`⚠️ [${exchange}] Entry order ${orderId} not cancelled (status=${normalizedStatus || 'unknown'}) — keeping tracked for polling backstop`, {
+        orderId,
+        status: normalizedStatus || 'unknown',
+      });
     }
 
     console.log(`🚫 [${exchange}] Cancelled ${cancelled} entry orders${filled > 0 ? ` (${filled} filled during cancel)` : ''}${failed > 0 ? ` (${failed} failed, still tracked)` : ''}`);
@@ -879,7 +908,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // Genuine orphan: the order isn't in pendingOrders AND we have no
       // record of recently settling it (polling backstop, stale-cancel,
       // or engine restart paths all stamp `recentlySettled`).
-      console.log(`🚨 [${exchange}] WS fill for untracked order ${orderId} — likely orphan (check audit-fills.js)`);
+      logger.error(`🚨 [${exchange}] WS fill for untracked order ${orderId} — likely orphan (check audit-fills.js)`, { orderId, orphan: true });
     }
   };
 
@@ -1088,7 +1117,10 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       }
 
       if (!body && fallbackOrderId) {
-        console.log(`⚠️ [${exchange}] Body ${bodyId.slice(-8)} not in executor tracking, using fallback orderId ${fallbackOrderId.slice(0, 8)} for cancel`);
+        logger.warn(`⚠️ [${exchange}] Body ${bodyId.slice(-8)} not in executor tracking, using fallback orderId ${fallbackOrderId.slice(0, 8)} for cancel`, {
+          bodyId,
+          orderId: fallbackOrderId,
+        });
       }
 
       const result = await safeCancelOrder(orderToCancel);
@@ -1225,7 +1257,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // #226 follow-up) instead of treating a network error as a clean
       // failure — a real ladder entry may have reached the exchange despite it.
       const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitBuy(productId, level.assetQty, level.price, { postOnly: true })).catch(err => {
-        console.log(`⚠️ [${exchange}] Error placing ladder order at $${level.price}: ${err.message}`);
+        logger.warn(`⚠️ [${exchange}] Error placing ladder order at $${level.price}: ${err.message}`, { price: level.price, error: err.message });
         return { success: false, errorMessage: err.message };
       });
 
@@ -1236,13 +1268,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // Only treat as immediately cancelled when we positively know it's cancelled.
         // If we failed to fetch status (null), track the order and let later refresh reconcile.
         if (orderStatus && orderStatus.status === 'CANCELLED') {
-          console.log(`⚠️ [${exchange}] Ladder order at $${level.price} was immediately cancelled`);
+          logger.warn(`⚠️ [${exchange}] Ladder order at $${level.price} was immediately cancelled`, { orderId: result.orderId, price: level.price });
           failedCount++;
           continue;
         }
 
         if (!orderStatus) {
-          console.log(`⚠️ [${exchange}] Could not verify ladder order at $${level.price}, tracking it for reconciliation`);
+          logger.warn(`⚠️ [${exchange}] Could not verify ladder order at $${level.price}, tracking it for reconciliation`, { orderId: result.orderId, price: level.price });
         }
 
         pendingOrders.set(result.orderId, {
@@ -1262,7 +1294,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
           assetQty: level.assetQty,
         });
       } else {
-        console.log(`⚠️ [${exchange}] Failed to place ladder order at $${level.price}: ${result.errorMessage}`);
+        logger.warn(`⚠️ [${exchange}] Failed to place ladder order at $${level.price}: ${result.errorMessage}`, { price: level.price, error: result.errorMessage });
         failedCount++;
       }
 
@@ -1291,7 +1323,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       } else if (result.filled) {
         console.log(`📋 [${exchange}] Ladder order ${orderId.slice(0, 8)} filled during cancel — polling will process`);
       } else {
-        console.log(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId.slice(0, 8)}`);
+        logger.warn(`⚠️ [${exchange}] Failed to cancel ladder order ${orderId.slice(0, 8)}`, { orderId });
       }
     }
 
