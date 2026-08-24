@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
+const { createContextLogger } = require('../../logger');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -34,6 +35,7 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
   // Start with base adapter
   const adapter = createBaseAdapter('coinbase');
+  const logger = createContextLogger({ exchange: 'coinbase' });
 
   /**
    * Check if keys file exists and contains valid-looking credentials
@@ -126,6 +128,19 @@ const createCoinbaseAdapter = (keysPath = null) => {
     apiPath.split('?')[0] === '/api/v3/brokerage/orders';
 
   /**
+   * Extract product context from Coinbase product paths and query parameters.
+   * @param {string} apiPath
+   * @returns {string|undefined}
+   */
+  const getPairFromApiPath = (apiPath) => {
+    const [endpoint, query = ''] = apiPath.split('?');
+    const pathMatch = endpoint.match(/\/products\/([^/]+)/);
+    if (pathMatch) return decodeURIComponent(pathMatch[1]);
+    const params = new URLSearchParams(query);
+    return params.get('product_id') || params.get('product_ids') || undefined;
+  };
+
+  /**
    * Make authenticated request to Coinbase API with retry logic
    * @param {string} method - HTTP method
    * @param {string} apiPath - API path
@@ -186,7 +201,16 @@ const createCoinbaseAdapter = (keysPath = null) => {
       // branch above and are never network-retried here.)
       if (attempt < retries && method === 'GET' && isTransientNetworkError(lastError)) {
         const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
-        console.log(`⚠️ [coinbase] Network error on ${method} ${apiPath.split('?')[0]}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+        const endpoint = apiPath.split('?')[0];
+        logger.warn(`⚠️ [coinbase] Network error on ${method} ${endpoint}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`, {
+          pair: getPairFromApiPath(apiPath),
+          method,
+          endpoint,
+          delayMs: delay,
+          attempt: attempt + 1,
+          retries,
+          error: lastError.message,
+        });
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
