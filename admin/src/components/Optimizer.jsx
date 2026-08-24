@@ -47,8 +47,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
   const [currentBest, setCurrentBest] = useState(null)
   const [showConfig, setShowConfig] = useState(false)
   const activeRunIdRef = useRef(null)
-  const activeFundRef = useRef(`${exchange}::${pair || ''}`)
-  activeFundRef.current = `${exchange}::${pair || ''}`
+  const cacheRequestGenerationRef = useRef(0)
 
   // Configurable parameters
   const [selectedIntervals, setSelectedIntervals] = useState(['10min', '1hour', 'daily'])
@@ -96,13 +95,16 @@ function Optimizer({ exchange = 'coinbase', pair }) {
       activeRunIdRef.current = null
     })
 
-    return () => socket.disconnect()
+    return () => {
+      activeRunIdRef.current = null
+      socket.disconnect()
+    }
   }, [exchange, pair])
 
   // Load cached results whenever the active fund changes.
   useEffect(() => {
     const controller = new AbortController()
-    const requestedFund = `${exchange}::${pair || ''}`
+    const requestGeneration = ++cacheRequestGenerationRef.current
     activeRunIdRef.current = null
     setInitialLoading(true)
     setLoading(false)
@@ -114,7 +116,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
     fetch(`/api/${exchange}/optimizer/cache${pairQuery}`, { signal: controller.signal })
       .then(res => res.json())
       .then(data => {
-        if (activeFundRef.current !== requestedFund) return
+        if (cacheRequestGenerationRef.current !== requestGeneration) return
         if (data.cached) {
           setResults(data)
           setFundSize(data.fundSize || 10000)
@@ -128,13 +130,18 @@ function Optimizer({ exchange = 'coinbase', pair }) {
         }
       })
       .catch(err => {
-        if (err.name !== 'AbortError') setError(err.message || 'Failed to load optimizer cache')
+        if (err.name !== 'AbortError' && cacheRequestGenerationRef.current === requestGeneration) {
+          setError(err.message || 'Failed to load optimizer cache')
+        }
       })
       .finally(() => {
-        if (activeFundRef.current === requestedFund) setInitialLoading(false)
+        if (cacheRequestGenerationRef.current === requestGeneration) setInitialLoading(false)
       })
 
-    return () => controller.abort()
+    return () => {
+      cacheRequestGenerationRef.current += 1
+      controller.abort()
+    }
   }, [exchange, pair, pairQuery])
 
   const formatPercent = (n) => `${(n || 0).toFixed(2)}%`
@@ -198,6 +205,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
     })
       .then(res => res.json())
       .then(data => {
+        if (activeRunIdRef.current !== runId) return
         if (!data.success) throw new Error(data.error || 'Unknown error')
         // Cached results come via HTTP response
         if (data.cached) {
@@ -211,6 +219,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
         // Keep loading state, results will come via optimizer:complete event
       })
       .catch(err => {
+        if (activeRunIdRef.current !== runId) return
         console.error('Optimizer fetch error:', err)
         activeRunIdRef.current = null
         setError(err.message || 'Failed to start optimizer')
