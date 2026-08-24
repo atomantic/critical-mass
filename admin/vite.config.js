@@ -16,11 +16,13 @@ export default defineConfig({
       '/api': {
         target: `http://localhost:${API_PORT}`,
         changeOrigin: true,
+        xfwd: true,
       },
       '/socket.io': {
         target: `http://localhost:${API_PORT}`,
         changeOrigin: true,
         ws: true,
+        xfwd: true,
       },
     },
   },

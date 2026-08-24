@@ -40,6 +40,7 @@ const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { createOperatorAuth } = require('./src/operator-auth');
+const { resolveListenHosts, isGatewayOrigin } = require('./src/gateway-listen');
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -49,13 +50,13 @@ runMigrationIfNeeded();
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5563;
-const HOST = process.env.HOST || '127.0.0.1';
+const LISTEN_HOSTS = resolveListenHosts(process.env.HOST);
 
-// CORS allowlist -- only local dev and the server itself
+// CORS allowlist -- local dev, plus Tailscale 100.x / *.ts.net (see isGatewayOrigin)
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5564`).split(',').map(s => s.trim());
 
 const io = new Server(server, {
-  cors: { origin: CORS_ORIGINS }
+  cors: { origin: (origin, cb) => cb(null, isGatewayOrigin(origin, CORS_ORIGINS)) },
 });
 
 // Notification system
@@ -65,8 +66,8 @@ const notifier = createNotifier();
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (CORS_ORIGINS.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
+  if (isGatewayOrigin(origin, CORS_ORIGINS)) {
+    if (origin) res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -488,12 +489,24 @@ const checkAndRunIntervalTrade = () => {
 
 // ============ Start Server ============
 
-server.listen(PORT, HOST, () => {
+const extraServers = [];
+LISTEN_HOSTS.forEach((host, i) => {
+  const s = i === 0 ? server : http.createServer(app);
+  if (i > 0) {
+    io.attach(s);
+    extraServers.push(s);
+  }
+  s.listen(PORT, host, () => {
+    log('INFO', `Critical Mass listening on http://${host}:${PORT}`);
+  });
+});
+
+{
   const enabledExchanges = getEnabledExchanges();
 
   const { version } = require('./package.json');
   log('INFO', `\n⚛  Critical Mass v${version}\n·  ·  · ◉ ·  ·  ·\nBTC Accumulation Engine\n`);
-  log('INFO', `Critical Mass running on http://${HOST}:${PORT}`);
+  log('INFO', `Critical Mass running on ${LISTEN_HOSTS.map((h) => `http://${h}:${PORT}`).join(' ')}`);
   log('INFO', `Configured exchanges: ${getConfiguredExchanges().join(', ')}`);
   log('INFO', `Enabled exchanges: ${enabledExchanges.length > 0 ? enabledExchanges.join(', ') : 'none'}`);
 
@@ -519,7 +532,7 @@ server.listen(PORT, HOST, () => {
 
   // Check immediately on startup
   checkAndRunIntervalTrade();
-});
+}
 
 // ============ Graceful Shutdown ============
 
@@ -547,6 +560,7 @@ const gracefulShutdown = async (signal) => {
     backupTimer = null;
   }
 
+  extraServers.forEach((s) => s.close());
   server.close(() => {
     log('INFO', 'Server closed');
     process.exit(0);
