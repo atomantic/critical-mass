@@ -9,6 +9,7 @@
 
 const path = require('path');
 const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType, applyUpOnlyGate } = require('./signal-engine');
+const { clampScoreToExistingType, preventTickCreatedSignal, alignJournalType } = require('./signal-stability');
 const { createScorecard } = require('./scorecard');
 const { log } = require('../logger');
 
@@ -85,7 +86,10 @@ const createUpDownService = (io, deps) => {
         signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
       }
     }
-    log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position}`);
+    if (saved.stability) {
+      signalEngine.setStabilityState(saved.stability);
+    }
+    log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position} stability=${saved.stability?.publishedType || 'none'}`);
   };
 
   // Eagerly load persisted state so signal history is available even before start()
@@ -95,7 +99,12 @@ const createUpDownService = (io, deps) => {
    * Persist current state to disk
    */
   const persistState = () => {
-    writeJSON(stateFilePath, { contract, position, signalHistory: signalHistory.slice(-MAX_SIGNAL_HISTORY) });
+    writeJSON(stateFilePath, {
+      contract,
+      position,
+      signalHistory: signalHistory.slice(-MAX_SIGNAL_HISTORY),
+      stability: signalEngine.getStabilityState(),
+    });
   };
 
   /**
@@ -195,25 +204,27 @@ const createUpDownService = (io, deps) => {
     // Pass the held position so NO_TRADE_ZONE surfaces exit signals (issue #108).
     const result = signalEngine.computeSignals(contract.expiry, metrics, position);
 
-    // Tick momentum confirmation — adjust composite score post-computation
+    // Tick momentum confirmation — adjust composite score post-computation.
+    // Must not create or cancel a published type: 5s tick boosts were shoving
+    // HOLD (14.5) across the BUY line as a fake 18.3 print.
     const tickMomentum = computeTickMomentum();
+    const typeBeforeTick = result.type;
     if (Math.abs(result.score) >= 5 && tickMomentum.magnitude > 0) {
       const scoreDir = result.score > 0 ? 'up' : 'down';
+      let adjusted = result.score;
       if (tickMomentum.direction === scoreDir) {
-        // Aligned: boost up to +25% scaled by magnitude (caps at 20 bps)
         const boostFactor = 1 + 0.25 * Math.min(1, tickMomentum.magnitude / 20);
-        result.score = Math.round(result.score * boostFactor * 100) / 100;
+        adjusted = Math.round(result.score * boostFactor * 100) / 100;
       } else if (tickMomentum.direction !== 'neutral') {
-        // Contradicting: reduce up to -15% scaled by magnitude
         const dampFactor = 1 - 0.15 * Math.min(1, tickMomentum.magnitude / 20);
-        result.score = Math.round(result.score * dampFactor * 100) / 100;
+        adjusted = Math.round(result.score * dampFactor * 100) / 100;
       }
-      // Recompute type and confidence after the tick-momentum score adjustment,
-      // preserving exit-signal surfacing for a held position in the no-trade
-      // zone (issue #108) — same rule as the signal engine.
-      const adjustedRaw = scoreToSignalDynamic(result.score, result.volatility?.ratio ?? 1);
+      const atrRatio = result.volatility?.ratio ?? 1;
+      result.score = clampScoreToExistingType(typeBeforeTick, result.score, adjusted, atrRatio);
+      const adjustedRaw = scoreToSignalDynamic(result.score, atrRatio);
       const gated = applyUpOnlyGate(adjustedRaw, result.trendGate?.open !== false, position);
-      result.type = resolveNoTradeZoneType(gated, result.noTradeZone, position);
+      const candidate = resolveNoTradeZoneType(gated, result.noTradeZone, position);
+      result.type = preventTickCreatedSignal(typeBeforeTick, candidate);
       result.confidence = Math.round(Math.min(1, Math.abs(result.score) / 60) * 100) / 100;
     }
 
@@ -262,6 +273,8 @@ const createUpDownService = (io, deps) => {
           }
         }
       }
+
+      persistState();
 
       // Record signal change for scorecard tracking
       scorecard.recordPrediction(result, 'signal_change');
@@ -313,7 +326,10 @@ const createUpDownService = (io, deps) => {
     // Start scorecard auto-sampling (every 60s) — awaits JSONL history hydration.
     // Uses scorecardSignalEngine (issue #212C), a dedicated instance, so the sampler's
     // reads don't advance the live cycle's crossover-detection memory.
-    await scorecard.start(() => scorecardSignalEngine.computeSignals(contract.expiry, scorecard.getMetrics()));
+    await scorecard.start(() => {
+      const sampled = scorecardSignalEngine.computeSignals(contract.expiry, scorecard.getMetrics());
+      return alignJournalType(sampled, lastSignalResult?.type);
+    });
 
     log('INFO', '📊 UpDown service started interval=5s');
   };

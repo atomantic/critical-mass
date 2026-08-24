@@ -15,6 +15,7 @@
  */
 
 const WebSocket = require('ws');
+const { createContextLogger } = require('../../logger');
 
 const GEMINI_WS_URL = 'wss://api.gemini.com/v2/marketdata';
 const HEARTBEAT_INTERVAL = 30000;
@@ -47,6 +48,7 @@ const toGeminiSymbol = (productId) =>
  * @returns {{ connect: Function, disconnect: Function, isActive: Function, getStatus: Function }}
  */
 const createGeminiWebSocketFeed = (exchange, config) => {
+  const logger = createContextLogger({ exchange, pair: config.productId });
   let ws = null;
   let isConnected = false;
   let shouldReconnect = true;
@@ -110,7 +112,7 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('error', (error) => {
-      console.log(`❌ [${exchange}] Gemini WebSocket error: ${error.message}`);
+      logger.error(`❌ [${exchange}] Gemini WebSocket error: ${error.message}`, { error: error.message });
       config.onError?.(error);
     });
 
@@ -290,7 +292,10 @@ const createGeminiWebSocketFeed = (exchange, config) => {
       if (ws?.readyState !== WebSocket.OPEN) return;
 
       if (missedPongs >= MAX_MISSED_PONGS) {
-        console.log(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`);
+        logger.error(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`, {
+          missedPongs,
+          elapsedMs: missedPongs * HEARTBEAT_INTERVAL,
+        });
         ws.terminate();
         return;
       }

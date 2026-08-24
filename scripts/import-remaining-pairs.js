@@ -7,7 +7,6 @@
 const { getAdapter } = require('../src/adapters');
 const { createFillLedger } = require('../src/fill-ledger');
 const { createManualTradeStore } = require('../src/manual-trades');
-const { fetchAllCoinbaseFills, normalizeFills } = require('../src/sync-fills');
 
 const EXCHANGE = 'coinbase';
 const PAIR = 'BTC-USDC';
@@ -17,8 +16,8 @@ const isManualSize = (btc) => [0.5, 1.0].some(s => Math.abs(btc - s) < SIZE_TOLE
 (async () => {
   const adapter = getAdapter(EXCHANGE);
   console.log('🔄 Fetching bulk fills...');
-  const rawFills = await fetchAllCoinbaseFills(adapter, new Date('2026-01-01').getTime());
-  const fills = normalizeFills(EXCHANGE, rawFills);
+  const normalizedFills = await adapter.getReconciliationFills(PAIR, new Date('2026-01-01').getTime());
+  const fills = new Map(normalizedFills.map(fill => [fill.tradeId, fill]));
 
   const fillLedger = createFillLedger(EXCHANGE, PAIR, PAIR);
   fillLedger.load();
