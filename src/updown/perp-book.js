@@ -103,20 +103,27 @@ const createPerpBook = (initial = {}) => {
     if (side === lastSide) {
       return { action, fill: null, trade: null }
     }
+    return applyFill(action, price, ts)
+  }
 
-    // HOLD needs no price — remember the side so the next BUY can ADD.
-    // OPEN/ADD/CLOSE with a dead tick must NOT consume the signal.
+  /**
+   * Replay a journaled fill. Unlike applySignal this does not skip same-side
+   * repeats — JSONL only records actual fills, so OPEN then ADD must both land
+   * even with no intervening HOLD row.
+   * @param {'OPEN'|'ADD'|'HOLD'|'CLOSE'} action
+   * @param {number} price
+   * @param {number} [ts]
+   */
+  const applyFill = (action, price, ts = Date.now()) => {
     if (action === 'HOLD') {
-      lastSide = side
+      lastSide = 'HOLD'
       return { action, fill: null, trade: null }
     }
-
     if (!Number.isFinite(price) || price <= 0) {
       return { action, fill: null, trade: null }
     }
-    lastSide = side
-
     if (action === 'OPEN' || action === 'ADD') {
+      lastSide = 'BUY'
       lots.push({ entryPrice: price, entryTs: ts, action })
       if (lots.length > maxContracts) maxContracts = lots.length
       return {
@@ -125,8 +132,8 @@ const createPerpBook = (initial = {}) => {
         trade: null,
       }
     }
-
     if (action === 'CLOSE' && lots.length > 0) {
+      lastSide = 'SELL'
       const n = lots.length
       const avg = avgEntry()
       const pnl = round2(unrealizedAt(price))
@@ -148,7 +155,6 @@ const createPerpBook = (initial = {}) => {
         trade,
       }
     }
-
     return { action, fill: null, trade: null }
   }
 
@@ -176,6 +182,7 @@ const createPerpBook = (initial = {}) => {
 
   return {
     applySignal,
+    applyFill,
     snapshot,
     hydrate,
     serialize,

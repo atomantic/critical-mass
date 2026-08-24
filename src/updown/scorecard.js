@@ -885,10 +885,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       if (fillRecords.length > 0) {
         const replay = createPerpBook()
         for (const rec of fillRecords) {
-          // Journal rows store the engine type as signalType; fall back to action.
-          const engineType = rec.signalType
-            || (rec.action === 'CLOSE' ? 'SELL' : rec.action === 'HOLD' ? 'NEUTRAL' : 'BUY')
-          replay.applySignal(engineType, rec.price, Date.parse(rec.ts) || rec.ts)
+          const action = rec.action
+            || (rec.side === 'sell' ? 'CLOSE' : rec.side === 'buy' ? (replay.isLong() ? 'ADD' : 'OPEN') : 'HOLD')
+          replay.applyFill(action, rec.price, Date.parse(rec.ts) || rec.ts)
         }
         perpBook.hydrate(replay.serialize())
         log('INFO', `📊 Scorecard rebuilt perp book from journal fills=${fillRecords.length} contracts=${perpBook.snapshot().contracts}`)

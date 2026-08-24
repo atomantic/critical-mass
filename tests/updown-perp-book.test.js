@@ -138,6 +138,16 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
     assert.equal(restored.contracts(), 2)
   })
 
+  it('replays journaled OPEN then ADD without an intervening HOLD', () => {
+    const book = createPerpBook()
+    book.applyFill('OPEN', 100_000, 1)
+    book.applyFill('ADD', 110_000, 2)
+    assert.equal(book.contracts(), 2)
+    assert.equal(book.snapshot().avgEntry, 105_000)
+    const close = book.applyFill('CLOSE', 120_000, 3)
+    assert.equal(close.trade.pnl, 30_000)
+  })
+
   it('ignores a fill when price is missing so a dead tick cannot open a $0 lot', () => {
     const book = createPerpBook()
     const out = book.applySignal('BUY', NaN, 1)
