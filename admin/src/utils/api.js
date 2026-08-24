@@ -14,11 +14,3 @@
  * installs keep working.
  */
 export const pairQuery = (pair) => (pair ? `?pair=${encodeURIComponent(pair)}` : '');
-
-/**
- * Build a complete API URL for a per-fund endpoint.
- * Example: apiUrl('coinbase', 'regime/status', 'BTC-USDC')
- *   → '/api/coinbase/regime/status?pair=BTC-USDC'
- */
-export const apiUrl = (exchange, endpoint, pair) =>
-  `/api/${exchange}/${endpoint}${pairQuery(pair)}`;
