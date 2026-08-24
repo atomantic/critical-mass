@@ -422,9 +422,10 @@ const computeByHour = (outcomes) => {
  * @param {Object} opts.io - Socket.IO server instance
  * @param {Function} opts.lastPriceFn - Returns current BTC price
  * @param {Function} [opts.contractFn] - Returns current contract config
+ * @param {Function} [opts.journalWriter] - Testable persistence boundary
  * @returns {{recordPrediction: Function, getMetrics: Function, start: Function, stop: Function}}
  */
-const createScorecard = ({ io, lastPriceFn, contractFn }) => {
+const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord }) => {
   /** @type {Array<Object>} Ring buffer of evaluated outcomes */
   const outcomeBuffer = []
 
@@ -444,6 +445,24 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
   let totalPredictions = 0
   let totalSkipped = 0
   let adaptiveWeights = { ...BASE_WEIGHTS }
+  const journal = {
+    healthy: true,
+    lastError: null,
+    lastErrorAt: null,
+    lastSuccessAt: null,
+  }
+
+  const persistRecord = (record) => Promise.resolve()
+    .then(() => journalWriter(record))
+    .then(() => {
+      journal.lastSuccessAt = new Date().toISOString()
+    })
+    .catch((err) => {
+      journal.healthy = false
+      journal.lastError = err?.message || String(err)
+      journal.lastErrorAt = new Date().toISOString()
+      log('ERROR', `📊 Scorecard journal write failed type=${record?.type || 'unknown'} err=${journal.lastError}`)
+    })
 
   /**
    * Build a prediction record from signal engine output
@@ -516,7 +535,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     const outcome = buildOutcomeRecord(prediction, windowMs, exitPrice)
 
     // Persist to JSONL
-    appendRecord(outcome).catch(() => {})
+    persistRecord(outcome)
 
     // Push to ring buffer
     outcomeBuffer.push(outcome)
@@ -556,14 +575,14 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     if (prediction.compositeDirection !== 'up') {
       totalSkipped++
       // DOWN and NEUTRAL are not longs we score. Still journal them.
-      appendRecord(prediction).catch(() => {})
+      persistRecord(prediction)
       return
     }
 
     totalPredictions++
 
     // Persist prediction to JSONL
-    appendRecord(prediction).catch(() => {})
+    persistRecord(prediction)
 
     log('INFO', `📊 Scorecard prediction=${prediction.id} price=$${prediction.price} dir=${prediction.compositeDirection} trigger=${trigger}`)
 
@@ -719,12 +738,12 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     const weightNow = Date.now()
     if (weightNow - lastWeightLogTs >= WEIGHT_LOG_THROTTLE_MS) {
       lastWeightLogTs = weightNow
-      appendRecord({
+      persistRecord({
         type: 'weights',
         ts: new Date().toISOString(),
         weights: { ...adaptiveWeights },
         byIndicator: { ...byIndicator },
-      }).catch(() => {})
+      })
     }
 
     // Last prediction info
@@ -755,6 +774,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       byHour,
       contractAware,
       adaptiveWeights,
+      journal: { ...journal },
       lastPrediction: lastPred ? {
         ts: lastPred.ts,
         price: lastPred.entryPrice,
@@ -810,7 +830,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
       if (exitPrice == null) continue // no price data available at all — unsettleable
       const outcome = buildOutcomeRecord(prediction, windowMs, exitPrice)
       outcome.backfilled = true
-      appendRecord(outcome).catch(() => {})
+      persistRecord(outcome)
       outcomeBuffer.push(outcome)
       backfilled++
     }
@@ -894,7 +914,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn }) => {
     }, SAMPLE_INTERVAL_MS)
 
     // Daily prune of old scorecard files (every 24h)
-    pruneTimer = setInterval(() => pruneHistory(30).catch(() => {}), 24 * 60 * 60 * 1000)
+    pruneTimer = setInterval(() => pruneHistory(30).catch(err => log('WARN', `📊 Scorecard prune failed err=${err.message}`)), 24 * 60 * 60 * 1000)
 
     log('INFO', '📊 Scorecard started interval=60s windows=[1m,5m,15m,1h] primary=[1m,5m] upOnly=true')
   }
