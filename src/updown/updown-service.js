@@ -302,6 +302,7 @@ const createUpDownService = (io, deps) => {
             score: result.score,
             confidence: result.confidence,
             timestamp: result.timestamp,
+            price: lastPrice,
           });
           if (signalHistory.length > MAX_SIGNAL_HISTORY) {
             signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
