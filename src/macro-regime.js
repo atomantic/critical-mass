@@ -16,6 +16,7 @@
 const { calculateEMA, clamp } = require('./volatility-utils');
 const { createLongTermCandleStore } = require('./long-term-candle-store');
 const { computeDepressionScore } = require('./depression-score');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {import('./types').MacroRegimeMode} MacroRegimeMode
@@ -172,6 +173,7 @@ const classifyMacroMode = (score, currentMode, hysteresis, thresholds) => {
  * @returns {Object} Macro regime instance
  */
 const createMacroRegime = (exchange, config, adapter, productId) => {
+  const logger = createContextLogger({ exchange, pair: productId });
 
   /** @type {MacroRegimeMode} */
   let mode = 'RANGING';
@@ -225,11 +227,17 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     const dailyCandles = (rawDaily || []).sort((a, b) => a.timestamp - b.timestamp);
 
     if (!hourlyCandles || hourlyCandles.length < 50) {
-      console.log(`⏳ [${exchange}] Macro: insufficient hourly candles (${hourlyCandles?.length || 0}/50 min)`);
+      const candleCount = hourlyCandles?.length || 0;
+      logger.info(`⏳ [${exchange}] Macro: insufficient hourly candles (${candleCount}/50 min)`, {
+        timeframe: 'hourly', candleCount, minimumCandleCount: 50,
+      });
       return;
     }
     if (!dailyCandles || dailyCandles.length < 20) {
-      console.log(`⏳ [${exchange}] Macro: insufficient daily candles (${dailyCandles?.length || 0}/20 min)`);
+      const candleCount = dailyCandles?.length || 0;
+      logger.info(`⏳ [${exchange}] Macro: insufficient daily candles (${candleCount}/20 min)`, {
+        timeframe: 'daily', candleCount, minimumCandleCount: 20,
+      });
       return;
     }
 
@@ -303,20 +311,31 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     }
 
     if (prevMode !== mode) {
-      console.log(`🔭 [${exchange}] Macro regime: ${prevMode} → ${mode} (score=${score.toFixed(1)}, EMAs: 21h=$${h21.toFixed(0)} 50h=$${h50.toFixed(0)} 200h=$${h200.toFixed(0)} 20d=$${d20.toFixed(0)})`);
+      logger.info(`🔭 [${exchange}] Macro regime: ${prevMode} → ${mode} (score=${score.toFixed(1)}, EMAs: 21h=$${h21.toFixed(0)} 50h=$${h50.toFixed(0)} 200h=$${h200.toFixed(0)} 20d=$${d20.toFixed(0)})`, {
+        previousMode: prevMode, mode, score, ema21h: h21, ema50h: h50, ema200h: h200, ema20d: d20,
+      });
     } else {
-      console.log(`🔭 [${exchange}] Macro update: ${mode} score=${score.toFixed(1)} (align=${alignmentScore} price200=${priceVsLongScore.toFixed(1)} daily=${dailyTrendScore.toFixed(1)} conv=${convergenceScore.toFixed(1)})`);
+      logger.info(`🔭 [${exchange}] Macro update: ${mode} score=${score.toFixed(1)} (align=${alignmentScore} price200=${priceVsLongScore.toFixed(1)} daily=${dailyTrendScore.toFixed(1)} conv=${convergenceScore.toFixed(1)})`, {
+        mode, score, alignmentScore, priceVsLongScore, dailyTrendScore, convergenceScore,
+      });
     }
 
     // Log the long-term bias on every cycle so we can correlate it with
     // entries and watch the score evolve. Compact one-liner.
     if (longTermBias?.ready) {
       const c = longTermBias.components;
-      console.log(`🗓️ [${exchange}] LT bias: ${(longTermBias.score * 100).toFixed(0)}/100 → ${longTermBias.suggestedLevel.toUpperCase()} ` +
+      logger.info(`🗓️ [${exchange}] LT bias: ${(longTermBias.score * 100).toFixed(0)}/100 → ${longTermBias.suggestedLevel.toUpperCase()} ` +
         `(pct=${(c.percentile.score * 100).toFixed(0)} ` +
         `dd=${c.drawdown.drawdownPct.toFixed(1)}% ` +
         `z=${c.zscore.zscore.toFixed(2)}) ` +
-        `n=${longTermBias.sampleSize}`);
+        `n=${longTermBias.sampleSize}`, {
+        biasScore: longTermBias.score,
+        suggestedLevel: longTermBias.suggestedLevel,
+        percentileScore: c.percentile.score,
+        drawdownPercent: c.drawdown.drawdownPct,
+        zScore: c.zscore.zscore,
+        sampleSize: longTermBias.sampleSize,
+      });
     }
   };
 
@@ -384,7 +403,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
     if (saved.emas) emas = { ...saved.emas };
     lastUpdate = saved.lastUpdate || 0;
     if (saved.candles) candleCounts = { ...saved.candles };
-    console.log(`📂 [${exchange}] Macro state restored: ${mode} score=${score.toFixed(1)}`);
+    logger.info(`📂 [${exchange}] Macro state restored: ${mode} score=${score.toFixed(1)}`, { mode, score });
   };
 
   /**
@@ -402,7 +421,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
    */
   const start = () => {
     const interval = config.macroUpdateIntervalMs || 300000;
-    console.log(`🔭 [${exchange}] Macro regime started (update every ${(interval / 1000).toFixed(0)}s)`);
+    logger.info(`🔭 [${exchange}] Macro regime started (update every ${(interval / 1000).toFixed(0)}s)`, { intervalMs: interval });
 
     // Spin up the long-term candle store on its own slow cadence.
     // Default off-by-default could be enabled later, but Phase 1 is observe-only
@@ -413,18 +432,26 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
         refreshIntervalMs: config.longTermUpdateIntervalMs || 3600000,
       });
       longTermStore.start();
-      console.log(`🗓️ [${exchange}] Long-term bias store started (${config.longTermLookbackDays || 365}d window, refresh every ${((config.longTermUpdateIntervalMs || 3600000) / 60000).toFixed(0)}m)`);
+      const lookbackDays = config.longTermLookbackDays || 365;
+      const refreshIntervalMs = config.longTermUpdateIntervalMs || 3600000;
+      logger.info(`🗓️ [${exchange}] Long-term bias store started (${lookbackDays}d window, refresh every ${(refreshIntervalMs / 60000).toFixed(0)}m)`, {
+        lookbackDays, refreshIntervalMs,
+      });
     }
 
     // Initial update
     update().catch(err => {
-      console.log(`⚠️ [${exchange}] Macro initial update failed: ${err.message}`);
+      logger.warn(`⚠️ [${exchange}] Macro initial update failed: ${err.message}`, {
+        phase: 'initial', error: err.message,
+      });
     });
 
     // Periodic updates
     updateTimer = setInterval(() => {
       update().catch(err => {
-        console.log(`⚠️ [${exchange}] Macro update failed: ${err.message}`);
+        logger.warn(`⚠️ [${exchange}] Macro update failed: ${err.message}`, {
+          phase: 'periodic', error: err.message,
+        });
       });
     }, interval);
   };
@@ -441,7 +468,7 @@ const createMacroRegime = (exchange, config, adapter, productId) => {
       longTermStore.stop();
       longTermStore = null;
     }
-    console.log(`🔭 [${exchange}] Macro regime stopped`);
+    logger.info(`🔭 [${exchange}] Macro regime stopped`, { lifecycle: 'stopped' });
   };
 
   return {

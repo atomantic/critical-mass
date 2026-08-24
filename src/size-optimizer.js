@@ -16,6 +16,7 @@
  */
 
 const { roundUSDC } = require('./volatility-utils');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {Object} CycleRecord
@@ -66,9 +67,11 @@ const calculateTotalStepMultiplier = (maxSteps, _liquidityFactorCap = 2.0) => {
  * @param {Object} config - Regime configuration
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onAdjustment] - Called when sizing values are adjusted
+ * @param {string} [productId] - Trading pair ID
  * @returns {Object} Size optimizer instance
  */
-const createSizeOptimizer = (exchange, config, callbacks = {}) => {
+const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
+  const logger = createContextLogger({ exchange, pair: productId });
   /** @type {CycleRecord[]} */
   let recentCycles = [];
 
@@ -131,7 +134,9 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
     if (previousBalance > 0) {
       const changeRatio = Math.abs(currentBalance - previousBalance) / previousBalance;
       if (changeRatio >= BALANCE_CHANGE_THRESHOLD) {
-        console.log(`📊 [${exchange}] Balance changed ${(changeRatio * 100).toFixed(1)}%: $${previousBalance.toFixed(2)} → $${currentBalance.toFixed(2)}`);
+        logger.info(`📊 [${exchange}] Balance changed ${(changeRatio * 100).toFixed(1)}%: $${previousBalance.toFixed(2)} → $${currentBalance.toFixed(2)}`, {
+          previousBalance, currentBalance, changeRatio,
+        });
         return evaluateForBalance(currentBalance);
       }
     }
@@ -423,7 +428,9 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
       adjustmentHistory = state.adjustmentHistory.map(a => ({ ...a }));
     }
 
-    console.log(`📊 [${exchange}] Size optimizer restored: ${totalCycleCount} cycles, avg ${avgStepsUsed.toFixed(1)} steps, p90 ${p90StepsUsed} steps`);
+    logger.info(`📊 [${exchange}] Size optimizer restored: ${totalCycleCount} cycles, avg ${avgStepsUsed.toFixed(1)} steps, p90 ${p90StepsUsed} steps`, {
+      totalCycleCount, averageStepsUsed: avgStepsUsed, p90StepsUsed,
+    });
   };
 
   /**
@@ -462,7 +469,7 @@ const createSizeOptimizer = (exchange, config, callbacks = {}) => {
     lastKnownBalance = 0;
     avgStepsUsed = 0;
     p90StepsUsed = 0;
-    console.log(`📊 [${exchange}] Size optimizer reset`);
+    logger.info(`📊 [${exchange}] Size optimizer reset`, { lifecycle: 'reset' });
   };
 
   return {

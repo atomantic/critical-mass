@@ -13,6 +13,7 @@
 
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { getBaseCurrency } = require('./config-utils');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -27,6 +28,7 @@ const { getBaseCurrency } = require('./config-utils');
  * @returns {Object} Risk manager instance
  */
 const createRiskManager = (exchange, config, productId) => {
+  const logger = createContextLogger({ exchange, pair: productId });
   const assetLabel = productId ? getBaseCurrency(productId).toLowerCase() : 'asset';
   let peakEquity = null; // null = uninitialized, will be set to first observed equity
   let maxDrawdownSeen = 0;
@@ -101,7 +103,9 @@ const createRiskManager = (exchange, config, productId) => {
       // Track when limit was first reached
       if (!cycleBuysLimitReachedAt) {
         cycleBuysLimitReachedAt = Date.now();
-        console.log(`⚠️ [${exchange}] Cycle buys limit reached: ${currentStep}/${config.maxCycleBuys}, waiting for TP or auto-reset`);
+        logger.warn(`⚠️ [${exchange}] Cycle buys limit reached: ${currentStep}/${config.maxCycleBuys}, waiting for TP or auto-reset`, {
+          currentStep, maxSteps: config.maxCycleBuys,
+        });
       }
 
       // Check for time-based auto-reset
@@ -109,7 +113,9 @@ const createRiskManager = (exchange, config, productId) => {
         const atLimitMs = Date.now() - cycleBuysLimitReachedAt;
         const atLimitHours = atLimitMs / (1000 * 60 * 60);
         if (atLimitHours >= config.cycleResetHours) {
-          console.log(`🔄 [${exchange}] Auto-resetting cycle buys after ${config.cycleResetHours}h at limit`);
+          logger.info(`🔄 [${exchange}] Auto-resetting cycle buys after ${config.cycleResetHours}h at limit`, {
+            currentStep, maxSteps: config.maxCycleBuys, resetHours: config.cycleResetHours,
+          });
           cycleBuysLimitReachedAt = null;
           return {
             allowed: true,
@@ -167,7 +173,7 @@ const createRiskManager = (exchange, config, productId) => {
     // Initialize peakEquity on first observation with a position
     if (peakEquity === null) {
       peakEquity = currentEquity;
-      console.log(`📊 [${exchange}] Initialized peak equity to $${peakEquity.toFixed(2)}`);
+      logger.info(`📊 [${exchange}] Initialized peak equity to $${peakEquity.toFixed(2)}`, { peakEquity });
     }
 
     // Check for time-based reset if paused and configured
@@ -175,7 +181,9 @@ const createRiskManager = (exchange, config, productId) => {
       const pausedMs = Date.now() - drawdownPausedAt;
       const pausedHours = pausedMs / (1000 * 60 * 60);
       if (pausedHours >= config.drawdownResetHours) {
-        console.log(`🔄 [${exchange}] Auto-resetting peak after ${config.drawdownResetHours}h of drawdown pause`);
+        logger.info(`🔄 [${exchange}] Auto-resetting peak after ${config.drawdownResetHours}h of drawdown pause`, {
+          currentEquity, resetHours: config.drawdownResetHours,
+        });
         peakEquity = currentEquity; // Reset peak to current equity
         isDrawdownPaused = false;
         drawdownPausedAt = null;
@@ -200,13 +208,17 @@ const createRiskManager = (exchange, config, productId) => {
       if (!isDrawdownPaused) {
         isDrawdownPaused = true;
         drawdownPausedAt = Date.now();
-        console.log(`⚠️ [${exchange}] Drawdown limit reached: ${drawdownPercent.toFixed(1)}% >= ${config.maxDrawdownPercent}%`);
+        logger.warn(`⚠️ [${exchange}] Drawdown limit reached: ${drawdownPercent.toFixed(1)}% >= ${config.maxDrawdownPercent}%`, {
+          drawdownPercent, maxDrawdownPercent: config.maxDrawdownPercent, peakEquity, currentEquity,
+        });
       }
     } else if (isDrawdownPaused && drawdownPercent < config.maxDrawdownPercent * 0.5) {
       // Resume if drawdown recovers to half of limit
       isDrawdownPaused = false;
       drawdownPausedAt = null;
-      console.log(`✅ [${exchange}] Drawdown recovered: ${drawdownPercent.toFixed(1)}%`);
+      logger.info(`✅ [${exchange}] Drawdown recovered: ${drawdownPercent.toFixed(1)}%`, {
+        drawdownPercent, maxDrawdownPercent: config.maxDrawdownPercent, peakEquity, currentEquity,
+      });
     }
 
     return {
@@ -378,7 +390,9 @@ const createRiskManager = (exchange, config, productId) => {
       if (currentEquity !== undefined) {
         peakEquity = currentEquity; // Reset peak to current equity
       }
-      console.log(`▶️ [${exchange}] Manually resumed from drawdown pause, peak reset to ${peakEquity.toFixed(2)}`);
+      logger.info(`▶️ [${exchange}] Manually resumed from drawdown pause, peak reset to ${peakEquity.toFixed(2)}`, {
+        peakEquity, resumeType: 'manual',
+      });
     }
   };
 
