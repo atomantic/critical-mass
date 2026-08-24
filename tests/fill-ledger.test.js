@@ -118,6 +118,41 @@ describe('Fill Ledger', () => {
     assert.equal(ledger.getFillCount(), 1);
   });
 
+  it('preserves fill-ingestion text while appending fund, trade, and order context', () => {
+    const { createFillLedger } = freshFillLedgerModule();
+    const ledger = createFillLedger('coinbase', 'BTC-USDC', 'BTC-USDC', { quiet: true });
+    ledger.startNewCycle();
+    const lines = [];
+    const originalLog = console.log;
+    console.log = (line) => lines.push(line);
+
+    try {
+      ledger.ingestFill(makeBuyFill({
+        tradeId: 'structured-trade',
+        orderId: 'structured-order',
+      }));
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.match(
+      lines[0],
+      /^📝 \[coinbase\] Fill ingested: tradeId=structured-trade orderId=structured-order buy 0\.001 BTC @ \$100000\.00 \(fee: \$0\.1000\)/
+    );
+    const context = JSON.parse(lines[0].slice(lines[0].lastIndexOf(' {') + 1));
+    assert.deepEqual(context, {
+      exchange: 'coinbase',
+      pair: 'BTC-USDC',
+      tradeId: 'structured-trade',
+      orderId: 'structured-order',
+      side: 'buy',
+      size: 0.001,
+      price: 100000,
+      netFee: 0.1,
+      fillTimeMs: null,
+    });
+  });
+
   // =======================================================================
   // 3. Fill Ingestion — basic sell
   // =======================================================================

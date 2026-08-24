@@ -14,6 +14,7 @@ const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { atomicWriteSync } = require('./state-tracker');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency } = require('./shared-utils');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {import('./types').Fill} Fill
@@ -100,6 +101,7 @@ const findInvalidLedgerReason = (data) => {
  */
 const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const quiet = opts.quiet === true;
+  const logger = createContextLogger({ exchange, pair: pair || productId });
   /** @type {Map<string, Fill>} */
   const fills = new Map();
   /** @type {Map<string, Set<string>>} cycleId -> Set of tradeIds for O(1) cycle lookups */
@@ -170,7 +172,12 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       // momentarily-missing file (e.g., operator's edit/rename window)
       // doesn't wipe live data. To intentionally clear, write `[]` to
       // the file — that loads cleanly to empty state.
-      if (!quiet) console.log(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`);
+      if (!quiet) {
+        logger.info(`📖 [${exchange}] fill-ledger not found at ${filePath} — preserving in-memory state (${fills.size} fills)`, {
+          filePath,
+          fillCount: fills.size,
+        });
+      }
       hasLoadedSuccessfully = true;
       return;
     }
@@ -191,7 +198,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       // would forget its last known-good state and the next persist
       // would rewrite the file with only the fills that arrive after
       // the reload. Operator can fix the file and re-fire SIGUSR1.
-      console.log(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+      logger.error(`❌ [${exchange}] fill-ledger corrupted or unreadable at ${filePath}: ${err.message} — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
+        filePath,
+        fillCount: fills.size,
+        error: err.message,
+      });
       return;
     }
     // Validate shape BEFORE resetCaches. Valid JSON like `{}` or `null`
@@ -203,7 +214,12 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       if (!isReload) {
         throw new Error(`fill-ledger at ${filePath} is not an array on cold start (got ${data === null ? 'null' : typeof data}). Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
       }
-      console.log(`❌ [${exchange}] fill-ledger at ${filePath} is not an array (got ${data === null ? 'null' : typeof data}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+      const actualType = data === null ? 'null' : typeof data;
+      logger.error(`❌ [${exchange}] fill-ledger at ${filePath} is not an array (got ${actualType}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
+        filePath,
+        fillCount: fills.size,
+        actualType,
+      });
       return;
     }
     // Element-level validation: even an array can contain malformed
@@ -222,7 +238,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       if (!isReload) {
         throw new Error(`fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) on cold start. Repair or move the file aside before starting; refusing to boot with an empty ledger that would overwrite recoverable history on next persist.`);
       }
-      console.log(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`);
+      logger.error(`❌ [${exchange}] fill-ledger at ${filePath} contains an invalid entry (${invalidReason}) — keeping in-memory state (${fills.size} fills); operator must fix and reload`, {
+        filePath,
+        fillCount: fills.size,
+        invalidReason,
+      });
       return;
     }
     // Clean slate before re-reading. The successful-read path mirrors
@@ -285,7 +305,12 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       const sellRatio = stats.sellsAsset / stats.buysAsset;
       if (sellRatio < 1.0) {
         currentCycleId = fill.cycleId;
-        if (!quiet) console.log(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sells)`);
+        if (!quiet) {
+          logger.info(`📖 [${exchange}] Restored active cycle: ${currentCycleId} (${(sellRatio * 100).toFixed(1)}% sells)`, {
+            cycleId: currentCycleId,
+            sellRatio,
+          });
+        }
         break;
       }
     }
@@ -302,7 +327,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     nextCycleNumber = maxCycleNum + 1;
 
     hasLoadedSuccessfully = true;
-    if (!quiet) console.log(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`);
+    if (!quiet) {
+      logger.info(`📖 [${exchange}] Loaded ${fills.size} fills from ledger`, {
+        fillCount: fills.size,
+      });
+    }
   };
 
   // Counter for tests: increments only when persist() actually writes to
@@ -451,7 +480,15 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     if (!options.skipPersist) persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
-    console.log(`📝 [${exchange}] Fill ingested: tradeId=${tradeId} orderId=${fill.orderId} ${fill.side} ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`);
+    logger.info(`📝 [${exchange}] Fill ingested: tradeId=${tradeId} orderId=${fill.orderId} ${fill.side} ${fill.size} ${baseCurrency} @ ${fmtPrice(fill.price)} (fee: $${fill.netFee.toFixed(4)})${fillTimeStr}`, {
+      tradeId,
+      orderId: fill.orderId,
+      side: fill.side,
+      size: fill.size,
+      price: fill.price,
+      netFee: fill.netFee,
+      fillTimeMs,
+    });
 
     return { ingested: true, fill };
   };
@@ -549,7 +586,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
         totalAsset = roundAsset(totalAsset - fill.size);
         if (totalAsset < 0) {
-          console.log(`⚠️ [${exchange}] rebuildPositionFromFills: negative ${baseCurrency} ${totalAsset} after sell ${fill.tradeId}, clamping to 0`);
+          logger.warn(`⚠️ [${exchange}] rebuildPositionFromFills: negative ${baseCurrency} ${totalAsset} after sell ${fill.tradeId}, clamping to 0`, {
+            tradeId: fill.tradeId,
+            baseCurrency,
+            totalAsset,
+          });
           totalAsset = 0;
           totalCostBasis = 0;
         } else {
@@ -586,7 +627,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const startNewCycle = () => {
     currentCycleId = `cycle-${nextCycleNumber}`;
     nextCycleNumber++;
-    console.log(`🔄 [${exchange}] Started new cycle: ${currentCycleId}`);
+    logger.info(`🔄 [${exchange}] Started new cycle: ${currentCycleId}`, {
+      cycleId: currentCycleId,
+    });
     return currentCycleId;
   };
 
@@ -910,7 +953,10 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         orphanCycles.push(currentOrphanCycle);
       }
 
-      console.log(`🔧 [${exchange}] Split ${orphanFills.length} orphan fills into ${orphanCycles.length} cycles`);
+      logger.info(`🔧 [${exchange}] Split ${orphanFills.length} orphan fills into ${orphanCycles.length} cycles`, {
+        orphanFillCount: orphanFills.length,
+        orphanCycleCount: orphanCycles.length,
+      });
 
       // Assign cycle IDs and calculate P&L for completed orphan cycles
       for (let i = 0; i < orphanCycles.length; i++) {
@@ -987,7 +1033,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
 
       if (orphansFixed > 0) {
-        console.log(`🔧 [${exchange}] Assigned ${orphansFixed} orphan fills, found ${orphanCycles.filter(c => c.some(f => f.side === 'sell')).length} completed cycles`);
+        const completedCycleCount = orphanCycles.filter(c => c.some(f => f.side === 'sell')).length;
+        logger.info(`🔧 [${exchange}] Assigned ${orphansFixed} orphan fills, found ${completedCycleCount} completed cycles`, {
+          orphansFixed,
+          completedCycleCount,
+        });
       }
     }
 
@@ -1042,7 +1092,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         if (currentCycleId && idMap.has(currentCycleId)) {
           currentCycleId = idMap.get(currentCycleId);
         }
-        console.log(`🔢 [${exchange}] Renumbered ${renumbered} cycles to sequential IDs (cycle-1 through cycle-${cycleNum - 1})`);
+        logger.info(`🔢 [${exchange}] Renumbered ${renumbered} cycles to sequential IDs (cycle-1 through cycle-${cycleNum - 1})`, {
+          renumbered,
+          firstCycleId: 'cycle-1',
+          lastCycleId: `cycle-${cycleNum - 1}`,
+        });
       }
       nextCycleNumber = cycleNum;
     }
@@ -1068,7 +1122,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
     }
     if (linkedCount > 0) {
-      console.log(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`);
+      logger.info(`🔗 [${exchange}] Linked ${linkedCount} buys to their cycle sells`, {
+        linkedCount,
+      });
     }
 
     if (orphansFixed > 0 || linkedCount > 0) {
