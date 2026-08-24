@@ -21,6 +21,7 @@ const { calculateATR, calculateVWAP, calculateEMA, calculateMomentumAcceleration
 const { detectDivergence, detectMACDDivergence } = require('./divergence');
 const { calculatePivotPoints, computePivotDampening } = require('./pivot-points');
 const { INDICATOR_WEIGHTS } = require('./indicator-config');
+const { createStabilityState, stabilizeSignal } = require('./signal-stability');
 
 const TIMEFRAME_WEIGHTS = {
   '1m': 0.10,
@@ -352,12 +353,15 @@ const scoreCCI = (cci, trendBias = 'neutral') => {
  * @returns {{trendBias: 'bullish'|'bearish'|'neutral', ema50: number, ema200: number, multiplier: number}}
  */
 const computeTrendFilter = (candles1h) => {
-  if (!candles1h || candles1h.length < 200) {
+  // 199 completed 1h bars is the live steady state (max 200, one hour still forming).
+  // Requiring 200 forced FLAT/ema=0 and disabled the 1h bias for hours.
+  if (!candles1h || candles1h.length < 199) {
     return { trendBias: 'neutral', ema50: 0, ema200: 0, multiplier: 1 };
   }
 
   const ema50 = calculateEMA(candles1h, 50);
-  const ema200 = calculateEMA(candles1h, 200);
+  const slowPeriod = Math.min(200, candles1h.length);
+  const ema200 = calculateEMA(candles1h, slowPeriod);
 
   if (!ema50 || !ema200 || ema200 === 0) {
     return { trendBias: 'neutral', ema50, ema200, multiplier: 1 };
@@ -803,6 +807,8 @@ const createSignalEngine = (candleAggregator) => {
   let cachedPivots = null;
   let lastPivotDayTs = 0;
 
+  let stabilityState = createStabilityState();
+
   /**
    * Update indicator weights (called from updown-service after scorecard computes adaptive weights)
    * @param {Record<string, number>} weights
@@ -957,7 +963,14 @@ const createSignalEngine = (candleAggregator) => {
     // passes so a held long can EXIT (issue #108 / resolveNoTradeZoneType).
     const trendGate = computeTrendGate(trendFilter, timeframes);
     const gatedType = applyUpOnlyGate(rawType, trendGate.open, heldPosition);
-    const type = resolveNoTradeZoneType(gatedType, noTradeZone, heldPosition);
+    const rawPublished = resolveNoTradeZoneType(gatedType, noTradeZone, heldPosition);
+    const roundedScore = Math.round(compositeScore * 100) / 100;
+    const stabilized = stabilizeSignal(
+      { rawType: rawPublished, score: roundedScore, now, heldPosition },
+      stabilityState,
+    );
+    stabilityState = stabilized.state;
+    const type = stabilized.type;
 
     // Multi-factor confidence: score magnitude (0-0.5) + TF agreement (0-0.3) + ADX regime (0-0.2)
     const scoreFactor = Math.min(0.5, Math.abs(compositeScore) / 100);
@@ -974,7 +987,7 @@ const createSignalEngine = (candleAggregator) => {
 
     return {
       type,
-      score: Math.round(compositeScore * 100) / 100,
+      score: roundedScore,
       confidence: Math.round(confidence * 100) / 100,
       timeframes,
       noTradeZone,
@@ -993,7 +1006,13 @@ const createSignalEngine = (candleAggregator) => {
     };
   };
 
-  return { computeSignals, setIndicatorWeights };
+  const getStabilityState = () => ({ ...stabilityState });
+  const setStabilityState = (next) => {
+    if (!next || typeof next !== 'object') return;
+    stabilityState = { ...createStabilityState(), ...next };
+  };
+
+  return { computeSignals, setIndicatorWeights, getStabilityState, setStabilityState };
 };
 
 module.exports = {

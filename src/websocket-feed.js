@@ -18,6 +18,7 @@ const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { preparePrivateKey } = require('./adapters/coinbase/auth');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {Object} WebSocketConfig
@@ -91,6 +92,8 @@ const createWebSocketFeed = (exchange, config) => {
     return createGeminiWebSocketFeed(exchange, config);
   }
 
+  const logger = createContextLogger({ exchange, pair: config.productId });
+
   let ws = null;
   let isConnected = false;
   let shouldReconnect = true;
@@ -138,7 +141,7 @@ const createWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('error', (error) => {
-      console.log(`❌ [${exchange}] WebSocket error: ${error.message}`);
+      logger.error(`❌ [${exchange}] WebSocket error: ${error.message}`, { error: error.message });
       if (config.onError) {
         config.onError(error);
       }
@@ -187,7 +190,7 @@ const createWebSocketFeed = (exchange, config) => {
         ws.send(JSON.stringify(userSub));
         console.log(`📡 [${exchange}] Subscribed to ticker, market_trades, user channels for ${config.productId}`);
       } catch (err) {
-        console.log(`⚠️ [${exchange}] Failed to subscribe to user channel (JWT error): ${err.message}`);
+        logger.warn(`⚠️ [${exchange}] Failed to subscribe to user channel (JWT error): ${err.message}`, { error: err.message, channel: 'user' });
         console.log(`📡 [${exchange}] Subscribed to ticker, market_trades channels for ${config.productId}`);
       }
     } else {
@@ -202,7 +205,7 @@ const createWebSocketFeed = (exchange, config) => {
   const handleMessage = (data) => {
     const message = safeJsonParse(data);
     if (!message) {
-      console.log(`⚠️ [${exchange}] Received invalid JSON from WebSocket`);
+      logger.warn(`⚠️ [${exchange}] Received invalid JSON from WebSocket`, { error: 'invalid_json' });
       return;
     }
     const { channel, events, type } = message;
@@ -210,7 +213,7 @@ const createWebSocketFeed = (exchange, config) => {
     // Handle non-event messages (errors, heartbeats, subscription acks)
     if (type === 'error') {
       const errorMsg = message.message || message.reason || 'Unknown WebSocket error';
-      console.log(`❌ [${exchange}] WebSocket error: ${errorMsg}`);
+      logger.error(`❌ [${exchange}] WebSocket error: ${errorMsg}`, { error: errorMsg });
       if (config.onError) {
         config.onError(new Error(errorMsg));
       }
@@ -404,7 +407,10 @@ const createWebSocketFeed = (exchange, config) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
       if (missedPongs >= MAX_MISSED_PONGS) {
-        console.log(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`);
+        logger.error(`💀 [${exchange}] No pong after ${missedPongs} pings (${(missedPongs * HEARTBEAT_INTERVAL) / 1000}s) — terminating dead WebSocket to trigger reconnect`, {
+          missedPongs,
+          elapsedMs: missedPongs * HEARTBEAT_INTERVAL,
+        });
         ws.terminate();
         return;
       }

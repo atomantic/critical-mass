@@ -19,7 +19,7 @@ const SEED_TIMEFRAMES = [
   { tf: '1m',  hours: 3,   coinbaseGranularity: 60,   cryptocomTf: '1m'  },
   { tf: '5m',  hours: 15,  coinbaseGranularity: 300,  cryptocomTf: '5m'  },
   { tf: '15m', hours: 45,  coinbaseGranularity: 900,  cryptocomTf: '15m' },
-  { tf: '1h',  hours: 200, coinbaseGranularity: 3600, cryptocomTf: '1h'  },
+  { tf: '1h',  hours: 220, coinbaseGranularity: 3600, cryptocomTf: '1h'  },
   { tf: '1d',  hours: 8760, coinbaseGranularity: 86400, cryptocomTf: '1D' },
 ];
 

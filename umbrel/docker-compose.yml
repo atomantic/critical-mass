@@ -15,3 +15,6 @@ services:
       - ${APP_DATA_DIR}/logs:/app/logs
     environment:
       - NODE_ENV=production
+      - OPERATOR_TOKEN=${OPERATOR_TOKEN:?Set OPERATOR_TOKEN to at least 32 characters}
+      - AI_ALLOWED_ENDPOINTS=${AI_ALLOWED_ENDPOINTS:-}
+      - AI_WORKSPACE_ROOTS=/app
