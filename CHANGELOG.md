@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- **Safer local service and automation boundaries** — The gateway now binds to loopback by default, Docker host publishing is loopback-only, state files are atomically replaced with owner-only permissions, CI actions use immutable revisions, and startup refuses foreign port occupants instead of killing them. The vulnerable development dependency chain was also removed.
+
 ### Fixed
 - **UpDown published signals no longer chatter around the ±15 line** - BUY/SELL now require 60s/15s of raw agreement before printing, stay printed through 14.x fade (drop BUY only below score 12, or after 60s of HOLD), and 5s −20 SELL flashes are ignored. Tick-momentum may still boost a live score but cannot create or cancel a type, and cannot shove HOLD across the BUY line. 1h EMA trend filter accepts 199 completed hours (the live steady state with one hour still forming) instead of forcing FLAT/ema=0. Replay of 2026-08-21's journal: 59 raw BUY episodes → 3 stable clips.
 - **UpDown scorecard no longer journals a BUY the banner never showed** - the 60s sampler has its own hysteresis clock, so two interval ticks could confirm BUY while the live 5s engine stayed HOLD. Journal type is now aligned to the live published signal.

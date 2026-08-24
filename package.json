@@ -1,12 +1,12 @@
 {
   "name": "critical-mass",
-  "version": "2.23.0",
+  "version": "2.23.1",
   "description": "Multi-exchange BTC accumulation engine with celestial position management",
   "main": "index.js",
   "scripts": {
-    "start": "pm2 delete ecosystem.config.cjs 2>/dev/null; for p in 5563 5564 5570 5571 5572 5573 5574; do lsof -i :$p -sTCP:LISTEN -t 2>/dev/null | xargs kill -9 2>/dev/null; done; sleep 1; pm2 start ecosystem.config.cjs && pm2 save",
+    "start": "pm2 stop ecosystem.config.cjs >/dev/null 2>&1 || true; pm2 delete ecosystem.config.cjs >/dev/null 2>&1 || true; for p in 5563 5564 5565 5566 5567; do if lsof -i :$p -sTCP:LISTEN -t >/dev/null 2>&1; then echo \"Error: required port $p remains occupied after stopping Critical Mass PM2 processes.\" >&2; exit 1; fi; done; pm2 start ecosystem.config.cjs && pm2 save",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:ui\"",
-    "dev:server": "VITE_API_PORT=5563 nodemon server.js",
+    "dev:server": "VITE_API_PORT=5563 node --watch server.js",
     "dev:ui": "cd admin && VITE_PORT=5564 VITE_API_PORT=5563 npm run dev",
     "build": "cd admin && npm run build",
     "pm2:start": "pm2 start ecosystem.config.cjs",
@@ -45,7 +45,6 @@
     "ws": "8.21.3"
   },
   "devDependencies": {
-    "concurrently": "10.0.5",
-    "nodemon": "3.1.14"
+    "concurrently": "10.0.5"
   }
 }
