@@ -6,7 +6,7 @@
  * GET /api/candles/:exchange — returns all 4 timeframes or a single one via ?tf=
  */
 
-const VALID_EXCHANGES = new Set(['cryptocom', 'coinbase']);
+const VALID_EXCHANGES = new Set(['cryptocom', 'coinbase', 'gemini']);
 const VALID_TIMEFRAMES = new Set(['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']);
 
 /**

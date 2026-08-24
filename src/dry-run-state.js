@@ -221,6 +221,16 @@ const saveState = (exchange, exchangeState, pair) => {
  */
 const clearState = (exchange, pair) => {
   const key = fundKey(exchange, pair);
+
+  // A debounced snapshot for this fund must not survive an explicit reset.
+  // Otherwise the pending timer can flush the pre-reset state back to disk
+  // after this deletion and resurrect simulated orders/P&L on restart.
+  pendingStates.delete(key);
+  if (pendingStates.size === 0 && pendingSave) {
+    clearTimeout(pendingSave);
+    pendingSave = null;
+  }
+
   const allState = loadAllState();
   delete allState.exchanges[key];
   saveAllState(allState);

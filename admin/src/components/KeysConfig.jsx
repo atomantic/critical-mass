@@ -226,18 +226,18 @@ function KeysConfig({ exchange, onSave }) {
         )}
 
         {/* Action Buttons */}
-        <div className="mt-6 flex gap-3">
+        <div className="mt-6 flex flex-col sm:flex-row gap-3">
           <button
             onClick={handleSave}
             disabled={saving || !hasAllFields}
-            className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+            className="flex-1 min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
           >
             {saving ? 'Saving...' : 'Save Keys'}
           </button>
           <button
             onClick={handleTest}
             disabled={testing || !hasAllFields}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+            className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
           >
             {testing ? 'Testing...' : 'Test Connection'}
           </button>
@@ -245,7 +245,7 @@ function KeysConfig({ exchange, onSave }) {
             <button
               onClick={() => setConfirmDelete(true)}
               disabled={deleting}
-              className="px-4 py-2 bg-red-700 hover:bg-red-600 disabled:bg-red-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+              className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-600 disabled:bg-red-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
             >
               Delete Keys
             </button>
@@ -260,17 +260,17 @@ function KeysConfig({ exchange, onSave }) {
               <p className="text-gray-400 mb-4">
                 Are you sure you want to delete the {exchange} API keys? This action cannot be undone.
               </p>
-              <div className="flex gap-3 justify-end">
+              <div className="flex flex-col-reverse sm:flex-row gap-3 sm:justify-end">
                 <button
                   onClick={() => setConfirmDelete(false)}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
+                  className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleDelete}
                   disabled={deleting}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:bg-red-800 rounded-lg font-medium transition-colors"
+                  className="min-h-11 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:bg-red-800 rounded-lg font-medium transition-colors"
                 >
                   {deleting ? 'Deleting...' : 'Delete'}
                 </button>

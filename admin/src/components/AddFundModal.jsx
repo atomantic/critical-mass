@@ -74,11 +74,15 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const inputRef = useRef(null)
+  const modalRef = useRef(null)
+  const previouslyFocusedRef = useRef(null)
 
   const fmt = EXCHANGE_FORMATS[exchange] || fallbackFormat
 
   useEffect(() => {
+    let focusTimer
     if (open) {
+      previouslyFocusedRef.current = document.activeElement
       const ex = exchangeNames[0] || 'gemini'
       setError(null)
       setExchange(ex)
@@ -86,12 +90,48 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
       setTotalAllocation('5000')
       setDryRun(true)
       // Focus and select the pair input on open so the user can immediately type to replace
-      setTimeout(() => {
+      focusTimer = setTimeout(() => {
         inputRef.current?.focus()
         inputRef.current?.select()
       }, 50)
     }
+    return () => {
+      clearTimeout(focusTimer)
+      if (open) previouslyFocusedRef.current?.focus?.()
+    }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!open) return undefined
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && !submitting) {
+        event.preventDefault()
+        onClose?.()
+        return
+      }
+      if (event.key !== 'Tab') return
+
+      const focusable = modalRef.current?.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+      if (!focusable?.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open, submitting, onClose])
 
   // When the exchange dropdown changes, re-format the existing pair value
   // to the new exchange's separator convention. This lets the operator type
@@ -160,23 +200,29 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-4" onClick={() => !submitting && onClose?.()}>
       <div
-        className="bg-gray-800 rounded-lg border border-gray-700 shadow-xl w-full max-w-md p-6"
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-fund-title"
+        aria-describedby="add-fund-description"
+        className="bg-gray-800 rounded-lg border border-gray-700 shadow-xl w-full max-w-md max-h-[calc(100dvh-1.5rem)] overflow-y-auto p-4 sm:p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-lg font-bold text-white mb-4">Add Fund</h2>
-        <p className="text-sm text-gray-400 mb-4">
+        <h2 id="add-fund-title" className="text-lg font-bold text-white mb-4">Add Fund</h2>
+        <p id="add-fund-description" className="text-sm text-gray-400 mb-4">
           Create a new trading fund on an existing exchange. The fund starts <span className="text-yellow-400">disabled</span> and in <span className="text-purple-400">dry-run mode</span> by default — enable it manually from the fund dashboard once you've reviewed the config.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Exchange</label>
+            <label htmlFor="add-fund-exchange" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Exchange</label>
             <select
+              id="add-fund-exchange"
               value={exchange}
               onChange={(e) => handleExchangeChange(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white focus:border-blue-500 focus:outline-none"
+              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white focus:border-blue-500 focus:outline-none"
               disabled={submitting}
             >
               {exchangeNames.map((name) => (
@@ -186,15 +232,16 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
           </div>
 
           <div>
-            <label className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Pair</label>
+            <label htmlFor="add-fund-pair" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Pair</label>
             <input
+              id="add-fund-pair"
               ref={inputRef}
               type="text"
               value={pair}
               onChange={(e) => setPair(formatPairForExchange(e.target.value, exchange))}
               onFocus={(e) => e.target.select()}
               placeholder={fmt.placeholder}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
+              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
               disabled={submitting}
               autoComplete="off"
             />
@@ -202,14 +249,15 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
           </div>
 
           <div>
-            <label className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Initial Capital (quote currency)</label>
+            <label htmlFor="add-fund-allocation" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">Initial Capital (quote currency)</label>
             <input
+              id="add-fund-allocation"
               type="number"
               min="0"
               step="100"
               value={totalAllocation}
               onChange={(e) => setTotalAllocation(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
+              className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
               disabled={submitting}
             />
             <div className="text-xs text-gray-500 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
@@ -235,19 +283,19 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-2 pt-2">
+          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
             <button
               type="button"
               onClick={onClose}
               disabled={submitting}
-              className="px-4 py-2 text-sm text-gray-300 hover:text-white"
+              className="min-h-11 px-4 py-2 text-sm text-gray-300 hover:text-white"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-sm font-medium text-white"
+              className="min-h-11 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-sm font-medium text-white"
             >
               {submitting ? 'Creating...' : 'Create Fund'}
             </button>

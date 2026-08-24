@@ -14,6 +14,8 @@ const { resolveFundDataDir } = require('../migration');
 const { calculateApyMetrics } = require('../apy-calculator');
 const celestialHierarchy = require('../celestial-hierarchy');
 const { log } = require('../logger');
+const { sanitizeRegimeConfig } = require('../config-validator');
+const { getIPC: getExchangeIPC } = require('./route-utils');
 
 // Fields that live on the fund/exchange block (siblings of `regime`), NOT inside
 // the regime sub-block. GET sources these from getFundConfig, so a PUT must
@@ -141,7 +143,13 @@ const errStatus = (result) => result.error?.includes('unavailable') ? 503 : 400;
  */
 module.exports = (app, deps) => {
   const { exchangeIPCMap } = deps;
-  const getIPC = (exchange) => exchangeIPCMap[exchange] || exchangeIPCMap.coinbase;
+  const getIPC = (exchange) => {
+    try {
+      return getExchangeIPC(exchangeIPCMap, exchange);
+    } catch (err) {
+      return { request: () => Promise.reject(err) };
+    }
+  };
   // Resolve pair from request (?pair= query) defaulting to exchange's default
   const getPair = (req) => req.query?.pair || getDefaultPair(req.params.exchange);
 
@@ -154,19 +162,36 @@ module.exports = (app, deps) => {
     res.json({ success: true, exchange, pair, config });
   });
 
-  app.put('/api/:exchange/regime/config', (req, res) => {
+  app.put('/api/:exchange/regime/config', async (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
-    const updates = req.body;
+    const rawUpdates = req.body;
+    if (typeof rawUpdates !== 'object' || rawUpdates === null || Array.isArray(rawUpdates)) {
+      return res.status(400).json({ success: false, errors: ['config update must be an object'] });
+    }
+
+    // Fund-level fields are governed by their own schema below. Everything else
+    // must pass through the same regime allowlist used by the full config route,
+    // so stale UI fields cannot be persisted or sent to the live engine.
+    const fundUpdates = {};
+    const rawRegimeUpdates = {};
+    for (const [key, value] of Object.entries(rawUpdates)) {
+      (FUND_LEVEL_FIELDS.includes(key) ? fundUpdates : rawRegimeUpdates)[key] = value;
+    }
+    const { value: regimeUpdates, droppedKeys } = sanitizeRegimeConfig(rawRegimeUpdates);
+    if (droppedKeys.length > 0) {
+      log('WARN', `🧹 [${exchange}/${pair}] Ignored unknown regime config keys: ${droppedKeys.join(', ')}`);
+    }
+    const updates = { ...regimeUpdates, ...fundUpdates };
 
     const currentConfig = getRegimeConfig(exchange, pair);
-    const keysToValidate = Object.keys(updates);
+    const keysToValidate = Object.keys(regimeUpdates);
     const crossFieldPairs = {
       tpMinPercent: 'tpMaxPercent', tpMaxPercent: 'tpMinPercent',
       macroDeclineThreshold: 'macroAccumulationThreshold', macroAccumulationThreshold: 'macroMarkupThreshold',
       macroMarkupThreshold: 'macroAccumulationThreshold',
     };
-    const validationSubset = { ...updates };
+    const validationSubset = { ...regimeUpdates };
     for (const key of keysToValidate) {
       const partner = crossFieldPairs[key];
       if (partner && validationSubset[partner] === undefined) {
@@ -181,12 +206,6 @@ module.exports = (app, deps) => {
     // Split fund-level fields (dryRun, productId) from regime updates — they
     // persist on different parts of the config block and are read back from
     // different places (see FUND_LEVEL_FIELDS).
-    const fundUpdates = {};
-    const regimeUpdates = {};
-    for (const [key, value] of Object.entries(updates)) {
-      (FUND_LEVEL_FIELDS.includes(key) ? fundUpdates : regimeUpdates)[key] = value;
-    }
-
     // Type-guard fund-level fields before persisting. validateRegimeConfig above
     // only checks regime fields, so a malformed fund value would otherwise slip
     // through. dryRun is the dangerous one: the engine reads it with `=== true`,
@@ -207,15 +226,27 @@ module.exports = (app, deps) => {
     }
     log('INFO', `🔧 [${exchange}/${pair}] Config updated (fund: ${Object.keys(fundUpdates).join(',') || 'none'}, regime: ${Object.keys(regimeUpdates).join(',') || 'none'})`);
 
-    // Notify engine of config change (fire-and-forget) — forward the full
-    // update set so the running engine picks up dryRun changes too.
-    getIPC(exchange).request('regime:update-config', updates, exchange, pair).catch(() => {});
-
     // Return the merged view GET would produce, so the client reflects both
     // fund-level and regime changes immediately.
     const config = buildClientConfig(exchange, pair);
 
-    res.json({ success: true, exchange, pair, config });
+    try {
+      const applied = await getIPC(exchange).request('regime:update-config', updates, exchange, pair);
+      if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
+    } catch (err) {
+      log('ERROR', `🚨 [${exchange}/${pair}] Regime config persisted but live engine update failed: ${err.message}`);
+      return res.status(503).json({
+        success: false,
+        persisted: true,
+        applied: false,
+        error: `Config was saved but the live engine did not apply it: ${err.message}`,
+        exchange,
+        pair,
+        config,
+      });
+    }
+
+    res.json({ success: true, persisted: true, applied: true, exchange, pair, config });
   });
 
   // ============ Engine Commands (forwarded via IPC) ============

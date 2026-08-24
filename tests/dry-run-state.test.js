@@ -91,3 +91,35 @@ describe('dry-run-state forceSave — preserves queued funds on shutdown (#159)'
     assert.equal(onDisk.exchanges['coinbase::BTC-USD'].tag, 'A2', 'latest queued snapshot wins');
   });
 });
+
+describe('dry-run-state clearState — fences debounced snapshots', () => {
+  it('does not resurrect a cleared fund when its pending timer fires', (t) => {
+    const { saveState, clearState, loadState, STATE_FILE } = setup(t);
+
+    saveState('coinbase', mkState('old'), 'BTC-USD');
+    t.mock.timers.setTime(11_000);
+    saveState('coinbase', mkState('queued-old'), 'BTC-USD');
+
+    clearState('coinbase', 'BTC-USD');
+    t.mock.timers.tick(10_000);
+
+    assert.equal(loadState('coinbase', 'BTC-USD'), null);
+    assert.equal(readState(STATE_FILE).exchanges['coinbase::BTC-USD'], undefined);
+  });
+
+  it('clears only the target while preserving another fund queued in the same debounce window', (t) => {
+    const { saveState, clearState, STATE_FILE } = setup(t);
+
+    saveState('coinbase', mkState('initial'), 'BTC-USD');
+    t.mock.timers.setTime(11_000);
+    saveState('coinbase', mkState('clear-me'), 'BTC-USD');
+    saveState('gemini', mkState('keep-me'), 'ETH-USD');
+
+    clearState('coinbase', 'BTC-USD');
+    t.mock.timers.tick(5_000);
+
+    const onDisk = readState(STATE_FILE);
+    assert.equal(onDisk.exchanges['coinbase::BTC-USD'], undefined);
+    assert.equal(onDisk.exchanges['gemini::ETH-USD'].tag, 'keep-me');
+  });
+});

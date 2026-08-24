@@ -22,13 +22,13 @@ const {
   removeFund,
   getBaseCurrency,
   getQuoteCurrency,
-  REGIME_DEFAULTS,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
-const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+const { getIPC: getExchangeIPC } = require('./route-utils');
 
 // --- Security: pair validation regex ---
 // Accepts three pair formats (case-insensitive):
@@ -57,17 +57,19 @@ const validatePairParam = (req) => {
   return { pair: String(raw).toUpperCase(), error: null };
 };
 
-// --- Security: regime sub-object allowlist ---
-// Derived from REGIME_DEFAULTS so it automatically stays in sync as config-utils evolves.
-const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
-
 /**
  * @param {import('express').Express} app
  * @param {{exchangeIPCMap: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
  */
 module.exports = (app, deps) => {
   const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
-  const getIPC = (exchange) => exchangeIPCMap[exchange] || exchangeIPCMap.coinbase;
+  const getIPC = (exchange) => {
+    try {
+      return getExchangeIPC(exchangeIPCMap, exchange);
+    } catch (err) {
+      return { request: () => Promise.reject(err) };
+    }
+  };
 
   // Get list of all exchanges (with each fund flattened into the array).
   // Returns one entry per (exchange, pair) — the legacy `name` field is the
@@ -242,7 +244,7 @@ module.exports = (app, deps) => {
   });
 
   // Update config for an exchange/fund (?pair= optional)
-  app.put('/api/:exchange/config', (req, res) => {
+  app.put('/api/:exchange/config', async (req, res) => {
     const { exchange } = req.params;
     const { pair, error: pairError } = validatePairParam(req);
     if (pairError) return res.status(400).json({ success: false, error: pairError });
@@ -276,15 +278,7 @@ module.exports = (app, deps) => {
     // diff and computeDiff doesn't tombstone removals), but it's harmless — never
     // forwarded and dropped again on every save.
     if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
-      const sanitizedRegime = {};
-      const droppedKeys = [];
-      for (const key of Object.keys(req.body.regime)) {
-        if (REGIME_ALLOWED_KEYS.has(key)) {
-          sanitizedRegime[key] = req.body.regime[key];
-        } else {
-          droppedKeys.push(key);
-        }
-      }
+      const { value: sanitizedRegime, droppedKeys } = sanitizeRegimeConfig(req.body.regime);
       if (droppedKeys.length > 0) {
         log('WARN', `🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on save: ${droppedKeys.join(', ')}`);
       }
@@ -295,15 +289,30 @@ module.exports = (app, deps) => {
 
     updateFundConfig(exchange, pair, updates);
 
-    if (updates.regime) {
-      getIPC(exchange).request('regime:update-config', updates.regime, exchange, pair).catch(() => {});
+    const engineUpdates = { ...(updates.regime || {}) };
+    if ('dryRun' in updates) engineUpdates.dryRun = updates.dryRun;
+    if ('productId' in updates) engineUpdates.productId = updates.productId;
+    if (Object.keys(engineUpdates).length > 0) {
+      try {
+        const applied = await getIPC(exchange).request('regime:update-config', engineUpdates, exchange, pair);
+        if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
+      } catch (err) {
+        log('ERROR', `🚨 [${exchange}/${pair}] Config persisted but live engine update failed: ${err.message}`);
+        return res.status(503).json({
+          success: false,
+          persisted: true,
+          applied: false,
+          error: `Config was saved but the live engine did not apply it: ${err.message}`,
+          config: getFundConfig(exchange, pair),
+        });
+      }
     }
 
-    res.json({ success: true, config: getFundConfig(exchange, pair) });
+    res.json({ success: true, persisted: true, applied: true, config: getFundConfig(exchange, pair) });
   });
 
   // Toggle enabled/dryRun for an exchange/fund (?pair= optional)
-  app.patch('/api/:exchange/config', (req, res) => {
+  app.patch('/api/:exchange/config', async (req, res) => {
     const { exchange } = req.params;
     const { pair, error } = validatePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
@@ -317,9 +326,22 @@ module.exports = (app, deps) => {
     if (typeof dryRun === 'boolean') {
       setExchangeDryRun(exchange, pair, dryRun);
       log('INFO', `[${exchange}/${pair}] Dry-run mode ${dryRun ? 'ENABLED' : 'DISABLED'}`);
+      try {
+        const applied = await getIPC(exchange).request('regime:update-config', { dryRun }, exchange, pair);
+        if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
+      } catch (err) {
+        log('ERROR', `🚨 [${exchange}/${pair}] Dry-run setting persisted but live engine update failed: ${err.message}`);
+        return res.status(503).json({
+          success: false,
+          persisted: true,
+          applied: false,
+          error: `Dry-run setting was saved but the live engine did not apply it: ${err.message}`,
+          config: getFundConfig(exchange, pair),
+        });
+      }
     }
 
-    res.json({ success: true, config: getFundConfig(exchange, pair) });
+    res.json({ success: true, persisted: true, applied: true, config: getFundConfig(exchange, pair) });
   });
 
   // Get state for an exchange/fund (?pair= optional)

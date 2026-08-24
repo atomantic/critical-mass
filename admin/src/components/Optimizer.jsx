@@ -46,7 +46,8 @@ function Optimizer({ exchange = 'coinbase', pair }) {
   const [progress, setProgress] = useState(null)
   const [currentBest, setCurrentBest] = useState(null)
   const [showConfig, setShowConfig] = useState(false)
-  const socketRef = useRef(null)
+  const activeRunIdRef = useRef(null)
+  const cacheRequestGenerationRef = useRef(0)
 
   // Configurable parameters
   const [selectedIntervals, setSelectedIntervals] = useState(['10min', '1hour', 'daily'])
@@ -60,37 +61,62 @@ function Optimizer({ exchange = 'coinbase', pair }) {
   // Connect to WebSocket
   useEffect(() => {
     const socket = io()
-    socketRef.current = socket
+
+    const isActiveEvent = (data) => (
+      data?.exchange === exchange &&
+      data?.pair === pair &&
+      data?.runId === activeRunIdRef.current
+    )
 
     socket.on('optimizer:progress', (data) => {
+      if (!isActiveEvent(data)) return
       setProgress(data)
     })
 
     socket.on('optimizer:newBest', (data) => {
+      if (!isActiveEvent(data)) return
       setCurrentBest(data)
     })
 
     socket.on('optimizer:complete', (data) => {
+      if (!isActiveEvent(data)) return
       setResults(data)
       setLoading(false)
       setProgress(null)
       setCurrentBest(null)
+      activeRunIdRef.current = null
     })
 
     socket.on('optimizer:error', (data) => {
+      if (!isActiveEvent(data)) return
       setError(data.error)
       setLoading(false)
       setProgress(null)
+      activeRunIdRef.current = null
     })
 
-    return () => socket.disconnect()
-  }, [])
+    return () => {
+      activeRunIdRef.current = null
+      socket.disconnect()
+    }
+  }, [exchange, pair])
 
-  // Load cached results on mount
+  // Load cached results whenever the active fund changes.
   useEffect(() => {
-    fetch(`/api/${exchange}/optimizer/cache${pairQuery}`)
+    const controller = new AbortController()
+    const requestGeneration = ++cacheRequestGenerationRef.current
+    activeRunIdRef.current = null
+    setInitialLoading(true)
+    setLoading(false)
+    setResults(null)
+    setError(null)
+    setProgress(null)
+    setCurrentBest(null)
+
+    fetch(`/api/${exchange}/optimizer/cache${pairQuery}`, { signal: controller.signal })
       .then(res => res.json())
       .then(data => {
+        if (cacheRequestGenerationRef.current !== requestGeneration) return
         if (data.cached) {
           setResults(data)
           setFundSize(data.fundSize || 10000)
@@ -103,9 +129,20 @@ function Optimizer({ exchange = 'coinbase', pair }) {
           }
         }
       })
-      .catch(() => {})
-      .finally(() => setInitialLoading(false))
-  }, [])
+      .catch(err => {
+        if (err.name !== 'AbortError' && cacheRequestGenerationRef.current === requestGeneration) {
+          setError(err.message || 'Failed to load optimizer cache')
+        }
+      })
+      .finally(() => {
+        if (cacheRequestGenerationRef.current === requestGeneration) setInitialLoading(false)
+      })
+
+    return () => {
+      cacheRequestGenerationRef.current += 1
+      controller.abort()
+    }
+  }, [exchange, pair, pairQuery])
 
   const formatPercent = (n) => `${(n || 0).toFixed(2)}%`
 
@@ -150,6 +187,8 @@ function Optimizer({ exchange = 'coinbase', pair }) {
     setProgress(null)
     setCurrentBest(null)
     if (forceRefresh) setResults(null)
+    const runId = globalThis.crypto?.randomUUID?.() || `optimizer_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    activeRunIdRef.current = runId
 
     fetch(`/api/${exchange}/optimizer/run${pairQuery}`, {
       method: 'POST',
@@ -160,22 +199,29 @@ function Optimizer({ exchange = 'coinbase', pair }) {
         intervals: selectedIntervals,
         markups: selectedMarkups,
         periods: selectedPeriods,
-        buyAmounts
+        buyAmounts,
+        runId
       })
     })
       .then(res => res.json())
       .then(data => {
+        if (activeRunIdRef.current !== runId) return
         if (!data.success) throw new Error(data.error || 'Unknown error')
         // Cached results come via HTTP response
         if (data.cached) {
           setResults(data)
           setLoading(false)
+          activeRunIdRef.current = null
+        } else if (data.streaming && data.runId) {
+          activeRunIdRef.current = data.runId
         }
         // Non-cached results stream via WebSocket (data.streaming = true)
         // Keep loading state, results will come via optimizer:complete event
       })
       .catch(err => {
+        if (activeRunIdRef.current !== runId) return
         console.error('Optimizer fetch error:', err)
+        activeRunIdRef.current = null
         setError(err.message || 'Failed to start optimizer')
         setLoading(false)
       })

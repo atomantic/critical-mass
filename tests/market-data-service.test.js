@@ -178,6 +178,27 @@ describe('ingestNewFillsForOrder', () => {
       'watermark must NOT advance — next WS update should retry the fetch');
   });
 
+  it('preserves fill-recovery warning text while appending fund and order context', async () => {
+    const adapter = makeAdapter([new Error('network down')]);
+    const lines = [];
+    const originalLog = console.log;
+    console.log = (line) => lines.push(line);
+
+    try {
+      await ingestNewFillsForOrder(
+        { adapter, fillLedger: ledger, exchange: 'coinbase', pair: 'BTC-USDC' },
+        'order-1', trackedOrder, 0.5, 'partial fill'
+      );
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.equal(
+      lines[0],
+      '⚠️ [coinbase] Failed to fetch fills for order-1: network down — will retry on next update {"exchange":"coinbase","pair":"BTC-USDC","orderId":"order-1","error":"network down"}'
+    );
+  });
+
   it('on adapter failure, reconciles watermark from ledger so post-restart with already-recorded fills does not trigger retry', async () => {
     // Scenario: an order was fully ingested before a process restart.
     // After restart, trackedOrder is recreated with lastIngestedFilledSize=0
