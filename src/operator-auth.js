@@ -54,38 +54,30 @@ const makeRecord = (password) => {
   };
 };
 
-const normalizeEnvToken = (raw) => {
-  const token = typeof raw === 'string' ? raw.trim() : '';
-  return token.length >= MIN_PASSWORD_LENGTH ? token : '';
-};
-
 /**
- * Operator auth is off until a password is set in the admin panel (or an
- * optional OPERATOR_TOKEN env secret is present). Missing env does not crash.
+ * Operator auth is off until a password is set in the admin UI.
+ * The hash lives in data/operator-auth.json — there is no env secret.
  *
  * @param {Object} [opts]
- * @param {string} [opts.operatorToken]
  * @param {string} [opts.authFile]
  * @param {Function} [opts.readJSON]
  * @param {Function} [opts.writeJSON]
  */
 const createOperatorAuth = ({
-  operatorToken = process.env.OPERATOR_TOKEN,
   authFile = null,
   readJSON = null,
   writeJSON = null,
 } = {}) => {
-  const envToken = normalizeEnvToken(operatorToken);
   let record = null;
   if (authFile && readJSON) {
     const saved = readJSON(authFile, null);
     if (saved?.salt && saved?.hash) record = saved;
   }
 
-  const isRequired = () => Boolean(record || envToken);
+  const isRequired = () => Boolean(record);
 
   const sessionSecret = () => crypto.createHash('sha256')
-    .update(`critical-mass-session:${record?.hash || envToken || 'open'}`)
+    .update(`critical-mass-session:${record?.hash || 'open'}`)
     .digest('hex');
 
   const createSession = () => jwt.sign(
@@ -108,12 +100,8 @@ const createOperatorAuth = ({
   };
 
   const passwordMatches = (password) => {
-    if (!password) return false;
-    if (envToken && timingSafeEqual(password, envToken)) return true;
-    if (record?.salt && record?.hash) {
-      return timingSafeEqual(hashPassword(password, record.salt), record.hash);
-    }
-    return false;
+    if (!password || !record?.salt || !record?.hash) return false;
+    return timingSafeEqual(hashPassword(password, record.salt), record.hash);
   };
 
   const persist = (next) => {
@@ -209,7 +197,7 @@ const createOperatorAuth = ({
     });
 
     app.delete('/api/auth/password', (req, res) => {
-      if (!record && !envToken) {
+      if (!record) {
         return res.json({ authenticated: true, required: false });
       }
       const currentPassword = submittedSecret(req.body);
@@ -218,11 +206,8 @@ const createOperatorAuth = ({
       }
       persist(null);
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
-      const stillRequired = isRequired();
-      log('INFO', stillRequired
-        ? '🔐 Operator panel password cleared — OPERATOR_TOKEN env still requires sign-in'
-        : '🔐 Operator password cleared — gateway sign-in is off');
-      res.json({ authenticated: true, required: stillRequired });
+      log('INFO', '🔐 Operator password cleared — gateway sign-in is off');
+      res.json({ authenticated: true, required: false });
     });
 
     app.delete('/api/auth/session', (req, res) => {

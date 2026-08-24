@@ -59,12 +59,7 @@ export default function GatewayAccess() {
     if (res.ok) {
       setRequired(Boolean(data.required))
       setCurrentPassword('')
-      setMessage({
-        type: 'success',
-        text: data.required
-          ? 'Panel password removed. OPERATOR_TOKEN is still set in the environment, so sign-in stays on.'
-          : 'Password removed. Sign-in is off.',
-      })
+      setMessage({ type: 'success', text: 'Password removed. Sign-in is off.' })
     } else {
       setMessage({ type: 'error', text: data.error || 'Could not remove password' })
     }
@@ -84,7 +79,7 @@ export default function GatewayAccess() {
           <h2 className="text-lg font-bold">Gateway access</h2>
         </div>
         <p className="text-sm text-gray-400">
-          Sign-in is off until you set a password here. The old <code className="text-gray-300">OPERATOR_TOKEN</code> env var is optional — it was never stored on disk.
+          Sign-in is off until you set a password here. It is stored as a hash in <code className="text-gray-300">data/operator-auth.json</code>, not as an environment variable.
         </p>
       </div>
 

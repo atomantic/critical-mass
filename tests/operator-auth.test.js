@@ -1,5 +1,6 @@
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('crypto');
 const express = require('express');
 const fs = require('fs');
 const http = require('http');
@@ -9,13 +10,23 @@ const path = require('path');
 const { createOperatorAuth, MIN_PASSWORD_LENGTH } = require('../src/operator-auth');
 const { readJSON, writeJSON } = require('../src/shared-utils');
 
-const OPERATOR_TOKEN = 'test-operator-token-with-at-least-32-chars';
+const PASSWORD = 'gateway-password-1';
 const tmpFiles = [];
 
 const tmpAuthFile = () => {
   const file = path.join(os.tmpdir(), `operator-auth-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   tmpFiles.push(file);
   return file;
+};
+
+const seedPassword = (file, password = PASSWORD) => {
+  const salt = crypto.randomBytes(16).toString('hex');
+  writeJSON(file, {
+    kdf: 'scrypt',
+    salt,
+    hash: crypto.scryptSync(password, Buffer.from(salt, 'hex'), 32).toString('hex'),
+    updatedAt: new Date().toISOString(),
+  });
 };
 
 after(() => {
@@ -49,13 +60,13 @@ const withServer = async (authOpts, run) => {
 };
 
 describe('operator authentication is off by default', () => {
-  it('does not throw when OPERATOR_TOKEN is missing', () => {
-    assert.doesNotThrow(() => createOperatorAuth({ operatorToken: '' }));
-    assert.equal(createOperatorAuth({ operatorToken: '' }).isRequired(), false);
+  it('does not throw when no password file exists', () => {
+    assert.doesNotThrow(() => createOperatorAuth({}));
+    assert.equal(createOperatorAuth({}).isRequired(), false);
   });
 
   it('lets unauthenticated requests through when no password is configured', async () => {
-    await withServer({ operatorToken: '' }, async ({ baseUrl, reached }) => {
+    await withServer({ authFile: tmpAuthFile(), readJSON, writeJSON }, async ({ baseUrl, reached }) => {
       const session = await fetch(`${baseUrl}/api/auth/session`).then((r) => r.json());
       assert.equal(session.required, false);
       assert.equal(session.authenticated, true);
@@ -73,7 +84,7 @@ describe('operator authentication is off by default', () => {
   });
 
   it('does not guard Socket.IO when auth is off', async () => {
-    const auth = createOperatorAuth({ operatorToken: '' });
+    const auth = createOperatorAuth({});
     const error = await new Promise((resolve) => {
       auth.socketMiddleware({ handshake: { headers: {}, auth: {} } }, (err) => resolve(err));
     });
@@ -84,7 +95,7 @@ describe('operator authentication is off by default', () => {
 describe('operator password set from the admin panel', () => {
   it('turns on auth after PUT /api/auth/password and accepts the new password', async () => {
     const authFile = tmpAuthFile();
-    await withServer({ operatorToken: '', authFile, readJSON, writeJSON }, async ({ baseUrl, reached }) => {
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl, reached }) => {
       const tooShort = await fetch(`${baseUrl}/api/auth/password`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -95,9 +106,10 @@ describe('operator password set from the admin panel', () => {
       const set = await fetch(`${baseUrl}/api/auth/password`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: 'gateway-password-1' }),
+        body: JSON.stringify({ password: PASSWORD }),
       });
       assert.equal(set.status, 200);
+      assert.ok(fs.existsSync(authFile), 'password hash is written to data file');
       const cookie = set.headers.get('set-cookie').split(';')[0];
 
       const blocked = await fetch(`${baseUrl}/api/providers`);
@@ -110,27 +122,28 @@ describe('operator password set from the admin panel', () => {
       const login = await fetch(`${baseUrl}/api/auth/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: 'gateway-password-1' }),
+        body: JSON.stringify({ password: PASSWORD }),
       });
       assert.equal(login.status, 200);
     });
   });
 
-  it('clears the panel password and opens the gateway again', async () => {
+  it('clears the panel password from disk and opens the gateway again', async () => {
     const authFile = tmpAuthFile();
-    await withServer({ operatorToken: '', authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/api/auth/password`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: 'gateway-password-1' }),
+        body: JSON.stringify({ password: PASSWORD }),
       });
       const cleared = await fetch(`${baseUrl}/api/auth/password`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: 'gateway-password-1' }),
+        body: JSON.stringify({ password: PASSWORD }),
       });
       assert.equal(cleared.status, 200);
       assert.equal((await cleared.json()).required, false);
+      assert.equal(fs.existsSync(authFile), false);
       assert.equal((await fetch(`${baseUrl}/api/providers`)).status, 200);
     });
   });
@@ -138,7 +151,9 @@ describe('operator password set from the admin panel', () => {
 
 describe('operator authentication boundary', () => {
   it('prevents unauthenticated requests from reaching provider and run handlers', async () => {
-    await withServer({ operatorToken: OPERATOR_TOKEN }, async ({ baseUrl, reached }) => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl, reached }) => {
       const providerResponse = await fetch(`${baseUrl}/api/providers`);
       const runResponse = await fetch(`${baseUrl}/api/runs`, {
         method: 'POST',
@@ -152,11 +167,13 @@ describe('operator authentication boundary', () => {
   });
 
   it('lets an authenticated browser session reach protected handlers', async () => {
-    await withServer({ operatorToken: OPERATOR_TOKEN }, async ({ baseUrl, reached }) => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl, reached }) => {
       const login = await fetch(`${baseUrl}/api/auth/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: OPERATOR_TOKEN }),
+        body: JSON.stringify({ password: PASSWORD }),
       });
       assert.equal(login.status, 200);
       const cookie = login.headers.get('set-cookie').split(';')[0];
@@ -173,11 +190,13 @@ describe('operator authentication boundary', () => {
     });
   });
 
-  it('accepts bearer auth and rejects cross-origin session mutations', async () => {
-    await withServer({ operatorToken: OPERATOR_TOKEN }, async ({ baseUrl, reached }) => {
+  it('accepts bearer auth (the panel password) and rejects cross-origin session mutations', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl, reached }) => {
       const bearerResponse = await fetch(`${baseUrl}/api/runs`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${OPERATOR_TOKEN}`, 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${PASSWORD}`, 'Content-Type': 'application/json' },
         body: '{}',
       });
       assert.equal(bearerResponse.status, 202);
@@ -185,7 +204,7 @@ describe('operator authentication boundary', () => {
       const login = await fetch(`${baseUrl}/api/auth/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: OPERATOR_TOKEN }),
+        body: JSON.stringify({ password: PASSWORD }),
       });
       const cookie = login.headers.get('set-cookie').split(';')[0];
       const rejected = await fetch(`${baseUrl}/api/runs`, {
@@ -198,13 +217,15 @@ describe('operator authentication boundary', () => {
     });
   });
 
-  it('guards Socket.IO handshakes with the same credentials', async () => {
-    const auth = createOperatorAuth({ operatorToken: OPERATOR_TOKEN });
+  it('guards Socket.IO handshakes with the panel password', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    const auth = createOperatorAuth({ authFile, readJSON, writeJSON });
     const invoke = (headers = {}, handshakeAuth = {}) => new Promise((resolve) => {
       auth.socketMiddleware({ handshake: { headers, auth: handshakeAuth } }, (error) => resolve(error));
     });
     assert.equal((await invoke())?.data?.code, 'UNAUTHORIZED');
-    assert.equal(await invoke({}, { token: OPERATOR_TOKEN }), undefined);
+    assert.equal(await invoke({}, { token: PASSWORD }), undefined);
   });
 });
 

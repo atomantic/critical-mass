@@ -65,11 +65,7 @@ A real-time, volatility-aware strategy that adapts to market conditions:
 
 ### Operator authentication
 
-Sign-in is **off by default**. The gateway used to require an `OPERATOR_TOKEN` environment variable that was never written to disk — if you never set one, that is why the process refused to start.
-
-To require a password, open **Gateway** in the admin UI and set one. That stores a scrypt hash in `data/operator-auth.json` (not the password itself). Removing the password turns sign-in off again.
-
-`OPERATOR_TOKEN` is still optional: if you set it in the environment (min 8 characters), it also requires sign-in and works as `Authorization: Bearer <token>` for API clients.
+Sign-in is **off by default**. To require a password, open **Gateway** in the admin UI and set one. That stores a scrypt hash in `data/operator-auth.json` (never the password itself). Removing the password turns sign-in off again. There is no environment variable for this.
 
 AI toolkit execution is fail-closed: CLI providers are disabled while the bundled toolkit uses shell execution, workspaces must stay under `AI_WORKSPACE_ROOTS` (comma-separated, defaults to the Critical Mass directory), and API provider origins must be listed in `AI_ALLOWED_ENDPOINTS` (comma-separated exact origins such as `https://api.openai.com`).
 

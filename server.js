@@ -77,7 +77,6 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 const operatorAuth = createOperatorAuth({
-  operatorToken: process.env.OPERATOR_TOKEN,
   authFile: path.join(DATA_DIR, 'operator-auth.json'),
   readJSON,
   writeJSON,
@@ -86,7 +85,7 @@ operatorAuth.registerSessionRoutes(app);
 app.use('/api', operatorAuth.requireAuth);
 io.use(operatorAuth.socketMiddleware);
 log('INFO', operatorAuth.isRequired()
-  ? '🔐 Operator sign-in is required (panel password or OPERATOR_TOKEN)'
+  ? '🔐 Operator sign-in is required (password in data/operator-auth.json)'
   : '🔐 Operator sign-in is off — set a password at /gateway to require it');
 
 // Exchange param validation middleware
