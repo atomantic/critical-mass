@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
+const { createContextLogger } = require('../../logger');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -46,6 +47,7 @@ const createCryptocomAdapter = (keysPath = null) => {
 
   // Start with base adapter
   const adapter = createBaseAdapter('cryptocom');
+  const logger = createContextLogger({ exchange: 'cryptocom' });
 
   /**
    * Check if keys file exists and contains valid-looking credentials
@@ -358,7 +360,14 @@ const createCryptocomAdapter = (keysPath = null) => {
       spot_margin: 'SPOT',
     };
 
-    console.log(`Crypto.com market buy: ${quoteAmount} USD -> ${roundedQuantity} ${instrument.split('_')[0]} @ ${price}`);
+    logger.info(`Crypto.com market buy: ${quoteAmount} USD -> ${roundedQuantity} ${instrument.split('_')[0]} @ ${price}`, {
+      pair: productId,
+      clientOrderId,
+      side: 'BUY',
+      quoteAmount,
+      baseAmount: roundedQuantity,
+      price,
+    });
 
     const result = await makePrivateRequest('private/create-order', orderParams);
 
@@ -399,7 +408,14 @@ const createCryptocomAdapter = (keysPath = null) => {
 
     const minQty = parseFloat(details.baseMinSize) || baseIncrement;
     if (roundedAmount < minQty) {
-      console.log(`⚠️ Crypto.com order qty ${roundedAmount} (from ${baseAmount}) below minimum ${minQty} (tick_size=${baseIncrement})`);
+      logger.warn(`⚠️ Crypto.com order qty ${roundedAmount} (from ${baseAmount}) below minimum ${minQty} (tick_size=${baseIncrement})`, {
+        pair: productId,
+        side,
+        requestedAmount: baseAmount,
+        roundedAmount,
+        minimumAmount: minQty,
+        baseIncrement,
+      });
       return {
         orderId: '',
         clientOrderId: '',
@@ -422,7 +438,14 @@ const createCryptocomAdapter = (keysPath = null) => {
       exec_inst: postOnly ? ['POST_ONLY'] : [],
     };
 
-    console.log(`Crypto.com limit ${side.toLowerCase()}: ${orderParams.quantity} ${instrument.split('_')[0]} @ ${orderParams.price}`);
+    logger.info(`Crypto.com limit ${side.toLowerCase()}: ${orderParams.quantity} ${instrument.split('_')[0]} @ ${orderParams.price}`, {
+      pair: productId,
+      clientOrderId,
+      side,
+      baseAmount: roundedAmount,
+      price: roundedPrice,
+      postOnly,
+    });
 
     const result = await makePrivateRequest('private/create-order', orderParams);
 
@@ -582,7 +605,11 @@ const createCryptocomAdapter = (keysPath = null) => {
       const detail = await makePrivateRequest('private/get-order-detail', { order_id: orderId });
       orderInfo = detail?.order_info || detail || {};
     } catch (err) {
-      console.log(`⚠️ Crypto.com getOrderFills: order-detail lookup failed for ${orderId}: ${err.message}`);
+      logger.warn(`⚠️ Crypto.com getOrderFills: order-detail lookup failed for ${orderId}: ${err.message}`, {
+        orderId,
+        fallbackWindowMs: 60 * 60 * 1000,
+        error: err.message,
+      });
     }
     const instrument = orderInfo.instrument_name;
     const createTime = Number(orderInfo.create_time || 0);

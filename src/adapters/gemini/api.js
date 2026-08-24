@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
 const { createBaseAdapter } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
+const { createContextLogger } = require('../../logger');
 
 /**
  * @typedef {import('../../types').AccountBalance} AccountBalance
@@ -82,6 +83,7 @@ const createGeminiAdapter = (keysPath = null) => {
 
   // Start with base adapter
   const adapter = createBaseAdapter('gemini');
+  const logger = createContextLogger({ exchange: 'gemini' });
 
   // WebSocket connection state
   let wsConnection = null;
@@ -601,7 +603,11 @@ const createGeminiAdapter = (keysPath = null) => {
         // second-granular with no sub-second/older-than cursor, so the newest
         // of that same-second cluster is genuinely unreachable. Surface it
         // rather than loop forever.
-        console.log(`⚠️ [gemini] mytrades has >${PAGE_SIZE} trades at the same second for ${symbolLabel} (${new Date(newestMs).toISOString()}); the newest of that cluster is unreachable via Gemini's API — fill recovery may be incomplete`);
+        logger.warn(`⚠️ [gemini] mytrades has >${PAGE_SIZE} trades at the same second for ${symbolLabel} (${new Date(newestMs).toISOString()}); the newest of that cluster is unreachable via Gemini's API — fill recovery may be incomplete`, {
+          symbol: symbol || undefined,
+          pageSize: PAGE_SIZE,
+          newestTimestamp: new Date(newestMs).toISOString(),
+        });
         break;
       }
       prevNewestMs = newestMs;
@@ -639,7 +645,11 @@ const createGeminiAdapter = (keysPath = null) => {
       const createdMs = Number(order?.timestampms || (order?.timestamp ? Number(order.timestamp) * 1000 : 0));
       if (createdMs > 0) sinceMs = createdMs - 60000; // 60s pad for clock skew
     } catch (err) {
-      console.log(`⚠️ [gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message} — scanning last hour across all symbols`);
+      logger.warn(`⚠️ [gemini] getOrderFills: order-status lookup failed for ${orderId}: ${err.message} — scanning last hour across all symbols`, {
+        orderId,
+        fallbackWindowMs: 60 * 60 * 1000,
+        error: err.message,
+      });
     }
 
     // Step 2: paginate trades since order creation and filter by order
@@ -701,12 +711,22 @@ const createGeminiAdapter = (keysPath = null) => {
 
     const candles = await makePublicRequest(`/v2/candles/${symbol}/${geminiGranularity}`)
       .catch(err => {
-        console.error(`Gemini candles API error for ${symbol}: ${err.message}`);
+        logger.error(`Gemini candles API error for ${symbol}: ${err.message}`, {
+          pair: productId,
+          symbol,
+          granularity: geminiGranularity,
+          error: err.message,
+        });
         return []; // Return empty array on error
       });
 
     if (!Array.isArray(candles)) {
-      console.error(`Gemini candles API returned unexpected format for ${symbol}`);
+      logger.error(`Gemini candles API returned unexpected format for ${symbol}`, {
+        pair: productId,
+        symbol,
+        granularity: geminiGranularity,
+        responseType: typeof candles,
+      });
       return [];
     }
 
@@ -737,10 +757,15 @@ const createGeminiAdapter = (keysPath = null) => {
    */
   let heartbeatTimer = null;
   const heartbeatOwners = new Set();
+  const heartbeatContext = (owner) => ({
+    pair: owner.includes('/') ? owner.slice(owner.indexOf('/') + 1) : undefined,
+    owner,
+    consumers: heartbeatOwners.size,
+  });
   adapter.startHeartbeat = (owner = 'default') => {
     heartbeatOwners.add(owner);
     if (heartbeatTimer) {
-      console.log(`💓 [gemini] Heartbeat already running — ${owner} registered (${heartbeatOwners.size} consumer(s))`);
+      logger.info(`💓 [gemini] Heartbeat already running — ${owner} registered (${heartbeatOwners.size} consumer(s))`, heartbeatContext(owner));
       return;
     }
     const HEARTBEAT_MS = 60000; // Send every 60s (well within 5-min timeout)
@@ -748,28 +773,37 @@ const createGeminiAdapter = (keysPath = null) => {
       makeRestRequest('/v1/heartbeat')
         .then(res => {
           if (res?.result !== 'ok') {
-            console.log(`⚠️ [gemini] Heartbeat response: ${JSON.stringify(res)}`);
+            logger.warn(`⚠️ [gemini] Heartbeat response: ${JSON.stringify(res)}`, {
+              ...heartbeatContext(owner),
+              response: res,
+            });
           }
         })
         .catch(err => {
-          console.log(`⚠️ [gemini] Heartbeat failed: ${err.message}`);
+          logger.warn(`⚠️ [gemini] Heartbeat failed: ${err.message}`, {
+            ...heartbeatContext(owner),
+            error: err.message,
+          });
         });
     };
     sendHeartbeat(); // Send immediately
     heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
-    console.log(`💓 [gemini] Heartbeat started by ${owner} (every ${HEARTBEAT_MS / 1000}s)`);
+    logger.info(`💓 [gemini] Heartbeat started by ${owner} (every ${HEARTBEAT_MS / 1000}s)`, {
+      ...heartbeatContext(owner),
+      intervalMs: HEARTBEAT_MS,
+    });
   };
 
   adapter.stopHeartbeat = (owner = 'default') => {
     heartbeatOwners.delete(owner);
     if (heartbeatOwners.size > 0) {
-      console.log(`💓 [gemini] Heartbeat kept alive after ${owner} stopped (${heartbeatOwners.size} consumer(s) remain)`);
+      logger.info(`💓 [gemini] Heartbeat kept alive after ${owner} stopped (${heartbeatOwners.size} consumer(s) remain)`, heartbeatContext(owner));
       return;
     }
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
-      console.log(`💔 [gemini] Heartbeat stopped by ${owner} (no consumers remain)`);
+      logger.info(`💔 [gemini] Heartbeat stopped by ${owner} (no consumers remain)`, heartbeatContext(owner));
     }
   };
 
