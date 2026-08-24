@@ -747,8 +747,24 @@
  * @property {(productId: string) => Promise<OpenOrder[]>} getOpenOrders - Get open orders
  * @property {(orderId: string) => Promise<CancelResult>} cancelOrder - Cancel an order
  * @property {(orderId: string) => Promise<OrderFill[]>} getOrderFills - Get order fills
+ * @property {{fillReconciliation: boolean}} capabilities - Optional exchange feature metadata
+ * @property {(productId: string|undefined, startTimestampMs: number) => Promise<ReconciliationFill[]>} getReconciliationFills - Get normalized historical fills for ledger reconciliation
  * @property {(orderId: string) => Promise<FillSummary>} getOrderFillSummary - Get fill summary
  * @property {(productId: string, start: number, end: number, granularity: string) => Promise<Candle[]>} getCandles - Get candles
+ */
+
+/**
+ * @typedef {Object} ReconciliationFill
+ * @property {string} tradeId
+ * @property {string} orderId
+ * @property {'buy'|'sell'} side
+ * @property {number} price
+ * @property {number} size - Base-asset quantity
+ * @property {number} quoteAmount
+ * @property {number} fee
+ * @property {string} feeCurrency
+ * @property {number} timestamp - Milliseconds since epoch
+ * @property {'MAKER'|'TAKER'|string} liquidityIndicator
  */
 
 // ============================================================================

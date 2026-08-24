@@ -13,6 +13,8 @@
  * - API key / IP-allowlist denial (AUTH_DENIED — does NOT self-heal on a timer)
  */
 
+const { createContextLogger } = require('./logger');
+
 /**
  * @typedef {import('./types').HealthState} HealthState
  * @typedef {import('./types').HealthMode} HealthMode
@@ -47,6 +49,7 @@ const createInitialHealthState = () => ({
  * @returns {Object} Health monitor instance
  */
 const createHealthMonitor = (exchange, config, callbacks = {}) => {
+  const logger = createContextLogger({ exchange, pair: config.productId });
   /** @type {HealthState} */
   let state = createInitialHealthState();
 
@@ -141,7 +144,7 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     state.since = Date.now();
     state.reason = reason;
 
-    console.log(`⚠️ [${exchange}] Entering SAFE mode: ${reason}`);
+    logger.warn(`⚠️ [${exchange}] Entering SAFE mode: ${reason}`, { reason, mode: 'SAFE' });
 
     if (callbacks.onSafeMode) {
       callbacks.onSafeMode(reason);
@@ -158,7 +161,7 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     state.since = Date.now();
     state.reason = null;
 
-    console.log(`✅ [${exchange}] Exiting SAFE mode, returning to ACTIVE`);
+    logger.info(`✅ [${exchange}] Exiting SAFE mode, returning to ACTIVE`, { mode: 'ACTIVE' });
 
     if (callbacks.onActiveMode) {
       callbacks.onActiveMode();
@@ -183,7 +186,7 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     state.reason = reason;
     lastHealthyTimestamp = 0;
 
-    console.log(`🔑 [${exchange}] API key denied — entering AUTH_DENIED (halting new orders): ${reason}`);
+    logger.error(`🔑 [${exchange}] API key denied — entering AUTH_DENIED (halting new orders): ${reason}`, { reason, mode: 'AUTH_DENIED' });
 
     if (callbacks.onAuthDenied) {
       callbacks.onAuthDenied(reason);
@@ -202,7 +205,7 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     state.reason = null;
     lastHealthyTimestamp = Date.now();
 
-    console.log(`✅ [${exchange}] API access restored — exiting AUTH_DENIED, returning to ACTIVE`);
+    logger.info(`✅ [${exchange}] API access restored — exiting AUTH_DENIED, returning to ACTIVE`, { mode: 'ACTIVE' });
 
     if (callbacks.onActiveMode) {
       callbacks.onActiveMode();
@@ -218,7 +221,7 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     state.since = Date.now();
     state.reason = reason;
 
-    console.log(`⏸️ [${exchange}] System paused: ${reason}`);
+    logger.warn(`⏸️ [${exchange}] System paused: ${reason}`, { reason, mode: 'PAUSED' });
   };
 
   /**
@@ -233,7 +236,7 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     state.reason = null;
     lastHealthyTimestamp = Date.now();
 
-    console.log(`▶️ [${exchange}] System resumed from ${previousMode}`);
+    logger.info(`▶️ [${exchange}] System resumed from ${previousMode}`, { previousMode, mode: 'ACTIVE' });
   };
 
   /**
