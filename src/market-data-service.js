@@ -22,6 +22,7 @@ const { createFillLedger } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
 const { calculateApyMetrics } = require('./apy-calculator');
 const celestialHierarchy = require('./celestial-hierarchy');
+const { createContextLogger } = require('./logger');
 
 // Store active market data services keyed by `${exchange}::${pair}`
 const marketDataServices = new Map();
@@ -100,6 +101,8 @@ const instrumentAdapterForHealth = (adapter, healthMonitor) => {
  * @param {{getOrderFills: Function}} deps.adapter
  * @param {{ingestFill: Function, persist: Function}} deps.fillLedger
  * @param {string} deps.exchange - For log prefixes only
+ * @param {string} [deps.pair] - Stable fund pair for structured context
+ * @param {Object} [deps.logger] - Existing contextual logger from the service factory
  * @param {string} orderId
  * @param {Object} trackedOrder - Mutated: lastIngestedFilledSize updated on success
  * @param {number} cumulativeFilledSize - From the WS event (always cumulative)
@@ -117,6 +120,7 @@ const instrumentAdapterForHealth = (adapter, healthMonitor) => {
  */
 const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFilledSize, label) => {
   const { adapter, fillLedger, exchange, isStopped = () => false } = deps;
+  const logger = deps.logger || createContextLogger({ exchange, pair: deps.pair });
   const lastSize = trackedOrder.lastIngestedFilledSize || 0;
   if (cumulativeFilledSize <= lastSize) {
     return { fetched: true, fillsCount: 0, ingestedCount: 0 };
@@ -143,7 +147,10 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
   try {
     fills = await adapter.getOrderFills(orderId);
   } catch (err) {
-    console.log(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`);
+    logger.warn(`⚠️ [${exchange}] Failed to fetch fills for ${orderId}: ${err.message} — will retry on next update`, {
+      orderId,
+      error: err.message,
+    });
     // Bail post-stop: the service may have been replaced during the await,
     // and writing to its now-stale fillLedger or trackedOrder via persist
     // / reconcile would corrupt the replacement service's state.
@@ -189,7 +196,10 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
     try {
       fillLedger.persist();
     } catch (err) {
-      console.log(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`);
+      logger.warn(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`, {
+        orderId,
+        error: err.message,
+      });
       // Don't reconcile from ledger here: persist failed, so the in-memory
       // ledger may be ahead of disk. Reading it would advance the
       // watermark past what's durably recorded — a subsequent crash
@@ -226,7 +236,10 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
   try {
     fillLedger.persist();
   } catch (err) {
-    console.log(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`);
+    logger.warn(`⚠️ [${exchange}] Failed to persist ledger for ${orderId}: ${err.message} — will retry on next update`, {
+      orderId,
+      error: err.message,
+    });
     return { fetched: false, fillsCount: fills.length, ingestedCount: 0 };
   }
 
@@ -246,7 +259,13 @@ const ingestNewFillsForOrder = async (deps, orderId, trackedOrder, cumulativeFil
   trackedOrder.lastIngestedFilledSize = recordedSize;
 
   if (ingestedCount > 0) {
-    console.log(`📥 [${exchange}] ${label} for ${orderId}: ingested ${ingestedCount} new fill(s), recorded=${recordedSize} of ${cumulativeFilledSize}`);
+    logger.info(`📥 [${exchange}] ${label} for ${orderId}: ingested ${ingestedCount} new fill(s), recorded=${recordedSize} of ${cumulativeFilledSize}`, {
+      orderId,
+      label,
+      ingestedCount,
+      recordedSize,
+      cumulativeFilledSize,
+    });
   }
 
   return { fetched: true, fillsCount: fills.length, ingestedCount };
@@ -299,6 +318,8 @@ const CANCEL_RETRY_TIME_BUDGET_MS = 6 * 60 * 60 * 1000; // 6 hours
  * @param {{getOrderFills: Function}} deps.adapter
  * @param {{ingestFill: Function, persist: Function}} deps.fillLedger
  * @param {string} deps.exchange
+ * @param {string} [deps.pair] - Stable fund pair for structured context
+ * @param {Object} [deps.logger] - Existing contextual logger from the service factory
  * @param {(orderId: string) => void} deps.markSettled
  * @param {(orderId: string) => void} deps.untrackOrder
  * @param {number} [deps.retryDelayBaseMs=CANCEL_RETRY_BASE_MS]
@@ -325,6 +346,7 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
     getCurrentFilledSize,
     now = Date.now,
   } = deps;
+  const logger = deps.logger || createContextLogger({ exchange, pair: deps.pair });
 
   if (isStopped()) return { settledNow: false, retryScheduled: false };
 
@@ -339,7 +361,11 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   }
 
   if (attempt === 0) {
-    console.log(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`);
+    logger.warn(`⚠️ [${exchange}] Tracked order ${orderId} ${status}`, {
+      orderId,
+      status,
+      filledSize,
+    });
     // Flip status before the retry window so the offline pendingOrders
     // synthesizer (which relies on getOrderStatus to drop non-open orders)
     // doesn't keep emitting this order as a phantom open row.
@@ -352,7 +378,14 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   let catchup = { fetched: true, fillsCount: 0, ingestedCount: 0 };
   if (hadUnrecorded) {
     const label = attempt === 0 ? status : `${status} (retry ${attempt})`;
-    catchup = await ingestNewFillsForOrder({ adapter, fillLedger, exchange, isStopped }, orderId, trackedOrder, filledSize, label);
+    catchup = await ingestNewFillsForOrder({
+      adapter,
+      fillLedger,
+      exchange,
+      pair: deps.pair,
+      logger,
+      isStopped,
+    }, orderId, trackedOrder, filledSize, label);
     // After the await, the service may have been stopped — bail before
     // we touch markSettled/scheduleTimeout, which would otherwise
     // mutate the stopped-service's state after a replacement is up.
@@ -385,7 +418,13 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   // loss in the local ledger after this many ms of trying.
   const startedAt = trackedOrder._cancelRetryStartedAt || now();
   if (now() - startedAt > retryTimeBudgetMs) {
-    console.log(`❌ [${exchange}] Cancel catch-up time budget (${Math.round(retryTimeBudgetMs / 60000)}min) exhausted for ${orderId} — settling without all partials. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`);
+    logger.error(`❌ [${exchange}] Cancel catch-up time budget (${Math.round(retryTimeBudgetMs / 60000)}min) exhausted for ${orderId} — settling without all partials. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`, {
+      orderId,
+      status,
+      filledSize,
+      recordedSize,
+      retryTimeBudgetMs,
+    });
     markSettled(orderId);
     scheduleTimeout(() => untrackOrder(orderId), untrackDelayMs);
     return { settledNow: true, retryScheduled: false, exhausted: true };
@@ -406,7 +445,12 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
   // drop the partials. Persisted retry markers + engine-side
   // reconciliation are deferred follow-ups.
   const nextDelay = Math.min(retryDelayBaseMs * Math.pow(2, attempt), retryDelayMaxMs);
-  console.log(`⏳ [${exchange}] Scheduling cancel catch-up retry ${attempt + 1} for ${orderId} in ${Math.round(nextDelay / 1000)}s`);
+  logger.info(`⏳ [${exchange}] Scheduling cancel catch-up retry ${attempt + 1} for ${orderId} in ${Math.round(nextDelay / 1000)}s`, {
+    orderId,
+    status,
+    attempt: attempt + 1,
+    delayMs: nextDelay,
+  });
   // Re-enter the retry through enqueueOrderWork (when the factory provides
   // it) so the retry callback serializes against any replayed CANCELLED/
   // FAILED WS update for the same orderId. Without this, two concurrent
@@ -423,7 +467,12 @@ const settleCancelledOrder = async (deps, orderId, trackedOrder, status, filledS
         await run();
       }
     } catch (err) {
-      console.log(`❌ [${exchange}] Cancel retry chain crashed for ${orderId}: ${err.message}`);
+      logger.error(`❌ [${exchange}] Cancel retry chain crashed for ${orderId}: ${err.message}`, {
+        orderId,
+        status,
+        attempt: attempt + 1,
+        error: err.message,
+      });
     }
   }, nextDelay);
   return { settledNow: false, retryScheduled: true };
@@ -532,6 +581,7 @@ const serviceKey = (exchange, pair) => fundKey(exchange, pair || getDefaultPair(
  */
 const createMarketDataService = (exchange, pair) => {
   const resolvedPair = pair || getDefaultPair(exchange);
+  let logger = createContextLogger({ exchange, pair: resolvedPair });
   let wsFeed = null;
   let regimeDetector = null;
   let fillLedger = null;
@@ -623,7 +673,10 @@ const createMarketDataService = (exchange, pair) => {
         placedAt: pos.lastEntryTime || Date.now(),
         status: 'open',
       });
-      console.log(`📋 [${exchange}] Market data service tracking core TP: ${pos.activeTpOrderId}`);
+      logger.info(`📋 [${exchange}] Market data service tracking core TP: ${pos.activeTpOrderId}`, {
+        orderId: pos.activeTpOrderId,
+        orderType: 'take_profit',
+      });
     }
     for (const body of (pos?.celestialBodies || [])) {
       if (!body.tpOrderId || trackedOrders.has(body.tpOrderId) || settledOrderIds.has(body.tpOrderId)) continue;
@@ -671,13 +724,16 @@ const createMarketDataService = (exchange, pair) => {
     // failure path testable without mocking credentials.
     const fundConfig = getFundConfig(exchange, resolvedPair);
     productId = fundConfig.productId || resolvedPair || 'BTC-USDC';
+    logger = createContextLogger({ exchange, pair: resolvedPair || productId });
     try {
       fillLedger = createFillLedger(exchange, productId, resolvedPair);
     } catch (err) {
       // Log full detail (absolute path + parser error) server-side; return
       // a sanitized message to the IPC client (regime:stop relays this
       // back to the operator) so filesystem internals stay in engine logs.
-      console.log(`⚠️ [${exchange}] Market data service: Fill ledger init failed: ${err.message}`);
+      logger.warn(`⚠️ [${exchange}] Market data service: Fill ledger init failed: ${err.message}`, {
+        error: err.message,
+      });
       return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
     }
 
@@ -696,12 +752,16 @@ const createMarketDataService = (exchange, pair) => {
     try {
       credentials = adapter.loadCredentials();
     } catch (err) {
-      console.log(`⚠️ [${exchange}] Market data service: Failed to load credentials: ${err.message}`);
+      logger.warn(`⚠️ [${exchange}] Market data service: Failed to load credentials: ${err.message}`, {
+        error: err.message,
+      });
       return { success: false, error: err.message };
     }
 
     if (!credentials || !credentials.apiKey || !credentials.apiSecret) {
-      console.log(`⚠️ [${exchange}] Market data service: No API credentials, skipping`);
+      logger.warn(`⚠️ [${exchange}] Market data service: No API credentials, skipping`, {
+        reason: 'missing_credentials',
+      });
       return { success: false, error: 'No API credentials' };
     }
 
@@ -712,7 +772,12 @@ const createMarketDataService = (exchange, pair) => {
     const savedState = loadRegimeState(exchange, resolvedPair);
     trackPersistedOrders(savedState.position);
     const bodyTpCount = (savedState.position?.celestialBodies || []).filter(b => b.tpOrderId).length;
-    if (bodyTpCount > 0) console.log(`📋 [${exchange}] Market data service tracking ${bodyTpCount} body TP(s)`);
+    if (bodyTpCount > 0) {
+      logger.info(`📋 [${exchange}] Market data service tracking ${bodyTpCount} body TP(s)`, {
+        orderType: 'body_tp',
+        orderCount: bodyTpCount,
+      });
+    }
 
     // Create WebSocket feed
     wsFeed = createWebSocketFeed(exchange, {
@@ -724,14 +789,16 @@ const createMarketDataService = (exchange, pair) => {
       onOrderUpdate: handleOrderUpdate,
       onConnect: () => {
         isConnected = true;
-        console.log(`📊 [${exchange}] Market data service connected`);
+        logger.info(`📊 [${exchange}] Market data service connected`);
       },
       onDisconnect: () => {
         isConnected = false;
-        console.log(`📊 [${exchange}] Market data service disconnected`);
+        logger.info(`📊 [${exchange}] Market data service disconnected`);
       },
       onError: (error) => {
-        console.log(`❌ [${exchange}] Market data service error: ${error.message}`);
+        logger.error(`❌ [${exchange}] Market data service error: ${error.message}`, {
+          error: error.message,
+        });
       },
     });
 
@@ -747,7 +814,9 @@ const createMarketDataService = (exchange, pair) => {
     metricsUpdateInterval = setInterval(
       () =>
         updateMetrics(adapter, productId).catch((err) =>
-          console.log(`❌ [${exchange}] Metrics update failed: ${err.message}`)
+          logger.error(`❌ [${exchange}] Metrics update failed: ${err.message}`, {
+            error: err.message,
+          })
         ),
       METRICS_INTERVAL_MS
     );
@@ -755,7 +824,9 @@ const createMarketDataService = (exchange, pair) => {
     // Initial metrics fetch
     await updateMetrics(adapter, productId);
 
-    console.log(`📊 [${exchange}] Market data service started for ${productId}`);
+    logger.info(`📊 [${exchange}] Market data service started for ${productId}`, {
+      productId,
+    });
     return { success: true };
   };
 
@@ -1008,7 +1079,14 @@ const createMarketDataService = (exchange, pair) => {
     }
     if (filledSize <= (trackedOrder.lastIngestedFilledSize || 0)) return; // already covered
 
-    const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    const ingestDeps = {
+      adapter: getActiveAdapter(),
+      fillLedger,
+      exchange,
+      pair: resolvedPair,
+      logger,
+      isStopped: timerTracker.isStopped,
+    };
     const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, filledSize, `partial retry ${attempt}`);
     if (timerTracker.isStopped()) return;
 
@@ -1020,7 +1098,11 @@ const createMarketDataService = (exchange, pair) => {
       const reason = result.fetched ? 'ledger short of cumulative' : 'fetch/persist failed';
       schedulePartialRetry(orderId, trackedOrder, filledSize, attempt + 1, reason);
     } else {
-      console.log(`⚠️ [${exchange}] Partial-fill ingest gave up for ${orderId} after ${PARTIAL_MAX_ATTEMPTS} attempts — relying on next WS event or terminal catch-up`);
+      logger.warn(`⚠️ [${exchange}] Partial-fill ingest gave up for ${orderId} after ${PARTIAL_MAX_ATTEMPTS} attempts — relying on next WS event or terminal catch-up`, {
+        orderId,
+        filledSize,
+        maxAttempts: PARTIAL_MAX_ATTEMPTS,
+      });
     }
   };
 
@@ -1035,7 +1117,13 @@ const createMarketDataService = (exchange, pair) => {
       entry.timerId = null;
     }
     const delay = Math.min(PARTIAL_RETRY_BASE_MS * Math.pow(2, entry.attempt - 1), PARTIAL_RETRY_MAX_MS);
-    console.log(`⏳ [${exchange}] partial ${orderId} ${reason} — retry ${entry.attempt}/${PARTIAL_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`);
+    logger.info(`⏳ [${exchange}] partial ${orderId} ${reason} — retry ${entry.attempt}/${PARTIAL_MAX_ATTEMPTS} in ${Math.round(delay / 1000)}s`, {
+      orderId,
+      reason,
+      attempt: entry.attempt,
+      maxAttempts: PARTIAL_MAX_ATTEMPTS,
+      delayMs: delay,
+    });
     entry.timerId = trackedSetTimeout(
       () => enqueueOrderWork(orderId, async () => {
         // Read the (possibly updated) target out of the map; if the
@@ -1046,7 +1134,11 @@ const createMarketDataService = (exchange, pair) => {
         try {
           await retryPartialIngest(orderId, trackedOrder, cur.filledSize, cur.attempt);
         } catch (err) {
-          console.log(`❌ [${exchange}] partial retry chain crashed for ${orderId}: ${err.message}`);
+          logger.error(`❌ [${exchange}] partial retry chain crashed for ${orderId}: ${err.message}`, {
+            orderId,
+            attempt: cur.attempt,
+            error: err.message,
+          });
         }
       }),
       delay
@@ -1098,7 +1190,11 @@ const createMarketDataService = (exchange, pair) => {
     }
     const startedAt = trackedOrder._filledRetryStartedAt || Date.now();
     if (Date.now() - startedAt > filledRetryTimeBudgetMs) {
-      console.log(`❌ [${exchange}] FILLED retry time budget (${Math.round(filledRetryTimeBudgetMs / 60000)}min) exhausted for ${orderId} — settling. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`);
+      logger.error(`❌ [${exchange}] FILLED retry time budget (${Math.round(filledRetryTimeBudgetMs / 60000)}min) exhausted for ${orderId} — settling. Manual reconciliation may be required if partials fell outside the adapter's recent-trade window.`, {
+        orderId,
+        filledSize: target.filledSize,
+        retryTimeBudgetMs: filledRetryTimeBudgetMs,
+      });
       finalizeFilledOrder(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees);
       return;
     }
@@ -1106,7 +1202,14 @@ const createMarketDataService = (exchange, pair) => {
     // Read the latest target values — handleOrderUpdate's synchronous
     // prelude updates `target` in place when a replayed FILLED arrives,
     // so a replay during this retry's await is reflected here.
-    const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    const ingestDeps = {
+      adapter: getActiveAdapter(),
+      fillLedger,
+      exchange,
+      pair: resolvedPair,
+      logger,
+      isStopped: timerTracker.isStopped,
+    };
     const result = await ingestNewFillsForOrder(ingestDeps, orderId, trackedOrder, target.filledSize, `FILLED retry ${attempt}`);
     if (timerTracker.isStopped()) return;
 
@@ -1137,7 +1240,12 @@ const createMarketDataService = (exchange, pair) => {
     }
     target.timerScheduled = true;
     const delay = Math.min(FILLED_RETRY_BASE_MS * Math.pow(2, attempt - 1), FILLED_RETRY_MAX_MS);
-    console.log(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retry ${attempt} in ${Math.round(delay / 1000)}s`);
+    logger.info(`⏳ [${exchange}] FILLED ${orderId} ${reason} — retry ${attempt} in ${Math.round(delay / 1000)}s`, {
+      orderId,
+      reason,
+      attempt,
+      delayMs: delay,
+    });
     target.timerId = trackedSetTimeout(
       () => enqueueOrderWork(orderId, async () => {
         target.timerScheduled = false;
@@ -1150,7 +1258,11 @@ const createMarketDataService = (exchange, pair) => {
         try {
           await retryFilledIngest(orderId, trackedOrder, target, attempt);
         } catch (err) {
-          console.log(`❌ [${exchange}] FILLED retry chain crashed for ${orderId}: ${err.message}`);
+          logger.error(`❌ [${exchange}] FILLED retry chain crashed for ${orderId}: ${err.message}`, {
+            orderId,
+            attempt,
+            error: err.message,
+          });
           scheduleFilledRetry(orderId, trackedOrder, target.filledSize, target.averageFilledPrice, target.totalFees, attempt + 1, 'previous attempt threw');
         }
       }),
@@ -1219,7 +1331,14 @@ const createMarketDataService = (exchange, pair) => {
       timerTracker.cancel(target.timerId);
       target.timerId = null;
     }
-    const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    const ingestDeps = {
+      adapter: getActiveAdapter(),
+      fillLedger,
+      exchange,
+      pair: resolvedPair,
+      logger,
+      isStopped: timerTracker.isStopped,
+    };
     return settleCancelledOrder(
       {
         ...ingestDeps,
@@ -1426,7 +1545,14 @@ const createMarketDataService = (exchange, pair) => {
       return;
     }
 
-    const ingestDeps = { adapter: getActiveAdapter(), fillLedger, exchange, isStopped: timerTracker.isStopped };
+    const ingestDeps = {
+      adapter: getActiveAdapter(),
+      fillLedger,
+      exchange,
+      pair: resolvedPair,
+      logger,
+      isStopped: timerTracker.isStopped,
+    };
 
     const terminalKind = classifyTerminal(data);
 
@@ -1460,7 +1586,13 @@ const createMarketDataService = (exchange, pair) => {
 
     if (terminalKind === 'filled') {
       const baseCurr = getBaseCurrency(productId);
-      console.log(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`);
+      logger.info(`✅ [${exchange}] Tracked order ${orderId} FILLED: ${filledSize} ${baseCurr} @ $${averageFilledPrice}`, {
+        orderId,
+        status: 'FILLED',
+        filledSize,
+        averageFilledPrice,
+        baseCurrency: baseCurr,
+      });
 
       // Cancel-after-fill reclassification reset: a prior CANCELLED event
       // may have routed through settleCancelledOrder, which flips
@@ -1669,7 +1801,7 @@ const createMarketDataService = (exchange, pair) => {
     timerTracker.cancelAll();
 
     isConnected = false;
-    console.log(`📊 [${exchange}] Market data service stopped`);
+    logger.info(`📊 [${exchange}] Market data service stopped`);
   };
 
   /**
