@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 
 export default function OperatorLogin({ children }) {
   const [status, setStatus] = useState('loading')
-  const [token, setToken] = useState('')
+  const [required, setRequired] = useState(false)
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
 
   // Keep authentication as an application boundary, including after the
@@ -25,7 +26,10 @@ export default function OperatorLogin({ children }) {
   useEffect(() => {
     fetch('/api/auth/session')
       .then((response) => response.json())
-      .then((session) => setStatus(session.authenticated ? 'authenticated' : 'anonymous'))
+      .then((session) => {
+        setRequired(Boolean(session.required))
+        setStatus(session.required && !session.authenticated ? 'anonymous' : 'authenticated')
+      })
       .catch(() => setStatus('anonymous'))
   }, [])
 
@@ -35,13 +39,14 @@ export default function OperatorLogin({ children }) {
     const response = await fetch('/api/auth/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ password }),
     })
     if (!response.ok) {
-      setError('The operator token was not accepted.')
+      setError('That password was not accepted.')
       return
     }
-    setToken('')
+    setPassword('')
+    setRequired(true)
     setStatus('authenticated')
   }
 
@@ -52,15 +57,19 @@ export default function OperatorLogin({ children }) {
     <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
       <form onSubmit={login} className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-8 shadow-2xl">
         <div className="text-3xl mb-3">⚛</div>
-        <h1 className="text-2xl font-semibold">Operator authentication</h1>
-        <p className="mt-2 text-sm text-gray-400">Enter the token configured as <code>OPERATOR_TOKEN</code> on this gateway.</p>
-        <label className="block mt-6 text-sm font-medium text-gray-300" htmlFor="operator-token">Operator token</label>
+        <h1 className="text-2xl font-semibold">Operator sign-in</h1>
+        <p className="mt-2 text-sm text-gray-400">
+          {required
+            ? 'Enter the operator password set in Gateway → Access.'
+            : 'Could not reach the gateway. Check that critical-mass is running, then retry.'}
+        </p>
+        <label className="block mt-6 text-sm font-medium text-gray-300" htmlFor="operator-password">Password</label>
         <input
-          id="operator-token"
+          id="operator-password"
           type="password"
           autoComplete="current-password"
-          value={token}
-          onChange={(event) => setToken(event.target.value)}
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
           className="mt-2 w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-gray-100 focus:border-blue-500 focus:outline-none"
           required
           autoFocus

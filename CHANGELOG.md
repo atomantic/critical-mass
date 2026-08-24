@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - **UpDown hysteresis survives process restart** - published BUY/SELL state is persisted with the rest of updown-state.json, so a PM2 bounce no longer dumps a live clip to HOLD.
 
 ### Changed
+- **Operator sign-in is off until you set a password** — `OPERATOR_TOKEN` is no longer required to start. Missing env no longer crashes the gateway. Set or clear a password on the Gateway page (`data/operator-auth.json` stores a hash, never the password). Env `OPERATOR_TOKEN` remains an optional bearer secret.
 - **UpDown prints Open / Add / Hold / Close for BTC perp longs** — BUY while flat is OPEN, BUY while already long is ADD, SELL while long is CLOSE, everything else is HOLD (never a short). Paper book buys 1 BTC on each Open or Add and flattens on Close; that P&L is the scorecard headline. Same-side repeats do not pyramid — a new BUY after HOLD adds the next contract.
 - **Critical trading alerts now carry structured context** — Order failures, WebSocket faults, safety pauses, and recovery/reconciliation events retain their familiar operator messages while adding exchange, pair, order, and error metadata through the centralized logger (#253)
 - **Market-data reconciliation and fill-ledger logs now carry structured context** — Fill ingestion, retry, persistence, lifecycle, and cycle-repair messages retain their operator-facing text while adding fund, order, trade, path, and error metadata (#253)

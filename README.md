@@ -65,7 +65,11 @@ A real-time, volatility-aware strategy that adapts to market conditions:
 
 ### Operator authentication
 
-The gateway requires an operator token of at least 32 characters. Set `OPERATOR_TOKEN` before starting Critical Mass, then enter the same token in the admin login screen. API clients may instead send `Authorization: Bearer <token>`.
+Sign-in is **off by default**. The gateway used to require an `OPERATOR_TOKEN` environment variable that was never written to disk — if you never set one, that is why the process refused to start.
+
+To require a password, open **Gateway** in the admin UI and set one. That stores a scrypt hash in `data/operator-auth.json` (not the password itself). Removing the password turns sign-in off again.
+
+`OPERATOR_TOKEN` is still optional: if you set it in the environment (min 8 characters), it also requires sign-in and works as `Authorization: Bearer <token>` for API clients.
 
 AI toolkit execution is fail-closed: CLI providers are disabled while the bundled toolkit uses shell execution, workspaces must stay under `AI_WORKSPACE_ROOTS` (comma-separated, defaults to the Critical Mass directory), and API provider origins must be listed in `AI_ALLOWED_ENDPOINTS` (comma-separated exact origins such as `https://api.openai.com`).
 

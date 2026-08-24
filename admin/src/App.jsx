@@ -20,6 +20,7 @@ import RegimeDashboard from './components/RegimeDashboard'
 const Systems = lazy(() => import('./components/Systems'))
 const AIProviders = lazy(() => import('./components/ai/Providers'))
 const LogViewer = lazy(() => import('./components/LogViewer'))
+const GatewayAccess = lazy(() => import('./components/GatewayAccess'))
 const UpDownDashboard = lazy(() => import('./components/updown/Dashboard'))
 const ScorecardAnalysis = lazy(() => import('./components/updown/ScorecardAnalysis'))
 const SentinelDashboard = lazy(() => import('./components/sentinel/Dashboard'))
@@ -638,7 +639,7 @@ function AppContent() {
                   AI
                 </Link>
                 <Link
-                  to="/gateway/logs"
+                  to="/gateway"
                   className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
                 >
                   Gateway
@@ -699,7 +700,7 @@ function AppContent() {
                   AI Providers
                 </Link>
                 <Link
-                  to="/gateway/logs"
+                  to="/gateway"
                   onClick={() => setMobileMenuOpen(false)}
                   className="min-h-11 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors flex items-center"
                 >
@@ -1015,7 +1016,8 @@ function AppContent() {
               {/* Sentinel news monitor */}
               <Route path="/sentinel" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><SentinelDashboard /></Suspense>} />
 
-              {/* Gateway logs */}
+              {/* Gateway access + logs */}
+              <Route path="/gateway" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><GatewayAccess /></Suspense>} />
               <Route path="/gateway/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass" /></Suspense>} />
 
               {/* Legacy route - redirect /:exchange (without pair) to /:exchange/:pair */}
