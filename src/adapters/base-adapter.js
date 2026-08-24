@@ -54,6 +54,11 @@
  *   @param {string} orderId - Order ID
  *   @returns {Promise<Array>}
  *
+ * getReconciliationFills(productId, startTimestampMs) - Get normalized fills for ledger reconciliation
+ *   @param {string|undefined} productId - Exchange product ID; adapter supplies its legacy default when omitted
+ *   @param {number} startTimestampMs - Inclusive start timestamp in milliseconds
+ *   @returns {Promise<Array>}
+ *
  * getCandles(productId, start, end, granularity) - Get historical price candles
  *   @param {string} productId - Product ID
  *   @param {number} start - Start timestamp (seconds)
@@ -73,6 +78,7 @@ const REQUIRED_METHODS = [
   'getOpenOrders',
   'cancelOrder',
   'getOrderFills',
+  'getReconciliationFills',
   'getCandles',
 ];
 
@@ -97,6 +103,9 @@ const validateAdapter = (adapter, name) => {
  */
 const createBaseAdapter = (exchangeName) => ({
   name: exchangeName,
+  capabilities: {
+    fillReconciliation: false,
+  },
 
   /**
    * Get aggregated fill info for an order

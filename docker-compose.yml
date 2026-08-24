@@ -12,6 +12,9 @@ services:
     environment:
       - NODE_ENV=production
       - HOST=0.0.0.0
+      - OPERATOR_TOKEN=${OPERATOR_TOKEN:?Set OPERATOR_TOKEN to at least 32 characters}
+      - AI_ALLOWED_ENDPOINTS=${AI_ALLOWED_ENDPOINTS:-}
+      - AI_WORKSPACE_ROOTS=/app
 
 networks:
   default:

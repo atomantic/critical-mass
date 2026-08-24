@@ -558,8 +558,8 @@ const createCoinbaseAdapter = (keysPath = null) => {
       // Coinbase returns `size_in_quote` as a boolean flag (not a numeric size).
       // When true (e.g. market-buy fills), `size` is denominated in quote
       // currency (USDC), so convert it to base currency and derive the quote
-      // notional separately — mirroring normalizeFills() in sync-fills.js and
-      // the gemini/cryptocom adapters, where `size` is base currency and
+      // notional separately — mirroring the reconciliation contract and the
+      // Gemini/Crypto.com adapters, where `size` is base currency and
       // `sizeInQuote` is the quote-currency amount.
       const price = parseFloat(fill.price);
       const rawSize = parseFloat(fill.size);
@@ -587,6 +587,64 @@ const createCoinbaseAdapter = (keysPath = null) => {
       };
     });
   };
+
+  /**
+   * Fetch and normalize every fill used by the ledger reconciliation tools.
+   * @param {string|undefined} productId
+   * @param {number} startTimestampMs
+   * @returns {Promise<import('../../types').ReconciliationFill[]>}
+   */
+  adapter.getReconciliationFills = async (productId, startTimestampMs) => {
+    const normalizedProductId = productId || 'BTC-USDC';
+    const startISO = new Date(startTimestampMs).toISOString();
+    const basePath = `/api/v3/brokerage/orders/historical/fills?product_id=${encodeURIComponent(normalizedProductId)}&start_sequence_timestamp=${encodeURIComponent(startISO)}&limit=500`;
+    const rawFills = [];
+    const seenCursors = new Set();
+    let cursor = null;
+
+    while (true) {
+      const apiPath = cursor ? `${basePath}&cursor=${encodeURIComponent(cursor)}` : basePath;
+      const data = await makeRequest('GET', apiPath);
+      rawFills.push(...(data.fills || []));
+
+      if (data.has_next === false) break;
+
+      const nextCursor = data.cursor;
+      if (!nextCursor) {
+        throw new Error(`Coinbase reconciliation response for ${normalizedProductId} has more pages but no cursor`);
+      }
+      if (seenCursors.has(nextCursor)) {
+        throw new Error(`Coinbase reconciliation cursor repeated for ${normalizedProductId}; refusing to return incomplete fills`);
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    const seenTrades = new Set();
+    return rawFills.flatMap(raw => {
+      const tradeId = String(raw.trade_id || '');
+      if (!tradeId || seenTrades.has(tradeId)) return [];
+      seenTrades.add(tradeId);
+      const price = parseFloat(raw.price || 0);
+      const rawSize = parseFloat(raw.size || 0);
+      const sizeInQuote = raw.size_in_quote === true || raw.size_in_quote === 'true';
+      const size = sizeInQuote && price > 0 ? rawSize / price : rawSize;
+      return [{
+        tradeId,
+        orderId: String(raw.order_id || ''),
+        side: String(raw.side || '').toLowerCase(),
+        price,
+        size,
+        quoteAmount: sizeInQuote ? rawSize : price * size,
+        fee: parseFloat(raw.commission || 0),
+        feeCurrency: normalizedProductId.split('-')[1] || 'USDC',
+        timestamp: new Date(raw.trade_time).getTime(),
+        liquidityIndicator: raw.liquidity_indicator || 'TAKER',
+      }];
+    });
+  };
+
+  adapter.capabilities.fillReconciliation = true;
 
   /**
    * Get historical price candles

@@ -7,7 +7,6 @@
  */
 
 const { getAdapter } = require('./adapters');
-const { getAuthHeaders } = require('./adapters/coinbase/auth');
 const { loadRegimeState } = require('./state-tracker');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 const { log } = require('./logger');
@@ -22,108 +21,7 @@ const groupFillsByOrder = (fills) => {
   return map;
 };
 
-/**
- * Fetch all Coinbase fills since a timestamp using paginated brokerage API
- * @param {Object} adapter - Coinbase adapter (used for credentials)
- * @param {number} startTimestampMs
- * @param {string} [productId] - Coinbase product id (e.g. 'ETH-USDC'). Defaults to 'BTC-USDC' for backward compatibility.
- * @returns {Promise<Array>}
- */
-const fetchAllCoinbaseFills = async (adapter, startTimestampMs, productId = 'BTC-USDC') => {
-  const { apiKey, apiSecret } = adapter.loadCredentials();
-  const allFills = [];
-  let cursor = null;
-  const startISO = new Date(startTimestampMs).toISOString();
-
-  for (let page = 0; page < 50; page++) {
-    let apiPath = `/api/v3/brokerage/orders/historical/fills?product_id=${productId}&start_sequence_timestamp=${startISO}&limit=500`;
-    if (cursor) apiPath += `&cursor=${cursor}`;
-
-    const headers = getAuthHeaders(apiKey, apiSecret, 'GET', apiPath);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-    try {
-      const resp = await fetch(`https://api.coinbase.com${apiPath}`, {
-        method: 'GET',
-        headers,
-        signal: controller.signal,
-      });
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => '');
-        throw new Error(`Coinbase API ${resp.status}: ${body}`);
-      }
-      const data = await resp.json();
-      const fills = data.fills || [];
-      allFills.push(...fills);
-      cursor = data.cursor || null;
-      if (!cursor) break;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  return allFills;
-};
-
-/**
- * Normalize raw exchange fills to a common format
- * @param {string} exchange
- * @param {Array} rawFills
- * @returns {Map<string, Object>} Map of tradeId → normalized fill
- */
-const normalizeFills = (exchange, rawFills) => {
-  const fills = new Map();
-
-  for (const raw of rawFills) {
-    let fill;
-
-    if (exchange === 'gemini') {
-      const tid = (raw.tid || '').toString();
-      if (fills.has(tid)) continue;
-      const price = parseFloat(raw.price || 0);
-      const amount = parseFloat(raw.amount || 0);
-      fill = {
-        tradeId: tid,
-        orderId: (raw.order_id || '').toString(),
-        side: (raw.type || '').toLowerCase(),
-        price,
-        size: amount,
-        quoteAmount: price * amount,
-        fee: parseFloat(raw.fee_amount || 0),
-        feeCurrency: raw.fee_currency || 'USD',
-        timestamp: raw.timestampms || (raw.timestamp * 1000),
-        liquidityIndicator: raw.is_maker ? 'MAKER' : 'TAKER',
-      };
-    } else if (exchange === 'coinbase') {
-      const tid = raw.trade_id;
-      if (fills.has(tid)) continue;
-      const price = parseFloat(raw.price);
-      const rawSize = parseFloat(raw.size);
-      // Coinbase returns size in quote currency (USDC) for some order types
-      const sizeInQuote = raw.size_in_quote === true || raw.size_in_quote === 'true';
-      const size = sizeInQuote ? rawSize / price : rawSize;
-      const quoteAmount = sizeInQuote ? rawSize : price * size;
-      fill = {
-        tradeId: tid,
-        orderId: raw.order_id,
-        side: raw.side.toLowerCase(),
-        price,
-        size,
-        quoteAmount,
-        fee: parseFloat(raw.commission || 0),
-        feeCurrency: 'USDC',
-        timestamp: new Date(raw.trade_time).getTime(),
-        liquidityIndicator: raw.liquidity_indicator || 'TAKER',
-      };
-    } else {
-      continue;
-    }
-
-    fills.set(fill.tradeId, fill);
-  }
-
-  return fills;
-};
+const indexFillsByTradeId = (fills) => new Map(fills.map(fill => [fill.tradeId, fill]));
 
 /**
  * Sync fills from exchange to local ledger
@@ -146,20 +44,14 @@ const syncFills = async (exchange, fillLedger, options = {}) => {
 
   log('INFO', `[${exchange}] Sync fills: fetching trades since ${new Date(engineStart).toISOString()}`);
 
-  let rawFills;
+  let normalizedFills;
   try {
-    if (exchange === 'gemini') {
-      rawFills = await adapter.getAllTrades(pair ? pair.toLowerCase() : 'btcusd', engineStart);
-    } else if (exchange === 'coinbase') {
-      rawFills = await fetchAllCoinbaseFills(adapter, engineStart, pair || 'BTC-USDC');
-    } else {
-      return { success: false, error: `Sync not yet supported for ${exchange}` };
-    }
+    normalizedFills = await adapter.getReconciliationFills(pair, engineStart);
   } catch (err) {
     return { success: false, error: `Failed to fetch trades: ${err.message}` };
   }
 
-  const exchangeFills = normalizeFills(exchange, rawFills);
+  const exchangeFills = indexFillsByTradeId(normalizedFills);
   log('INFO', `[${exchange}] Sync fills: ${exchangeFills.size} trades from exchange`);
 
   const ledgerFills = fillLedger.getAllFills();
@@ -288,20 +180,14 @@ const getUnaccountedFills = async (exchange, fillLedger, manualTradeStore, optio
 
   const adapter = getAdapter(exchange);
 
-  let rawFills;
+  let normalizedFills;
   try {
-    if (exchange === 'coinbase') {
-      rawFills = await fetchAllCoinbaseFills(adapter, startTimestampMs, pair || 'BTC-USDC');
-    } else if (exchange === 'gemini') {
-      rawFills = await adapter.getAllTrades(pair ? pair.toLowerCase() : 'btcusd', startTimestampMs);
-    } else {
-      return { success: false, error: `Not supported for ${exchange}` };
-    }
+    normalizedFills = await adapter.getReconciliationFills(pair, startTimestampMs);
   } catch (err) {
     return { success: false, error: `Failed to fetch trades: ${err.message}` };
   }
 
-  const exchangeFills = normalizeFills(exchange, rawFills);
+  const exchangeFills = indexFillsByTradeId(normalizedFills);
 
   // Filter out fills already in ledger and dismissed fills
   const unaccounted = [];
@@ -346,4 +232,4 @@ const getUnaccountedFills = async (exchange, fillLedger, manualTradeStore, optio
   };
 };
 
-module.exports = { syncFills, getUnaccountedFills, fetchAllCoinbaseFills, normalizeFills };
+module.exports = { syncFills, getUnaccountedFills };

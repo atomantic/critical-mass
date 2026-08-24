@@ -414,7 +414,8 @@ function runSimulation(candles1m, tfCandles, config) {
           entryScore = score
         }
       } else {
-        // Exit check: score < 0 OR exit signal
+        // Options-oriented exit: published SELL/EXIT, or score gone red.
+        // HOLD (NEUTRAL) does not exit — that is "keep the long".
         if (score < 0 || EXIT_SIGNALS.includes(signal)) {
           const bps = ((price - entryPrice) / entryPrice) * 10000
           const pnlPct = bps / 10000

@@ -39,6 +39,7 @@ const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
+const { createOperatorAuth } = require('./src/operator-auth');
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -74,6 +75,11 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
+
+const operatorAuth = createOperatorAuth();
+operatorAuth.registerSessionRoutes(app);
+app.use('/api', operatorAuth.requireAuth);
+io.use(operatorAuth.socketMiddleware);
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());
