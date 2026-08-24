@@ -762,6 +762,10 @@ const createGeminiAdapter = (keysPath = null) => {
     owner,
     consumers: heartbeatOwners.size,
   });
+  const sharedHeartbeatContext = () => ({
+    owners: Array.from(heartbeatOwners),
+    consumers: heartbeatOwners.size,
+  });
   adapter.startHeartbeat = (owner = 'default') => {
     heartbeatOwners.add(owner);
     if (heartbeatTimer) {
@@ -774,14 +778,14 @@ const createGeminiAdapter = (keysPath = null) => {
         .then(res => {
           if (res?.result !== 'ok') {
             logger.warn(`⚠️ [gemini] Heartbeat response: ${JSON.stringify(res)}`, {
-              ...heartbeatContext(owner),
+              ...sharedHeartbeatContext(),
               response: res,
             });
           }
         })
         .catch(err => {
           logger.warn(`⚠️ [gemini] Heartbeat failed: ${err.message}`, {
-            ...heartbeatContext(owner),
+            ...sharedHeartbeatContext(),
             error: err.message,
           });
         });

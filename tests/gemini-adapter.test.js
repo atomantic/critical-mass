@@ -46,6 +46,7 @@ const installFetchMock = (handler) => {
 
 const mytradesCalls = (calls) => calls.filter(c => c.endpoint === '/v1/mytrades');
 const heartbeatCalls = (calls) => calls.filter(c => c.endpoint === '/v1/heartbeat');
+const logContext = (line) => JSON.parse(line.slice(line.lastIndexOf(' {') + 1));
 
 const makeTrade = (overrides = {}) => ({
   tid: 1000,
@@ -306,6 +307,44 @@ describe('gemini heartbeat refcount', () => {
     adapter.stopHeartbeat('gemini/BTC-USD');
 
     mock.timers.reset();
+  });
+
+  it('attributes timer failures to the current owner set after a fund stops', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'Date'] });
+    const originalLog = console.log;
+    const lines = [];
+    let heartbeatAttempt = 0;
+
+    try {
+      console.log = line => lines.push(line);
+      const adapter = createGeminiAdapter(keysPath);
+      installFetchMock((endpoint) => {
+        if (endpoint !== '/v1/heartbeat') return { result: 'ok' };
+        heartbeatAttempt++;
+        return heartbeatAttempt === 1
+          ? { result: 'ok' }
+          : { __error: true, status: 500 };
+      });
+
+      adapter.startHeartbeat('gemini/BTC-USD');
+      adapter.startHeartbeat('gemini/ETH-USD');
+      adapter.stopHeartbeat('gemini/BTC-USD');
+      mock.timers.tick(60000);
+      await new Promise(resolve => setImmediate(resolve));
+      adapter.stopHeartbeat('gemini/ETH-USD');
+
+      const failureLine = lines.find(line => line.startsWith('⚠️ [gemini] Heartbeat failed:'));
+      assert.ok(failureLine);
+      assert.deepEqual(logContext(failureLine), {
+        exchange: 'gemini',
+        owners: ['gemini/ETH-USD'],
+        consumers: 1,
+        error: 'Gemini API 500: Bad Request (simulated error)',
+      });
+    } finally {
+      console.log = originalLog;
+      mock.timers.reset();
+    }
   });
 });
 
