@@ -58,7 +58,7 @@ A real-time, volatility-aware strategy that adapts to market conditions:
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20+
 - Exchange API key with View and Trade permissions
 
 ## Installation
