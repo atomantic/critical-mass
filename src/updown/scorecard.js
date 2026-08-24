@@ -13,6 +13,7 @@ const path = require('path')
 const { log } = require('../logger')
 const { UPDOWN_DATA_DIR } = require('../paths')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('./indicator-config')
+const { createPerpBook } = require('./perp-book')
 
 const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SAMPLE_INTERVAL_MS = 60_000
@@ -121,7 +122,7 @@ const scorecardDirection = (result) => {
   if (result?.trendGate?.open === false) {
     return getDirection(result?.score) === 'down' ? 'down' : 'neutral'
   }
-  // Vol-lowered BUY (score 12–15) still printed BUY UP on the banner.
+  // Vol-lowered BUY (score 12–15) still printed OPEN/ADD on the banner.
   if (result?.type === 'BUY' || result?.type === 'STRONG_BUY') return 'up'
   if (result?.type) {
     // Any other published type (SELL, NEUTRAL, NO_TRADE_ZONE) is not an UP call.
@@ -423,9 +424,10 @@ const computeByHour = (outcomes) => {
  * @param {Function} opts.lastPriceFn - Returns current BTC price
  * @param {Function} [opts.contractFn] - Returns current contract config
  * @param {Function} [opts.journalWriter] - Testable persistence boundary
- * @returns {{recordPrediction: Function, getMetrics: Function, start: Function, stop: Function}}
+ * @param {{snapshot: Function, hydrate: Function, isLong: Function, serialize: Function}|null} [opts.perpBook] - Shared 1-BTC paper book
+ * @returns {{recordPrediction: Function, recordPerpFill: Function, getMetrics: Function, start: Function, stop: Function}}
  */
-const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord }) => {
+const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, perpBook = null }) => {
   /** @type {Array<Object>} Ring buffer of evaluated outcomes */
   const outcomeBuffer = []
 
@@ -749,6 +751,8 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     // Last prediction info
     const lastPred = scored.length > 0 ? scored[scored.length - 1] : null
 
+    const perp = perpBook ? perpBook.snapshot(lastPriceFn()) : null
+
     return {
       totalPredictions,
       totalEvaluated: evaluated.length,
@@ -781,8 +785,21 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
         direction: lastPred.compositeDirection,
         signalType: lastPred.compositeDirection,
       } : null,
+      perp,
       timestamp: new Date().toISOString(),
     }
+  }
+
+  /**
+   * Persist a paper-trade fill (Open/Add/Close) to the JSONL journal.
+   * @param {Object} record
+   */
+  const recordPerpFill = (record) => {
+    persistRecord({
+      type: 'perp_fill',
+      ts: new Date((record.ts || Date.now())).toISOString(),
+      ...record,
+    })
   }
 
   /**
@@ -858,6 +875,25 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
 
     totalPredictions = predictions
     totalSkipped = skipped
+
+    // Rebuild the paper book from journaled fills only when the live snapshot
+    // is empty (fresh process with no updown-state.json perpBook).
+    if (perpBook && !perpBook.isLong() && perpBook.snapshot().rounds === 0 && perpBook.snapshot().realizedPnl === 0) {
+      const fillRecords = allRecords
+        .filter(r => r?.type === 'perp_fill')
+        .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
+      if (fillRecords.length > 0) {
+        const replay = createPerpBook()
+        for (const rec of fillRecords) {
+          const action = rec.action
+            || (rec.side === 'sell' ? 'CLOSE' : rec.side === 'buy' ? (replay.isLong() ? 'ADD' : 'OPEN') : 'HOLD')
+          replay.applyFill(action, rec.price, Date.parse(rec.ts) || rec.ts)
+        }
+        perpBook.hydrate(replay.serialize())
+        log('INFO', `📊 Scorecard rebuilt perp book from journal fills=${fillRecords.length} contracts=${perpBook.snapshot().contracts}`)
+      }
+    }
+
     log('INFO', `📊 Scorecard loaded history outcomes=${loaded} predictions=${predictions} skipped=${skipped} files=${recentFiles.length}`)
   }
 
@@ -939,7 +975,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     log('INFO', `📊 Scorecard stopped predictions=${totalPredictions} evaluated=${outcomeBuffer.length}`)
   }
 
-  return { recordPrediction, getMetrics, start, stop }
+  return { recordPrediction, recordPerpFill, getMetrics, start, stop }
 }
 
 module.exports = {

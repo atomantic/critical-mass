@@ -155,8 +155,9 @@ const emptyBucket = (time, price) => ({
  * Merge signal change annotations into bucket map by matching timestamps to nearest bucket key.
  */
 const SIGNAL_PRIORITY = {
-  STRONG_BUY: 5, STRONG_SELL: 5,
-  BUY: 4, SELL: 4,
+  STRONG_BUY: 5, STRONG_SELL: 5, CLOSE: 5,
+  BUY: 4, SELL: 4, OPEN: 4,
+  ADD: 3,
 }
 
 const applySignalAnnotations = (map, annotations, bucketMs) => {

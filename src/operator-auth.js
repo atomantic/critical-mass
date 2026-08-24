@@ -1,8 +1,11 @@
 const crypto = require('crypto');
+const fs = require('fs');
 const jwt = require('jsonwebtoken');
+const { log } = require('./logger');
 
 const COOKIE_NAME = 'critical_mass_operator';
 const SESSION_TTL_SECONDS = 12 * 60 * 60;
+const MIN_PASSWORD_LENGTH = 8;
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const parseCookies = (header = '') => Object.fromEntries(
@@ -32,25 +35,61 @@ const requestOriginMatches = (req) => {
   return URL.canParse(origin) && new URL(origin).host === expectedHost;
 };
 
-const createOperatorAuth = ({ operatorToken = process.env.OPERATOR_TOKEN } = {}) => {
-  if (!operatorToken || Buffer.byteLength(operatorToken) < 32) {
-    throw new Error('OPERATOR_TOKEN must be set to a secret of at least 32 characters');
+const submittedSecret = (body = {}) => {
+  const value = body.password ?? body.token;
+  return typeof value === 'string' ? value : '';
+};
+
+const hashPassword = (password, saltHex) => crypto
+  .scryptSync(password, Buffer.from(saltHex, 'hex'), 32)
+  .toString('hex');
+
+const makeRecord = (password) => {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return {
+    kdf: 'scrypt',
+    salt,
+    hash: hashPassword(password, salt),
+    updatedAt: new Date().toISOString(),
+  };
+};
+
+/**
+ * Operator auth is off until a password is set in the admin UI.
+ * The hash lives in data/operator-auth.json — there is no env secret.
+ *
+ * @param {Object} [opts]
+ * @param {string} [opts.authFile]
+ * @param {Function} [opts.readJSON]
+ * @param {Function} [opts.writeJSON]
+ */
+const createOperatorAuth = ({
+  authFile = null,
+  readJSON = null,
+  writeJSON = null,
+} = {}) => {
+  let record = null;
+  if (authFile && readJSON) {
+    const saved = readJSON(authFile, null);
+    if (saved?.salt && saved?.hash) record = saved;
   }
 
-  const sessionSecret = crypto.createHash('sha256')
-    .update(`critical-mass-session:${operatorToken}`)
+  const isRequired = () => Boolean(record);
+
+  const sessionSecret = () => crypto.createHash('sha256')
+    .update(`critical-mass-session:${record?.hash || 'open'}`)
     .digest('hex');
 
   const createSession = () => jwt.sign(
     { sub: 'operator', role: 'operator' },
-    sessionSecret,
+    sessionSecret(),
     { algorithm: 'HS256', audience: 'critical-mass', issuer: 'critical-mass', expiresIn: SESSION_TTL_SECONDS }
   );
 
   const verifySession = (token) => {
     if (!token) return false;
     try {
-      return Boolean(jwt.verify(token, sessionSecret, {
+      return Boolean(jwt.verify(token, sessionSecret(), {
         algorithms: ['HS256'],
         audience: 'critical-mass',
         issuer: 'critical-mass',
@@ -60,9 +99,26 @@ const createOperatorAuth = ({ operatorToken = process.env.OPERATOR_TOKEN } = {})
     }
   };
 
+  const passwordMatches = (password) => {
+    if (!password || !record?.salt || !record?.hash) return false;
+    return timingSafeEqual(hashPassword(password, record.salt), record.hash);
+  };
+
+  const persist = (next) => {
+    record = next;
+    if (!authFile || !writeJSON) return;
+    if (!next) {
+      try { fs.unlinkSync(authFile); } catch { /* missing is the cleared state */ }
+      return;
+    }
+    writeJSON(authFile, next);
+  };
+
   const authenticate = (headers = {}) => {
+    if (!isRequired()) return { source: 'open' };
+
     const bearer = readBearerToken(headers.authorization);
-    if (bearer && timingSafeEqual(bearer, operatorToken)) return { source: 'bearer' };
+    if (bearer && passwordMatches(bearer)) return { source: 'bearer' };
 
     const session = parseCookies(headers.cookie)[COOKIE_NAME];
     if (!session) return null;
@@ -80,6 +136,7 @@ const createOperatorAuth = ({ operatorToken = process.env.OPERATOR_TOKEN } = {})
   };
 
   const socketMiddleware = (socket, next) => {
+    if (!isRequired()) return next();
     const headers = { ...socket.handshake.headers };
     if (socket.handshake.auth?.token) headers.authorization = `Bearer ${socket.handshake.auth.token}`;
     if (authenticate(headers)) return next();
@@ -88,34 +145,90 @@ const createOperatorAuth = ({ operatorToken = process.env.OPERATOR_TOKEN } = {})
     next(error);
   };
 
+  const setSessionCookie = (req, res) => {
+    const forwardedProto = (req.get('x-forwarded-proto') || '').split(',')[0].trim();
+    const secure = req.secure || forwardedProto === 'https';
+    res.cookie(COOKIE_NAME, createSession(), {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure,
+      maxAge: SESSION_TTL_SECONDS * 1000,
+      path: '/',
+    });
+  };
+
   const registerSessionRoutes = (app) => {
     app.get('/api/auth/session', (req, res) => {
-      res.json({ authenticated: Boolean(authenticate(req.headers)) });
+      const required = isRequired();
+      const auth = authenticate(req.headers);
+      res.json({
+        authenticated: required ? Boolean(auth && auth.source !== 'open') : true,
+        required,
+      });
     });
 
     app.post('/api/auth/session', (req, res) => {
-      if (!timingSafeEqual(req.body?.token, operatorToken)) {
-        return res.status(401).json({ error: 'Invalid operator token' });
+      if (!isRequired()) {
+        return res.json({ authenticated: true, required: false });
       }
-      const forwardedProto = (req.get('x-forwarded-proto') || '').split(',')[0].trim();
-      const secure = req.secure || forwardedProto === 'https';
-      res.cookie(COOKIE_NAME, createSession(), {
-        httpOnly: true,
-        sameSite: 'strict',
-        secure,
-        maxAge: SESSION_TTL_SECONDS * 1000,
-        path: '/',
-      });
-      res.json({ authenticated: true });
+      if (!passwordMatches(submittedSecret(req.body))) {
+        return res.status(401).json({ error: 'Invalid operator password' });
+      }
+      setSessionCookie(req, res);
+      res.json({ authenticated: true, required: true });
     });
 
-    app.delete('/api/auth/session', requireAuth, (req, res) => {
+    app.put('/api/auth/password', (req, res) => {
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+      const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+      if (Buffer.byteLength(password) < MIN_PASSWORD_LENGTH) {
+        return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+      }
+      if (isRequired() && !passwordMatches(currentPassword) && !authenticate(req.headers)) {
+        return res.status(401).json({ error: 'Current password is required' });
+      }
+      if (isRequired() && currentPassword && !passwordMatches(currentPassword)) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+      persist(makeRecord(password));
+      setSessionCookie(req, res);
+      log('INFO', '🔐 Operator password set — gateway sign-in is now required');
+      res.json({ authenticated: true, required: true });
+    });
+
+    app.delete('/api/auth/password', (req, res) => {
+      if (!record) {
+        return res.json({ authenticated: true, required: false });
+      }
+      const currentPassword = submittedSecret(req.body);
+      if (!passwordMatches(currentPassword)) {
+        return res.status(401).json({ error: 'Current password is required to remove it' });
+      }
+      persist(null);
+      res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
+      log('INFO', '🔐 Operator password cleared — gateway sign-in is off');
+      res.json({ authenticated: true, required: false });
+    });
+
+    app.delete('/api/auth/session', (req, res) => {
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
       res.status(204).send();
     });
   };
 
-  return { authenticate, registerSessionRoutes, requireAuth, socketMiddleware };
+  return {
+    authenticate,
+    registerSessionRoutes,
+    requireAuth,
+    socketMiddleware,
+    isRequired,
+  };
 };
 
-module.exports = { COOKIE_NAME, createOperatorAuth, parseCookies, readBearerToken };
+module.exports = {
+  COOKIE_NAME,
+  MIN_PASSWORD_LENGTH,
+  createOperatorAuth,
+  parseCookies,
+  readBearerToken,
+};

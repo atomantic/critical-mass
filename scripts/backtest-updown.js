@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 // @ts-check
 /**
- * UpDown Signal Backtest — Up Options Day Trading
+ * UpDown Signal Backtest — BTC perpetual longs
  *
- * Replays BTC 1m candle data through the signal engine to evaluate
- * whether BUY/SELL signals would have been profitable for day trading
- * Bitcoin Up options.
+ * Replays BTC 1m candle data through the signal engine and paper-trades:
+ *   OPEN or ADD → buy 1 BTC perp
+ *   CLOSE       → flatten the entire book
+ *   HOLD        → no fill
  *
  * Usage:
- *   node scripts/backtest-updown.js [--days 30] [--capital 1000] [--warmup 7] [--no-cache]
+ *   node scripts/backtest-updown.js [--days 30] [--warmup 7] [--no-cache]
  *
  * Options:
  *   --days N      Evaluation period in days (default: 30)
- *   --capital N   Starting equity in USD (default: 1000)
  *   --warmup N    Days of pre-data for indicator warmup (default: 7)
  *   --no-cache    Skip cache, always fetch fresh 1m data
  */
@@ -22,6 +22,7 @@ const path = require('path')
 const { getAdapter } = require('../src/adapters')
 const { createCandleAggregator, TIMEFRAMES } = require('../src/candle-aggregator')
 const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
+const { createPerpBook } = require('../src/updown/perp-book')
 const { getCacheFile } = require('../src/backtest-engine')
 const { DATA_DIR } = require('../src/paths')
 
@@ -29,9 +30,6 @@ const coinbase = getAdapter('coinbase')
 const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const BACKTEST_DIR = path.join(DATA_DIR, 'updown', 'backtest')
 const CACHE_FILE = path.join(COINBASE_DIR, 'btc-usdc-price-cache-1min.json')
-
-const ENTRY_SIGNALS = ['BUY', 'STRONG_BUY']
-const EXIT_SIGNALS = ['SELL', 'STRONG_SELL']
 
 // TF intervals in ms for aggregation
 const TF_MS = {
@@ -55,7 +53,6 @@ const getArg = (name, def) => {
 const hasFlag = (name) => args.includes(`--${name}`)
 
 const EVAL_DAYS = parseInt(getArg('days', '30'), 10)
-const START_CAPITAL = parseFloat(getArg('capital', '1000'))
 const WARMUP_DAYS = parseInt(getArg('warmup', '7'), 10)
 const NO_CACHE = hasFlag('no-cache')
 
@@ -317,7 +314,7 @@ function seedUpTo(aggregator, tfCandles, evalTs) {
  * Run the trading simulation stepping through each 1m candle.
  */
 function runSimulation(candles1m, tfCandles, config) {
-  const { evalStartMs, startCapital } = config
+  const { evalStartMs } = config
 
   // Find the evaluation start index in 1m candles
   let evalStartIdx = 0
@@ -329,19 +326,14 @@ function runSimulation(candles1m, tfCandles, config) {
   }
 
   const trades = []
-  let equity = startCapital
-  let peakEquity = startCapital
+  let equity = 0
+  let peakEquity = 0
   let maxDrawdown = 0
   const equityCurve = []
   let lastCurveTs = 0
+  const actionCounts = { OPEN: 0, ADD: 0, HOLD: 0, CLOSE: 0 }
 
-  // Position state
-  let inPosition = false
-  let entryPrice = 0
-  let entryTs = 0
-  let entrySignal = ''
-  let entryScore = 0
-
+  const book = createPerpBook()
   const aggregator = createCandleAggregator()
   const engine = createSignalEngine(aggregator)
 
@@ -404,51 +396,36 @@ function runSimulation(candles1m, tfCandles, config) {
         }
       }
 
-      if (!inPosition) {
-        // Entry check
-        if (ENTRY_SIGNALS.includes(signal)) {
-          inPosition = true
-          entryPrice = price
-          entryTs = ts
-          entrySignal = signal
-          entryScore = score
-        }
-      } else {
-        // Options-oriented exit: published SELL/EXIT, or score gone red.
-        // HOLD (NEUTRAL) does not exit — that is "keep the long".
-        if (score < 0 || EXIT_SIGNALS.includes(signal)) {
-          const bps = ((price - entryPrice) / entryPrice) * 10000
-          const pnlPct = bps / 10000
-          const tradePnl = equity * pnlPct
-          equity += tradePnl
-
-          trades.push({
-            entryTs,
-            exitTs: ts,
-            entryPrice,
-            exitPrice: price,
-            entrySignal,
-            exitSignal: signal,
-            entryScore,
-            exitScore: score,
-            bps: Math.round(bps * 100) / 100,
-            pnl: Math.round(tradePnl * 100) / 100,
-            equity: Math.round(equity * 100) / 100,
-            holdMs: ts - entryTs,
-          })
-
-          inPosition = false
-
-          // Track drawdown
-          if (equity > peakEquity) peakEquity = equity
-          const dd = (peakEquity - equity) / peakEquity
-          if (dd > maxDrawdown) maxDrawdown = dd
-        }
+      const fill = book.applySignal(signal, price, ts)
+      if (fill.fill) actionCounts[fill.action] = (actionCounts[fill.action] || 0) + 1
+      if (fill.trade) {
+        const t = fill.trade
+        const bps = t.avgEntry > 0 ? ((t.exitPrice - t.avgEntry) / t.avgEntry) * 10000 : 0
+        trades.push({
+          entryTs: t.openedAt,
+          exitTs: t.closedAt,
+          entryPrice: t.avgEntry,
+          exitPrice: t.exitPrice,
+          entrySignal: 'OPEN',
+          exitSignal: 'CLOSE',
+          contracts: t.contracts,
+          adds: t.adds,
+          bps: Math.round(bps * 100) / 100,
+          pnl: t.pnl,
+          equity: book.snapshot(price).totalPnl,
+          holdMs: t.closedAt - t.openedAt,
+        })
       }
+
+      const snap = book.snapshot(price)
+      equity = snap.totalPnl
+      if (equity > peakEquity) peakEquity = equity
+      const dd = peakEquity > 0 ? (peakEquity - equity) / peakEquity : (equity < 0 ? Math.abs(equity) : 0)
+      if (dd > maxDrawdown) maxDrawdown = dd
 
       // Sample equity curve every 15 minutes
       if (ts - lastCurveTs >= 900_000) {
-        equityCurve.push({ ts, equity: Math.round(equity * 100) / 100, price })
+        equityCurve.push({ ts, equity: Math.round(equity * 100) / 100, price, contracts: snap.contracts })
         lastCurveTs = ts
       }
 
@@ -465,75 +442,79 @@ function runSimulation(candles1m, tfCandles, config) {
     restoreDateNow()
   }
 
-  // Force-close open position at end of data
-  if (inPosition && candles1m.length > 0) {
+  // Force-close open lots at end of data
+  if (book.isLong() && candles1m.length > 0) {
     const lastCandle = candles1m[candles1m.length - 1]
-    const price = lastCandle.close
-    const ts = lastCandle.timestamp
-    const bps = ((price - entryPrice) / entryPrice) * 10000
-    const pnlPct = bps / 10000
-    const tradePnl = equity * pnlPct
-    equity += tradePnl
-
-    trades.push({
-      entryTs,
-      exitTs: ts,
-      entryPrice,
-      exitPrice: price,
-      entrySignal,
-      exitSignal: 'FORCE_CLOSE',
-      entryScore,
-      exitScore: 0,
-      bps: Math.round(bps * 100) / 100,
-      pnl: Math.round(tradePnl * 100) / 100,
-      equity: Math.round(equity * 100) / 100,
-      holdMs: ts - entryTs,
-    })
-
-    if (equity > peakEquity) peakEquity = equity
-    const dd = (peakEquity - equity) / peakEquity
-    if (dd > maxDrawdown) maxDrawdown = dd
+    const force = book.applySignal('SELL', lastCandle.close, lastCandle.timestamp)
+    if (force.trade) {
+      const t = force.trade
+      const bps = t.avgEntry > 0 ? ((t.exitPrice - t.avgEntry) / t.avgEntry) * 10000 : 0
+      trades.push({
+        entryTs: t.openedAt,
+        exitTs: t.closedAt,
+        entryPrice: t.avgEntry,
+        exitPrice: t.exitPrice,
+        entrySignal: 'OPEN',
+        exitSignal: 'FORCE_CLOSE',
+        contracts: t.contracts,
+        adds: t.adds,
+        bps: Math.round(bps * 100) / 100,
+        pnl: t.pnl,
+        equity: book.snapshot(lastCandle.close).totalPnl,
+        holdMs: t.closedAt - t.openedAt,
+      })
+      equity = book.snapshot(lastCandle.close).totalPnl
+      if (equity > peakEquity) peakEquity = equity
+      const dd = peakEquity > 0 ? (peakEquity - equity) / peakEquity : 0
+      if (dd > maxDrawdown) maxDrawdown = dd
+    }
   }
 
   console.log('')
   return {
-    trades, equity, peakEquity, maxDrawdown, equityCurve,
+    trades, equity, peakEquity, maxDrawdown, equityCurve, actionCounts,
     diagnostics: { scoreHist, signalCounts, allScores, positiveScores, negativeScores, dampenerStats, sampledDampeners, totalSteps }
   }
 }
 
 // ─── Stats ───────────────────────────────────────────────
 
-function computeStats(trades, startCapital, finalEquity, maxDrawdown) {
-  const wins = trades.filter(t => t.bps > 0)
-  const losses = trades.filter(t => t.bps <= 0)
+function computeStats(trades, finalEquity, maxDrawdown) {
+  const wins = trades.filter(t => t.pnl > 0)
+  const losses = trades.filter(t => t.pnl <= 0)
 
   const avgWinBps = wins.length > 0
     ? wins.reduce((s, t) => s + t.bps, 0) / wins.length : 0
   const avgLossBps = losses.length > 0
     ? losses.reduce((s, t) => s + t.bps, 0) / losses.length : 0
+  const avgWinPnl = wins.length > 0
+    ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0
+  const avgLossPnl = losses.length > 0
+    ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0
 
-  const totalWinBps = wins.reduce((s, t) => s + t.bps, 0)
-  const totalLossBps = Math.abs(losses.reduce((s, t) => s + t.bps, 0))
-  const profitFactor = totalLossBps > 0 ? totalWinBps / totalLossBps : totalWinBps > 0 ? Infinity : 0
+  const totalWin = wins.reduce((s, t) => s + t.pnl, 0)
+  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0))
+  const profitFactor = totalLoss > 0 ? totalWin / totalLoss : totalWin > 0 ? Infinity : 0
 
   const holdTimes = trades.map(t => t.holdMs)
   const avgHold = holdTimes.length > 0 ? holdTimes.reduce((s, v) => s + v, 0) / holdTimes.length : 0
   const minHold = holdTimes.length > 0 ? Math.min(...holdTimes) : 0
   const maxHold = holdTimes.length > 0 ? Math.max(...holdTimes) : 0
-
-  const returnPct = ((finalEquity - startCapital) / startCapital) * 100
+  const contracts = trades.reduce((s, t) => s + (t.contracts || 1), 0)
 
   return {
     totalTrades: trades.length,
+    contracts,
     wins: wins.length,
     losses: losses.length,
     winRate: trades.length > 0 ? (wins.length / trades.length) * 100 : 0,
     avgWinBps: Math.round(avgWinBps * 10) / 10,
     avgLossBps: Math.round(avgLossBps * 10) / 10,
+    avgWinPnl: Math.round(avgWinPnl * 100) / 100,
+    avgLossPnl: Math.round(avgLossPnl * 100) / 100,
     profitFactor: Math.round(profitFactor * 100) / 100,
     maxDrawdownPct: Math.round(maxDrawdown * 10000) / 100,
-    returnPct: Math.round(returnPct * 100) / 100,
+    totalPnl: Math.round(finalEquity * 100) / 100,
     avgHoldMs: Math.round(avgHold),
     minHoldMs: minHold,
     maxHoldMs: maxHold,
@@ -554,9 +535,9 @@ async function main() {
   const evalStartMs = now - EVAL_DAYS * 86_400_000
   const fetchFromMs = evalStartMs - WARMUP_DAYS * 86_400_000
 
-  console.log('=== UpDown Signal Backtest ===')
+  console.log('=== UpDown Perp Long Backtest ===')
   console.log(`  Period: ${new Date(evalStartMs).toISOString().slice(0, 10)} to ${new Date(evalEndMs).toISOString().slice(0, 10)} (${EVAL_DAYS} days)`)
-  console.log(`  Warmup: ${WARMUP_DAYS} days | Capital: $${START_CAPITAL.toLocaleString()}`)
+  console.log(`  Warmup: ${WARMUP_DAYS} days | Size: 1 BTC per Open/Add`)
   console.log('')
 
   // 1. Fetch 1m candles
@@ -579,30 +560,32 @@ async function main() {
 
   // 3. Run simulation
   console.log('\nStep 3: Running simulation...')
-  const { trades, equity, maxDrawdown, equityCurve, diagnostics } = runSimulation(
-    candles1m, tfCandles, { evalStartMs, startCapital: START_CAPITAL }
+  const { trades, equity, maxDrawdown, equityCurve, diagnostics, actionCounts } = runSimulation(
+    candles1m, tfCandles, { evalStartMs }
   )
 
   // 4. Compute stats
-  const stats = computeStats(trades, START_CAPITAL, equity, maxDrawdown)
+  const stats = computeStats(trades, equity, maxDrawdown)
 
   // 5. Output results
   const evalCandleCount = candles1m.filter(c => c.timestamp >= evalStartMs).length
-  console.log('\n=== UpDown Backtest Results ===')
-  console.log('  NOTE: results model ZERO fees/spread/premium — directional signal quality only, not net profitability.')
+  console.log('\n=== UpDown Perp Long Backtest Results ===')
+  console.log('  NOTE: 1 BTC per Open/Add, flatten on Close. Zero fees/funding/spread.')
   console.log(`  Period: ${new Date(evalStartMs).toISOString().slice(0, 10)} to ${new Date(evalEndMs).toISOString().slice(0, 10)} (${EVAL_DAYS} days)`)
   console.log(`  Warmup: ${WARMUP_DAYS} days | Candles: ${evalCandleCount.toLocaleString()}`)
   console.log('')
+  console.log('Actions:')
+  console.log(`  Open=${actionCounts.OPEN || 0} Add=${actionCounts.ADD || 0} Close=${actionCounts.CLOSE || 0} Hold=${actionCounts.HOLD || 0}`)
+  console.log('')
   console.log('Trade Summary:')
-  console.log(`  Total trades: ${stats.totalTrades}`)
+  console.log(`  Closed rounds: ${stats.totalTrades} | Contracts filled: ${stats.contracts}`)
   console.log(`  Win rate: ${stats.winRate.toFixed(1)}% (${stats.wins}W / ${stats.losses}L)`)
-  console.log(`  Avg win: +${stats.avgWinBps} bps | Avg loss: ${stats.avgLossBps} bps`)
+  console.log(`  Avg win: ${stats.avgWinPnl >= 0 ? '+' : ''}$${stats.avgWinPnl.toFixed(0)} (+${stats.avgWinBps} bps) | Avg loss: $${stats.avgLossPnl.toFixed(0)} (${stats.avgLossBps} bps)`)
   console.log(`  Profit factor: ${stats.profitFactor}`)
   console.log(`  Max drawdown: -${stats.maxDrawdownPct}%`)
   console.log('')
-  console.log('Equity:')
-  console.log(`  Start: $${START_CAPITAL.toLocaleString(undefined, { minimumFractionDigits: 2 })} → End: $${equity.toLocaleString(undefined, { minimumFractionDigits: 2 })}`)
-  console.log(`  Return: ${stats.returnPct >= 0 ? '+' : ''}${stats.returnPct}%`)
+  console.log('P&L:')
+  console.log(`  Realized: $${equity.toLocaleString(undefined, { minimumFractionDigits: 2 })}`)
   console.log('')
   console.log('Timing:')
   console.log(`  Avg hold: ${formatDuration(stats.avgHoldMs)} | Longest: ${formatDuration(stats.maxHoldMs)} | Shortest: ${formatDuration(stats.minHoldMs)}`)
@@ -658,15 +641,16 @@ async function main() {
   // Summary JSON
   const summaryPath = path.join(BACKTEST_DIR, `backtest-summary-${dateStr}.json`)
   fs.writeFileSync(summaryPath, JSON.stringify({
-    note: 'Results model zero fees/spread/premium — directional signal quality only, not net profitability.',
+    note: '1 BTC per Open/Add, flatten on Close. Zero fees/funding/spread.',
     config: {
       evalDays: EVAL_DAYS,
       warmupDays: WARMUP_DAYS,
-      startCapital: START_CAPITAL,
+      contractSizeBtc: 1,
       evalStart: new Date(evalStartMs).toISOString(),
       evalEnd: new Date(evalEndMs).toISOString(),
       candleCount: evalCandleCount,
     },
+    actionCounts,
     stats,
     equityCurve,
   }, null, 2))

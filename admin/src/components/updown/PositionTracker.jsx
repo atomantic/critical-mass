@@ -9,7 +9,7 @@ function formatCurrency(value) {
 export default function PositionTracker({ initialPosition, tick }) {
   const [entryPrice, setEntryPrice] = useState('')
   const [amount, setAmount] = useState('')
-  const [direction, setDirection] = useState('Up')
+  const [direction, setDirection] = useState('Up') // long-only perp
   const [saving, setSaving] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [hasPosition, setHasPosition] = useState(false)
@@ -36,7 +36,7 @@ export default function PositionTracker({ initialPosition, tick }) {
       body: JSON.stringify({
         entryPrice: parseFloat(entryPrice),
         contracts: parseFloat(amount),
-        direction: direction.toLowerCase(),
+        direction: 'up',
       }),
     })
     if (res.ok) setHasPosition(true)
@@ -77,7 +77,7 @@ export default function PositionTracker({ initialPosition, tick }) {
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
       <div className="flex items-center gap-2 mb-3">
         <Crosshair size={16} className="text-purple-400" />
-        <h3 className="text-sm font-semibold">Position Tracker</h3>
+        <h3 className="text-sm font-semibold">Perp Long Position</h3>
       </div>
 
       <div className="space-y-3">
@@ -92,42 +92,15 @@ export default function PositionTracker({ initialPosition, tick }) {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs text-gray-400 block mb-1">Amount (contracts)</label>
-            <input
-              type="number"
-              value={amount}
-              onChange={e => setAmount(e.target.value)}
-              placeholder="10"
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-gray-400 block mb-1">Direction</label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setDirection('Up')}
-                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
-                  direction === 'Up'
-                    ? 'bg-green-600 text-white'
-                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                }`}
-              >
-                Up
-              </button>
-              <button
-                onClick={() => setDirection('Down')}
-                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
-                  direction === 'Down'
-                    ? 'bg-red-600 text-white'
-                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                }`}
-              >
-                Down
-              </button>
-            </div>
-          </div>
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">Contracts (1 BTC each)</label>
+          <input
+            type="number"
+            value={amount}
+            onChange={e => setAmount(e.target.value)}
+            placeholder="1"
+            className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+          />
         </div>
 
         {/* Computed P&L */}

@@ -1,4 +1,4 @@
-import { TrendingUp, TrendingDown, Minus, ShieldAlert } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, Plus, CircleDot } from 'lucide-react'
 
 export const SIGNAL_TYPES = {
   STRONG_BUY: 'STRONG_BUY',
@@ -9,6 +9,13 @@ export const SIGNAL_TYPES = {
   NO_TRADE_ZONE: 'NO_TRADE_ZONE',
 }
 
+export const ACTIONS = {
+  OPEN: 'OPEN',
+  ADD: 'ADD',
+  HOLD: 'HOLD',
+  CLOSE: 'CLOSE',
+}
+
 export const signalBadgeColors = {
   STRONG_BUY: 'bg-green-500/20 border-green-500/40 text-green-400',
   BUY: 'bg-green-500/10 border-green-500/20 text-green-400',
@@ -16,6 +23,10 @@ export const signalBadgeColors = {
   SELL: 'bg-red-500/10 border-red-500/20 text-red-400',
   STRONG_SELL: 'bg-red-500/20 border-red-500/40 text-red-400',
   NO_TRADE_ZONE: 'bg-yellow-500/20 border-yellow-500/40 text-yellow-400',
+  OPEN: 'bg-green-500/20 border-green-500/40 text-green-400',
+  ADD: 'bg-teal-500/20 border-teal-500/40 text-teal-400',
+  HOLD: 'bg-gray-500/10 border-gray-500/20 text-gray-400',
+  CLOSE: 'bg-red-500/20 border-red-500/40 text-red-400',
 }
 
 export const signalIcons = {
@@ -24,21 +35,36 @@ export const signalIcons = {
   NEUTRAL: Minus,
   SELL: TrendingDown,
   STRONG_SELL: TrendingDown,
-  NO_TRADE_ZONE: ShieldAlert,
+  NO_TRADE_ZONE: Minus,
+  OPEN: CircleDot,
+  ADD: Plus,
+  HOLD: Minus,
+  CLOSE: TrendingDown,
 }
 
 export const getSignalColor = (type) => signalBadgeColors[type] || signalBadgeColors.NEUTRAL
 export const getSignalIcon = (type) => signalIcons[type] || Minus
 
-/** UP-only: SELL is EXIT (held long) or STAND ASIDE (flat) — never BUY DOWN. */
+const isBuyType = (type) => type === 'BUY' || type === 'STRONG_BUY'
+const isSellType = (type) => type === 'SELL' || type === 'STRONG_SELL'
+
+const isHeldLong = (held) => {
+  if (!held) return false
+  if (held === true) return true
+  if (typeof held.contracts === 'number') return held.contracts > 0 && held.direction !== 'down'
+  return held.direction === 'up'
+}
+
+/** Perp-long actions: Open / Add / Hold / Close. Never BUY DOWN. */
+export const resolveAction = (type, heldPosition) => {
+  const long = isHeldLong(heldPosition)
+  if (isBuyType(type)) return long ? 'ADD' : 'OPEN'
+  if (isSellType(type) && long) return 'CLOSE'
+  return 'HOLD'
+}
+
 export const getActionLabel = (type, heldPosition) => {
   if (!type) return 'CALCULATING...'
-  if (type === 'NO_TRADE_ZONE') return 'NO TRADE'
-  if (type === 'STRONG_BUY') return 'STRONG BUY UP'
-  if (type === 'BUY') return 'BUY UP'
-  if (type === 'SELL' || type === 'STRONG_SELL') {
-    return heldPosition?.direction === 'up' ? 'EXIT' : 'STAND ASIDE'
-  }
-  if (type === 'NEUTRAL') return 'HOLD'
-  return 'HOLD'
+  if (type === 'OPEN' || type === 'ADD' || type === 'HOLD' || type === 'CLOSE') return type
+  return resolveAction(type, heldPosition)
 }

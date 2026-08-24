@@ -8,15 +8,21 @@
 const MARKER_COLORS = {
   STRONG_BUY: '#10b981',
   BUY: '#10b981',
+  OPEN: '#10b981',
+  ADD: '#14b8a6',
   STRONG_SELL: '#ef4444',
   SELL: '#ef4444',
+  CLOSE: '#ef4444',
 }
 
 const MARKER_LABELS = {
-  STRONG_BUY: 'BUY',
-  BUY: 'BUY',
-  STRONG_SELL: 'SELL',
-  SELL: 'SELL',
+  STRONG_BUY: 'OPEN',
+  BUY: 'OPEN',
+  OPEN: 'OPEN',
+  ADD: 'ADD',
+  STRONG_SELL: 'CLOSE',
+  SELL: 'CLOSE',
+  CLOSE: 'CLOSE',
 }
 
 const SignalAnnotationRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
@@ -45,10 +51,10 @@ const SignalAnnotationRenderer = ({ formattedGraphicalItems, yAxisMap }) => {
     if (x == null) continue
 
     const { type } = d.signalChange
-    const isBuy = type === 'BUY' || type === 'STRONG_BUY'
-    const isSell = type === 'SELL' || type === 'STRONG_SELL'
+    const isBuy = type === 'BUY' || type === 'STRONG_BUY' || type === 'OPEN' || type === 'ADD'
+    const isSell = type === 'SELL' || type === 'STRONG_SELL' || type === 'CLOSE'
 
-    // Only render BUY/SELL markers — skip NEUTRAL and NTZ
+    // Only render Open/Add/Close markers — skip HOLD
     if (!isBuy && !isSell) continue
 
     const color = MARKER_COLORS[type]

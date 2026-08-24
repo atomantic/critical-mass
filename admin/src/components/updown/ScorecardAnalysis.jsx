@@ -90,7 +90,7 @@ export default function ScorecardAnalysis() {
             </Link>
             <div>
               <h2 className="text-lg font-bold">Scorecard Analysis</h2>
-              <div className="text-xs text-gray-400">Historical prediction performance</div>
+              <div className="text-xs text-gray-400">Perp-long paper book + directional accuracy</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -129,6 +129,18 @@ export default function ScorecardAnalysis() {
           {/* Summary Cards */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <StatCard
+              label="Perp P&L"
+              value={s.perpRealizedPnl != null
+                ? s.perpRealizedPnl.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+                : null}
+              sub={s.perpRounds ? `${s.perpRounds} closed rounds` : '1 BTC / Open or Add'}
+            />
+            <StatCard
+              label="Perp Win Rate"
+              value={s.perpWinRate != null ? `${s.perpWinRate}%` : null}
+              sub={data.perpAnalysis ? `${data.perpAnalysis.wins}W / ${data.perpAnalysis.losses}L` : null}
+            />
+            <StatCard
               label="Overall Accuracy"
               value={s.accuracy != null ? `${s.accuracy}%` : null}
               sub={`${s.outcomes} evaluated`}
@@ -138,8 +150,6 @@ export default function ScorecardAnalysis() {
               label="Best Indicator"
               value={s.bestIndicator ? INDICATOR_LABELS[s.bestIndicator] || s.bestIndicator : null}
             />
-            <StatCard label="Best Timeframe" value={s.bestTimeframe} />
-            <StatCard label="Best Window" value={s.bestWindow} />
           </div>
 
           {/* Accuracy Over Time */}

@@ -2,7 +2,7 @@
 /**
  * UpDown Service
  *
- * Top-level coordinator for the UpDown BTC Options Signal Dashboard.
+ * Top-level coordinator for the UpDown BTC perp-long signal dashboard.
  * Manages signal computation, state persistence, and Socket.IO emission.
  * Candle aggregation is delegated to the shared candle-cache.
  */
@@ -11,6 +11,8 @@ const path = require('path');
 const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType, applyUpOnlyGate } = require('./signal-engine');
 const { clampScoreToExistingType, preventTickCreatedSignal, alignJournalType } = require('./signal-stability');
 const { createScorecard } = require('./scorecard');
+const { createPerpBook } = require('./perp-book');
+const { resolveAction } = require('./signal-actions');
 const { log } = require('../logger');
 
 const STATE_FILE = 'updown-state.json';
@@ -46,7 +48,8 @@ const createUpDownService = (io, deps) => {
   // stale (post-cross) state. A dedicated instance over the same read-only candle
   // adapter gives the sampler its own crossover memory without affecting the live cycle.
   const scorecardSignalEngine = createSignalEngine(candleAdapter);
-  const scorecard = createScorecard({ io, lastPriceFn: () => lastPrice, contractFn: () => contract });
+  const perpBook = createPerpBook();
+  const scorecard = createScorecard({ io, lastPriceFn: () => lastPrice, contractFn: () => contract, perpBook });
 
   const TICK_BUFFER_SIZE = 60;
   const tickBuffer = []; // { price, timestamp }
@@ -89,7 +92,10 @@ const createUpDownService = (io, deps) => {
     if (saved.stability) {
       signalEngine.setStabilityState(saved.stability);
     }
-    log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position} stability=${saved.stability?.publishedType || 'none'}`);
+    if (saved.perpBook) {
+      perpBook.hydrate(saved.perpBook);
+    }
+    log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position} stability=${saved.stability?.publishedType || 'none'} perp=${perpBook.snapshot().contracts}`);
   };
 
   // Eagerly load persisted state so signal history is available even before start()
@@ -104,6 +110,7 @@ const createUpDownService = (io, deps) => {
       position,
       signalHistory: signalHistory.slice(-MAX_SIGNAL_HISTORY),
       stability: signalEngine.getStabilityState(),
+      perpBook: perpBook.serialize(),
     });
   };
 
@@ -182,6 +189,7 @@ const createUpDownService = (io, deps) => {
         pnl,
         contract: contract.expiry ? contract : null,
         tickMomentum,
+        perp: perpBook.snapshot(price),
       });
     }
   };
@@ -230,12 +238,37 @@ const createUpDownService = (io, deps) => {
 
     lastSignalResult = result;
 
+    // Paper-trade the published type against the 1-BTC perp book. Same-side
+    // repeats (BUY staying BUY) do not pyramid; a new BUY after HOLD adds.
+    const fillResult = lastPrice > 0
+      ? perpBook.applySignal(result.type, lastPrice, result.timestamp)
+      : { action: resolveAction(result.type, perpBook.isLong()), fill: null, trade: null };
+    const action = fillResult.action;
+    const perpSnap = perpBook.snapshot(lastPrice);
+    if (fillResult.fill) {
+      scorecard.recordPerpFill({
+        action,
+        signalType: result.type,
+        price: fillResult.fill.price,
+        ts: fillResult.fill.ts,
+        contracts: fillResult.fill.contracts,
+        side: fillResult.fill.side,
+        pnl: fillResult.fill.pnl,
+        trade: fillResult.trade,
+        book: { contracts: perpSnap.contracts, realizedPnl: perpSnap.realizedPnl },
+      });
+      persistState();
+      io.to('updown').emit('updown:scorecard', scorecard.getMetrics());
+      log('INFO', `📊 UpDown perp ${action} contracts=${fillResult.fill.contracts} price=$${fillResult.fill.price} book=${perpSnap.contracts} realized=$${perpSnap.realizedPnl}`);
+    }
+
     // Emit full indicator data every cycle (with new fields)
     io.to('updown').emit('updown:indicators', {
       timeframes: result.timeframes,
       type: result.type,
       score: result.score,
       confidence: result.confidence,
+      action,
       noTradeZone: result.noTradeZone,
       warningZone: result.warningZone,
       timestamp: result.timestamp,
@@ -248,6 +281,7 @@ const createUpDownService = (io, deps) => {
       pivotPoints: result.pivotPoints,
       confluence: result.confluence,
       trendGate: result.trendGate,
+      perp: perpSnap,
     });
 
     // Emit signal change event only when signal changes
@@ -264,6 +298,7 @@ const createUpDownService = (io, deps) => {
         if (!isConsecutiveDuplicate) {
           signalHistory.push({
             type: result.type,
+            action,
             score: result.score,
             confidence: result.confidence,
             timestamp: result.timestamp,
@@ -281,6 +316,8 @@ const createUpDownService = (io, deps) => {
 
       io.to('updown').emit('updown:signal', {
         type: result.type,
+        action,
+        filled: !!fillResult.fill,
         score: result.score,
         confidence: result.confidence,
         noTradeZone: result.noTradeZone,
@@ -295,6 +332,7 @@ const createUpDownService = (io, deps) => {
         pivotPoints: result.pivotPoints,
         horizonPrediction: result.horizonPrediction,
         trendGate: result.trendGate,
+        perp: perpSnap,
       });
     }
   };
@@ -354,6 +392,7 @@ const createUpDownService = (io, deps) => {
    */
   const getStatus = () => {
     const latestSignal = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1] : null;
+    const perpSnap = perpBook.snapshot(lastPrice);
     return {
       running,
       contract,
@@ -363,6 +402,8 @@ const createUpDownService = (io, deps) => {
       latestSignal,
       signalHistory: signalHistory.slice(-100),
       scorecard: scorecard.getMetrics(),
+      action: latestSignal?.action || resolveAction(latestSignal?.type, perpBook.isLong()),
+      perp: perpSnap,
       candleCounts: {
         '1m': candleCache.getCandles('coinbase', '1m').length,
         '3m': candleCache.getCandles('coinbase', '3m').length,
@@ -418,6 +459,7 @@ const createUpDownService = (io, deps) => {
     lastPrice,
     latestSignal: lastSignalResult ? {
       type: lastSignalResult.type,
+      action: resolveAction(lastSignalResult.type, perpBook.isLong()),
       score: lastSignalResult.score,
       confidence: lastSignalResult.confidence,
       timestamp: lastSignalResult.timestamp,
