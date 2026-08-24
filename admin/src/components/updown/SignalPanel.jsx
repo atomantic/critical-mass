@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Signal, Minus } from 'lucide-react'
-import { signalBadgeColors, getSignalIcon, getActionLabel } from '../../constants/signals'
+import { signalBadgeColors, getSignalIcon, getActionLabel, labelHistoryActions } from '../../constants/signals'
 
 function ConfidenceBar({ value }) {
   const pct = Math.max(0, Math.min(100, (value ?? 0) * 100))
@@ -48,6 +48,10 @@ export default function SignalPanel({ signal, indicators, position }) {
     : null
   const colors = action ? (signalBadgeColors[action] || signalBadgeColors.HOLD) : 'bg-gray-500/10 border-gray-500/20 text-gray-500'
   const Icon = action ? getSignalIcon(action) : Minus
+  const labeledHistory = useMemo(() => {
+    const labeled = labelHistoryActions(history)
+    return labeled.slice().sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0))
+  }, [history])
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -82,12 +86,12 @@ export default function SignalPanel({ signal, indicators, position }) {
       )}
 
       {/* History Log */}
-      {history.length > 0 && (
+      {labeledHistory.length > 0 && (
         <div>
           <div className="text-xs text-gray-500 mb-1 font-medium">History</div>
           <div className="max-h-48 overflow-y-auto space-y-1">
-            {history.map((h, i) => {
-              const hAction = h.action || getActionLabel(h.type || 'NEUTRAL', null)
+            {labeledHistory.map((h, i) => {
+              const hAction = h.action || 'HOLD'
               const hColors = signalBadgeColors[hAction] || signalBadgeColors.HOLD
               return (
                 <div key={h.timestamp || i} className="flex items-center justify-between py-1 text-xs">

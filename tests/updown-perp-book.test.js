@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const { createPerpBook } = require('../src/updown/perp-book')
-const { resolveAction, signalSide, isHeldLong } = require('../src/updown/signal-actions')
+const { resolveAction, signalSide, isHeldLong, labelHistoryActions } = require('../src/updown/signal-actions')
 
 describe('resolveAction (Open / Add / Hold / Close)', () => {
   it('maps BUY while flat to OPEN and BUY while long to ADD', () => {
@@ -39,6 +39,42 @@ describe('resolveAction (Open / Add / Hold / Close)', () => {
     assert.equal(signalSide('SELL'), 'SELL')
     assert.equal(signalSide('NEUTRAL'), 'HOLD')
     assert.equal(signalSide('NO_TRADE_ZONE'), 'HOLD')
+  })
+})
+
+describe('labelHistoryActions never prints OPEN until after CLOSE', () => {
+  it('relabels a second BUY as ADD when there was no CLOSE', () => {
+    const rows = [
+      { type: 'BUY', timestamp: 100, action: 'OPEN' },
+      { type: 'NEUTRAL', timestamp: 200 },
+      { type: 'BUY', timestamp: 300, action: 'OPEN' },
+      { type: 'NEUTRAL', timestamp: 400 },
+      { type: 'BUY', timestamp: 500, action: 'OPEN' },
+    ]
+    const labeled = labelHistoryActions(rows)
+    assert.deepEqual(labeled.map(r => r.action), ['OPEN', 'HOLD', 'ADD', 'HOLD', 'ADD'])
+  })
+
+  it('allows OPEN again only after CLOSE', () => {
+    const rows = [
+      { type: 'BUY', timestamp: 100 },
+      { type: 'SELL', timestamp: 200 },
+      { type: 'BUY', timestamp: 300 },
+    ]
+    const labeled = labelHistoryActions(rows)
+    assert.deepEqual(labeled.map(r => r.action), ['OPEN', 'CLOSE', 'OPEN'])
+  })
+
+  it('is order-stable when the array is newest-first', () => {
+    const rows = [
+      { type: 'BUY', timestamp: 300 },
+      { type: 'NEUTRAL', timestamp: 200 },
+      { type: 'BUY', timestamp: 100 },
+    ]
+    const labeled = labelHistoryActions(rows)
+    assert.equal(labeled[2].action, 'OPEN')
+    assert.equal(labeled[1].action, 'HOLD')
+    assert.equal(labeled[0].action, 'ADD')
   })
 })
 
@@ -121,6 +157,14 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
 
     const reopen = book.applySignal('BUY', 90_000, 3)
     assert.equal(reopen.action, 'OPEN')
+    assert.equal(book.contracts(), 1)
+  })
+
+  it('stays long across HOLD with no lots so the next BUY is ADD not OPEN', () => {
+    const book = createPerpBook({ open: true, lastSide: 'HOLD' })
+    assert.equal(book.isLong(), true)
+    const add = book.applySignal('BUY', 100_000, 1)
+    assert.equal(add.action, 'ADD')
     assert.equal(book.contracts(), 1)
   })
 
