@@ -373,13 +373,15 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
-   * Place a limit sell order
-   * @param {string} productId - Product ID
-   * @param {number} baseAmount - Amount of base currency to sell
-   * @param {number} price - Limit price
-   * @returns {Promise<LimitSellResult>} Order result
+   * Place a limit buy or sell order through Crypto.com's shared create-order shape.
+   * @param {'BUY'|'SELL'} side
+   * @param {string} productId
+   * @param {number} baseAmount
+   * @param {number} price
+   * @param {{postOnly?: boolean}} [options]
+   * @returns {Promise<LimitSellResult|Object>}
    */
-  adapter.placeLimitSell = async (productId, baseAmount, price, options = {}) => {
+  const placeLimitOrder = async (side, productId, baseAmount, price, options = {}) => {
     const instrument = toCryptocomSymbol(productId);
     const clientOrderId = crypto.randomUUID().replace(/-/g, '');
     const postOnly = options.postOnly !== false; // Default to true
@@ -395,9 +397,22 @@ const createCryptocomAdapter = (keysPath = null) => {
     const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
     const roundedPrice = floorToIncrement(price, priceTickSize);
 
+    const minQty = parseFloat(details.baseMinSize) || baseIncrement;
+    if (roundedAmount < minQty) {
+      console.log(`⚠️ Crypto.com order qty ${roundedAmount} (from ${baseAmount}) below minimum ${minQty} (tick_size=${baseIncrement})`);
+      return {
+        orderId: '',
+        clientOrderId: '',
+        success: false,
+        errorMessage: `Order quantity ${baseAmount} rounds to ${roundedAmount}, below minimum ${minQty}`,
+        baseSize: roundedAmount,
+        limitPrice: roundedPrice,
+      };
+    }
+
     const orderParams = {
       instrument_name: instrument,
-      side: 'SELL',
+      side,
       type: 'LIMIT',
       quantity: roundedAmount.toFixed(qtyDecimals),
       price: roundedPrice.toFixed(priceDecimals),
@@ -407,7 +422,7 @@ const createCryptocomAdapter = (keysPath = null) => {
       exec_inst: postOnly ? ['POST_ONLY'] : [],
     };
 
-    console.log(`Crypto.com limit sell: ${orderParams.quantity} ${instrument.split('_')[0]} @ ${orderParams.price}`);
+    console.log(`Crypto.com limit ${side.toLowerCase()}: ${orderParams.quantity} ${instrument.split('_')[0]} @ ${orderParams.price}`);
 
     const result = await makePrivateRequest('private/create-order', orderParams);
 
@@ -424,6 +439,16 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
+   * Place a limit sell order
+   * @param {string} productId - Product ID
+   * @param {number} baseAmount - Amount of base currency to sell
+   * @param {number} price - Limit price
+   * @returns {Promise<LimitSellResult>} Order result
+   */
+  adapter.placeLimitSell = (productId, baseAmount, price, options = {}) =>
+    placeLimitOrder('SELL', productId, baseAmount, price, options);
+
+  /**
    * Place a limit buy order
    * @param {string} productId - Product ID
    * @param {number} baseAmount - Amount of base currency to buy
@@ -432,62 +457,8 @@ const createCryptocomAdapter = (keysPath = null) => {
    * @param {boolean} [options.postOnly] - Whether to use post-only mode (default: true)
    * @returns {Promise<Object>} Order result
    */
-  adapter.placeLimitBuy = async (productId, baseAmount, price, options = {}) => {
-    const instrument = toCryptocomSymbol(productId);
-    const clientOrderId = crypto.randomUUID().replace(/-/g, '');
-    const postOnly = options.postOnly !== false;
-
-    const details = await adapter.getProductDetails(productId);
-    const baseIncrement = parseFloat(details.baseIncrement);
-    const priceTickSize = parseFloat(details.quoteIncrement);
-
-    const priceDecimals = incrementToDecimals(details.quoteIncrement);
-    const qtyDecimals = incrementToDecimals(details.baseIncrement);
-
-    const roundedAmount = floorToIncrement(baseAmount, baseIncrement);
-    const roundedPrice = floorToIncrement(price, priceTickSize);
-
-    // Validate quantity is non-zero and meets minimum
-    const minQty = parseFloat(details.baseMinSize) || baseIncrement;
-    if (roundedAmount < minQty) {
-      console.log(`⚠️ Crypto.com order qty ${roundedAmount} (from ${baseAmount}) below minimum ${minQty} (tick_size=${baseIncrement})`);
-      return {
-        orderId: '',
-        clientOrderId: '',
-        success: false,
-        errorMessage: `Order quantity ${baseAmount} rounds to ${roundedAmount}, below minimum ${minQty}`,
-        baseSize: roundedAmount,
-        limitPrice: roundedPrice,
-      };
-    }
-
-    const orderParams = {
-      instrument_name: instrument,
-      side: 'BUY',
-      type: 'LIMIT',
-      quantity: roundedAmount.toFixed(qtyDecimals),
-      price: roundedPrice.toFixed(priceDecimals),
-      client_oid: clientOrderId,
-      spot_margin: 'SPOT',
-      time_in_force: 'GOOD_TILL_CANCEL',
-      exec_inst: postOnly ? ['POST_ONLY'] : [],
-    };
-
-    console.log(`Crypto.com limit buy: ${orderParams.quantity} ${instrument.split('_')[0]} @ ${orderParams.price}`);
-
-    const result = await makePrivateRequest('private/create-order', orderParams);
-
-    const success = !!result.order_id;
-
-    return {
-      orderId: result.order_id?.toString() || '',
-      clientOrderId,
-      success,
-      errorMessage: success ? undefined : 'Order placement failed',
-      baseSize: roundedAmount,
-      limitPrice: roundedPrice,
-    };
-  };
+  adapter.placeLimitBuy = (productId, baseAmount, price, options = {}) =>
+    placeLimitOrder('BUY', productId, baseAmount, price, options);
 
   /**
    * Get order status

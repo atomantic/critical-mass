@@ -5,6 +5,23 @@ export default function OperatorLogin({ children }) {
   const [token, setToken] = useState('')
   const [error, setError] = useState('')
 
+  // Keep authentication as an application boundary, including after the
+  // initial session check. A gateway restart invalidates in-memory sessions;
+  // without this response hook the already-mounted SPA would merely show API
+  // errors while continuing to render privileged controls.
+  useEffect(() => {
+    const originalFetch = window.fetch
+    const authenticatedFetch = async (...args) => {
+      const response = await originalFetch.apply(window, args)
+      if (response.status === 401) setStatus('anonymous')
+      return response
+    }
+    window.fetch = authenticatedFetch
+    return () => {
+      if (window.fetch === authenticatedFetch) window.fetch = originalFetch
+    }
+  }, [])
+
   useEffect(() => {
     fetch('/api/auth/session')
       .then((response) => response.json())

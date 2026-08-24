@@ -15,10 +15,18 @@
 const fs = require('fs');
 const path = require('path');
 const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
+const { getFundDataDir, resolveFundDataDir } = require('../src/migration');
 
 const PRODUCT_ID = 'BTC-USDC';
+const EXCHANGE = 'coinbase';
 const FEE_RATE = 0.0005;
-const PENDING_FILE = path.join(__dirname, '..', 'data', 'coinbase', 'pending-corrective-buys.json');
+const PENDING_FILENAME = 'pending-corrective-buys.json';
+
+const getPendingReadPath = (exchange = EXCHANGE, productId = PRODUCT_ID) =>
+  path.join(resolveFundDataDir(exchange, productId), PENDING_FILENAME);
+
+const getPendingWritePath = (exchange = EXCHANGE, productId = PRODUCT_ID) =>
+  path.join(getFundDataDir(exchange, productId), PENDING_FILENAME);
 
 const SELL_ORDER_ID = '2cb8f4c2-b766-4795-9634-e6412c5d3961';
 const REMAINING_SIZE = 0.00327689;
@@ -44,7 +52,7 @@ async function main() {
   console.log(`   ✅ Placed: ${result.orderId} — ${result.baseSize} BTC @ $${result.limitPrice}`);
 
   // Update pending-corrective-buys.json
-  const pending = JSON.parse(fs.readFileSync(PENDING_FILE, 'utf8'));
+  const pending = JSON.parse(fs.readFileSync(getPendingReadPath(), 'utf8'));
 
   // Mark old entry as replaced
   const oldEntry = pending.find(p => p.sellOrderId === SELL_ORDER_ID);
@@ -65,12 +73,16 @@ async function main() {
     note: `Remaining uncovered portion after split-2 reassignment (0.00268593 BTC already covered)`,
   });
 
-  fs.writeFileSync(PENDING_FILE, JSON.stringify(pending, null, 2));
+  fs.writeFileSync(getPendingWritePath(), JSON.stringify(pending, null, 2));
   console.log(`\n💾 Saved to pending-corrective-buys.json`);
   console.log(`   GTC limit buy sitting on the book at $${MAX_BUY_PRICE}`);
 }
 
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { getPendingReadPath, getPendingWritePath };

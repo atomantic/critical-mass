@@ -174,10 +174,24 @@ const createCryptocomWebSocketFeed = (exchange, config) => {
     if (!config.onTicker) return;
 
     for (const tick of dataArray) {
+      const price = parseFloat(tick.a);
+      const bid = parseFloat(tick.b);
+      const ask = parseFloat(tick.k);
+
+      // Downstream entry sizing and order pricing assume a complete,
+      // uncrossed top-of-book. Withhold sparse/corrupt exchange messages
+      // instead of coercing missing values to zero or forwarding NaN.
+      if (!Number.isFinite(price) || price <= 0
+        || !Number.isFinite(bid) || bid <= 0
+        || !Number.isFinite(ask) || ask <= 0
+        || bid > ask) {
+        continue;
+      }
+
       config.onTicker({
-        price: parseFloat(tick.a || 0),
-        bid: parseFloat(tick.b || 0),
-        ask: parseFloat(tick.k || 0),
+        price,
+        bid,
+        ask,
         volume24h: parseFloat(tick.v || 0),
         timestamp: tick.t || Date.now(),
       });

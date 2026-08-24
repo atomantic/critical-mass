@@ -22,8 +22,10 @@ const getPair = (req) => req.query?.pair || getDefaultPair(req.params.exchange);
  * @returns {Object}
  */
 const getIPC = (exchangeIPCMap, exchange) => {
-  const ipc = exchangeIPCMap[exchange];
-  if (!ipc) {
+  const ipc = Object.prototype.hasOwnProperty.call(exchangeIPCMap, exchange)
+    ? exchangeIPCMap[exchange]
+    : null;
+  if (!ipc || typeof ipc.request !== 'function') {
     throw new Error(`No IPC client for exchange: ${exchange}`);
   }
   return ipc;

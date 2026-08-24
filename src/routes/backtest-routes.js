@@ -4,6 +4,7 @@
  */
 
 const path = require('path');
+const { randomUUID } = require('crypto');
 const backtestEngine = require('../backtest-engine');
 const optimizerEngine = require('../optimizer-engine');
 const { formatInterval } = require('../interval-utils');
@@ -38,7 +39,14 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const fundConfig = getFundConfig(exchange, pair);
-    const configProductId = fundConfig.productId || null;
+    const configProductId = fundConfig.productId || pair;
+
+    if (req.body.productId !== undefined && req.body.productId !== configProductId) {
+      return res.status(400).json({
+        success: false,
+        error: `productId must match the selected fund (${configProductId})`,
+      });
+    }
 
     const {
       intervalBuyAmount = 500, sellMarkupPercent = 10, holdbackPercent = 5,
@@ -81,21 +89,28 @@ module.exports = (app, deps) => {
     res.json({ success: true, message: 'Cache cleared' });
   });
 
-  // Run optimizer
-  let currentBestResult = null;
-
   app.post('/api/:exchange/optimizer/run', (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const fundConfig = getFundConfig(exchange, pair);
-    const configProductId = fundConfig.productId || null;
+    const configProductId = fundConfig.productId || pair;
+
+    if (req.body.productId !== undefined && req.body.productId !== configProductId) {
+      return res.status(400).json({
+        success: false,
+        error: `productId must match the selected fund (${configProductId})`,
+      });
+    }
 
     const {
       fundSize = 10000, forceRefresh = false, productId = configProductId,
-      intervals = null, markups = null, periods = null, buyAmounts = null,
+      intervals = null, markups = null, periods = null, buyAmounts = null, runId: requestedRunId,
     } = req.body;
     const cacheFile = getOptimizerCacheFile(exchange, productId);
     const configKey = JSON.stringify({ intervals, markups, periods });
+    const runId = typeof requestedRunId === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(requestedRunId)
+      ? requestedRunId
+      : randomUUID();
 
     if (!forceRefresh) {
       const cache = readJSON(cacheFile, null);
@@ -112,18 +127,18 @@ module.exports = (app, deps) => {
 
     const totalTests = (intervals?.length || 6) * (markups?.length || 9) * (periods?.length || 4);
     log('INFO', `[${exchange}] Running optimizer for ${productId} with fund size: $${fundSize} (${totalTests} combinations)`);
-    currentBestResult = null;
+    let currentBestResult = null;
 
-    res.json({ success: true, streaming: true, message: 'Optimizer started, results will stream via WebSocket' });
+    res.json({ success: true, streaming: true, runId, exchange, pair, message: 'Optimizer started, results will stream via WebSocket' });
 
     optimizerEngine.runOptimizer({
       fundSize, exchange, forceRefresh, productId, intervals, markups, periods, buyAmounts,
       onProgress: (progress) => {
-        io.emit('optimizer:progress', progress);
+        io.emit('optimizer:progress', { ...progress, runId, exchange, pair });
         if (progress.latestResult) {
           if (!currentBestResult || progress.latestResult.metrics.totalValue > currentBestResult.metrics.totalValue) {
             currentBestResult = progress.latestResult;
-            io.emit('optimizer:newBest', currentBestResult);
+            io.emit('optimizer:newBest', { ...currentBestResult, runId, exchange, pair });
           }
         }
         if (progress.current % 20 === 0 || progress.phase === 'prefetch') {
@@ -140,6 +155,7 @@ module.exports = (app, deps) => {
           success: true, cached: false, cachedAt: new Date().toISOString(),
           fundSize, productId: result.productId, totalCombinations: result.totalCombinations,
           duration: result.duration, bestResult: result.bestResult, topResults, config: result.config,
+          runId, exchange, pair,
         };
 
         writeJSON(cacheFile, response);
@@ -148,7 +164,7 @@ module.exports = (app, deps) => {
       })
       .catch(err => {
         log('ERROR', `[${exchange}] Optimizer failed: ${err.message}`);
-        io.emit('optimizer:error', { error: err.message });
+        io.emit('optimizer:error', { error: err.message, runId, exchange, pair });
       });
   });
 };

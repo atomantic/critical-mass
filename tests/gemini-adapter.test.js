@@ -408,6 +408,33 @@ describe('makeRestRequest 429 handling (issue #193)', () => {
   });
 });
 
+describe('Gemini shared limit-order placement', () => {
+  it('preserves buy/sell sides and optional maker-or-cancel behavior', async () => {
+    const adapter = createGeminiAdapter(keysPath);
+    adapter.getProductDetails = async () => ({
+      baseIncrement: '0.001',
+      quoteIncrement: '0.01',
+      baseMinSize: '0.01',
+      quoteMinSize: '1',
+      price: 100,
+    });
+    const { calls } = installFetchMock((endpoint) => {
+      assert.equal(endpoint, '/v1/order/new');
+      return { order_id: '123', is_cancelled: false };
+    });
+
+    await adapter.placeLimitBuy('BTC-USD', 0.0199, 100.019);
+    await adapter.placeLimitSell('BTC-USD', 0.0199, 100.019, { postOnly: false });
+
+    const orders = calls.filter(call => call.endpoint === '/v1/order/new').map(call => call.payload);
+    assert.deepEqual(orders.map(order => order.side), ['buy', 'sell']);
+    assert.deepEqual(orders.map(order => order.amount), ['0.019', '0.019']);
+    assert.deepEqual(orders.map(order => order.price), ['100.01', '100.01']);
+    assert.deepEqual(orders[0].options, ['maker-or-cancel']);
+    assert.deepEqual(orders[1].options, []);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // placeMarketBuy — tick sizing (issue #208B) + partial-IOC success (issue #208A)
 // ---------------------------------------------------------------------------

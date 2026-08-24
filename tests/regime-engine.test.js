@@ -2,7 +2,21 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody, instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody, instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/regime-engine');
+
+describe('makeFillDedupKey', () => {
+  it('uses order ID alone for terminal fills', () => {
+    assert.equal(makeFillDedupKey('order-1', false, 0.25), 'order-1');
+  });
+
+  it('includes fixed-precision cumulative size for partial-fill advances', () => {
+    assert.equal(makeFillDedupKey('order-1', true, 0.25), 'order-1:0.25000000');
+    assert.notEqual(
+      makeFillDedupKey('order-1', true, 0.25),
+      makeFillDedupKey('order-1', true, 0.5)
+    );
+  });
+});
 
 describe('cancelPartialFillOrder', () => {
   const makeDeps = ({ cancelOrder, exchange = 'gemini' } = {}) => {

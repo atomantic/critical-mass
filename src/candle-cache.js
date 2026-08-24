@@ -16,15 +16,16 @@ const SEED_RETRY_INTERVAL_MS = 5_000;
  * Seed configs: timeframe → { hours of history, API granularity }
  */
 const SEED_TIMEFRAMES = [
-  { tf: '1m',  hours: 3,   coinbaseGranularity: 60,   cryptocomTf: '1m'  },
-  { tf: '5m',  hours: 15,  coinbaseGranularity: 300,  cryptocomTf: '5m'  },
-  { tf: '15m', hours: 45,  coinbaseGranularity: 900,  cryptocomTf: '15m' },
-  { tf: '1h',  hours: 220, coinbaseGranularity: 3600, cryptocomTf: '1h'  },
-  { tf: '1d',  hours: 8760, coinbaseGranularity: 86400, cryptocomTf: '1D' },
+  { tf: '1m',  hours: 3,   coinbaseGranularity: 60,   cryptocomTf: '1m',  geminiTf: '1m' },
+  { tf: '5m',  hours: 15,  coinbaseGranularity: 300,  cryptocomTf: '5m',  geminiTf: '5m' },
+  { tf: '15m', hours: 45,  coinbaseGranularity: 900,  cryptocomTf: '15m', geminiTf: '15m' },
+  { tf: '1h',  hours: 220, coinbaseGranularity: 3600, cryptocomTf: '1h',  geminiTf: '1hr' },
+  { tf: '1d',  hours: 8760, coinbaseGranularity: 86400, cryptocomTf: '1D', geminiTf: '1day' },
 ];
 
 const COINBASE_EXCHANGE_URL = 'https://api.exchange.coinbase.com';
 const CRYPTOCOM_API_URL = 'https://api.crypto.com/exchange/v1/public';
+const GEMINI_API_URL = 'https://api.gemini.com/v2';
 
 /**
  * Fetch historical candles from Coinbase public Exchange API.
@@ -114,6 +115,38 @@ const fetchCryptocomCandles = async (tf, hours, cryptocomTf) => {
   // Crypto.com: {t, o, h, l, c, v}
   return data
     .map(c => ({ timestamp: c.t, open: parseFloat(c.o), high: parseFloat(c.h), low: parseFloat(c.l), close: parseFloat(c.c), volume: parseFloat(c.v) }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+};
+
+/** Fetch Gemini v2 public candles and normalize them oldest-first. */
+const fetchGeminiCandles = async (tf, hours, geminiTf) => {
+  const url = `${GEMINI_API_URL}/candles/btcusd/${geminiTf}`;
+  const controller = new AbortController();
+  const fetchTimeout = setTimeout(() => controller.abort(), 15000);
+  let res, raw;
+  try {
+    res = await fetch(url, { signal: controller.signal });
+    raw = await res.json().catch(() => null);
+  } catch {
+    res = null;
+    raw = null;
+  } finally {
+    clearTimeout(fetchTimeout);
+  }
+  if (!res?.ok) {
+    log('WARN', `🕯️ candle-cache: gemini ${tf} fetch failed status=${res?.status}`);
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+
+  const cutoff = Date.now() - hours * 3_600_000;
+  // Gemini: [timestampMs, open, high, low, close, volume], newest-first.
+  return raw
+    .map(c => ({
+      timestamp: Number(c?.[0]), open: Number(c?.[1]), high: Number(c?.[2]),
+      low: Number(c?.[3]), close: Number(c?.[4]), volume: Number(c?.[5]),
+    }))
+    .filter(c => c.timestamp >= cutoff && Object.values(c).every(Number.isFinite))
     .sort((a, b) => a.timestamp - b.timestamp);
 };
 
@@ -239,12 +272,14 @@ const createCandleCache = () => {
     // candles. Capturing it AFTER the fetches (not once up front) also keeps it fresh, so
     // a slow fetch can't misclassify the in-progress bucket as completed (issue #145).
     const fetched = [];
-    for (const { tf, hours, coinbaseGranularity, cryptocomTf } of SEED_TIMEFRAMES) {
+    for (const { tf, hours, coinbaseGranularity, cryptocomTf, geminiTf } of SEED_TIMEFRAMES) {
       let candles;
       if (exchange === 'coinbase') {
         candles = await fetchCoinbaseCandles(tf, hours, coinbaseGranularity);
       } else if (exchange === 'cryptocom') {
         candles = await fetchCryptocomCandles(tf, hours, cryptocomTf);
+      } else if (exchange === 'gemini') {
+        candles = await fetchGeminiCandles(tf, hours, geminiTf);
       } else {
         continue;
       }
@@ -351,6 +386,7 @@ const createCandleCache = () => {
     await Promise.all([
       seedWithRetry('cryptocom'),
       seedWithRetry('coinbase'),
+      seedWithRetry('gemini'),
     ]);
   };
 
