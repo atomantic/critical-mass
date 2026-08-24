@@ -66,6 +66,30 @@ const resolveAction = (type, held = null) => {
  */
 const resolveActionLabel = (type, held = null) => resolveAction(type, held)
 
+/**
+ * Relabel a chronological-or-not history of engine types as Open/Add/Hold/Close
+ * using a virtual long/flat book. A BUY after OPEN (no CLOSE yet) is ADD.
+ * @param {Array<{type?: string, action?: string, timestamp?: number}>} entries
+ * @returns {Array<Object>} new array, original objects not mutated
+ */
+const labelHistoryActions = (entries) => {
+  if (!Array.isArray(entries) || entries.length === 0) return []
+  const sorted = entries
+    .map((e, i) => ({ e, i, ts: Number(e?.timestamp) || 0 }))
+    .sort((a, b) => a.ts - b.ts || a.i - b.i)
+  let long = false
+  const byIndex = new Array(entries.length)
+  for (const { e, i } of sorted) {
+    const type = e?.type
+      || (e?.action === 'CLOSE' ? 'SELL' : e?.action === 'HOLD' ? 'NEUTRAL' : (e?.action === 'OPEN' || e?.action === 'ADD') ? 'BUY' : 'NEUTRAL')
+    const action = resolveAction(type, long)
+    if (action === 'OPEN' || action === 'ADD') long = true
+    else if (action === 'CLOSE') long = false
+    byIndex[i] = { ...e, action }
+  }
+  return byIndex
+}
+
 module.exports = {
   BUY_SIDE,
   SELL_SIDE,
@@ -75,4 +99,5 @@ module.exports = {
   isHeldLong,
   resolveAction,
   resolveActionLabel,
+  labelHistoryActions,
 }

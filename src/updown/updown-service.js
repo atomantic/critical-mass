@@ -12,7 +12,7 @@ const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType, applyU
 const { clampScoreToExistingType, preventTickCreatedSignal, alignJournalType } = require('./signal-stability');
 const { createScorecard } = require('./scorecard');
 const { createPerpBook } = require('./perp-book');
-const { resolveAction } = require('./signal-actions');
+const { resolveAction, labelHistoryActions } = require('./signal-actions');
 const { log } = require('../logger');
 
 const STATE_FILE = 'updown-state.json';
@@ -95,7 +95,20 @@ const createUpDownService = (io, deps) => {
     if (saved.perpBook) {
       perpBook.hydrate(saved.perpBook);
     }
-    log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position} stability=${saved.stability?.publishedType || 'none'} perp=${perpBook.snapshot().contracts}`);
+    if (signalHistory.length > 0) {
+      const labeled = labelHistoryActions(signalHistory)
+      signalHistory.length = 0
+      signalHistory.push(...labeled)
+      const stillLong = labeled.slice().sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0)).reduce((long, s) => {
+        if (s.action === 'OPEN' || s.action === 'ADD') return true
+        if (s.action === 'CLOSE') return false
+        return long
+      }, false)
+      if (stillLong && !perpBook.isLong()) {
+        perpBook.hydrate({ ...perpBook.serialize(), open: true, lastSide: 'HOLD' })
+      }
+    }
+    log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position} stability=${saved.stability?.publishedType || 'none'} perp=${perpBook.snapshot().contracts} open=${perpBook.isLong()}`);
   };
 
   // Eagerly load persisted state so signal history is available even before start()

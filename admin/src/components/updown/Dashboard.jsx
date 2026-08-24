@@ -11,6 +11,7 @@ import TimeframeGrid from './TimeframeGrid'
 import TradeHistory from './TradeHistory'
 import ScorecardPanel from './ScorecardPanel'
 import { parseExpiry } from './TimeWarningBanner'
+import { labelHistoryActions } from '../../constants/signals'
 
 function formatCurrency(value) {
   if (value == null) return '---'
@@ -47,11 +48,11 @@ export default function UpDownDashboard() {
       // Seed signal annotations from backend history on first load
       if (!seededRef.current && data.signalHistory?.length) {
         seededRef.current = true
-        setSignalAnnotations(data.signalHistory
-          .filter(s => s.action ? s.action !== 'HOLD' : (s.type !== 'NEUTRAL' && s.type !== 'NO_TRADE_ZONE'))
+        setSignalAnnotations(labelHistoryActions(data.signalHistory)
+          .filter(s => s.action === 'OPEN' || s.action === 'ADD' || s.action === 'CLOSE')
           .map(s => ({
             timestamp: s.timestamp,
-            type: s.action || s.type,
+            type: s.action,
             score: s.score ?? 0,
           })))
       }

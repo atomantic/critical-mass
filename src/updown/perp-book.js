@@ -38,7 +38,9 @@ const createPerpBook = (initial = {}) => {
   let lastSide = initial.lastSide === 'BUY' || initial.lastSide === 'SELL' || initial.lastSide === 'HOLD'
     ? initial.lastSide
     : (lots.length > 0 ? 'BUY' : 'HOLD')
+  let open = initial.open === true || lots.length > 0
 
+  const isLong = () => open || lots.length > 0
   const contracts = () => lots.length
 
   const avgEntry = () => {
@@ -97,7 +99,7 @@ const createPerpBook = (initial = {}) => {
    * @returns {{action: 'OPEN'|'ADD'|'HOLD'|'CLOSE', fill: Object|null, trade: Object|null}}
    */
   const applySignal = (type, price, ts = Date.now()) => {
-    const action = resolveAction(type, lots.length > 0)
+    const action = resolveAction(type, isLong())
     const side = signalSide(type)
 
     if (side === lastSide) {
@@ -119,21 +121,13 @@ const createPerpBook = (initial = {}) => {
       lastSide = 'HOLD'
       return { action, fill: null, trade: null }
     }
-    if (!Number.isFinite(price) || price <= 0) {
-      return { action, fill: null, trade: null }
-    }
-    if (action === 'OPEN' || action === 'ADD') {
-      lastSide = 'BUY'
-      lots.push({ entryPrice: price, entryTs: ts, action })
-      if (lots.length > maxContracts) maxContracts = lots.length
-      return {
-        action,
-        fill: { side: 'buy', action, contracts: 1, price, ts },
-        trade: null,
-      }
-    }
-    if (action === 'CLOSE' && lots.length > 0) {
+    if (action === 'CLOSE') {
       lastSide = 'SELL'
+      open = false
+      if (lots.length === 0 || !Number.isFinite(price) || price <= 0) {
+        lots = []
+        return { action, fill: null, trade: null }
+      }
       const n = lots.length
       const avg = avgEntry()
       const pnl = round2(unrealizedAt(price))
@@ -155,6 +149,20 @@ const createPerpBook = (initial = {}) => {
         trade,
       }
     }
+    if (!Number.isFinite(price) || price <= 0) {
+      return { action, fill: null, trade: null }
+    }
+    if (action === 'OPEN' || action === 'ADD') {
+      lastSide = 'BUY'
+      open = true
+      lots.push({ entryPrice: price, entryTs: ts, action })
+      if (lots.length > maxContracts) maxContracts = lots.length
+      return {
+        action,
+        fill: { side: 'buy', action, contracts: 1, price, ts },
+        trade: null,
+      }
+    }
     return { action, fill: null, trade: null }
   }
 
@@ -170,6 +178,7 @@ const createPerpBook = (initial = {}) => {
     lastSide = next.lastSide === 'BUY' || next.lastSide === 'SELL' || next.lastSide === 'HOLD'
       ? next.lastSide
       : (lots.length > 0 ? 'BUY' : 'HOLD')
+    open = next.open === true || lots.length > 0
   }
 
   const serialize = () => ({
@@ -178,6 +187,7 @@ const createPerpBook = (initial = {}) => {
     closedTrades: closedTrades.slice(-200),
     maxContracts,
     lastSide,
+    open: isLong(),
   })
 
   return {
@@ -186,7 +196,7 @@ const createPerpBook = (initial = {}) => {
     snapshot,
     hydrate,
     serialize,
-    isLong: () => lots.length > 0,
+    isLong,
     contracts,
   }
 }

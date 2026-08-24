@@ -68,3 +68,22 @@ export const getActionLabel = (type, heldPosition) => {
   if (type === 'OPEN' || type === 'ADD' || type === 'HOLD' || type === 'CLOSE') return type
   return resolveAction(type, heldPosition)
 }
+
+/** Walk history oldest-first so OPEN cannot repeat until after CLOSE. */
+export const labelHistoryActions = (entries) => {
+  if (!Array.isArray(entries) || entries.length === 0) return []
+  const sorted = entries
+    .map((e, i) => ({ e, i, ts: Number(e?.timestamp) || 0 }))
+    .sort((a, b) => a.ts - b.ts || a.i - b.i)
+  let long = false
+  const byIndex = new Array(entries.length)
+  for (const { e, i } of sorted) {
+    const type = e?.type
+      || (e?.action === 'CLOSE' ? 'SELL' : e?.action === 'HOLD' ? 'NEUTRAL' : (e?.action === 'OPEN' || e?.action === 'ADD') ? 'BUY' : 'NEUTRAL')
+    const action = resolveAction(type, long)
+    if (action === 'OPEN' || action === 'ADD') long = true
+    else if (action === 'CLOSE') long = false
+    byIndex[i] = { ...e, action }
+  }
+  return byIndex
+}
