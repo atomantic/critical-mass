@@ -5,8 +5,12 @@
  *
  * Usage:
  *   node scripts/updown-pnl-snapshot.js
+ *   node scripts/updown-pnl-snapshot.js --reset-book
  *   node scripts/updown-pnl-snapshot.js --hydrate-state
  *
+ * --reset-book     Stop-the-engine first. Zero the paper book (0 lots, 0 P&L)
+ *                  so the next BUY is a fresh OPEN. Historical signal labels
+ *                  are not a live position.
  * --hydrate-state  Stop-the-engine first. Replays signal history through the
  *                  0.01-BTC-per-contract paper book using scorecard prediction prices, then
  *                  writes perpBook into data/updown-state.json.
@@ -23,6 +27,11 @@ const STATE_PATH = path.join(DATA_DIR, 'updown-state.json')
 const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SNAPSHOT_PATH = path.join(UPDOWN_DATA_DIR, 'pnl-monitor.jsonl')
 const hydrate = process.argv.includes('--hydrate-state')
+const resetBook = process.argv.includes('--reset-book')
+if (hydrate && resetBook) {
+  console.error('📊 UpDown pnl-monitor cannot --hydrate-state and --reset-book together')
+  process.exit(1)
+}
 
 const loadPriceIndex = () => {
   if (!fs.existsSync(SCORECARD_DIR)) return []
@@ -58,7 +67,11 @@ const latest = Array.isArray(state.signalHistory) && state.signalHistory.length 
   : null
 
 let book = createPerpBook()
-if (hydrate) {
+if (resetBook) {
+  state.perpBook = book.serialize()
+  writeJSON(STATE_PATH, state)
+  console.error(`📊 UpDown pnl-monitor reset book contracts=0 file=${STATE_PATH}`)
+} else if (hydrate) {
   const { book: replayed, fills } = replaySignals(
     state.signalHistory,
     (ts) => priceAt(priceIndex, ts),

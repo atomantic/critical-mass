@@ -13,7 +13,6 @@ const path = require('path')
 const { log } = require('../logger')
 const { UPDOWN_DATA_DIR } = require('../paths')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('./indicator-config')
-const { createPerpBook } = require('./perp-book')
 
 const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SAMPLE_INTERVAL_MS = 60_000
@@ -876,23 +875,9 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     totalPredictions = predictions
     totalSkipped = skipped
 
-    // Rebuild the paper book from journaled fills only when the live snapshot
-    // is empty (fresh process with no updown-state.json perpBook).
-    if (perpBook && !perpBook.isLong() && perpBook.snapshot().rounds === 0 && perpBook.snapshot().realizedPnl === 0) {
-      const fillRecords = allRecords
-        .filter(r => r?.type === 'perp_fill')
-        .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
-      if (fillRecords.length > 0) {
-        const replay = createPerpBook()
-        for (const rec of fillRecords) {
-          const action = rec.action
-            || (rec.side === 'sell' ? 'CLOSE' : rec.side === 'buy' ? (replay.isLong() ? 'ADD' : 'OPEN') : 'HOLD')
-          replay.applyFill(action, rec.price, Date.parse(rec.ts) || rec.ts)
-        }
-        perpBook.hydrate(replay.serialize())
-        log('INFO', `📊 Scorecard rebuilt perp book from journal fills=${fillRecords.length} contracts=${perpBook.snapshot().contracts}`)
-      }
-    }
+    // Paper book lives in updown-state.json. Do not rebuild it from the
+    // scorecard journal — a 0-lot reset would otherwise come back as a
+    // historical position.
 
     log('INFO', `📊 Scorecard loaded history outcomes=${loaded} predictions=${predictions} skipped=${skipped} files=${recentFiles.length}`)
   }

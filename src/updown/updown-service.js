@@ -96,18 +96,12 @@ const createUpDownService = (io, deps) => {
     if (saved.perpBook) {
       perpBook.hydrate(saved.perpBook);
     }
+    // Relabel the log for the dashboard, but do not treat historical OPEN/ADD
+    // as a live position. Paper P&L starts from the persisted book only.
     if (signalHistory.length > 0) {
       const labeled = labelHistoryActions(signalHistory)
       signalHistory.length = 0
       signalHistory.push(...labeled)
-      const stillLong = labeled.slice().sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0)).reduce((long, s) => {
-        if (s.action === 'OPEN' || s.action === 'ADD') return true
-        if (s.action === 'CLOSE') return false
-        return long
-      }, false)
-      if (stillLong && !perpBook.isLong()) {
-        perpBook.hydrate({ ...perpBook.serialize(), open: true, lastSide: 'HOLD' })
-      }
     }
     log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position} stability=${saved.stability?.publishedType || 'none'} perp=${perpBook.snapshot().contracts} open=${perpBook.isLong()}`);
   };
