@@ -42,9 +42,12 @@ describe('optimizer route event scoping', () => {
     });
 
     const responses = [];
-    const invoke = (exchange, pair, productId, runId) => runHandler(
-      { params: { exchange }, query: { pair }, body: { forceRefresh: true, productId, runId } },
-      { json: (body) => responses.push(body) },
+    const invoke = (exchange, pair, _productId, runId) => runHandler(
+      { params: { exchange }, query: { pair }, body: { forceRefresh: true, runId } },
+      {
+        status(code) { this.statusCode = code; return this; },
+        json(body) { responses.push(body); return this; },
+      },
     );
     invoke('coinbase', 'BTC-USDC', 'BTC-USDC', 'client_run_123');
     invoke('gemini', 'BTCUSD', 'BTCUSD');
