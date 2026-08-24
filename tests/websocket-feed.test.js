@@ -16,6 +16,14 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 
+const contextFor = (lines, prefix) => {
+  const line = lines.find(candidate => candidate.startsWith(prefix));
+  assert.ok(line, `missing log line starting with: ${prefix}`);
+  const contextStart = line.lastIndexOf(' {');
+  assert.notEqual(contextStart, -1, `missing structured context: ${line}`);
+  return JSON.parse(line.slice(contextStart + 1));
+};
+
 const HEARTBEAT = 30000;
 
 class FakeWebSocket extends EventEmitter {
@@ -64,9 +72,9 @@ for (const p of ['../src/websocket-feed', '../src/adapters/gemini/websocket', '.
 const { createWebSocketFeed } = require('../src/websocket-feed');
 
 const VARIANTS = [
-  { exchange: 'coinbase', openDelayMs: 0 },
-  { exchange: 'gemini', openDelayMs: 0 },
-  { exchange: 'cryptocom', openDelayMs: 1000 }, // 1s post-connect delay before subscribe/heartbeat
+  { exchange: 'coinbase', openDelayMs: 0, connectMessage: '🔌 [coinbase] Connecting to WebSocket...' },
+  { exchange: 'gemini', openDelayMs: 0, connectMessage: '🔌 [gemini] Connecting to Gemini WebSocket...' },
+  { exchange: 'cryptocom', openDelayMs: 1000, connectMessage: '🔌 [cryptocom] Connecting to Crypto.com WebSocket...' }, // 1s post-connect delay before subscribe/heartbeat
 ];
 
 /**
@@ -94,6 +102,24 @@ const openFeed = (t, variant) => {
 
 for (const variant of VARIANTS) {
   describe(`${variant.exchange} pong-timeout watchdog`, () => {
+    it('preserves connection messages and appends fund lifecycle context', (t) => {
+      const lines = [];
+      const originalLog = console.log;
+      console.log = line => lines.push(line);
+
+      try {
+        const { feed } = openFeed(t, variant);
+        feed.disconnect();
+      } finally {
+        console.log = originalLog;
+      }
+
+      assert.deepEqual(
+        contextFor(lines, variant.connectMessage),
+        { exchange: variant.exchange, pair: 'BTC-USD', lifecycle: 'connecting' }
+      );
+    });
+
     it('terminates a silently dead connection after missed pongs and reconnects', (t) => {
       const { sock, events } = openFeed(t, variant);
 

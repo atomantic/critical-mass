@@ -76,12 +76,12 @@ const createGeminiWebSocketFeed = (exchange, config) => {
       return;
     }
 
-    console.log(`🔌 [${exchange}] Connecting to Gemini WebSocket...`);
+    logger.info(`🔌 [${exchange}] Connecting to Gemini WebSocket...`, { lifecycle: 'connecting' });
 
     ws = new WebSocket(GEMINI_WS_URL);
 
     ws.on('open', () => {
-      console.log(`✅ [${exchange}] Gemini WebSocket connected`);
+      logger.info(`✅ [${exchange}] Gemini WebSocket connected`, { lifecycle: 'connected' });
       isConnected = true;
       reconnectAttempts = 0;
 
@@ -107,7 +107,11 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     });
 
     ws.on('close', (code, reason) => {
-      console.log(`🔌 [${exchange}] Gemini WebSocket closed: ${code} ${reason}`);
+      logger.info(`🔌 [${exchange}] Gemini WebSocket closed: ${code} ${reason}`, {
+        lifecycle: 'closed',
+        code,
+        reason: reason.toString(),
+      });
       handleDisconnect();
     });
 
@@ -132,7 +136,10 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     };
 
     ws.send(JSON.stringify(sub));
-    console.log(`📡 [${exchange}] Subscribed to l2 for ${symbol}`);
+    logger.info(`📡 [${exchange}] Subscribed to l2 for ${symbol}`, {
+      channel: 'l2',
+      symbol,
+    });
   };
 
   /**
@@ -275,7 +282,11 @@ const createGeminiWebSocketFeed = (exchange, config) => {
       MAX_RECONNECT_DELAY
     );
 
-    console.log(`🔄 [${exchange}] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts + 1})`);
+    logger.info(`🔄 [${exchange}] Reconnecting in ${delay / 1000}s (attempt ${reconnectAttempts + 1})`, {
+      lifecycle: 'reconnecting',
+      delayMs: delay,
+      reconnectAttempt: reconnectAttempts + 1,
+    });
 
     reconnectTimeout = setTimeout(() => {
       reconnectAttempts++;
@@ -327,7 +338,7 @@ const createGeminiWebSocketFeed = (exchange, config) => {
     }
 
     isConnected = false;
-    console.log(`🔌 [${exchange}] Gemini WebSocket disconnected`);
+    logger.info(`🔌 [${exchange}] Gemini WebSocket disconnected`, { lifecycle: 'disconnected' });
   };
 
   const isActive = () => isConnected;
