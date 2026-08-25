@@ -8,7 +8,7 @@
  *   node scripts/updown-pnl-snapshot.js --hydrate-state
  *
  * --hydrate-state  Stop-the-engine first. Replays signal history through the
- *                  1-BTC paper book using scorecard prediction prices, then
+ *                  0.01-BTC-per-contract paper book using scorecard prediction prices, then
  *                  writes perpBook into data/updown-state.json.
  */
 

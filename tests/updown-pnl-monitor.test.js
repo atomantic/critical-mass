@@ -17,7 +17,7 @@ describe('pnl-monitor verdict', () => {
 })
 
 describe('replaySignals paper-trades Open/Add then marks to market', () => {
-  it('opens 1 BTC, adds after HOLD, and reports PROFITABLE at a higher mark', () => {
+  it('opens 0.01 BTC contracts, adds after HOLD, and reports PROFITABLE at a higher mark', () => {
     const { book, fills } = replaySignals([
       { type: 'BUY', timestamp: 100, price: 100_000 },
       { type: 'NEUTRAL', timestamp: 200, price: 101_000 },
@@ -27,7 +27,7 @@ describe('replaySignals paper-trades Open/Add then marks to market', () => {
     assert.equal(book.contracts(), 2)
     const snap = summarize(book.snapshot(110_000), { mark: 110_000, lastAction: 'ADD' })
     assert.equal(snap.verdict, 'PROFITABLE')
-    assert.equal(snap.unrealizedPnl, 18_000)
+    assert.equal(snap.unrealizedPnl, 180)
     assert.equal(snap.contracts, 2)
   })
 
@@ -43,7 +43,7 @@ describe('replaySignals paper-trades Open/Add then marks to market', () => {
     assert.equal(fills[0].action, 'OPEN')
     assert.equal(fills[0].price, 100_000)
     assert.equal(fills[1].action, 'CLOSE')
-    assert.equal(book.snapshot().realizedPnl, -20_000)
+    assert.equal(book.snapshot().realizedPnl, -200)
     assert.equal(verdictOf(book.snapshot()), 'UNDERWATER')
   })
 })

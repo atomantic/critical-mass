@@ -2,7 +2,7 @@
 /**
  * Paper-book profitability snapshot for the UpDown advising engine.
  *
- * 1 BTC long per Open/Add, flatten on Close. Verdict is mark-to-market
+ * One 0.01 BTC contract per Open/Add, flatten on Close. Verdict is mark-to-market
  * total P&L (realized closed rounds + open lots at `mark`).
  */
 
@@ -70,7 +70,7 @@ const priceAt = (index, ts) => {
 }
 
 /**
- * Walk engine types through the paper book (same-side skip, 1 BTC per fill).
+ * Walk engine types through the paper book (same-side skip, one 0.01 BTC contract per fill).
  * Uses `entry.price` when present, otherwise `lookupPrice(timestamp)`.
  * @param {Array<{type?: string, price?: number, timestamp?: number}>} entries
  * @param {(ts: number) => number|null|undefined} [lookupPrice]

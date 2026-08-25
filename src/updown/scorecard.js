@@ -424,7 +424,7 @@ const computeByHour = (outcomes) => {
  * @param {Function} opts.lastPriceFn - Returns current BTC price
  * @param {Function} [opts.contractFn] - Returns current contract config
  * @param {Function} [opts.journalWriter] - Testable persistence boundary
- * @param {{snapshot: Function, hydrate: Function, isLong: Function, serialize: Function}|null} [opts.perpBook] - Shared 1-BTC paper book
+ * @param {{snapshot: Function, hydrate: Function, isLong: Function, serialize: Function}|null} [opts.perpBook] - Shared 0.01-BTC-per-contract paper book
  * @returns {{recordPrediction: Function, recordPerpFill: Function, getMetrics: Function, start: Function, stop: Function}}
  */
 const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, perpBook = null }) => {

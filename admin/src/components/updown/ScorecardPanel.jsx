@@ -86,10 +86,10 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
         <h3 className="text-sm font-semibold">Prediction Scorecard</h3>
       </div>
 
-      {/* Perp long paper book — 1 BTC per Open/Add, flatten on Close */}
+      {/* Perp long paper book — 0.01 BTC per contract, flatten on Close */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] uppercase tracking-wide text-gray-500">Perp long P&amp;L (1 BTC / fill)</span>
+          <span className="text-[10px] uppercase tracking-wide text-gray-500">Perp long P&amp;L (0.01 BTC / contract)</span>
           {perp?.contracts > 0 && (
             <span className="text-[10px] font-mono text-teal-400">{perp.contracts} open @ {formatUsd(perp.avgEntry)}</span>
           )}

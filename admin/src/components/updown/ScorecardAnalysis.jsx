@@ -133,7 +133,7 @@ export default function ScorecardAnalysis() {
               value={s.perpRealizedPnl != null
                 ? s.perpRealizedPnl.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
                 : null}
-              sub={s.perpRounds ? `${s.perpRounds} closed rounds` : '1 BTC / Open or Add'}
+              sub={s.perpRounds ? `${s.perpRounds} closed rounds` : '0.01 BTC / Open or Add'}
             />
             <StatCard
               label="Perp Win Rate"

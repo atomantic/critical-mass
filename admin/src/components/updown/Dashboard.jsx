@@ -151,7 +151,7 @@ export default function UpDownDashboard() {
             <div>
               <h2 className="text-lg font-bold">UpDown BTC Perp Longs</h2>
               <div className="text-xs text-gray-400">
-                Open / Add / Hold / Close — 1 BTC perpetual long per Open or Add
+                Open / Add / Hold / Close — 0.01 BTC perpetual contract per Open or Add
               </div>
             </div>
             <Link
