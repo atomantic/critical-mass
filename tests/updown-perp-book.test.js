@@ -2,6 +2,7 @@
 const { describe, it } = require('node:test')
 const assert = require('node:assert/strict')
 const { createPerpBook } = require('../src/updown/perp-book')
+const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('../src/updown/perp-contract')
 const { resolveAction, signalSide, isHeldLong, labelHistoryActions } = require('../src/updown/signal-actions')
 
 describe('resolveAction (Open / Add / Hold / Close)', () => {
@@ -78,12 +79,13 @@ describe('labelHistoryActions never prints OPEN until after CLOSE', () => {
   })
 })
 
-describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () => {
-  it('opens 1 BTC on the first BUY, does not pyramid while BUY stays printed', () => {
+describe('perp book paper-trades 0.01 BTC per contract and flattens on Close', () => {
+  it('opens one 0.01 BTC contract on the first BUY, does not pyramid while BUY stays printed', () => {
     const book = createPerpBook()
     const open = book.applySignal('BUY', 100_000, 1)
     assert.equal(open.action, 'OPEN')
     assert.equal(open.fill.contracts, 1)
+    assert.equal(book.snapshot().btcSize, PERP_CONTRACT_SIZE_BTC)
     assert.equal(book.contracts(), 1)
 
     const still = book.applySignal('BUY', 101_000, 2)
@@ -96,7 +98,7 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
     assert.equal(book.contracts(), 1)
   })
 
-  it('adds 1 BTC when BUY returns after HOLD while still long', () => {
+  it('adds one 0.01 BTC contract when BUY returns after HOLD while still long', () => {
     const book = createPerpBook()
     book.applySignal('BUY', 100_000, 1)
     const hold = book.applySignal('NEUTRAL', 99_000, 2)
@@ -111,7 +113,7 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
     assert.equal(book.snapshot().avgEntry, 99_000)
   })
 
-  it('closes the entire book on SELL and records round P&L as Σ(exit − entry)', () => {
+  it('closes the entire book on SELL and records P&L at 0.01 BTC per contract', () => {
     const book = createPerpBook()
     book.applySignal('BUY', 100_000, 1)
     book.applySignal('NEUTRAL', 100_000, 2)
@@ -120,11 +122,11 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
     const close = book.applySignal('SELL', 120_000, 4)
     assert.equal(close.action, 'CLOSE')
     assert.equal(close.fill.contracts, 2)
-    // (120k−100k) + (120k−110k) = 30k
-    assert.equal(close.trade.pnl, 30_000)
+    // ((120k−100k) + (120k−110k)) × 0.01 = 300
+    assert.equal(close.trade.pnl, 300)
     assert.equal(close.trade.adds, 1)
     assert.equal(book.contracts(), 0)
-    assert.equal(book.snapshot().realizedPnl, 30_000)
+    assert.equal(book.snapshot().realizedPnl, 300)
     assert.equal(book.snapshot().wins, 1)
     assert.equal(book.snapshot().winRate, 100)
   })
@@ -141,9 +143,9 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
     const book = createPerpBook()
     book.applySignal('BUY', 100_000, 1)
     const snap = book.snapshot(101_000)
-    assert.equal(snap.unrealizedPnl, 1_000)
+    assert.equal(snap.unrealizedPnl, 10)
     assert.equal(snap.realizedPnl, 0)
-    assert.equal(snap.totalPnl, 1_000)
+    assert.equal(snap.totalPnl, 10)
     assert.equal(book.contracts(), 1)
   })
 
@@ -151,7 +153,7 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
     const book = createPerpBook()
     book.applySignal('BUY', 100_000, 1)
     const close = book.applySignal('SELL', 90_000, 2)
-    assert.equal(close.trade.pnl, -10_000)
+    assert.equal(close.trade.pnl, -100)
     assert.equal(book.snapshot().losses, 1)
     assert.equal(book.snapshot().winRate, 0)
 
@@ -189,7 +191,7 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
     assert.equal(book.contracts(), 2)
     assert.equal(book.snapshot().avgEntry, 105_000)
     const close = book.applyFill('CLOSE', 120_000, 3)
-    assert.equal(close.trade.pnl, 30_000)
+    assert.equal(close.trade.pnl, 300)
   })
 
   it('ignores a fill when price is missing so a dead tick cannot open a $0 lot', () => {
@@ -201,5 +203,23 @@ describe('perp book paper-trades 1 BTC per Open/Add and flattens on Close', () =
     const retry = book.applySignal('BUY', 100_000, 2)
     assert.equal(retry.action, 'OPEN')
     assert.equal(retry.fill.contracts, 1)
+  })
+
+  it('normalizes 1-BTC legacy saved P&L when hydrating', () => {
+    const restored = createPerpBook({
+      realizedPnl: 30_000,
+      closedTrades: [{ pnl: 30_000 }],
+    })
+    const snap = restored.snapshot()
+    assert.equal(snap.realizedPnl, 300)
+    assert.equal(snap.closedTrades[0].pnl, 300)
+    assert.equal(restored.serialize().contractSizeBtc, PERP_CONTRACT_SIZE_BTC)
+  })
+})
+
+describe('UpDown perpetual contract sizing', () => {
+  it('uses 0.01 BTC per contract for USD P&L', () => {
+    assert.equal(calculatePerpPnl(100_000, 101_000, 2), 20)
+    assert.equal(calculatePerpPnl(100_000, 99_000, 2), -20)
   })
 })

@@ -1,17 +1,18 @@
 // @ts-check
 /**
- * Simulated 1-BTC perpetual-long book.
+ * Simulated 0.01-BTC-per-contract perpetual-long book.
  *
- * Every OPEN or ADD buys 1 BTC at the mark. CLOSE sells the entire book at
+ * Every OPEN or ADD buys one 0.01 BTC contract at the mark. CLOSE sells the entire book at
  * the mark. Same-side repeats (BUY staying BUY, or BUY→STRONG_BUY) do not
  * pyramid — a new fill requires a side change (Hold→Buy while already long
  * is ADD; Buy→Sell is CLOSE).
  *
- * P&L is mark-to-market USD with 1 BTC notional per contract: Δprice × contracts.
+ * P&L is mark-to-market USD with 0.01 BTC per contract: Δprice × contracts × 0.01.
  * No fees, no funding — this is the scorecard's "if we followed the signals" book.
  */
 
 const { resolveAction, signalSide } = require('./signal-actions')
+const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract')
 
 const round2 = (n) => Math.round(n * 100) / 100
 const round8 = (n) => Math.round(n * 1e8) / 1e8
@@ -20,6 +21,11 @@ const cloneLot = (lot) => ({
   entryPrice: lot.entryPrice,
   entryTs: lot.entryTs,
   action: lot.action,
+})
+
+const normalizeClosedTrade = (trade, pnlScale) => ({
+  ...trade,
+  pnl: Number.isFinite(trade?.pnl) ? round8(trade.pnl * pnlScale) : trade?.pnl,
 })
 
 /**
@@ -32,8 +38,16 @@ const cloneLot = (lot) => ({
  */
 const createPerpBook = (initial = {}) => {
   let lots = Array.isArray(initial.lots) ? initial.lots.filter(l => Number.isFinite(l?.entryPrice)).map(cloneLot) : []
-  let realizedPnl = Number.isFinite(initial.realizedPnl) ? initial.realizedPnl : 0
-  let closedTrades = Array.isArray(initial.closedTrades) ? initial.closedTrades.slice() : []
+  // Versions before contractSizeBtc reported P&L as if every contract were 1 BTC.
+  // Existing saved paper-book state is normalized when it is first loaded.
+  const initialContractSize = Number.isFinite(initial.contractSizeBtc) && initial.contractSizeBtc > 0
+    ? initial.contractSizeBtc
+    : 1
+  const initialPnlScale = PERP_CONTRACT_SIZE_BTC / initialContractSize
+  let realizedPnl = Number.isFinite(initial.realizedPnl) ? initial.realizedPnl * initialPnlScale : 0
+  let closedTrades = Array.isArray(initial.closedTrades)
+    ? initial.closedTrades.map(trade => normalizeClosedTrade(trade, initialPnlScale))
+    : []
   let maxContracts = Number.isFinite(initial.maxContracts) ? initial.maxContracts : lots.length
   let lastSide = initial.lastSide === 'BUY' || initial.lastSide === 'SELL' || initial.lastSide === 'HOLD'
     ? initial.lastSide
@@ -50,7 +64,7 @@ const createPerpBook = (initial = {}) => {
 
   const unrealizedAt = (price) => {
     if (!Number.isFinite(price) || lots.length === 0) return 0
-    return lots.reduce((s, l) => s + (price - l.entryPrice), 0)
+    return lots.reduce((s, l) => s + calculatePerpPnl(l.entryPrice, price, 1), 0)
   }
 
   const closedStats = () => {
@@ -79,6 +93,8 @@ const createPerpBook = (initial = {}) => {
     const stats = closedStats()
     return {
       contracts: n,
+      contractSizeBtc: PERP_CONTRACT_SIZE_BTC,
+      btcSize: round8(n * PERP_CONTRACT_SIZE_BTC),
       avgEntry: n > 0 ? round2(avgEntry()) : 0,
       realizedPnl: round2(realizedPnl),
       unrealizedPnl: round2(unrealized),
@@ -139,6 +155,8 @@ const createPerpBook = (initial = {}) => {
         openedAt: lots[0].entryTs,
         closedAt: ts,
         adds: n - 1,
+        contractSizeBtc: PERP_CONTRACT_SIZE_BTC,
+        btcSize: round8(n * PERP_CONTRACT_SIZE_BTC),
       }
       realizedPnl = round8(realizedPnl + pnl)
       closedTrades.push(trade)
@@ -172,8 +190,14 @@ const createPerpBook = (initial = {}) => {
    */
   const hydrate = (next = {}) => {
     lots = Array.isArray(next.lots) ? next.lots.filter(l => Number.isFinite(l?.entryPrice)).map(cloneLot) : []
-    realizedPnl = Number.isFinite(next.realizedPnl) ? next.realizedPnl : 0
-    closedTrades = Array.isArray(next.closedTrades) ? next.closedTrades.slice() : []
+    const previousContractSize = Number.isFinite(next.contractSizeBtc) && next.contractSizeBtc > 0
+      ? next.contractSizeBtc
+      : 1
+    const pnlScale = PERP_CONTRACT_SIZE_BTC / previousContractSize
+    realizedPnl = Number.isFinite(next.realizedPnl) ? next.realizedPnl * pnlScale : 0
+    closedTrades = Array.isArray(next.closedTrades)
+      ? next.closedTrades.map(trade => normalizeClosedTrade(trade, pnlScale))
+      : []
     maxContracts = Number.isFinite(next.maxContracts) ? next.maxContracts : lots.length
     lastSide = next.lastSide === 'BUY' || next.lastSide === 'SELL' || next.lastSide === 'HOLD'
       ? next.lastSide
@@ -182,6 +206,7 @@ const createPerpBook = (initial = {}) => {
   }
 
   const serialize = () => ({
+    contractSizeBtc: PERP_CONTRACT_SIZE_BTC,
     lots: lots.map(cloneLot),
     realizedPnl,
     closedTrades: closedTrades.slice(-200),

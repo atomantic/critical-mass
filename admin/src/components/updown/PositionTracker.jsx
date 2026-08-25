@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { Crosshair, Save, Trash2 } from 'lucide-react'
 
+const PERP_CONTRACT_SIZE_BTC = 0.01
+
 function formatCurrency(value) {
   if (value == null) return '---'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
@@ -60,11 +62,8 @@ export default function PositionTracker({ initialPosition, tick }) {
   const entry = parseFloat(entryPrice)
   const amt = parseFloat(amount)
   const validCalc = currentPrice > 0 && Number.isFinite(entry) && entry > 0 && Number.isFinite(amt) && amt > 0
-  const pnl = validCalc
-    ? direction === 'Up'
-      ? (currentPrice - entry) * amt
-      : (entry - currentPrice) * amt
-    : null
+  const directionMultiplier = direction === 'Up' ? 1 : -1
+  const pnl = validCalc ? (currentPrice - entry) * amt * PERP_CONTRACT_SIZE_BTC * directionMultiplier : null
   const pnlPct = validCalc
     ? direction === 'Up'
       ? ((currentPrice - entry) / entry) * 100
@@ -93,7 +92,7 @@ export default function PositionTracker({ initialPosition, tick }) {
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 block mb-1">Contracts (1 BTC each)</label>
+          <label className="text-xs text-gray-400 block mb-1">Contracts (0.01 BTC each)</label>
           <input
             type="number"
             value={amount}

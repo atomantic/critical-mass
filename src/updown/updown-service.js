@@ -12,6 +12,7 @@ const { createSignalEngine, scoreToSignalDynamic, resolveNoTradeZoneType, applyU
 const { clampScoreToExistingType, preventTickCreatedSignal, alignJournalType } = require('./signal-stability');
 const { createScorecard } = require('./scorecard');
 const { createPerpBook } = require('./perp-book');
+const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract');
 const { resolveAction, labelHistoryActions } = require('./signal-actions');
 const { log } = require('../logger');
 
@@ -133,10 +134,9 @@ const createUpDownService = (io, deps) => {
    */
   const computePnL = () => {
     if (!position || !lastPrice) return null;
-    const entryValue = position.contracts * position.entryPrice;
-    const currentValue = position.contracts * lastPrice;
+    const entryValue = position.contracts * PERP_CONTRACT_SIZE_BTC * position.entryPrice;
     const direction = position.direction === 'up' ? 1 : -1;
-    const pnl = (currentValue - entryValue) * direction;
+    const pnl = calculatePerpPnl(position.entryPrice, lastPrice, position.contracts, direction);
     const pnlPercent = entryValue > 0 ? (pnl / entryValue) * 100 : 0;
     return { pnl: Math.round(pnl * 100) / 100, pnlPercent: Math.round(pnlPercent * 100) / 100 };
   };
@@ -251,7 +251,7 @@ const createUpDownService = (io, deps) => {
 
     lastSignalResult = result;
 
-    // Paper-trade the published type against the 1-BTC perp book. Same-side
+    // Paper-trade the published type against the 0.01-BTC-per-contract perp book. Same-side
     // repeats (BUY staying BUY) do not pyramid; a new BUY after HOLD adds.
     const fillResult = lastPrice > 0
       ? perpBook.applySignal(result.type, lastPrice, result.timestamp)

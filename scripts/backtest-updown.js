@@ -4,7 +4,7 @@
  * UpDown Signal Backtest — BTC perpetual longs
  *
  * Replays BTC 1m candle data through the signal engine and paper-trades:
- *   OPEN or ADD → buy 1 BTC perp
+ *   OPEN or ADD → buy one 0.01 BTC perp contract
  *   CLOSE       → flatten the entire book
  *   HOLD        → no fill
  *
@@ -23,6 +23,7 @@ const { getAdapter } = require('../src/adapters')
 const { createCandleAggregator, TIMEFRAMES } = require('../src/candle-aggregator')
 const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
 const { createPerpBook } = require('../src/updown/perp-book')
+const { PERP_CONTRACT_SIZE_BTC } = require('../src/updown/perp-contract')
 const { getCacheFile } = require('../src/backtest-engine')
 const { DATA_DIR } = require('../src/paths')
 
@@ -537,7 +538,7 @@ async function main() {
 
   console.log('=== UpDown Perp Long Backtest ===')
   console.log(`  Period: ${new Date(evalStartMs).toISOString().slice(0, 10)} to ${new Date(evalEndMs).toISOString().slice(0, 10)} (${EVAL_DAYS} days)`)
-  console.log(`  Warmup: ${WARMUP_DAYS} days | Size: 1 BTC per Open/Add`)
+  console.log(`  Warmup: ${WARMUP_DAYS} days | Size: ${PERP_CONTRACT_SIZE_BTC} BTC per contract`)
   console.log('')
 
   // 1. Fetch 1m candles
@@ -570,7 +571,7 @@ async function main() {
   // 5. Output results
   const evalCandleCount = candles1m.filter(c => c.timestamp >= evalStartMs).length
   console.log('\n=== UpDown Perp Long Backtest Results ===')
-  console.log('  NOTE: 1 BTC per Open/Add, flatten on Close. Zero fees/funding/spread.')
+  console.log(`  NOTE: ${PERP_CONTRACT_SIZE_BTC} BTC per Open/Add contract, flatten on Close. Zero fees/funding/spread.`)
   console.log(`  Period: ${new Date(evalStartMs).toISOString().slice(0, 10)} to ${new Date(evalEndMs).toISOString().slice(0, 10)} (${EVAL_DAYS} days)`)
   console.log(`  Warmup: ${WARMUP_DAYS} days | Candles: ${evalCandleCount.toLocaleString()}`)
   console.log('')
@@ -641,11 +642,11 @@ async function main() {
   // Summary JSON
   const summaryPath = path.join(BACKTEST_DIR, `backtest-summary-${dateStr}.json`)
   fs.writeFileSync(summaryPath, JSON.stringify({
-    note: '1 BTC per Open/Add, flatten on Close. Zero fees/funding/spread.',
+    note: `${PERP_CONTRACT_SIZE_BTC} BTC per Open/Add contract, flatten on Close. Zero fees/funding/spread.`,
     config: {
       evalDays: EVAL_DAYS,
       warmupDays: WARMUP_DAYS,
-      contractSizeBtc: 1,
+      contractSizeBtc: PERP_CONTRACT_SIZE_BTC,
       evalStart: new Date(evalStartMs).toISOString(),
       evalEnd: new Date(evalEndMs).toISOString(),
       candleCount: evalCandleCount,

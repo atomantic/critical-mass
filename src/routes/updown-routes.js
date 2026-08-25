@@ -13,6 +13,7 @@ const { readFileSync, readdirSync } = fs;
 const { log } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
+const { calculatePerpPnl } = require('../updown/perp-contract');
 
 const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
@@ -541,10 +542,15 @@ module.exports = (app, deps) => {
       byRange: contractByRange,
     } : null;
 
-    const closedRounds = perpFills.filter(f => f.action === 'CLOSE' && f.trade)
-    const perpWins = closedRounds.filter(f => (f.trade?.pnl ?? f.pnl ?? 0) > 0)
-    const perpLosses = closedRounds.filter(f => (f.trade?.pnl ?? f.pnl ?? 0) <= 0)
-    const perpRealized = closedRounds.reduce((s, f) => s + (f.trade?.pnl ?? f.pnl ?? 0), 0)
+    const closedRounds = perpFills
+      .filter(f => f.action === 'CLOSE' && f.trade)
+      .map(f => ({
+        ...f,
+        normalizedPnl: calculatePerpPnl(f.trade.avgEntry, f.trade.exitPrice, f.trade.contracts),
+      }))
+    const perpWins = closedRounds.filter(f => f.normalizedPnl > 0)
+    const perpLosses = closedRounds.filter(f => f.normalizedPnl <= 0)
+    const perpRealized = closedRounds.reduce((s, f) => s + f.normalizedPnl, 0)
     const perpAnalysis = perpFills.length > 0 ? {
       opens: perpFills.filter(f => f.action === 'OPEN').length,
       adds: perpFills.filter(f => f.action === 'ADD').length,
