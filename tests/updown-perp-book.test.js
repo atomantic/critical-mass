@@ -22,9 +22,10 @@ describe('resolveAction (Open / Add / Hold / Close)', () => {
     assert.equal(resolveAction('SELL', { direction: 'down' }), 'HOLD')
   })
 
-  it('maps NEUTRAL / NO_TRADE_ZONE to HOLD whether flat or long', () => {
+  it('maps NEUTRAL / NO_TRADE_ZONE to CLOSE while long and HOLD while flat', () => {
     assert.equal(resolveAction('NEUTRAL'), 'HOLD')
-    assert.equal(resolveAction('NO_TRADE_ZONE', { direction: 'up', contracts: 1 }), 'HOLD')
+    assert.equal(resolveAction('NO_TRADE_ZONE', { direction: 'up', contracts: 1 }), 'CLOSE')
+    assert.equal(resolveAction('NEUTRAL', { contracts: 1 }), 'CLOSE')
     assert.equal(resolveAction(null), 'HOLD')
   })
 
@@ -44,7 +45,7 @@ describe('resolveAction (Open / Add / Hold / Close)', () => {
 })
 
 describe('labelHistoryActions never prints OPEN until after CLOSE', () => {
-  it('relabels a second BUY as ADD when there was no CLOSE', () => {
+  it('treats NEUTRAL while long as CLOSE so the next BUY is a new OPEN', () => {
     const rows = [
       { type: 'BUY', timestamp: 100, action: 'OPEN' },
       { type: 'NEUTRAL', timestamp: 200 },
@@ -53,7 +54,7 @@ describe('labelHistoryActions never prints OPEN until after CLOSE', () => {
       { type: 'BUY', timestamp: 500, action: 'OPEN' },
     ]
     const labeled = labelHistoryActions(rows)
-    assert.deepEqual(labeled.map(r => r.action), ['OPEN', 'HOLD', 'ADD', 'HOLD', 'ADD'])
+    assert.deepEqual(labeled.map(r => r.action), ['OPEN', 'CLOSE', 'OPEN', 'CLOSE', 'OPEN'])
   })
 
   it('allows OPEN again only after CLOSE', () => {
@@ -74,8 +75,8 @@ describe('labelHistoryActions never prints OPEN until after CLOSE', () => {
     ]
     const labeled = labelHistoryActions(rows)
     assert.equal(labeled[2].action, 'OPEN')
-    assert.equal(labeled[1].action, 'HOLD')
-    assert.equal(labeled[0].action, 'ADD')
+    assert.equal(labeled[1].action, 'CLOSE')
+    assert.equal(labeled[0].action, 'OPEN')
   })
 })
 
@@ -98,35 +99,45 @@ describe('perp book paper-trades 0.01 BTC per contract and flattens on Close', (
     assert.equal(book.contracts(), 1)
   })
 
-  it('adds one 0.01 BTC contract when BUY returns after HOLD while still long', () => {
+  it('closes when BUY fades to NEUTRAL so the next BUY is a fresh OPEN', () => {
     const book = createPerpBook()
     book.applySignal('BUY', 100_000, 1)
-    const hold = book.applySignal('NEUTRAL', 99_000, 2)
-    assert.equal(hold.action, 'HOLD')
-    assert.equal(hold.fill, null)
-    assert.equal(book.contracts(), 1)
+    const faded = book.applySignal('NEUTRAL', 99_000, 2)
+    assert.equal(faded.action, 'CLOSE')
+    assert.equal(faded.fill.contracts, 1)
+    assert.equal(book.contracts(), 0)
 
-    const add = book.applySignal('BUY', 98_000, 3)
-    assert.equal(add.action, 'ADD')
-    assert.equal(add.fill.contracts, 1)
-    assert.equal(book.contracts(), 2)
-    assert.equal(book.snapshot().avgEntry, 99_000)
+    const reopen = book.applySignal('BUY', 98_000, 3)
+    assert.equal(reopen.action, 'OPEN')
+    assert.equal(reopen.fill.contracts, 1)
+    assert.equal(book.contracts(), 1)
+    assert.equal(book.snapshot().avgEntry, 98_000)
+  })
+
+  it('closes even when lastSide is already HOLD (faded BUY clip)', () => {
+    const book = createPerpBook()
+    book.applySignal('BUY', 100_000, 1)
+    book.applyFill('HOLD', 99_000, 2)
+    const faded = book.applySignal('NEUTRAL', 98_000, 3)
+    assert.equal(faded.action, 'CLOSE')
+    assert.equal(book.contracts(), 0)
   })
 
   it('closes the entire book on SELL and records P&L at 0.01 BTC per contract', () => {
     const book = createPerpBook()
     book.applySignal('BUY', 100_000, 1)
-    book.applySignal('NEUTRAL', 100_000, 2)
-    book.applySignal('BUY', 110_000, 3)
+    book.applySignal('STRONG_BUY', 100_000, 2)
+    const still = book.applySignal('BUY', 110_000, 3)
+    assert.equal(still.fill, null)
 
     const close = book.applySignal('SELL', 120_000, 4)
     assert.equal(close.action, 'CLOSE')
-    assert.equal(close.fill.contracts, 2)
-    // ((120k−100k) + (120k−110k)) × 0.01 = 300
-    assert.equal(close.trade.pnl, 300)
-    assert.equal(close.trade.adds, 1)
+    assert.equal(close.fill.contracts, 1)
+    // (120k−100k) × 0.01 = 200
+    assert.equal(close.trade.pnl, 200)
+    assert.equal(close.trade.adds, 0)
     assert.equal(book.contracts(), 0)
-    assert.equal(book.snapshot().realizedPnl, 300)
+    assert.equal(book.snapshot().realizedPnl, 200)
     assert.equal(book.snapshot().wins, 1)
     assert.equal(book.snapshot().winRate, 100)
   })
@@ -162,11 +173,11 @@ describe('perp book paper-trades 0.01 BTC per contract and flattens on Close', (
     assert.equal(book.contracts(), 1)
   })
 
-  it('stays long across HOLD with no lots so the next BUY is ADD not OPEN', () => {
-    const book = createPerpBook({ open: true, lastSide: 'HOLD' })
-    assert.equal(book.isLong(), true)
+  it('treats a BUY after a flat HOLD as OPEN, not ADD', () => {
+    const book = createPerpBook({ open: false, lastSide: 'HOLD' })
+    assert.equal(book.isLong(), false)
     const add = book.applySignal('BUY', 100_000, 1)
-    assert.equal(add.action, 'ADD')
+    assert.equal(add.action, 'OPEN')
     assert.equal(book.contracts(), 1)
   })
 

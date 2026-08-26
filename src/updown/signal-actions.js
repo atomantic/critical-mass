@@ -6,7 +6,7 @@
  * The dashboard prints Open / Add / Hold / Close:
  *   BUY while flat  → OPEN
  *   BUY while long  → ADD
- *   SELL while long → CLOSE
+ *   any non-BUY while long → CLOSE  (lost the long thesis, including NEUTRAL)
  *   anything else   → HOLD  (flat + SELL is stand-aside, not a short)
  */
 
@@ -52,7 +52,7 @@ const isHeldLong = (held) => {
 const resolveAction = (type, held = null) => {
   const long = isHeldLong(held)
   if (isBuyType(type)) return long ? 'ADD' : 'OPEN'
-  if (isSellType(type) && long) return 'CLOSE'
+  if (long) return 'CLOSE'
   return 'HOLD'
 }
 

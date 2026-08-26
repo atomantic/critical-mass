@@ -116,8 +116,9 @@ const createPerpBook = (initial = {}) => {
    */
   const applySignal = (type, price, ts = Date.now()) => {
     const action = resolveAction(type, isLong())
+    // CLOSE must flatten even if lastSide is already HOLD (BUY faded to NEUTRAL).
+    if (action === 'CLOSE') return applyFill(action, price, ts)
     const side = signalSide(type)
-
     if (side === lastSide) {
       return { action, fill: null, trade: null }
     }

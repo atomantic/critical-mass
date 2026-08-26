@@ -59,7 +59,7 @@ const isHeldLong = (held) => {
 export const resolveAction = (type, heldPosition) => {
   const long = isHeldLong(heldPosition)
   if (isBuyType(type)) return long ? 'ADD' : 'OPEN'
-  if (isSellType(type) && long) return 'CLOSE'
+  if (long) return 'CLOSE'
   return 'HOLD'
 }
 
