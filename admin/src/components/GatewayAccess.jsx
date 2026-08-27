@@ -80,6 +80,7 @@ export default function GatewayAccess() {
         </div>
         <p className="text-sm text-gray-400">
           Sign-in is off until you set a password here. It is stored as a hash in <code className="text-gray-300">data/operator-auth.json</code>, not as an environment variable.
+          {' '}Authenticated browsers stay signed in for 30 days after each visit.
         </p>
       </div>
 

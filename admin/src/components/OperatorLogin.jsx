@@ -6,10 +6,10 @@ export default function OperatorLogin({ children }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
 
-  // Keep authentication as an application boundary, including after the
-  // initial session check. A gateway restart invalidates in-memory sessions;
-  // without this response hook the already-mounted SPA would merely show API
-  // errors while continuing to render privileged controls.
+  // Keep authentication as an application boundary after the initial session
+  // check. If a session expires or a password change revokes it, the mounted
+  // SPA must return to sign-in instead of merely showing API errors while
+  // continuing to render privileged controls.
   useEffect(() => {
     const originalFetch = window.fetch
     const authenticatedFetch = async (...args) => {
@@ -63,6 +63,11 @@ export default function OperatorLogin({ children }) {
             ? 'Enter the operator password set in Gateway → Access.'
             : 'Could not reach the gateway. Check that critical-mass is running, then retry.'}
         </p>
+        {required && (
+          <p className="mt-2 text-xs text-gray-500">
+            This browser stays signed in for 30 days after each visit.
+          </p>
+        )}
         <label className="block mt-6 text-sm font-medium text-gray-300" htmlFor="operator-password">Password</label>
         <input
           id="operator-password"

@@ -7,10 +7,15 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 
-const { createOperatorAuth, MIN_PASSWORD_LENGTH } = require('../src/operator-auth');
+const {
+  createOperatorAuth,
+  MIN_PASSWORD_LENGTH,
+  SESSION_TTL_SECONDS,
+} = require('../src/operator-auth');
 const { readJSON, writeJSON } = require('../src/shared-utils');
 
 const PASSWORD = 'gateway-password-1';
+const NEW_PASSWORD = 'gateway-password-2';
 const tmpFiles = [];
 
 const tmpAuthFile = () => {
@@ -190,6 +195,79 @@ describe('operator authentication boundary', () => {
     });
   });
 
+  it('persists and renews browser authentication across page and gateway reloads', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    let cookie;
+
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      assert.equal(login.status, 200);
+      const setCookie = login.headers.get('set-cookie');
+      assert.match(setCookie, new RegExp(`Max-Age=${SESSION_TTL_SECONDS}(?:;|$)`));
+      assert.match(setCookie, /HttpOnly/i);
+      cookie = setCookie.split(';')[0];
+    });
+
+    // Recreate the auth service from its persisted password record, matching a
+    // gateway restart. A subsequent page-load session check stays authorized
+    // and renews the durable browser cookie.
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const session = await fetch(`${baseUrl}/api/auth/session`, {
+        headers: { Cookie: cookie },
+      });
+      assert.equal(session.status, 200);
+      assert.deepEqual(await session.json(), { authenticated: true, required: true });
+      assert.match(
+        session.headers.get('set-cookie'),
+        new RegExp(`Max-Age=${SESSION_TTL_SECONDS}(?:;|$)`)
+      );
+
+      const protectedResponse = await fetch(`${baseUrl}/api/providers`, {
+        headers: { Cookie: cookie },
+      });
+      assert.equal(protectedResponse.status, 200);
+    });
+  });
+
+  it('revokes persisted browser authentication after a password change or sign-out', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const oldCookie = login.headers.get('set-cookie').split(';')[0];
+
+      const changed = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: { Cookie: oldCookie, Origin: baseUrl, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: NEW_PASSWORD }),
+      });
+      assert.equal(changed.status, 200);
+      const newCookie = changed.headers.get('set-cookie').split(';')[0];
+
+      const revoked = await fetch(`${baseUrl}/api/auth/session`, {
+        headers: { Cookie: oldCookie },
+      });
+      assert.deepEqual(await revoked.json(), { authenticated: false, required: true });
+
+      const signedOut = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'DELETE',
+        headers: { Cookie: newCookie, Origin: baseUrl },
+      });
+      assert.equal(signedOut.status, 204);
+      assert.match(signedOut.headers.get('set-cookie'), /Expires=Thu, 01 Jan 1970 00:00:00 GMT/i);
+    });
+  });
+
   it('accepts bearer auth (the panel password) and rejects cross-origin session mutations', async () => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
@@ -232,5 +310,9 @@ describe('operator authentication boundary', () => {
 describe('operator password length', () => {
   it('exports the panel minimum', () => {
     assert.equal(MIN_PASSWORD_LENGTH, 8);
+  });
+
+  it('keeps browser sessions for 30 days', () => {
+    assert.equal(SESSION_TTL_SECONDS, 30 * 24 * 60 * 60);
   });
 });
