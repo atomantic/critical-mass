@@ -17,18 +17,19 @@ describe('pnl-monitor verdict', () => {
 })
 
 describe('replaySignals paper-trades Open/Add then marks to market', () => {
-  it('opens 0.01 BTC contracts, adds after HOLD, and reports PROFITABLE at a higher mark', () => {
+  it('closes on a faded BUY, reopens, and reports PROFITABLE at a higher mark', () => {
     const { book, fills } = replaySignals([
       { type: 'BUY', timestamp: 100, price: 100_000 },
       { type: 'NEUTRAL', timestamp: 200, price: 101_000 },
       { type: 'BUY', timestamp: 300, price: 102_000 },
     ])
-    assert.deepEqual(fills.map(f => f.action), ['OPEN', 'ADD'])
-    assert.equal(book.contracts(), 2)
-    const snap = summarize(book.snapshot(110_000), { mark: 110_000, lastAction: 'ADD' })
+    assert.deepEqual(fills.map(f => f.action), ['OPEN', 'CLOSE', 'OPEN'])
+    assert.equal(book.contracts(), 1)
+    const snap = summarize(book.snapshot(110_000), { mark: 110_000, lastAction: 'OPEN' })
     assert.equal(snap.verdict, 'PROFITABLE')
-    assert.equal(snap.unrealizedPnl, 180)
-    assert.equal(snap.contracts, 2)
+    assert.equal(snap.realizedPnl, 10)
+    assert.equal(snap.unrealizedPnl, 80)
+    assert.equal(snap.contracts, 1)
   })
 
   it('looks up missing prices from a sorted index', () => {

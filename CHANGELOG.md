@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - **Safer local service and automation boundaries** — The gateway now binds to loopback by default, Docker host publishing is loopback-only, state files are atomically replaced with owner-only permissions, CI actions use immutable revisions, and startup refuses foreign port occupants instead of killing them. The vulnerable development dependency chain was also removed.
 
 ### Fixed
+- **Operator authentication persists across visits** — A successful sign-in now keeps the browser authenticated with a rolling 30-day, signed HttpOnly session. Page-load session checks renew the cookie, while password changes and explicit sign-out still revoke it.
 - **UpDown flattens when a BUY clip fades** — NEUTRAL/HOLD while still long was "stay in the trade," so the paper book rode the whole dump without a CLOSE. Losing BUY now prints CLOSE; the next BUY is a fresh OPEN.
 - **Gateway is reachable on Tailscale again** — loopback-only bind had dropped `http://100.x:5563` and MagicDNS `http://<machine>.ts.net:5563`. The gateway now listens on 127.0.0.1 plus Tailscale 100.64/10, and CORS/Socket.IO allow `*.ts.net` and 100.x origins. LAN/WAN stay unpublished unless `HOST=0.0.0.0`.
 - **UpDown history no longer prints OPEN until after CLOSE** — old BUY rows were labeled OPEN as if the book were always flat. History is walked oldest-first (Open → Hold/Add → Close → Open).

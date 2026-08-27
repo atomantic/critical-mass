@@ -181,18 +181,20 @@ describe('perp book paper-trades 0.01 BTC per contract and flattens on Close', (
     assert.equal(book.contracts(), 1)
   })
 
-  it('hydrates lots so a restart does not re-open a live long as a new OPEN', () => {
+  it('hydrates lots so a restart still closes a faded live long before reopening', () => {
     const book = createPerpBook()
     book.applySignal('BUY', 100_000, 1)
     const saved = book.serialize()
 
     const restored = createPerpBook(saved)
     assert.equal(restored.contracts(), 1)
-    const add = restored.applySignal('NEUTRAL', 100_000, 2)
-    assert.equal(add.fill, null)
+    const close = restored.applySignal('NEUTRAL', 100_000, 2)
+    assert.equal(close.action, 'CLOSE')
+    assert.equal(close.fill.contracts, 1)
+    assert.equal(restored.contracts(), 0)
     const again = restored.applySignal('BUY', 101_000, 3)
-    assert.equal(again.action, 'ADD')
-    assert.equal(restored.contracts(), 2)
+    assert.equal(again.action, 'OPEN')
+    assert.equal(restored.contracts(), 1)
   })
 
   it('replays journaled OPEN then ADD without an intervening HOLD', () => {

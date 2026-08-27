@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const { log } = require('./logger');
 
 const COOKIE_NAME = 'critical_mass_operator';
-const SESSION_TTL_SECONDS = 12 * 60 * 60;
+const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MIN_PASSWORD_LENGTH = 8;
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -161,6 +161,7 @@ const createOperatorAuth = ({
     app.get('/api/auth/session', (req, res) => {
       const required = isRequired();
       const auth = authenticate(req.headers);
+      if (required && auth?.source === 'session') setSessionCookie(req, res);
       res.json({
         authenticated: required ? Boolean(auth && auth.source !== 'open') : true,
         required,
@@ -228,6 +229,7 @@ const createOperatorAuth = ({
 module.exports = {
   COOKIE_NAME,
   MIN_PASSWORD_LENGTH,
+  SESSION_TTL_SECONDS,
   createOperatorAuth,
   parseCookies,
   readBearerToken,
