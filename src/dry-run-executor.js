@@ -15,6 +15,7 @@
 const { roundAsset, roundPrice } = require('./volatility-utils');
 const { getBaseCurrency } = require('./config-utils');
 const { fmtCurrency: fmtPrice, BASIS_POINTS_DIVISOR } = require('./shared-utils');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -84,12 +85,16 @@ const getOrderIdCounter = () => orderIdCounter;
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onBuyFill] - Called when buy order fills: (orderId, assetQty, price, costBasis)
  * @param {Function} [callbacks.onSellFill] - Called when sell order fills: (orderId, assetQty, price, proceeds, pnl)
+ * @param {string} productId - Trading pair
+ * @param {Object} [deps] - Optional dependencies
+ * @param {Object} [deps.logger] - Context logger override
  * @returns {Object} Dry-run order executor instance
  */
-const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, productId) => {
+const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, productId, deps = {}) => {
   /** @type {Map<string, SimulatedOrder>} */
   const pendingOrders = new Map();
   const baseCurrency = getBaseCurrency(productId);
+  const logger = deps.logger || createContextLogger({ exchange, pair: productId, mode: 'dry-run' });
   let priceIncrement = 0.01; // Updated via setPriceIncrement from product details
 
   /** @type {DecisionLogEntry[]} */
@@ -207,7 +212,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       offsetBps,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc}) offset=${offsetBps}bps stale=${Math.round((staleMs ?? config.orderStaleMs) / 1000)}s`);
+    logger.info(
+      `🧪 [${exchange}] [DRY-RUN] Entry bid placed: ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)} (size $${sizeUsdc}) offset=${offsetBps}bps stale=${Math.round((staleMs ?? config.orderStaleMs) / 1000)}s`,
+      { orderId, orderType: 'entry', side: 'buy', assetQty, sizeUsdc, price: bidPrice, offsetBps, staleMs: staleMs ?? config.orderStaleMs }
+    );
 
     // Entry fills are checked continuously via checkEntryFills() called from regime engine
 
@@ -281,7 +289,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       assetQty: roundedQty,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] TP sell placed: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`);
+    logger.info(
+      `🧪 [${exchange}] [DRY-RUN] TP sell placed: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)}`,
+      { orderId, orderType: 'take_profit', side: 'sell', assetQty: roundedQty, price: roundedPrice }
+    );
 
     return {
       success: true,
@@ -339,7 +350,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
             reason: 'stale_order',
             ageMs: now - order.placedAt,
           });
-          console.log(`🧪 [${exchange}] [DRY-RUN] Entry cancelled (stale after ${Math.round((now - order.placedAt) / 1000)}s): ${orderId}`);
+          logger.info(
+            `🧪 [${exchange}] [DRY-RUN] Entry cancelled (stale after ${Math.round((now - order.placedAt) / 1000)}s): ${orderId}`,
+            { orderId, orderType: 'entry', reason: 'stale_order', ageMs: now - order.placedAt, currentPrice }
+          );
         }
       }
     }
@@ -433,7 +447,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
         costBasis,
         totalBought: simulatedTotalBought,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] Entry FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}`);
+      logger.info(
+        `🧪 [${exchange}] [DRY-RUN] Entry FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}`,
+        { orderId, orderType: 'entry', assetQty: order.size, fillPrice, costBasis, totalBought: simulatedTotalBought }
+      );
 
       // Push to filled orders after all data is populated
       recordFilledOrder({ ...order });
@@ -479,7 +496,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
         pnl,
         isBody: true,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] Body TP FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}, PnL=$${pnl.toFixed(2)}`);
+      logger.info(
+        `🧪 [${exchange}] [DRY-RUN] Body TP FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}, PnL=$${pnl.toFixed(2)}`,
+        { orderId, bodyId: bodyInfo?.bodyId, orderType: 'body_tp', assetQty: order.size, fillPrice, pnl, holdbackAsset }
+      );
 
       // Remove body tracking
       removeBodyTracking(orderId);
@@ -536,7 +556,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
         usdcProfit,
         totalRealizedPnL: simulatedRealizedPnL,
       });
-      console.log(`🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}, USDC profit=$${usdcProfit.toFixed(2)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency} (≈$${holdbackValue.toFixed(2)})`);
+      logger.info(
+        `🧪 [${exchange}] [DRY-RUN] TP FILLED: ${order.size} ${baseCurrency} @ ${fmtPrice(fillPrice)}, USDC profit=$${usdcProfit.toFixed(2)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency} (≈$${holdbackValue.toFixed(2)})`,
+        { orderId, orderType: 'take_profit', assetQty: order.size, fillPrice, pnl, usdcProfit, holdbackAsset, holdbackValue }
+      );
 
       if (orderId === activeTpOrderId) {
         activeTpOrderId = null;
@@ -564,7 +587,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
           cycleNumber: cycleAnalytics.length + 1,
         });
 
-        console.log(`📊 [${exchange}] [DRY-RUN] Cycle ${cycleAnalytics.length} analytics: optimal=${optimalTpPct.toFixed(2)}% actual=${actualTpPct.toFixed(2)}% missed=${missedProfitPct.toFixed(2)}%`);
+        logger.info(
+          `📊 [${exchange}] [DRY-RUN] Cycle ${cycleAnalytics.length} analytics: optimal=${optimalTpPct.toFixed(2)}% actual=${actualTpPct.toFixed(2)}% missed=${missedProfitPct.toFixed(2)}%`,
+          { cycleNumber: cycleAnalytics.length, entryPrice, exitPrice: fillPrice, optimalTpPct, actualTpPct, missedProfitPct, timeToMax }
+        );
 
         // Reset tracking for next cycle
         currentCycleTracking = null;
@@ -625,7 +651,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       }
     }
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] Cancelled ${cancelled} entry orders`);
+    logger.info(`🧪 [${exchange}] [DRY-RUN] Cancelled ${cancelled} entry orders`, {
+      orderType: 'entry',
+      cancelledCount: cancelled,
+    });
     return cancelled;
   };
 
@@ -680,7 +709,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       costBasis,
     });
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] Body TP placed: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`);
+    logger.info(
+      `🧪 [${exchange}] [DRY-RUN] Body TP placed: ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`,
+      { orderId, bodyId, orderType: 'body_tp', side: 'sell', assetQty: roundedQty, price: roundedPrice, costBasis }
+    );
     return { success: true, orderId };
   };
 
@@ -1120,7 +1152,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
     simulatedBodyRealizedBtcPnL = 0;
     simulatedTotalBought = 0;
     simulatedTotalSold = 0;
-    console.log(`🧪 [${exchange}] [DRY-RUN] State reset`);
+    logger.info(`🧪 [${exchange}] [DRY-RUN] State reset`, { action: 'state_reset' });
   };
 
   /**
@@ -1223,7 +1255,10 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
       setOrderIdCounter(state.orderIdCounter);
     }
 
-    console.log(`🧪 [${exchange}] [DRY-RUN] State restored: ${filledOrders.length} filled, ${pendingOrders.size} pending, ${bodyTpOrders.size} bodies, PnL=$${simulatedRealizedPnL.toFixed(2)}`);
+    logger.info(
+      `🧪 [${exchange}] [DRY-RUN] State restored: ${filledOrders.length} filled, ${pendingOrders.size} pending, ${bodyTpOrders.size} bodies, PnL=$${simulatedRealizedPnL.toFixed(2)}`,
+      { action: 'state_restored', filledCount: filledOrders.length, pendingCount: pendingOrders.size, bodyCount: bodyTpOrders.size, realizedPnl: simulatedRealizedPnL }
+    );
   };
 
   return {
