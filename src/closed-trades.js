@@ -65,7 +65,7 @@ const getClosedTradesPath = (exchange, pair) => {
  * @returns {Object}
  */
 const createClosedTrades = (exchange, pair) => {
-  const logger = createContextLogger({ exchange, pair, module: 'closed-trades' });
+  const logger = createContextLogger({ exchange, pair });
   /** @type {ClosedTrade[]} */
   const trades = [];
   /** @type {Set<string>} Dedup keys (see dedupKeyFor — keyed on sellOrderId) */

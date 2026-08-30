@@ -59,7 +59,7 @@ const getStorePath = (exchange, pair) => {
  * @returns {Object}
  */
 const createManualTradeStore = (exchange, pair) => {
-  const logger = createContextLogger({ exchange, pair, module: 'manual-trades' });
+  const logger = createContextLogger({ exchange, pair });
   /** @type {Map<string, ManualTrade>} */
   const trades = new Map();
   /** @type {Set<string>} orderIds dismissed from the unaccounted fills view */

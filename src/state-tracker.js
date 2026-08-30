@@ -30,7 +30,7 @@ const { loadRawConfig } = require('./config-utils');
 const { createContextLogger } = require('./logger');
 const { DATA_DIR } = require('./paths');
 
-const stateTrackerLogger = createContextLogger({ module: 'state-tracker' });
+const stateTrackerLogger = createContextLogger();
 
 /**
  * Fund lifecycle states. The operator drives transitions:
@@ -357,7 +357,7 @@ const markSellPlacementFailed = (state, buyOrderId, reason) => {
   if (!order) {
     stateTrackerLogger.warn(`⚠️ markSellPlacementFailed: no awaiting_sell order for buy ${buyOrderId} — failure not recorded (reason: ${reason})`, {
       buyOrderId,
-      error: reason,
+      reason,
     });
     return state;
   }
@@ -825,7 +825,7 @@ const createInitialRegimeState = () => ({
  */
 const loadRegimeState = (exchange = 'coinbase', pair) => {
   const stateFile = getRegimeStateFile(exchange, pair);
-  const logger = createContextLogger({ exchange, pair, module: 'state-tracker' });
+  const logger = createContextLogger({ exchange, pair });
 
   if (!fs.existsSync(stateFile)) {
     return {
@@ -987,7 +987,7 @@ const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'r
 const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null, pair) => {
   const stateFile = getRegimeStateFile(exchange, pair);
   const dir = path.dirname(stateFile);
-  const logger = createContextLogger({ exchange, pair, module: 'state-tracker' });
+  const logger = createContextLogger({ exchange, pair });
 
   fs.mkdirSync(dir, { recursive: true });
 

@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { createContextLogger } = require('./logger');
 
-const dryRunStateLogger = createContextLogger({ module: 'dry-run-state' });
+const dryRunStateLogger = createContextLogger();
 
 const STATE_FILE = path.join(__dirname, '..', 'dry-run-state.json');
 const SAVE_DEBOUNCE_MS = 5000; // Debounce saves to avoid excessive disk writes
@@ -162,7 +162,7 @@ const fundKey = (exchange, pair) => (pair ? composeFundKey(exchange, pair) : exc
  */
 const loadState = (exchange, pair) => {
   const key = fundKey(exchange, pair);
-  const logger = createContextLogger({ exchange, pair, module: 'dry-run-state' });
+  const logger = createContextLogger({ exchange, pair });
   const allState = loadAllState();
   const exchangeState = allState.exchanges[key];
 
@@ -200,7 +200,7 @@ const loadState = (exchange, pair) => {
  */
 const saveState = (exchange, exchangeState, pair) => {
   const key = fundKey(exchange, pair);
-  const logger = createContextLogger({ exchange, pair, module: 'dry-run-state' });
+  const logger = createContextLogger({ exchange, pair });
   // Always store the latest state for this fund
   pendingStates.set(key, exchangeState);
 
@@ -213,8 +213,7 @@ const saveState = (exchange, exchangeState, pair) => {
         pendingSave = null;
         const fundCount = flushPendingStates();
         lastSaveTime = Date.now();
-        logger.info(`💾 Dry-run state saved for ${fundCount} fund(s)`, {
-          fundKey: key,
+        dryRunStateLogger.info(`💾 Dry-run state saved for ${fundCount} fund(s)`, {
           stateFile: STATE_FILE,
           fundCount,
           saveMode: 'debounced',
@@ -253,7 +252,7 @@ const saveState = (exchange, exchangeState, pair) => {
  */
 const clearState = (exchange, pair) => {
   const key = fundKey(exchange, pair);
-  const logger = createContextLogger({ exchange, pair, module: 'dry-run-state' });
+  const logger = createContextLogger({ exchange, pair });
 
   // A debounced snapshot for this fund must not survive an explicit reset.
   // Otherwise the pending timer can flush the pre-reset state back to disk
@@ -278,7 +277,7 @@ const clearState = (exchange, pair) => {
  */
 const forceSave = (exchange, exchangeState, pair) => {
   const key = fundKey(exchange, pair);
-  const logger = createContextLogger({ exchange, pair, module: 'dry-run-state' });
+  const logger = createContextLogger({ exchange, pair });
   if (pendingSave) {
     clearTimeout(pendingSave);
     pendingSave = null;

@@ -43,7 +43,6 @@ describe('supporting state structured logging', () => {
     assert.deepEqual(
       contextFor(lines, '⚠️ attachSellOrder: no awaiting_sell order for buy buy-123 — sell sell-456 not linked'),
       {
-        module: 'state-tracker',
         buyOrderId: 'buy-123',
         sellOrderId: 'sell-456',
       }
@@ -51,9 +50,8 @@ describe('supporting state structured logging', () => {
     assert.deepEqual(
       contextFor(lines, '⚠️ markSellPlacementFailed: no awaiting_sell order for buy buy-789 — failure not recorded (reason: exchange unavailable)'),
       {
-        module: 'state-tracker',
         buyOrderId: 'buy-789',
-        error: 'exchange unavailable',
+        reason: 'exchange unavailable',
       }
     );
   });
