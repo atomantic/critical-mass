@@ -1257,7 +1257,7 @@ const createDryRunExecutor = (exchange, config, marketStateRef, callbacks = {}, 
 
     logger.info(
       `🧪 [${exchange}] [DRY-RUN] State restored: ${filledOrders.length} filled, ${pendingOrders.size} pending, ${bodyTpOrders.size} bodies, PnL=$${simulatedRealizedPnL.toFixed(2)}`,
-      { action: 'state_restored', filledCount: filledOrders.length, pendingCount: pendingOrders.size, bodyCount: bodyTpOrders.size, realizedPnl: simulatedRealizedPnL }
+      { action: 'state_restored', filledCount: filledOrders.length, pendingCount: pendingOrders.size, bodyCount: bodyTpOrders.size, realizedPnL: simulatedRealizedPnL }
     );
   };
 

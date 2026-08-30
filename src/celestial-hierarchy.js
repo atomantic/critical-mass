@@ -241,10 +241,11 @@ const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId, logger = cel
   if (newTier.name !== target.tier) {
     const oldTier = target.tier;
     target.tier = newTier.name;
-    const pct = maxUsdcDeployed > 0 ? ((target.costBasis / maxUsdcDeployed) * 100).toFixed(1) : '0';
+    const capitalPercent = maxUsdcDeployed > 0 ? (target.costBasis / maxUsdcDeployed) * 100 : null;
+    const pct = capitalPercent === null ? '0' : capitalPercent.toFixed(1);
     logger.info(
       `⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (${pct}% of capital, $${target.costBasis.toFixed(0)})`,
-      { bodyId: target.id, orderId, oldTier, newTier: newTier.name, capitalPercent: Number(pct), costBasis: target.costBasis }
+      { bodyId: target.id, orderId, oldTier, newTier: newTier.name, capitalPercent, costBasis: target.costBasis }
     );
   }
 
@@ -280,10 +281,11 @@ const mergeBodies = (target, source, maxUsdcDeployed, logger = celestialHierarch
   if (newTier.name !== target.tier) {
     const oldTier = target.tier;
     target.tier = newTier.name;
-    const pct = maxUsdcDeployed > 0 ? ((target.costBasis / maxUsdcDeployed) * 100).toFixed(1) : '0';
+    const capitalPercent = maxUsdcDeployed > 0 ? (target.costBasis / maxUsdcDeployed) * 100 : null;
+    const pct = capitalPercent === null ? '0' : capitalPercent.toFixed(1);
     logger.info(
       `⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (${pct}% of capital, $${target.costBasis.toFixed(0)})`,
-      { bodyId: target.id, sourceBodyId: source.id, oldTier, newTier: newTier.name, capitalPercent: Number(pct), costBasis: target.costBasis }
+      { bodyId: target.id, sourceBodyId: source.id, oldTier, newTier: newTier.name, capitalPercent, costBasis: target.costBasis }
     );
   }
 
