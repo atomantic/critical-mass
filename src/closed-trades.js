@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir } = require('./migration');
 const { atomicWriteSync } = require('./state-tracker');
+const { createContextLogger } = require('./logger');
 const { roundAsset, roundUSDC } = require('./volatility-utils');
 
 /**
@@ -64,6 +65,7 @@ const getClosedTradesPath = (exchange, pair) => {
  * @returns {Object}
  */
 const createClosedTrades = (exchange, pair) => {
+  const logger = createContextLogger({ exchange, pair });
   /** @type {ClosedTrade[]} */
   const trades = [];
   /** @type {Set<string>} Dedup keys (see dedupKeyFor — keyed on sellOrderId) */
@@ -82,10 +84,16 @@ const createClosedTrades = (exchange, pair) => {
         trades.push(t);
         dedupKeys.add(dedupKeyFor(t));
       }
-      console.log(`📋 [${exchange}] Loaded ${trades.length} closed trades`);
+      logger.info(`📋 [${exchange}] Loaded ${trades.length} closed trades`, {
+        filePath,
+        tradeCount: trades.length,
+      });
       return true;
     } catch (err) {
-      console.log(`⚠️ [${exchange}] Failed to load closed trades: ${err.message}`);
+      logger.warn(`⚠️ [${exchange}] Failed to load closed trades: ${err.message}`, {
+        filePath,
+        error: err.message,
+      });
       return false;
     }
   };
@@ -274,7 +282,11 @@ const createClosedTrades = (exchange, pair) => {
 
     if (trades.length > 0) {
       persist();
-      console.log(`📋 [${exchange}] Migrated ${trades.length} closed trades from fill ledger (P&L: $${getTotalPnL().toFixed(2)})`);
+      logger.info(`📋 [${exchange}] Migrated ${trades.length} closed trades from fill ledger (P&L: $${getTotalPnL().toFixed(2)})`, {
+        tradeCount: trades.length,
+        totalPnl: getTotalPnL(),
+        source: 'fill-ledger',
+      });
     }
   };
 

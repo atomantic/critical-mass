@@ -32,6 +32,67 @@ const mkState = (tag) => ({
 
 const readState = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
+const contextFor = (lines, prefix) => {
+  const line = lines.find(candidate => candidate.startsWith(prefix));
+  assert.ok(line, `missing log line starting with: ${prefix}`);
+  const contextStart = line.lastIndexOf(' {');
+  assert.notEqual(contextStart, -1, `missing structured context: ${line}`);
+  return JSON.parse(line.slice(contextStart + 1));
+};
+
+describe('dry-run-state structured logging', () => {
+  it('preserves the version-mismatch warning with version and file context', (t) => {
+    const { loadState, STATE_FILE } = setup(t);
+    fs.writeFileSync(STATE_FILE, JSON.stringify({ exchanges: {}, version: 0 }));
+    const lines = [];
+    const originalLog = console.log;
+    console.log = line => lines.push(line);
+
+    try {
+      assert.equal(loadState('coinbase', 'BTC-USD'), null);
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.deepEqual(
+      contextFor(lines, '⚠️ Dry-run state version mismatch (0 vs 1), starting fresh'),
+      { stateFile: STATE_FILE, actualVersion: 0, expectedVersion: 1 }
+    );
+  });
+
+  it('preserves the stale-state warning with numeric age and fund context', (t) => {
+    const now = 8 * 24 * 60 * 60 * 1000;
+    const { loadState, STATE_FILE } = setup(t, now);
+    fs.writeFileSync(STATE_FILE, JSON.stringify({
+      exchanges: {
+        'coinbase::BTC-USD': { ...mkState('stale'), savedAt: 0 },
+      },
+      version: 1,
+    }));
+    const lines = [];
+    const originalLog = console.log;
+    console.log = line => lines.push(line);
+
+    try {
+      assert.equal(loadState('coinbase', 'BTC-USD'), null);
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.deepEqual(
+      contextFor(lines, '⚠️ [coinbase::BTC-USD] Dry-run state is 8.0 days old, discarding'),
+      {
+        exchange: 'coinbase',
+        pair: 'BTC-USD',
+        fundKey: 'coinbase::BTC-USD',
+        stateFile: STATE_FILE,
+        ageDays: 8,
+        savedAt: 0,
+      }
+    );
+  });
+});
+
 describe('dry-run-state saveState — immediate branch preserves queued funds (#159)', () => {
   it('does not drop a debounce-queued fund when another fund saves immediately', (t) => {
     const { saveState, STATE_FILE } = setup(t);

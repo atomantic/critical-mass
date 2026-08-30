@@ -8,6 +8,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { createContextLogger } = require('./logger');
+
+const dryRunStateLogger = createContextLogger();
 
 const STATE_FILE = path.join(__dirname, '..', 'dry-run-state.json');
 const SAVE_DEBOUNCE_MS = 5000; // Debounce saves to avoid excessive disk writes
@@ -91,13 +94,21 @@ const loadAllState = () => {
   } catch (err) {
     const quarantinePath = `${STATE_FILE}.corrupt-${Date.now()}`;
     fs.renameSync(STATE_FILE, quarantinePath);
-    console.log(`⚠️ Dry-run state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)}, starting fresh`);
+    dryRunStateLogger.warn(`⚠️ Dry-run state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)}, starting fresh`, {
+      stateFile: STATE_FILE,
+      quarantinePath,
+      error: err.message,
+    });
     return { exchanges: {}, version: STATE_VERSION };
   }
 
   // Version check for future migrations
   if (state.version !== STATE_VERSION) {
-    console.log(`⚠️ Dry-run state version mismatch (${state.version} vs ${STATE_VERSION}), starting fresh`);
+    dryRunStateLogger.warn(`⚠️ Dry-run state version mismatch (${state.version} vs ${STATE_VERSION}), starting fresh`, {
+      stateFile: STATE_FILE,
+      actualVersion: state.version,
+      expectedVersion: STATE_VERSION,
+    });
     return { exchanges: {}, version: STATE_VERSION };
   }
 
@@ -151,11 +162,12 @@ const fundKey = (exchange, pair) => (pair ? composeFundKey(exchange, pair) : exc
  */
 const loadState = (exchange, pair) => {
   const key = fundKey(exchange, pair);
+  const logger = createContextLogger({ exchange, pair });
   const allState = loadAllState();
   const exchangeState = allState.exchanges[key];
 
   if (!exchangeState) {
-    console.log(`ℹ️ [${key}] No saved dry-run state found`);
+    logger.info(`ℹ️ [${key}] No saved dry-run state found`, { fundKey: key, stateFile: STATE_FILE });
     return null;
   }
 
@@ -163,11 +175,20 @@ const loadState = (exchange, pair) => {
   const ageMs = Date.now() - exchangeState.savedAt;
   const ageDays = ageMs / (1000 * 60 * 60 * 24);
   if (ageDays > 7) {
-    console.log(`⚠️ [${key}] Dry-run state is ${ageDays.toFixed(1)} days old, discarding`);
+    logger.warn(`⚠️ [${key}] Dry-run state is ${ageDays.toFixed(1)} days old, discarding`, {
+      fundKey: key,
+      stateFile: STATE_FILE,
+      ageDays,
+      savedAt: exchangeState.savedAt,
+    });
     return null;
   }
 
-  console.log(`📂 [${key}] Loaded dry-run state from ${new Date(exchangeState.savedAt).toISOString()}`);
+  logger.info(`📂 [${key}] Loaded dry-run state from ${new Date(exchangeState.savedAt).toISOString()}`, {
+    fundKey: key,
+    stateFile: STATE_FILE,
+    savedAt: exchangeState.savedAt,
+  });
   return exchangeState;
 };
 
@@ -179,6 +200,7 @@ const loadState = (exchange, pair) => {
  */
 const saveState = (exchange, exchangeState, pair) => {
   const key = fundKey(exchange, pair);
+  const logger = createContextLogger({ exchange, pair });
   // Always store the latest state for this fund
   pendingStates.set(key, exchangeState);
 
@@ -191,7 +213,11 @@ const saveState = (exchange, exchangeState, pair) => {
         pendingSave = null;
         const fundCount = flushPendingStates();
         lastSaveTime = Date.now();
-        console.log(`💾 Dry-run state saved for ${fundCount} fund(s)`);
+        dryRunStateLogger.info(`💾 Dry-run state saved for ${fundCount} fund(s)`, {
+          stateFile: STATE_FILE,
+          fundCount,
+          saveMode: 'debounced',
+        });
       }, SAVE_DEBOUNCE_MS);
     }
     return;
@@ -211,7 +237,12 @@ const saveState = (exchange, exchangeState, pair) => {
   // current key. Clearing pendingStates without writing them — the old behavior —
   // dropped any fund queued by an earlier debounced call (issue #159).
   const fundCount = flushPendingStates();
-  console.log(`💾 [${key}] Dry-run state saved (${fundCount} fund(s))`);
+  logger.info(`💾 [${key}] Dry-run state saved (${fundCount} fund(s))`, {
+    fundKey: key,
+    stateFile: STATE_FILE,
+    fundCount,
+    saveMode: 'immediate',
+  });
 };
 
 /**
@@ -221,6 +252,7 @@ const saveState = (exchange, exchangeState, pair) => {
  */
 const clearState = (exchange, pair) => {
   const key = fundKey(exchange, pair);
+  const logger = createContextLogger({ exchange, pair });
 
   // A debounced snapshot for this fund must not survive an explicit reset.
   // Otherwise the pending timer can flush the pre-reset state back to disk
@@ -234,7 +266,7 @@ const clearState = (exchange, pair) => {
   const allState = loadAllState();
   delete allState.exchanges[key];
   saveAllState(allState);
-  console.log(`🗑️ [${key}] Dry-run state cleared`);
+  logger.info(`🗑️ [${key}] Dry-run state cleared`, { fundKey: key, stateFile: STATE_FILE });
 };
 
 /**
@@ -245,6 +277,7 @@ const clearState = (exchange, pair) => {
  */
 const forceSave = (exchange, exchangeState, pair) => {
   const key = fundKey(exchange, pair);
+  const logger = createContextLogger({ exchange, pair });
   if (pendingSave) {
     clearTimeout(pendingSave);
     pendingSave = null;
@@ -255,7 +288,11 @@ const forceSave = (exchange, exchangeState, pair) => {
   // call (issue #159). Setting it last lets it win over any stale queued entry.
   pendingStates.set(key, exchangeState);
   flushPendingStates();
-  console.log(`💾 [${key}] Dry-run state force saved`);
+  logger.info(`💾 [${key}] Dry-run state force saved`, {
+    fundKey: key,
+    stateFile: STATE_FILE,
+    saveMode: 'forced',
+  });
 };
 
 module.exports = {

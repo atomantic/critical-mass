@@ -14,6 +14,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { resolveFundDataDir } = require('./migration');
 const { atomicWriteSync } = require('./state-tracker');
+const { createContextLogger } = require('./logger');
 
 /**
  * @typedef {Object} ManualTrade
@@ -58,6 +59,7 @@ const getStorePath = (exchange, pair) => {
  * @returns {Object}
  */
 const createManualTradeStore = (exchange, pair) => {
+  const logger = createContextLogger({ exchange, pair });
   /** @type {Map<string, ManualTrade>} */
   const trades = new Map();
   /** @type {Set<string>} orderIds dismissed from the unaccounted fills view */
@@ -93,9 +95,16 @@ const createManualTradeStore = (exchange, pair) => {
           dismissedFillOrderIds.add(id);
         }
       }
-      console.log(`📋 [${exchange}] Loaded ${trades.size} manual trades, ${dismissedFillOrderIds.size} dismissed fills`);
+      logger.info(`📋 [${exchange}] Loaded ${trades.size} manual trades, ${dismissedFillOrderIds.size} dismissed fills`, {
+        filePath,
+        tradeCount: trades.size,
+        dismissedFillCount: dismissedFillOrderIds.size,
+      });
     } catch (err) {
-      console.log(`⚠️ [${exchange}] Failed to load manual trades: ${err.message}`);
+      logger.warn(`⚠️ [${exchange}] Failed to load manual trades: ${err.message}`, {
+        filePath,
+        error: err.message,
+      });
     }
   };
 
