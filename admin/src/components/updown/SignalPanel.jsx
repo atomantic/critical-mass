@@ -10,7 +10,7 @@ function ConfidenceBar({ value }) {
       <div className="flex-1 bg-gray-700 rounded-full h-2">
         <div className={`${color} h-2 rounded-full transition-all`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs text-gray-400 w-10 text-right">{pct.toFixed(0)}%</span>
+      <span className="text-xs text-gray-400 w-20 text-right">Strength {pct.toFixed(0)}%</span>
     </div>
   )
 }
@@ -68,7 +68,9 @@ export default function SignalPanel({ signal, indicators, position }) {
             <span className="text-lg font-bold">{action || 'CALCULATING...'}</span>
           </div>
           {type && liveConfidence != null && (
-            <span className="text-sm font-mono">{(liveConfidence * 100).toFixed(0)}%</span>
+            <span className="text-xs font-mono" title="Heuristic signal strength, not a calibrated win probability">
+              Strength {(liveConfidence * 100).toFixed(0)}%
+            </span>
           )}
         </div>
         {type && liveConfidence != null && (
@@ -100,7 +102,7 @@ export default function SignalPanel({ signal, indicators, position }) {
                   </span>
                   <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{hAction}</span>
                   {h.confidence != null && (
-                    <span className="text-gray-400 font-mono">{(h.confidence * 100).toFixed(0)}%</span>
+                    <span className="text-gray-400 font-mono" title="Heuristic signal strength">S {(h.confidence * 100).toFixed(0)}%</span>
                   )}
                 </div>
               )

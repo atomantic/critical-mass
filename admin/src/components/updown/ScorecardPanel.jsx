@@ -161,7 +161,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Contract Accuracy */}
       {contractAware && (
         <div className="mb-4 bg-gray-900 rounded-lg p-2.5">
-          <div className="text-xs text-gray-500 mb-1 font-medium">Contract Accuracy</div>
+          <div className="text-xs text-gray-500 mb-1 font-medium">Contract-expiry Accuracy</div>
           <div className="flex items-center justify-between">
             <span className={`text-lg font-bold font-mono ${accuracyColor(contractAware.accuracy)}`}>
               {contractAware.accuracy.toFixed(1)}%

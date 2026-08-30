@@ -14,6 +14,14 @@ const { log } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
 const { calculatePerpPnl } = require('../updown/perp-contract');
+const { INDICATORS, INDICATOR_LABELS } = require('../updown/indicator-config');
+const { ALL_SIGNAL_TFS } = require('../updown/signal-engine');
+const {
+  dedupeScorecardRecords,
+  evaluateDirection,
+  getDirection,
+  WINDOW_MS,
+} = require('../updown/scorecard');
 
 const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
@@ -21,6 +29,54 @@ const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 // screenshot is a single PNG/JPEG frame — 25MB is generous headroom while
 // still bounding worst-case memory use per request (issue #215-B).
 const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024;
+
+// Strictly parse a finite number, or NaN. Unlike parseFloat, this rejects
+// numeric-prefix junk, empty strings, arrays, and booleans.
+const parseFiniteNumber = (v) => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : NaN;
+  }
+  return NaN;
+};
+
+const buildIndicatorTimeframeHeatmap = (
+  predictions,
+  outcomes,
+  indicators = INDICATORS,
+  timeframes = ALL_SIGNAL_TFS,
+) => {
+  const predictionById = new Map(predictions.map(p => [p.id, p]));
+  const heatmap = {};
+  for (const ind of indicators) {
+    heatmap[ind] = {};
+    for (const tf of timeframes) heatmap[ind][tf] = { correct: 0, total: 0, accuracy: null };
+  }
+  for (const outcome of outcomes) {
+    for (const ind of indicators) {
+      for (const tf of timeframes) {
+        let exact = outcome.indicatorTfResults?.[ind]?.[tf]?.correct;
+        if (exact === undefined) {
+          const prediction = predictionById.get(outcome.predictionId);
+          const score = prediction?.timeframes?.[tf]?.scores?.[ind];
+          if (!Number.isFinite(score) || !Number.isFinite(outcome.priceChangeBps)) continue;
+          exact = evaluateDirection(getDirection(score), outcome.priceChangeBps, WINDOW_MS[outcome.window], 'perp');
+        }
+        if (exact == null) continue;
+        heatmap[ind][tf].total++;
+        if (exact) heatmap[ind][tf].correct++;
+      }
+    }
+  }
+  for (const ind of indicators) {
+    for (const tf of timeframes) {
+      const cell = heatmap[ind][tf];
+      cell.accuracy = cell.total > 0 ? Math.round(cell.correct / cell.total * 10000) / 100 : null;
+    }
+  }
+  return heatmap;
+};
 
 /**
  * Read a request body stream into a Buffer, aborting once `maxBytes` is
@@ -315,8 +371,7 @@ module.exports = (app, deps) => {
 
   // --- Scorecard Analysis (historical) ---
   const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard');
-  const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum'];
-  const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d'];
+  const ALL_TFS = ALL_SIGNAL_TFS;
 
   const readJSONLFiles = (from, to) => {
     if (!fs.existsSync(SCORECARD_DIR)) return [];
@@ -339,7 +394,7 @@ module.exports = (app, deps) => {
         records.push(rec);
       }
     }
-    return records;
+    return dedupeScorecardRecords(records);
   };
 
   app.get('/api/updown/scorecard-analysis', (req, res) => {
@@ -351,6 +406,7 @@ module.exports = (app, deps) => {
 
     const records = readJSONLFiles(from, to);
     const predictions = records.filter(r => r.type === 'prediction');
+    const predictionById = new Map(predictions.map(p => [p.id, p]));
     const outcomes = records.filter(r => r.type === 'outcome' && r.compositeDirection !== 'down');
     const weights = records.filter(r => r.type === 'weights');
     const perpFills = records.filter(r => r.type === 'perp_fill');
@@ -375,33 +431,7 @@ module.exports = (app, deps) => {
       }));
 
     // --- heatmap: indicator × timeframe accuracy ---
-    const heatmap = {};
-    for (const ind of INDICATORS) {
-      heatmap[ind] = {};
-      for (const tf of ALL_TFS) {
-        heatmap[ind][tf] = { correct: 0, total: 0, accuracy: null };
-      }
-    }
-    for (const o of outcomes) {
-      for (const ind of INDICATORS) {
-        for (const tf of ALL_TFS) {
-          const tfResult = o.tfResults?.[tf];
-          if (!tfResult || tfResult.correct == null) continue;
-          const indResult = o.indicatorResults?.[ind];
-          if (!indResult || indResult.predictions === 0) continue;
-          // Check if this indicator had a non-neutral prediction in this timeframe
-          // We use the prediction's per-tf per-indicator scores via the outcome's indicator data
-          heatmap[ind][tf].total++;
-          if (tfResult.correct) heatmap[ind][tf].correct++;
-        }
-      }
-    }
-    for (const ind of INDICATORS) {
-      for (const tf of ALL_TFS) {
-        const cell = heatmap[ind][tf];
-        cell.accuracy = cell.total > 0 ? Math.round(cell.correct / cell.total * 10000) / 100 : null;
-      }
-    }
+    const heatmap = buildIndicatorTimeframeHeatmap(predictions, outcomes, INDICATORS, ALL_TFS);
 
     // --- indicatorAccuracyOverTime: per-indicator hourly trends ---
     const indHourly = {};
@@ -476,6 +506,11 @@ module.exports = (app, deps) => {
     const totalOutcomes = outcomes.filter(o => o.compositeCorrect != null).length;
     const totalCorrect = outcomes.filter(o => o.compositeCorrect === true).length;
     const overallAccuracy = totalOutcomes > 0 ? Math.round(totalCorrect / totalOutcomes * 10000) / 100 : null;
+    const perpOutcomes = outcomes.filter(o => o.perpCorrect != null);
+    const perpCorrect = perpOutcomes.filter(o => o.perpCorrect === true).length;
+    const perpDirectionalAccuracy = perpOutcomes.length > 0
+      ? Math.round(perpCorrect / perpOutcomes.length * 10000) / 100
+      : null;
 
     // Best/worst indicator
     const indStats = {};
@@ -522,11 +557,12 @@ module.exports = (app, deps) => {
     const bestWindow = sortedWindows[0]?.window ?? null;
 
     // Contract-aware analysis: aggregate contract outcomes by range
-    const contractOutcomes = outcomes.filter(o => o.contractOutcome != null);
+    const contractOutcomes = outcomes.filter(o => o.window === 'contract' &&
+      (o.contractOutcome === 'win' || o.contractOutcome === 'loss'));
     const contractByRange = {};
     for (const o of contractOutcomes) {
       // Find matching prediction for range info
-      const pred = predictions.find(p => p.id === o.predictionId);
+      const pred = predictionById.get(o.predictionId);
       const range = pred?.contract?.range ?? 'unknown';
       if (!contractByRange[range]) contractByRange[range] = { wins: 0, losses: 0, total: 0 };
       contractByRange[range].total++;
@@ -565,6 +601,10 @@ module.exports = (app, deps) => {
 
     res.json({
       success: true,
+      catalog: {
+        indicators: INDICATORS.map(key => ({ key, label: INDICATOR_LABELS[key] ?? key })),
+        timeframes: [...ALL_TFS],
+      },
       accuracyOverTime,
       heatmap,
       indicatorAccuracyOverTime,
@@ -574,6 +614,7 @@ module.exports = (app, deps) => {
       perpAnalysis,
       summary: {
         accuracy: overallAccuracy,
+        perpDirectionalAccuracy,
         predictions: predictions.length,
         outcomes: totalOutcomes,
         bestIndicator,
@@ -614,7 +655,22 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'direction must be "up" or "down"' });
     }
     const expiryMs = parseExpiryToMs(expiry);
-    updownService.setContract({ expiry: expiryMs, target: target ?? null, stop: stop ?? null, range: range ?? null, direction: direction ?? null });
+    const numericFields = { target, stop, range };
+    const parsed = {};
+    for (const [key, value] of Object.entries(numericFields)) {
+      if (value == null || value === '') {
+        parsed[key] = null;
+        continue;
+      }
+      parsed[key] = parseFiniteNumber(value);
+      if (!Number.isFinite(parsed[key]) || parsed[key] <= 0) {
+        return res.status(400).json({ success: false, error: `${key} must be a positive number` });
+      }
+    }
+    if (expiry != null && expiry !== '' && !Number.isFinite(expiryMs)) {
+      return res.status(400).json({ success: false, error: 'expiry must be a valid date or timestamp' });
+    }
+    updownService.setContract({ expiry: expiryMs, ...parsed, direction: direction ?? null });
     res.json({ success: true });
   });
 
@@ -626,11 +682,9 @@ module.exports = (app, deps) => {
     if (direction !== 'up' && direction !== 'down') {
       return res.status(400).json({ success: false, error: 'direction must be "up" or "down"' });
     }
-    // Reject non-numeric/non-positive values: !entryPrice doesn't catch "abc",
-    // and parseFloat('abc')=NaN would persist into the position and emit
-    // {pnl: NaN} over the socket (issue #108).
-    const px = parseFloat(entryPrice);
-    const qty = parseFloat(contracts);
+    // Reject numeric-prefix junk and non-positive values before persistence.
+    const px = parseFiniteNumber(entryPrice);
+    const qty = parseFiniteNumber(contracts);
     if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ success: false, error: 'entryPrice and contracts must be positive numbers' });
     }
@@ -644,9 +698,14 @@ module.exports = (app, deps) => {
   });
 
   app.post('/api/updown/start', async (req, res) => {
-    await updownService.start();
-    log('INFO', '📊 UpDown service started via API');
-    res.json({ success: true });
+    try {
+      await updownService.start();
+      log('INFO', '📊 UpDown service started via API');
+      res.json({ success: true });
+    } catch (err) {
+      log('ERROR', `📊 UpDown service start failed err=${err.message}`);
+      res.status(500).json({ success: false, error: 'UpDown service failed to start' });
+    }
   });
 
   app.post('/api/updown/stop', (req, res) => {
@@ -678,19 +737,6 @@ module.exports = (app, deps) => {
 
   const readTrades = () => readJSON(TRADES_PATH, { trades: [], nextId: 1 });
   const writeTrades = (data) => fs.writeFileSync(TRADES_PATH, JSON.stringify(data, null, 2));
-  // Strictly parse a finite number, or NaN. Unlike parseFloat, this rejects
-  // numeric-prefix junk ('12abc'), empty/whitespace strings, arrays, and
-  // booleans — non-numeric input must not persist as null over the wire and
-  // break the win/loss pnl filters (issue #151).
-  const parseFiniteNumber = (v) => {
-    if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
-    if (typeof v === 'string' && v.trim() !== '') {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : NaN;
-    }
-    return NaN;
-  };
-
   app.get('/api/updown/trades', (req, res) => {
     const data = readTrades();
     const trades = data.trades || [];
@@ -813,3 +859,5 @@ module.exports = (app, deps) => {
 // are unaffected.
 module.exports.readBodyWithLimit = readBodyWithLimit;
 module.exports.MAX_SCREENSHOT_BYTES = MAX_SCREENSHOT_BYTES;
+module.exports.buildIndicatorTimeframeHeatmap = buildIndicatorTimeframeHeatmap;
+module.exports.parseFiniteNumber = parseFiniteNumber;

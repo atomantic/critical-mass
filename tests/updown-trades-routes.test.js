@@ -184,3 +184,40 @@ describe('PUT /api/updown/trades/:id rejects non-numeric updates (issue #151)', 
     assert.equal(res.body.trade.pnl, 70);
   });
 });
+
+describe('PUT /api/updown/position strictly validates numeric fields', () => {
+  const setupPosition = () => {
+    const calls = [];
+    const app = createFakeApp();
+    registerUpdownRoutes(app, {
+      updownService: {
+        setPosition: position => calls.push(position),
+        getTradeContext: () => ({}),
+      },
+      candleCache: { getAllCandles: () => [] },
+      readJSON: () => ({ trades: [], nextId: 1 }),
+      DATA_DIR: '/tmp/updown-position-test',
+    });
+    return { app, calls };
+  };
+
+  for (const bad of ['12abc', '', '   ', Infinity, NaN, 0, -1]) {
+    it(`rejects invalid entryPrice ${String(bad)}`, async () => {
+      const { app, calls } = setupPosition();
+      const res = await invoke(app, 'PUT /api/updown/position', {
+        body: { entryPrice: bad, contracts: 1, direction: 'up' },
+      });
+      assert.equal(res.statusCode, 400);
+      assert.equal(calls.length, 0);
+    });
+  }
+
+  it('accepts complete numeric strings and persists parsed numbers', async () => {
+    const { app, calls } = setupPosition();
+    const res = await invoke(app, 'PUT /api/updown/position', {
+      body: { entryPrice: '78000.5', contracts: '2', direction: 'up' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(calls[0], { entryPrice: 78000.5, contracts: 2, direction: 'up', entryTime: undefined });
+  });
+});

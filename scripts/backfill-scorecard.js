@@ -16,7 +16,8 @@
 const fs = require('fs')
 const path = require('path')
 const { createCandleAggregator } = require('../src/candle-aggregator')
-const { createSignalEngine } = require('../src/updown/signal-engine')
+const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
+const { TF_MS, seedCompletedCandles } = require('../src/updown/replay-candles')
 const { computeAdaptiveWeights, buildOutcomeRecord, scorecardDirection } = require('../src/updown/scorecard')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('../src/updown/indicator-config')
 const { DATA_DIR } = require('../src/paths')
@@ -31,7 +32,7 @@ const EVAL_WINDOWS = [
   { label: '15m', candles5m: 3, windowMs: 900_000 },
   { label: '1h', candles5m: 12, windowMs: 3_600_000 },
 ]
-const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']
+const ALL_TFS = ALL_SIGNAL_TFS
 const BASE_WEIGHTS = INDICATOR_WEIGHTS
 
 // File name mapping
@@ -42,13 +43,6 @@ const FILE_MAP = {
   '1h': 'btc-price-cache-1hour.json',
   '4h': 'btc-price-cache-4hour.json',
   '1d': 'btc-price-cache-daily.json',
-}
-
-// TF interval in ms
-const TF_INTERVAL = {
-  '1m': 60_000, '3m': 180_000, '5m': 300_000, '10m': 600_000,
-  '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000,
-  '2h': 7_200_000, '4h': 14_400_000, '1d': 86_400_000,
 }
 
 /**
@@ -82,6 +76,32 @@ const findCandleIndex = (candles, targetTs) => {
   return lo
 }
 
+const withHistoricalClock = (timestamp, fn) => {
+  const originalDateNow = Date.now
+  try {
+    Date.now = () => timestamp
+    return fn()
+  } finally {
+    Date.now = originalDateNow
+  }
+}
+
+const scorecardRecordKey = (record) => {
+  if (record?.type === 'prediction') {
+    return record.trigger === 'backfill'
+      ? `prediction:backfill:${record.ts}`
+      : (record.id ? `prediction:${record.id}` : null)
+  }
+  if (record?.type === 'outcome' && record.predictionId && record.window) {
+    const match = String(record.predictionId).match(/^backfill_(\d+)/)
+    return match
+      ? `outcome:backfill:${match[1]}:${record.window}`
+      : `outcome:${record.predictionId}:${record.window}`
+  }
+  if (record?.type === 'weights' && record.ts) return `weights:${record.ts}`
+  return null
+}
+
 // Parse CLI args
 const args = process.argv.slice(2)
 const getArg = (name, def) => {
@@ -98,6 +118,23 @@ const main = () => {
     allCandles[tf] = loadCandles(file)
     console.log(`  ${tf}: ${allCandles[tf].length} candles`)
   }
+
+  // Weekly context is part of the live engine. Derive it from daily history
+  // once, then expose only completed weekly buckets at each decision time.
+  const weekly = new Map()
+  for (const candle of allCandles['1d'] || []) {
+    const bucket = Math.floor(candle.timestamp / TF_MS['1w']) * TF_MS['1w']
+    const existing = weekly.get(bucket)
+    if (existing) {
+      existing.high = Math.max(existing.high, candle.high)
+      existing.low = Math.min(existing.low, candle.low)
+      existing.close = candle.close
+      existing.volume += candle.volume || 0
+    } else {
+      weekly.set(bucket, { ...candle, timestamp: bucket })
+    }
+  }
+  allCandles['1w'] = [...weekly.values()].sort((a, b) => a.timestamp - b.timestamp)
 
   // We don't have raw 1m/3m/15m/2h files — derive from 5m by processTick
   const candles5m = allCandles['5m']
@@ -133,7 +170,6 @@ const main = () => {
   let adaptiveWeights = { ...BASE_WEIGHTS }
   const outcomeBuffer = []
   const WEIGHT_INTERVAL = 50 // recompute weights every N predictions
-  let predCounter = 0
 
   // Output buffers per day
   const dayBuffers = {} // { 'YYYY-MM-DD': [lines] }
@@ -142,17 +178,17 @@ const main = () => {
     dayBuffers[dateStr].push(JSON.stringify(record))
   }
 
+  const computeSignalsAt = (decisionTs) => {
+    return withHistoricalClock(decisionTs, () => engine.computeSignals(null, null))
+  }
+
   /**
    * Seed the aggregator with candles up to a given timestamp.
-   * For each TF, find all candles with timestamp <= evalTs and take the last N.
+   * A candle timestamp is its bucket start. Only candles whose bucket END is
+   * at or before evalTs are visible, matching the live aggregator.
    */
   const seedUpTo = (evalTs) => {
-    for (const [tf, file] of Object.entries(FILE_MAP)) {
-      const candles = allCandles[tf]
-      const idx = findCandleIndex(candles, evalTs + 1) // first candle > evalTs
-      const window = candles.slice(Math.max(0, idx - 200), idx)
-      aggregator.seedCandles(tf, window)
-    }
+    seedCompletedCandles(aggregator, allCandles, evalTs, [...Object.keys(FILE_MAP), '1w'])
 
     // Derive missing TFs from existing ones
     // 1m: approximate from 5m (split each 5m into 5 equal 1m candles)
@@ -240,7 +276,7 @@ const main = () => {
 
   for (let i = startIdx; i < endIdx; i += stepCandles) {
     const candle = candles5m[i]
-    const evalTs = candle.timestamp
+    const evalTs = candle.timestamp + TF_MS['5m']
     const price = candle.close
     const dateStr = new Date(evalTs).toISOString().slice(0, 10)
     const ts = new Date(evalTs).toISOString()
@@ -249,11 +285,9 @@ const main = () => {
     seedUpTo(evalTs)
 
     // Compute signal
-    const result = engine.computeSignals(null, null)
+    const result = computeSignalsAt(evalTs)
     const compositeDirection = scorecardDirection(result)
-    predCounter++
-
-    const predId = `backfill_${evalTs}_${predCounter}`
+    const predId = `backfill_${evalTs}`
 
     // Build timeframe data
     const timeframes = {}
@@ -296,7 +330,7 @@ const main = () => {
 
       const exitPrice = candles5m[futureIdx].close
       const outcome = buildOutcomeRecord(prediction, w.windowMs, exitPrice, {
-        ts: new Date(candles5m[futureIdx].timestamp).toISOString(),
+        ts: new Date(candles5m[futureIdx].timestamp + TF_MS['5m']).toISOString(),
       })
       outcome.backfilled = true
       appendLine(dateStr, outcome)
@@ -357,9 +391,26 @@ const main = () => {
     const filePath = path.join(SCORECARD_DIR, `${day}.jsonl`)
     // Prepend to existing file (backfill data comes before live data)
     const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : ''
-    const backfillContent = dayBuffers[day].join('\n') + '\n'
-    fs.writeFileSync(filePath, backfillContent + existing)
-    totalLines += dayBuffers[day].length
+    const existingKeys = new Set()
+    for (const line of existing.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const key = scorecardRecordKey(JSON.parse(line))
+        if (key) existingKeys.add(key)
+      } catch {}
+    }
+    const freshLines = []
+    for (const line of dayBuffers[day]) {
+      const record = JSON.parse(line)
+      const key = scorecardRecordKey(record)
+      if (key && existingKeys.has(key)) continue
+      if (key) existingKeys.add(key)
+      freshLines.push(line)
+    }
+    if (freshLines.length > 0) {
+      fs.writeFileSync(filePath, freshLines.join('\n') + '\n' + existing)
+    }
+    totalLines += freshLines.length
   }
 
   console.log(`\n✅ Backfill complete:`)
@@ -369,4 +420,6 @@ const main = () => {
   console.log(`   Output: ${SCORECARD_DIR}/`)
 }
 
-main()
+if (require.main === module) main()
+
+module.exports = { findCandleIndex, scorecardRecordKey, withHistoricalClock }

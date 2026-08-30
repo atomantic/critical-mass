@@ -19,8 +19,13 @@ const { log } = require('../logger');
 const STATE_FILE = 'updown-state.json';
 const SIGNAL_INTERVAL_MS = 5_000;
 const TICK_THROTTLE_MS = 1_000;
+const PRICE_STALE_MS = 30_000;
 const MAX_SIGNAL_HISTORY = 100;
 const SIGNAL_DEBOUNCE_MS = 5 * 60 * 1000; // 5 min minimum between same-type history entries
+
+const isFreshPrice = (price, lastTickAt, now = Date.now(), maxAgeMs = PRICE_STALE_MS) =>
+  Number.isFinite(price) && price > 0 && Number.isFinite(lastTickAt) &&
+  lastTickAt > 0 && now - lastTickAt >= 0 && now - lastTickAt <= maxAgeMs;
 
 /**
  * Create the UpDown service
@@ -41,16 +46,23 @@ const createUpDownService = (io, deps) => {
   const candleAdapter = {
     getCandles: (tf) => candleCache.getCandles('coinbase', tf),
   };
-  const signalEngine = createSignalEngine(candleAdapter);
+  const signalEngineFactory = deps.createSignalEngine ?? createSignalEngine;
+  const signalEngine = signalEngineFactory(candleAdapter);
   // Issue #212C: the scorecard's 60s sampler must NOT share prevIndicators with the
   // live 5s cycle — createSignalEngine mutates prevIndicators on every computeSignals
   // call for crossover detection (stoch/MACD), so two consumers sharing one engine
   // instance race: whichever fires first "consumes" the crossover and the other sees
   // stale (post-cross) state. A dedicated instance over the same read-only candle
   // adapter gives the sampler its own crossover memory without affecting the live cycle.
-  const scorecardSignalEngine = createSignalEngine(candleAdapter);
+  const scorecardSignalEngine = signalEngineFactory(candleAdapter);
   const perpBook = createPerpBook();
-  const scorecard = createScorecard({ io, lastPriceFn: () => lastPrice, contractFn: () => contract, perpBook });
+  const scorecardFactory = deps.createScorecard ?? createScorecard;
+  const scorecard = scorecardFactory({
+    io,
+    lastPriceFn: () => isFreshPrice(lastPrice, lastTickAt) ? lastPrice : null,
+    contractFn: () => contract,
+    perpBook,
+  });
 
   const TICK_BUFFER_SIZE = 60;
   const tickBuffer = []; // { price, timestamp }
@@ -59,9 +71,13 @@ const createUpDownService = (io, deps) => {
   let signalInterval = null;
   let lastTickEmit = 0;
   let lastPrice = 0;
+  let lastTickAt = 0;
+  let lastStaleLogAt = 0;
   let lastSignal = null;
   let lastSignalResult = null;
   let running = false;
+  let lifecycleGeneration = 0;
+  let startPromise = null;
 
   // State
   let contract = { expiry: null, target: null, stop: null, range: null, direction: null };
@@ -127,7 +143,7 @@ const createUpDownService = (io, deps) => {
    * @returns {{pnl: number, pnlPercent: number} | null}
    */
   const computePnL = () => {
-    if (!position || !lastPrice) return null;
+    if (!position || !isFreshPrice(lastPrice, lastTickAt)) return null;
     const entryValue = position.contracts * PERP_CONTRACT_SIZE_BTC * position.entryPrice;
     const direction = position.direction === 'up' ? 1 : -1;
     const pnl = calculatePerpPnl(position.entryPrice, lastPrice, position.contracts, direction);
@@ -174,23 +190,27 @@ const createUpDownService = (io, deps) => {
    */
   const handlePriceTick = (price, timestamp) => {
     if (!running) return;
-    lastPrice = price;
+    const numericPrice = Number(price);
+    if (!Number.isFinite(numericPrice) || numericPrice <= 0) return;
+    const now = Date.now();
+    lastPrice = numericPrice;
+    lastTickAt = now;
+    const tickTimestamp = Number.isFinite(Number(timestamp)) ? Number(timestamp) : now;
 
     // Buffer all raw ticks for momentum computation
-    tickBuffer.push({ price, timestamp });
+    tickBuffer.push({ price: numericPrice, timestamp: tickTimestamp });
     if (tickBuffer.length > TICK_BUFFER_SIZE) {
       tickBuffer.splice(0, tickBuffer.length - TICK_BUFFER_SIZE);
     }
 
     // Throttled tick emission to updown room (max 1/sec)
-    const now = Date.now();
     if (now - lastTickEmit >= TICK_THROTTLE_MS) {
       lastTickEmit = now;
       const timeRemaining = contract.expiry ? Math.max(0, contract.expiry - now) : null;
       const pnl = computePnL();
       const tickMomentum = computeTickMomentum();
       io.to('updown').emit('updown:tick', {
-        price,
+        price: numericPrice,
         timestamp: now,
         timeRemaining,
         pnl,
@@ -205,6 +225,16 @@ const createUpDownService = (io, deps) => {
    * Run signal computation and emit results
    */
   const runSignalCycle = () => {
+    if (!isFreshPrice(lastPrice, lastTickAt)) {
+      const now = Date.now();
+      if (now - lastStaleLogAt >= PRICE_STALE_MS) {
+        lastStaleLogAt = now;
+        const age = lastTickAt > 0 ? now - lastTickAt : null;
+        log('WARN', `📊 UpDown signal cycle paused — BTC price feed stale ageMs=${age ?? 'unavailable'}`);
+      }
+      return;
+    }
+
     // Get scorecard metrics for adaptive weights + horizon prediction
     const metrics = scorecard.getMetrics();
 
@@ -287,6 +317,7 @@ const createUpDownService = (io, deps) => {
       volatility: result.volatility,
       pivotPoints: result.pivotPoints,
       confluence: result.confluence,
+      horizonPrediction: result.horizonPrediction,
       trendGate: result.trendGate,
       perp: perpSnap,
     });
@@ -338,7 +369,7 @@ const createUpDownService = (io, deps) => {
         adxRegime: result.adxRegime,
         volatility: result.volatility,
         pivotPoints: result.pivotPoints,
-        horizonPrediction: result.horizonPrediction,
+      horizonPrediction: result.horizonPrediction,
         trendGate: result.trendGate,
         perp: perpSnap,
       });
@@ -349,19 +380,13 @@ const createUpDownService = (io, deps) => {
    * Start the service
    */
   const start = async () => {
-    if (running) return;
+    if (running) return startPromise;
+    const generation = ++lifecycleGeneration;
     loadState();
 
     running = true;
-    // runSignalCycle is synchronous; a throw inside it would crash the process
-    // from the interval callback, so guard every tick.
-    signalInterval = setInterval(() => {
-      try {
-        runSignalCycle();
-      } catch (err) {
-        log('WARN', `📊 UpDown signal cycle failed err=${err.message}`);
-      }
-    }, SIGNAL_INTERVAL_MS);
+    lastTickAt = 0;
+    tickBuffer.length = 0;
 
     // Set lastPrice from most recent candle if available
     const candles1m = candleCache.getCandles('coinbase', '1m');
@@ -372,12 +397,37 @@ const createUpDownService = (io, deps) => {
     // Start scorecard auto-sampling (every 60s) — awaits JSONL history hydration.
     // Uses scorecardSignalEngine (issue #212C), a dedicated instance, so the sampler's
     // reads don't advance the live cycle's crossover-detection memory.
-    await scorecard.start(() => {
+    startPromise = Promise.resolve(scorecard.start(() => {
       const sampled = scorecardSignalEngine.computeSignals(contract.expiry, scorecard.getMetrics());
       return alignJournalType(sampled, lastSignalResult?.type);
+    })).then(() => {
+      if (running && generation === lifecycleGeneration) {
+        // Start live cycles only after scorecard hydration completes. Otherwise
+        // a 5s cycle can journal a prediction while loadHistory is replacing
+        // counters/buffers, making the new sample disappear from memory.
+        signalInterval = setInterval(() => {
+          try {
+            runSignalCycle();
+          } catch (err) {
+            log('WARN', `📊 UpDown signal cycle failed err=${err.message}`);
+          }
+        }, SIGNAL_INTERVAL_MS);
+        log('INFO', '📊 UpDown service started interval=5s');
+      }
+    }).catch((err) => {
+      if (generation === lifecycleGeneration) {
+        running = false;
+        if (signalInterval) {
+          clearInterval(signalInterval);
+          signalInterval = null;
+        }
+        scorecard.stop();
+      }
+      throw err;
+    }).finally(() => {
+      if (generation === lifecycleGeneration) startPromise = null;
     });
-
-    log('INFO', '📊 UpDown service started interval=5s');
+    return startPromise;
   };
 
   /**
@@ -385,6 +435,8 @@ const createUpDownService = (io, deps) => {
    */
   const stop = () => {
     running = false;
+    lifecycleGeneration++;
+    startPromise = null;
     if (signalInterval) {
       clearInterval(signalInterval);
       signalInterval = null;
@@ -400,12 +452,19 @@ const createUpDownService = (io, deps) => {
    */
   const getStatus = () => {
     const latestSignal = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1] : null;
-    const perpSnap = perpBook.snapshot(lastPrice);
+    const now = Date.now();
+    const priceFresh = isFreshPrice(lastPrice, lastTickAt, now);
+    const visiblePrice = priceFresh ? lastPrice : null;
+    const perpSnap = perpBook.snapshot(visiblePrice);
     return {
       running,
       contract,
       position,
-      lastPrice,
+      lastPrice: visiblePrice,
+      lastKnownPrice: lastPrice || null,
+      lastTickAt: lastTickAt || null,
+      priceAgeMs: lastTickAt > 0 ? Math.max(0, now - lastTickAt) : null,
+      priceFresh,
       pnl: computePnL(),
       latestSignal,
       signalHistory: signalHistory.slice(-100),
@@ -464,7 +523,7 @@ const createUpDownService = (io, deps) => {
   const getTradeContext = () => ({
     contract: { ...contract },
     position: position ? { ...position } : null,
-    lastPrice,
+    lastPrice: isFreshPrice(lastPrice, lastTickAt) ? lastPrice : null,
     latestSignal: lastSignalResult ? {
       type: lastSignalResult.type,
       action: resolveAction(lastSignalResult.type, perpBook.isLong()),
@@ -498,4 +557,4 @@ const createUpDownService = (io, deps) => {
   };
 };
 
-module.exports = { createUpDownService };
+module.exports = { createUpDownService, isFreshPrice, PRICE_STALE_MS };

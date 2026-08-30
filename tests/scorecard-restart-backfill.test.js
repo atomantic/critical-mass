@@ -78,7 +78,7 @@ describe('findUnsettledPredictions (issue #212E)', () => {
     assert.equal(oneMin.exitPrice, 108, 'resolves to the nearest recorded price at/after the target time');
   });
 
-  it('falls back to the latest known price when the outage extends past every later record', () => {
+  it('refuses to settle from a price observed before the target time', () => {
     const t0 = '2026-01-01T00:00:00.000Z';
     const before = new Date(Date.parse(t0) - 120_000).toISOString();
     const after = new Date(Date.parse(t0) + 30_000).toISOString(); // later than p1, but still before its 1m target (60s)
@@ -90,7 +90,8 @@ describe('findUnsettledPredictions (issue #212E)', () => {
     const now = Date.parse(t0) + 10 * 60_000; // well past every record — nothing exists at/after the target
     const { elapsed } = findUnsettledPredictions(records, now);
     const oneMin = elapsed.find(e => e.prediction.id === 'p1' && e.windowMs === 60_000);
-    assert.equal(oneMin.exitPrice, 95, 'falls back to the chronologically latest recorded price, not p1\'s own entry price');
+    assert.equal(oneMin.exitPrice, null, 'a pre-target price is not a valid future settlement');
+    assert.equal(oneMin.settlementTs, null);
   });
 
   it('returns exitPrice: null when no record carries a usable (truthy) price to backfill against', () => {

@@ -4,7 +4,7 @@ import { FileText, Save, Camera, Upload, Check, X, Loader2 } from 'lucide-react'
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
 
-export default function ContractSetup({ initialContract, onPositionSet }) {
+export default function ContractSetup({ initialContract }) {
   const [expiry, setExpiry] = useState('')
   const [target, setTarget] = useState('')
   const [stop, setStop] = useState('')
@@ -20,6 +20,7 @@ export default function ContractSetup({ initialContract, onPositionSet }) {
   const [analyzing, setAnalyzing] = useState(false)
   const [preview, setPreview] = useState(null) // extracted data from AI
   const [screenshotError, setScreenshotError] = useState('')
+  const [screenshotNotice, setScreenshotNotice] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef(null)
   const dropZoneRef = useRef(null)
@@ -108,6 +109,7 @@ export default function ContractSetup({ initialContract, onPositionSet }) {
 
     setAnalyzing(true)
     setScreenshotError('')
+    setScreenshotNotice('')
     setPreview(null)
 
     const params = new URLSearchParams({ providerId: selectedProvider })
@@ -204,27 +206,10 @@ export default function ContractSetup({ initialContract, onPositionSet }) {
       setSaving(false)
     }
 
-    // For order and position screens, also set the position
+    // Crypto.com screenshots contain option premiums, not BTC perp entry
+    // prices. Never feed those values into the 0.01-BTC perp tracker.
     if (screenType === 'order' || screenType === 'position') {
-      const entryPrice = screenType === 'order' ? d.contractPrice : d.entryPrice
-      if (!entryPrice || !dir) {
-        setScreenshotError('Missing entry price or direction for position')
-        return
-      }
-      const posRes = await fetch('/api/updown/position', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          entryPrice,
-          contracts: d.contracts || 1,
-          direction: dir.toLowerCase(),
-        }),
-      })
-      if (!posRes.ok) {
-        setScreenshotError('Failed to save position')
-        return
-      }
-      onPositionSet?.()
+      setScreenshotNotice('Option details applied to the contract only. Option premiums were not imported into the BTC perp tracker.')
     }
   }
 
@@ -241,7 +226,7 @@ export default function ContractSetup({ initialContract, onPositionSet }) {
       <div className="mb-4 space-y-2">
         <div className="flex items-center gap-2 mb-1">
           <Camera size={14} className="text-purple-400" />
-          <span className="text-xs font-medium text-purple-400">Screenshot Import</span>
+          <span className="text-xs font-medium text-purple-400">Crypto.com Option Screenshot</span>
         </div>
 
         {/* Provider / Model selectors */}
@@ -311,6 +296,11 @@ export default function ContractSetup({ initialContract, onPositionSet }) {
         {screenshotError && (
           <div className="text-xs text-red-400 bg-red-900/20 rounded px-2 py-1">
             {screenshotError}
+          </div>
+        )}
+        {screenshotNotice && (
+          <div className="text-xs text-blue-300 bg-blue-900/20 border border-blue-700/40 rounded p-2" role="status">
+            {screenshotNotice}
           </div>
         )}
 

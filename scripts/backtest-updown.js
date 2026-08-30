@@ -20,8 +20,9 @@
 const fs = require('fs')
 const path = require('path')
 const { getAdapter } = require('../src/adapters')
-const { createCandleAggregator, TIMEFRAMES } = require('../src/candle-aggregator')
+const { createCandleAggregator } = require('../src/candle-aggregator')
 const { createSignalEngine, ALL_SIGNAL_TFS } = require('../src/updown/signal-engine')
+const { TF_MS, findLastIndex, seedCompletedCandles } = require('../src/updown/replay-candles')
 const { createPerpBook } = require('../src/updown/perp-book')
 const { PERP_CONTRACT_SIZE_BTC } = require('../src/updown/perp-contract')
 const { getCacheFile } = require('../src/backtest-engine')
@@ -32,18 +33,8 @@ const COINBASE_DIR = path.join(DATA_DIR, 'coinbase')
 const BACKTEST_DIR = path.join(DATA_DIR, 'updown', 'backtest')
 const CACHE_FILE = path.join(COINBASE_DIR, 'btc-usdc-price-cache-1min.json')
 
-// TF intervals in ms for aggregation
-const TF_MS = {
-  '1m': 60_000, '3m': 180_000, '5m': 300_000, '10m': 600_000,
-  '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000,
-  '2h': 7_200_000, '4h': 14_400_000, '1d': 86_400_000, '1w': 604_800_000,
-}
-
-// Max candles per TF for seeding (from TIMEFRAMES)
-const MAX_CANDLES = {}
-for (const [tf, cfg] of Object.entries(TIMEFRAMES)) {
-  MAX_CANDLES[tf] = cfg.maxCandles
-}
+const seedUpTo = (aggregator, tfCandles, evalTs) =>
+  seedCompletedCandles(aggregator, tfCandles, evalTs, ALL_SIGNAL_TFS)
 
 // ─── CLI ─────────────────────────────────────────────────
 const args = process.argv.slice(2)
@@ -161,6 +152,18 @@ async function loadOrFetch1mCandles(fromMs, toMs) {
   return cached.filter(c => c.timestamp >= fromMs && c.timestamp <= toMs)
 }
 
+/** Return discontinuities in a sorted candle series. */
+function findCandleGaps(candles, intervalMs = TF_MS['1m']) {
+  const gaps = []
+  for (let i = 1; i < candles.length; i++) {
+    const delta = candles[i].timestamp - candles[i - 1].timestamp
+    if (delta > intervalMs) {
+      gaps.push({ after: candles[i - 1].timestamp, before: candles[i].timestamp, missing: Math.round(delta / intervalMs) - 1 })
+    }
+  }
+  return gaps
+}
+
 /**
  * Load candle data from an existing cache file (for daily/weekly).
  */
@@ -259,54 +262,6 @@ function preAggregateAll(candles1m) {
   result['1w'] = Array.from(weeklyMap.values()).sort((a, b) => a.timestamp - b.timestamp)
 
   return result
-}
-
-// ─── Binary Search ───────────────────────────────────────
-
-/**
- * Find index of last candle with timestamp <= target.
- * Returns -1 if no candle qualifies.
- */
-function findLastIndex(candles, targetTs) {
-  let lo = 0, hi = candles.length - 1, result = -1
-  while (lo <= hi) {
-    const mid = (lo + hi) >>> 1
-    if (candles[mid].timestamp <= targetTs) {
-      result = mid
-      lo = mid + 1
-    } else {
-      hi = mid - 1
-    }
-  }
-  return result
-}
-
-// ─── Seeding ─────────────────────────────────────────────
-
-/**
- * Seed the aggregator with COMPLETED candles up to evalTs for all TFs.
- *
- * Live parity: candle-aggregator getCandles() only ever returns completed
- * candles — the in-progress bucket lives in getCurrentCandle() and is never
- * visible to the signal engine. A bucket's timestamp is its START, so a
- * bucket is completed only when its END (timestamp + tfMs) <= evalTs.
- * Seeding by start (timestamp <= evalTs) leaked up to 59min (1h), ~24h (1d),
- * or ~7d (1w) of future high/low/close into every signal — lookahead bias.
- */
-function seedUpTo(aggregator, tfCandles, evalTs) {
-  for (const tf of ALL_SIGNAL_TFS) {
-    const candles = tfCandles[tf]
-    if (!candles || candles.length === 0) continue
-
-    // timestamp + TF_MS[tf] <= evalTs  ⟺  timestamp <= evalTs - TF_MS[tf]
-    const lastIdx = findLastIndex(candles, evalTs - TF_MS[tf])
-    if (lastIdx < 0) continue
-
-    const maxC = MAX_CANDLES[tf] || 200
-    const startIdx = Math.max(0, lastIdx + 1 - maxC)
-    const window = candles.slice(startIdx, lastIdx + 1)
-    aggregator.seedCandles(tf, window)
-  }
 }
 
 // ─── Simulation ──────────────────────────────────────────
@@ -550,6 +505,11 @@ async function main() {
     console.error('Not enough 1m candle data for backtest. Need at least 1000 candles.')
     process.exit(1)
   }
+  const gaps = findCandleGaps(candles1m)
+  if (gaps.length > 0) {
+    const first = gaps[0]
+    throw new Error(`1m candle history is discontinuous: ${gaps.length} gaps; first gap after ${new Date(first.after).toISOString()} (${first.missing} candles missing)`)
+  }
 
   // 2. Pre-aggregate to all timeframes
   console.log('\nStep 2: Aggregating to all timeframes...')
@@ -572,6 +532,7 @@ async function main() {
   const evalCandleCount = candles1m.filter(c => c.timestamp >= evalStartMs).length
   console.log('\n=== UpDown Perp Long Backtest Results ===')
   console.log(`  NOTE: ${PERP_CONTRACT_SIZE_BTC} BTC per Open/Add contract, flatten on Close. Zero fees/funding/spread.`)
+  console.log('  BASELINE ONLY: excludes live adaptive-weight training and tick-momentum adjustments.')
   console.log(`  Period: ${new Date(evalStartMs).toISOString().slice(0, 10)} to ${new Date(evalEndMs).toISOString().slice(0, 10)} (${EVAL_DAYS} days)`)
   console.log(`  Warmup: ${WARMUP_DAYS} days | Candles: ${evalCandleCount.toLocaleString()}`)
   console.log('')
@@ -642,7 +603,8 @@ async function main() {
   // Summary JSON
   const summaryPath = path.join(BACKTEST_DIR, `backtest-summary-${dateStr}.json`)
   fs.writeFileSync(summaryPath, JSON.stringify({
-    note: `${PERP_CONTRACT_SIZE_BTC} BTC per Open/Add contract, flatten on Close. Zero fees/funding/spread.`,
+    note: `${PERP_CONTRACT_SIZE_BTC} BTC per Open/Add contract, flatten on Close. Zero fees/funding/spread. Baseline replay only: excludes live adaptive-weight training and tick-momentum adjustments.`,
+    strategyMode: 'static-baseline',
     config: {
       evalDays: EVAL_DAYS,
       warmupDays: WARMUP_DAYS,
@@ -668,4 +630,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { seedUpTo, findLastIndex, TF_MS }
+module.exports = { seedUpTo, findLastIndex, findCandleGaps, TF_MS }

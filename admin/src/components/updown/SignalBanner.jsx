@@ -86,14 +86,14 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
           <span className={`text-lg font-bold whitespace-nowrap ${labelColor}`}>
             {actionLabel}
           </span>
-          <div className="flex items-center gap-2 min-w-[120px]" title={`Confidence: ${confPct.toFixed(0)}% — How strongly indicators agree (score magnitude / 60)`}>
+          <div className="flex items-center gap-2 min-w-[160px]" title={`Heuristic signal strength: ${confPct.toFixed(0)}% — indicator agreement, not a calibrated probability`}>
             <div className="w-20 bg-gray-700 rounded-full h-2.5">
               <div
                 className={`${barColor} h-2.5 rounded-full transition-all duration-500`}
                 style={{ width: `${confPct}%` }}
               />
             </div>
-            <span className="text-sm font-mono text-gray-300">{confPct.toFixed(0)}%</span>
+            <span className="text-xs font-mono text-gray-300 whitespace-nowrap">Strength {confPct.toFixed(0)}%</span>
           </div>
         </div>
 

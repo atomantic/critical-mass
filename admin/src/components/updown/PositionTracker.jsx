@@ -15,11 +15,19 @@ export default function PositionTracker({ initialPosition, tick }) {
   const [saving, setSaving] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [hasPosition, setHasPosition] = useState(false)
+  const [error, setError] = useState('')
 
   // Only update form when the server-side position actually changes
   const prevPositionRef = useRef(null)
   useEffect(() => {
-    if (!initialPosition?.entryPrice) return
+    if (!initialPosition?.entryPrice) {
+      prevPositionRef.current = null
+      setEntryPrice('')
+      setAmount('')
+      setDirection('Up')
+      setHasPosition(false)
+      return
+    }
     const key = `${initialPosition.entryPrice}-${initialPosition.contracts}-${initialPosition.direction}`
     if (prevPositionRef.current === key) return
     prevPositionRef.current = key
@@ -32,29 +40,44 @@ export default function PositionTracker({ initialPosition, tick }) {
 
   const handleSave = async () => {
     setSaving(true)
-    const res = await fetch('/api/updown/position', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        entryPrice: parseFloat(entryPrice),
-        contracts: parseFloat(amount),
-        direction: 'up',
-      }),
-    })
-    if (res.ok) setHasPosition(true)
-    setSaving(false)
+    setError('')
+    try {
+      const res = await fetch('/api/updown/position', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entryPrice: Number(entryPrice),
+          contracts: Number(amount),
+          direction: 'up',
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to save tracker')
+      }
+      setHasPosition(true)
+    } catch (err) {
+      setError(err.message || 'Failed to save tracker')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleClear = async () => {
     setClearing(true)
-    const res = await fetch('/api/updown/position', { method: 'DELETE' })
-    if (res.ok) {
+    setError('')
+    try {
+      const res = await fetch('/api/updown/position', { method: 'DELETE' })
+      if (!res.ok) throw new Error('Failed to clear tracker')
       setEntryPrice('')
       setAmount('')
       setDirection('Up')
       setHasPosition(false)
+    } catch (err) {
+      setError(err.message || 'Failed to clear tracker')
+    } finally {
+      setClearing(false)
     }
-    setClearing(false)
   }
 
   // Computed P&L
@@ -80,6 +103,7 @@ export default function PositionTracker({ initialPosition, tick }) {
       </div>
 
       <div className="space-y-3">
+        {error && <div className="text-xs text-red-400" role="alert">{error}</div>}
         <div>
           <label className="text-xs text-gray-400 block mb-1">Entry Price ($)</label>
           <input
@@ -138,7 +162,7 @@ export default function PositionTracker({ initialPosition, tick }) {
               className="py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 rounded text-sm text-red-400 transition-colors flex items-center gap-1"
             >
               <Trash2 size={14} />
-              {clearing ? '...' : 'Clear'}
+              {clearing ? '...' : 'Clear tracker'}
             </button>
           )}
         </div>

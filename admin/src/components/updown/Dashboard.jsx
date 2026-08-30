@@ -10,7 +10,7 @@ import SignalBanner from './SignalBanner'
 import TimeframeGrid from './TimeframeGrid'
 import TradeHistory from './TradeHistory'
 import ScorecardPanel from './ScorecardPanel'
-import { parseExpiry } from './TimeWarningBanner'
+import TimeWarningBanner, { parseExpiry } from './TimeWarningBanner'
 import { labelHistoryActions } from '../../constants/signals'
 
 function formatCurrency(value) {
@@ -100,26 +100,44 @@ export default function UpDownDashboard() {
   const handleStart = async () => {
     setStarting(true)
     setError(null)
-    const res = await fetch('/api/updown/start', { method: 'POST' })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      setError(data.error || 'Failed to start')
+    try {
+      const res = await fetch('/api/updown/start', { method: 'POST' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to start')
+      }
+      await fetchStatus()
+    } catch (err) {
+      setError(err.message || 'Failed to start')
+    } finally {
+      setStarting(false)
     }
-    setStarting(false)
-    fetchStatus()
   }
 
   const handleStop = async () => {
     setStopping(true)
-    await fetch('/api/updown/stop', { method: 'POST' })
-    setStopping(false)
-    fetchStatus()
+    setError(null)
+    try {
+      const res = await fetch('/api/updown/stop', { method: 'POST' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to stop')
+      }
+      await fetchStatus()
+    } catch (err) {
+      setError(err.message || 'Failed to stop')
+    } finally {
+      setStopping(false)
+    }
   }
 
   const isRunning = status?.running || false
 
   // Merge tick data with status for current price
-  const currentPrice = tick?.price || status?.lastPrice
+  const tickFresh = Number.isFinite(tick?.timestamp) && Date.now() - tick.timestamp <= 30000
+  const priceFresh = tickFresh || status?.priceFresh === true
+  const currentPrice = tickFresh ? tick?.price : (status?.priceFresh ? status.lastPrice : null)
+  const liveIndicators = isRunning && priceFresh ? rawIndicators : null
   const timeRemaining = tick?.timeRemaining
 
   // Time remaining for signal banner
@@ -172,11 +190,11 @@ export default function UpDownDashboard() {
               </span>
             )}
 
-            {/* Live indicator */}
+            {/* Data health indicator */}
             <div className="flex items-center gap-1.5 text-xs">
-              <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-              <span className={connected ? 'text-green-400' : 'text-red-400'}>
-                {connected ? 'Live' : 'Offline'}
+              <span className={`w-2 h-2 rounded-full ${connected && isRunning && priceFresh ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+              <span className={connected && isRunning && priceFresh ? 'text-green-400' : 'text-red-400'}>
+                {!connected ? 'Socket offline' : !isRunning ? 'Engine stopped' : !priceFresh ? 'Price stale' : 'Data live'}
               </span>
             </div>
 
@@ -185,6 +203,7 @@ export default function UpDownDashboard() {
               onClick={() => setAudioEnabled(!audioEnabled)}
               className={`p-1.5 rounded transition-colors ${audioEnabled ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:text-white'}`}
               title={audioEnabled ? 'Disable audio alerts' : 'Enable audio alerts'}
+              aria-label={audioEnabled ? 'Disable audio alerts' : 'Enable audio alerts'}
             >
               {audioEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
             </button>
@@ -193,12 +212,20 @@ export default function UpDownDashboard() {
             <button
               onClick={async () => {
                 setRestarting(true)
-                await fetch('/api/updown/restart', { method: 'POST' }).catch(() => {})
-                setTimeout(() => setRestarting(false), 5000)
+                setError(null)
+                try {
+                  const res = await fetch('/api/updown/restart', { method: 'POST' })
+                  if (!res.ok) throw new Error('Restart request failed')
+                } catch (err) {
+                  setError(err.message || 'Restart request failed')
+                } finally {
+                  setRestarting(false)
+                }
               }}
               disabled={restarting}
               className={`p-1.5 rounded transition-colors ${restarting ? 'bg-yellow-600 text-white' : 'bg-gray-700 hover:bg-gray-600'}`}
               title="Restart server (pm2)"
+              aria-label="Restart server"
             >
               <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
             </button>
@@ -227,11 +254,13 @@ export default function UpDownDashboard() {
         </div>
       </div>
 
+      <TimeWarningBanner timeRemaining={timeRemaining} expiry={status?.contract?.expiry} />
+
       {/* TimeframeGrid/Signal + Price Chart/Trade History + Scorecard/Position */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <div className="flex flex-col gap-4">
           <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
-          <SignalPanel signal={signal || status?.latestSignal} indicators={rawIndicators} position={status?.position} />
+          <SignalPanel signal={signal || status?.latestSignal} indicators={liveIndicators} position={status?.position} />
           <TradeHistory />
         </div>
         <div className="lg:col-span-2 flex flex-col gap-4">
@@ -247,7 +276,7 @@ export default function UpDownDashboard() {
         <div className="flex flex-col gap-4">
           <SignalBanner
             signal={signal || status?.latestSignal}
-            indicators={rawIndicators}
+            indicators={liveIndicators}
             timeRemaining={msLeft}
             position={status?.position}
           />
@@ -255,7 +284,7 @@ export default function UpDownDashboard() {
             scorecard={socketScorecard || status?.scorecard}
             perp={rawIndicators?.perp || tick?.perp || status?.perp}
           />
-          <ContractSetup initialContract={status?.contract} onPositionSet={fetchStatus} />
+          <ContractSetup initialContract={status?.contract} />
           <PositionTracker initialPosition={status?.position} tick={tick} />
         </div>
       </div>

@@ -13,16 +13,18 @@ const RANGES = [
   { label: '30d', days: 30 },
 ]
 
-const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum']
-const INDICATOR_LABELS = {
+const DEFAULT_INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum', 'obv', 'williamsR', 'cci']
+const DEFAULT_INDICATOR_LABELS = {
   rsi: 'RSI', stochastic: 'Stoch', macd: 'MACD',
   bollinger: 'Bollinger', vwap: 'VWAP', momentum: 'Momentum',
+  obv: 'OBV', williamsR: 'Will %R', cci: 'CCI',
 }
 const INDICATOR_COLORS = {
   rsi: '#f97316', stochastic: '#06b6d4', macd: '#a855f7',
   bollinger: '#eab308', vwap: '#22c55e', momentum: '#ec4899',
+  obv: '#14b8a6', williamsR: '#f43f5e', cci: '#84cc16',
 }
-const TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d']
+const DEFAULT_TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
 
 function heatmapColor(accuracy) {
   if (accuracy == null) return 'bg-gray-700/50 text-gray-600'
@@ -78,6 +80,13 @@ export default function ScorecardAnalysis() {
   }, [fetchData])
 
   const s = data?.summary
+  const indicatorCatalog = data?.catalog?.indicators
+  const indicators = indicatorCatalog?.map(item => item.key) || DEFAULT_INDICATORS
+  const indicatorLabels = {
+    ...DEFAULT_INDICATOR_LABELS,
+    ...(indicatorCatalog ? Object.fromEntries(indicatorCatalog.map(item => [item.key, item.label])) : {}),
+  }
+  const timeframes = data?.catalog?.timeframes || DEFAULT_TF_ORDER
 
   return (
     <div className="space-y-4">
@@ -141,14 +150,14 @@ export default function ScorecardAnalysis() {
               sub={data.perpAnalysis ? `${data.perpAnalysis.wins}W / ${data.perpAnalysis.losses}L` : null}
             />
             <StatCard
-              label="Overall Accuracy"
-              value={s.accuracy != null ? `${s.accuracy}%` : null}
-              sub={`${s.outcomes} evaluated`}
+              label="Directional Accuracy"
+              value={s.perpDirectionalAccuracy != null ? `${s.perpDirectionalAccuracy}%` : null}
+              sub={`${s.outcomes} options-style outcomes`}
             />
             <StatCard label="Predictions" value={s.predictions} />
             <StatCard
               label="Best Indicator"
-              value={s.bestIndicator ? INDICATOR_LABELS[s.bestIndicator] || s.bestIndicator : null}
+              value={s.bestIndicator ? indicatorLabels[s.bestIndicator] || s.bestIndicator : null}
             />
           </div>
 
@@ -188,17 +197,17 @@ export default function ScorecardAnalysis() {
               <div className="overflow-x-auto">
                 <div className="min-w-[600px]">
                   {/* Header row */}
-                  <div className="grid gap-1" style={{ gridTemplateColumns: `80px repeat(${TF_ORDER.length}, 1fr)` }}>
+                  <div className="grid gap-1" style={{ gridTemplateColumns: `80px repeat(${timeframes.length}, 1fr)` }}>
                     <div />
-                    {TF_ORDER.map(tf => (
+                    {timeframes.map(tf => (
                       <div key={tf} className="text-center text-xs text-gray-400 font-medium py-1">{tf}</div>
                     ))}
                   </div>
                   {/* Data rows */}
-                  {INDICATORS.map(ind => (
-                    <div key={ind} className="grid gap-1 mb-1" style={{ gridTemplateColumns: `80px repeat(${TF_ORDER.length}, 1fr)` }}>
-                      <div className="text-xs text-gray-400 flex items-center">{INDICATOR_LABELS[ind]}</div>
-                      {TF_ORDER.map(tf => {
+                  {indicators.map(ind => (
+                    <div key={ind} className="grid gap-1 mb-1" style={{ gridTemplateColumns: `80px repeat(${timeframes.length}, 1fr)` }}>
+                      <div className="text-xs text-gray-400 flex items-center">{indicatorLabels[ind]}</div>
+                      {timeframes.map(tf => {
                         const cell = data.heatmap[ind]?.[tf]
                         return (
                           <div
@@ -230,14 +239,14 @@ export default function ScorecardAnalysis() {
                     <Tooltip
                       contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
                       labelFormatter={formatHour}
-                      formatter={(v, name) => [v != null ? `${v}%` : '---', INDICATOR_LABELS[name] || name]}
+                      formatter={(v, name) => [v != null ? `${v}%` : '---', indicatorLabels[name] || name]}
                     />
                     <Legend
-                      formatter={(value) => INDICATOR_LABELS[value] || value}
+                      formatter={(value) => indicatorLabels[value] || value}
                       wrapperStyle={{ fontSize: 11 }}
                     />
                     <ReferenceLine y={50} stroke="#6b7280" strokeDasharray="4 4" />
-                    {INDICATORS.map(ind => (
+                    {indicators.map(ind => (
                       <Line
                         key={ind}
                         type="monotone"
@@ -271,13 +280,13 @@ export default function ScorecardAnalysis() {
                     <Tooltip
                       contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
                       labelFormatter={(v) => v?.slice(0, 16)?.replace('T', ' ') || ''}
-                      formatter={(v, name) => [(v * 100).toFixed(1) + '%', INDICATOR_LABELS[name] || name]}
+                      formatter={(v, name) => [(v * 100).toFixed(1) + '%', indicatorLabels[name] || name]}
                     />
                     <Legend
-                      formatter={(value) => INDICATOR_LABELS[value] || value}
+                      formatter={(value) => indicatorLabels[value] || value}
                       wrapperStyle={{ fontSize: 11 }}
                     />
-                    {INDICATORS.map(ind => (
+                    {indicators.map(ind => (
                       <Line
                         key={ind}
                         type="monotone"
@@ -319,7 +328,7 @@ export default function ScorecardAnalysis() {
                                 className="px-1.5 py-0.5 rounded text-xs font-medium"
                                 style={{ backgroundColor: INDICATOR_COLORS[ind] + '30', color: INDICATOR_COLORS[ind] }}
                               >
-                                {INDICATOR_LABELS[ind] || ind}
+                                {indicatorLabels[ind] || ind}
                               </span>
                             ))}
                           </div>
