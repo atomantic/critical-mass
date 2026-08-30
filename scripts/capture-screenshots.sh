@@ -6,18 +6,18 @@
 #
 # Prereqs:
 #   - Google Chrome installed at /Applications/Google Chrome.app
-#   - Admin UI reachable at $CM_BASE_URL (default http://localhost:5563)
+#   - Admin UI reachable at $CM_BASE_URL (default http://localhost:5570)
 #   - Regime engines running with live data for best results
 #
 # Usage:
 #   ./scripts/capture-screenshots.sh                 # capture to umbrel/gallery/
-#   CM_BASE_URL=http://localhost:5564 ./scripts/capture-screenshots.sh
+#   CM_BASE_URL=http://localhost:5571 ./scripts/capture-screenshots.sh
 #   CM_WAIT_MS=12000 ./scripts/capture-screenshots.sh  # longer render wait
 
 set -euo pipefail
 
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-BASE_URL="${CM_BASE_URL:-http://localhost:5563}"
+BASE_URL="${CM_BASE_URL:-http://localhost:5570}"
 WAIT_MS="${CM_WAIT_MS:-8000}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -5,7 +5,7 @@ services:
     container_name: critical-mass
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5563:5563"
+      - "127.0.0.1:5570:5570"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

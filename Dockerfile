@@ -38,6 +38,6 @@ RUN mkdir -p data logs && chown -R 1000:1000 /app
 
 USER 1000
 
-EXPOSE 5563
+EXPOSE 5570
 
 ENTRYPOINT ["/docker-entrypoint.sh"]

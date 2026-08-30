@@ -3,7 +3,7 @@ services:
   app_proxy:
     environment:
       APP_HOST: critical-mass_web_1
-      APP_PORT: 5563
+      APP_PORT: 5570
 
   web:
     image: ghcr.io/atomantic/critical-mass:v2.19.2

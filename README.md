@@ -186,8 +186,8 @@ npm run pm2:start
 ```
 
 **URLs:**
-- **API/Production UI:** http://localhost:5563
-- **Dev UI (hot-reload):** http://localhost:5564
+- **API/Production UI:** http://localhost:5570
+- **Dev UI (hot-reload):** http://localhost:5571
 
 ### CLI Commands
 

@@ -2,11 +2,11 @@
 // Port Configuration - All ports defined here as single source of truth
 // =============================================================================
 const PORTS = {
-  API: 5563, // Express API server + static admin UI (gateway)
-  UI: 5564, // Vite dev server (admin UI development)
-  COINBASE_IPC: 5565, // Coinbase engine IPC WebSocket
-  GEMINI_IPC: 5566, // Gemini engine IPC WebSocket
-  CRYPTOCOM_IPC: 5567, // Crypto.com engine IPC WebSocket
+  API: 5570, // Express API server + static admin UI (gateway)
+  UI: 5571, // Vite dev server (admin UI development)
+  COINBASE_IPC: 5572, // Coinbase engine IPC WebSocket
+  GEMINI_IPC: 5573, // Gemini engine IPC WebSocket
+  CRYPTOCOM_IPC: 5574, // Crypto.com engine IPC WebSocket
 };
 
 module.exports = {

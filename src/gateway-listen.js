@@ -3,7 +3,7 @@
  * Where the operator gateway should listen.
  *
  * Default is loopback plus any Tailscale 100.64/10 addresses so the admin UI
- * is reachable at http://100.x:5563 and http://<machine>.ts.net:5563 without
+ * is reachable at http://100.x:5570 and http://<machine>.ts.net:5570 without
  * publishing on LAN/WAN. HOST=0.0.0.0 still binds every interface.
  */
 

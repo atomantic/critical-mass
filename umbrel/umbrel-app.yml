@@ -5,7 +5,7 @@ tagline: Multi-exchange BTC accumulation engine
 icon: https://raw.githubusercontent.com/atomantic/critical-mass/main/admin/public/icon-512.png
 category: bitcoin
 version: "2.19.2"
-port: 5563
+port: 5570
 description: >-
   Critical Mass is a multi-exchange BTC accumulation engine with celestial
   position management. It supports Coinbase, Gemini, and Crypto.com with

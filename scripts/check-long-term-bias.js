@@ -5,10 +5,10 @@
  * Usage:
  *   node scripts/check-long-term-bias.js
  *   node scripts/check-long-term-bias.js --json    # machine-readable output
- *   GATEWAY_URL=http://localhost:5563 node scripts/check-long-term-bias.js
+ *   GATEWAY_URL=http://localhost:5570 node scripts/check-long-term-bias.js
  */
 
-const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:5563';
+const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:5570';
 const EXCHANGES = ['coinbase', 'gemini', 'cryptocom'];
 const JSON_MODE = process.argv.includes('--json');
 

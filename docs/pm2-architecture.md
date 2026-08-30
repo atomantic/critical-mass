@@ -6,7 +6,7 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 
 ```
 ┌──────────────────────────────────┐
-│   critical-mass (:5563)          │  API gateway, Socket.IO hub, admin UI,
+│   critical-mass (:5570)          │  API gateway, Socket.IO hub, admin UI,
 │   server.js                      │  DCA scheduler, backup, notifier, settings
 └────────┬─────────┬───────────────┘
     IPC WS    IPC WS

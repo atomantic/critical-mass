@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Moved off ports 5563-5567 to 5570-5574** — the old block sat inside the range PortOS reserves for its own extensions, where `:5563` is claimed by an on-demand Eidoverse bridge. Because Critical Mass bound `127.0.0.1` and the Tailscale address explicitly while PortOS bound the wildcard, both listeners started without an `EADDRINUSE` and the specific bind silently won every connection — so PortOS's bridge served nothing and its Eidoverse page loaded the Critical Mass admin UI instead. The gateway, admin UI, and the three engine IPC sockets now use 5570-5574, inside the documented user-application range. Anything pinning the old ports (bookmarks, `GATEWAY_URL`, `CORS_ORIGINS`, reverse proxies, the Umbrel manifest) needs updating.
+
 ### Security
 - **Safer local service and automation boundaries** — The gateway now binds to loopback by default, Docker host publishing is loopback-only, state files are atomically replaced with owner-only permissions, CI actions use immutable revisions, and startup refuses foreign port occupants instead of killing them. The vulnerable development dependency chain was also removed.
 

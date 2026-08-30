@@ -2,8 +2,8 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // Default ports matching ecosystem.config.cjs
-const UI_PORT = parseInt(process.env.VITE_PORT || '5564')
-const API_PORT = parseInt(process.env.VITE_API_PORT || '5563')
+const UI_PORT = parseInt(process.env.VITE_PORT || '5571')
+const API_PORT = parseInt(process.env.VITE_API_PORT || '5570')
 
 export default defineConfig({
   plugins: [react()],

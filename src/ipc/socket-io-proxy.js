@@ -7,7 +7,7 @@
  * which re-emits them on the real Socket.IO server.
  *
  * Engine processes use this instead of a real Socket.IO server so the
- * admin UI only connects to the gateway (:5563).
+ * admin UI only connects to the gateway (:5570).
  */
 
 /**

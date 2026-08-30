@@ -39,19 +39,19 @@ describe('resolveListenHosts', () => {
 })
 
 describe('isGatewayOrigin', () => {
-  const listed = ['http://localhost:5563', 'http://localhost:5564']
+  const listed = ['http://localhost:5570', 'http://localhost:5571']
 
   it('allows missing origin, the allowlist, MagicDNS, and 100.x', () => {
     assert.equal(isGatewayOrigin(undefined, listed), true)
-    assert.equal(isGatewayOrigin('http://localhost:5564', listed), true)
-    assert.equal(isGatewayOrigin('http://void.taile8179.ts.net:5564', listed), true)
+    assert.equal(isGatewayOrigin('http://localhost:5571', listed), true)
+    assert.equal(isGatewayOrigin('http://void.taile8179.ts.net:5571', listed), true)
     assert.equal(isGatewayOrigin('https://void.taile8179.ts.net', listed), true)
-    assert.equal(isGatewayOrigin('http://100.83.147.46:5563', listed), true)
+    assert.equal(isGatewayOrigin('http://100.83.147.46:5570', listed), true)
   })
 
   it('rejects unrelated origins', () => {
     assert.equal(isGatewayOrigin('http://evil.example', listed), false)
-    assert.equal(isGatewayOrigin('http://192.168.1.14:5563', listed), false)
+    assert.equal(isGatewayOrigin('http://192.168.1.14:5570', listed), false)
   })
 })
 

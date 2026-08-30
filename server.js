@@ -49,11 +49,11 @@ runMigrationIfNeeded();
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || 5563;
+const PORT = process.env.PORT || 5570;
 const LISTEN_HOSTS = resolveListenHosts(process.env.HOST);
 
 // CORS allowlist -- local dev, plus Tailscale 100.x / *.ts.net (see isGatewayOrigin)
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5564`).split(',').map(s => s.trim());
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5571`).split(',').map(s => s.trim());
 
 const io = new Server(server, {
   cors: { origin: (origin, cb) => cb(null, isGatewayOrigin(origin, CORS_ORIGINS)) },

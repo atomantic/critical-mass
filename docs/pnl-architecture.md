@@ -213,7 +213,7 @@ When P&L looks wrong, work through these in order:
 ### Step 1: Compare authoritative numbers
 ```bash
 # What the engine reports
-curl -s 'http://localhost:5563/api/<exchange>/regime/status?pair=<PAIR>' \
+curl -s 'http://localhost:5570/api/<exchange>/regime/status?pair=<PAIR>' \
   | jq '.status.position | {realizedPnL, realizedAssetPnL, totalAsset}'
 
 # What cycle-pair derivation says (should match)
