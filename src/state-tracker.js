@@ -27,7 +27,10 @@ const { getExchangeDataDir, getFundDataDir, resolveFundDataDir } = require('./mi
 const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
 const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
 const { loadRawConfig } = require('./config-utils');
+const { createContextLogger } = require('./logger');
 const { DATA_DIR } = require('./paths');
+
+const stateTrackerLogger = createContextLogger({ module: 'state-tracker' });
 
 /**
  * Fund lifecycle states. The operator drives transitions:
@@ -324,7 +327,10 @@ const findAwaitingSellOrder = (state, buyOrderId) =>
 const attachSellOrder = (state, buyOrderId, sellOrder) => {
   const order = findAwaitingSellOrder(state, buyOrderId);
   if (!order) {
-    console.log(`⚠️ attachSellOrder: no awaiting_sell order for buy ${buyOrderId} — sell ${sellOrder?.orderId} not linked`);
+    stateTrackerLogger.warn(`⚠️ attachSellOrder: no awaiting_sell order for buy ${buyOrderId} — sell ${sellOrder?.orderId} not linked`, {
+      buyOrderId,
+      sellOrderId: sellOrder?.orderId,
+    });
     return state;
   }
 
@@ -349,7 +355,10 @@ const attachSellOrder = (state, buyOrderId, sellOrder) => {
 const markSellPlacementFailed = (state, buyOrderId, reason) => {
   const order = findAwaitingSellOrder(state, buyOrderId);
   if (!order) {
-    console.log(`⚠️ markSellPlacementFailed: no awaiting_sell order for buy ${buyOrderId} — failure not recorded (reason: ${reason})`);
+    stateTrackerLogger.warn(`⚠️ markSellPlacementFailed: no awaiting_sell order for buy ${buyOrderId} — failure not recorded (reason: ${reason})`, {
+      buyOrderId,
+      error: reason,
+    });
     return state;
   }
 
@@ -816,6 +825,7 @@ const createInitialRegimeState = () => ({
  */
 const loadRegimeState = (exchange = 'coinbase', pair) => {
   const stateFile = getRegimeStateFile(exchange, pair);
+  const logger = createContextLogger({ exchange, pair, module: 'state-tracker' });
 
   if (!fs.existsSync(stateFile)) {
     return {
@@ -904,7 +914,10 @@ const loadRegimeState = (exchange = 'coinbase', pair) => {
     delete position.satellitesCompleted;
     delete position.satelliteRealizedPnL;
     delete position.satelliteRealizedBtcPnL;
-    console.log(`🔄 Folded legacy satellite counters into celestialState`);
+    logger.info(`🔄 Folded legacy satellite counters into celestialState`, {
+      stateFile,
+      migration: 'legacy-satellite-counters',
+    });
   }
 
   // Migrate legacy core+satellite state to celestial bodies if needed
@@ -929,7 +942,13 @@ const loadRegimeState = (exchange = 'coinbase', pair) => {
 
       const coreCount = hasCorePosition ? 1 : 0;
       const satCount = hasSatellites ? position.satelliteTpOrders.length : 0;
-      console.log(`🔄 Migrated ${coreCount} core + ${satCount} satellites → ${position.celestialBodies.length} celestial bodies`);
+      logger.info(`🔄 Migrated ${coreCount} core + ${satCount} satellites → ${position.celestialBodies.length} celestial bodies`, {
+        stateFile,
+        migration: 'legacy-celestial-bodies',
+        coreCount,
+        satelliteCount: satCount,
+        bodyCount: position.celestialBodies.length,
+      });
     } else {
       position.celestialBodies = [];
       position.celestialState = position.celestialState || createInitialCelestialState();
@@ -968,6 +987,7 @@ const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'r
 const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null, pair) => {
   const stateFile = getRegimeStateFile(exchange, pair);
   const dir = path.dirname(stateFile);
+  const logger = createContextLogger({ exchange, pair, module: 'state-tracker' });
 
   fs.mkdirSync(dir, { recursive: true });
 
@@ -991,15 +1011,29 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
       const quarantinePath = `${stateFile}.corrupt-${Date.now()}`;
       try {
         fs.renameSync(stateFile, quarantinePath);
-        console.log(`⚠️ Regime state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)} before overwrite`);
+        logger.warn(`⚠️ Regime state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)} before overwrite`, {
+          stateFile,
+          quarantinePath,
+          error: err.message,
+        });
       } catch (renameErr) {
-        console.log(`⚠️ Regime state unreadable (${err.message}) and quarantine failed (${renameErr.message}) — overwriting in place`);
+        logger.error(`⚠️ Regime state unreadable (${err.message}) and quarantine failed (${renameErr.message}) — overwriting in place`, {
+          stateFile,
+          quarantinePath,
+          error: err.message,
+          quarantineError: renameErr.message,
+        });
       }
     }
     diskVersion = (diskData?.position && diskData.position._saveVersion) || 0;
     if (diskData && diskVersion > myVersion) {
       // External edit detected — merge protected fields from disk
-      console.log(`🔀 Merge: disk version ${diskVersion} > memory ${myVersion}, preserving external edits on [${PROTECTED_FIELDS.join(', ')}]`);
+      logger.info(`🔀 Merge: disk version ${diskVersion} > memory ${myVersion}, preserving external edits on [${PROTECTED_FIELDS.join(', ')}]`, {
+        stateFile,
+        diskVersion,
+        memoryVersion: myVersion,
+        protectedFields: PROTECTED_FIELDS,
+      });
       for (const field of PROTECTED_FIELDS) {
         if (diskData.position[field] !== undefined) {
           position[field] = diskData.position[field];

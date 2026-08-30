@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveFundDataDir } = require('./migration');
+const { createContextLogger } = require('./logger');
 const { fundKey } = require('./shared-utils');
 
 // Maximum data retention (1 hour in milliseconds)
@@ -39,6 +40,7 @@ const getFilePath = (exchange, pair) => path.join(resolveFundDataDir(exchange, p
  * @returns {Object} Chart data buffer instance
  */
 const createChartDataBuffer = (exchange, pair) => {
+  const logger = createContextLogger({ exchange, pair, module: 'chart-data-buffer' });
   let priceHistory = [];
   let atrHistory = [];
   let regimeHistory = [];
@@ -80,7 +82,10 @@ const createChartDataBuffer = (exchange, pair) => {
       fs.writeFileSync(filePath, JSON.stringify(data));
       dirty = false;
     } catch (err) {
-      console.log(`⚠️ chart buffer save failed for ${exchange}: ${err.message}`);
+      logger.warn(`⚠️ chart buffer save failed for ${exchange}: ${err.message}`, {
+        filePath: getFilePath(exchange, pair),
+        error: err.message,
+      });
     }
   };
 
@@ -96,7 +101,10 @@ const createChartDataBuffer = (exchange, pair) => {
     try {
       data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (err) {
-      console.log(`⚠️ chart buffer load failed for ${exchange} (starting empty): ${err.message}`);
+      logger.warn(`⚠️ chart buffer load failed for ${exchange} (starting empty): ${err.message}`, {
+        filePath,
+        error: err.message,
+      });
       return;
     }
     if (data.priceHistory) priceHistory = trimOldData(data.priceHistory);
@@ -105,7 +113,13 @@ const createChartDataBuffer = (exchange, pair) => {
     const loaded = priceHistory.length + atrHistory.length + regimeHistory.length;
     if (loaded > 0) {
       const age = data.savedAt ? Math.round((Date.now() - data.savedAt) / 1000) : '?';
-      console.log(`📊 chart buffer loaded for ${exchange}: ${priceHistory.length} price, ${atrHistory.length} atr, ${regimeHistory.length} regime points (saved ${age}s ago)`);
+      logger.info(`📊 chart buffer loaded for ${exchange}: ${priceHistory.length} price, ${atrHistory.length} atr, ${regimeHistory.length} regime points (saved ${age}s ago)`, {
+        filePath,
+        pricePointCount: priceHistory.length,
+        atrPointCount: atrHistory.length,
+        regimePointCount: regimeHistory.length,
+        ageSeconds: age,
+      });
     }
   };
 
@@ -297,7 +311,9 @@ const removeChartDataBuffer = (exchange, pair) => {
 const shutdownAllBuffers = () => {
   for (const [key, buffer] of chartBuffers) {
     buffer.shutdown();
-    console.log(`📊 chart buffer flushed for ${key}`);
+    createContextLogger({ module: 'chart-data-buffer', fundKey: key }).info(`📊 chart buffer flushed for ${key}`, {
+      flushReason: 'shutdown',
+    });
   }
 };
 
