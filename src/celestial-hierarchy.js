@@ -12,6 +12,9 @@
  */
 
 const { roundAsset, roundUSDC } = require('./volatility-utils');
+const { createContextLogger } = require('./logger');
+
+const celestialHierarchyLogger = createContextLogger({ module: 'celestial-hierarchy' });
 
 /**
  * @typedef {Object} CelestialTier
@@ -202,9 +205,10 @@ const findMergeTarget = (bodies, newBuy, maxUsdcDeployed, candidateTpPrice, maxB
  * @param {number} newBuy.avgPrice - Average fill price
  * @param {number} maxUsdcDeployed - Maximum capital deployed
  * @param {string} buyOrderId - Order ID from the buy
+ * @param {Object} [logger] - Context logger
  * @returns {CelestialBody} Updated body (mutated in place)
  */
-const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
+const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId, logger = celestialHierarchyLogger) => {
   // Nullish coalescing, NOT ||: a sub-cent buy legitimately has costBasis 0
   // (aggregateFills rounds totalValue to USDC cents), and `0 || fallback` would
   // fall through to newBuy.totalValue — undefined on a {costBasis}-shaped arg —
@@ -237,8 +241,12 @@ const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
   if (newTier.name !== target.tier) {
     const oldTier = target.tier;
     target.tier = newTier.name;
-    const pct = maxUsdcDeployed > 0 ? ((target.costBasis / maxUsdcDeployed) * 100).toFixed(1) : '0';
-    console.log(`⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (${pct}% of capital, $${target.costBasis.toFixed(0)})`);
+    const capitalPercent = maxUsdcDeployed > 0 ? (target.costBasis / maxUsdcDeployed) * 100 : null;
+    const pct = capitalPercent === null ? '0' : capitalPercent.toFixed(1);
+    logger.info(
+      `⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (${pct}% of capital, $${target.costBasis.toFixed(0)})`,
+      { bodyId: target.id, orderId, oldTier, newTier: newTier.name, capitalPercent, costBasis: target.costBasis }
+    );
   }
 
   return target;
@@ -251,9 +259,10 @@ const mergeIntoBody = (target, newBuy, maxUsdcDeployed, buyOrderId) => {
  * @param {CelestialBody} target - Body to merge INTO (higher TP)
  * @param {CelestialBody} source - Body being absorbed (lower TP)
  * @param {number} maxUsdcDeployed - For tier reclassification
+ * @param {Object} [logger] - Context logger
  * @returns {CelestialBody} Mutated target
  */
-const mergeBodies = (target, source, maxUsdcDeployed) => {
+const mergeBodies = (target, source, maxUsdcDeployed, logger = celestialHierarchyLogger) => {
   target.assetQty = roundAsset(target.assetQty + source.assetQty);
   target.costBasis = roundUSDC(target.costBasis + source.costBasis);
   target.avgPrice = target.assetQty > 0 ? target.costBasis / target.assetQty : 0;
@@ -272,8 +281,12 @@ const mergeBodies = (target, source, maxUsdcDeployed) => {
   if (newTier.name !== target.tier) {
     const oldTier = target.tier;
     target.tier = newTier.name;
-    const pct = maxUsdcDeployed > 0 ? ((target.costBasis / maxUsdcDeployed) * 100).toFixed(1) : '0';
-    console.log(`⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (${pct}% of capital, $${target.costBasis.toFixed(0)})`);
+    const capitalPercent = maxUsdcDeployed > 0 ? (target.costBasis / maxUsdcDeployed) * 100 : null;
+    const pct = capitalPercent === null ? '0' : capitalPercent.toFixed(1);
+    logger.info(
+      `⬆️ Body ${target.id.slice(-8)} promoted: ${getTierConfig(oldTier).emoji} ${oldTier} → ${newTier.emoji} ${newTier.name} (${pct}% of capital, $${target.costBasis.toFixed(0)})`,
+      { bodyId: target.id, sourceBodyId: source.id, oldTier, newTier: newTier.name, capitalPercent, costBasis: target.costBasis }
+    );
   }
 
   return target;
@@ -300,15 +313,20 @@ const calculateBodyTpPercent = (baseTpPct, tierName, tpMaxPercent) => {
  * Reclassify all bodies that may have crossed tier boundaries
  * @param {CelestialBody[]} bodies - All bodies
  * @param {number} maxUsdcDeployed - Maximum capital deployed
+ * @param {Object} [logger] - Context logger
  * @returns {CelestialBody[]} Bodies with updated tiers
  */
-const checkPromotions = (bodies, maxUsdcDeployed) => {
+const checkPromotions = (bodies, maxUsdcDeployed, logger = celestialHierarchyLogger) => {
   for (const body of bodies) {
     const correctTier = classifyTier(body.costBasis, maxUsdcDeployed);
     if (correctTier.name !== body.tier) {
-      const oldEmoji = getTierConfig(body.tier).emoji;
+      const oldTier = body.tier;
+      const oldEmoji = getTierConfig(oldTier).emoji;
       body.tier = correctTier.name;
-      console.log(`⬆️ Body ${body.id.slice(-8)} reclassified: ${oldEmoji} → ${correctTier.emoji} ${correctTier.name}`);
+      logger.info(
+        `⬆️ Body ${body.id.slice(-8)} reclassified: ${oldEmoji} → ${correctTier.emoji} ${correctTier.name}`,
+        { bodyId: body.id, oldTier, newTier: correctTier.name, costBasis: body.costBasis }
+      );
     }
   }
   return bodies;

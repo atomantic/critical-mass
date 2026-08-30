@@ -1711,7 +1711,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             continue;
           }
 
-          const merged = celestialHierarchy.mergeIntoBody(target, newBuy, config.maxUsdcDeployed, orderId);
+          const merged = celestialHierarchy.mergeIntoBody(target, newBuy, config.maxUsdcDeployed, orderId, logger);
           // Overwrite mergeIntoBody's Date.now() lastMergedAt with the orphan's
           // actual fill time, and the appended buyOrder's filledAt likewise.
           merged.lastMergedAt = fillTime;
@@ -1729,7 +1729,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
 
         if (recoveredCount > 0) {
-          celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
+          celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
           celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
           logger.info(`🔧 [${exchange}] Recovered ${recoveredCount} orphan buy order(s) into bodies; reconcile loop will re-place affected TPs`);
         }
@@ -2820,7 +2820,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
       if (mergeTarget) {
         // MERGE: merge into existing body, possibly promote, re-place TP
-        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed);
+        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed, undefined, logger);
         // Replace old body with merged body in array
         const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
         if (idx !== -1) positionState.celestialBodies[idx] = merged;
@@ -2829,7 +2829,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         fillLedger.annotateFillsByOrderId(fillData.orderId, { isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier });
 
         // Check for cascading promotions
-        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
+        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
 
         // Sync aggregate fields for backward compatibility
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
@@ -4769,11 +4769,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       }
 
       if (mergeTarget) {
-        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed);
+        const merged = celestialHierarchy.mergeIntoBody(mergeTarget, newBuy, config.maxUsdcDeployed, undefined, logger);
         const idx = positionState.celestialBodies.findIndex(b => b.id === merged.id);
         if (idx !== -1) positionState.celestialBodies[idx] = merged;
 
-        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
+        celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
         celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
         await placeBodyTp(merged);
 
@@ -5365,7 +5365,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     target.assetOnOrder = 0;
 
     // Merge bodies (pure data)
-    const merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed);
+    const merged = celestialHierarchy.mergeBodies(target, source, config.maxUsdcDeployed, logger);
 
     // Remove source from celestialBodies
     positionState.celestialBodies = positionState.celestialBodies.filter(b => b.id !== source.id);
@@ -5385,7 +5385,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     }
 
     // Check cascading promotions and sync aggregates
-    celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed);
+    celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
     celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
     // Re-annotate source body's fills with merged body's ID
