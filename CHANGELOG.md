@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-284] Removed unreachable legacy price socket hooks** — The admin bundle no longer carries unused Coinbase, composite-price, or generic price-subscription hooks that could invite duplicate Socket.IO connection paths.
 - **UpDown now distinguishes signal strength from calibrated confidence** — The dashboard and analysis surfaces label the heuristic composite as signal strength, publish the canonical indicator/timeframe catalog, and identify the historical backtest as a static-strategy baseline rather than evidence for the live adaptive model.
 - **Moved off ports 5563-5567 to 5570-5574** — the old block sat inside the range PortOS reserves for its own extensions, where `:5563` is claimed by an on-demand Eidoverse bridge. Because Critical Mass bound `127.0.0.1` and the Tailscale address explicitly while PortOS bound the wildcard, both listeners started without an `EADDRINUSE` and the specific bind silently won every connection — so PortOS's bridge served nothing and its Eidoverse page loaded the Critical Mass admin UI instead. The gateway, admin UI, and the three engine IPC sockets now use 5570-5574, inside the documented user-application range. Anything pinning the old ports (bookmarks, `GATEWAY_URL`, `CORS_ORIGINS`, reverse proxies, the Umbrel manifest) needs updating.
 
