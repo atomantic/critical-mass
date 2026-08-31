@@ -56,6 +56,9 @@ const operatorAuth = createOperatorAuth({
   writeJSON,
   bootstrapSecret: process.env.OPERATOR_BOOTSTRAP_SECRET,
   bootstrapSecretFile: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
+  onPasswordRemoved: () => {
+    setTimeout(() => gracefulShutdown('operator password removal'), 100).unref();
+  },
 });
 const LISTEN_HOSTS = resolveListenHosts(process.env.HOST, undefined, {
   allowRemote: operatorAuth.hasPassword() || operatorAuth.hasRemoteBootstrap(),

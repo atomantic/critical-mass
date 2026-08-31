@@ -57,7 +57,8 @@ export default function GatewayAccess() {
     })
     const data = await res.json().catch(() => ({}))
     if (res.ok) {
-      window.location.reload()
+      setMessage({ type: 'success', text: 'Password removed. Gateway is restarting in protected setup mode.' })
+      setTimeout(() => window.location.reload(), 1500)
     } else {
       setMessage({ type: 'error', text: data.error || 'Could not remove password' })
     }

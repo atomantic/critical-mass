@@ -115,14 +115,15 @@ describe('operator authentication bootstrap', () => {
     assert.equal(isLoopbackAddress('100.83.147.46'), false);
     assert.equal(isLoopbackAddress('::ffff:192.168.1.10'), false);
 
-    const request = (remoteAddress, forwardedFor = '') => ({
+    const request = (remoteAddress, forwardedFor = '', host = 'localhost:5570') => ({
       socket: { remoteAddress },
-      get: (name) => name === 'x-forwarded-for' ? forwardedFor : '',
+      get: (name) => name === 'x-forwarded-for' ? forwardedFor : name === 'host' ? host : '',
     });
     assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1')), true);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '::1, 127.0.0.1')), true);
     assert.equal(isLoopbackRequest(request('127.0.0.1', '100.83.147.46')), false);
     assert.equal(isLoopbackRequest(request('100.83.147.46', '127.0.0.1')), false);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '', 'critical-mass.example')), false);
   });
 
   it('rejects short remote bootstrap secrets at startup', () => {
@@ -240,7 +241,13 @@ describe('operator password set from the admin panel', () => {
 
   it('removes the password but returns the gateway to fail-closed local bootstrap', async () => {
     const authFile = tmpAuthFile();
-    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+    let removalNotified = false;
+    await withServer({
+      authFile,
+      readJSON,
+      writeJSON,
+      onPasswordRemoved: () => { removalNotified = true; },
+    }, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/api/auth/password`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -259,6 +266,7 @@ describe('operator password set from the admin panel', () => {
       });
       assert.equal(readJSON(authFile, null).state, 'bootstrap');
       assert.equal((await fetch(`${baseUrl}/api/providers`)).status, 401);
+      assert.equal(removalNotified, true);
     });
   });
 });

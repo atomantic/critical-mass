@@ -39,7 +39,16 @@ const isLoopbackRequest = (req) => {
     .split(',')
     .map((address) => address.trim())
     .filter(Boolean);
-  return forwarded.every(isLoopbackHost);
+  if (forwarded.length > 0) return forwarded.every(isLoopbackHost);
+
+  // A direct browser connection has a loopback Host. A reverse proxy that
+  // erases X-Forwarded-For must not become a trusted bootstrap channel merely
+  // because its backend connection originates on loopback.
+  const host = (req.get('host') || '').trim();
+  const hostname = host.startsWith('[')
+    ? host.slice(1, host.indexOf(']'))
+    : host.split(':')[0];
+  return isLoopbackHost(hostname);
 };
 
 const requestOriginMatches = (req) => {
@@ -79,6 +88,7 @@ const makeRecord = (password) => {
  * @param {Function} [opts.writeJSON]
  * @param {string} [opts.bootstrapSecret]
  * @param {string} [opts.bootstrapSecretFile]
+ * @param {Function} [opts.onPasswordRemoved]
  * @param {(req: import('express').Request) => boolean} [opts.isTrustedBootstrapRequest]
  */
 const createOperatorAuth = ({
@@ -87,6 +97,7 @@ const createOperatorAuth = ({
   writeJSON = null,
   bootstrapSecret = '',
   bootstrapSecretFile = '',
+  onPasswordRemoved = null,
   isTrustedBootstrapRequest = isLoopbackRequest,
 } = {}) => {
   let record = null;
@@ -264,6 +275,7 @@ const createOperatorAuth = ({
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
       log('INFO', '🔐 Operator password cleared — local bootstrap is required');
       res.json({ authenticated: false, required: true, bootstrapRequired: true });
+      onPasswordRemoved?.();
     });
 
     app.delete('/api/auth/session', (req, res) => {
