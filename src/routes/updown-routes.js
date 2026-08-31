@@ -196,12 +196,18 @@ const parseExpiryToMs = (value) => {
 
 /**
  * @param {import('express').Express} app
- * @param {{updownService: Object, readJSON: Function, DATA_DIR: string}} deps
+ * @param {{updownService: Object, readJSON: Function, DATA_DIR: string, validateEndpointUrl?: Function, safeFetch?: Function}} deps
  */
 module.exports = (app, deps) => {
-  const { updownService, candleCache, readJSON, DATA_DIR } = deps;
+  const {
+    updownService,
+    candleCache,
+    readJSON,
+    DATA_DIR,
+    validateEndpointUrl: validateEndpointUrlFn = validateEndpointUrl,
+    safeFetch: safeFetchFn = safeFetch,
+  } = deps;
   const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json');
-  const SCREENSHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 
   // --- AI Vision: providers list ---
   app.get('/api/updown/providers', (req, res) => {
@@ -233,15 +239,13 @@ module.exports = (app, deps) => {
     }
     if (!imageBuffer.length) return res.status(400).json({ success: false, error: 'Empty image body' });
 
-    // Validate and save screenshot
+    // Validate the image type before provider work. Screenshots are deliberately
+    // processed from memory and never persisted: they contain operator/account
+    // details and retaining them made every analysis permanently consume disk.
     const ext = (req.headers['content-type'] || 'image/png').split('/')[1]?.split(';')[0] || 'png';
     if (!ALLOWED_IMAGE_EXTS.has(ext)) {
       return res.status(400).json({ success: false, error: `Unsupported image type: ${ext}. Allowed: ${[...ALLOWED_IMAGE_EXTS].join(', ')}` });
     }
-    if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
-    const filename = `updown-${Date.now()}.${ext}`;
-    fs.writeFileSync(path.join(SCREENSHOTS_DIR, filename), imageBuffer);
-    log('INFO', `📸 UpDown screenshot saved: ${filename} (${imageBuffer.length} bytes)`);
 
     // Load provider
     const data = readJSON(PROVIDERS_PATH, { providers: {} });
@@ -272,7 +276,7 @@ module.exports = (app, deps) => {
     };
 
     // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
-    const endpointValidation = await validateEndpointUrl(provider.endpoint);
+    const endpointValidation = await validateEndpointUrlFn(provider.endpoint);
     if (!endpointValidation.valid) {
       // Log the full detail server-side (includes URL); return only a generic message to the caller.
       log('WARN', `🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointValidation.error}`);
@@ -289,7 +293,7 @@ module.exports = (app, deps) => {
       // strips Authorization on cross-origin redirects, and re-checks the
       // resolved IP at connect time (closes the redirect + TOCTOU SSRF gaps
       // that a bare fetch() would leave open — issue #207).
-      const response = await safeFetch(`${provider.endpoint}/chat/completions`, {
+      const response = await safeFetchFn(`${provider.endpoint}/chat/completions`, {
         method: 'POST',
         headers,
         signal: controller.signal,
