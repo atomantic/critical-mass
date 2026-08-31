@@ -11,6 +11,7 @@ const BASE_URL = 'https://api.coinbase.com';
 // Granularity config used by both exchanges (Coinbase format is the canonical)
 // Valid: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, THIRTY_MINUTE, ONE_HOUR, TWO_HOUR, ONE_DAY
 const GRANULARITY = {
+  '1min': { value: 'ONE_MINUTE', seconds: 60 },
   '5min': { value: 'FIVE_MINUTE', seconds: 300 },
   '10min': { value: 'FIVE_MINUTE', seconds: 300 },
   '30min': { value: 'THIRTY_MINUTE', seconds: 1800 },

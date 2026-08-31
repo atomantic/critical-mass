@@ -16,6 +16,12 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// The merge-snapshot fill path credits realized P&L through config.json. Keep
+// this integration suite isolated from the operator's shared fund config.
+const configUtils = require('../src/config-utils');
+const originalUpdateRegimeConfig = configUtils.updateRegimeConfig;
+configUtils.updateRegimeConfig = () => {};
+
 const { createRegimeEngine } = require('../src/regime-engine');
 
 const TEST_PAIR = '__test196__';
@@ -28,6 +34,7 @@ const engines = [];
 after(() => {
   for (const eng of engines) eng._test.clearTimers();
   fs.rmSync(JUNK_DIR, { recursive: true, force: true });
+  configUtils.updateRegimeConfig = originalUpdateRegimeConfig;
 });
 
 // ---------------------------------------------------------------------------
@@ -445,6 +452,104 @@ describe('#196 handleOrderFill — defers to an in-flight merge', () => {
     assert.equal(settled, true, 'fill proceeds once the merge lock clears');
     assert.equal(getOrderFillsCalls, 1, 'fill reached the ledger path exactly once');
     assert.equal(eng._test.getFlags().fillInProgress, 0, 'in-flight counter decremented in finally');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// merge-snapshot sell fill — retain live TP until cancellation is confirmed
+// ---------------------------------------------------------------------------
+
+const runMergeSnapshotCancelFailure = async (cancelFailure) => {
+  let cancelCalls = 0;
+  let placementCalls = 0;
+  const trackedOrders = new Set(['tp-source', 'tp-target']);
+  const logs = [];
+
+  const eng = makeEngine({
+    bodies: [
+      makeBody('source', 50000, 0.01, 'tp-source'),
+      makeBody('target', 51000, 0.02, 'tp-target'),
+    ],
+    adapter: {
+      getOrder: async () => ({ filledSize: 0, status: 'OPEN' }),
+      getOrderFills: async (orderId) => orderId === 'tp-target' ? [{
+        tradeId: 'merge-snapshot-sell',
+        orderId,
+        side: 'sell',
+        price: '51000',
+        size: '0.005',
+        totalCommission: '0',
+        rebate: '0',
+        tradeTime: new Date().toISOString(),
+      }] : [],
+    },
+    executor: {
+      cancelBodyTpOrder: async (_bodyId, orderId) => {
+        cancelCalls += 1;
+        if (cancelCalls <= 2) {
+          trackedOrders.delete(orderId);
+          return { cancelled: true };
+        }
+        return cancelFailure();
+      },
+      placeBodyTpOrder: async () => {
+        placementCalls += 1;
+        const orderId = `tp-replacement-${placementCalls}`;
+        trackedOrders.add(orderId);
+        return { success: true, orderId };
+      },
+      removeBodyTracking: (orderId) => trackedOrders.delete(orderId),
+    },
+  });
+
+  const merged = await eng.manualMergeBody('source', { targetId: 'target' });
+  assert.equal(merged.success, true, `setup merge should succeed: ${merged.message}`);
+  assert.equal(placementCalls, 1, 'setup merge places one TP on the merged body');
+
+  const originalLog = console.log;
+  console.log = (...args) => { logs.push(args.join(' ')); };
+  try {
+    await eng._test.handleOrderFill({
+      orderId: 'tp-target',
+      side: 'sell',
+      filledSize: 0.005,
+      averageFilledPrice: 51000,
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const liveBody = eng._getPositionState().celestialBodies.find((body) => body.id === 'target');
+  assert.ok(liveBody, 'the merged target remains live after deducting the stale fill');
+  assert.equal(cancelCalls, 3, 'the handler attempts to cancel the merged body TP once');
+  assert.equal(placementCalls, 1, 'no replacement TP is placed after cancellation failure');
+  assert.equal(liveBody.tpOrderId, 'tp-replacement-1', 'the live TP identity remains on the body');
+  assert.ok(trackedOrders.has('tp-replacement-1'), 'executor tracking retains the live TP');
+
+  return logs;
+};
+
+describe('merge-snapshot sell fill — failed live TP cancellation', () => {
+  it('retains the live TP when cancellation rejects', async () => {
+    const logs = await runMergeSnapshotCancelFailure(async () => {
+      throw new Error('exchange unavailable');
+    });
+
+    const failure = logs.find((line) => line.includes('keeping the existing TP identity'));
+    assert.ok(failure, 'rejected cancellation emits an operator-visible failure');
+    assert.match(failure, /"bodyId":"target"/);
+    assert.match(failure, /"orderId":"tp-replacement-1"/);
+    assert.match(failure, /"cancellationOutcome":"rejected"/);
+  });
+
+  it('retains the live TP when cancellation is unconfirmed', async () => {
+    const logs = await runMergeSnapshotCancelFailure(async () => ({ cancelled: false, filled: false }));
+
+    const failure = logs.find((line) => line.includes('keeping the existing TP identity'));
+    assert.ok(failure, 'unconfirmed cancellation emits an operator-visible failure');
+    assert.match(failure, /"bodyId":"target"/);
+    assert.match(failure, /"orderId":"tp-replacement-1"/);
+    assert.match(failure, /"cancellationOutcome":"unconfirmed"/);
   });
 });
 

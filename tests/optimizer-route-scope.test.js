@@ -1,6 +1,7 @@
 // @ts-check
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const { SimulationRunCoordinator } = require('../src/simulation-run-coordinator');
 
 const optimizerPath = require.resolve('../src/optimizer-engine');
 const pending = [];
@@ -55,6 +56,9 @@ describe('optimizer route event scoping', () => {
     assert.equal(responses.length, 2);
     assert.equal(responses[0].runId, 'client_run_123');
     assert.notEqual(responses[0].runId, responses[1].runId);
+    // The coordinator owns the promise lifecycle and schedules the expensive
+    // work after the HTTP acknowledgement is sent.
+    await new Promise(resolve => setImmediate(resolve));
     pending[0].options.onProgress({ current: 1, total: 1, percentComplete: 100, latestResult: resultFor('BTC-USDC', 101).bestResult });
     pending[1].options.onProgress({ current: 1, total: 1, percentComplete: 100, latestResult: resultFor('BTCUSD', 202).bestResult });
     pending[0].resolve(resultFor('BTC-USDC', 101));
@@ -129,5 +133,76 @@ describe('optimizer route event scoping', () => {
     assert.equal(res.statusCode, 400);
     assert.match(res.body.error, /invalid pair/i);
     assert.equal(pending.length, pendingBefore);
+  });
+
+  it('rejects malformed and duplicate optimizer requests before another job starts', async () => {
+    pending.length = 0;
+    let optimizerHandler;
+    const coordinator = new SimulationRunCoordinator();
+    registerBacktestRoutes({
+      get: () => {}, delete: () => {},
+      post: (path, handler) => { if (path.endsWith('/optimizer/run')) optimizerHandler = handler; },
+    }, {
+      io: { emit: () => {} }, readJSON: () => null, writeJSON: () => {}, DATA_DIR: '/tmp', simulationCoordinator: coordinator,
+    });
+    const response = () => ({
+      statusCode: 200,
+      body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; return this; },
+    });
+    const request = (body) => ({ params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' }, body });
+
+    const malformed = response();
+    optimizerHandler(request({ intervals: ['daily', 'daily'] }), malformed);
+    assert.equal(malformed.statusCode, 400);
+    assert.equal(malformed.body.code, 'INVALID_SIMULATION_REQUEST');
+    assert.equal(pending.length, 0);
+
+    const started = response();
+    optimizerHandler(request({ intervals: ['daily'], markups: [2], periods: ['30D'] }), started);
+    assert.equal(started.body.success, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(pending.length, 1);
+
+    const duplicate = response();
+    optimizerHandler(request({ intervals: ['daily'], markups: [2], periods: ['30D'] }), duplicate);
+    assert.equal(duplicate.statusCode, 409);
+    assert.equal(duplicate.body.code, 'SIMULATION_ALREADY_RUNNING');
+    pending[0].resolve(resultFor('BTC-USDC', 101));
+    await new Promise(resolve => setImmediate(resolve));
+  });
+
+  it('reuses a legacy cache whose unused buy amounts were persisted', () => {
+    pending.length = 0;
+    let optimizerHandler;
+    registerBacktestRoutes({
+      get: () => {}, delete: () => {},
+      post: (path, handler) => { if (path.endsWith('/optimizer/run')) optimizerHandler = handler; },
+    }, {
+      io: { emit: () => {} },
+      readJSON: () => ({
+        fundSize: 10000,
+        productId: 'BTC-USDC',
+        config: {
+          intervals: ['daily'], markups: [2], periods: ['30D'],
+          buyAmounts: { '5min': 1, '10min': 2, '30min': 10, '1hour': 50, '4hour': 100, daily: 500 },
+        },
+      }),
+      writeJSON: () => {}, DATA_DIR: '/tmp',
+    });
+    const res = {
+      statusCode: 200,
+      body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; return this; },
+    };
+    optimizerHandler({
+      params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' },
+      body: { intervals: ['daily'], markups: [2], periods: ['30D'], buyAmounts: { daily: 500 } },
+    }, res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.cached, true);
+    assert.equal(pending.length, 0);
   });
 });

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- **[issue-285] Bounded simulation requests and active jobs** — Backtest and optimizer APIs now validate every caller-provided limit, cap grid-search work, serialize jobs per fund, and return actionable busy or retry responses before expensive market-data work starts.
+
 ### Changed
 - **[issue-284] Removed unreachable legacy price socket hooks** — The admin bundle no longer carries unused Coinbase, composite-price, or generic price-subscription hooks that could invite duplicate Socket.IO connection paths.
 - **UpDown now distinguishes signal strength from calibrated confidence** — The dashboard and analysis surfaces label the heuristic composite as signal strength, publish the canonical indicator/timeframe catalog, and identify the historical backtest as a static-strategy baseline rather than evidence for the live adaptive model.
@@ -15,6 +18,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **[issue-287] UpDown trade amounts now reject malformed numeric input** — Cost and return fields accept finite numbers and documented sums while keeping the form open with a visible field error for values such as `500usd` or `1++2`.
+- **[issue-281] Merge-snapshot fills retain live take-profit protection when cancellation fails** — A rejected or unconfirmed resize cancellation now keeps the existing sell order represented and cannot place a second replacement order.
 - **UpDown screenshot analysis no longer consumes disk indefinitely** — Uploaded screenshots are processed transiently in memory and are never retained after successful or failed AI analysis (#286).
 - **[issue-282] Scorecard retention now reports actual deletion outcomes** — Failed journal deletions include the affected filename and error, successful deletions remain accurately counted, and one failure no longer prevents later expired journals from being pruned.
 - **UpDown prediction scoring is causal and fail-closed** — Historical replay uses only candles complete at each prediction time, preserves the original clock, includes weekly inputs, deduplicates reruns, and rejects candle gaps. Live scoring waits for fresh prices, settles contract calls at their actual expiry, ignores legacy one-hour contract outcomes, prevents pre-target recovery leakage, keeps hydration idempotent, and no longer mutates adaptive weights when an operator merely polls metrics.
