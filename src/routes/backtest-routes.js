@@ -8,8 +8,9 @@ const { randomUUID } = require('crypto');
 const backtestEngine = require('../backtest-engine');
 const optimizerEngine = require('../optimizer-engine');
 const { formatInterval } = require('../interval-utils');
-const { getFundConfig, getDefaultPair } = require('../config-utils');
+const { getFundConfig } = require('../config-utils');
 const { log } = require('../logger');
+const { withConfiguredPair } = require('./route-utils');
 
 /**
  * @param {import('express').Express} app
@@ -18,7 +19,11 @@ const { log } = require('../logger');
 module.exports = (app, deps) => {
   const { io, readJSON, writeJSON, DATA_DIR } = deps;
 
-  const getPair = (req) => req.query?.pair || getDefaultPair(req.params.exchange);
+  const getPair = (req) => req.fundPair;
+  const registerPairRoute = (method) => (route, handler) => app[method](route, withConfiguredPair(handler));
+  const pairGet = registerPairRoute('get');
+  const pairPost = registerPairRoute('post');
+  const pairDelete = registerPairRoute('delete');
   const getOptimizerCacheFile = (exchange, productId) => {
     const slug = (productId || 'default').toLowerCase().replace(/[^a-z0-9]/g, '-');
     return path.join(DATA_DIR, exchange, `optimizer-cache-${slug}.json`);
@@ -35,7 +40,7 @@ module.exports = (app, deps) => {
   });
 
   // Run backtest
-  app.post('/api/:exchange/backtest/run', async (req, res) => {
+  pairPost('/api/:exchange/backtest/run', async (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const fundConfig = getFundConfig(exchange, pair);
@@ -68,7 +73,7 @@ module.exports = (app, deps) => {
   });
 
   // Optimizer cache (per-pair)
-  app.get('/api/:exchange/optimizer/cache', (req, res) => {
+  pairGet('/api/:exchange/optimizer/cache', (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const fundConfig = getFundConfig(exchange, pair);
@@ -76,7 +81,7 @@ module.exports = (app, deps) => {
     res.json(cache ? { success: true, cached: true, ...cache } : { success: true, cached: false });
   });
 
-  app.delete('/api/:exchange/optimizer/cache', (req, res) => {
+  pairDelete('/api/:exchange/optimizer/cache', (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const fundConfig = getFundConfig(exchange, pair);
@@ -89,7 +94,7 @@ module.exports = (app, deps) => {
     res.json({ success: true, message: 'Cache cleared' });
   });
 
-  app.post('/api/:exchange/optimizer/run', (req, res) => {
+  pairPost('/api/:exchange/optimizer/run', (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
     const fundConfig = getFundConfig(exchange, pair);
