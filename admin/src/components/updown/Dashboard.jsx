@@ -11,6 +11,7 @@ import TimeframeGrid from './TimeframeGrid'
 import TradeHistory from './TradeHistory'
 import ScorecardPanel from './ScorecardPanel'
 import TimeWarningBanner, { parseExpiry } from './TimeWarningBanner'
+import { isFreshTick } from './position-tracker-math'
 import { labelHistoryActions } from '../../constants/signals'
 
 function formatCurrency(value) {
@@ -134,9 +135,14 @@ export default function UpDownDashboard() {
   const isRunning = status?.running || false
 
   // Merge tick data with status for current price
-  const tickFresh = Number.isFinite(tick?.timestamp) && Date.now() - tick.timestamp <= 30000
-  const priceFresh = tickFresh || status?.priceFresh === true
-  const currentPrice = tickFresh ? tick?.price : (status?.priceFresh ? status.lastPrice : null)
+  const now = Date.now()
+  const tickFresh = isFreshTick(tick, now)
+  const statusPriceFresh = status?.priceFresh === true && isFreshTick({
+    price: status.lastPrice,
+    timestamp: status.lastTickAt,
+  }, now)
+  const priceFresh = tickFresh || statusPriceFresh
+  const currentPrice = tickFresh ? tick.price : (statusPriceFresh ? status.lastPrice : null)
   const liveIndicators = isRunning && priceFresh ? rawIndicators : null
   const timeRemaining = tick?.timeRemaining
 
@@ -285,7 +291,12 @@ export default function UpDownDashboard() {
             perp={rawIndicators?.perp || tick?.perp || status?.perp}
           />
           <ContractSetup initialContract={status?.contract} />
-          <PositionTracker initialPosition={status?.position} tick={tick} />
+          <PositionTracker
+            initialPosition={status?.position}
+            currentPrice={currentPrice}
+            contractPnl={tickFresh ? tick?.pnl?.pnl : null}
+            priceFresh={priceFresh}
+          />
         </div>
       </div>
 
