@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- **[issue-285] Bounded simulation requests and active jobs** — Backtest and optimizer APIs now validate every caller-provided limit, cap grid-search work, serialize jobs per fund, and return actionable busy or retry responses before expensive market-data work starts.
+
 ### Changed
 - **[issue-284] Removed unreachable legacy price socket hooks** — The admin bundle no longer carries unused Coinbase, composite-price, or generic price-subscription hooks that could invite duplicate Socket.IO connection paths.
 - **UpDown now distinguishes signal strength from calibrated confidence** — The dashboard and analysis surfaces label the heuristic composite as signal strength, publish the canonical indicator/timeframe catalog, and identify the historical backtest as a static-strategy baseline rather than evidence for the live adaptive model.

@@ -53,6 +53,9 @@ A real-time, volatility-aware strategy that adapts to market conditions:
 - **Dry-Run Mode** - Test strategies without real trades
 - **Notifications** - Configurable alerts for fills, errors, and regime changes
 - **Backup & Restore** - Automatic state backups with pruning
+
+Simulation HTTP endpoints enforce bounded, server-side request and concurrency
+limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 - **Health Monitor** - Tracks WebSocket connectivity, latency, rate limits, and error rates
 - **PM2 Support** - Production-ready process management
 
