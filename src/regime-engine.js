@@ -2990,11 +2990,34 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           // and clear it so a correctly-sized TP is re-placed for the remaining body.
           if (liveMerged.tpOrderId) {
             const staleTp = liveMerged.tpOrderId;
-            liveMerged.tpOrderId = null;
-            liveMerged.tpPrice = 0;
-            liveMerged.assetOnOrder = 0;
-            await orderExecutor.cancelBodyTpOrder(liveMerged.id, staleTp).catch(() => {});
-            if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(staleTp);
+            let cancelResult;
+            try {
+              cancelResult = await orderExecutor.cancelBodyTpOrder(liveMerged.id, staleTp);
+            } catch (err) {
+              logger.error(
+                `❌ [${exchange}] Failed to cancel merge-snapshot body TP ${staleTp}: ${err.message} — keeping the existing TP identity and skipping replacement`,
+                { bodyId: liveMerged.id, orderId: staleTp, cancellationOutcome: 'rejected', error: err.message }
+              );
+            }
+
+            if (cancelResult?.cancelled) {
+              liveMerged.tpOrderId = null;
+              liveMerged.tpPrice = 0;
+              liveMerged.assetOnOrder = 0;
+              if (orderExecutor.removeBodyTracking) orderExecutor.removeBodyTracking(staleTp);
+            } else if (cancelResult) {
+              logger.error(
+                `❌ [${exchange}] Merge-snapshot body TP cancellation was not confirmed for ${staleTp} — keeping the existing TP identity and skipping replacement`,
+                {
+                  bodyId: liveMerged.id,
+                  orderId: staleTp,
+                  cancellationOutcome: 'unconfirmed',
+                  cancelled: false,
+                  filled: Boolean(cancelResult.filled),
+                  filledSize: cancelResult.filledSize || 0,
+                }
+              );
+            }
           }
         }
 
