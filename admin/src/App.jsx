@@ -1,22 +1,22 @@
-import { useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
+import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom'
-import Dashboard from './components/Dashboard'
-import ConfigEditor from './components/ConfigEditor'
-import TransactionsDCA from './components/TransactionsDCA'
-import TransactionsRegime from './components/TransactionsRegime'
-import ChartsDCA from './components/ChartsDCA'
-import ChartsRegime from './components/ChartsRegime'
-import CostBasisDCA from './components/CostBasisDCA'
-import CostBasisRegime from './components/CostBasisRegime'
-import Backtest from './components/Backtest'
-import Optimizer from './components/Optimizer'
-import Overview from './components/Overview'
 import ExchangeSelector from './components/ExchangeSelector'
 import AddFundModal from './components/AddFundModal'
-import KeysConfig from './components/KeysConfig'
-import NotificationsConfig from './components/NotificationsConfig'
-import BackupRestore from './components/BackupRestore'
-import RegimeDashboard from './components/RegimeDashboard'
+const Dashboard = lazy(() => import('./components/Dashboard'))
+const ConfigEditor = lazy(() => import('./components/ConfigEditor'))
+const TransactionsDCA = lazy(() => import('./components/TransactionsDCA'))
+const TransactionsRegime = lazy(() => import('./components/TransactionsRegime'))
+const ChartsDCA = lazy(() => import('./components/ChartsDCA'))
+const ChartsRegime = lazy(() => import('./components/ChartsRegime'))
+const CostBasisDCA = lazy(() => import('./components/CostBasisDCA'))
+const CostBasisRegime = lazy(() => import('./components/CostBasisRegime'))
+const Backtest = lazy(() => import('./components/Backtest'))
+const Optimizer = lazy(() => import('./components/Optimizer'))
+const Overview = lazy(() => import('./components/Overview'))
+const KeysConfig = lazy(() => import('./components/KeysConfig'))
+const NotificationsConfig = lazy(() => import('./components/NotificationsConfig'))
+const BackupRestore = lazy(() => import('./components/BackupRestore'))
+const RegimeDashboard = lazy(() => import('./components/RegimeDashboard'))
 const Systems = lazy(() => import('./components/Systems'))
 const AIProviders = lazy(() => import('./components/ai/Providers'))
 const LogViewer = lazy(() => import('./components/LogViewer'))
@@ -92,6 +92,39 @@ const getTabsForStrategy = (strategy) => {
 // Valid exchange names
 const VALID_EXCHANGES = ['coinbase', 'gemini', 'cryptocom']
 const REGIME_ACTION_TOUCH_TARGET = 'min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center'
+
+class RouteErrorBoundary extends Component {
+  state = { hasError: false }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children
+
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-3 text-center" role="alert">
+        <p className="text-gray-300">This page could not be loaded.</p>
+        <button
+          type="button"
+          className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+          onClick={() => window.location.reload()}
+        >
+          Reload page
+        </button>
+      </div>
+    )
+  }
+}
+
+function RouteLoadingFallback() {
+  return (
+    <div className="flex items-center justify-center h-64" role="status" aria-live="polite">
+      <div className="text-gray-400">Loading...</div>
+    </div>
+  )
+}
 
 // Component that listens to trade events and shows toasts
 function TradeEventListener() {
@@ -951,11 +984,11 @@ function AppContent() {
           )}
 
           {loading && !summary && !isOverview && !isAI && !isUpDown && !isSentinel && !isGateway ? (
-            <div className="flex items-center justify-center h-64">
-              <div className="text-gray-400">Loading...</div>
-            </div>
+            <RouteLoadingFallback />
           ) : (
-            <Routes>
+            <RouteErrorBoundary key={location.pathname}>
+              <Suspense fallback={<RouteLoadingFallback />}>
+                <Routes>
               {/* Overview dashboard at root */}
               <Route path="/" element={<Overview />} />
 
@@ -996,7 +1029,7 @@ function AppContent() {
               <Route path="/:exchange/:pair/keys" element={<KeysConfig exchange={currentExchange} onSave={fetchExchanges} />} />
 
               {/* PM2 Logs - per exchange engine */}
-              <Route path="/:exchange/:pair/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName={`critical-mass-${currentExchange}`} /></Suspense>} />
+              <Route path="/:exchange/:pair/logs" element={<LogViewer processName={`critical-mass-${currentExchange}`} />} />
 
               {/* Notifications - global (not exchange-specific) */}
               <Route path="/notifications" element={<NotificationsConfig />} />
@@ -1005,28 +1038,30 @@ function AppContent() {
               <Route path="/backups" element={<BackupRestore />} />
 
               {/* Systems - debug showcase of all celestial body types */}
-              <Route path="/systems" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><Systems /></Suspense>} />
+              <Route path="/systems" element={<Systems />} />
 
               {/* AI Provider management */}
-              <Route path="/ai" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><AIProviders /></Suspense>} />
+              <Route path="/ai" element={<AIProviders />} />
 
               {/* UpDown BTC perp-long dashboard */}
-              <Route path="/updown/analysis" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><ScorecardAnalysis /></Suspense>} />
-              <Route path="/updown" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><UpDownDashboard /></Suspense>} />
+              <Route path="/updown/analysis" element={<ScorecardAnalysis />} />
+              <Route path="/updown" element={<UpDownDashboard />} />
 
               {/* Sentinel news monitor */}
-              <Route path="/sentinel" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><SentinelDashboard /></Suspense>} />
+              <Route path="/sentinel" element={<SentinelDashboard />} />
 
               {/* Gateway access + logs */}
-              <Route path="/gateway" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><GatewayAccess /></Suspense>} />
-              <Route path="/gateway/logs" element={<Suspense fallback={<div className="text-gray-400">Loading...</div>}><LogViewer processName="critical-mass" /></Suspense>} />
+              <Route path="/gateway" element={<GatewayAccess />} />
+              <Route path="/gateway/logs" element={<LogViewer processName="critical-mass" />} />
 
               {/* Legacy route - redirect /:exchange (without pair) to /:exchange/:pair */}
               <Route path="/:exchange" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />
 
               {/* Catch invalid routes - redirect to current exchange/pair */}
               <Route path="*" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />
-            </Routes>
+                </Routes>
+              </Suspense>
+            </RouteErrorBoundary>
           )}
         </main>
       </div>
