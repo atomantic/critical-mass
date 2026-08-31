@@ -43,11 +43,26 @@ describe('admin route code splitting', () => {
   it('uses one shared Suspense boundary around the route outlet', () => {
     assert.match(
       appSource,
-      /<Suspense fallback={<RouteLoadingFallback \/>}>\s*<Routes>/,
+      /<RouteErrorBoundary key={location\.pathname}>\s*<Suspense fallback={<RouteLoadingFallback \/>}>\s*<Routes>/,
     )
     assert.equal(
       (appSource.match(/<Suspense fallback={<RouteLoadingFallback \/>}>/g) || []).length,
       1,
+    )
+  })
+
+  it('announces route loading and recovers from chunk failures', () => {
+    assert.match(
+      appSource,
+      /class RouteErrorBoundary extends Component/,
+    )
+    assert.match(
+      appSource,
+      /role="status" aria-live="polite"/,
+    )
+    assert.match(
+      appSource,
+      /onClick={\(\) => window\.location\.reload\(\)}/,
     )
   })
 

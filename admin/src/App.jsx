@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
+import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom'
 import ExchangeSelector from './components/ExchangeSelector'
 import AddFundModal from './components/AddFundModal'
@@ -93,9 +93,34 @@ const getTabsForStrategy = (strategy) => {
 const VALID_EXCHANGES = ['coinbase', 'gemini', 'cryptocom']
 const REGIME_ACTION_TOUCH_TARGET = 'min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center'
 
+class RouteErrorBoundary extends Component {
+  state = { hasError: false }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children
+
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-3 text-center" role="alert">
+        <p className="text-gray-300">This page could not be loaded.</p>
+        <button
+          type="button"
+          className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+          onClick={() => window.location.reload()}
+        >
+          Reload page
+        </button>
+      </div>
+    )
+  }
+}
+
 function RouteLoadingFallback() {
   return (
-    <div className="flex items-center justify-center h-64">
+    <div className="flex items-center justify-center h-64" role="status" aria-live="polite">
       <div className="text-gray-400">Loading...</div>
     </div>
   )
@@ -961,8 +986,9 @@ function AppContent() {
           {loading && !summary && !isOverview && !isAI && !isUpDown && !isSentinel && !isGateway ? (
             <RouteLoadingFallback />
           ) : (
-            <Suspense fallback={<RouteLoadingFallback />}>
-              <Routes>
+            <RouteErrorBoundary key={location.pathname}>
+              <Suspense fallback={<RouteLoadingFallback />}>
+                <Routes>
               {/* Overview dashboard at root */}
               <Route path="/" element={<Overview />} />
 
@@ -1033,8 +1059,9 @@ function AppContent() {
 
               {/* Catch invalid routes - redirect to current exchange/pair */}
               <Route path="*" element={<Navigate to={`/${currentExchange}/${currentPair}`} replace />} />
-              </Routes>
-            </Suspense>
+                </Routes>
+              </Suspense>
+            </RouteErrorBoundary>
           )}
         </main>
       </div>
