@@ -106,4 +106,28 @@ describe('optimizer route event scoping', () => {
     assert.equal(backtestRes.statusCode, 400);
     assert.match(backtestRes.body.error, /selected fund/);
   });
+
+  it('rejects a traversal pair before optimizer work is queued', () => {
+    const pendingBefore = pending.length;
+    let optimizerHandler;
+    registerBacktestRoutes({
+      get: () => {}, delete: () => {},
+      post: (path, handler) => { if (path.endsWith('/optimizer/run')) optimizerHandler = handler; },
+    }, {
+      io: { emit: () => {} }, readJSON: () => null, writeJSON: () => {}, DATA_DIR: '/tmp',
+    });
+    const res = {
+      statusCode: 200,
+      body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; return this; },
+    };
+
+    optimizerHandler({
+      params: { exchange: 'coinbase' }, query: { pair: '../keys' }, body: {},
+    }, res);
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /invalid pair/i);
+    assert.equal(pending.length, pendingBefore);
+  });
 });

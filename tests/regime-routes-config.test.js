@@ -234,3 +234,23 @@ describe('POST /api/:exchange/regime/reset-cycle (#232)', () => {
     assert.equal(res.body.success, false);
   });
 });
+
+describe('regime pair validation', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('rejects traversal before forwarding a regime command over IPC', async () => {
+    setupFsMocks(BASE_CONFIG);
+    let ipcCalls = 0;
+    const app = createFakeApp();
+    registerRegimeRoutes(app, {
+      exchangeIPCMap: { cryptocom: { request: () => { ipcCalls += 1; return Promise.resolve({ success: true }); } } },
+    });
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/start', {
+      params: { exchange: 'cryptocom' }, query: { pair: '../keys' },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /invalid pair/i);
+    assert.equal(ipcCalls, 0);
+  });
+});
