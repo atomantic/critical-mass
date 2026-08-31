@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - **Safer local service and automation boundaries** — The gateway now binds to loopback by default, Docker host publishing is loopback-only, state files are atomically replaced with owner-only permissions, CI actions use immutable revisions, and startup refuses foreign port occupants instead of killing them. The vulnerable development dependency chain was also removed.
 
 ### Fixed
+- **[issue-291] Operator session checks now show immediate loading feedback** — Slow gateway startup no longer leaves operators staring at a blank screen while the admin console verifies their session.
 - **[issue-290] Configuration controls now announce their labels and state** — Form fields expose their visible labels and hints to assistive technology, while custom toggles report their accessible name and on/off state without changing keyboard behavior.
 - **[issue-287] UpDown trade amounts now reject malformed numeric input** — Cost and return fields accept finite numbers and documented sums while keeping the form open with a visible field error for values such as `500usd` or `1++2`.
 - **[issue-281] Merge-snapshot fills retain live take-profit protection when cancellation fails** — A rejected or unconfirmed resize cancellation now keeps the existing sell order represented and cannot place a second replacement order.
