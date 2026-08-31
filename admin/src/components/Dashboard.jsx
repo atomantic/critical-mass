@@ -4,6 +4,7 @@ import { useToast } from './Toast'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { runDashboardAction } from '../utils/dashboardAction.mjs'
 
 function ToggleSwitch({ label, checked, onChange, disabled, colorOn = 'bg-green-500', colorOff = 'bg-gray-600' }) {
   return (
@@ -113,38 +114,44 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   }, [summary?.nextTrade?.nextTradeTime, summary?.nextTrade?.enabled, summary?.nextTrade?.fullyAllocated])
 
   const toggleConfig = async (key, value) => {
-    setUpdating(true)
-    const res = await fetch(`/api/${exchange}/config${pairQuery}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [key]: value })
+    await runDashboardAction({
+      setBusy: setUpdating,
+      request: () => fetch(`/api/${exchange}/config${pairQuery}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value })
+      }),
+      addToast,
+      failureTitle: 'Configuration Update Failed',
+      failureMessage: 'Could not update DCA configuration',
+      onSuccess: () => onRefresh?.(),
     })
-    if (res.ok && onRefresh) {
-      onRefresh()
-    }
-    setUpdating(false)
   }
 
   const handleConsolidate = async () => {
-    setConsolidating(true)
-    const res = await fetch(`/api/${exchange}/consolidate${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+    await runDashboardAction({
+      setBusy: setConsolidating,
+      request: () => fetch(`/api/${exchange}/consolidate${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }),
+      addToast,
+      failureTitle: 'Consolidation Failed',
+      failureMessage: 'Could not consolidate DCA orders',
+      onSuccess: () => onRefresh?.(),
     })
-    if (res.ok && onRefresh) {
-      onRefresh()
-    }
-    setConsolidating(false)
   }
 
   const handleSync = async () => {
-    setSyncing(true)
-    const res = await fetch(`/api/${exchange}/sync${pairQuery}`, { method: 'POST' })
-    if (res.ok && onRefresh) {
-      onRefresh()
-    }
-    setSyncing(false)
+    await runDashboardAction({
+      setBusy: setSyncing,
+      request: () => fetch(`/api/${exchange}/sync${pairQuery}`, { method: 'POST' }),
+      addToast,
+      failureTitle: 'Order Sync Failed',
+      failureMessage: 'Could not sync DCA orders',
+      onSuccess: () => onRefresh?.(),
+    })
   }
 
   // Check if regime engine is running (for Export to Regime button)
@@ -174,29 +181,30 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   }, [exchange, pairQuery, addToast])
 
   const handleExecuteExport = useCallback(async () => {
-    setConverting(true)
-    const res = await fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preview: false, merge: true }),
+    await runDashboardAction({
+      setBusy: setConverting,
+      request: () => fetch(`/api/${exchange}/regime/convert-dca${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preview: false, merge: true }),
+      }),
+      addToast,
+      failureTitle: 'Export Failed',
+      failureMessage: 'Could not export to regime',
+      onSuccess: async (res) => {
+        const data = await res.json()
+        addToast({
+          type: 'success',
+          title: 'Positions Exported to Regime',
+          message: `${data.summary?.pendingOrders || 0} positions exported. Start the regime engine to place sell orders.`,
+        })
+        onRefresh?.()
+      },
+      onSettled: () => {
+        setShowConvertConfirm(false)
+        setConvertPreview(null)
+      },
     })
-    setConverting(false)
-    setShowConvertConfirm(false)
-    setConvertPreview(null)
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      addToast({ type: 'error', title: 'Export Failed', message: err.error || 'Could not export to regime' })
-      return
-    }
-
-    const data = await res.json()
-    addToast({
-      type: 'success',
-      title: 'Positions Exported to Regime',
-      message: `${data.summary?.pendingOrders || 0} positions exported. Start the regime engine to place sell orders.`,
-    })
-    if (onRefresh) onRefresh()
   }, [exchange, pairQuery, addToast, onRefresh])
 
   if (!summary) return null
