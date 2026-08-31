@@ -25,7 +25,7 @@ const {
   getConfiguredExchanges,
   getConfiguredFunds,
   getFundsForExchange,
-  getDefaultPair,
+  resolveConfiguredPair,
 } = require('../src/config-utils');
 const { createRegimeEngine } = require('../src/regime-engine');
 const {
@@ -59,8 +59,12 @@ const ioProxy = createSocketIOProxy(ipcServer);
 // standalone fill ledger. Maps are keyed by `${exchange}::${pair}` so multiple
 // funds can coexist within the same engine process.
 
-/** Resolve pair from IPC arg, falling back to the exchange's default pair. */
-const resolvePair = (exchange, pair) => pair || getDefaultPair(exchange);
+/** Resolve IPC pairs to configured funds before they reach engine state or disk. */
+const resolvePair = (exchange, pair) => {
+  const resolved = resolveConfiguredPair(exchange, pair);
+  if (resolved.error) throw new Error(resolved.error);
+  return resolved.pair;
+};
 
 /** @type {Map<string, Object>} Active regime engines keyed by `${exchange}::${pair}` */
 const regimeEngines = new Map();

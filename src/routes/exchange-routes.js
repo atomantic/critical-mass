@@ -22,6 +22,7 @@ const {
   removeFund,
   getBaseCurrency,
   getQuoteCurrency,
+  resolveConfiguredPair,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { log, loadTransactionHistory, getLogFile } = require('../logger');
@@ -30,31 +31,14 @@ const { shouldAutoResumeRegime } = require('../shared-utils');
 const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { getIPC: getExchangeIPC } = require('./route-utils');
 
-// --- Security: pair validation regex ---
-// Accepts three pair formats (case-insensitive):
-//   BASE-QUOTE  (Coinbase, e.g. BTC-USDC)
-//   BASE_QUOTE  (Crypto.com, e.g. BTC_USD)
-//   BASEQUOTE   (Gemini, e.g. BTCUSD, ETHUSD)
-const PAIR_RE = /^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/i;
-
 /**
- * Validate and return the trading pair from a request's query param.
- * Falls back to the exchange default if ?pair= is absent.
- * Returns null (without throwing) if the value fails validation.
+ * Resolve a query pair through the shared configured-fund boundary.
  *
  * @param {import('express').Request} req
  * @returns {{ pair: string | null, error: string | null }}
  */
 const validatePairParam = (req) => {
-  const raw = req.query?.pair;
-  if (!raw) {
-    // No pair supplied — fall back to exchange default (may still be null).
-    return { pair: getDefaultPair(req.params.exchange), error: null };
-  }
-  if (!PAIR_RE.test(String(raw))) {
-    return { pair: null, error: `Invalid pair format: "${raw}". Expected e.g. BTC-USDC, BTC_USD, or ETHUSD` };
-  }
-  return { pair: String(raw).toUpperCase(), error: null };
+  return resolveConfiguredPair(req.params.exchange, req.query?.pair);
 };
 
 /**
