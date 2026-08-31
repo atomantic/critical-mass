@@ -57,9 +57,7 @@ export default function GatewayAccess() {
     })
     const data = await res.json().catch(() => ({}))
     if (res.ok) {
-      setRequired(Boolean(data.required))
-      setCurrentPassword('')
-      setMessage({ type: 'success', text: 'Password removed. Sign-in is off.' })
+      window.location.reload()
     } else {
       setMessage({ type: 'error', text: data.error || 'Could not remove password' })
     }
@@ -79,7 +77,7 @@ export default function GatewayAccess() {
           <h2 className="text-lg font-bold">Gateway access</h2>
         </div>
         <p className="text-sm text-gray-400">
-          Sign-in is off until you set a password here. It is stored as a hash in <code className="text-gray-300">data/operator-auth.json</code>, not as an environment variable.
+          Gateway APIs always require operator authentication. The password is stored as a hash in <code className="text-gray-300">data/operator-auth.json</code>, not as an environment variable.
           {' '}Authenticated browsers stay signed in for 30 days after each visit.
         </p>
       </div>
@@ -152,7 +150,7 @@ export default function GatewayAccess() {
                 disabled={clearing || !currentPassword}
                 className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded text-sm"
               >
-                {clearing ? '...' : 'Turn sign-in off'}
+                {clearing ? '...' : 'Remove password'}
               </button>
             )}
             {required && (

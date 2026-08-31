@@ -1,11 +1,14 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
+const { isLoopbackHost } = require('./gateway-listen');
 const { log } = require('./logger');
 
 const COOKIE_NAME = 'critical_mass_operator';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MIN_PASSWORD_LENGTH = 8;
+const MIN_BOOTSTRAP_SECRET_LENGTH = 32;
+const BOOTSTRAP_HEADER = 'x-operator-bootstrap';
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const parseCookies = (header = '') => Object.fromEntries(
@@ -26,6 +29,17 @@ const timingSafeEqual = (left, right) => {
   const leftBuffer = Buffer.from(String(left || ''));
   const rightBuffer = Buffer.from(String(right || ''));
   return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+};
+
+const isLoopbackRequest = (req) => {
+  if (!isLoopbackHost(req.socket?.remoteAddress)) return false;
+  // A loopback proxy may preserve the original client. Forwarding headers can
+  // only downgrade trust: every reported hop must also be loopback.
+  const forwarded = (req.get('x-forwarded-for') || '')
+    .split(',')
+    .map((address) => address.trim())
+    .filter(Boolean);
+  return forwarded.every(isLoopbackHost);
 };
 
 const requestOriginMatches = (req) => {
@@ -55,29 +69,48 @@ const makeRecord = (password) => {
 };
 
 /**
- * Operator auth is off until a password is set in the admin UI.
- * The hash lives in data/operator-auth.json — there is no env secret.
+ * Operator auth starts in a fail-closed bootstrap state. The first password may
+ * be enrolled from loopback, or remotely with an out-of-band bootstrap secret.
+ * Once enrollment succeeds, that bootstrap secret cannot be reused.
  *
  * @param {Object} [opts]
  * @param {string} [opts.authFile]
  * @param {Function} [opts.readJSON]
  * @param {Function} [opts.writeJSON]
+ * @param {string} [opts.bootstrapSecret]
+ * @param {string} [opts.bootstrapSecretFile]
+ * @param {(req: import('express').Request) => boolean} [opts.isTrustedBootstrapRequest]
  */
 const createOperatorAuth = ({
   authFile = null,
   readJSON = null,
   writeJSON = null,
+  bootstrapSecret = '',
+  bootstrapSecretFile = '',
+  isTrustedBootstrapRequest = isLoopbackRequest,
 } = {}) => {
   let record = null;
   if (authFile && readJSON) {
     const saved = readJSON(authFile, null);
-    if (saved?.salt && saved?.hash) record = saved;
+    if ((saved?.salt && saved?.hash) || saved?.state === 'bootstrap') record = saved;
   }
 
-  const isRequired = () => Boolean(record);
+  if (bootstrapSecret && Buffer.byteLength(bootstrapSecret) < MIN_BOOTSTRAP_SECRET_LENGTH) {
+    throw new Error(`OPERATOR_BOOTSTRAP_SECRET must be at least ${MIN_BOOTSTRAP_SECRET_LENGTH} bytes`);
+  }
+
+  const hasPassword = () => Boolean(record?.salt && record?.hash);
+  const isBootstrapping = () => !hasPassword();
+  const isRequired = () => true;
+  const bootstrapSecretHash = bootstrapSecret
+    ? crypto.createHash('sha256').update(bootstrapSecret).digest('hex')
+    : '';
+  const hasRemoteBootstrap = () => Boolean(
+    bootstrapSecretHash && bootstrapSecretHash !== record?.bootstrapConsumedHash
+  );
 
   const sessionSecret = () => crypto.createHash('sha256')
-    .update(`critical-mass-session:${record?.hash || 'open'}`)
+    .update(`critical-mass-session:${record?.hash || 'bootstrap'}`)
     .digest('hex');
 
   const createSession = () => jwt.sign(
@@ -104,6 +137,15 @@ const createOperatorAuth = ({
     return timingSafeEqual(hashPassword(password, record.salt), record.hash);
   };
 
+  const bootstrapSecretMatches = (req) => {
+    if (!hasRemoteBootstrap()) return false;
+    return timingSafeEqual(req.get(BOOTSTRAP_HEADER), bootstrapSecret);
+  };
+
+  const canBootstrap = (req) => (
+    isTrustedBootstrapRequest(req) || bootstrapSecretMatches(req)
+  );
+
   const persist = (next) => {
     record = next;
     if (!authFile || !writeJSON) return;
@@ -115,7 +157,7 @@ const createOperatorAuth = ({
   };
 
   const authenticate = (headers = {}) => {
-    if (!isRequired()) return { source: 'open' };
+    if (!hasPassword()) return null;
 
     const bearer = readBearerToken(headers.authorization);
     if (bearer && passwordMatches(bearer)) return { source: 'bearer' };
@@ -136,7 +178,6 @@ const createOperatorAuth = ({
   };
 
   const socketMiddleware = (socket, next) => {
-    if (!isRequired()) return next();
     const headers = { ...socket.handshake.headers };
     if (socket.handshake.auth?.token) headers.authorization = `Bearer ${socket.handshake.auth.token}`;
     if (authenticate(headers)) return next();
@@ -159,18 +200,19 @@ const createOperatorAuth = ({
 
   const registerSessionRoutes = (app) => {
     app.get('/api/auth/session', (req, res) => {
-      const required = isRequired();
       const auth = authenticate(req.headers);
-      if (required && auth?.source === 'session') setSessionCookie(req, res);
+      if (auth?.source === 'session') setSessionCookie(req, res);
       res.json({
-        authenticated: required ? Boolean(auth && auth.source !== 'open') : true,
-        required,
+        authenticated: Boolean(auth),
+        required: true,
+        bootstrapRequired: isBootstrapping(),
+        bootstrapSecretRequired: isBootstrapping() && !isTrustedBootstrapRequest(req),
       });
     });
 
     app.post('/api/auth/session', (req, res) => {
-      if (!isRequired()) {
-        return res.json({ authenticated: true, required: false });
+      if (isBootstrapping()) {
+        return res.status(401).json({ error: 'Operator setup is required' });
       }
       if (!passwordMatches(submittedSecret(req.body))) {
         return res.status(401).json({ error: 'Invalid operator password' });
@@ -185,30 +227,43 @@ const createOperatorAuth = ({
       if (Buffer.byteLength(password) < MIN_PASSWORD_LENGTH) {
         return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
       }
-      if (isRequired() && !passwordMatches(currentPassword) && !authenticate(req.headers)) {
+      if (isBootstrapping() && !canBootstrap(req)) {
+        return res.status(403).json({ error: 'Initial operator setup requires loopback access or a valid bootstrap secret' });
+      }
+      if (hasPassword() && !passwordMatches(currentPassword) && !authenticate(req.headers)) {
         return res.status(401).json({ error: 'Current password is required' });
       }
-      if (isRequired() && currentPassword && !passwordMatches(currentPassword)) {
+      if (hasPassword() && currentPassword && !passwordMatches(currentPassword)) {
         return res.status(401).json({ error: 'Current password is incorrect' });
       }
-      persist(makeRecord(password));
+      persist({
+        ...makeRecord(password),
+        bootstrapConsumedHash: bootstrapSecretHash || record?.bootstrapConsumedHash || null,
+      });
+      if (bootstrapSecretFile) {
+        try { fs.unlinkSync(bootstrapSecretFile); } catch { /* already consumed in the auth record */ }
+      }
       setSessionCookie(req, res);
       log('INFO', '🔐 Operator password set — gateway sign-in is now required');
-      res.json({ authenticated: true, required: true });
+      res.json({ authenticated: true, required: true, bootstrapRequired: false });
     });
 
     app.delete('/api/auth/password', (req, res) => {
-      if (!record) {
-        return res.json({ authenticated: true, required: false });
+      if (!hasPassword()) {
+        return res.json({ authenticated: false, required: true, bootstrapRequired: true });
       }
       const currentPassword = submittedSecret(req.body);
       if (!passwordMatches(currentPassword)) {
         return res.status(401).json({ error: 'Current password is required to remove it' });
       }
-      persist(null);
+      persist({
+        state: 'bootstrap',
+        bootstrapConsumedHash: record.bootstrapConsumedHash || null,
+        updatedAt: new Date().toISOString(),
+      });
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
-      log('INFO', '🔐 Operator password cleared — gateway sign-in is off');
-      res.json({ authenticated: true, required: false });
+      log('INFO', '🔐 Operator password cleared — local bootstrap is required');
+      res.json({ authenticated: false, required: true, bootstrapRequired: true });
     });
 
     app.delete('/api/auth/session', (req, res) => {
@@ -222,15 +277,22 @@ const createOperatorAuth = ({
     registerSessionRoutes,
     requireAuth,
     socketMiddleware,
+    hasPassword,
+    hasRemoteBootstrap,
+    isBootstrapping,
     isRequired,
   };
 };
 
 module.exports = {
   COOKIE_NAME,
+  BOOTSTRAP_HEADER,
+  MIN_BOOTSTRAP_SECRET_LENGTH,
   MIN_PASSWORD_LENGTH,
   SESSION_TTL_SECONDS,
   createOperatorAuth,
+  isLoopbackAddress: isLoopbackHost,
+  isLoopbackRequest,
   parseCookies,
   readBearerToken,
 };

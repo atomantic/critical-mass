@@ -8,7 +8,11 @@ const os = require('os');
 const path = require('path');
 
 const {
+  BOOTSTRAP_HEADER,
   createOperatorAuth,
+  isLoopbackAddress,
+  isLoopbackRequest,
+  MIN_BOOTSTRAP_SECRET_LENGTH,
   MIN_PASSWORD_LENGTH,
   SESSION_TTL_SECONDS,
 } = require('../src/operator-auth');
@@ -16,6 +20,7 @@ const { readJSON, writeJSON } = require('../src/shared-utils');
 
 const PASSWORD = 'gateway-password-1';
 const NEW_PASSWORD = 'gateway-password-2';
+const BOOTSTRAP_SECRET = 'bootstrap-secret-with-at-least-32-bytes';
 const tmpFiles = [];
 
 const tmpAuthFile = () => {
@@ -64,17 +69,24 @@ const withServer = async (authOpts, run) => {
   await new Promise((resolve) => server.close(resolve));
 };
 
-describe('operator authentication is off by default', () => {
-  it('does not throw when no password file exists', () => {
+describe('operator authentication bootstrap', () => {
+  it('starts in a fail-closed bootstrap state when no password file exists', () => {
     assert.doesNotThrow(() => createOperatorAuth({}));
-    assert.equal(createOperatorAuth({}).isRequired(), false);
+    const auth = createOperatorAuth({});
+    assert.equal(auth.isRequired(), true);
+    assert.equal(auth.isBootstrapping(), true);
+    assert.equal(auth.hasPassword(), false);
   });
 
-  it('lets unauthenticated requests through when no password is configured', async () => {
+  it('blocks APIs and reports bootstrap state when no password is configured', async () => {
     await withServer({ authFile: tmpAuthFile(), readJSON, writeJSON }, async ({ baseUrl, reached }) => {
       const session = await fetch(`${baseUrl}/api/auth/session`).then((r) => r.json());
-      assert.equal(session.required, false);
-      assert.equal(session.authenticated, true);
+      assert.deepEqual(session, {
+        authenticated: false,
+        required: true,
+        bootstrapRequired: true,
+        bootstrapSecretRequired: false,
+      });
 
       const providerResponse = await fetch(`${baseUrl}/api/providers`);
       const runResponse = await fetch(`${baseUrl}/api/runs`, {
@@ -82,18 +94,111 @@ describe('operator authentication is off by default', () => {
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
       });
-      assert.equal(providerResponse.status, 200);
-      assert.equal(runResponse.status, 202);
-      assert.deepEqual(reached, { providers: 1, runs: 1 });
+      assert.equal(providerResponse.status, 401);
+      assert.equal(runResponse.status, 401);
+      assert.deepEqual(reached, { providers: 0, runs: 0 });
     });
   });
 
-  it('does not guard Socket.IO when auth is off', async () => {
+  it('guards Socket.IO while bootstrap is incomplete', async () => {
     const auth = createOperatorAuth({});
     const error = await new Promise((resolve) => {
       auth.socketMiddleware({ handshake: { headers: {}, auth: {} } }, (err) => resolve(err));
     });
-    assert.equal(error, undefined);
+    assert.equal(error?.data?.code, 'UNAUTHORIZED');
+  });
+
+  it('recognizes only direct loopback addresses as locally trusted', () => {
+    assert.equal(isLoopbackAddress('127.0.0.1'), true);
+    assert.equal(isLoopbackAddress('::1'), true);
+    assert.equal(isLoopbackAddress('::ffff:127.0.0.1'), true);
+    assert.equal(isLoopbackAddress('100.83.147.46'), false);
+    assert.equal(isLoopbackAddress('::ffff:192.168.1.10'), false);
+
+    const request = (remoteAddress, forwardedFor = '') => ({
+      socket: { remoteAddress },
+      get: (name) => name === 'x-forwarded-for' ? forwardedFor : '',
+    });
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '127.0.0.1')), true);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '::1, 127.0.0.1')), true);
+    assert.equal(isLoopbackRequest(request('127.0.0.1', '100.83.147.46')), false);
+    assert.equal(isLoopbackRequest(request('100.83.147.46', '127.0.0.1')), false);
+  });
+
+  it('rejects short remote bootstrap secrets at startup', () => {
+    assert.throws(
+      () => createOperatorAuth({ bootstrapSecret: 'too-short' }),
+      new RegExp(`at least ${MIN_BOOTSTRAP_SECRET_LENGTH} bytes`)
+    );
+  });
+
+  it('rejects remote enrollment without the configured one-time bootstrap secret', async () => {
+    await withServer({
+      authFile: tmpAuthFile(),
+      readJSON,
+      writeJSON,
+      bootstrapSecret: BOOTSTRAP_SECRET,
+      isTrustedBootstrapRequest: () => false,
+    }, async ({ baseUrl }) => {
+      const session = await fetch(`${baseUrl}/api/auth/session`).then((r) => r.json());
+      assert.equal(session.bootstrapSecretRequired, true);
+
+      for (const headers of [
+        { 'Content-Type': 'application/json' },
+        { 'Content-Type': 'application/json', [BOOTSTRAP_HEADER]: 'not-the-secret' },
+      ]) {
+        const response = await fetch(`${baseUrl}/api/auth/password`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ password: PASSWORD }),
+        });
+        assert.equal(response.status, 403);
+      }
+    });
+  });
+
+  it('accepts a valid remote bootstrap secret once without returning it', async () => {
+    const authFile = tmpAuthFile();
+    const bootstrapSecretFile = tmpAuthFile();
+    fs.writeFileSync(bootstrapSecretFile, BOOTSTRAP_SECRET, { mode: 0o600 });
+    await withServer({
+      authFile,
+      readJSON,
+      writeJSON,
+      bootstrapSecret: BOOTSTRAP_SECRET,
+      bootstrapSecretFile,
+      isTrustedBootstrapRequest: () => false,
+    }, async ({ baseUrl }) => {
+      const enrolled = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          [BOOTSTRAP_HEADER]: BOOTSTRAP_SECRET,
+        },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      assert.equal(enrolled.status, 200);
+      assert.doesNotMatch(await enrolled.text(), new RegExp(BOOTSTRAP_SECRET));
+      assert.equal(fs.existsSync(bootstrapSecretFile), false);
+
+      const cleared = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      assert.equal(cleared.status, 200);
+
+      const reused = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          [BOOTSTRAP_HEADER]: BOOTSTRAP_SECRET,
+        },
+        body: JSON.stringify({ password: NEW_PASSWORD }),
+      });
+      assert.equal(reused.status, 403);
+      assert.match(readJSON(authFile, null).bootstrapConsumedHash, /^[a-f0-9]{64}$/);
+    });
   });
 });
 
@@ -133,7 +238,7 @@ describe('operator password set from the admin panel', () => {
     });
   });
 
-  it('clears the panel password from disk and opens the gateway again', async () => {
+  it('removes the password but returns the gateway to fail-closed local bootstrap', async () => {
     const authFile = tmpAuthFile();
     await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/api/auth/password`, {
@@ -147,9 +252,13 @@ describe('operator password set from the admin panel', () => {
         body: JSON.stringify({ password: PASSWORD }),
       });
       assert.equal(cleared.status, 200);
-      assert.equal((await cleared.json()).required, false);
-      assert.equal(fs.existsSync(authFile), false);
-      assert.equal((await fetch(`${baseUrl}/api/providers`)).status, 200);
+      assert.deepEqual(await cleared.json(), {
+        authenticated: false,
+        required: true,
+        bootstrapRequired: true,
+      });
+      assert.equal(readJSON(authFile, null).state, 'bootstrap');
+      assert.equal((await fetch(`${baseUrl}/api/providers`)).status, 401);
     });
   });
 });
@@ -210,6 +319,7 @@ describe('operator authentication boundary', () => {
       const setCookie = login.headers.get('set-cookie');
       assert.match(setCookie, new RegExp(`Max-Age=${SESSION_TTL_SECONDS}(?:;|$)`));
       assert.match(setCookie, /HttpOnly/i);
+      assert.match(setCookie, /SameSite=Strict/i);
       cookie = setCookie.split(';')[0];
     });
 
@@ -221,7 +331,12 @@ describe('operator authentication boundary', () => {
         headers: { Cookie: cookie },
       });
       assert.equal(session.status, 200);
-      assert.deepEqual(await session.json(), { authenticated: true, required: true });
+      assert.deepEqual(await session.json(), {
+        authenticated: true,
+        required: true,
+        bootstrapRequired: false,
+        bootstrapSecretRequired: false,
+      });
       assert.match(
         session.headers.get('set-cookie'),
         new RegExp(`Max-Age=${SESSION_TTL_SECONDS}(?:;|$)`)
@@ -257,7 +372,12 @@ describe('operator authentication boundary', () => {
       const revoked = await fetch(`${baseUrl}/api/auth/session`, {
         headers: { Cookie: oldCookie },
       });
-      assert.deepEqual(await revoked.json(), { authenticated: false, required: true });
+      assert.deepEqual(await revoked.json(), {
+        authenticated: false,
+        required: true,
+        bootstrapRequired: false,
+        bootstrapSecretRequired: false,
+      });
 
       const signedOut = await fetch(`${baseUrl}/api/auth/session`, {
         method: 'DELETE',
@@ -295,6 +415,22 @@ describe('operator authentication boundary', () => {
     });
   });
 
+  it('marks session cookies Secure when HTTPS is forwarded', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Forwarded-Proto': 'https' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const cookie = login.headers.get('set-cookie');
+      assert.match(cookie, /HttpOnly/i);
+      assert.match(cookie, /SameSite=Strict/i);
+      assert.match(cookie, /Secure/i);
+    });
+  });
+
   it('guards Socket.IO handshakes with the panel password', async () => {
     const authFile = tmpAuthFile();
     seedPassword(authFile);
@@ -310,6 +446,7 @@ describe('operator authentication boundary', () => {
 describe('operator password length', () => {
   it('exports the panel minimum', () => {
     assert.equal(MIN_PASSWORD_LENGTH, 8);
+    assert.equal(MIN_BOOTSTRAP_SECRET_LENGTH, 32);
   });
 
   it('keeps browser sessions for 30 days', () => {

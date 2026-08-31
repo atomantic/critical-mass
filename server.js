@@ -50,7 +50,16 @@ runMigrationIfNeeded();
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5570;
-const LISTEN_HOSTS = resolveListenHosts(process.env.HOST);
+const operatorAuth = createOperatorAuth({
+  authFile: path.join(DATA_DIR, 'operator-auth.json'),
+  readJSON,
+  writeJSON,
+  bootstrapSecret: process.env.OPERATOR_BOOTSTRAP_SECRET,
+  bootstrapSecretFile: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
+});
+const LISTEN_HOSTS = resolveListenHosts(process.env.HOST, undefined, {
+  allowRemote: operatorAuth.hasPassword() || operatorAuth.hasRemoteBootstrap(),
+});
 
 // CORS allowlist -- local dev, plus Tailscale 100.x / *.ts.net (see isGatewayOrigin)
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || `http://localhost:${PORT},http://localhost:5571`).split(',').map(s => s.trim());
@@ -69,7 +78,7 @@ app.use((req, res, next) => {
   if (isGatewayOrigin(origin, CORS_ORIGINS)) {
     if (origin) res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Operator-Bootstrap');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
   }
   next();
@@ -77,17 +86,14 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-const operatorAuth = createOperatorAuth({
-  authFile: path.join(DATA_DIR, 'operator-auth.json'),
-  readJSON,
-  writeJSON,
-});
 operatorAuth.registerSessionRoutes(app);
 app.use('/api', operatorAuth.requireAuth);
 io.use(operatorAuth.socketMiddleware);
-log('INFO', operatorAuth.isRequired()
+log('INFO', operatorAuth.hasPassword()
   ? '🔐 Operator sign-in is required (password in data/operator-auth.json)'
-  : '🔐 Operator sign-in is off — set a password at /gateway to require it');
+  : operatorAuth.hasRemoteBootstrap()
+    ? '🔐 Operator bootstrap mode — remote enrollment requires the configured bootstrap credential'
+    : '🔐 Operator bootstrap mode — gateway is loopback-only until a password is set');
 
 // Exchange param validation middleware
 const KNOWN_EXCHANGES = new Set(getConfiguredExchanges());

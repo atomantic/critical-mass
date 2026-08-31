@@ -68,7 +68,11 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 
 ### Operator authentication
 
-Sign-in is **off by default**. To require a password, open **Gateway** in the admin UI and set one. That stores a scrypt hash in `data/operator-auth.json` (never the password itself). After sign-in, a signed HttpOnly browser session is renewed on each visit and remains valid for 30 days; changing or removing the password invalidates it. Removing the password turns sign-in off again. There is no environment variable for this.
+The gateway starts in a fail-closed bootstrap state until the first operator password is enrolled. With no password or bootstrap credential, it binds loopback-only; open the local admin UI and create the password there, then restart the gateway to enable its default Tailscale listener. To bootstrap over Tailscale or another non-loopback listener, set a one-time `OPERATOR_BOOTSTRAP_SECRET` of at least 32 bytes (for example, `openssl rand -hex 32`) and enter it in the setup screen. The secret is accepted only before first enrollment and is never returned by the API or written to logs.
+
+The password is stored as a scrypt hash in `data/operator-auth.json`. After sign-in, a signed HttpOnly, SameSite=Strict browser session is renewed on each visit and remains valid for 30 days; HTTPS sessions are also Secure. Changing or removing the password invalidates existing sessions. Removing the password returns the gateway to fail-closed local bootstrap mode rather than opening its APIs.
+
+Docker Compose and Umbrel must bind the container interface for their local proxy. On a fresh container start, the entrypoint therefore generates the one-time credential at `data/operator-bootstrap-secret` with owner-only permissions; read that file from the mounted app data directory and enter it in the setup screen. Successful enrollment deletes the file. You can instead supply `OPERATOR_BOOTSTRAP_SECRET` explicitly; rotate it before restarting after password removal because an already-consumed value remains invalid.
 
 AI toolkit execution is fail-closed: CLI providers are disabled while the bundled toolkit uses shell execution, workspaces must stay under `AI_WORKSPACE_ROOTS` (comma-separated, defaults to the Critical Mass directory), and API provider origins must be listed in `AI_ALLOWED_ENDPOINTS` (comma-separated exact origins such as `https://api.openai.com`).
 
