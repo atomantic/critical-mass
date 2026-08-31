@@ -7,7 +7,7 @@
  * accuracy metrics for real-time monitoring.
  */
 
-const { appendFile, mkdir, readFile, readdir } = require('fs/promises')
+const { appendFile, mkdir, readFile, readdir, unlink } = require('fs/promises')
 const { existsSync } = require('fs')
 const path = require('path')
 const { log } = require('../logger')
@@ -536,10 +536,12 @@ const computeByHour = (outcomes) => {
  * @param {Function} [opts.contractFn] - Returns current contract config
  * @param {Function} [opts.journalWriter] - Testable persistence boundary
  * @param {string} [opts.scorecardDir] - Testable history source directory
+ * @param {(file: string) => Promise<void>} [opts.unlinkFile] - Testable history deletion boundary
+ * @param {typeof log} [opts.retentionLogger] - Testable retention logging boundary
  * @param {{snapshot: Function, hydrate: Function, isLong: Function, serialize: Function}|null} [opts.perpBook] - Shared 0.01-BTC-per-contract paper book
  * @returns {{recordPrediction: Function, recordPerpFill: Function, getMetrics: Function, start: Function, stop: Function}}
  */
-const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, perpBook = null }) => {
+const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = log, perpBook = null }) => {
   /** @type {Array<Object>} Ring buffer of evaluated outcomes */
   const outcomeBuffer = []
 
@@ -1111,12 +1113,18 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
 
     const toDelete = jsonlFiles.slice(0, jsonlFiles.length - retentionDays)
     let deleted = 0
+    const failures = []
     for (const file of toDelete) {
-      await require('fs/promises').unlink(path.join(scorecardDir, file)).catch(() => {})
-      deleted++
+      try {
+        await unlinkFile(path.join(scorecardDir, file))
+        deleted++
+      } catch (err) {
+        failures.push(`${file}: ${err.message}`)
+      }
     }
-    if (deleted > 0) {
-      log('INFO', `📊 Scorecard pruned ${deleted} files older than ${retentionDays} days`)
+    retentionLogger('INFO', `📊 Scorecard prune completed deleted=${deleted} failed=${failures.length} retentionDays=${retentionDays}`)
+    if (failures.length > 0) {
+      throw new Error(`failed to delete ${failures.length} scorecard file(s): ${failures.join('; ')}`)
     }
   }
 
@@ -1130,7 +1138,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     computeSignalsFn = computeSignals
 
     // Prune old scorecard data on startup (keep 30 days)
-    await pruneHistory(30).catch(err => log('WARN', `📊 Scorecard prune failed err=${err.message}`))
+    await pruneHistory(30).catch(err => retentionLogger('WARN', `📊 Scorecard prune failed err=${err.message}`))
     if (!running || generation !== lifecycleGeneration) return
 
     // Hydrate from disk and emit initial metrics
@@ -1156,7 +1164,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     }, SAMPLE_INTERVAL_MS)
 
     // Daily prune of old scorecard files (every 24h)
-    pruneTimer = setInterval(() => pruneHistory(30).catch(err => log('WARN', `📊 Scorecard prune failed err=${err.message}`)), 24 * 60 * 60 * 1000)
+    pruneTimer = setInterval(() => pruneHistory(30).catch(err => retentionLogger('WARN', `📊 Scorecard prune failed err=${err.message}`)), 24 * 60 * 60 * 1000)
 
     log('INFO', '📊 Scorecard started interval=60s windows=[1m,5m,15m,1h] primary=[1m,5m] upOnly=true')
   }
