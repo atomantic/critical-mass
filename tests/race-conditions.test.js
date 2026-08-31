@@ -59,16 +59,36 @@ describe('Mutex utility', () => {
   it('auto-releases after the timeout when a holder never releases (deadlock guard)', async () => {
     // Documents the hazard the tpMutex fix addresses: a small auto-release
     // timeout admits a second acquirer even though the first never released.
-    const mutex = createMutex(30);
-    const first = await mutex.acquire(); // acquired, intentionally never released
-    void first;
+    const lines = [];
+    const originalLog = console.log;
+    console.log = line => lines.push(line);
 
-    const start = Date.now();
-    await mutex.acquire(); // only resolves because the 30ms guard fires
-    const waited = Date.now() - start;
+    let waited;
+    try {
+      const mutex = createMutex(30);
+      const first = await mutex.acquire(); // acquired, intentionally never released
+      void first;
+
+      const start = Date.now();
+      const releaseSecond = await mutex.acquire(); // only resolves because the 30ms guard fires
+      waited = Date.now() - start;
+      releaseSecond();
+    } finally {
+      console.log = originalLog;
+    }
 
     assert.ok(waited >= 25, `second acquire waited for the auto-release (~30ms), got ${waited}ms`);
     assert.ok(waited < 200, `second acquire did not hang, got ${waited}ms`);
+
+    const prefix = '⚠️ Mutex auto-released after 30ms timeout (potential deadlock)';
+    const line = lines.find(candidate => candidate.startsWith(prefix));
+    assert.ok(line, 'logs the mutex auto-release warning');
+    assert.deepStrictEqual(JSON.parse(line.slice(line.lastIndexOf(' {') + 1)), {
+      module: 'async-mutex',
+      event: 'auto_release',
+      timeoutMs: 30,
+      potentialDeadlock: true,
+    });
   });
 
   it('does NOT auto-release a slow section when the timeout sits above its duration (issue #209 B)', async () => {

@@ -6,6 +6,10 @@
  * Serializes concurrent access to critical sections.
  */
 
+const { createContextLogger } = require('./logger');
+
+const mutexLogger = createContextLogger({ module: 'async-mutex' });
+
 /**
  * Create a mutex instance
  * @param {number} [timeoutMs=30000] - Auto-release timeout in ms (0 = no timeout)
@@ -43,7 +47,11 @@ const createMutex = (timeoutMs = 30000) => {
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
           if (!released) {
-            console.log(`⚠️ Mutex auto-released after ${timeoutMs}ms timeout (potential deadlock)`);
+            mutexLogger.warn(`⚠️ Mutex auto-released after ${timeoutMs}ms timeout (potential deadlock)`, {
+              event: 'auto_release',
+              timeoutMs,
+              potentialDeadlock: true,
+            });
             release();
           }
         }, timeoutMs);
