@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from 'lucide-react'
+import { parseTradeAmountExpression } from './tradeAmountExpression'
 
 function fmt(v) {
   if (v == null) return '---'
@@ -18,16 +19,11 @@ function fmtDate(d) {
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-function evalSum(str) {
-  if (!str) return NaN
-  const parts = str.replace(/\s/g, '').split('+').map(s => parseFloat(s))
-  if (parts.some(isNaN)) return NaN
-  return parts.reduce((a, b) => a + b, 0)
-}
-
 function isExpression(str) {
   return typeof str === 'string' && str.includes('+')
 }
+
+const INVALID_AMOUNT_MESSAGE = 'Enter a finite number or sum, such as 200+300.'
 
 export default function TradeHistory() {
   const [trades, setTrades] = useState([])
@@ -35,6 +31,9 @@ export default function TradeHistory() {
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState(null)
   const [form, setForm] = useState({ date: '', cost: '', returnAmount: '', note: '', direction: '' })
+  const [validationErrors, setValidationErrors] = useState({})
+  const parsedCost = parseTradeAmountExpression(form.cost)
+  const parsedReturnAmount = parseTradeAmountExpression(form.returnAmount)
 
   const fetchTrades = useCallback(async () => {
     const res = await fetch('/api/updown/trades').catch(() => null)
@@ -52,17 +51,28 @@ export default function TradeHistory() {
     setForm({ date: new Date().toISOString().slice(0, 10), cost: '', returnAmount: '', note: '', direction: '' })
     setShowForm(false)
     setEditId(null)
+    setValidationErrors({})
+  }
+
+  const updateAmount = (field, value) => {
+    setForm(current => ({ ...current, [field]: value }))
+    setValidationErrors(current => ({ ...current, [field]: undefined }))
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    const cost = evalSum(form.cost)
-    const returnAmount = evalSum(form.returnAmount)
-    if (isNaN(cost) || isNaN(returnAmount)) return
+    const errors = {
+      cost: Number.isNaN(parsedCost) ? INVALID_AMOUNT_MESSAGE : undefined,
+      returnAmount: Number.isNaN(parsedReturnAmount) ? INVALID_AMOUNT_MESSAGE : undefined,
+    }
+    if (errors.cost || errors.returnAmount) {
+      setValidationErrors(errors)
+      return
+    }
     const payload = {
       date: form.date,
-      cost,
-      returnAmount,
+      cost: parsedCost,
+      returnAmount: parsedReturnAmount,
       note: form.note,
       direction: form.direction || undefined,
     }
@@ -94,6 +104,7 @@ export default function TradeHistory() {
     })
     setEditId(trade.id)
     setShowForm(true)
+    setValidationErrors({})
   }
 
   const handleDelete = async (id) => {
@@ -190,13 +201,18 @@ export default function TradeHistory() {
                 type="text"
                 inputMode="decimal"
                 value={form.cost}
-                onChange={e => setForm({ ...form, cost: e.target.value })}
+                onChange={e => updateAmount('cost', e.target.value)}
                 placeholder="500 or 200+300"
                 required
-                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+                aria-invalid={Boolean(validationErrors.cost)}
+                aria-describedby={validationErrors.cost ? 'trade-cost-error' : undefined}
+                className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none ${validationErrors.cost ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
               />
-              {isExpression(form.cost) && !isNaN(evalSum(form.cost)) && (
-                <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(evalSum(form.cost))}</div>
+              {validationErrors.cost && (
+                <div id="trade-cost-error" role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.cost}</div>
+              )}
+              {isExpression(form.cost) && !Number.isNaN(parsedCost) && (
+                <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(parsedCost)}</div>
               )}
             </div>
             <div>
@@ -205,13 +221,18 @@ export default function TradeHistory() {
                 type="text"
                 inputMode="decimal"
                 value={form.returnAmount}
-                onChange={e => setForm({ ...form, returnAmount: e.target.value })}
+                onChange={e => updateAmount('returnAmount', e.target.value)}
                 placeholder="650 or 300+350"
                 required
-                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
+                aria-invalid={Boolean(validationErrors.returnAmount)}
+                aria-describedby={validationErrors.returnAmount ? 'trade-return-error' : undefined}
+                className={`w-full bg-gray-800 border rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none ${validationErrors.returnAmount ? 'border-red-500 focus:border-red-500' : 'border-gray-700 focus:border-emerald-500'}`}
               />
-              {isExpression(form.returnAmount) && !isNaN(evalSum(form.returnAmount)) && (
-                <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(evalSum(form.returnAmount))}</div>
+              {validationErrors.returnAmount && (
+                <div id="trade-return-error" role="alert" className="text-[10px] text-red-400 mt-0.5">{validationErrors.returnAmount}</div>
+              )}
+              {isExpression(form.returnAmount) && !Number.isNaN(parsedReturnAmount) && (
+                <div className="text-[10px] text-emerald-400 mt-0.5">= {fmt(parsedReturnAmount)}</div>
               )}
             </div>
           </div>
@@ -244,11 +265,11 @@ export default function TradeHistory() {
               className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500"
             />
           </div>
-          {form.cost && form.returnAmount && !isNaN(evalSum(form.cost)) && !isNaN(evalSum(form.returnAmount)) && (
+          {form.cost && form.returnAmount && !Number.isNaN(parsedCost) && !Number.isNaN(parsedReturnAmount) && (
             <div className="text-xs">
               <span className="text-gray-500">P&L: </span>
-              <span className={pnlColor(evalSum(form.returnAmount) - evalSum(form.cost))}>
-                {fmt(evalSum(form.returnAmount) - evalSum(form.cost))}
+              <span className={pnlColor(parsedReturnAmount - parsedCost)}>
+                {fmt(parsedReturnAmount - parsedCost)}
               </span>
             </div>
           )}

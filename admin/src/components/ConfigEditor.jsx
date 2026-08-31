@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useId, useRef } from 'react'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
 // Input component defined OUTSIDE ConfigEditor to prevent re-creation on every render
 function FormInput({ label, hint, value, onChange, type = 'text', className = '' }) {
+  const inputId = useId()
+  const hintId = `${inputId}-hint`
   // For number inputs, hold the raw string locally while editing so partial
   // entries survive ("0." doesn't collapse to "0" mid-type, and clearing the
   // field shows empty rather than instantly committing 0). The parsed number is
@@ -12,14 +14,16 @@ function FormInput({ label, hint, value, onChange, type = 'text', className = ''
   if (type !== 'number') {
     return (
       <div className={className}>
-        <label className="block text-xs text-gray-400 mb-1">{label}</label>
+        <label htmlFor={inputId} className="block text-xs text-gray-400 mb-1">{label}</label>
         <input
+          id={inputId}
           type={type}
+          aria-describedby={hint ? hintId : undefined}
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
           className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
         />
-        {hint && <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
+        {hint && <div id={hintId} className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
       </div>
     )
   }
@@ -35,25 +39,31 @@ function FormInput({ label, hint, value, onChange, type = 'text', className = ''
   const display = draft != null ? draft : (value ?? '')
   return (
     <div className={className}>
-      <label className="block text-xs text-gray-400 mb-1">{label}</label>
+      <label htmlFor={inputId} className="block text-xs text-gray-400 mb-1">{label}</label>
       <input
+        id={inputId}
         type="text"
         inputMode="decimal"
+        aria-describedby={hint ? hintId : undefined}
         value={display}
         onChange={handleNumberChange}
         onBlur={() => setDraft(null)}
         className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
       />
-      {hint && <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
+      {hint && <div id={hintId} className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
     </div>
   )
 }
 
 function FormSelect({ label, hint, value, onChange, options, className = '' }) {
+  const selectId = useId()
+  const hintId = `${selectId}-hint`
   return (
     <div className={className}>
-      <label className="block text-xs text-gray-400 mb-1">{label}</label>
+      <label htmlFor={selectId} className="block text-xs text-gray-400 mb-1">{label}</label>
       <select
+        id={selectId}
+        aria-describedby={hint ? hintId : undefined}
         value={value ?? options[0]?.value}
         onChange={(e) => onChange(e.target.value)}
         className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
@@ -62,7 +72,31 @@ function FormSelect({ label, hint, value, onChange, options, className = '' }) {
           <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
       </select>
-      {hint && <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
+      {hint && <div id={hintId} className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
+    </div>
+  )
+}
+
+function ToggleSwitch({ label, checked, onClick, disabled = false, activeClassName = 'bg-cyan-500' }) {
+  const labelId = useId()
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <span id={labelId} className="text-gray-400">{label}</span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-labelledby={labelId}
+        onClick={onClick}
+        disabled={disabled}
+        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
+          checked ? activeClassName : 'bg-gray-600'
+        }`}
+      >
+        <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+          checked ? 'translate-x-5' : 'translate-x-1'
+        }`} />
+      </button>
     </div>
   )
 }
@@ -442,38 +476,20 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Bot Configuration</h2>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-sm">
-              <span className="text-gray-400">Enabled</span>
-              <button
-                type="button"
-                onClick={handleToggleEnabled}
-                disabled={toggleBusy}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
-                  (isRegime ? regimeConfig.enabled : config.enabled)
-                    ? 'bg-green-500' : 'bg-gray-600'
-                }`}
-              >
-                <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                  (isRegime ? regimeConfig.enabled : config.enabled)
-                    ? 'translate-x-5' : 'translate-x-1'
-                }`} />
-              </button>
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <span className="text-gray-400">Dry Run</span>
-              <button
-                type="button"
-                onClick={handleToggleDryRun}
-                disabled={toggleBusy}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 ${
-                  config.dryRun ? 'bg-yellow-500' : 'bg-gray-600'
-                }`}
-              >
-                <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                  config.dryRun ? 'translate-x-5' : 'translate-x-1'
-                }`} />
-              </button>
-            </label>
+            <ToggleSwitch
+              label="Enabled"
+              checked={Boolean(isRegime ? regimeConfig.enabled : config.enabled)}
+              onClick={handleToggleEnabled}
+              disabled={toggleBusy}
+              activeClassName="bg-green-500"
+            />
+            <ToggleSwitch
+              label="Dry Run"
+              checked={Boolean(config.dryRun)}
+              onClick={handleToggleDryRun}
+              disabled={toggleBusy}
+              activeClassName="bg-yellow-500"
+            />
           </div>
         </div>
 
@@ -827,20 +843,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             {/* Celestial Hierarchy - full width */}
             <SectionCard title="Celestial Hierarchy" className="lg:col-span-2">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
-                <label className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-400">Enable Celestial Bodies</span>
-                  <button
-                    type="button"
-                    onClick={() => handleRegimeChange('celestialEnabled', !(regimeConfig.celestialEnabled !== false))}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                      regimeConfig.celestialEnabled !== false ? 'bg-cyan-500' : 'bg-gray-600'
-                    }`}
-                  >
-                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                      regimeConfig.celestialEnabled !== false ? 'translate-x-5' : 'translate-x-1'
-                    }`} />
-                  </button>
-                </label>
+                <ToggleSwitch
+                  label="Enable Celestial Bodies"
+                  checked={regimeConfig.celestialEnabled !== false}
+                  onClick={() => handleRegimeChange('celestialEnabled', !(regimeConfig.celestialEnabled !== false))}
+                />
                 {regimeConfig.celestialEnabled !== false && (
                   <span className="text-xs text-cyan-400">
                     Buys become celestial bodies that consolidate and promote through tiers
@@ -885,20 +892,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             {/* Macro Regime - full width */}
             <SectionCard title="Macro Regime (Multi-Timeframe)" className="lg:col-span-2">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
-                <label className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-400">Enable Macro Regime</span>
-                  <button
-                    type="button"
-                    onClick={() => handleRegimeChange('macroEnabled', !regimeConfig.macroEnabled)}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                      regimeConfig.macroEnabled ? 'bg-cyan-500' : 'bg-gray-600'
-                    }`}
-                  >
-                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                      regimeConfig.macroEnabled ? 'translate-x-5' : 'translate-x-1'
-                    }`} />
-                  </button>
-                </label>
+                <ToggleSwitch
+                  label="Enable Macro Regime"
+                  checked={Boolean(regimeConfig.macroEnabled)}
+                  onClick={() => handleRegimeChange('macroEnabled', !regimeConfig.macroEnabled)}
+                />
                 {regimeConfig.macroEnabled && (
                   <span className="text-xs text-cyan-400">
                     Hourly + daily EMA overlay modulates sizing, TP, and entry offset
@@ -950,20 +948,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             {/* TP Auto-Management - full width */}
             <SectionCard title="TP Auto-Management" className="lg:col-span-2">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
-                <label className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-400">Enable Auto-Management</span>
-                  <button
-                    type="button"
-                    onClick={() => handleRegimeChange('tpAutoManaged', !regimeConfig.tpAutoManaged)}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                      regimeConfig.tpAutoManaged ? 'bg-cyan-500' : 'bg-gray-600'
-                    }`}
-                  >
-                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                      regimeConfig.tpAutoManaged ? 'translate-x-5' : 'translate-x-1'
-                    }`} />
-                  </button>
-                </label>
+                <ToggleSwitch
+                  label="Enable Auto-Management"
+                  checked={Boolean(regimeConfig.tpAutoManaged)}
+                  onClick={() => handleRegimeChange('tpAutoManaged', !regimeConfig.tpAutoManaged)}
+                />
                 {regimeConfig.tpAutoManaged && (
                   <span className="text-xs text-cyan-400">
                     TP values will be dynamically adjusted based on observed cycle data
