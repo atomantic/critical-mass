@@ -735,6 +735,42 @@ const getFundsForExchange = (exchange) => {
   return Object.keys(normalized.pairs || {});
 };
 
+// Pair names are identifiers, not filesystem paths. Keep this format check
+// alongside the configured-fund lookup so HTTP and IPC callers share one
+// definition of an acceptable fund identity.
+const PAIR_RE = /^[A-Z0-9]{2,8}([-_][A-Z0-9]{2,8})?$/i;
+
+/**
+ * Resolve a requested pair to the exact configured fund key for an exchange.
+ * A missing pair keeps the legacy default-fund behavior; supplied pairs must
+ * be strings in a supported exchange format and name an existing fund.
+ *
+ * @param {string} exchange
+ * @param {unknown} pair
+ * @returns {{ pair: string | null, error: string | null }}
+ */
+const resolveConfiguredPair = (exchange, pair) => {
+  const configuredFunds = getFundsForExchange(exchange);
+  if (pair === undefined || pair === null || pair === '') {
+    const defaultPair = getDefaultPair(exchange);
+    if (!defaultPair || !configuredFunds.includes(defaultPair)) {
+      return { pair: null, error: `No configured fund for exchange: ${exchange}` };
+    }
+    return { pair: defaultPair, error: null };
+  }
+
+  if (typeof pair !== 'string' || !PAIR_RE.test(pair)) {
+    return { pair: null, error: 'Invalid pair. Expected a configured pair such as BTC-USDC, BTC_USD, or ETHUSD' };
+  }
+
+  const normalized = pair.toUpperCase();
+  const configuredPair = configuredFunds.find((fund) => fund.toUpperCase() === normalized);
+  if (!configuredPair) {
+    return { pair: null, error: `Unknown configured fund for ${exchange}: ${normalized}` };
+  }
+  return { pair: configuredPair, error: null };
+};
+
 /**
  * Get the merged configuration for a specific fund (exchange + pair).
  * Resolves the fund's pair-level block, merges with DEFAULTS, and applies
@@ -1521,6 +1557,7 @@ module.exports = {
   getDefaultPair,
   getConfiguredFunds,
   getFundsForExchange,
+  resolveConfiguredPair,
   getEnabledFunds,
   getFundConfig,
   updateFundConfig,

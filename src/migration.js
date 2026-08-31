@@ -240,7 +240,28 @@ const resolveFundDataDir = (exchange, pair) => {
   // Crucially, we do NOT mkdir the per-fund subdirectory here — that would
   // turn read-side path resolution into directory creation, which is what
   // caused empty BTC-USDC dirs to appear and mask legacy state.
-  return path.join(module.exports.getExchangeDataDir(exchange), resolvedPair);
+  return resolveFundPath(module.exports.getExchangeDataDir(exchange), resolvedPair);
+};
+
+/**
+ * Resolve a fund path without allowing a pair to escape its exchange directory.
+ * This is a defense-in-depth boundary for direct callers outside the gateway.
+ *
+ * @param {string} exchangeDir
+ * @param {unknown} pair
+ * @returns {string}
+ */
+const resolveFundPath = (exchangeDir, pair) => {
+  if (typeof pair !== 'string' || pair.length === 0) {
+    throw new Error('Fund pair must be a non-empty string');
+  }
+  const baseDir = path.resolve(exchangeDir);
+  const candidate = path.resolve(baseDir, pair);
+  const relative = path.relative(baseDir, candidate);
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
+    throw new Error(`Fund path escapes exchange data directory: ${pair}`);
+  }
+  return candidate;
 };
 
 /**
@@ -268,7 +289,7 @@ const getFundDataDir = (exchange, pair) => {
     const configUtils = require('./config-utils');
     resolvedPair = configUtils.getDefaultPair(exchange) || 'default';
   }
-  const dir = path.join(exchangeDir, resolvedPair);
+  const dir = resolveFundPath(exchangeDir, resolvedPair);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 };

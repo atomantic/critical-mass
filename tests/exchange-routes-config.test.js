@@ -153,6 +153,25 @@ describe('PUT /api/:exchange/config tolerates stale regime keys', () => {
   });
 });
 
+describe('configured fund selection', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('rejects a syntactically valid pair that is not configured for the exchange', async () => {
+    setupFsMocks(BASE_CONFIG);
+    const app = createFakeApp();
+    registerExchangeRoutes(app, {
+      exchangeIPCMap: { coinbase: { request: () => Promise.resolve({ success: true }) } },
+      parseTSV: () => [], calculateCostBasis: () => ({}), getNextTradeInfo: () => ({}),
+    });
+
+    const res = await invoke(app, 'GET /api/:exchange/config', {
+      params: { exchange: 'coinbase' }, query: { pair: 'ETH-USDC' },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.error, /unknown configured fund/i);
+  });
+});
+
 // A Gemini fund (ETHUSD) alongside a Coinbase fund (BTC-USDC). The bug: switching
 // the platform on the config page could leave the editor holding Coinbase's stale
 // config (productId "BTC-USDC") while the URL/query already pointed at the Gemini
