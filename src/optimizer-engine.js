@@ -6,25 +6,14 @@
 
 const { runBacktest, getPriceData } = require('./backtest-engine');
 const { getIntervalConfig } = require('./interval-utils');
+const {
+  OPTIMIZER_INTERVALS: DEFAULT_INTERVALS,
+  DEFAULT_BUY_AMOUNTS,
+  OPTIMIZER_MARKUPS: DEFAULT_MARKUPS,
+  OPTIMIZER_PERIODS: DEFAULT_PERIODS,
+} = require('./simulation-policy');
 
 // Default interval types to test
-const DEFAULT_INTERVALS = ['5min', '10min', '30min', '1hour', '4hour', 'daily'];
-
-// Default scaled buy amounts per interval
-const DEFAULT_BUY_AMOUNTS = {
-  '5min': 1,
-  '10min': 2,
-  '30min': 10,
-  '1hour': 50,
-  '4hour': 100,
-  'daily': 500
-};
-
-// Default markup percentages to test (1-10%)
-const DEFAULT_MARKUPS = [1, 2, 3, 4, 5, 6, 7, 8, 10];
-
-// Default periods to test
-const DEFAULT_PERIODS = ['30D', '60D', '90D', '1Y'];
 
 // Time periods to test with interval counts
 const PERIOD_INTERVALS = {
@@ -355,7 +344,9 @@ const runOptimizer = async ({
     productId,
     config: {
       intervals: selectedIntervals,
-      buyAmounts: selectedBuyAmounts,
+      // Only selections that actually participated in this run belong in the
+      // cache identity. Unused UI fields must not invalidate a cached result.
+      buyAmounts: Object.fromEntries(selectedIntervals.map(intervalType => [intervalType, selectedBuyAmounts[intervalType]])),
       markups: selectedMarkups,
       periods: selectedPeriods,
       feePercent: FEE_PERCENT,

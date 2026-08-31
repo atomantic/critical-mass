@@ -11,13 +11,21 @@ const { formatInterval } = require('../interval-utils');
 const { getFundConfig } = require('../config-utils');
 const { log } = require('../logger');
 const { withConfiguredPair } = require('./route-utils');
+const {
+  validatePriceQuery,
+  validateBacktestInput,
+  validateOptimizerInput,
+  normalizeOptimizerConfig,
+  optimizerRequestKey,
+} = require('../simulation-policy');
+const { SimulationRunCoordinator } = require('../simulation-run-coordinator');
 
 /**
  * @param {import('express').Express} app
  * @param {{io: Object, readJSON: Function, writeJSON: Function, DATA_DIR: string}} deps
  */
 module.exports = (app, deps) => {
-  const { io, readJSON, writeJSON, DATA_DIR } = deps;
+  const { io, readJSON, writeJSON, DATA_DIR, simulationCoordinator = new SimulationRunCoordinator() } = deps;
 
   const getPair = (req) => req.fundPair;
   const registerPairRoute = (method) => (route, handler) => app[method](route, withConfiguredPair(handler));
@@ -28,14 +36,24 @@ module.exports = (app, deps) => {
     const slug = (productId || 'default').toLowerCase().replace(/[^a-z0-9]/g, '-');
     return path.join(DATA_DIR, exchange, `optimizer-cache-${slug}.json`);
   };
+  const rejectAdmission = (res, admission) => {
+    res.set?.('Retry-After', String(admission.retryAfter));
+    return res.status(admission.status).json({ success: false, error: admission.error, code: admission.code, retryAfter: admission.retryAfter });
+  };
 
   // Get historical price data
   app.get('/api/:exchange/backtest/prices', async (req, res) => {
     const { exchange } = req.params;
-    const intervals = parseInt(req.query.intervals) || 365;
-    const intervalType = req.query.intervalType || 'daily';
+    const validation = validatePriceQuery(req.query);
+    if (!validation.ok) return res.status(400).json({ success: false, error: validation.error, code: validation.code });
+    const { intervals, intervalType } = validation.value;
 
-    const prices = await backtestEngine.getPriceData(intervals, intervalType, exchange);
+    const admission = simulationCoordinator.start({
+      resourceKey: `prices:${exchange}`,
+      requestKey: JSON.stringify({ exchange, intervals, intervalType }),
+    }, () => backtestEngine.getPriceData(intervals, intervalType, exchange));
+    if (!admission.accepted) return rejectAdmission(res, admission);
+    const prices = await admission.promise;
     res.json({ success: true, count: prices.length, intervalType, exchange, prices });
   });
 
@@ -43,30 +61,35 @@ module.exports = (app, deps) => {
   pairPost('/api/:exchange/backtest/run', async (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
+    const body = req.body || {};
     const fundConfig = getFundConfig(exchange, pair);
     const configProductId = fundConfig.productId || pair;
 
-    if (req.body.productId !== undefined && req.body.productId !== configProductId) {
+    if (body.productId !== undefined && body.productId !== configProductId) {
       return res.status(400).json({
         success: false,
         error: `productId must match the selected fund (${configProductId})`,
       });
     }
 
-    const {
-      intervalBuyAmount = 500, sellMarkupPercent = 10, holdbackPercent = 5,
-      feePercent = 0.125, rebatePercent = 0.031, intervals = 365,
-      intervalType = 'daily', fundSize = 0, productId = configProductId,
-    } = req.body;
+    const validation = validateBacktestInput(body);
+    if (!validation.ok) return res.status(400).json({ success: false, error: validation.error, code: validation.code });
+    const { intervalBuyAmount, sellMarkupPercent, holdbackPercent, feePercent, rebatePercent, intervals, intervalType, fundSize } = validation.value;
+    const productId = configProductId;
 
     const fundInfo = fundSize > 0 ? `, $${fundSize} fund` : ', unlimited funds';
     const intervalLabel = formatInterval(intervalType);
     log('INFO', `[${exchange}/${pair}] Running backtest for ${productId}: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`);
 
-    const results = await backtestEngine.runBacktest({
+    const admission = simulationCoordinator.start({
+      resourceKey: `fund:${exchange}:${pair}`,
+      requestKey: JSON.stringify({ exchange, pair, productId, ...validation.value }),
+    }, () => backtestEngine.runBacktest({
       intervalBuyAmount, sellMarkupPercent, holdbackPercent, feePercent, rebatePercent,
       intervals, intervalType, fundSize, exchange, productId,
-    });
+    }));
+    if (!admission.accepted) return rejectAdmission(res, admission);
+    const results = await admission.promise;
 
     log('INFO', `[${exchange}/${pair}] Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`);
     res.json({ success: true, ...results });
@@ -97,60 +120,66 @@ module.exports = (app, deps) => {
   pairPost('/api/:exchange/optimizer/run', (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
+    const body = req.body || {};
     const fundConfig = getFundConfig(exchange, pair);
     const configProductId = fundConfig.productId || pair;
 
-    if (req.body.productId !== undefined && req.body.productId !== configProductId) {
+    if (body.productId !== undefined && body.productId !== configProductId) {
       return res.status(400).json({
         success: false,
         error: `productId must match the selected fund (${configProductId})`,
       });
     }
 
-    const {
-      fundSize = 10000, forceRefresh = false, productId = configProductId,
-      intervals = null, markups = null, periods = null, buyAmounts = null, runId: requestedRunId,
-    } = req.body;
+    const validation = validateOptimizerInput(body);
+    if (!validation.ok) return res.status(400).json({ success: false, error: validation.error, code: validation.code });
+    const { fundSize, forceRefresh, intervals, markups, periods, buyAmounts, combinations } = validation.value;
+    const productId = configProductId;
+    const { runId: requestedRunId } = body;
     const cacheFile = getOptimizerCacheFile(exchange, productId);
-    const configKey = JSON.stringify({ intervals, markups, periods });
+    const configKey = JSON.stringify({ intervals, markups, periods, buyAmounts });
     const runId = typeof requestedRunId === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(requestedRunId)
       ? requestedRunId
       : randomUUID();
 
     if (!forceRefresh) {
       const cache = readJSON(cacheFile, null);
-      const cacheConfigKey = JSON.stringify({
-        intervals: cache?.config?.intervals,
-        markups: cache?.config?.markups,
-        periods: cache?.config?.periods,
-      });
+      const cacheConfig = normalizeOptimizerConfig(cache?.config);
+      const cacheConfigKey = cacheConfig && JSON.stringify(cacheConfig);
       if (cache && cache.fundSize === fundSize && cache.productId === productId && configKey === cacheConfigKey) {
         log('INFO', `[${exchange}] Returning cached optimizer results for ${productId}, fund size: $${fundSize}`);
         return res.json({ success: true, cached: true, ...cache });
       }
     }
 
-    const totalTests = (intervals?.length || 6) * (markups?.length || 9) * (periods?.length || 4);
-    log('INFO', `[${exchange}] Running optimizer for ${productId} with fund size: $${fundSize} (${totalTests} combinations)`);
+    const requestKey = optimizerRequestKey({ exchange, pair, productId, ...validation.value });
     let currentBestResult = null;
-
-    res.json({ success: true, streaming: true, runId, exchange, pair, message: 'Optimizer started, results will stream via WebSocket' });
-
-    optimizerEngine.runOptimizer({
+    const admission = simulationCoordinator.start({
+      resourceKey: `fund:${exchange}:${pair}`,
+      requestKey,
+      forceRefresh,
+    }, () => optimizerEngine.runOptimizer({
       fundSize, exchange, forceRefresh, productId, intervals, markups, periods, buyAmounts,
       onProgress: (progress) => {
-        io.emit('optimizer:progress', { ...progress, runId, exchange, pair });
+        io.emit('optimizer:progress', { ...progress, runId, exchange, pair, requestKey });
         if (progress.latestResult) {
           if (!currentBestResult || progress.latestResult.metrics.totalValue > currentBestResult.metrics.totalValue) {
             currentBestResult = progress.latestResult;
-            io.emit('optimizer:newBest', { ...currentBestResult, runId, exchange, pair });
+            io.emit('optimizer:newBest', { ...currentBestResult, runId, exchange, pair, requestKey });
           }
         }
         if (progress.current % 20 === 0 || progress.phase === 'prefetch') {
           log('INFO', `[${exchange}] Optimizer: ${progress.message} (${progress.percentComplete}%)`);
         }
       },
-    })
+    }));
+    if (!admission.accepted) return rejectAdmission(res, admission);
+
+    log('INFO', `[${exchange}] Running optimizer for ${productId} with fund size: $${fundSize} (${combinations} combinations)`);
+
+    res.json({ success: true, streaming: true, runId, requestKey, exchange, pair, message: 'Optimizer started, results will stream via WebSocket' });
+
+    admission.promise
       .then(result => {
         log('INFO', `[${exchange}] Optimizer complete: ${result.totalCombinations} combinations in ${(result.duration / 1000).toFixed(1)}s`);
         log('INFO', `[${exchange}] Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> $${result.bestResult.metrics.totalValue.toFixed(2)}`);
