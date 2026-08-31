@@ -8,14 +8,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getRegimeConfig, updateRegimeConfig, updateFundConfig, validateRegimeConfig, getFundConfig, getDefaultPair } = require('../config-utils');
+const { getRegimeConfig, updateRegimeConfig, updateFundConfig, validateRegimeConfig, getFundConfig } = require('../config-utils');
 const { loadRegimeState, LIFECYCLE } = require('../state-tracker');
 const { resolveFundDataDir } = require('../migration');
 const { calculateApyMetrics } = require('../apy-calculator');
 const celestialHierarchy = require('../celestial-hierarchy');
 const { log } = require('../logger');
 const { sanitizeRegimeConfig } = require('../config-validator');
-const { getIPC: getExchangeIPC } = require('./route-utils');
+const { getIPC: getExchangeIPC, withConfiguredPair } = require('./route-utils');
 
 // Fields that live on the fund/exchange block (siblings of `regime`), NOT inside
 // the regime sub-block. GET sources these from getFundConfig, so a PUT must
@@ -142,6 +142,13 @@ const errStatus = (result) => result.error?.includes('unavailable') ? 503 : 400;
  * @param {{exchangeIPCMap: Object}} deps
  */
 module.exports = (app, deps) => {
+  // Every regime route is fund-scoped. Wrap registrations once so a future
+  // handler cannot accidentally forward an unvalidated query string to IPC.
+  const originalApp = app;
+  app = Object.create(app);
+  for (const method of ['get', 'post', 'put', 'delete']) {
+    app[method] = (route, handler) => originalApp[method](route, withConfiguredPair(handler));
+  }
   const { exchangeIPCMap } = deps;
   const getIPC = (exchange) => {
     try {
@@ -150,8 +157,7 @@ module.exports = (app, deps) => {
       return { request: () => Promise.reject(err) };
     }
   };
-  // Resolve pair from request (?pair= query) defaulting to exchange's default
-  const getPair = (req) => req.query?.pair || getDefaultPair(req.params.exchange);
+  const getPair = (req) => req.fundPair;
 
   // ============ Config (file-based, stays in gateway) ============
 

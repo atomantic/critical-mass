@@ -5,14 +5,30 @@
  * Common helpers used across multiple route modules.
  */
 
-const { getDefaultPair } = require('../config-utils');
+const { resolveConfiguredPair } = require('../config-utils');
 
 /**
- * Resolve the trading pair from a request's query string, falling back to the exchange default.
+ * Resolve the trading pair from a request's query string, falling back to the
+ * configured exchange default. Callers must handle the returned error before
+ * using the pair.
  * @param {import('express').Request} req
- * @returns {string}
+ * @returns {{ pair: string | null, error: string | null }}
  */
-const getPair = (req) => req.query?.pair || getDefaultPair(req.params.exchange);
+const getPair = (req) => resolveConfiguredPair(req.params.exchange, req.query?.pair);
+
+/**
+ * Guard a pair-aware route before it can access config, IPC, or persistence.
+ * The canonical pair is attached to the request so every handler forwards the
+ * same configured fund identity.
+ *
+ * @param {(req: import('express').Request, res: import('express').Response, next?: Function) => unknown} handler
+ */
+const withConfiguredPair = (handler) => (req, res, next) => {
+  const { pair, error } = getPair(req);
+  if (error) return res.status(400).json({ success: false, error });
+  req.fundPair = pair;
+  return handler(req, res, next);
+};
 
 /**
  * Look up the IPC client for a given exchange. Throws if not found
@@ -31,4 +47,4 @@ const getIPC = (exchangeIPCMap, exchange) => {
   return ipc;
 };
 
-module.exports = { getPair, getIPC };
+module.exports = { getPair, getIPC, withConfiguredPair };
