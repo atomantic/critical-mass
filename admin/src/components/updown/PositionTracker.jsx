@@ -1,14 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { Crosshair, Save, Trash2 } from 'lucide-react'
-
-const PERP_CONTRACT_SIZE_BTC = 0.01
+import { calculateManualPositionPnl } from './position-tracker-math'
 
 function formatCurrency(value) {
   if (value == null) return '---'
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
 }
 
-export default function PositionTracker({ initialPosition, tick }) {
+export default function PositionTracker({ initialPosition, currentPrice, contractPnl, priceFresh }) {
   const [entryPrice, setEntryPrice] = useState('')
   const [amount, setAmount] = useState('')
   const [direction, setDirection] = useState('Up') // long-only perp
@@ -81,19 +80,11 @@ export default function PositionTracker({ initialPosition, tick }) {
   }
 
   // Computed P&L
-  const currentPrice = tick?.price
-  const entry = parseFloat(entryPrice)
-  const amt = parseFloat(amount)
-  const validCalc = currentPrice > 0 && Number.isFinite(entry) && entry > 0 && Number.isFinite(amt) && amt > 0
-  const directionMultiplier = direction === 'Up' ? 1 : -1
-  const pnl = validCalc ? (currentPrice - entry) * amt * PERP_CONTRACT_SIZE_BTC * directionMultiplier : null
-  const pnlPct = validCalc
-    ? direction === 'Up'
-      ? ((currentPrice - entry) / entry) * 100
-      : ((entry - currentPrice) / entry) * 100
+  const manualPnl = priceFresh
+    ? calculateManualPositionPnl({ currentPrice, entryPrice, contracts: amount, direction })
     : null
-
-  const contractPnl = tick?.pnl?.pnl ?? null
+  const pnl = manualPnl?.pnl ?? null
+  const pnlPct = manualPnl?.pnlPct ?? null
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
@@ -143,6 +134,14 @@ export default function PositionTracker({ initialPosition, tick }) {
                 </span>
               </div>
             )}
+          </div>
+        )}
+        {hasPosition && !priceFresh && (
+          <div className="bg-gray-900 rounded p-3" role="status">
+            <div className="flex justify-between gap-3 text-xs">
+              <span className="text-gray-400">Unrealized P&amp;L</span>
+              <span className="text-amber-400 text-right">Price unavailable — waiting for a fresh mark</span>
+            </div>
           </div>
         )}
 
