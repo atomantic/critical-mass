@@ -91,6 +91,7 @@ const getTabsForStrategy = (strategy) => {
 
 // Valid exchange names
 const VALID_EXCHANGES = ['coinbase', 'gemini', 'cryptocom']
+const REGIME_ACTION_TOUCH_TARGET = 'min-h-11 min-w-11 md:min-h-0 md:min-w-0 inline-flex items-center justify-center'
 
 // Component that listens to trade events and shows toasts
 function TradeEventListener() {
@@ -731,7 +732,7 @@ function AppContent() {
                     </Link>
                   ))}
                 </div>
-                <div className="flex items-center gap-2 md:gap-3 flex-wrap px-3 md:px-0 py-1.5 shrink-0 md:ml-auto">
+                <div className="flex items-center gap-2 md:gap-3 flex-wrap max-w-full px-3 md:px-0 py-1.5 shrink-0 md:ml-auto">
                   <ExchangeSelector
                     currentExchange={currentExchange}
                     currentPair={currentPair}
@@ -775,7 +776,7 @@ function AppContent() {
                           <button
                             onClick={handleResetDryRun}
                             disabled={resetting}
-                            className="px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-[10px] md:text-xs transition-colors"
+                            className={`${REGIME_ACTION_TOUCH_TARGET} px-1.5 md:px-2 py-0.5 md:py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-800 rounded text-[10px] md:text-xs transition-colors`}
                             title="Reset dry-run state"
                           >
                             {resetting ? '...' : 'Reset'}
@@ -785,7 +786,7 @@ function AppContent() {
                           <button
                             onClick={openCloseFundDialog}
                             disabled={closing}
-                            className="px-2 md:px-3 py-1 md:py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 rounded text-xs md:text-sm font-medium transition-colors"
+                            className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 rounded text-xs md:text-sm font-medium transition-colors`}
                             title="Block new entries; auto-close after current cycle's TP fills"
                           >
                             {closing ? '...' : 'Close Fund'}
@@ -794,7 +795,7 @@ function AppContent() {
                         <button
                           onClick={handleStopRegime}
                           disabled={stopping}
-                          className="px-2 md:px-3 py-1 md:py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-xs md:text-sm font-medium transition-colors"
+                          className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-xs md:text-sm font-medium transition-colors`}
                         >
                           {stopping ? '...' : 'Stop'}
                         </button>
@@ -803,7 +804,7 @@ function AppContent() {
                       <button
                         onClick={openReopenFundDialog}
                         disabled={reopening}
-                        className="px-2 md:px-3 py-1 md:py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-xs md:text-sm font-medium transition-colors"
+                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded text-xs md:text-sm font-medium transition-colors`}
                         title="Reopen fund (does not restart the engine)"
                       >
                         {reopening ? '...' : 'Reopen'}
@@ -812,7 +813,7 @@ function AppContent() {
                       <button
                         onClick={handleStartRegime}
                         disabled={starting}
-                        className="px-2 md:px-3 py-1 md:py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-xs md:text-sm font-medium transition-colors"
+                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-xs md:text-sm font-medium transition-colors`}
                       >
                         {starting ? '...' : 'Start'}
                       </button>
