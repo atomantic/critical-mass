@@ -51,7 +51,25 @@ export default function OperatorLogin({ children }) {
   }
 
   if (status === 'authenticated') return children
-  if (status === 'loading') return <div className="min-h-screen bg-gray-950" />
+  if (status === 'loading') {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
+        <div
+          className="w-full max-w-sm rounded-xl border border-gray-700 bg-gray-900 p-8 text-center shadow-2xl"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="text-3xl mb-3" aria-hidden="true">⚛</div>
+          <h1 className="text-xl font-semibold">Critical Mass</h1>
+          <div
+            className="mx-auto mt-6 h-7 w-7 animate-spin rounded-full border-2 border-gray-700 border-t-blue-500"
+            aria-hidden="true"
+          />
+          <p className="mt-4 text-sm text-gray-400">Checking operator session…</p>
+        </div>
+      </main>
+    )
+  }
 
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
