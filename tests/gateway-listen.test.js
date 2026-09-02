@@ -36,6 +36,21 @@ describe('resolveListenHosts', () => {
   it('HOST=0.0.0.0 is all-interfaces and skips the Tailscale extra', () => {
     assert.deepEqual(resolveListenHosts('0.0.0.0', ['100.83.147.46']), ['0.0.0.0'])
   })
+
+  it('binds only loopback while operator bootstrap has no remote credential', () => {
+    assert.deepEqual(
+      resolveListenHosts(undefined, ['100.83.147.46'], { allowRemote: false }),
+      ['127.0.0.1'],
+    )
+    assert.deepEqual(
+      resolveListenHosts('127.0.0.1,100.83.147.46', [], { allowRemote: false }),
+      ['127.0.0.1'],
+    )
+    assert.throws(
+      () => resolveListenHosts('0.0.0.0', [], { allowRemote: false }),
+      /Refusing non-loopback HOST/,
+    )
+  })
 })
 
 describe('isGatewayOrigin', () => {

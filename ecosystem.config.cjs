@@ -24,6 +24,8 @@ module.exports = {
         COINBASE_IPC_PORT: PORTS.COINBASE_IPC,
         GEMINI_IPC_PORT: PORTS.GEMINI_IPC,
         CRYPTOCOM_IPC_PORT: PORTS.CRYPTOCOM_IPC,
+        OPERATOR_BOOTSTRAP_SECRET: process.env.OPERATOR_BOOTSTRAP_SECRET,
+        OPERATOR_BOOTSTRAP_SECRET_FILE: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
         NODE_OPTIONS: "--dns-result-order=ipv4first", // Force IPv4 for API stability (IPv6 rotates)
       },
       env_production: {
@@ -32,6 +34,8 @@ module.exports = {
         COINBASE_IPC_PORT: PORTS.COINBASE_IPC,
         GEMINI_IPC_PORT: PORTS.GEMINI_IPC,
         CRYPTOCOM_IPC_PORT: PORTS.CRYPTOCOM_IPC,
+        OPERATOR_BOOTSTRAP_SECRET: process.env.OPERATOR_BOOTSTRAP_SECRET,
+        OPERATOR_BOOTSTRAP_SECRET_FILE: process.env.OPERATOR_BOOTSTRAP_SECRET_FILE,
         NODE_OPTIONS: "--dns-result-order=ipv4first",
       },
       watch: false,

@@ -32,13 +32,33 @@ const tailscaleIpv4s = (nets = os.networkInterfaces()) => {
   return out
 }
 
+/** @param {string} host */
+const isLoopbackHost = (host) => {
+  const normalized = String(host).toLowerCase().split('%')[0]
+  if (normalized === 'localhost' || normalized === '::1') return true
+  const ipv4 = normalized.startsWith('::ffff:') ? normalized.slice(7) : normalized
+  const octets = ipv4.split('.').map(Number)
+  return octets.length === 4
+    && octets.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)
+    && octets[0] === 127
+}
+
 /**
  * @param {string|undefined} envHost
  * @param {string[]} [tailscale]
+ * @param {{allowRemote?: boolean}} [options]
  * @returns {string[]}
  */
-const resolveListenHosts = (envHost, tailscale = tailscaleIpv4s()) => {
+const resolveListenHosts = (envHost, tailscale = tailscaleIpv4s(), { allowRemote = true } = {}) => {
   const raw = typeof envHost === 'string' ? envHost.trim() : ''
+  if (!allowRemote) {
+    if (!raw) return ['127.0.0.1']
+    const loopbacks = raw.split(',').map((s) => s.trim()).filter(isLoopbackHost)
+    if (loopbacks.length === 0) {
+      throw new Error('Refusing non-loopback HOST while operator authentication is uninitialized; set a password locally or configure OPERATOR_BOOTSTRAP_SECRET')
+    }
+    return [...new Set(loopbacks)]
+  }
   if (raw === '0.0.0.0' || raw === '::') return [raw]
   const listed = raw
     ? raw.split(',').map((s) => s.trim()).filter(Boolean)
@@ -63,6 +83,7 @@ const isGatewayOrigin = (origin, allowlist = []) => {
 
 module.exports = {
   isTailscaleIpv4,
+  isLoopbackHost,
   tailscaleIpv4s,
   resolveListenHosts,
   isGatewayOrigin,

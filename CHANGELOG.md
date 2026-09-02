@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 - **Fund-scoped routes now require configured pair identities** — Gateway and IPC pair resolution rejects traversal, absolute paths, arrays, malformed values, and unconfigured funds before they reach engine state. Per-fund path helpers also refuse paths outside an exchange data directory (#280)
+- **[issue-279] Operator setup now requires a trusted bootstrap channel** — An uninitialized gateway keeps APIs locked and binds loopback-only unless a one-time out-of-band bootstrap secret enables remote enrollment; removing the password returns to protected local setup instead of exposing the gateway.
 - **Safer local service and automation boundaries** — The gateway now binds to loopback by default, Docker host publishing is loopback-only, state files are atomically replaced with owner-only permissions, CI actions use immutable revisions, and startup refuses foreign port occupants instead of killing them. The vulnerable development dependency chain was also removed.
 
 ### Fixed
