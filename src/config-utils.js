@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
+// logger imports migration; migration's back-edge to config-utils must stay lazy.
 const { createContextLogger } = require('./logger');
 
 const configLogger = createContextLogger({ module: 'config-utils' });
