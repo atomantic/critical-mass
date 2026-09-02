@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const stateTracker = require('./state-tracker');
+const { createContextLogger } = require('./logger');
 const { DATA_DIR } = require('./paths');
 const {
   normalizeConfig,
@@ -17,6 +18,8 @@ const {
   formatInterval,
   getTimeUntilNext,
 } = require('./interval-utils');
+
+const sharedUtilsLogger = createContextLogger({ module: 'shared-utils' });
 
 // ============ Numeric Constants ============
 
@@ -41,7 +44,10 @@ const readJSON = (filepath, defaultValue = {}) => {
   try {
     return JSON.parse(content);
   } catch (err) {
-    console.error(`Error parsing JSON from ${filepath}:`, err.message);
+    sharedUtilsLogger.error(`Error parsing JSON from ${filepath}: ${err.message}`, {
+      filePath: filepath,
+      error: err.message,
+    });
     return defaultValue;
   }
 };

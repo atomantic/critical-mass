@@ -9,6 +9,10 @@
 const fs = require('fs');
 const path = require('path');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
+// logger imports migration; migration's back-edge to config-utils must stay lazy.
+const { createContextLogger } = require('./logger');
+
+const configLogger = createContextLogger({ module: 'config-utils' });
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -426,7 +430,11 @@ const loadRawConfig = () => {
       // otherwise flood every process's log. Operators must still notice their
       // change didn't take effect; the engine keeps running on last-good config.
       if (!_configReloadFailedLogged) {
-        console.warn(`⚠️ [config] reload failed (${err.message}) — STILL USING LAST-GOOD CONFIG; repair ${USER_CONFIG_FILE}`);
+        configLogger.warn(`⚠️ [config] reload failed (${err.message}) — STILL USING LAST-GOOD CONFIG; repair ${USER_CONFIG_FILE}`, {
+          error: err.message,
+          configFile: USER_CONFIG_FILE,
+          usingLastGoodConfig: true,
+        });
         _configReloadFailedLogged = true;
       }
       return _configCache;

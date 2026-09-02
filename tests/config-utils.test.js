@@ -45,6 +45,17 @@ const {
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
 const USER_CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
 
+const contextFor = (lines, prefix) => {
+  const line = lines.find(candidate => candidate.startsWith(prefix));
+  assert.ok(line, `missing log line starting with: ${prefix}`);
+  const contextStart = line.lastIndexOf(' {');
+  assert.notEqual(contextStart, -1, `missing structured context: ${line}`);
+  return {
+    context: JSON.parse(line.slice(contextStart + 1)),
+    message: line.slice(0, contextStart),
+  };
+};
+
 // ============================================================================
 // Helper: mock fs for config loading/saving
 // ============================================================================
@@ -521,16 +532,29 @@ describe('loadRawConfig', () => {
     // (cache key differs) and hits the corrupted read.
     mock.method(fs, 'readFileSync', () => 'not json{');
     const warnings = [];
-    const origWarn = console.warn;
-    console.warn = (...a) => warnings.push(a.join(' '));
+    const origLog = console.log;
+    console.log = (...a) => warnings.push(a.join(' '));
     let result;
     try {
       result = loadRawConfig(); // must not throw
     } finally {
-      console.warn = origWarn;
+      console.log = origLog;
     }
     assert.deepStrictEqual(result, good, 'returns the last-good cached config');
     assert.ok(warnings.some(w => w.includes('reload failed')), 'logs a reload-failed warning');
+    const { context, message } = contextFor(warnings, '⚠️ [config] reload failed');
+    assert.equal(
+      message,
+      `⚠️ [config] reload failed (${context.error}) — STILL USING LAST-GOOD CONFIG; repair ${USER_CONFIG_FILE}`
+    );
+    assert.equal(typeof context.error, 'string');
+    assert.ok(context.error.length > 0, 'includes the parse failure');
+    assert.deepStrictEqual(context, {
+      module: 'config-utils',
+      error: context.error,
+      configFile: USER_CONFIG_FILE,
+      usingLastGoodConfig: true,
+    });
   });
 
   it('warns only once across repeated failed reloads (no per-tick spam)', () => {
@@ -540,14 +564,14 @@ describe('loadRawConfig', () => {
 
     mock.method(fs, 'readFileSync', () => 'not json{');
     const warnings = [];
-    const origWarn = console.warn;
-    console.warn = (...a) => warnings.push(a.join(' '));
+    const origLog = console.log;
+    console.log = (...a) => warnings.push(a.join(' '));
     try {
       loadRawConfig();
       loadRawConfig();
       loadRawConfig();
     } finally {
-      console.warn = origWarn;
+      console.log = origLog;
     }
     assert.equal(warnings.length, 1, 'persistent corruption must warn once, not every call');
   });
