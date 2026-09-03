@@ -1,6 +1,6 @@
 // @ts-check
 const { getAdapter } = require('./adapters');
-const { log } = require('./logger');
+const { createContextLogger } = require('./logger');
 const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { getBaseCurrency } = require('./config-utils');
 const { isFilledStatus } = require('./shared-utils');
@@ -14,6 +14,24 @@ const { isFilledStatus } = require('./shared-utils');
  * @typedef {import('./types').TrackedOrder} TrackedOrder
  * @typedef {import('./types').ConsolidationResult} ConsolidationResult
  */
+
+/**
+ * Build a context logger for a single order-manager operation.
+ *
+ * These are module-level functions rather than a factory closure, so the stable
+ * trading context (which exchange, which pair) is derived per call from the
+ * adapter and product id the caller passed in. Every adapter exposes `name`
+ * via createBaseAdapter; `pair` is omitted when the call site only has an
+ * adapter (JSON.stringify drops undefined keys, so the context stays clean).
+ * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (supplies the exchange name)
+ * @param {string} [productId] - Trading pair being operated on
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const orderLogger = (adapter, productId) => createContextLogger({
+  module: 'order-manager',
+  exchange: adapter?.name,
+  pair: productId,
+});
 
 /**
  * Wait for a market buy order to fill and get fill details with fees
@@ -134,12 +152,21 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, retryDelay
 
   // Can't reconcile without the id or a lookup capability — surface as a clean
   // failure (the safe mode: no untracked position, engine re-buys next cycle).
+  const logger = orderLogger(adapter, productId);
+
   if (!clientOrderId || typeof adapter.findOrderByClientOrderId !== 'function') {
-    log('ERROR', `❌ Unknown order outcome and cannot reconcile (clientOrderId=${clientOrderId ?? 'none'}) — treating as failed`);
+    logger.error(`❌ Unknown order outcome and cannot reconcile (clientOrderId=${clientOrderId ?? 'none'}) — treating as failed`, {
+      clientOrderId: clientOrderId ?? null,
+      reconcilable: false,
+      error: err.message,
+    });
     return { success: false, errorMessage: err.message };
   }
 
-  log('WARN', `⚠️ Unknown order outcome — reconciling by client_order_id ${clientOrderId}`);
+  logger.warn(`⚠️ Unknown order outcome — reconciling by client_order_id ${clientOrderId}`, {
+    clientOrderId,
+    error: err.message,
+  });
   let found = null;
   for (let attempt = 0; ; attempt++) {
     found = await adapter.findOrderByClientOrderId(clientOrderId, productId);
@@ -150,11 +177,20 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, retryDelay
   if (found && !NON_ADOPTABLE_STATUSES.has(found.status)) {
     // The order DID reach the exchange — adopt it rather than re-place (which
     // would double-spend against the already-executing order).
-    log('INFO', `✅ Reconciled unknown placement — adopting exchange order ${found.orderId} (status ${found.status})`);
+    logger.info(`ℹ️ ✅ Reconciled unknown placement — adopting exchange order ${found.orderId} (status ${found.status})`, {
+      orderId: found.orderId,
+      clientOrderId,
+      status: found.status,
+      reconciled: true,
+    });
     return { orderId: found.orderId, clientOrderId, success: true, reconciled: true };
   }
 
-  log('WARN', `❌ Unknown placement not found live on exchange (client_order_id ${clientOrderId}, status ${found?.status ?? 'absent'}) — treating as failed, safe to re-place next cycle`);
+  logger.warn(`❌ Unknown placement not found live on exchange (client_order_id ${clientOrderId}, status ${found?.status ?? 'absent'}) — treating as failed, safe to re-place next cycle`, {
+    clientOrderId,
+    status: found?.status ?? 'absent',
+    error: err.message,
+  });
   return { success: false, errorMessage: err.message };
 };
 
@@ -167,8 +203,9 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, retryDelay
  */
 const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
   adapter = adapter || getAdapter('coinbase');
+  const logger = orderLogger(adapter, config.productId);
 
-  log('INFO', `Placing market buy for ${usdcAmount} of ${config.productId}`);
+  logger.info(`ℹ️ Placing market buy for ${usdcAmount} of ${config.productId}`, { usdcAmount });
 
   // Place the market buy. An ambiguous 'unknown' outcome (network error after
   // the POST may have executed) is reconciled by client_order_id rather than
@@ -184,15 +221,24 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
     throw new Error(`Market buy failed: ${buyResult.errorMessage}`);
   }
 
-  log('INFO', `Buy order placed: ${buyResult.orderId}`);
+  logger.info(`ℹ️ Buy order placed: ${buyResult.orderId}`, { orderId: buyResult.orderId, usdcAmount });
 
   // Wait for fill
   const fillDetails = await waitForBuyFill(buyResult.orderId, adapter);
 
   // Extract base currency from product ID (e.g., CRO_USD -> CRO, BTC-USDC -> BTC)
   const baseCurrency = getBaseCurrency(config.productId);
-  log('INFO', `Buy filled: ${fillDetails.assetAmount.toFixed(8)} ${baseCurrency} at ${fillDetails.price.toFixed(2)}`);
-  log('INFO', `Fees: ${fillDetails.fees.toFixed(4)}, Rebates: ${fillDetails.rebates.toFixed(4)}, Net: ${fillDetails.netFees.toFixed(4)}`);
+  logger.info(`ℹ️ Buy filled: ${fillDetails.assetAmount.toFixed(8)} ${baseCurrency} at ${fillDetails.price.toFixed(2)}`, {
+    orderId: buyResult.orderId,
+    assetAmount: fillDetails.assetAmount,
+    price: fillDetails.price,
+  });
+  logger.info(`ℹ️ Fees: ${fillDetails.fees.toFixed(4)}, Rebates: ${fillDetails.rebates.toFixed(4)}, Net: ${fillDetails.netFees.toFixed(4)}`, {
+    orderId: buyResult.orderId,
+    fees: fillDetails.fees,
+    rebates: fillDetails.rebates,
+    netFees: fillDetails.netFees,
+  });
 
   return fillDetails;
 };
@@ -214,7 +260,8 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
   const sellPrice = buyDetails.price * (1 + config.sellMarkupPercent / 100);
 
   const baseCurrency = getBaseCurrency(config.productId);
-  log('INFO', `Placing post-only sell for ${sellQuantity} ${baseCurrency} at ${sellPrice}`);
+  const logger = orderLogger(adapter, config.productId);
+  logger.info(`ℹ️ Placing post-only sell for ${sellQuantity} ${baseCurrency} at ${sellPrice}`, { sellQuantity, sellPrice });
 
   // An ambiguous 'unknown' outcome here (network error after the POST may
   // have reached the exchange) is reconciled by client_order_id, mirroring
@@ -240,7 +287,11 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
     sellResult.limitPrice = sellPrice;
   }
 
-  log('INFO', `Sell order placed: ${sellResult.orderId}`);
+  logger.info(`ℹ️ Sell order placed: ${sellResult.orderId}`, {
+    orderId: sellResult.orderId,
+    sellQuantity,
+    sellPrice,
+  });
 
   return sellResult;
 };
@@ -253,6 +304,8 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
  */
 const checkFilledOrders = async (pendingOrders, adapter = null) => {
   adapter = adapter || getAdapter('coinbase');
+  // No product id is available here — TrackedOrder carries only order ids.
+  const logger = orderLogger(adapter);
   const filledOrders = [];
 
   // Filter out dry-run orders - they don't exist on the exchange
@@ -279,8 +332,17 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
         originalOrder: pendingOrder,
       });
 
-      log('INFO', `Sell order ${pendingOrder.orderId} filled at ${orderStatus.averageFilledPrice}`);
-      log('INFO', `Sell fees: ${fillSummary.totalFees.toFixed(4)}, rebates: ${fillSummary.totalRebates.toFixed(4)}, net: ${fillSummary.netFees.toFixed(4)}`);
+      logger.info(`ℹ️ Sell order ${pendingOrder.orderId} filled at ${orderStatus.averageFilledPrice}`, {
+        orderId: pendingOrder.orderId,
+        averageFilledPrice: orderStatus.averageFilledPrice,
+        filledSize: orderStatus.filledSize,
+      });
+      logger.info(`ℹ️ Sell fees: ${fillSummary.totalFees.toFixed(4)}, rebates: ${fillSummary.totalRebates.toFixed(4)}, net: ${fillSummary.netFees.toFixed(4)}`, {
+        orderId: pendingOrder.orderId,
+        fees: fillSummary.totalFees,
+        rebates: fillSummary.totalRebates,
+        netFees: fillSummary.netFees,
+      });
     }
   }
 
@@ -297,6 +359,7 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
  */
 const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRetries = 3) => {
   adapter = adapter || getAdapter('coinbase');
+  const logger = orderLogger(adapter, config.productId);
   let lastError;
   let priceMultiplier = 1 + config.sellMarkupPercent / 100;
 
@@ -309,7 +372,12 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
     // Ensure sell price is above current market (for post-only)
     if (sellPrice <= currentPrice) {
       priceMultiplier += 0.01; // Add 1% more
-      log('WARN', `Sell price ${sellPrice} below market ${currentPrice}, adjusting to ${buyDetails.price * priceMultiplier}`);
+      logger.warn(`⚠️ Sell price ${sellPrice} below market ${currentPrice}, adjusting to ${buyDetails.price * priceMultiplier}`, {
+        attempt: attempt + 1,
+        sellPrice,
+        currentPrice,
+        adjustedPrice: buyDetails.price * priceMultiplier,
+      });
       continue;
     }
 
@@ -332,7 +400,13 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
     }
 
     lastError = sellResult.errorMessage;
-    log('WARN', `Sell attempt ${attempt + 1} failed: ${lastError}`);
+    logger.warn(`⚠️ Sell attempt ${attempt + 1} failed: ${lastError}`, {
+      attempt: attempt + 1,
+      maxRetries,
+      sellQuantity,
+      sellPrice,
+      error: lastError,
+    });
 
     // If post-only rejection, increase price
     if (lastError && lastError.includes('post only')) {
@@ -375,14 +449,19 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   const cancelledOrderIds = [];
   const filledDuringCancelOrderIds = [];
 
+  const logger = orderLogger(adapter, config.productId);
+
   // Step 1: Check each order for partial fills
-  log('INFO', `Checking ${realOrders.length} orders for partial fills...`);
+  logger.info(`ℹ️ Checking ${realOrders.length} orders for partial fills...`, { orderCount: realOrders.length });
   for (const order of realOrders) {
     const orderDetails = await adapter.getOrder(order.orderId);
 
     // Skip orders that have partial fills
     if (orderDetails.completionPercentage > 0) {
-      log('WARN', `Order ${order.orderId} has ${orderDetails.completionPercentage}% filled, skipping`);
+      logger.warn(`⚠️ Order ${order.orderId} has ${orderDetails.completionPercentage}% filled, skipping`, {
+        orderId: order.orderId,
+        completionPercentage: orderDetails.completionPercentage,
+      });
       skippedOrderIds.push(order.orderId);
       continue;
     }
@@ -407,7 +486,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   // otherwise be counted into totalAsset and re-sold by the consolidated order —
   // a double-sell. Partition into confirmed-cancelled (still 0% filled) vs
   // filled-during-cancel; only the confirmed set feeds the consolidated quantity.
-  log('INFO', `Cancelling ${eligibleOrders.length} orders...`);
+  logger.info(`ℹ️ Cancelling ${eligibleOrders.length} orders...`, { orderCount: eligibleOrders.length });
   for (const order of eligibleOrders) {
     const cancelResult = await adapter.cancelOrder(order.orderId);
     if (!cancelResult.success) {
@@ -436,7 +515,11 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
       // attribute the order's full cost basis to the new order while only the
       // remainder is in it, corrupting P&L. The freed remainder asset is re-covered
       // by the engine's normal cycle reconciliation, same as any cancelled order.
-      log('WARN', `Order ${order.orderId} filled (${postCancel?.completionPercentage ?? 'unknown'}%) during cancel — excluding from consolidated total`);
+      logger.warn(`⚠️ Order ${order.orderId} filled (${postCancel?.completionPercentage ?? 'unknown'}%) during cancel — excluding from consolidated total`, {
+        orderId: order.orderId,
+        completionPercentage: postCancel?.completionPercentage ?? null,
+        status: postCancel?.status ?? 'indeterminate',
+      });
       filledDuringCancelOrderIds.push(order.orderId);
       continue;
     }
@@ -449,7 +532,9 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     // Every eligible order filled during its cancel window — nothing left to
     // consolidate. The fills are real and tracked elsewhere; report them so the
     // caller can reconcile, but place no order (no asset is held).
-    log('WARN', 'All eligible orders filled during cancel — no consolidated order placed');
+    logger.warn('⚠️ All eligible orders filled during cancel — no consolidated order placed', {
+      filledDuringCancelCount: filledDuringCancelOrderIds.length,
+    });
     return {
       success: true,
       newOrderId: null,
@@ -467,10 +552,17 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
   const weightedPriceSum = cancelledOrders.reduce((sum, o) => sum + (o.sellQuantity * o.sellPrice), 0);
   const consolidatedPrice = weightedPriceSum / totalAsset;
 
-  log('INFO', `Consolidating ${cancelledOrders.length} orders: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
+  logger.info(`ℹ️ Consolidating ${cancelledOrders.length} orders: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`, {
+    orderCount: cancelledOrders.length,
+    totalAsset,
+    consolidatedPrice,
+  });
 
   // Step 4: Place new consolidated order
-  log('INFO', `Placing consolidated sell order: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`);
+  logger.info(`ℹ️ Placing consolidated sell order: ${totalAsset.toFixed(8)} ${baseCurrency} @ ${consolidatedPrice.toFixed(2)}`, {
+    totalAsset,
+    consolidatedPrice,
+  });
   const sellResult = await adapter.placeLimitSell(config.productId, totalAsset, consolidatedPrice);
 
   if (!sellResult.success) {
@@ -482,7 +574,11 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     // Note: we can't place the consolidated order before cancelling — the asset is
     // still locked in the open sells, so the exchange would reject it for
     // insufficient balance.
-    log('ERROR', `${error} — re-placing ${cancelledOrders.length} original sells to avoid a naked position`);
+    logger.error(`❌ ${error} — re-placing ${cancelledOrders.length} original sells to avoid a naked position`, {
+      error: sellResult.errorMessage,
+      nakedOrderCount: cancelledOrders.length,
+      cancelledOrderIds,
+    });
     const restoredOrders = [];
     const failedRestoreOrderIds = [];
     for (const order of cancelledOrders) {
@@ -493,7 +589,12 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
         restoredOrders.push({ oldOrderId: order.orderId, newOrderId: restoreResult.orderId });
       } else {
         failedRestoreOrderIds.push(order.orderId);
-        log('ERROR', `Failed to restore sell for cancelled order ${order.orderId}: ${restoreResult.errorMessage}`);
+        logger.error(`❌ Failed to restore sell for cancelled order ${order.orderId}: ${restoreResult.errorMessage}`, {
+          orderId: order.orderId,
+          sellQuantity: order.sellQuantity,
+          sellPrice: order.sellPrice,
+          error: restoreResult.errorMessage,
+        });
       }
     }
 
@@ -508,7 +609,12 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     };
   }
 
-  log('INFO', `Consolidation complete: ${cancelledOrders.length} orders -> 1 order (${sellResult.orderId})`);
+  logger.info(`ℹ️ Consolidation complete: ${cancelledOrders.length} orders -> 1 order (${sellResult.orderId})`, {
+    orderId: sellResult.orderId,
+    consolidatedCount: cancelledOrders.length,
+    consolidatedPrice,
+    consolidatedAsset: totalAsset,
+  });
 
   return {
     success: true,
@@ -534,6 +640,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
  */
 const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, prevOrderId, adapter) => {
   const baseCurrency = getBaseCurrency(config.productId);
+  const logger = orderLogger(adapter, config.productId);
 
   // Inspect the previous sell before mutating any state. We look at the actual
   // executed amount (filledSize), not just the coarse status string, because
@@ -556,7 +663,10 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
 
     if (prevOrderStatus.status === 'FILLED') {
       // Fully filled - this should trigger cycle reset upstream
-      log('INFO', `Previous Fibonacci sell order ${prevOrderId} already filled`);
+      logger.info(`ℹ️ Previous Fibonacci sell order ${prevOrderId} already filled`, {
+        orderId: prevOrderId,
+        status: prevOrderStatus.status,
+      });
       return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
     }
 
@@ -566,13 +676,21 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
       // credit the already-executed portion and shrink the new consolidated
       // sell so the sold quantity is not re-sold from reserves (issue #200,
       // Bug B).
-      log('INFO', `Previous Fibonacci sell ${prevOrderId} partially filled (${filledSize} ${baseCurrency}); cancelling remainder`);
+      logger.info(`ℹ️ Previous Fibonacci sell ${prevOrderId} partially filled (${filledSize} ${baseCurrency}); cancelling remainder`, {
+        orderId: prevOrderId,
+        status: prevOrderStatus.status,
+        filledSize,
+      });
       const cancelResult = await adapter.cancelOrder(prevOrderId);
 
       if (!cancelResult || cancelResult.success !== true) {
         // Cancel refused - the order filled between getOrder and cancelOrder.
         // Route through the fill path so the full fill is credited upstream.
-        log('WARN', `Cancel refused for partially-filled ${prevOrderId} - treating as fully filled`);
+        logger.warn(`⚠️ Cancel refused for partially-filled ${prevOrderId} - treating as fully filled`, {
+          orderId: prevOrderId,
+          filledSize,
+          cancelSuccess: cancelResult?.success ?? null,
+        });
         return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
       }
 
@@ -591,12 +709,18 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
       alreadySoldQty = filledSize;
     } else if (isLive) {
       // Fully open, nothing executed - cancel and replace.
-      log('INFO', `Cancelling previous Fibonacci sell order ${prevOrderId}`);
+      logger.info(`ℹ️ Cancelling previous Fibonacci sell order ${prevOrderId}`, {
+        orderId: prevOrderId,
+        status: prevOrderStatus.status,
+      });
       const cancelResult = await adapter.cancelOrder(prevOrderId);
 
       if (!cancelResult || cancelResult.success !== true) {
         // Cancel refused - the order filled between getOrder and cancelOrder.
-        log('WARN', `Cancel refused for ${prevOrderId} - treating as fully filled`);
+        logger.warn(`⚠️ Cancel refused for ${prevOrderId} - treating as fully filled`, {
+          orderId: prevOrderId,
+          cancelSuccess: cancelResult?.success ?? null,
+        });
         return { sellOrder: null, sellQuantity: 0, holdbackAsset: 0, alreadyFilled: true };
       }
     }
@@ -610,7 +734,12 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
   const sellQuantity = Math.max(0, targetSellQuantity - alreadySoldQty);
   const sellPrice = getFibonacciSellPrice(avgCostBasis, config.sellMarkupPercent);
 
-  log('INFO', `Placing Fibonacci sell: ${sellQuantity.toFixed(8)} ${baseCurrency} at $${sellPrice.toFixed(2)} (avg cost: $${avgCostBasis.toFixed(2)})`);
+  logger.info(`ℹ️ Placing Fibonacci sell: ${sellQuantity.toFixed(8)} ${baseCurrency} at $${sellPrice.toFixed(2)} (avg cost: $${avgCostBasis.toFixed(2)})`, {
+    sellQuantity,
+    sellPrice,
+    avgCostBasis,
+    alreadySoldQty,
+  });
 
   // Ensure sell price is above current market for post-only
   const currentPrice = await adapter.getCurrentPrice(config.productId);
@@ -618,7 +747,11 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
 
   if (sellPrice <= currentPrice) {
     adjustedPrice = currentPrice * 1.01; // 1% above current price minimum
-    log('WARN', `Fibonacci sell price $${sellPrice.toFixed(2)} below market $${currentPrice.toFixed(2)}, adjusting to $${adjustedPrice.toFixed(2)}`);
+    logger.warn(`⚠️ Fibonacci sell price $${sellPrice.toFixed(2)} below market $${currentPrice.toFixed(2)}, adjusting to $${adjustedPrice.toFixed(2)}`, {
+      sellPrice,
+      currentPrice,
+      adjustedPrice,
+    });
   }
 
   // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
@@ -639,7 +772,11 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
     sellResult.limitPrice = adjustedPrice;
   }
 
-  log('INFO', `Fibonacci sell order placed: ${sellResult.orderId}`);
+  logger.info(`ℹ️ Fibonacci sell order placed: ${sellResult.orderId}`, {
+    orderId: sellResult.orderId,
+    sellQuantity,
+    limitPrice: adjustedPrice,
+  });
 
   return {
     sellOrder: sellResult,
