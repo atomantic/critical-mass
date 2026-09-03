@@ -10,7 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
 const { readFileSync, readdirSync } = fs;
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
 const { calculatePerpPnl } = require('../updown/perp-contract');
@@ -22,6 +22,18 @@ const {
   getDirection,
   WINDOW_MS,
 } = require('../updown/scorecard');
+
+/**
+ * Context logger for the UpDown routes. UpDown is a single paper-traded BTC
+ * perp book with no exchange behind it, so `route` carries the operator-facing
+ * scope instead of exchange/pair.
+ * @param {string} route - Express route pattern being served
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const updownRouteLogger = (route) => createContextLogger({
+  module: 'updown-routes',
+  route,
+});
 
 const ALLOWED_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 
@@ -223,6 +235,7 @@ module.exports = (app, deps) => {
 
   // --- AI Vision: screenshot analysis ---
   app.post('/api/updown/screenshot', async (req, res) => {
+    const logger = updownRouteLogger('/api/updown/screenshot');
     const { providerId, model } = req.query;
     if (!providerId) return res.status(400).json({ success: false, error: 'providerId query param required' });
 
@@ -232,7 +245,11 @@ module.exports = (app, deps) => {
       imageBuffer = await readBodyWithLimit(req, MAX_SCREENSHOT_BYTES);
     } catch (err) {
       if (err.status === 413) {
-        log('WARN', `📸 UpDown screenshot rejected: body exceeds ${MAX_SCREENSHOT_BYTES} bytes`);
+        logger.warn(`⚠️ 📸 UpDown screenshot rejected: body exceeds ${MAX_SCREENSHOT_BYTES} bytes`, {
+          action: 'screenshot',
+          reason: 'body-too-large',
+          maxBytes: MAX_SCREENSHOT_BYTES,
+        });
         return res.status(413).json({ success: false, error: 'Image body too large' });
       }
       throw err;
@@ -279,7 +296,11 @@ module.exports = (app, deps) => {
     const endpointValidation = await validateEndpointUrlFn(provider.endpoint);
     if (!endpointValidation.valid) {
       // Log the full detail server-side (includes URL); return only a generic message to the caller.
-      log('WARN', `🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointValidation.error}`);
+      logger.warn(`⚠️ 🤖 UpDown screenshot rejected: unsafe endpoint for "${providerId}": ${endpointValidation.error}`, {
+        action: 'screenshot',
+        provider: providerId,
+        error: endpointValidation.error,
+      });
       return res.status(400).json({ success: false, error: 'Provider endpoint is misconfigured. Contact the administrator.' });
     }
 
@@ -288,7 +309,11 @@ module.exports = (app, deps) => {
 
     let aiResponse;
     try {
-      log('INFO', `🤖 UpDown screenshot → ${providerId}/${selectedModel}`);
+      logger.info(`ℹ️ 🤖 UpDown screenshot → ${providerId}/${selectedModel}`, {
+        action: 'screenshot',
+        provider: providerId,
+        model: selectedModel,
+      });
       // safeFetch re-validates every redirect target through validateEndpointUrl,
       // strips Authorization on cross-origin redirects, and re-checks the
       // resolved IP at connect time (closes the redirect + TOCTOU SSRF gaps
@@ -303,7 +328,12 @@ module.exports = (app, deps) => {
 
       if (!response.ok) {
         const errBody = await response.text().catch(() => '');
-        log('ERROR', `🤖 UpDown screenshot AI error: ${response.status}`);
+        logger.error(`❌ 🤖 UpDown screenshot AI error: ${response.status}`, {
+          action: 'screenshot',
+          provider: providerId,
+          model: selectedModel,
+          status: response.status,
+        });
         return res.status(502).json({ success: false, error: `AI provider returned ${response.status}: ${errBody.slice(0, 200)}` });
       }
 
@@ -316,7 +346,13 @@ module.exports = (app, deps) => {
       // refused to connect to — log that detail server-side but return a
       // generic message to the caller (same treatment as the pre-check above).
       const isSsrfBlock = /^Blocked (endpoint|private)/.test(err.message || '');
-      log('ERROR', `🤖 UpDown screenshot AI failed: ${err.message}`);
+      logger.error(`❌ 🤖 UpDown screenshot AI failed: ${err.message}`, {
+        action: 'screenshot',
+        provider: providerId,
+        model: selectedModel,
+        ssrfBlocked: isSsrfBlock,
+        error: err.message,
+      });
       if (isSsrfBlock) {
         return res.status(502).json({ success: false, error: 'AI provider endpoint is misconfigured. Contact the administrator.' });
       }
@@ -344,7 +380,12 @@ module.exports = (app, deps) => {
         }
       }
     } catch (err) {
-      log('ERROR', `🤖 UpDown screenshot parse failed`);
+      logger.error(`❌ 🤖 UpDown screenshot parse failed`, {
+        action: 'screenshot',
+        provider: providerId,
+        model: selectedModel,
+        error: err.message,
+      });
       return res.status(422).json({ success: false, error: 'AI returned unparseable response', raw: aiResponse.slice(0, 500) });
     }
 
@@ -369,7 +410,13 @@ module.exports = (app, deps) => {
       }
     }
 
-    log('INFO', `📸 UpDown screenshot extracted: screenType=${extracted.screenType} direction=${extracted.direction} target=${extracted.target} stop=${extracted.stop} range=${extracted.range}`);
+    logger.info(`ℹ️ 📸 UpDown screenshot extracted: screenType=${extracted.screenType} direction=${extracted.direction} target=${extracted.target} stop=${extracted.stop} range=${extracted.range}`, {
+      action: 'screenshot',
+      provider: providerId,
+      model: selectedModel,
+      screenType: extracted.screenType,
+      direction: extracted.direction,
+    });
     res.json({ success: true, extracted });
   });
 
@@ -702,24 +749,28 @@ module.exports = (app, deps) => {
   });
 
   app.post('/api/updown/start', async (req, res) => {
+    const logger = updownRouteLogger('/api/updown/start');
     try {
       await updownService.start();
-      log('INFO', '📊 UpDown service started via API');
+      logger.info('ℹ️ 📊 UpDown service started via API', { action: 'start' });
       res.json({ success: true });
     } catch (err) {
-      log('ERROR', `📊 UpDown service start failed err=${err.message}`);
+      logger.error(`❌ 📊 UpDown service start failed err=${err.message}`, {
+        action: 'start',
+        error: err.message,
+      });
       res.status(500).json({ success: false, error: 'UpDown service failed to start' });
     }
   });
 
   app.post('/api/updown/stop', (req, res) => {
     updownService.stop();
-    log('INFO', '📊 UpDown service stopped via API');
+    updownRouteLogger('/api/updown/stop').info('ℹ️ 📊 UpDown service stopped via API', { action: 'stop' });
     res.json({ success: true });
   });
 
   app.post('/api/updown/restart', (req, res) => {
-    log('INFO', '🔄 PM2 restart requested via API');
+    updownRouteLogger('/api/updown/restart').info('ℹ️ 🔄 PM2 restart requested via API', { action: 'restart' });
     res.json({ success: true, message: 'Restarting...' });
     setTimeout(() => exec('pm2 restart critical-mass'), 500);
   });
@@ -817,7 +868,14 @@ module.exports = (app, deps) => {
     data.trades.push(trade);
     data.nextId = trade.id + 1;
     writeTrades(data);
-    log('INFO', `📊 UpDown trade added: id=${trade.id} cost=${trade.cost} return=${trade.returnAmount} pnl=${trade.pnl} dir=${trade.direction}`);
+    updownRouteLogger('/api/updown/trades').info(`ℹ️ 📊 UpDown trade added: id=${trade.id} cost=${trade.cost} return=${trade.returnAmount} pnl=${trade.pnl} dir=${trade.direction}`, {
+      action: 'add-trade',
+      tradeId: trade.id,
+      cost: trade.cost,
+      returnAmount: trade.returnAmount,
+      pnl: trade.pnl,
+      direction: trade.direction,
+    });
     res.json({ success: true, trade });
   });
 
@@ -853,7 +911,10 @@ module.exports = (app, deps) => {
     if (idx === -1) return res.status(404).json({ success: false, error: 'Trade not found' });
     data.trades.splice(idx, 1);
     writeTrades(data);
-    log('INFO', `📊 UpDown trade deleted: id=${id}`);
+    updownRouteLogger('/api/updown/trades/:id').info(`ℹ️ 📊 UpDown trade deleted: id=${id}`, {
+      action: 'delete-trade',
+      tradeId: id,
+    });
     res.json({ success: true });
   });
 };

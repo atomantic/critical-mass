@@ -10,9 +10,15 @@
 
 const { Router } = require('express');
 const path = require('path');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { ts } = require('../time-utils');
 const { createAiSecurity } = require('../ai-security');
+
+/**
+ * Context logger for the AI toolkit mount. These routes are provider-scoped,
+ * not market-scoped, so the provider/model ride along per call.
+ */
+const aiRoutesLogger = createContextLogger({ module: 'ai-routes' });
 
 module.exports = (app, sharedDeps) => {
   const { io } = sharedDeps;
@@ -44,10 +50,19 @@ module.exports = (app, sharedDeps) => {
       enableProviderStatus: false,
       hooks: {
         onRunCompleted: (metadata) => {
-          log('INFO', `[${ts()}] 🤖 AI run completed: ${metadata.providerName}/${metadata.model} (${(metadata.duration / 1000).toFixed(1)}s)`);
+          aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI run completed: ${metadata.providerName}/${metadata.model} (${(metadata.duration / 1000).toFixed(1)}s)`, {
+            action: 'run-completed',
+            provider: metadata.providerName,
+            model: metadata.model,
+            durationMs: metadata.duration,
+          });
         },
         onRunFailed: (metadata, error) => {
-          log('WARN', `[${ts()}] 🤖 AI run failed: ${metadata.providerName} — ${error}`);
+          aiRoutesLogger.warn(`⚠️ [${ts()}] 🤖 AI run failed: ${metadata.providerName} — ${error}`, {
+            action: 'run-failed',
+            provider: metadata.providerName,
+            error: String(error),
+          });
         }
       }
     });
@@ -58,8 +73,14 @@ module.exports = (app, sharedDeps) => {
     aiRouter.use('/runs', security.constrainOutboundRequests, security.guardRun, toolkit.routes.runs);
     aiRouter.use('/prompts', toolkit.routes.prompts);
 
-    log('INFO', `[${ts()}] 🤖 AI toolkit routes mounted at /api/providers, /api/runs, /api/prompts`);
+    aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI toolkit routes mounted at /api/providers, /api/runs, /api/prompts`, {
+      action: 'mount',
+      routes: ['/api/providers', '/api/runs', '/api/prompts'],
+    });
   }).catch(err => {
-    log('WARN', `[${ts()}] ⚠️ AI toolkit failed to load: ${err.message}`);
+    aiRoutesLogger.warn(`⚠️ [${ts()}] ⚠️ AI toolkit failed to load: ${err.message}`, {
+      action: 'mount',
+      error: err.message,
+    });
   });
 };

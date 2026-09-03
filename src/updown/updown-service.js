@@ -14,7 +14,13 @@ const { createScorecard } = require('./scorecard');
 const { createPerpBook } = require('./perp-book');
 const { PERP_CONTRACT_SIZE_BTC, calculatePerpPnl } = require('./perp-contract');
 const { resolveAction, labelHistoryActions } = require('./signal-actions');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
+
+/**
+ * UpDown runs a single paper-traded BTC perp book with no exchange behind it,
+ * so `module` is the only stable context; the signal/perp detail is per call.
+ */
+const updownLogger = createContextLogger({ module: 'updown-service' });
 
 const STATE_FILE = 'updown-state.json';
 const SIGNAL_INTERVAL_MS = 5_000;
@@ -119,7 +125,14 @@ const createUpDownService = (io, deps) => {
       signalHistory.length = 0
       signalHistory.push(...labeled)
     }
-    log('INFO', `📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position} stability=${saved.stability?.publishedType || 'none'} perp=${perpBook.snapshot().contracts} open=${perpBook.isLong()}`);
+    updownLogger.info(`ℹ️ 📊 UpDown state loaded contract=${!!saved.contract} position=${!!saved.position} stability=${saved.stability?.publishedType || 'none'} perp=${perpBook.snapshot().contracts} open=${perpBook.isLong()}`, {
+      action: 'load-state',
+      hasContract: !!saved.contract,
+      hasPosition: !!saved.position,
+      stability: saved.stability?.publishedType || 'none',
+      contracts: perpBook.snapshot().contracts,
+      open: perpBook.isLong(),
+    });
   };
 
   // Eagerly load persisted state so signal history is available even before start()
@@ -230,7 +243,12 @@ const createUpDownService = (io, deps) => {
       if (now - lastStaleLogAt >= PRICE_STALE_MS) {
         lastStaleLogAt = now;
         const age = lastTickAt > 0 ? now - lastTickAt : null;
-        log('WARN', `📊 UpDown signal cycle paused — BTC price feed stale ageMs=${age ?? 'unavailable'}`);
+        updownLogger.warn(`⚠️ 📊 UpDown signal cycle paused — BTC price feed stale ageMs=${age ?? 'unavailable'}`, {
+          action: 'signal-cycle',
+          reason: 'stale-price',
+          ageMs: age,
+          staleAfterMs: PRICE_STALE_MS,
+        });
       }
       return;
     }
@@ -296,7 +314,14 @@ const createUpDownService = (io, deps) => {
       });
       persistState();
       io.to('updown').emit('updown:scorecard', scorecard.getMetrics());
-      log('INFO', `📊 UpDown perp ${action} contracts=${fillResult.fill.contracts} price=$${fillResult.fill.price} book=${perpSnap.contracts} realized=$${perpSnap.realizedPnl}`);
+      updownLogger.info(`ℹ️ 📊 UpDown perp ${action} contracts=${fillResult.fill.contracts} price=$${fillResult.fill.price} book=${perpSnap.contracts} realized=$${perpSnap.realizedPnl}`, {
+        action,
+        signalType: result.type,
+        contracts: fillResult.fill.contracts,
+        price: fillResult.fill.price,
+        bookContracts: perpSnap.contracts,
+        realizedPnl: perpSnap.realizedPnl,
+      });
     }
 
     // Emit full indicator data every cycle (with new fields)
@@ -409,10 +434,16 @@ const createUpDownService = (io, deps) => {
           try {
             runSignalCycle();
           } catch (err) {
-            log('WARN', `📊 UpDown signal cycle failed err=${err.message}`);
+            updownLogger.warn(`⚠️ 📊 UpDown signal cycle failed err=${err.message}`, {
+              action: 'signal-cycle',
+              error: err.message,
+            });
           }
         }, SIGNAL_INTERVAL_MS);
-        log('INFO', '📊 UpDown service started interval=5s');
+        updownLogger.info('ℹ️ 📊 UpDown service started interval=5s', {
+          action: 'start',
+          intervalMs: SIGNAL_INTERVAL_MS,
+        });
       }
     }).catch((err) => {
       if (generation === lifecycleGeneration) {
@@ -443,7 +474,7 @@ const createUpDownService = (io, deps) => {
     }
     scorecard.stop();
     persistState();
-    log('INFO', '📊 UpDown service stopped');
+    updownLogger.info('ℹ️ 📊 UpDown service stopped', { action: 'stop' });
   };
 
   /**
@@ -499,7 +530,11 @@ const createUpDownService = (io, deps) => {
   const setContract = (config) => {
     contract = { ...contract, ...config };
     persistState();
-    log('INFO', `📊 UpDown contract updated expiry=${contract.expiry} direction=${contract.direction}`);
+    updownLogger.info(`ℹ️ 📊 UpDown contract updated expiry=${contract.expiry} direction=${contract.direction}`, {
+      action: 'set-contract',
+      expiry: contract.expiry,
+      direction: contract.direction,
+    });
   };
 
   /**
@@ -513,7 +548,12 @@ const createUpDownService = (io, deps) => {
   const setPosition = (pos) => {
     position = { ...pos, entryTime: pos.entryTime || Date.now() };
     persistState();
-    log('INFO', `📊 UpDown position set entry=$${pos.entryPrice} contracts=${pos.contracts} direction=${pos.direction}`);
+    updownLogger.info(`ℹ️ 📊 UpDown position set entry=$${pos.entryPrice} contracts=${pos.contracts} direction=${pos.direction}`, {
+      action: 'set-position',
+      entryPrice: pos.entryPrice,
+      contracts: pos.contracts,
+      direction: pos.direction,
+    });
   };
 
   /**
@@ -541,7 +581,7 @@ const createUpDownService = (io, deps) => {
   const clearPosition = () => {
     position = null;
     persistState();
-    log('INFO', '📊 UpDown position cleared');
+    updownLogger.info('ℹ️ 📊 UpDown position cleared', { action: 'clear-position' });
   };
 
   return {

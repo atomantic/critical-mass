@@ -5,9 +5,22 @@
 
 const fs = require('fs');
 const { getExchangeKeysPath } = require('../migration');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { loadConfig } = require('../dca-engine');
 const { getQuoteCurrency } = require('../config-utils');
+
+/**
+ * Context logger for the API-key routes. Every handler here is exchange-scoped
+ * but pair-agnostic, so `route` identifies the endpoint instead.
+ * @param {string} [exchange] - Exchange the request targets
+ * @param {string} [route] - Express route pattern being served
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const keysLogger = (exchange, route) => createContextLogger({
+  module: 'keys-routes',
+  exchange,
+  route,
+});
 
 /**
  * @param {import('express').Express} app
@@ -63,7 +76,10 @@ module.exports = (app, deps) => {
 
     const keysPath = getExchangeKeysPath(exchange);
     writeJSON(keysPath, keysData);
-    log('INFO', `🔑 [${exchange}] API keys configured`);
+    keysLogger(exchange, '/api/:exchange/keys').info(`ℹ️ 🔑 [${exchange}] API keys configured`, {
+      action: 'save-keys',
+      method: req.method,
+    });
     res.json({ success: true, exchange, configured: true });
   };
   app.post('/api/:exchange/keys', saveExchangeKeys);
@@ -101,7 +117,7 @@ module.exports = (app, deps) => {
 
     if (fs.existsSync(keysPath)) {
       fs.unlinkSync(keysPath);
-      log('INFO', `[${exchange}] API keys deleted`);
+      keysLogger(exchange, '/api/:exchange/keys').info(`ℹ️ [${exchange}] API keys deleted`, { action: 'delete-keys' });
     }
 
     res.json({ success: true, exchange, configured: false });

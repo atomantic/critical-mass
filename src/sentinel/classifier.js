@@ -9,9 +9,12 @@
 
 const { readFile } = require('fs/promises');
 const path = require('path');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { SENTINEL_DEFAULTS } = require('../config-utils');
 const { validateEndpointUrl, safeFetch } = require('../url-validator');
+
+/** Classification is provider-scoped; the provider travels per call. */
+const classifierLogger = createContextLogger({ module: 'sentinel-classifier' });
 
 const PROVIDERS_PATH = path.join(__dirname, '..', '..', 'data', 'providers.json');
 
@@ -145,7 +148,11 @@ Return:
     // Validate provider endpoint URL to prevent SSRF attacks (includes async DNS check).
     const endpointValidation = await validateEndpointUrl(activeProvider.endpoint);
     if (!endpointValidation.valid) {
-      log('WARN', `Sentinel AI classification rejected: unsafe endpoint: ${endpointValidation.error}`);
+      classifierLogger.warn(`⚠️ Sentinel AI classification rejected: unsafe endpoint: ${endpointValidation.error}`, {
+        action: 'classify',
+        provider: activeProvider.name,
+        error: endpointValidation.error,
+      });
       return null;
     }
 
@@ -190,7 +197,10 @@ Return:
       suggestedAction: sanitizeForTelegram(parsed.suggestedAction, 200),
     };
   } catch (err) {
-    log('WARN', `Sentinel AI classification failed: ${err.message}`);
+    classifierLogger.warn(`⚠️ Sentinel AI classification failed: ${err.message}`, {
+      action: 'classify',
+      error: err.message,
+    });
     return null;
   }
 };

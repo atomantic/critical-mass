@@ -5,8 +5,20 @@
  * REST endpoints for the News Sentinel market event monitor.
  */
 
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { validateEndpointUrl } = require('../url-validator');
+
+/**
+ * Context logger for the Sentinel routes. Sentinel watches news feeds rather
+ * than a market, so no exchange/pair exists to attach — `route` identifies the
+ * endpoint the operator hit.
+ * @param {string} route - Express route pattern being served
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const sentinelRouteLogger = (route) => createContextLogger({
+  module: 'sentinel-routes',
+  route,
+});
 
 /**
  * @param {import('express').Express} app
@@ -26,7 +38,7 @@ module.exports = (app, deps) => {
   });
 
   app.post('/api/sentinel/poll', async (req, res) => {
-    log('INFO', 'Sentinel force poll requested via API');
+    sentinelRouteLogger('/api/sentinel/poll').info('ℹ️ Sentinel force poll requested via API', { action: 'force-poll' });
     await sentinelService.forcePoll();
     res.json({ success: true, ...sentinelService.getStatus() });
   });
@@ -50,6 +62,7 @@ module.exports = (app, deps) => {
   ]);
 
   app.put('/api/sentinel/config', async (req, res) => {
+    const logger = sentinelRouteLogger('/api/sentinel/config');
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
       return res.status(400).json({ success: false, error: 'Request body must be a JSON object' });
     }
@@ -77,7 +90,11 @@ module.exports = (app, deps) => {
         }
         const validation = await validateEndpointUrl(feed.url);
         if (!validation.valid) {
-          log('WARN', `Sentinel config rejected: unsafe feed url "${feed.url}": ${validation.error}`);
+          logger.warn(`⚠️ Sentinel config rejected: unsafe feed url "${feed.url}": ${validation.error}`, {
+            action: 'update-config',
+            url: feed.url,
+            error: validation.error,
+          });
           return res.status(400).json({ success: false, error: `Feed URL "${feed.url}" is not allowed: ${validation.error}` });
         }
       }
@@ -87,25 +104,28 @@ module.exports = (app, deps) => {
     // Restart service with new config
     sentinelService.stop();
     sentinelService.start();
-    log('INFO', 'Sentinel config updated via API');
+    logger.info('ℹ️ Sentinel config updated via API', {
+      action: 'update-config',
+      keys: Object.keys(sanitized),
+    });
     res.json({ success: true, config: getSentinelConfig() });
   });
 
   app.delete('/api/sentinel/alerts', (req, res) => {
     sentinelService.clearAlerts();
-    log('INFO', 'Sentinel alerts cleared via API');
+    sentinelRouteLogger('/api/sentinel/alerts').info('ℹ️ Sentinel alerts cleared via API', { action: 'clear-alerts' });
     res.json({ success: true });
   });
 
   app.post('/api/sentinel/start', (req, res) => {
     sentinelService.start();
-    log('INFO', 'Sentinel started via API');
+    sentinelRouteLogger('/api/sentinel/start').info('ℹ️ Sentinel started via API', { action: 'start' });
     res.json({ success: true });
   });
 
   app.post('/api/sentinel/stop', (req, res) => {
     sentinelService.stop();
-    log('INFO', 'Sentinel stopped via API');
+    sentinelRouteLogger('/api/sentinel/stop').info('ℹ️ Sentinel stopped via API', { action: 'stop' });
     res.json({ success: true });
   });
 };

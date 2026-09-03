@@ -19,7 +19,20 @@
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./paths');
-const { log } = require('./logger');
+const { createContextLogger } = require('./logger');
+
+/**
+ * Context logger for the long-term daily-candle store. Every scope here owns a
+ * concrete (exchange, productId) pair, so both travel as structured context.
+ * @param {string} [exchange] - Exchange the store belongs to
+ * @param {string} [productId] - Trading pair being cached
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const storeLogger = (exchange, productId) => createContextLogger({
+  module: 'long-term-candle-store',
+  exchange,
+  pair: productId,
+});
 
 const SECONDS_PER_DAY = 86400;
 const COINBASE_PAGE_DAYS = 300; // Stay under Coinbase's 350-candle hard limit
@@ -50,7 +63,11 @@ const loadCache = (exchange, productId) => {
     if (!Array.isArray(raw?.candles)) return [];
     return raw.candles;
   } catch (err) {
-    log('WARN', `🗓️ [${exchange}] long-term cache load failed for ${productId}: ${err.message}`);
+    storeLogger(exchange, productId).warn(`⚠️ 🗓️ [${exchange}] long-term cache load failed for ${productId}: ${err.message}`, {
+      action: 'cache-load',
+      file,
+      error: err.message,
+    });
     return [];
   }
 };
@@ -76,7 +93,11 @@ const saveCache = (exchange, productId, candles) => {
     fs.writeFileSync(tmp, payload);
     fs.renameSync(tmp, file);
   } catch (err) {
-    log('WARN', `🗓️ [${exchange}] long-term cache save failed for ${productId}: ${err.message}`);
+    storeLogger(exchange, productId).warn(`⚠️ 🗓️ [${exchange}] long-term cache save failed for ${productId}: ${err.message}`, {
+      action: 'cache-save',
+      file,
+      error: err.message,
+    });
   }
 };
 
@@ -114,7 +135,12 @@ const fetchDailyWindow = async (adapter, productId, startSec, endSec) => {
         out.push(...page);
       }
     } catch (err) {
-      log('WARN', `🗓️ long-term page fetch failed (${cursor}→${pageEnd}): ${err.message}`);
+      storeLogger(adapter?.name, productId).warn(`⚠️ 🗓️ long-term page fetch failed (${cursor}→${pageEnd}): ${err.message}`, {
+        action: 'page-fetch',
+        startSec: cursor,
+        endSec: pageEnd,
+        error: err.message,
+      });
       // Bail on this window — return whatever we have so far
       break;
     }
@@ -141,6 +167,7 @@ const fetchDailyWindow = async (adapter, productId, startSec, endSec) => {
  * @returns {Object}
  */
 const createLongTermCandleStore = (exchange, adapter, productId, options = {}) => {
+  const logger = storeLogger(exchange, productId);
   const lookbackDays = Math.max(60, options.lookbackDays || 365);
   const refreshIntervalMs = Math.max(60_000, options.refreshIntervalMs || 3_600_000);
 
@@ -160,7 +187,10 @@ const createLongTermCandleStore = (exchange, adapter, productId, options = {}) =
     candles = dedupeAndSort(loadCache(exchange, productId));
     loaded = true;
     if (candles.length) {
-      log('INFO', `🗓️ [${exchange}] long-term candles loaded from disk: ${candles.length} candles for ${productId}`);
+      logger.info(`ℹ️ 🗓️ [${exchange}] long-term candles loaded from disk: ${candles.length} candles for ${productId}`, {
+        action: 'load-from-disk',
+        candles: candles.length,
+      });
     }
   };
 
@@ -200,7 +230,12 @@ const createLongTermCandleStore = (exchange, adapter, productId, options = {}) =
         const lastTsSec = Math.floor(candles[candles.length - 1].timestamp / 1000);
         fetchStartSec = Math.max(fullStartSec, lastTsSec - SECONDS_PER_DAY);
       } else if (isUnderfilled && candles.length) {
-        log('INFO', `🗓️ [${exchange}] long-term cache underfilled (${candles.length}/${expectedMin}+ for ${productId}) — forcing full re-fetch`);
+        logger.info(`ℹ️ 🗓️ [${exchange}] long-term cache underfilled (${candles.length}/${expectedMin}+ for ${productId}) — forcing full re-fetch`, {
+          action: 'refresh',
+          candles: candles.length,
+          expectedMin,
+          refetch: 'full',
+        });
       }
 
       if (fetchStartSec >= nowSec - SECONDS_PER_DAY / 2 && candles.length && !isUnderfilled) {
@@ -211,7 +246,11 @@ const createLongTermCandleStore = (exchange, adapter, productId, options = {}) =
 
       const fetched = await fetchDailyWindow(adapter, productId, fetchStartSec, nowSec);
       if (!fetched.length) {
-        log('WARN', `🗓️ [${exchange}] long-term refresh returned 0 candles for ${productId} (cache=${candles.length})`);
+        logger.warn(`⚠️ 🗓️ [${exchange}] long-term refresh returned 0 candles for ${productId} (cache=${candles.length})`, {
+          action: 'refresh',
+          fetched: 0,
+          cached: candles.length,
+        });
         lastRefresh = Date.now();
         return { added: 0, total: candles.length };
       }
@@ -222,10 +261,18 @@ const createLongTermCandleStore = (exchange, adapter, productId, options = {}) =
       saveCache(exchange, productId, candles);
       const added = candles.length - beforeCount;
       lastRefresh = Date.now();
-      log('INFO', `🗓️ [${exchange}] long-term refresh ${productId}: +${added} candles (total=${candles.length}, ${lookbackDays}d window)`);
+      logger.info(`ℹ️ 🗓️ [${exchange}] long-term refresh ${productId}: +${added} candles (total=${candles.length}, ${lookbackDays}d window)`, {
+        action: 'refresh',
+        added,
+        total: candles.length,
+        lookbackDays,
+      });
       return { added, total: candles.length };
     } catch (err) {
-      log('WARN', `🗓️ [${exchange}] long-term refresh failed for ${productId}: ${err.message}`);
+      logger.warn(`⚠️ 🗓️ [${exchange}] long-term refresh failed for ${productId}: ${err.message}`, {
+        action: 'refresh',
+        error: err.message,
+      });
       return { added: 0, total: candles.length };
     }
   };

@@ -6,8 +6,21 @@
 const stateTracker = require('../state-tracker');
 const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
 const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
-const { log, getLogFile } = require('../logger');
+const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+
+/**
+ * Context logger for the unprefixed legacy routes. Every one of them is pinned
+ * to coinbase by definition, so the exchange is fixed and `route` distinguishes
+ * the endpoint.
+ * @param {string} route - Express route pattern being served
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const legacyLogger = (route) => createContextLogger({
+  module: 'legacy-routes',
+  exchange: 'coinbase',
+  route,
+});
 
 /**
  * @param {import('express').Express} app
@@ -40,7 +53,10 @@ module.exports = (app, deps) => {
     if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
       const { value: sanitizedRegime, droppedKeys } = sanitizeRegimeConfig(req.body.regime);
       if (droppedKeys.length > 0) {
-        log('WARN', `🧹 [coinbase] Dropped ${droppedKeys.length} unknown regime key(s) on legacy config save: ${droppedKeys.join(', ')}`);
+        legacyLogger('/api/config').warn(`⚠️ 🧹 [coinbase] Dropped ${droppedKeys.length} unknown regime key(s) on legacy config save: ${droppedKeys.join(', ')}`, {
+          action: 'update-config',
+          droppedKeys,
+        });
       }
       if (Object.keys(sanitizedRegime).length > 0) {
         updates.regime = sanitizedRegime;
@@ -92,7 +108,11 @@ module.exports = (app, deps) => {
         assetBalance = await adapter.getAccountBalance(config.productId.split(/[-_]/)[0]);
       } catch (err) {
         apiError = err.message || 'API connection failed';
-        log('ERROR', `[coinbase] Status check failed: ${apiError}`);
+        legacyLogger('/api/status').error(`❌ [coinbase] Status check failed: ${apiError}`, {
+          action: 'status',
+          pair: config.productId,
+          error: apiError,
+        });
       }
     }
 
@@ -145,7 +165,7 @@ module.exports = (app, deps) => {
   });
 
   app.post('/api/trade', async (req, res) => {
-    log('INFO', 'Manual trade triggered via API');
+    legacyLogger('/api/trade').info('ℹ️ Manual trade triggered via API', { action: 'manual-trade' });
     const result = await runIntervalCycle('coinbase');
     res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
   });

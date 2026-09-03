@@ -25,11 +25,27 @@ const {
   resolveConfiguredPair,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
-const { log, loadTransactionHistory, getLogFile } = require('../logger');
+const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
 const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { getIPC: getExchangeIPC } = require('./route-utils');
+
+/**
+ * Context logger for the per-exchange fund routes. Every endpoint here is
+ * fund-scoped, so exchange and pair are real context; `route` names the
+ * endpoint the operator hit.
+ * @param {string} [exchange] - Exchange the request targets
+ * @param {string} [pair] - Fund pair the request targets
+ * @param {string} [route] - Express route pattern being served
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const exchangeLogger = (exchange, pair, route) => createContextLogger({
+  module: 'exchange-routes',
+  exchange,
+  pair,
+  route,
+});
 
 /**
  * Resolve a query pair through the shared configured-fund boundary.
@@ -172,7 +188,11 @@ module.exports = (app, deps) => {
       }
       initialConfig.regime = seedRegime;
       addFund(exchange, pair, initialConfig);
-      log('INFO', `🆕 [${exchange}/${pair}] Fund created (productId=${resolvedProductId}, dryRun=${initialConfig.dryRun})`);
+      exchangeLogger(exchange, pair, '/api/:exchange/funds').info(`ℹ️ 🆕 [${exchange}/${pair}] Fund created (productId=${resolvedProductId}, dryRun=${initialConfig.dryRun})`, {
+        action: 'create-fund',
+        productId: resolvedProductId,
+        dryRun: initialConfig.dryRun,
+      });
       res.json({
         success: true,
         exchange,
@@ -206,7 +226,7 @@ module.exports = (app, deps) => {
     }
     try {
       removeFund(exchange, pair);
-      log('INFO', `🗑️  [${exchange}/${pair}] Fund removed from config`);
+      exchangeLogger(exchange, pair, '/api/:exchange/funds/:pair').info(`ℹ️ 🗑️  [${exchange}/${pair}] Fund removed from config`, { action: 'remove-fund' });
       res.json({
         success: true,
         exchange,
@@ -232,6 +252,7 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { pair, error: pairError } = validatePairParam(req);
     if (pairError) return res.status(400).json({ success: false, error: pairError });
+    const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
@@ -246,7 +267,12 @@ module.exports = (app, deps) => {
       const pairBase = getBaseCurrency(pair);
       const incomingBase = getBaseCurrency(updates.productId);
       if (pairBase !== incomingBase) {
-        log('WARN', `🛑 [${exchange}/${pair}] Rejected config save: productId "${updates.productId}" trades ${incomingBase}, not ${pairBase}`);
+        logger.warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected config save: productId "${updates.productId}" trades ${incomingBase}, not ${pairBase}`, {
+          action: 'update-config',
+          productId: updates.productId,
+          incomingBase,
+          pairBase,
+        });
         return res.status(400).json({ error: `productId "${updates.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a config save cannot change a fund's traded asset` });
       }
     }
@@ -264,7 +290,10 @@ module.exports = (app, deps) => {
     if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
       const { value: sanitizedRegime, droppedKeys } = sanitizeRegimeConfig(req.body.regime);
       if (droppedKeys.length > 0) {
-        log('WARN', `🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on save: ${droppedKeys.join(', ')}`);
+        logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on save: ${droppedKeys.join(', ')}`, {
+          action: 'update-config',
+          droppedKeys,
+        });
       }
       if (Object.keys(sanitizedRegime).length > 0) {
         updates.regime = sanitizedRegime;
@@ -281,7 +310,13 @@ module.exports = (app, deps) => {
         const applied = await getIPC(exchange).request('regime:update-config', engineUpdates, exchange, pair);
         if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
       } catch (err) {
-        log('ERROR', `🚨 [${exchange}/${pair}] Config persisted but live engine update failed: ${err.message}`);
+        logger.error(`❌ 🚨 [${exchange}/${pair}] Config persisted but live engine update failed: ${err.message}`, {
+          action: 'update-config',
+          channel: 'regime:update-config',
+          persisted: true,
+          applied: false,
+          error: err.message,
+        });
         return res.status(503).json({
           success: false,
           persisted: true,
@@ -301,20 +336,33 @@ module.exports = (app, deps) => {
     const { pair, error } = validatePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { enabled, dryRun } = req.body;
+    const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
 
     if (typeof enabled === 'boolean') {
       setExchangeEnabled(exchange, pair, enabled);
-      log('INFO', `[${exchange}/${pair}] Trading automation ${enabled ? 'ENABLED' : 'DISABLED'}`);
+      logger.info(`ℹ️ [${exchange}/${pair}] Trading automation ${enabled ? 'ENABLED' : 'DISABLED'}`, {
+        action: 'toggle-enabled',
+        enabled,
+      });
     }
 
     if (typeof dryRun === 'boolean') {
       setExchangeDryRun(exchange, pair, dryRun);
-      log('INFO', `[${exchange}/${pair}] Dry-run mode ${dryRun ? 'ENABLED' : 'DISABLED'}`);
+      logger.info(`ℹ️ [${exchange}/${pair}] Dry-run mode ${dryRun ? 'ENABLED' : 'DISABLED'}`, {
+        action: 'toggle-dry-run',
+        dryRun,
+      });
       try {
         const applied = await getIPC(exchange).request('regime:update-config', { dryRun }, exchange, pair);
         if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
       } catch (err) {
-        log('ERROR', `🚨 [${exchange}/${pair}] Dry-run setting persisted but live engine update failed: ${err.message}`);
+        logger.error(`❌ 🚨 [${exchange}/${pair}] Dry-run setting persisted but live engine update failed: ${err.message}`, {
+          action: 'toggle-dry-run',
+          channel: 'regime:update-config',
+          persisted: true,
+          applied: false,
+          error: err.message,
+        });
         return res.status(503).json({
           success: false,
           persisted: true,
@@ -373,7 +421,11 @@ module.exports = (app, deps) => {
         assetBalance = await adapter.getAccountBalance(getBaseCurrency(config.productId));
       } catch (err) {
         apiError = err.message || 'API connection failed';
-        log('ERROR', `[${exchange}/${pair}] Status check failed: ${apiError}`);
+        exchangeLogger(exchange, pair, '/api/:exchange/status').error(`❌ [${exchange}/${pair}] Status check failed: ${apiError}`, {
+          action: 'status',
+          productId: config.productId,
+          error: apiError,
+        });
       }
     }
 
@@ -559,7 +611,7 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'Simple DCA is disabled. Use Regime engine.' });
     }
 
-    log('INFO', `[${exchange}/${pair}] Manual trade triggered via API`);
+    exchangeLogger(exchange, pair, '/api/:exchange/trade').info(`ℹ️ [${exchange}/${pair}] Manual trade triggered via API`, { action: 'manual-trade' });
 
     const result = await runIntervalCycle(exchange);
     res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
@@ -572,7 +624,10 @@ module.exports = (app, deps) => {
     if (error) return res.status(400).json({ success: false, error });
     const { orderIds } = req.body || {};
 
-    log('INFO', `[${exchange}/${pair}] Consolidation triggered via API`);
+    exchangeLogger(exchange, pair, '/api/:exchange/consolidate').info(`ℹ️ [${exchange}/${pair}] Consolidation triggered via API`, {
+      action: 'consolidate',
+      orderIds,
+    });
 
     const config = getFundConfig(exchange, pair);
     const state = stateTracker.loadState(config, exchange, pair);
