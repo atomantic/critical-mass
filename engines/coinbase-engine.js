@@ -17,7 +17,7 @@
  */
 
 const path = require('path');
-const { log } = require('../src/logger');
+const { createContextLogger } = require('../src/logger');
 const {
   getExchangeConfig,
   getFundConfig,
@@ -41,6 +41,23 @@ const { createSocketIOProxy } = require('../src/ipc/socket-io-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel } = require('../src/shared-utils');
 const { migrateExchangeToPairs } = require('../src/migration');
 const { LIFECYCLE } = require('../src/state-tracker');
+
+/**
+ * Build a context logger for one engine operation.
+ *
+ * The engine's handlers are keyed by fund (exchange + pair), so the stable
+ * trading context is derived per call site rather than bound once. `pair` is
+ * omitted for process-level events (startup banner, shutdown) that belong to
+ * no single fund — JSON.stringify drops undefined keys.
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Trading pair the event belongs to
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const engineLogger = (exchange, pair) => createContextLogger({
+  module: 'coinbase-engine',
+  exchange,
+  pair,
+});
 
 // ============ Configuration ============
 
@@ -86,7 +103,7 @@ const getStandaloneLedger = (exchange, pair) => {
     try {
       ledger = createFillLedger(exchange, fundConfig?.productId, resolvedPair);
     } catch (err) {
-      log('ERROR', `❌ [${exchange}/${resolvedPair}] Fill ledger init failed: ${err.message}`);
+      engineLogger(exchange, resolvedPair).error(`❌ [${exchange}/${resolvedPair}] Fill ledger init failed: ${err.message}`, { error: err.message });
       throw new Error(`Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details`);
     }
     ledger.load();
@@ -138,14 +155,15 @@ const createEngineCallbacks = (exchange, pair) => ({
   // the engine itself) to avoid re-entrancy in the cycle-completion path.
   onLifecycleClosed: async () => {
     const label = fundLabel(exchange, pair);
-    log('INFO', `🛑 [${label}] Lifecycle closed — stopping regime engine`);
+    const fundLogger = engineLogger(exchange, pair);
+    fundLogger.info(`ℹ️ 🛑 [${label}] Lifecycle closed — stopping regime engine`);
     const key = fundKey(exchange, pair);
     const engine = regimeEngines.get(key);
     if (!engine) return;
     try {
       await engine.stop();
     } catch (err) {
-      log('ERROR', `❌ [${label}] Error stopping engine after lifecycle close: ${err.message}`);
+      fundLogger.error(`❌ [${label}] Error stopping engine after lifecycle close: ${err.message}`, { error: err.message });
     }
     regimeEngines.delete(key);
     invalidateStandaloneLedger(exchange, pair);
@@ -167,6 +185,7 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const key = fundKey(exchange, resolvedPair);
   const label = fundLabel(exchange, resolvedPair);
+  const fundLogger = engineLogger(exchange, resolvedPair);
 
   if (regimeEngines.has(key)) {
     return { success: false, error: 'Regime engine already running for this fund' };
@@ -198,7 +217,7 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
   try {
     engine = createRegimeEngine(exchange, resolvedPair, fundConfig, createEngineCallbacks(exchange, resolvedPair));
   } catch (err) {
-    log('ERROR', `❌ [${label}] Fill ledger init failed on regime:start: ${err.message}`);
+    fundLogger.error(`❌ [${label}] Fill ledger init failed on regime:start: ${err.message}`, { error: err.message });
     return { success: false, error: `Fill ledger init failed for ${exchange}/${resolvedPair} — see engine logs for details` };
   }
   regimeEngines.set(key, engine);
@@ -213,7 +232,7 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
   // Auto-close: engine detected a drained fund and closed it instead of running
   if (startResult.autoClosed) {
     regimeEngines.delete(key);
-    log('INFO', `🛑 [${label}] Fund auto-closed (empty draining position)`);
+    fundLogger.info(`ℹ️ 🛑 [${label}] Fund auto-closed (empty draining position)`);
     return { success: true, exchange, pair: resolvedPair, autoClosed: true };
   }
 
@@ -221,7 +240,7 @@ ipcServer.onRequest('regime:start', async (payload, exchange, pair) => {
   invalidateStandaloneLedger(exchange, resolvedPair);
   saveRegimeRunningFlag(exchange, resolvedPair, true);
 
-  log('INFO', `🚀 [${label}] Regime engine started`);
+  fundLogger.info(`ℹ️ 🚀 [${label}] Regime engine started`);
   return { success: true, exchange, pair: resolvedPair, status: engine.getStatus() };
 });
 
@@ -229,13 +248,14 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const key = fundKey(exchange, resolvedPair);
   const label = fundLabel(exchange, resolvedPair);
+  const fundLogger = engineLogger(exchange, resolvedPair);
 
   const engine = regimeEngines.get(key);
   if (!engine) {
     return { success: false, error: 'Regime engine not running for this fund' };
   }
 
-  log('INFO', `🛑 [${label}] Stopping regime engine...`);
+  fundLogger.info(`ℹ️ 🛑 [${label}] Stopping regime engine...`);
 
   // Spin up the standalone market-data-service for fill-handover during
   // shutdown. If the on-disk fill-ledger is corrupt, createFillLedger
@@ -248,11 +268,11 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
   if (mdsResult?.success) {
     wireMarketDataCallbacks(exchange, resolvedPair);
   } else {
-    log('WARN', `⚠️ [${label}] Standalone market-data-service did not start (${mdsResult?.error || 'unknown'}); proceeding with engine stop, will retry handover after stop in case its persist repaired a corrupt ledger`);
+    fundLogger.warn(`⚠️ [${label}] Standalone market-data-service did not start (${mdsResult?.error || 'unknown'}); proceeding with engine stop, will retry handover after stop in case its persist repaired a corrupt ledger`, { error: mdsResult?.error || 'unknown' });
   }
 
   const stopResult = await engine.stop().catch((err) => {
-    log('ERROR', `❌ [${label}] Error stopping engine: ${err.message}`);
+    fundLogger.error(`❌ [${label}] Error stopping engine: ${err.message}`, { error: err.message });
     return { error: err.message };
   });
 
@@ -281,9 +301,9 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
     const retryResult = await startMarketDataService(exchange, resolvedPair);
     if (retryResult?.success) {
       wireMarketDataCallbacks(exchange, resolvedPair);
-      log('INFO', `✅ [${label}] Standalone market-data-service started after engine stop`);
+      fundLogger.info(`ℹ️ ✅ [${label}] Standalone market-data-service started after engine stop`);
     } else {
-      log('WARN', `⚠️ [${label}] Standalone market-data-service still not available after engine stop (${retryResult?.error || 'unknown'}) — fund has no WS service while stopped`);
+      fundLogger.warn(`⚠️ [${label}] Standalone market-data-service still not available after engine stop (${retryResult?.error || 'unknown'}) — fund has no WS service while stopped`, { error: retryResult?.error || 'unknown' });
     }
   }
 
@@ -291,7 +311,7 @@ ipcServer.onRequest('regime:stop', async (payload, exchange, pair) => {
   invalidateStandaloneLedger(exchange, resolvedPair);
   saveRegimeRunningFlag(exchange, resolvedPair, false);
 
-  log('INFO', `✅ [${label}] Regime engine stopped successfully`);
+  fundLogger.info(`ℹ️ ✅ [${label}] Regime engine stopped successfully`);
   return { success: true, exchange, pair: resolvedPair, stopped: true };
 });
 
@@ -319,7 +339,7 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
         position.lifecycleClosedCycle = position.cyclesCompleted || 0;
         saveRegimeState(position, savedState.regime, exchange, savedState.tpOptimizer, savedState.sizeOptimizer, resolvedPair);
         saveRegimeRunningFlag(exchange, resolvedPair, false);
-        log('INFO', `🛑 [${fundLabel(exchange, resolvedPair)}] Draining fund has empty position — auto-closed`);
+        engineLogger(exchange, resolvedPair).info(`ℹ️ 🛑 [${fundLabel(exchange, resolvedPair)}] Draining fund has empty position — auto-closed`);
       }
     }
 
@@ -339,7 +359,7 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
         position.realizedAssetPnL = derived.realizedAssetPnL;
         position.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
       } catch (e) {
-        log('WARN', `[${fundLabel(exchange, resolvedPair)}] offline cycle-pair derivation failed: ${e.message}`);
+        engineLogger(exchange, resolvedPair).warn(`⚠️ [${fundLabel(exchange, resolvedPair)}] offline cycle-pair derivation failed: ${e.message}`, { error: e.message });
       }
     }
 
@@ -423,7 +443,7 @@ ipcServer.onRequest('regime:reopen', async (payload, exchange, pair) => {
   saved.position.lifecycleChangedAt = Date.now();
   saved.position.lifecycleReason = null;
   saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, resolvedPair);
-  log('INFO', `🔓 [${fundLabel(exchange, resolvedPair)}] Fund reopened — lifecycle=active`);
+  engineLogger(exchange, resolvedPair).info(`ℹ️ 🔓 [${fundLabel(exchange, resolvedPair)}] Fund reopened — lifecycle=active`);
   ioProxy.emit('regime:reopened', { exchange, pair: resolvedPair });
   return { success: true, exchange, pair: resolvedPair, lifecycle: LIFECYCLE.ACTIVE };
 });
@@ -629,9 +649,9 @@ ipcServer.onRequest('regime:stop-all', async () => {
   const stopped = [];
   for (const [key, engine] of regimeEngines) {
     const [stoppedExchange, stoppedPair] = key.split('::');
-    log('INFO', `🛑 [${fundLabel(stoppedExchange, stoppedPair)}] Stopping regime engine (stop-all)...`);
+    engineLogger(stoppedExchange, stoppedPair).info(`ℹ️ 🛑 [${fundLabel(stoppedExchange, stoppedPair)}] Stopping regime engine (stop-all)...`);
     await engine.stop().catch((err) => {
-      log('ERROR', `❌ [${fundLabel(stoppedExchange, stoppedPair)}] Error stopping engine: ${err.message}`);
+      engineLogger(stoppedExchange, stoppedPair).error(`❌ [${fundLabel(stoppedExchange, stoppedPair)}] Error stopping engine: ${err.message}`, { error: err.message });
     });
     stopped.push({ exchange: stoppedExchange, pair: stoppedPair });
     saveRegimeRunningFlag(stoppedExchange, stoppedPair, false);
@@ -913,7 +933,7 @@ ipcServer.onRequest('regime:manual-trade', async (payload, exchange, pair) => {
       const result = await adapter.placeLimitBuy(productId, buySize, buyPrice, { postOnly: false });
       if (result.success) {
         store.recordRecoveryBuy(trade.id, result.orderId, buyPrice, buySize);
-        log('INFO', `📝 [${exchange}] Manual trade: placed recovery buy ${buySize} BTC @ $${buyPrice} (orderId=${result.orderId})`);
+        engineLogger(exchange, resolvedPair).info(`ℹ️ 📝 [${exchange}] Manual trade: placed recovery buy ${buySize} BTC @ $${buyPrice} (orderId=${result.orderId})`, { orderId: result.orderId, buySize, buyPrice });
       } else {
         return { success: false, error: `Failed to place recovery buy: ${result.errorMessage || 'unknown'}` };
       }
@@ -922,7 +942,7 @@ ipcServer.onRequest('regime:manual-trade', async (payload, exchange, pair) => {
     }
   } else if (existingBuyOrderId) {
     store.linkExistingBuy(trade.id, existingBuyOrderId);
-    log('INFO', `📝 [${exchange}] Manual trade: linked existing buy order ${existingBuyOrderId}`);
+    engineLogger(exchange, resolvedPair).info(`ℹ️ 📝 [${exchange}] Manual trade: linked existing buy order ${existingBuyOrderId}`, { orderId: existingBuyOrderId });
   }
 
   return { success: true, exchange, pair: resolvedPair, trade: store.getById(trade.id) };
@@ -988,7 +1008,7 @@ ipcServer.onRequest('regime:manual-trade-check', async (payload, exchange, pair)
       buyFillTradeIds,
     });
 
-    log('INFO', `✅ [${exchange}] Manual trade completed: sold ${trade.sellSize} BTC @ $${trade.sellPrice.toFixed(2)}, bought back ${totalBuySize} BTC @ $${avgBuyPrice.toFixed(2)}`);
+    engineLogger(exchange, resolvedPair).info(`ℹ️ ✅ [${exchange}] Manual trade completed: sold ${trade.sellSize} BTC @ $${trade.sellPrice.toFixed(2)}, bought back ${totalBuySize} BTC @ $${avgBuyPrice.toFixed(2)}`);
     return { success: true, exchange, pair: resolvedPair, trade: store.getById(tradeId), filled: true };
   }
 
@@ -1087,7 +1107,7 @@ ipcServer.onRequest('regime:manual-trade-buy', async (payload, exchange, pair) =
 
     if (engine && engine.injectBody) {
       const injectResult = await engine.injectBody(body);
-      log('INFO', `📦 [${exchange}] Manual buy import: injected body ${body.id} into running engine (TP placed: ${injectResult.tpPlaced})`);
+      engineLogger(exchange, resolvedPair).info(`ℹ️ 📦 [${exchange}] Manual buy import: injected body ${body.id} into running engine (TP placed: ${injectResult.tpPlaced})`);
     } else {
       // Engine not running — persist body to disk state
       const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
@@ -1097,7 +1117,7 @@ ipcServer.onRequest('regime:manual-trade-buy', async (payload, exchange, pair) =
         saved.position.celestialBodies.push(body);
         syncPositionState(saved.position, saved.position.celestialBodies);
         saveRegimeState(saved.position, saved.regime, exchange, saved.tpOptimizer, saved.sizeOptimizer, resolvedPair);
-        log('INFO', `📦 [${exchange}] Manual buy import: saved body ${body.id} to disk (engine not running, TP will be placed on start)`);
+        engineLogger(exchange, resolvedPair).info(`ℹ️ 📦 [${exchange}] Manual buy import: saved body ${body.id} to disk (engine not running, TP will be placed on start)`);
       }
     }
 
@@ -1188,7 +1208,7 @@ ipcServer.onRequest('regime:manual-trade-pair', async (payload, exchange, pair) 
   // Dismiss both orders from unaccounted view
   store.dismissFills([buyOrderId, sellOrderId]);
 
-  log('INFO', `📝 [${exchange}] Manual paired import: buy ${totalBuySize} BTC @ $${avgBuyPrice.toFixed(2)} + sell ${totalSellSize} BTC @ $${avgSellPrice.toFixed(2)}`);
+  engineLogger(exchange, resolvedPair).info(`ℹ️ 📝 [${exchange}] Manual paired import: buy ${totalBuySize} BTC @ $${avgBuyPrice.toFixed(2)} + sell ${totalSellSize} BTC @ $${avgSellPrice.toFixed(2)}`);
 
   return { success: true, exchange, pair: resolvedPair, trade: store.getById(trade.id) };
 });
@@ -1227,8 +1247,9 @@ ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
 const startup = async () => {
   const { version } = require('../package.json');
   const label = EXCHANGE_NAME.charAt(0).toUpperCase() + EXCHANGE_NAME.slice(1);
-  log('INFO', `\n📡 ${label} Engine v${version}`);
-  log('INFO', `   IPC: ws://127.0.0.1:${IPC_PORT}`);
+  const startupLogger = engineLogger(EXCHANGE_NAME);
+  startupLogger.info(`ℹ️ \n📡 ${label} Engine v${version}`);
+  startupLogger.info(`ℹ️    IPC: ws://127.0.0.1:${IPC_PORT}`);
 
   const exchange = EXCHANGE_NAME;
 
@@ -1237,10 +1258,10 @@ const startup = async () => {
   // Idempotent: returns no-op if already migrated. See UPGRADE.md.
   const migrationResult = migrateExchangeToPairs(exchange);
   if (migrationResult.migrated) {
-    log('INFO', `✅ [${exchange}] Pair migration complete: moved ${migrationResult.movedFiles} files into ${exchange}/${migrationResult.defaultPair}/`);
+    startupLogger.info(`ℹ️ ✅ [${exchange}] Pair migration complete: moved ${migrationResult.movedFiles} files into ${exchange}/${migrationResult.defaultPair}/`);
   } else if (migrationResult.reason && !migrationResult.reason.startsWith('no-op')) {
-    log('ERROR', `❌ [${exchange}] Pair migration failed: ${migrationResult.reason}`);
-    log('ERROR', `❌ [${exchange}] Refusing to start engine. See UPGRADE.md for instructions.`);
+    startupLogger.error(`❌ [${exchange}] Pair migration failed: ${migrationResult.reason}`, { reason: migrationResult.reason });
+    startupLogger.error(`❌ [${exchange}] Refusing to start engine. See UPGRADE.md for instructions.`, { reason: migrationResult.reason });
     process.exit(1);
   }
 
@@ -1250,6 +1271,7 @@ const startup = async () => {
   const fundsForExchange = getFundsForExchange(exchange);
   for (const fundPair of fundsForExchange) {
     const label = fundLabel(exchange, fundPair);
+    const fundLogger = engineLogger(exchange, fundPair);
     const key = fundKey(exchange, fundPair);
 
     if (shouldAutoResumeRegime(exchange, fundPair)) {
@@ -1257,11 +1279,11 @@ const startup = async () => {
       const { loadRegimeState } = require('../src/state-tracker');
       const savedState = loadRegimeState(exchange, fundPair);
       if (savedState?.position?.lifecycle === LIFECYCLE.CLOSED) {
-        log('INFO', `🛑 [${label}] Skipping auto-resume: fund is closed (call regime:reopen to reactivate)`);
+        fundLogger.info(`ℹ️ 🛑 [${label}] Skipping auto-resume: fund is closed (call regime:reopen to reactivate)`);
         saveRegimeRunningFlag(exchange, fundPair, false);
         continue;
       }
-      log('INFO', `🔄 [${label}] Auto-resuming regime engine from previous session...`);
+      fundLogger.info(`ℹ️ 🔄 [${label}] Auto-resuming regime engine from previous session...`);
 
       const { getAdapter } = require('../src/adapters');
       const fundConfig = getFundConfig(exchange, fundPair);
@@ -1280,7 +1302,7 @@ const startup = async () => {
         try {
           engine = createRegimeEngine(exchange, fundPair, fundConfig, createEngineCallbacks(exchange, fundPair));
         } catch (err) {
-          log('ERROR', `❌ [${label}] Failed to auto-resume: Fill ledger init failed: ${err.message}`);
+          fundLogger.error(`❌ [${label}] Failed to auto-resume: Fill ledger init failed: ${err.message}`, { error: err.message });
           saveRegimeRunningFlag(exchange, fundPair, false);
           continue;
         }
@@ -1289,16 +1311,16 @@ const startup = async () => {
         const startResult = await engine.start();
         if (startResult.autoClosed) {
           regimeEngines.delete(key);
-          log('INFO', `🛑 [${label}] Fund auto-closed on resume (empty draining position)`);
+          fundLogger.info(`ℹ️ 🛑 [${label}] Fund auto-closed on resume (empty draining position)`);
         } else if (startResult.success) {
-          log('INFO', `✅ [${label}] Regime engine auto-resumed successfully`);
+          fundLogger.info(`ℹ️ ✅ [${label}] Regime engine auto-resumed successfully`);
         } else {
-          log('ERROR', `❌ [${label}] Failed to auto-resume: ${startResult.error}`);
+          fundLogger.error(`❌ [${label}] Failed to auto-resume: ${startResult.error}`, { error: startResult.error });
           regimeEngines.delete(key);
           saveRegimeRunningFlag(exchange, fundPair, false);
         }
       } else {
-        log('WARN', `⚠️ [${label}] Cannot auto-resume: API keys not configured`);
+        fundLogger.warn(`⚠️ [${label}] Cannot auto-resume: API keys not configured`);
         saveRegimeRunningFlag(exchange, fundPair, false);
       }
     }
@@ -1307,11 +1329,11 @@ const startup = async () => {
     if (!regimeEngines.has(key)) {
       const regimeConfig = getRegimeConfig(exchange, fundPair);
       if (regimeConfig && Object.keys(regimeConfig).length > 0) {
-        log('INFO', `📊 [${label}] Starting market data service...`);
+        fundLogger.info(`ℹ️ 📊 [${label}] Starting market data service...`);
         startMarketDataService(exchange, fundPair)
           .then(() => wireMarketDataCallbacks(exchange, fundPair))
           .catch((err) => {
-            log('WARN', `⚠️ [${label}] Failed to start market data service: ${err.message}`);
+            fundLogger.warn(`⚠️ [${label}] Failed to start market data service: ${err.message}`, { error: err.message });
           });
       }
     }
@@ -1319,20 +1341,21 @@ const startup = async () => {
 };
 
 startup().catch((err) => {
-  log('ERROR', `Startup failed: ${err.message}`);
+  engineLogger(EXCHANGE_NAME).error(`❌ Startup failed: ${err.message}`, { error: err.message });
   process.exit(1);
 });
 
 // ============ Graceful Shutdown ============
 
 const gracefulShutdown = async (signal) => {
-  log('INFO', `Received ${signal}, shutting down...`);
+  const shutdownLogger = engineLogger(EXCHANGE_NAME);
+  shutdownLogger.info(`ℹ️ Received ${signal}, shutting down...`, { signal });
 
   stopAllMarketDataServices();
 
   const stopPromises = [];
   for (const [key, engine] of regimeEngines) {
-    log('INFO', `Stopping regime engine for ${key}...`);
+    shutdownLogger.info(`ℹ️ Stopping regime engine for ${key}...`, { fundKey: key });
     stopPromises.push(engine.stop());
   }
   await Promise.all(stopPromises);
@@ -1340,7 +1363,7 @@ const gracefulShutdown = async (signal) => {
   shutdownAllBuffers();
   ipcServer.stop();
 
-  log('INFO', `Shutdown complete`);
+  shutdownLogger.info(`ℹ️ Shutdown complete`);
   process.exit(0);
 };
 
