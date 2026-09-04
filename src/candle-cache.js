@@ -7,7 +7,17 @@
  */
 
 const { createCandleAggregator } = require('./candle-aggregator');
-const { log } = require('./logger');
+const { createContextLogger } = require('./logger');
+
+/**
+ * Context logger for the shared candle cache. `exchange` is supplied per call
+ * because one cache instance serves every configured exchange; `pair` is
+ * omitted because the seed feeds are BTC-only public endpoints whose pair is
+ * baked into the URL (JSON.stringify drops undefined keys).
+ * @param {string} [exchange] - Exchange the cache operation belongs to
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const cacheLogger = (exchange) => createContextLogger({ module: 'candle-cache', exchange });
 
 const SEED_MAX_RETRIES = 5;
 const SEED_RETRY_INTERVAL_MS = 5_000;
@@ -63,7 +73,11 @@ const fetchCoinbaseCandles = async (tf, hours, granularity) => {
       clearTimeout(fetchTimeout);
     }
     if (!res?.ok) {
-      log('WARN', `🕯️ candle-cache: coinbase ${tf} fetch failed status=${res?.status}`);
+      cacheLogger('coinbase').warn(`⚠️ 🕯️ candle-cache: coinbase ${tf} fetch failed status=${res?.status}`, {
+        action: 'seed-fetch',
+        timeframe: tf,
+        status: res?.status,
+      });
       continue;
     }
     if (!Array.isArray(raw) || !raw.length) continue;
@@ -106,7 +120,11 @@ const fetchCryptocomCandles = async (tf, hours, cryptocomTf) => {
     clearTimeout(fetchTimeout);
   }
   if (!res?.ok) {
-    log('WARN', `🕯️ candle-cache: cryptocom ${tf} fetch failed status=${res?.status}`);
+    cacheLogger('cryptocom').warn(`⚠️ 🕯️ candle-cache: cryptocom ${tf} fetch failed status=${res?.status}`, {
+      action: 'seed-fetch',
+      timeframe: tf,
+      status: res?.status,
+    });
     return [];
   }
   const data = json?.result?.data;
@@ -134,7 +152,11 @@ const fetchGeminiCandles = async (tf, hours, geminiTf) => {
     clearTimeout(fetchTimeout);
   }
   if (!res?.ok) {
-    log('WARN', `🕯️ candle-cache: gemini ${tf} fetch failed status=${res?.status}`);
+    cacheLogger('gemini').warn(`⚠️ 🕯️ candle-cache: gemini ${tf} fetch failed status=${res?.status}`, {
+      action: 'seed-fetch',
+      timeframe: tf,
+      status: res?.status,
+    });
     return [];
   }
   if (!Array.isArray(raw)) return [];
@@ -208,7 +230,12 @@ const seedDerivedTimeframes = (agg, now = Date.now()) => {
     if (targetCandles.length) {
       agg.seedCandles(target, targetCandles, now);
       derived += targetCandles.length;
-      log('INFO', `🕯️ candle-cache: derived ${targetCandles.length} ${target} candles from ${source}`);
+      cacheLogger().info(`ℹ️ 🕯️ candle-cache: derived ${targetCandles.length} ${target} candles from ${source}`, {
+        action: 'seed-derive',
+        timeframe: target,
+        sourceTimeframe: source,
+        candles: targetCandles.length,
+      });
     }
   }
   return derived;
@@ -292,7 +319,11 @@ const createCandleCache = () => {
       // them boundaryInclusive to net out the later 1m roll-up (issue #145).
       agg.seedCandles(tf, candles, now, { boundaryInclusive: true });
       totalSeeded += candles.length;
-      log('INFO', `🕯️ candle-cache: seeded ${candles.length} ${tf} candles for ${exchange}`);
+      cacheLogger(exchange).info(`ℹ️ 🕯️ candle-cache: seeded ${candles.length} ${tf} candles for ${exchange}`, {
+        action: 'seed',
+        timeframe: tf,
+        candles: candles.length,
+      });
     }
 
     // Derive intermediate timeframes (10m, 30m, 2h, 4h) from seeded data, same `now`.
@@ -306,20 +337,32 @@ const createCandleCache = () => {
    * @param {string} exchange
    */
   const seedWithRetry = async (exchange) => {
+    const logger = cacheLogger(exchange);
     let retries = 0;
     const attempt = async () => {
       const seeded = await seedFromPublicAPI(exchange).catch(() => 0);
       if (seeded > 0) {
-        log('INFO', `🕯️ candle-cache: ${exchange} seeded ${seeded} candles total`);
+        logger.info(`ℹ️ 🕯️ candle-cache: ${exchange} seeded ${seeded} candles total`, {
+          action: 'seed-complete',
+          candles: seeded,
+        });
         return;
       }
       retries++;
       if (retries < SEED_MAX_RETRIES) {
-        log('WARN', `🕯️ candle-cache: ${exchange} seed attempt ${retries}/${SEED_MAX_RETRIES} got 0 candles, retrying in ${SEED_RETRY_INTERVAL_MS}ms`);
+        logger.warn(`⚠️ 🕯️ candle-cache: ${exchange} seed attempt ${retries}/${SEED_MAX_RETRIES} got 0 candles, retrying in ${SEED_RETRY_INTERVAL_MS}ms`, {
+          action: 'seed-retry',
+          attempt: retries,
+          maxAttempts: SEED_MAX_RETRIES,
+          retryInMs: SEED_RETRY_INTERVAL_MS,
+        });
         await new Promise(r => setTimeout(r, SEED_RETRY_INTERVAL_MS));
         return attempt();
       }
-      log('WARN', `🕯️ candle-cache: ${exchange} seed failed after ${SEED_MAX_RETRIES} attempts, running with live data only`);
+      logger.warn(`⚠️ 🕯️ candle-cache: ${exchange} seed failed after ${SEED_MAX_RETRIES} attempts, running with live data only`, {
+        action: 'seed-failed',
+        attempts: SEED_MAX_RETRIES,
+      });
     };
     await attempt();
   };

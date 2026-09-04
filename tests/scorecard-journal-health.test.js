@@ -87,7 +87,11 @@ describe('scorecard journal health', () => {
         if (path.basename(file) === failedFile) throw new Error('permission denied');
         await fs.unlink(file);
       },
-      retentionLogger: (level, message) => lines.push(`${level} ${message}`),
+      retentionLogger: {
+        info: (message, data) => lines.push(`INFO ${message} ${JSON.stringify(data)}`),
+        warn: (message, data) => lines.push(`WARN ${message} ${JSON.stringify(data)}`),
+        error: (message, data) => lines.push(`ERROR ${message} ${JSON.stringify(data)}`),
+      },
     });
 
     await scorecard.start(() => ({ score: 0, type: 'NEUTRAL', confidence: 0, timeframes: {} }));

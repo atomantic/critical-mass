@@ -4,41 +4,49 @@
  * through the SSRF guard before fetching, and must never follow a
  * redirect to a private/reserved address either.
  *
- * `log` is mocked (module is required and patched before feed-poller.js
- * is first required, so feed-poller's destructured reference picks up
- * the mock — node:test runs each test file in its own process, so this
- * doesn't leak across files) so we can assert the SSRF guard specifically
- * fired, rather than just observing "some error happened".
+ * The assertion is made at the real output boundary (console.log, where the
+ * context logger writes) so we can confirm the SSRF guard specifically fired
+ * rather than just observing "some error happened". Since #314 the poller logs
+ * through createContextLogger, so patching the logger module's exported `log`
+ * would no longer intercept anything.
  */
-const { describe, it, mock } = require('node:test');
+const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-
-const logger = require('../src/logger');
-const logCalls = [];
-mock.method(logger, 'log', (...args) => { logCalls.push(args); });
 
 const { fetchFeed } = require('../src/sentinel/feed-poller');
 
+/** Capture everything the logger writes while `run` executes. */
+const captureLogs = async (run) => {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = line => lines.push(line);
+  try {
+    return { result: await run(), lines };
+  } finally {
+    console.log = originalLog;
+  }
+};
+
 describe('fetchFeed SSRF guard (issue #215-A)', () => {
   it('refuses to fetch a feed pointing at cloud metadata and returns no items', async () => {
-    logCalls.length = 0;
-    const items = await fetchFeed({ name: 'evil-metadata', url: 'http://169.254.169.254/latest/meta-data/' });
-    assert.deepEqual(items, []);
-    const message = logCalls.map(([, msg]) => msg).join('\n');
-    assert.match(message, /Blocked/, 'expected the SSRF guard to have fired, not just any fetch failure');
+    const { result, lines } = await captureLogs(() =>
+      fetchFeed({ name: 'evil-metadata', url: 'http://169.254.169.254/latest/meta-data/' }));
+
+    assert.deepEqual(result, []);
+    assert.match(lines.join('\n'), /Blocked/, 'expected the SSRF guard to have fired, not just any fetch failure');
   });
 
   it('refuses to fetch a feed pointing at an internal engine IPC port', async () => {
-    logCalls.length = 0;
-    const items = await fetchFeed({ name: 'evil-ipc', url: 'http://127.0.0.1:5571/' });
-    assert.deepEqual(items, []);
-    const message = logCalls.map(([, msg]) => msg).join('\n');
-    assert.match(message, /Blocked/);
+    const { result, lines } = await captureLogs(() =>
+      fetchFeed({ name: 'evil-ipc', url: 'http://127.0.0.1:5571/' }));
+
+    assert.deepEqual(result, []);
+    assert.match(lines.join('\n'), /Blocked/);
   });
 
   it('never throws — errors are caught and logged, feed is skipped', async () => {
     // fetchAllFeeds relies on fetchFeed never rejecting so one bad feed
     // doesn't take down the whole poll cycle.
-    await assert.doesNotReject(() => fetchFeed({ name: 'evil', url: 'http://[::1]/' }));
+    await assert.doesNotReject(() => captureLogs(() => fetchFeed({ name: 'evil', url: 'http://[::1]/' })));
   });
 });

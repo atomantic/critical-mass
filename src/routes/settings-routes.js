@@ -6,8 +6,20 @@
 const fs = require('fs');
 const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret } = require('../config-utils');
 const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('../backup-service');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA } = require('../config-validator');
+
+/**
+ * Context logger for the settings routes. These endpoints are global (presets,
+ * notifications, backups) rather than market-scoped, so `route` is the
+ * distinguishing context and no exchange/pair is fabricated.
+ * @param {string} route - Express route pattern being served
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const settingsLogger = (route) => createContextLogger({
+  module: 'settings-routes',
+  route,
+});
 
 /**
  * @param {import('express').Express} app
@@ -46,7 +58,10 @@ module.exports = (app, deps) => {
     }
 
     updateAggressivenessPresets(sanitized);
-    log('INFO', '🔧 Aggressiveness presets updated');
+    settingsLogger('/api/presets/aggressiveness').info('ℹ️ 🔧 Aggressiveness presets updated', {
+      action: 'update-presets',
+      levels: Object.keys(sanitized),
+    });
     const presets = getAggressivenessPresets();
     res.json({ success: true, presets });
   });
@@ -107,14 +122,18 @@ module.exports = (app, deps) => {
     const updates = req.body;
     updateBackupConfig(updates);
     rescheduleBackupTimer();
-    log('INFO', `💾 Backup config updated: enabled=${updates.enabled !== undefined ? updates.enabled : 'unchanged'}`);
+    settingsLogger('/api/backups/config').info(`ℹ️ 💾 Backup config updated: enabled=${updates.enabled !== undefined ? updates.enabled : 'unchanged'}`, {
+      action: 'update-backup-config',
+      enabled: updates.enabled,
+    });
     const config = getBackupConfig();
     res.json({ success: true, config });
   });
 
   app.post('/api/backups', (req, res) => {
+    const logger = settingsLogger('/api/backups');
     const config = getBackupConfig();
-    log('INFO', '💾 Manual backup triggered');
+    logger.info('ℹ️ 💾 Manual backup triggered', { action: 'create-backup' });
 
     const result = createBackup({ includePriceCache: config.includePriceCache });
     if (!result.success) {
@@ -122,11 +141,19 @@ module.exports = (app, deps) => {
     }
 
     const sizeMB = (result.sizeBytes / 1024 / 1024).toFixed(1);
-    log('INFO', `💾 Manual backup created: ${result.filename} (${sizeMB} MB)`);
+    logger.info(`ℹ️ 💾 Manual backup created: ${result.filename} (${sizeMB} MB)`, {
+      action: 'create-backup',
+      filename: result.filename,
+      sizeBytes: result.sizeBytes,
+    });
 
     const pruneResult = pruneBackups(config.maxBackups);
     if (pruneResult.pruned > 0) {
-      log('INFO', `💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`);
+      logger.info(`ℹ️ 💾 Pruned ${pruneResult.pruned} old backups, ${pruneResult.remaining} remaining`, {
+        action: 'prune-backups',
+        pruned: pruneResult.pruned,
+        remaining: pruneResult.remaining,
+      });
     }
 
     res.json({ success: true, filename: result.filename, sizeBytes: result.sizeBytes });
@@ -138,19 +165,31 @@ module.exports = (app, deps) => {
     if (!result.success) {
       return res.status(400).json(result);
     }
-    log('INFO', `💾 Backup deleted: ${filename}`);
+    settingsLogger('/api/backups/:filename').info(`ℹ️ 💾 Backup deleted: ${filename}`, {
+      action: 'delete-backup',
+      filename,
+    });
     res.json({ success: true });
   });
 
   app.post('/api/backups/:filename/restore', async (req, res) => {
+    const logger = settingsLogger('/api/backups/:filename/restore');
     const { filename } = req.params;
-    log('INFO', `💾 Restore requested: ${filename}`);
+    logger.info(`ℹ️ 💾 Restore requested: ${filename}`, {
+      action: 'restore-backup',
+      filename,
+    });
 
     // Stop all regime engines across all exchange processes before restore
     let stoppedEngines = [];
     const stopPromises = Object.entries(exchangeIPCMap).map(([name, ipc]) =>
       ipc.request('regime:stop-all', {}).catch((err) => {
-        log('WARN', `💾 Could not stop ${name} engine via IPC: ${err.message}`);
+        logger.warn(`⚠️ 💾 Could not stop ${name} engine via IPC: ${err.message}`, {
+          action: 'restore-backup',
+          exchange: name,
+          channel: 'regime:stop-all',
+          error: err.message,
+        });
         return { stopped: [] };
       })
     );
@@ -162,7 +201,11 @@ module.exports = (app, deps) => {
       return res.status(500).json({ success: false, error: result.error });
     }
 
-    log('INFO', `💾 Restore complete: ${result.filesRestored} files restored from ${filename}`);
+    logger.info(`ℹ️ 💾 Restore complete: ${result.filesRestored} files restored from ${filename}`, {
+      action: 'restore-backup',
+      filename,
+      filesRestored: result.filesRestored,
+    });
 
     res.json({
       success: true,

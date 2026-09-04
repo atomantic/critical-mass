@@ -9,7 +9,7 @@ const backtestEngine = require('../backtest-engine');
 const optimizerEngine = require('../optimizer-engine');
 const { formatInterval } = require('../interval-utils');
 const { getFundConfig } = require('../config-utils');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { withConfiguredPair } = require('./route-utils');
 const {
   validatePriceQuery,
@@ -19,6 +19,21 @@ const {
   optimizerRequestKey,
 } = require('../simulation-policy');
 const { SimulationRunCoordinator } = require('../simulation-run-coordinator');
+
+/**
+ * Context logger for the backtest/optimizer routes. Both are genuinely
+ * fund-scoped, so exchange and pair are real context here.
+ * @param {string} [exchange] - Exchange the simulation runs against
+ * @param {string} [pair] - Fund pair being simulated
+ * @param {string} [route] - Express route pattern being served
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const backtestLogger = (exchange, pair, route) => createContextLogger({
+  module: 'backtest-routes',
+  exchange,
+  pair,
+  route,
+});
 
 /**
  * @param {import('express').Express} app
@@ -61,6 +76,7 @@ module.exports = (app, deps) => {
   pairPost('/api/:exchange/backtest/run', async (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
+    const logger = backtestLogger(exchange, pair, '/api/:exchange/backtest/run');
     const body = req.body || {};
     const fundConfig = getFundConfig(exchange, pair);
     const configProductId = fundConfig.productId || pair;
@@ -79,7 +95,16 @@ module.exports = (app, deps) => {
 
     const fundInfo = fundSize > 0 ? `, $${fundSize} fund` : ', unlimited funds';
     const intervalLabel = formatInterval(intervalType);
-    log('INFO', `[${exchange}/${pair}] Running backtest for ${productId}: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`);
+    logger.info(`ℹ️ [${exchange}/${pair}] Running backtest for ${productId}: ${intervals} ${intervalLabel} intervals, $${intervalBuyAmount}/interval, +${sellMarkupPercent}% markup, ${holdbackPercent}% holdback${fundInfo}`, {
+      action: 'backtest-start',
+      productId,
+      intervals,
+      intervalType,
+      intervalBuyAmount,
+      sellMarkupPercent,
+      holdbackPercent,
+      fundSize,
+    });
 
     const admission = simulationCoordinator.start({
       resourceKey: `fund:${exchange}:${pair}`,
@@ -91,7 +116,13 @@ module.exports = (app, deps) => {
     if (!admission.accepted) return rejectAdmission(res, admission);
     const results = await admission.promise;
 
-    log('INFO', `[${exchange}/${pair}] Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`);
+    logger.info(`ℹ️ [${exchange}/${pair}] Backtest complete: ROI ${results.metrics.roi.toFixed(2)}%, ${results.metrics.sellsFilled}/${results.metrics.totalSells} sells filled`, {
+      action: 'backtest-complete',
+      productId,
+      roi: results.metrics.roi,
+      sellsFilled: results.metrics.sellsFilled,
+      totalSells: results.metrics.totalSells,
+    });
     res.json({ success: true, ...results });
   });
 
@@ -112,7 +143,10 @@ module.exports = (app, deps) => {
     const cacheFile = getOptimizerCacheFile(exchange, fundConfig.productId);
     if (fs.existsSync(cacheFile)) {
       fs.unlinkSync(cacheFile);
-      log('INFO', `[${exchange}/${pair}] Optimizer cache cleared`);
+      backtestLogger(exchange, pair, '/api/:exchange/optimizer/cache').info(`ℹ️ [${exchange}/${pair}] Optimizer cache cleared`, {
+        action: 'optimizer-cache-clear',
+        productId: fundConfig.productId,
+      });
     }
     res.json({ success: true, message: 'Cache cleared' });
   });
@@ -120,6 +154,7 @@ module.exports = (app, deps) => {
   pairPost('/api/:exchange/optimizer/run', (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
+    const logger = backtestLogger(exchange, pair, '/api/:exchange/optimizer/run');
     const body = req.body || {};
     const fundConfig = getFundConfig(exchange, pair);
     const configProductId = fundConfig.productId || pair;
@@ -147,7 +182,11 @@ module.exports = (app, deps) => {
       const cacheConfig = normalizeOptimizerConfig(cache?.config);
       const cacheConfigKey = cacheConfig && JSON.stringify(cacheConfig);
       if (cache && cache.fundSize === fundSize && cache.productId === productId && configKey === cacheConfigKey) {
-        log('INFO', `[${exchange}] Returning cached optimizer results for ${productId}, fund size: $${fundSize}`);
+        logger.info(`ℹ️ [${exchange}] Returning cached optimizer results for ${productId}, fund size: $${fundSize}`, {
+          action: 'optimizer-cache-hit',
+          productId,
+          fundSize,
+        });
         return res.json({ success: true, cached: true, ...cache });
       }
     }
@@ -169,20 +208,42 @@ module.exports = (app, deps) => {
           }
         }
         if (progress.current % 20 === 0 || progress.phase === 'prefetch') {
-          log('INFO', `[${exchange}] Optimizer: ${progress.message} (${progress.percentComplete}%)`);
+          logger.info(`ℹ️ [${exchange}] Optimizer: ${progress.message} (${progress.percentComplete}%)`, {
+            action: 'optimizer-progress',
+            runId,
+            phase: progress.phase,
+            percentComplete: progress.percentComplete,
+          });
         }
       },
     }));
     if (!admission.accepted) return rejectAdmission(res, admission);
 
-    log('INFO', `[${exchange}] Running optimizer for ${productId} with fund size: $${fundSize} (${combinations} combinations)`);
+    logger.info(`ℹ️ [${exchange}] Running optimizer for ${productId} with fund size: $${fundSize} (${combinations} combinations)`, {
+      action: 'optimizer-start',
+      runId,
+      productId,
+      fundSize,
+      combinations,
+    });
 
     res.json({ success: true, streaming: true, runId, requestKey, exchange, pair, message: 'Optimizer started, results will stream via WebSocket' });
 
     admission.promise
       .then(result => {
-        log('INFO', `[${exchange}] Optimizer complete: ${result.totalCombinations} combinations in ${(result.duration / 1000).toFixed(1)}s`);
-        log('INFO', `[${exchange}] Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> $${result.bestResult.metrics.totalValue.toFixed(2)}`);
+        logger.info(`ℹ️ [${exchange}] Optimizer complete: ${result.totalCombinations} combinations in ${(result.duration / 1000).toFixed(1)}s`, {
+          action: 'optimizer-complete',
+          runId,
+          totalCombinations: result.totalCombinations,
+          durationMs: result.duration,
+        });
+        logger.info(`ℹ️ [${exchange}] Best result: ${result.bestResult.params.intervalType} ${result.bestResult.params.sellMarkupPercent}% markup -> $${result.bestResult.metrics.totalValue.toFixed(2)}`, {
+          action: 'optimizer-best',
+          runId,
+          intervalType: result.bestResult.params.intervalType,
+          sellMarkupPercent: result.bestResult.params.sellMarkupPercent,
+          totalValue: result.bestResult.metrics.totalValue,
+        });
 
         const topResults = optimizerEngine.getTopResults(result.results, 20);
         const response = {
@@ -193,11 +254,19 @@ module.exports = (app, deps) => {
         };
 
         writeJSON(cacheFile, response);
-        log('INFO', `[${exchange}] Optimizer results cached`);
+        logger.info(`ℹ️ [${exchange}] Optimizer results cached`, {
+          action: 'optimizer-cache-write',
+          runId,
+          cacheFile,
+        });
         io.emit('optimizer:complete', response);
       })
       .catch(err => {
-        log('ERROR', `[${exchange}] Optimizer failed: ${err.message}`);
+        logger.error(`❌ [${exchange}] Optimizer failed: ${err.message}`, {
+          action: 'optimizer-failed',
+          runId,
+          error: err.message,
+        });
         io.emit('optimizer:error', { error: err.message, runId, exchange, pair });
       });
   });

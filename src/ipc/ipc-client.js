@@ -10,7 +10,15 @@
 
 const WebSocket = require('ws');
 const { MSG_TYPE, DEFAULT_TIMEOUT, createMessage, serialize, deserialize } = require('./ipc-protocol');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
+
+/**
+ * Context logger for the gateway-side IPC client. `peer` names the engine this
+ * socket talks to; transport detail rides along per call.
+ * @param {string} name - Engine the client is connected to
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const ipcClientLogger = (name) => createContextLogger({ module: 'ipc-client', peer: name });
 
 /**
  * Create an IPC client for the gateway
@@ -25,6 +33,7 @@ const { log } = require('../logger');
  * @returns {Object}
  */
 const createIPCClient = (url, name, options = {}) => {
+  const logger = ipcClientLogger(name);
   const {
     onEvent = null,
     onConnect = null,
@@ -56,7 +65,7 @@ const createIPCClient = (url, name, options = {}) => {
     ws.on('open', () => {
       connected = true;
       reconnectDelay = reconnectMin;
-      log('INFO', `🔗 [${name}] IPC connected to ${url}`);
+      logger.info(`ℹ️ 🔗 [${name}] IPC connected to ${url}`, { event: 'open', url });
 
       pingTimer = setInterval(() => {
         if (ws?.readyState === WebSocket.OPEN) {
@@ -72,7 +81,10 @@ const createIPCClient = (url, name, options = {}) => {
       try {
         msg = deserialize(data.toString());
       } catch (err) {
-        log('ERROR', `🔗 [${name}] IPC message deserialize error: ${String(err)}`);
+        logger.error(`❌ 🔗 [${name}] IPC message deserialize error: ${String(err)}`, {
+          event: 'message',
+          error: String(err),
+        });
         return;
       }
       handleIncoming(msg);
@@ -106,7 +118,12 @@ const createIPCClient = (url, name, options = {}) => {
     ws.on('error', (err) => {
       // Don't log ECONNREFUSED on every attempt — expected when engine isn't up yet
       if (err.code !== 'ECONNREFUSED') {
-        log('ERROR', `🔗 [${name}] IPC error: ${err.message}`);
+        logger.error(`❌ 🔗 [${name}] IPC error: ${err.message}`, {
+          event: 'socket-error',
+          url,
+          code: err.code,
+          error: err.message,
+        });
       }
     });
   };

@@ -7,8 +7,11 @@
  */
 
 const { XMLParser } = require('fast-xml-parser');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { safeFetch } = require('../url-validator');
+
+/** Feed identity is per-call (one poller serves every configured feed). */
+const feedPollerLogger = createContextLogger({ module: 'sentinel-feed-poller' });
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -93,10 +96,19 @@ const fetchFeed = async (feed, timeoutMs = 15000) => {
       return entries.map(entry => normalizeAtomEntry(entry, feed.name));
     }
 
-    log('WARN', `Sentinel: unrecognized feed format from ${feed.name}`);
+    feedPollerLogger.warn(`⚠️ Sentinel: unrecognized feed format from ${feed.name}`, {
+      action: 'parse-feed',
+      feed: feed.name,
+      url: feed.url,
+    });
     return [];
   } catch (err) {
-    log('WARN', `Sentinel: failed to fetch ${feed.name}: ${err.message}`);
+    feedPollerLogger.warn(`⚠️ Sentinel: failed to fetch ${feed.name}: ${err.message}`, {
+      action: 'fetch-feed',
+      feed: feed.name,
+      url: feed.url,
+      error: err.message,
+    });
     return [];
   }
 };

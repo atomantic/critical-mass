@@ -13,9 +13,24 @@ const { loadRegimeState, LIFECYCLE } = require('../state-tracker');
 const { resolveFundDataDir } = require('../migration');
 const { calculateApyMetrics } = require('../apy-calculator');
 const celestialHierarchy = require('../celestial-hierarchy');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { sanitizeRegimeConfig } = require('../config-validator');
 const { getIPC: getExchangeIPC, withConfiguredPair } = require('./route-utils');
+
+/**
+ * Context logger for the regime routes. Every endpoint here is fund-scoped, so
+ * exchange and pair are real context; `route` names the endpoint.
+ * @param {string} [exchange] - Exchange the request targets
+ * @param {string} [pair] - Fund pair the request targets
+ * @param {string} [route] - Express route pattern being served
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const regimeLogger = (exchange, pair, route) => createContextLogger({
+  module: 'regime-routes',
+  exchange,
+  pair,
+  route,
+});
 
 // Fields that live on the fund/exchange block (siblings of `regime`), NOT inside
 // the regime sub-block. GET sources these from getFundConfig, so a PUT must
@@ -102,10 +117,12 @@ const buildOfflineStatus = (exchange, pair) => {
     position.realizedAssetPnL = derived.realizedAssetPnL;
     position.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
   } catch (e) {
-    // logger exports a plain function — log.warn is undefined and would itself
-    // throw, turning the corrupt-ledger fallback into a 500 exactly when it's
-    // needed (issue #110 M5).
-    log('WARN', `[${exchange}/${pair}] offline cycle-pair derivation failed: ${e.message}`);
+    // Warn and fall through: a corrupt ledger must not turn the offline
+    // fallback into a 500 exactly when it's needed (issue #110 M5).
+    regimeLogger(exchange, pair).warn(`⚠️ [${exchange}/${pair}] offline cycle-pair derivation failed: ${e.message}`, {
+      action: 'offline-derive',
+      error: e.message,
+    });
   }
 
   return {
@@ -171,6 +188,7 @@ module.exports = (app, deps) => {
   app.put('/api/:exchange/regime/config', async (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
+    const logger = regimeLogger(exchange, pair, '/api/:exchange/regime/config');
     const rawUpdates = req.body;
     if (typeof rawUpdates !== 'object' || rawUpdates === null || Array.isArray(rawUpdates)) {
       return res.status(400).json({ success: false, errors: ['config update must be an object'] });
@@ -186,7 +204,10 @@ module.exports = (app, deps) => {
     }
     const { value: regimeUpdates, droppedKeys } = sanitizeRegimeConfig(rawRegimeUpdates);
     if (droppedKeys.length > 0) {
-      log('WARN', `🧹 [${exchange}/${pair}] Ignored unknown regime config keys: ${droppedKeys.join(', ')}`);
+      logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Ignored unknown regime config keys: ${droppedKeys.join(', ')}`, {
+        action: 'update-config',
+        droppedKeys,
+      });
     }
     const updates = { ...regimeUpdates, ...fundUpdates };
 
@@ -230,7 +251,11 @@ module.exports = (app, deps) => {
     if (Object.keys(regimeUpdates).length > 0) {
       updateRegimeConfig(exchange, pair, regimeUpdates);
     }
-    log('INFO', `🔧 [${exchange}/${pair}] Config updated (fund: ${Object.keys(fundUpdates).join(',') || 'none'}, regime: ${Object.keys(regimeUpdates).join(',') || 'none'})`);
+    logger.info(`ℹ️ 🔧 [${exchange}/${pair}] Config updated (fund: ${Object.keys(fundUpdates).join(',') || 'none'}, regime: ${Object.keys(regimeUpdates).join(',') || 'none'})`, {
+      action: 'update-config',
+      fundKeys: Object.keys(fundUpdates),
+      regimeKeys: Object.keys(regimeUpdates),
+    });
 
     // Return the merged view GET would produce, so the client reflects both
     // fund-level and regime changes immediately.
@@ -240,7 +265,13 @@ module.exports = (app, deps) => {
       const applied = await getIPC(exchange).request('regime:update-config', updates, exchange, pair);
       if (applied?.success === false) throw new Error(applied.error || applied.message || 'Engine rejected config update');
     } catch (err) {
-      log('ERROR', `🚨 [${exchange}/${pair}] Regime config persisted but live engine update failed: ${err.message}`);
+      logger.error(`❌ 🚨 [${exchange}/${pair}] Regime config persisted but live engine update failed: ${err.message}`, {
+        action: 'update-config',
+        channel: 'regime:update-config',
+        persisted: true,
+        applied: false,
+        error: err.message,
+      });
       return res.status(503).json({
         success: false,
         persisted: true,
@@ -320,7 +351,10 @@ module.exports = (app, deps) => {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
     const result = await getIPC(exchange).request('regime:close', { reason }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
-    log('INFO', `🚦 [${exchange}/${pair}] Fund close requested${reason ? `: ${reason}` : ''}`);
+    regimeLogger(exchange, pair, '/api/:exchange/regime/close').info(`ℹ️ 🚦 [${exchange}/${pair}] Fund close requested${reason ? `: ${reason}` : ''}`, {
+      action: 'close-fund',
+      reason,
+    });
     res.json(result);
   });
 
@@ -330,7 +364,7 @@ module.exports = (app, deps) => {
     const pair = getPair(req);
     const result = await getIPC(exchange).request('regime:reopen', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
-    log('INFO', `🔓 [${exchange}/${pair}] Fund reopened`);
+    regimeLogger(exchange, pair, '/api/:exchange/regime/reopen').info(`ℹ️ 🔓 [${exchange}/${pair}] Fund reopened`, { action: 'reopen-fund' });
     res.json(result);
   });
 

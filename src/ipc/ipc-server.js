@@ -9,7 +9,16 @@
 
 const WebSocket = require('ws');
 const { MSG_TYPE, createMessage, serialize, deserialize } = require('./ipc-protocol');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
+
+/**
+ * Context logger for the engine-side IPC server. `peer` is the engine process
+ * the socket belongs to; `channel` rides along per call where the message
+ * names one (JSON.stringify drops undefined keys).
+ * @param {string} name - Engine process name owning this server
+ * @returns {{info: (message: string, data?: Object) => void, warn: (message: string, data?: Object) => void, error: (message: string, data?: Object) => void}} Context logger
+ */
+const ipcServerLogger = (name) => createContextLogger({ module: 'ipc-server', peer: name });
 
 /**
  * Create an IPC server for an engine process
@@ -18,6 +27,7 @@ const { log } = require('../logger');
  * @returns {Object}
  */
 const createIPCServer = (port, name) => {
+  const logger = ipcServerLogger(name);
   /** @type {import('ws').WebSocketServer | null} */
   let wss = null;
   /** @type {Set<WebSocket>} */
@@ -30,36 +40,57 @@ const createIPCServer = (port, name) => {
 
     wss.on('connection', (ws) => {
       clients.add(ws);
-      log('INFO', `🔗 [${name}] IPC client connected (${clients.size} total)`);
+      logger.info(`ℹ️ 🔗 [${name}] IPC client connected (${clients.size} total)`, {
+        event: 'connection',
+        clients: clients.size,
+        port,
+      });
 
       ws.on('message', (data) => {
         let msg;
         try {
           msg = deserialize(data.toString());
         } catch (err) {
-          log('ERROR', `🔗 [${name}] IPC message deserialize error: ${String(err)}`);
+          logger.error(`❌ 🔗 [${name}] IPC message deserialize error: ${String(err)}`, {
+            event: 'message',
+            error: String(err),
+          });
           return;
         }
         handleIncoming(ws, msg).catch((err) => {
-          log('ERROR', `🔗 [${name}] IPC message handler error: ${String(err)}`);
+          logger.error(`❌ 🔗 [${name}] IPC message handler error: ${String(err)}`, {
+            event: 'message',
+            channel: msg?.channel,
+            error: String(err),
+          });
         });
       });
 
       ws.on('close', () => {
         clients.delete(ws);
-        log('INFO', `🔗 [${name}] IPC client disconnected (${clients.size} remaining)`);
+        logger.info(`ℹ️ 🔗 [${name}] IPC client disconnected (${clients.size} remaining)`, {
+          event: 'close',
+          clients: clients.size,
+        });
       });
 
       ws.on('error', (err) => {
-        log('ERROR', `🔗 [${name}] IPC client error: ${err.message}`);
+        logger.error(`❌ 🔗 [${name}] IPC client error: ${err.message}`, {
+          event: 'client-error',
+          error: err.message,
+        });
       });
     });
 
     wss.on('error', (err) => {
-      log('ERROR', `🔗 [${name}] IPC server error: ${err.message}`);
+      logger.error(`❌ 🔗 [${name}] IPC server error: ${err.message}`, {
+        event: 'server-error',
+        port,
+        error: err.message,
+      });
     });
 
-    log('INFO', `🔗 [${name}] IPC server listening on 127.0.0.1:${port}`);
+    logger.info(`ℹ️ 🔗 [${name}] IPC server listening on 127.0.0.1:${port}`, { event: 'listening', port });
   };
 
   /**
@@ -102,7 +133,12 @@ const createIPCServer = (port, name) => {
       const handler = requestHandlers.get('config_update');
       if (handler) {
         handler(msg.payload, msg.exchange, msg.pair).catch((err) => {
-          log('ERROR', `🔗 [${name}] config_update handler error: ${err.message}`);
+          logger.error(`❌ 🔗 [${name}] config_update handler error: ${err.message}`, {
+            channel: 'config_update',
+            exchange: msg.exchange,
+            pair: msg.pair,
+            error: err.message,
+          });
         });
       }
     }
@@ -147,7 +183,7 @@ const createIPCServer = (port, name) => {
       wss.close();
       wss = null;
     }
-    log('INFO', `🔗 [${name}] IPC server stopped`);
+    logger.info(`ℹ️ 🔗 [${name}] IPC server stopped`, { event: 'stopped', port });
   };
 
   return {

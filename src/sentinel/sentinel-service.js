@@ -10,8 +10,14 @@ const path = require('path');
 const crypto = require('crypto');
 const { fetchAllFeeds } = require('./feed-poller');
 const { classifyByKeywords, classifyByAI, resolveSeverity, sanitizeForTelegram } = require('./classifier');
-const { log } = require('../logger');
+const { createContextLogger } = require('../logger');
 const { tradeEvents } = require('../trade-events');
+
+/**
+ * Sentinel watches news feeds, not a trading pair, so `module` is the only
+ * stable context; poll counts and errors ride along per call.
+ */
+const sentinelLogger = createContextLogger({ module: 'sentinel-service' });
 
 const STATE_FILE = 'sentinel-state.json';
 const MAX_SEEN_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -65,7 +71,11 @@ const createSentinelService = (io, deps) => {
     }
     if (saved.lastPollAt) lastPollAt = saved.lastPollAt;
     if (saved.pollCount) pollCount = saved.pollCount;
-    log('INFO', `Sentinel state loaded: ${alerts.length} alerts, ${seenGuids.size} seen items`);
+    sentinelLogger.info(`ℹ️ Sentinel state loaded: ${alerts.length} alerts, ${seenGuids.size} seen items`, {
+      action: 'load-state',
+      alerts: alerts.length,
+      seenItems: seenGuids.size,
+    });
   };
 
   // Load state eagerly
@@ -190,7 +200,11 @@ const createSentinelService = (io, deps) => {
       pollCount++;
 
       if (newAlerts > 0) {
-        log('INFO', `Sentinel poll: ${newAlerts} new alerts from ${items.length} items`);
+        sentinelLogger.info(`ℹ️ Sentinel poll: ${newAlerts} new alerts from ${items.length} items`, {
+          action: 'poll',
+          newAlerts,
+          items: items.length,
+        });
         persistState();
       }
 
@@ -199,7 +213,11 @@ const createSentinelService = (io, deps) => {
     } catch (err) {
       if (!isCurrent()) return;
       errorCount++;
-      log('ERROR', `Sentinel poll error: ${err.message}`);
+      sentinelLogger.error(`❌ Sentinel poll error: ${err.message}`, {
+        action: 'poll',
+        errorCount,
+        error: err.message,
+      });
     }
   };
 
@@ -242,7 +260,7 @@ const createSentinelService = (io, deps) => {
   const start = () => {
     const config = getSentinelConfig();
     if (!config.enabled) {
-      log('INFO', 'Sentinel service disabled');
+      sentinelLogger.info('ℹ️ Sentinel service disabled', { action: 'start', enabled: false });
       return;
     }
     if (running) return;
@@ -255,7 +273,10 @@ const createSentinelService = (io, deps) => {
     // Initial poll after short delay
     initialPollTimeout = setTimeout(poll, 5000);
 
-    log('INFO', `Sentinel service started, polling every ${interval / 1000}s`);
+    sentinelLogger.info(`ℹ️ Sentinel service started, polling every ${interval / 1000}s`, {
+      action: 'start',
+      pollIntervalMs: interval,
+    });
   };
 
   /**
@@ -273,7 +294,7 @@ const createSentinelService = (io, deps) => {
       initialPollTimeout = null;
     }
     persistState();
-    log('INFO', 'Sentinel service stopped');
+    sentinelLogger.info('ℹ️ Sentinel service stopped', { action: 'stop' });
   };
 
   /**

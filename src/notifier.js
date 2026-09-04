@@ -9,7 +9,14 @@
 const { tradeEvents } = require('./trade-events');
 const { getNotificationConfig, getConfiguredExchanges, getRegimeConfig, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
-const { log } = require('./logger');
+const { createContextLogger } = require('./logger');
+
+/**
+ * Module-level context logger. The notifier is exchange-agnostic (it fans out
+ * events from every fund), so `module` is the only stable context; per-call
+ * data carries the channel/transport detail.
+ */
+const notifierLogger = createContextLogger({ module: 'notifier' });
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 const MAX_MESSAGE_LENGTH = 4000;
@@ -155,7 +162,11 @@ const createNotifier = () => {
         stats.errors++;
         stats.dailyErrors++;
         const desc = data.description || resp.statusText;
-        log('ERROR', `📨 Telegram send failed (${resp.status}): ${desc}`);
+        notifierLogger.error(`❌ 📨 Telegram send failed (${resp.status}): ${desc}`, {
+          transport: 'telegram',
+          status: resp.status,
+          error: desc,
+        });
         return false;
       }
       stats.sent++;
@@ -168,7 +179,11 @@ const createNotifier = () => {
       stats.dailyErrors++;
       const status = err.status || 'unknown';
       const desc = err.message || String(err);
-      log('ERROR', `📨 Telegram send failed (${status}): ${desc}`);
+      notifierLogger.error(`❌ 📨 Telegram send failed (${status}): ${desc}`, {
+        transport: 'telegram',
+        status,
+        error: desc,
+      });
       return false;
     }
   };
@@ -254,7 +269,10 @@ const createNotifier = () => {
       try {
         sendDailySummary();
       } catch (err) {
-        log('ERROR', `📨 Daily summary failed: ${err.message}`);
+        notifierLogger.error(`❌ 📨 Daily summary failed: ${err.message}`, {
+          action: 'daily-summary',
+          error: err.message,
+        });
       }
       // Reschedule for next day
       scheduleDailySummary();
@@ -309,12 +327,16 @@ const createNotifier = () => {
     getEngines = engineGetter || null;
 
     if (!config.enabled) {
-      log('INFO', '📨 Notifications disabled');
+      notifierLogger.info('ℹ️ 📨 Notifications disabled', { action: 'start', enabled: false });
       return;
     }
 
     if (!config.telegram.botToken || !config.telegram.chatId) {
-      log('INFO', '📨 Notifications enabled but Telegram not configured');
+      notifierLogger.info('ℹ️ 📨 Notifications enabled but Telegram not configured', {
+        action: 'start',
+        transport: 'telegram',
+        configured: false,
+      });
       return;
     }
 
@@ -325,7 +347,7 @@ const createNotifier = () => {
     // Schedule daily summary
     scheduleDailySummary();
 
-    log('INFO', '📨 Notifier started');
+    notifierLogger.info('ℹ️ 📨 Notifier started', { action: 'start' });
   };
 
   /**
@@ -350,7 +372,7 @@ const createNotifier = () => {
     // Flush remaining messages
     flushQueue();
 
-    log('INFO', '📨 Notifier stopped');
+    notifierLogger.info('ℹ️ 📨 Notifier stopped', { action: 'stop' });
   };
 
   /**

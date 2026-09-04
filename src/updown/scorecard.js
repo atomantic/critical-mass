@@ -10,9 +10,16 @@
 const { appendFile, mkdir, readFile, readdir, unlink } = require('fs/promises')
 const { existsSync } = require('fs')
 const path = require('path')
-const { log } = require('../logger')
+const { createContextLogger } = require('../logger')
 const { UPDOWN_DATA_DIR } = require('../paths')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('./indicator-config')
+
+/**
+ * The scorecard scores the UpDown paper book, which has no exchange or pair of
+ * its own, so `module` is the only stable context; prediction/window detail is
+ * carried per call.
+ */
+const scorecardLogger = createContextLogger({ module: 'updown-scorecard' })
 
 const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SAMPLE_INTERVAL_MS = 60_000
@@ -537,11 +544,11 @@ const computeByHour = (outcomes) => {
  * @param {Function} [opts.journalWriter] - Testable persistence boundary
  * @param {string} [opts.scorecardDir] - Testable history source directory
  * @param {(file: string) => Promise<void>} [opts.unlinkFile] - Testable history deletion boundary
- * @param {typeof log} [opts.retentionLogger] - Testable retention logging boundary
+ * @param {typeof scorecardLogger} [opts.retentionLogger] - Testable retention logging boundary
  * @param {{snapshot: Function, hydrate: Function, isLong: Function, serialize: Function}|null} [opts.perpBook] - Shared 0.01-BTC-per-contract paper book
  * @returns {{recordPrediction: Function, recordPerpFill: Function, getMetrics: Function, start: Function, stop: Function}}
  */
-const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = log, perpBook = null }) => {
+const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRecord, scorecardDir = SCORECARD_DIR, unlinkFile = unlink, retentionLogger = scorecardLogger, perpBook = null }) => {
   /** @type {Array<Object>} Ring buffer of evaluated outcomes */
   const outcomeBuffer = []
 
@@ -582,7 +589,11 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       journal.healthy = false
       journal.lastError = err?.message || String(err)
       journal.lastErrorAt = new Date().toISOString()
-      log('ERROR', `📊 Scorecard journal write failed type=${record?.type || 'unknown'} err=${journal.lastError}`)
+      scorecardLogger.error(`❌ 📊 Scorecard journal write failed type=${record?.type || 'unknown'} err=${journal.lastError}`, {
+        action: 'journal-write',
+        recordType: record?.type || 'unknown',
+        error: journal.lastError,
+      })
     })
 
   /**
@@ -714,10 +725,20 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
           if (Date.now() - targetTs <= MAX_EVAL_LAG_MS) {
             arm()
           } else {
-            log('WARN', `📊 Scorecard eval unavailable — fresh price missing predId=${prediction.id} window=${label}`)
+            scorecardLogger.warn(`⚠️ 📊 Scorecard eval unavailable — fresh price missing predId=${prediction.id} window=${label}`, {
+              action: 'evaluate',
+              predictionId: prediction.id,
+              window: label,
+              reason: 'stale-price',
+            })
           }
         } catch (err) {
-          log('WARN', `📊 Scorecard eval failed predId=${prediction.id} window=${label} err=${err.message}`)
+          scorecardLogger.warn(`⚠️ 📊 Scorecard eval failed predId=${prediction.id} window=${label} err=${err.message}`, {
+            action: 'evaluate',
+            predictionId: prediction.id,
+            window: label,
+            error: err.message,
+          })
         }
       }, Math.min(delay, 2_147_000_000))
       pendingTimeouts.add(timeout)
@@ -758,7 +779,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     // Persist prediction to JSONL
     persistRecord(prediction)
 
-    log('INFO', `📊 Scorecard prediction=${prediction.id} price=$${prediction.price} dir=${prediction.compositeDirection} trigger=${trigger}`)
+    scorecardLogger.info(`ℹ️ 📊 Scorecard prediction=${prediction.id} price=$${prediction.price} dir=${prediction.compositeDirection} trigger=${trigger}`, {
+      action: 'record-prediction',
+      predictionId: prediction.id,
+      price: prediction.price,
+      direction: prediction.compositeDirection,
+      trigger,
+    })
 
     // Schedule evaluations for each window
     const predictionTs = Date.parse(prediction.ts)
@@ -1073,7 +1100,11 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
 
     const pendingCount = pending.length + contractRecovery.pending.length
     if (backfilled > 0 || pendingCount > 0) {
-      log('INFO', `📊 Scorecard restart recovery: backfilled=${backfilled} elapsed outcomes, rescheduled=${pendingCount} pending windows`)
+      scorecardLogger.info(`ℹ️ 📊 Scorecard restart recovery: backfilled=${backfilled} elapsed outcomes, rescheduled=${pendingCount} pending windows`, {
+        action: 'restart-recovery',
+        backfilled,
+        rescheduled: pendingCount,
+      })
     }
 
     // Trim to buffer size
@@ -1094,7 +1125,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     // scorecard journal — a 0-lot reset would otherwise come back as a
     // historical position.
 
-    log('INFO', `📊 Scorecard loaded history outcomes=${loaded} predictions=${predictions} skipped=${skipped} files=${recentFiles.length}`)
+    scorecardLogger.info(`ℹ️ 📊 Scorecard loaded history outcomes=${loaded} predictions=${predictions} skipped=${skipped} files=${recentFiles.length}`, {
+      action: 'load-history',
+      outcomes: loaded,
+      predictions,
+      skipped,
+      files: recentFiles.length,
+    })
   }
 
   /**
@@ -1122,7 +1159,12 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
         failures.push(`${file}: ${err.message}`)
       }
     }
-    retentionLogger('INFO', `📊 Scorecard prune completed deleted=${deleted} failed=${failures.length} retentionDays=${retentionDays}`)
+    retentionLogger.info(`ℹ️ 📊 Scorecard prune completed deleted=${deleted} failed=${failures.length} retentionDays=${retentionDays}`, {
+      action: 'prune',
+      deleted,
+      failed: failures.length,
+      retentionDays,
+    })
     if (failures.length > 0) {
       throw new Error(`failed to delete ${failures.length} scorecard file(s): ${failures.join('; ')}`)
     }
@@ -1138,11 +1180,14 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     computeSignalsFn = computeSignals
 
     // Prune old scorecard data on startup (keep 30 days)
-    await pruneHistory(30).catch(err => retentionLogger('WARN', `📊 Scorecard prune failed err=${err.message}`))
+    await pruneHistory(30).catch(err => retentionLogger.warn(`⚠️ 📊 Scorecard prune failed err=${err.message}`, { action: 'prune', error: err.message }))
     if (!running || generation !== lifecycleGeneration) return
 
     // Hydrate from disk and emit initial metrics
-    await loadHistory(generation).catch(err => log('WARN', `📊 Scorecard history load failed err=${err.message}`))
+    await loadHistory(generation).catch(err => scorecardLogger.warn(`⚠️ 📊 Scorecard history load failed err=${err.message}`, {
+      action: 'load-history',
+      error: err.message,
+    }))
     if (!running || generation !== lifecycleGeneration) return
     if (outcomeBuffer.length > 0) {
       io.to('updown').emit('updown:scorecard', getMetrics())
@@ -1159,14 +1204,20 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
       try {
         recordPrediction(computeSignalsFn(), 'interval')
       } catch (err) {
-        log('WARN', `📊 Scorecard sample failed err=${err.message}`)
+        scorecardLogger.warn(`⚠️ 📊 Scorecard sample failed err=${err.message}`, {
+          action: 'sample',
+          error: err.message,
+        })
       }
     }, SAMPLE_INTERVAL_MS)
 
     // Daily prune of old scorecard files (every 24h)
-    pruneTimer = setInterval(() => pruneHistory(30).catch(err => retentionLogger('WARN', `📊 Scorecard prune failed err=${err.message}`)), 24 * 60 * 60 * 1000)
+    pruneTimer = setInterval(() => pruneHistory(30).catch(err => retentionLogger.warn(`⚠️ 📊 Scorecard prune failed err=${err.message}`, { action: 'prune', error: err.message })), 24 * 60 * 60 * 1000)
 
-    log('INFO', '📊 Scorecard started interval=60s windows=[1m,5m,15m,1h] primary=[1m,5m] upOnly=true')
+    scorecardLogger.info('ℹ️ 📊 Scorecard started interval=60s windows=[1m,5m,15m,1h] primary=[1m,5m] upOnly=true', {
+      action: 'start',
+      intervalMs: SAMPLE_INTERVAL_MS,
+    })
   }
 
   /**
@@ -1188,7 +1239,11 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     }
     pendingTimeouts.clear()
     computeSignalsFn = null
-    log('INFO', `📊 Scorecard stopped predictions=${totalPredictions} evaluated=${outcomeBuffer.length}`)
+    scorecardLogger.info(`ℹ️ 📊 Scorecard stopped predictions=${totalPredictions} evaluated=${outcomeBuffer.length}`, {
+      action: 'stop',
+      predictions: totalPredictions,
+      evaluated: outcomeBuffer.length,
+    })
   }
 
   return { recordPrediction, recordPerpFill, getMetrics, start, stop }
