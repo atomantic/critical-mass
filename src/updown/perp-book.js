@@ -139,9 +139,11 @@ const createPerpBook = (initial = {}) => {
       return { action, fill: null, trade: null }
     }
     if (action === 'CLOSE') {
+      // An unavailable mark cannot settle or discard an open position.
+      if (!Number.isFinite(price) || price <= 0) return { action, fill: null, trade: null }
       lastSide = 'SELL'
       open = false
-      if (lots.length === 0 || !Number.isFinite(price) || price <= 0) {
+      if (lots.length === 0) {
         lots = []
         return { action, fill: null, trade: null }
       }

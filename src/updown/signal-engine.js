@@ -780,9 +780,10 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
 /**
  * Create a signal engine instance
  * @param {{getCandles: (tf: string) => Array}} candleAggregator
+ * @param {{now?: () => number}} [options] - Instance clock for isolated historical replay
  * @returns {{computeSignals: Function, setIndicatorWeights: Function}}
  */
-const createSignalEngine = (candleAggregator) => {
+const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } = {}) => {
   /** @type {Record<string, Record<string, any> | null>} */
   const prevIndicators = {};
   for (const tf of ALL_SIGNAL_TFS) prevIndicators[tf] = null;
@@ -810,8 +811,8 @@ const createSignalEngine = (candleAggregator) => {
    * @param {Object} [scorecardMetrics] - Metrics from scorecard for horizon prediction
    */
   const computeSignals = (contractExpiry = null, scorecardMetrics = null, heldPosition = null) => {
-    const now = Date.now();
-    const timeToExpiry = (contractExpiry && contractExpiry > now) ? contractExpiry - now : Infinity;
+    const now = clock();
+    const timeToExpiry = Number.isFinite(contractExpiry) ? contractExpiry - now : Infinity;
     const noTradeZone = timeToExpiry <= NO_TRADE_ZONE_MS;
     const warningZone = timeToExpiry <= WARNING_ZONE_MS;
 
