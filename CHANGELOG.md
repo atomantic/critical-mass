@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **UpDown validation and safety** — Expired contracts remain in the no-trade zone; an invalid paper-book close preserves the position for retry. Historical baseline drawdown now reports dollars instead of treating P&L as account equity, and an evaluation beyond available candles no longer replays warmup data.
+
+### Validation
+- **Read-only UpDown walk-forward harness** — Explicit input hash, strict candle integrity, complete timeframe buckets, isolated replay clocks, next-minute fills, configurable fees/slippage, non-overlapping direction metrics, chronological threshold selection, and baseline/buy-and-hold/cash comparisons. No automatic strategy promotion or live state changes.
+
 ### Security
 - **[issue-285] Bounded simulation requests and active jobs** — Backtest and optimizer APIs now validate every caller-provided limit, cap grid-search work, serialize jobs per fund, and return actionable busy or retry responses before expensive market-data work starts.
 

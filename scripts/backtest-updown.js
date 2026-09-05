@@ -273,7 +273,7 @@ function runSimulation(candles1m, tfCandles, config) {
   const { evalStartMs } = config
 
   // Find the evaluation start index in 1m candles
-  let evalStartIdx = 0
+  let evalStartIdx = candles1m.length
   for (let i = 0; i < candles1m.length; i++) {
     if (candles1m[i].timestamp >= evalStartMs) {
       evalStartIdx = i
@@ -352,7 +352,7 @@ function runSimulation(candles1m, tfCandles, config) {
         }
       }
 
-      const fill = book.applySignal(signal, price, ts)
+      const fill = book.applySignal(signal, price, decisionTs)
       if (fill.fill) actionCounts[fill.action] = (actionCounts[fill.action] || 0) + 1
       if (fill.trade) {
         const t = fill.trade
@@ -376,7 +376,7 @@ function runSimulation(candles1m, tfCandles, config) {
       const snap = book.snapshot(price)
       equity = snap.totalPnl
       if (equity > peakEquity) peakEquity = equity
-      const dd = peakEquity > 0 ? (peakEquity - equity) / peakEquity : (equity < 0 ? Math.abs(equity) : 0)
+      const dd = peakEquity - equity
       if (dd > maxDrawdown) maxDrawdown = dd
 
       // Sample equity curve every 15 minutes
@@ -401,7 +401,7 @@ function runSimulation(candles1m, tfCandles, config) {
   // Force-close open lots at end of data
   if (book.isLong() && candles1m.length > 0) {
     const lastCandle = candles1m[candles1m.length - 1]
-    const force = book.applySignal('SELL', lastCandle.close, lastCandle.timestamp)
+    const force = book.applySignal('SELL', lastCandle.close, lastCandle.timestamp + TF_MS['1m'])
     if (force.trade) {
       const t = force.trade
       const bps = t.avgEntry > 0 ? ((t.exitPrice - t.avgEntry) / t.avgEntry) * 10000 : 0
@@ -421,7 +421,7 @@ function runSimulation(candles1m, tfCandles, config) {
       })
       equity = book.snapshot(lastCandle.close).totalPnl
       if (equity > peakEquity) peakEquity = equity
-      const dd = peakEquity > 0 ? (peakEquity - equity) / peakEquity : 0
+      const dd = peakEquity - equity
       if (dd > maxDrawdown) maxDrawdown = dd
     }
   }
@@ -469,7 +469,7 @@ function computeStats(trades, finalEquity, maxDrawdown) {
     avgWinPnl: Math.round(avgWinPnl * 100) / 100,
     avgLossPnl: Math.round(avgLossPnl * 100) / 100,
     profitFactor: Math.round(profitFactor * 100) / 100,
-    maxDrawdownPct: Math.round(maxDrawdown * 10000) / 100,
+    maxDrawdownUsd: Math.round(maxDrawdown * 100) / 100,
     totalPnl: Math.round(finalEquity * 100) / 100,
     avgHoldMs: Math.round(avgHold),
     minHoldMs: minHold,
@@ -544,7 +544,7 @@ async function main() {
   console.log(`  Win rate: ${stats.winRate.toFixed(1)}% (${stats.wins}W / ${stats.losses}L)`)
   console.log(`  Avg win: ${stats.avgWinPnl >= 0 ? '+' : ''}$${stats.avgWinPnl.toFixed(0)} (+${stats.avgWinBps} bps) | Avg loss: $${stats.avgLossPnl.toFixed(0)} (${stats.avgLossBps} bps)`)
   console.log(`  Profit factor: ${stats.profitFactor}`)
-  console.log(`  Max drawdown: -${stats.maxDrawdownPct}%`)
+  console.log(`  Max drawdown: -$${stats.maxDrawdownUsd}`)
   console.log('')
   console.log('P&L:')
   console.log(`  Realized: $${equity.toLocaleString(undefined, { minimumFractionDigits: 2 })}`)
@@ -630,4 +630,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { seedUpTo, findLastIndex, findCandleGaps, TF_MS }
+module.exports = { seedUpTo, findLastIndex, findCandleGaps, TF_MS, runSimulation, computeStats }
