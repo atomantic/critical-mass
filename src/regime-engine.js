@@ -38,7 +38,7 @@ const dryRunState = require('./dry-run-state');
 const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
 const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
-const { fmtCurrency: fmtPrice, isFilledStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
+const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
@@ -59,8 +59,7 @@ const cancelPartialFillOrder = async (deps, orderId) => {
   }
   try {
     const order = await adapter.getOrder(orderId);
-    const status = (order?.status || '').toUpperCase();
-    if (['FILLED', 'CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED'].includes(status)) {
+    if (isTerminalStatus(order)) {
       const openOrders = await adapter.getOpenOrders(pair);
       if (Array.isArray(openOrders) && !isOrderStillOpen(openOrders, orderId)) {
         return { cancelled: true, order };
@@ -1058,7 +1057,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Catch CANCELLED-with-partials at startup (Gemini heartbeat-cancels
         // open orders during downtime). The interval reconciler would catch
         // this too, but only after reconcileIntervalMs.
-        if (orderStatus && (orderStatus.status === 'CANCELLED' || orderStatus.status === 'FAILED') && orderStatus.filledSize > 0) {
+        if (isCancelledStatus(orderStatus) && orderStatus.filledSize > 0) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
           logger.info(
             `${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} ${orderStatus.status} while offline with ${orderStatus.filledSize} partial fill — routing through handleOrderFill`,
@@ -1072,7 +1071,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         // Cancelled-without-partials: clear the stale tpOrderId so the engine
         // places a fresh TP on first tick. Without this, body.tpOrderId points
         // at a dead order and placeBodyTp would skip (it gates on !tpOrderId).
-        if (orderStatus && (orderStatus.status === 'CANCELLED' || orderStatus.status === 'FAILED')) {
+        if (isCancelledStatus(orderStatus)) {
           logger.warn(
             `⚠️ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} ${orderStatus.status} while offline (no partials) — clearing for re-placement`,
             { bodyId: body.id, orderId: body.tpOrderId, status: orderStatus.status }
@@ -3750,7 +3749,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                 };
                 orderExecutor.markSettled(body.tpOrderId);
                 await handleOrderFill(fillData);
-              } else if (bodyStatus.status === 'CANCELLED' || bodyStatus.status === 'FAILED') {
+              } else if (isCancelledStatus(bodyStatus)) {
                 const tierCfg = celestialHierarchy.getTierConfig(body.tier);
                 if (bodyStatus.filledSize > 0) {
                   // Route partials through handleOrderFill before re-placing — otherwise
