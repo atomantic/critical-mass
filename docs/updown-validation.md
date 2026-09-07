@@ -49,3 +49,15 @@ Inventory found 104 source/engine files. This was a focused behavioral audit wit
 | Runtime | PM2 gateway and three exchange engines plus UI | All five online at initial inspection; data/configuration files not modified |
 
 The older `backtest-updown.js` remains a zero-cost, same-close diagnostic; use the new validator for execution-cost comparisons. The active DCA finding needs terminal-status reconciliation and polling/WS/restart race fixtures before rollout. No production orders, balances, grants or state files are edited by this work.
+
+## Scorecard ownership
+
+Put pure outcome interpretation, legacy compatibility, semantic journal deduplication,
+and historical aggregation in `src/updown/scorecard-analytics.js`. Reuse the indicator
+catalog in `indicator-config.js`, signal-engine timeframes, and perp-contract sizing.
+`scorecard.js` owns prediction/outcome construction, scheduling, hydration/recovery,
+retention, journal health, adaptive weights, and Socket.IO lifecycle.
+`routes/updown-routes.js` owns request/date handling, journal reads, and response delivery.
+Live ring-buffer windows, prediction-hour buckets, and weighted indicator training
+remain distinct from historical date ranges, settlement-hour buckets, and raw trends.
+Existing scorecard scoring exports and the route heatmap export remain compatibility aliases.

@@ -13,6 +13,14 @@ const path = require('path')
 const { createContextLogger } = require('../logger')
 const { UPDOWN_DATA_DIR } = require('../paths')
 const { INDICATORS, INDICATOR_WEIGHTS } = require('./indicator-config')
+const { ALL_SIGNAL_TFS: ALL_TFS } = require('./signal-engine')
+const {
+  getDirection,
+  evaluateDirection,
+  resolvePerpCorrect,
+  dedupeScorecardRecords,
+  WINDOW_MS,
+} = require('./scorecard-analytics')
 
 /**
  * The scorecard scores the UpDown paper book, which has no exchange or pair of
@@ -25,26 +33,16 @@ const SCORECARD_DIR = path.join(UPDOWN_DATA_DIR, 'scorecard')
 const SAMPLE_INTERVAL_MS = 60_000
 const EVAL_WINDOWS = [60_000, 300_000, 900_000, 3_600_000]
 const WINDOW_LABELS = { 60000: '1m', 300000: '5m', 900000: '15m', 3600000: '1h' }
-const WINDOW_MS = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000 }
 /** Tick-to-tick products (CDC Up options, Coinbase perp flips) live on 1m/5m. */
 const PRIMARY_WINDOWS = ['1m', '5m']
-const DIRECTION_THRESHOLD = 15 // aligned with signal-engine's neutralThreshold for BUY signals
 const BUFFER_SIZE = 2000
 const EMIT_THROTTLE_MS = 5_000
 const DEDUP_WINDOW_MS = 55_000
 const WEIGHT_LOG_THROTTLE_MS = 300_000
 const EVAL_RETRY_MS = 5_000
 const MAX_EVAL_LAG_MS = 60_000
-// Prevents 1-tick noise from inflating short-window accuracy stats.
-const EVAL_NOISE_FLOORS_BPS = {
-  60000: 5,      // 1m: 5 bps (~$4 on $80k BTC) — noise filter
-  300000: 10,    // 5m: 10 bps
-  900000: 20,    // 15m: 20 bps
-  3600000: 40,   // 1h: 40 bps
-}
 
 const BASE_WEIGHTS = INDICATOR_WEIGHTS
-const ALL_TFS = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
 
 /**
  * Compute adaptive indicator weights based on recent accuracy
@@ -107,17 +105,6 @@ const computeAdaptiveWeights = (byIndicator, baseWeights, prevWeights, alpha = 0
 let predictionCounter = 0
 
 /**
- * Classify a score into a directional prediction
- * @param {number} score
- * @returns {'up' | 'down' | 'neutral'}
- */
-const getDirection = (score) => {
-  if (score > DIRECTION_THRESHOLD) return 'up'
-  if (score < -DIRECTION_THRESHOLD) return 'down'
-  return 'neutral'
-}
-
-/**
  * Direction the scorecard journals. A raw +score that never printed BUY is a
  * skip, not an UP call — otherwise GATE CLOSED / HOLD / NO_TRADE_ZONE ticks
  * inflate UP precision with longs we never published. High-vol BUY uses a
@@ -159,30 +146,6 @@ const appendRecord = async (record) => {
   }
   const line = JSON.stringify(record) + '\n'
   await appendFile(getJournalPath(), line)
-}
-
-/**
- * Evaluate if a directional prediction was correct.
- *
- * Two products, two treatments of "didn't move":
- *  - `options` (default): no-move is a miss. A Crypto.com Up option that expires
- *    unchanged is out of the money.
- *  - `perp`: no-move is a scratch (null). A Coinbase perp flip that never reaches
- *    the noise floor is not a win or a loss — just not a trade.
- *
- * Pure/module-level so it can back both live evaluation and restart backfill (issue #212E).
- * @param {'up' | 'down' | 'neutral'} direction
- * @param {number} priceChangeBps
- * @param {number} [windowMs=300000] - Evaluation window in ms (determines noise floor)
- * @param {'options' | 'perp'} [mode='options']
- * @returns {boolean | null} null if skipped (neutral, or perp scratch)
- */
-const evaluateDirection = (direction, priceChangeBps, windowMs = 300000, mode = 'options') => {
-  if (direction === 'neutral') return null
-  const noiseBps = EVAL_NOISE_FLOORS_BPS[windowMs] ?? 10
-  if (mode === 'perp' && Math.abs(priceChangeBps) <= noiseBps) return null
-  if (direction === 'up') return priceChangeBps > noiseBps
-  return priceChangeBps < -noiseBps
 }
 
 /**
@@ -350,30 +313,6 @@ const tallyHistory = (records) => {
     }
   }
   return { outcomes, predCount, skipCount, totalPredictions: predCount - skipCount }
-}
-
-/**
- * Keep one durable prediction/outcome per semantic journal key. Append-only
- * recovery and legacy backfill reruns can otherwise train and report duplicates.
- * Non-scoring event records (weights/fills) are preserved.
- * @param {Array<Object|null>} records
- * @returns {Array<Object|null>}
- */
-const dedupeScorecardRecords = (records) => {
-  const seen = new Set()
-  const result = []
-  for (const record of records) {
-    if (!record) continue
-    let key = null
-    if (record.type === 'prediction' && record.id) key = `prediction:${record.id}`
-    if (record.type === 'outcome' && record.predictionId && record.window) {
-      key = `outcome:${record.predictionId}:${record.window}`
-    }
-    if (key && seen.has(key)) continue
-    if (key) seen.add(key)
-    result.push(record)
-  }
-  return result
 }
 
 /**
@@ -802,24 +741,6 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     if (Number.isFinite(expiry) && expiry > predictionTs) {
       scheduleEvaluation(prediction, expiry, () => evaluateContract(prediction), 'contract')
     }
-  }
-
-  /**
-   * Compute aggregate metrics from the outcome buffer
-   * @returns {Object}
-   */
-  /**
-   * Perp correctness: explicit field on new outcomes, derived from noise floor
-   * for JSONL rows persisted before perpCorrect existed.
-   * @param {Object} o
-   * @returns {boolean | null}
-   */
-  const resolvePerpCorrect = (o) => {
-    if (o.perpCorrect !== undefined) return o.perpCorrect
-    if (o.compositeCorrect == null) return null
-    const floor = EVAL_NOISE_FLOORS_BPS[WINDOW_MS[o.window]] ?? 10
-    if (Math.abs(o.priceChangeBps ?? 0) <= floor) return null
-    return o.compositeCorrect
   }
 
   const computeIndicatorMetrics = (scored) => {
