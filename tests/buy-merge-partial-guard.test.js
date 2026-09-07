@@ -146,7 +146,13 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
       bodies: [target],
       adapter: {
         // Pre-check is clean — the partial only surfaces from the cancel result.
-        getOrder: async () => { getOrderCalls++; return { filledSize: 0, status: 'OPEN' }; },
+        getOrder: async () => {
+          getOrderCalls++;
+          return getOrderCalls === 1
+            ? { filledSize: 0, status: 'OPEN' }
+            : { filledSize: 0.004, status: 'CANCELLED', averageFilledPrice: 50500 };
+        },
+        getOpenOrders: async () => [],
         // Fills are keyed by orderId: the buy's own fill for 'buy-new', and the
         // target TP's partial sell fill for 'tp-target' (the immediate booking).
         getOrderFills: async (orderId) => {
@@ -177,7 +183,7 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
 
     const bodies = eng._getPositionState().celestialBodies;
-    assert.equal(getOrderCalls, 1, 'the pre-check ran and saw a clean target');
+    assert.equal(getOrderCalls, 2, 'pre-check saw a clean target, then terminal status was verified');
     assert.equal(cancelCalls, 1, 'the merge proceeded to cancel the clean target TP');
 
     assert.equal(bodies.length, 2, 'the buy became its own body instead of folding onto the partially-sold target');

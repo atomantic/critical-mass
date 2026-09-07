@@ -401,6 +401,28 @@ describe('#196 manualMergeBody — lock acquisition', () => {
 // ---------------------------------------------------------------------------
 
 describe('#196 _mergeBodyImpl — successful merge folds source into target', () => {
+  it('links hundreds of merged buys with one durable ledger write', async () => {
+    const source = makeBody('batch-source', 50000, 0.01, 'tp-batch-source');
+    const target = makeBody('batch-target', 51000, 0.02, 'tp-batch-target');
+    target.buyOrders = Array.from({ length: 495 }, (_, i) => ({ orderId: `batch-buy-${i}` }));
+    const eng = makeEngine({ bodies: [source, target] });
+    const ledger = eng.getFillLedger();
+    const buys = [...source.buyOrders, ...target.buyOrders];
+    for (const { orderId } of buys) {
+      ledger.ingestFill({ tradeId: orderId, orderId, side: 'buy', price: '50000', size: '0.00001' }, { skipPersist: true });
+    }
+    ledger.persist();
+    const writes = ledger._test.getWriteCount();
+    const result = await eng.manualMergeBody(source.id, { targetId: target.id });
+    assert.equal(result.success, true);
+    assert.equal(ledger._test.getWriteCount(), writes + 1, 'whole roll-up flushes links once');
+    for (const { orderId } of buys) {
+      const fill = ledger.getFillsForOrder(orderId)[0];
+      assert.equal(fill.sellOrderId, target.tpOrderId);
+      assert.equal(fill.bodyId, target.id);
+    }
+  });
+
   it('removes the source body and combines qty/cost into the target', async () => {
     const eng = makeEngine({
       bodies: [makeBody('src', 50000, 0.01, 'tp-src'), makeBody('tgt', 51000, 0.02, 'tp-tgt')],
@@ -595,4 +617,69 @@ describe('#196 reconcileTick — holds the lock until every dispatched chain set
     assert.equal(recoveryCalls, 0, 'reconcile must defer while a merge holds the lock');
     assert.equal(eng._test.getFlags().reconcileInProgress, false, 'no lock taken on a skipped tick');
   });
+});
+
+// #316: cancellation uncertainty must not detach a still-live sell.
+describe('#316 partial sell terminal reconciliation', () => {
+  for (const throws of [false, true]) {
+    it(`retains body and tracking on ${throws ? 'timeout' : 'refusal'}, including retry`, async () => {
+      const body = makeBody('cancel-unknown', 50000, 0.01, 'tp-unknown');
+      body.assetOnOrder = 0.009;
+      const before = structuredClone(body);
+      let removed = 0;
+      let placed = 0;
+      let ingested = 0;
+      const eng = makeEngine({ bodies: [body], adapter: {
+        cancelOrder: async () => { if (throws) throw new Error('timeout'); return { success: false }; },
+        getOrder: async () => ({ status: 'PARTIALLY_FILLED', filledSize: 0.003 }),
+        getOrderFills: async () => { ingested++; return []; },
+      }, executor: {
+        removeBodyTracking: () => { removed++; },
+        placeBodyTpOrder: async () => { placed++; return { success: true }; },
+      } });
+      for (let n = 0; n < 2; n++) {
+        await assert.rejects(eng._test.handleOrderFill({ orderId: 'tp-unknown', side: 'sell', isPartialFill: true, filledSize: 0.003 }), /cancellation unresolved/);
+      }
+      assert.deepEqual(body, before);
+      assert.equal(removed, 0);
+      assert.equal(placed, 0);
+      assert.equal(ingested, 0);
+    });
+  }
+
+  for (const terminal of ['CANCELLED', 'FILLED']) {
+    it(`accounts final ${terminal} fills once after an incomplete response`, async () => {
+      const body = makeBody(`terminal-${terminal}`, 50000, 0.01, `tp-${terminal}`);
+      body.assetOnOrder = 0.009;
+      const filledSize = terminal === 'FILLED' ? 0.009 : 0.003;
+      let complete = false;
+      let placed = 0;
+      const eng = makeEngine({ bodies: [body, makeBody('other', 50000, 0.01, 'tp-other')], adapter: {
+        cancelOrder: async () => ({ success: false }),
+        getOrder: async () => ({ status: terminal, filledSize, averageFilledPrice: 51000 }),
+        getOpenOrders: async () => [],
+        getOrderFills: async () => complete ? [{ tradeId: `fill-${terminal}`, orderId: body.tpOrderId || `tp-${terminal}`, side: 'SELL', size: filledSize, price: 51000, tradeTime: new Date().toISOString() }] : [],
+      }, executor: {
+        placeBodyTpOrder: async () => { placed++; return { success: true, orderId: 'replacement' }; },
+      } });
+      const event = { orderId: `tp-${terminal}`, side: 'sell', isPartialFill: true, filledSize: 0.001 };
+      await assert.rejects(eng._test.handleOrderFill(event), /final fills incomplete/);
+      assert.equal(body.assetQty, 0.01);
+      complete = true;
+      // Keep exchange fill identity fixed after the body is reprotected.
+      eng._test.setAdapter(makeAdapter({
+        cancelOrder: async () => ({ success: false }),
+        getOrder: async () => ({ status: terminal, filledSize, averageFilledPrice: 51000 }),
+        getOpenOrders: async () => [],
+        getOrderFills: async () => [{ tradeId: `fill-${terminal}`, orderId: event.orderId, side: 'SELL', size: filledSize, price: 51000, tradeTime: new Date().toISOString() }],
+      }));
+      await eng._test.handleOrderFill(event);
+      const after = structuredClone(eng._getPositionState());
+      await eng._test.handleOrderFill(event);
+      assert.deepEqual(eng._getPositionState(), after);
+      assert.equal(placed, terminal === 'CANCELLED' ? 1 : 0);
+      if (terminal === 'CANCELLED') assert.equal(body.assetQty, 0.007);
+      else assert.equal(after.celestialBodies.some(b => b.id === body.id), false);
+    });
+  }
 });

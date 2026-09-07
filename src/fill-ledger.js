@@ -1278,13 +1278,14 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
 
   /**
    * Annotate a fill with additional metadata (e.g. celestial body TP data)
-   * @param {string} orderId - Order ID to annotate fills for
+   * @param {Iterable<string>} orderIds - Order IDs to annotate fills for
    * @param {Object} metadata - Key-value pairs to merge into the fill (bodyId, bodyTier, isBodyOwned, etc.)
    */
-  const annotateFillsByOrderId = (orderId, metadata) => {
+  const annotateFillsByOrderIds = (orderIds, metadata) => {
+    const ids = new Set(orderIds);
     let matched = false;
     for (const [, fill] of fills) {
-      if (fill.orderId === orderId) {
+      if (ids.has(fill.orderId)) {
         Object.assign(fill, metadata);
         matched = true;
         dirtySinceLastPersist = true;
@@ -1295,6 +1296,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       persist();
     }
   };
+
+  // Keep single-order callers on the same persistence contract.
+  const annotateFillsByOrderId = (orderId, metadata) => annotateFillsByOrderIds([orderId], metadata);
 
   /**
    * Idempotency guard for capital-growth credit (issue #210-B). Capital growth
@@ -1600,6 +1604,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     getDerivedRealizedPnL,
     updateFillCycleId,
     annotateFillsByOrderId,
+    annotateFillsByOrderIds,
     claimCapitalCredit,
     persist,
     /** Mark the in-memory ledger as dirty so the next persist() actually

@@ -421,7 +421,8 @@ module.exports = (app, deps) => {
     const { bodyId } = req.body || {};
     if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
 
-    const result = await getIPC(exchange).request('regime:rollup-body', { bodyId }, exchange, pair).catch(engineError);
+    // Two verified cancellations plus placement can exceed the default 10s IPC deadline.
+    const result = await getIPC(exchange).request('regime:rollup-body', { bodyId }, exchange, pair, 60_000).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -429,7 +430,8 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/rollup-all', async (req, res) => {
     const { exchange } = req.params;
     const pair = getPair(req);
-    const result = await getIPC(exchange).request('regime:rollup-all', {}, exchange, pair).catch(engineError);
+    // Collapse serializes multiple roll-ups, each with exchange settlement checks.
+    const result = await getIPC(exchange).request('regime:rollup-all', {}, exchange, pair, 300_000).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });

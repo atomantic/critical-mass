@@ -45,44 +45,33 @@ const { createContextLogger } = require('./logger');
 const METRICS_INTERVAL_MS = 60000;
 
 /**
- * Cancel a sell TP order that was detected as partially filled by polling.
- *
- * The partial-fill branch in handleOrderFill reduces the body and places a
- * replacement TP, but removeBodyTracking() also drops the orderId from
- * pendingOrders so polling no longer watches it. Without cancelling the
- * original order on the exchange first, additional fills can land on it
- * and are silently lost from the ledger: Gemini has no order-events WS
- * backstop, and on Coinbase the WS would still ingest fills but the body
- * record no longer references that orderId so body-level accounting
- * drifts.
- *
- * Idempotent on already-terminal orders: if the order fully-filled in the
- * race between poll and cancel, adapter.cancelOrder returns success=false
- * and we log a notice; the caller then proceeds with fill ingestion via
- * getOrderFills, which will see the additional fills now that the order
- * is frozen.
- *
- * @param {{adapter: {cancelOrder: Function}, exchange: string, pair?: string, log?: Function}} deps
- * @param {string} orderId
- * @returns {Promise<{cancelled: boolean, error?: Error}>}
+ * Freeze a partial sell before changing its body. A cancel acknowledgement is
+ * not terminal evidence: query status and cross-check the open-order snapshot.
+ * Unknown outcomes retain the original identity for reconciliation/restart.
  */
 const cancelPartialFillOrder = async (deps, orderId) => {
   const { adapter, exchange, pair, log = createContextLogger({ exchange, pair }).warn } = deps;
+  let error;
   try {
-    const result = await adapter.cancelOrder(orderId);
-    if (result?.success) return { cancelled: true };
-    log(
-      `⚠️ [${exchange}] cancelOrder did not confirm for partial TP ${orderId} — likely already terminal; proceeding with fill ingest`,
-      { orderId, orderType: 'body_tp' }
-    );
-    return { cancelled: false };
+    await adapter.cancelOrder(orderId);
   } catch (err) {
-    log(
-      `⚠️ [${exchange}] cancelOrder failed for partial TP ${orderId}: ${err.message} — proceeding; old order may keep filling on exchange`,
-      { orderId, orderType: 'body_tp', error: err.message }
-    );
-    return { cancelled: false, error: err };
+    error = err;
   }
+  try {
+    const order = await adapter.getOrder(orderId);
+    const status = (order?.status || '').toUpperCase();
+    if (['FILLED', 'CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED'].includes(status)) {
+      const openOrders = await adapter.getOpenOrders(pair);
+      if (Array.isArray(openOrders) && !isOrderStillOpen(openOrders, orderId)) {
+        return { cancelled: true, order };
+      }
+    }
+  } catch (err) {
+    error = err;
+  }
+  log(`⚠️ [${exchange}] Partial TP ${orderId} is not confirmed terminal — retaining tracking for reconciliation`,
+    { orderId, orderType: 'body_tp' });
+  return { cancelled: false, ...(error ? { error } : {}) };
 };
 
 /**
@@ -2556,10 +2545,26 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // awaits (WS vs polling).
     // Freeze a partially-filled sell before resizing — see cancelPartialFillOrder.
     if (fillData.isPartialFill && fillData.side?.toLowerCase() === 'sell') {
-      await cancelPartialFillOrder({ adapter, exchange, pair }, fillData.orderId);
+      const cancellation = await cancelPartialFillOrder({ adapter, exchange, pair: productId }, fillData.orderId);
+      if (!cancellation.cancelled) {
+        throw new Error(`Partial TP ${fillData.orderId} cancellation unresolved; retry reconciliation`);
+      }
+      // The sell may have advanced or fully filled while cancellation was in flight.
+      fillData = buildPartialFillData(fillData.orderId, 'sell', cancellation.order, {
+        isPartialFill: !isFilledStatus(cancellation.order),
+        totalFees: cancellation.order.totalFees,
+      });
+      // Require the final fill set before accounting; never synthesize a stale
+      // partial from the pre-cancel poll while the fills endpoint catches up.
+      const finalFills = await adapter.getOrderFills(fillData.orderId);
+      const finalSize = finalFills.reduce((sum, fill) => sum + Number(fill.size || 0), 0);
+      if (!(fillData.filledSize > 0) || !Number.isFinite(finalSize) || Math.abs(finalSize - fillData.filledSize) > 1e-8) {
+        throw new Error(`Partial TP ${fillData.orderId} final fills incomplete; retry reconciliation`);
+      }
+      fillData.confirmedFills = finalFills;
     }
 
-    let rawFills = await adapter.getOrderFills(fillData.orderId);
+    let rawFills = fillData.confirmedFills || await adapter.getOrderFills(fillData.orderId);
 
     // If getOrderFills returns empty but we have fill data from order status (polling detection),
     // retry once after a short delay - Coinbase has eventual consistency
@@ -3794,7 +3799,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
                     await placeBodyTp(body);
                   }
                 }
-              } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING') {
+              } else if (bodyStatus.status === 'OPEN' || bodyStatus.status === 'PENDING' || bodyStatus.status === 'PARTIALLY_FILLED') {
                 if (bodyStatus.filledSize > 0) {
                   // Route partials through handleOrderFill — cancelPartialFillOrder
                   // freezes the order and the partial-fill branch resizes the body,
@@ -4513,16 +4518,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
       // Link all source buy fills to this sell order (use both sourceOrderIds and buyOrders for coverage)
-      const annotatedSrcIds = new Set();
-      for (const srcId of (body.sourceOrderIds || [])) {
-        fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: result.orderId, bodyId: body.id, bodyTier: body.tier });
-        annotatedSrcIds.add(srcId);
-      }
+      // A large merged body can own hundreds of buys. Persist all links in one
+      // ledger write before reporting success, rather than blocking the engine
+      // with a full-ledger rewrite for every buy (and timing out the gateway).
+      const sourceIds = new Set(body.sourceOrderIds || []);
       for (const buyOrder of (body.buyOrders || [])) {
-        if (buyOrder.orderId !== 'core-migration' && !annotatedSrcIds.has(buyOrder.orderId)) {
-          fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: result.orderId, bodyId: body.id, bodyTier: body.tier });
-        }
+        if (buyOrder.orderId && buyOrder.orderId !== 'core-migration') sourceIds.add(buyOrder.orderId);
       }
+      fillLedger.annotateFillsByOrderIds(sourceIds, {
+        sellOrderId: result.orderId, bodyId: body.id, bodyTier: body.tier,
+      });
 
       logger.info(`${tierCfg.emoji} [${exchange}] Body TP placed (${body.tier}): ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency}, body=${body.id.slice(-8)})`);
 

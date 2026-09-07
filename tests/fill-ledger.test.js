@@ -902,6 +902,32 @@ describe('Fill Ledger', () => {
   // =======================================================================
   // 34. annotateFillsByOrderId
   // =======================================================================
+  it('persists a whole body of buy links once, including partial fills and duplicate IDs', () => {
+    const ledger = createTestLedger();
+    for (let i = 0; i < 496; i++) {
+      ledger.ingestFill(makeBuyFill({ tradeId: `batch-${i}`, orderId: `buy-${i}` }), { skipPersist: true });
+    }
+    ledger.ingestFill(makeBuyFill({ tradeId: 'partial', orderId: 'buy-0' }), { skipPersist: true });
+    ledger.ingestFill(makeBuyFill({ tradeId: 'unrelated', orderId: 'other' }), { skipPersist: true });
+    ledger.persist();
+    const writes = ledger._test.getWriteCount();
+    const ids = Array.from({ length: 496 }, (_, i) => `buy-${i}`);
+    ledger.annotateFillsByOrderIds([...ids, 'buy-0', 'missing'], {
+      sellOrderId: 'merged-tp', bodyId: 'merged-body', bodyTier: 'hypergiant',
+    });
+    assert.equal(ledger._test.getWriteCount(), writes + 1);
+    const restored = createTestLedger();
+    restored.load();
+    for (const id of ids) {
+      const fills = restored.getFillsForOrder(id);
+      assert.equal(fills.length, id === 'buy-0' ? 2 : 1);
+      assert.ok(fills.every(f => f.sellOrderId === 'merged-tp' && f.bodyId === 'merged-body'));
+    }
+    assert.equal(restored.getFillsForOrder('other')[0].sellOrderId, undefined);
+    ledger.annotateFillsByOrderIds(['missing'], { sellOrderId: 'unused' });
+    assert.equal(ledger._test.getWriteCount(), writes + 1, 'unmatched batch does not write');
+  });
+
   it('annotateFillsByOrderId merges metadata into matching fills', () => {
     const ledger = createTestLedger();
     ledger.startNewCycle();
