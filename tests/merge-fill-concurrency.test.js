@@ -647,6 +647,45 @@ describe('#316 partial sell terminal reconciliation', () => {
     });
   }
 
+  // An unresolved cancellation makes handleOrderFill throw. Offline recovery
+  // walks EVERY body, so that throw must not abort the pass and starve the
+  // bodies behind it — the reconcile loop retries the failed one on its tick.
+  it('contains an unresolved partial so offline recovery still reaches later bodies', async () => {
+    const stuck = makeBody('offline-stuck', 50000, 0.01, 'tp-stuck');
+    const later = makeBody('offline-later', 50000, 0.01, 'tp-later');
+    const removed = [];
+    let snapshotCalls = 0;
+    const eng = makeEngine({ bodies: [stuck, later], adapter: {
+      // Call 1 is the snapshot checkOfflineOrderFills builds the loop from —
+      // neither TP is listed, so both bodies enter offline recovery. Later
+      // calls come from cancelPartialFillOrder and fail, which is what leaves
+      // the stuck body's cancellation unresolved.
+      getOpenOrders: async () => {
+        if (snapshotCalls++ === 0) return [];
+        throw new Error('open-order lookup unavailable');
+      },
+      getOrder: async (orderId) => (orderId === 'tp-stuck'
+        // Terminal WITH partials → routed through handleOrderFill, which throws.
+        ? { status: 'EXPIRED', filledSize: 0.003, averageFilledPrice: 51000 }
+        // Terminal WITHOUT partials → tracking cleared for re-placement.
+        : { status: 'EXPIRED', filledSize: 0 }),
+      cancelOrder: async () => ({ success: false }),
+      getOrderFills: async () => [],
+    }, executor: {
+      getPendingEntries: () => new Map(),
+      removeBodyTracking: (id) => { removed.push(id); },
+    } });
+
+    await eng._test.checkOfflineOrderFills();
+
+    // The stuck body kept its TP identity for reconciliation...
+    assert.equal(stuck.tpOrderId, 'tp-stuck');
+    assert.equal(removed.includes('tp-stuck'), false);
+    // ...and the body BEHIND it was still recovered.
+    assert.equal(later.tpOrderId, null);
+    assert.deepEqual(removed, ['tp-later']);
+  });
+
   for (const terminal of ['CANCELLED', 'FILLED']) {
     it(`accounts final ${terminal} fills once after an incomplete response`, async () => {
       const body = makeBody(`terminal-${terminal}`, 50000, 0.01, `tp-${terminal}`);

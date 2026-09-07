@@ -413,6 +413,40 @@ const isFilledStatus = (order) =>
   (String(order.status || '').toUpperCase() === 'FILLED' || order.completionPercentage >= 100);
 
 /**
+ * Statuses that mean an order left the book WITHOUT completing — the exchange
+ * either cancelled it, expired it, or failed it. EXPIRED belongs here: it is a
+ * terminal cancellation, not a fill (see order-manager.js:68 and
+ * market-data-service.js:1421, which already classify it that way). Gemini
+ * normalizes any off-book, not-explicitly-cancelled order to EXPIRED, so every
+ * consumer that acts on CANCELLED/FAILED must accept it too or the order is
+ * never reconciled (issue #316).
+ *
+ * CANCELED (single L) is accepted alongside CANCELLED because exchange payloads
+ * disagree on the spelling.
+ */
+const CANCELLED_ORDER_STATUSES = new Set(['CANCELLED', 'CANCELED', 'EXPIRED', 'FAILED']);
+
+/**
+ * True when an order is terminally off the book without having filled.
+ * Case-insensitive; a null/undefined order is never cancelled.
+ *
+ * @param {{status?: string}|null|undefined} order
+ * @returns {boolean}
+ */
+const isCancelledStatus = (order) =>
+  !!order && CANCELLED_ORDER_STATUSES.has(String(order.status || '').toUpperCase());
+
+/**
+ * True when an order has reached ANY terminal state — filled or cancelled.
+ * This is the evidence `cancelPartialFillOrder` requires before it is willing to
+ * stop tracking a partially-filled sell (issue #316).
+ *
+ * @param {{status?: string, completionPercentage?: number}|null|undefined} order
+ * @returns {boolean}
+ */
+const isTerminalStatus = (order) => isFilledStatus(order) || isCancelledStatus(order);
+
+/**
  * True only when a getOrder failure definitively means the order does not
  * exist on the exchange. Network errors, 5xx, auth/IP-allowlist denials, and
  * rate limits all throw too — treating those as "order gone" orphans a live
@@ -449,6 +483,8 @@ const isOrderStillOpen = (openOrders, orderId) =>
 module.exports = {
   BASIS_POINTS_DIVISOR,
   isFilledStatus,
+  isCancelledStatus,
+  isTerminalStatus,
   isOrderNotFoundError,
   isOrderStillOpen,
   readJSON,

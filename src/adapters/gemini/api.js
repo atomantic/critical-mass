@@ -482,14 +482,34 @@ const createGeminiAdapter = (keysPath = null) => {
     const originalAmount = parseFloat(result.original_amount || 0);
     const avgPrice = parseFloat(result.avg_execution_price || 0);
 
-    // Map Gemini status to standard format
-    let status = 'UNKNOWN';
+    // Map Gemini status to standard format.
+    //
+    // Every order that is off the book MUST normalize to a terminal status.
+    // `cancelPartialFillOrder` (regime-engine) only removes a partial sell's
+    // tracking once getOrder reports FILLED/CANCELLED/EXPIRED/FAILED, so a
+    // closed order that fell through to 'UNKNOWN' could never be reconciled:
+    // handleOrderFill would throw on every reconcile tick forever, the partial
+    // fill would never be ingested, and the body would never be reprotected
+    // (issue #316).
+    //
+    // FILLED additionally requires a positive original_amount. Without that
+    // guard a response missing the field reads `0 >= 0` and reports a FILLED
+    // order with filledSize 0 — a false terminal fill that the reconcile loop's
+    // isFilledStatus() branch would act on.
+    let status;
     if (result.is_cancelled) {
       status = 'CANCELLED';
     } else if (result.is_live) {
       status = executedAmount > 0 ? 'PARTIALLY_FILLED' : 'OPEN';
-    } else if (executedAmount >= originalAmount) {
-      status = 'FILLED';
+    } else if (result.is_live === false) {
+      // Positively off the book and not flagged cancelled. A fill needs a real
+      // original_amount to compare against; anything short of it is terminal
+      // but NOT a fill.
+      status = originalAmount > 0 && executedAmount >= originalAmount ? 'FILLED' : 'EXPIRED';
+    } else {
+      // is_live absent/unparseable: we have no evidence either way, so do not
+      // fabricate a terminal verdict. Callers retain tracking and retry.
+      status = 'UNKNOWN';
     }
 
     return {
