@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Large body roll-ups no longer rewrite the fill ledger for every buy** — TP placement persists all buy-to-sell links in one batch, preventing long engine stalls and false gateway timeouts. Roll-up requests also allow time for verified exchange cancellations.
 - **UpDown validation and safety** — Expired contracts remain in the no-trade zone; an invalid paper-book close preserves the position for retry. Historical baseline drawdown now reports dollars instead of treating P&L as account equity, and an evaluation beyond available candles no longer replays warmup data.
 
 ### Validation

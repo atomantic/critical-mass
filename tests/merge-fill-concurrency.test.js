@@ -401,6 +401,28 @@ describe('#196 manualMergeBody — lock acquisition', () => {
 // ---------------------------------------------------------------------------
 
 describe('#196 _mergeBodyImpl — successful merge folds source into target', () => {
+  it('links hundreds of merged buys with one durable ledger write', async () => {
+    const source = makeBody('batch-source', 50000, 0.01, 'tp-batch-source');
+    const target = makeBody('batch-target', 51000, 0.02, 'tp-batch-target');
+    target.buyOrders = Array.from({ length: 495 }, (_, i) => ({ orderId: `batch-buy-${i}` }));
+    const eng = makeEngine({ bodies: [source, target] });
+    const ledger = eng.getFillLedger();
+    const buys = [...source.buyOrders, ...target.buyOrders];
+    for (const { orderId } of buys) {
+      ledger.ingestFill({ tradeId: orderId, orderId, side: 'buy', price: '50000', size: '0.00001' }, { skipPersist: true });
+    }
+    ledger.persist();
+    const writes = ledger._test.getWriteCount();
+    const result = await eng.manualMergeBody(source.id, { targetId: target.id });
+    assert.equal(result.success, true);
+    assert.equal(ledger._test.getWriteCount(), writes + 1, 'whole roll-up flushes links once');
+    for (const { orderId } of buys) {
+      const fill = ledger.getFillsForOrder(orderId)[0];
+      assert.equal(fill.sellOrderId, target.tpOrderId);
+      assert.equal(fill.bodyId, target.id);
+    }
+  });
+
   it('removes the source body and combines qty/cost into the target', async () => {
     const eng = makeEngine({
       bodies: [makeBody('src', 50000, 0.01, 'tp-src'), makeBody('tgt', 51000, 0.02, 'tp-tgt')],

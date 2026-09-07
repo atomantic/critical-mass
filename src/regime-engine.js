@@ -4513,16 +4513,16 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
 
       // Link all source buy fills to this sell order (use both sourceOrderIds and buyOrders for coverage)
-      const annotatedSrcIds = new Set();
-      for (const srcId of (body.sourceOrderIds || [])) {
-        fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: result.orderId, bodyId: body.id, bodyTier: body.tier });
-        annotatedSrcIds.add(srcId);
-      }
+      // A large merged body can own hundreds of buys. Persist all links in one
+      // ledger write before reporting success, rather than blocking the engine
+      // with a full-ledger rewrite for every buy (and timing out the gateway).
+      const sourceIds = new Set(body.sourceOrderIds || []);
       for (const buyOrder of (body.buyOrders || [])) {
-        if (buyOrder.orderId !== 'core-migration' && !annotatedSrcIds.has(buyOrder.orderId)) {
-          fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: result.orderId, bodyId: body.id, bodyTier: body.tier });
-        }
+        if (buyOrder.orderId && buyOrder.orderId !== 'core-migration') sourceIds.add(buyOrder.orderId);
       }
+      fillLedger.annotateFillsByOrderIds(sourceIds, {
+        sellOrderId: result.orderId, bodyId: body.id, bodyTier: body.tier,
+      });
 
       logger.info(`${tierCfg.emoji} [${exchange}] Body TP placed (${body.tier}): ${sellQty} ${baseCurrency} @ ${fmtPrice(tpPrice)} (holdback=${holdbackQty.toFixed(6)} ${baseCurrency}, body=${body.id.slice(-8)})`);
 
