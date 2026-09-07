@@ -501,12 +501,15 @@ const createGeminiAdapter = (keysPath = null) => {
       status = 'CANCELLED';
     } else if (result.is_live) {
       status = executedAmount > 0 ? 'PARTIALLY_FILLED' : 'OPEN';
-    } else if (originalAmount > 0 && executedAmount >= originalAmount) {
-      status = 'FILLED';
+    } else if (result.is_live === false) {
+      // Positively off the book and not flagged cancelled. A fill needs a real
+      // original_amount to compare against; anything short of it is terminal
+      // but NOT a fill.
+      status = originalAmount > 0 && executedAmount >= originalAmount ? 'FILLED' : 'EXPIRED';
     } else {
-      // Off the book, not flagged cancelled, and short of the requested size
-      // (or the size fields are unusable): terminal, but not a fill.
-      status = 'EXPIRED';
+      // is_live absent/unparseable: we have no evidence either way, so do not
+      // fabricate a terminal verdict. Callers retain tracking and retry.
+      status = 'UNKNOWN';
     }
 
     return {

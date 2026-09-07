@@ -274,6 +274,17 @@ describe('#316 partial-sell freeze — Gemini status normalization', () => {
     assert.equal(result.order.filledSize, 0);
   });
 
+  // An off-book verdict needs positive evidence. A payload that carries no
+  // usable is_live flag tells us nothing, so it must NOT be reported terminal —
+  // the caller retains tracking and retries rather than acting on a guess.
+  it('reports UNKNOWN — not a terminal status — when is_live is absent', async () => {
+    const result = await freeze(geminiFixture({
+      order: geminiOrder({ is_live: undefined, is_cancelled: undefined }),
+    }));
+    assert.equal(result.order, undefined);
+    assert.equal(result.cancelled, false);
+  });
+
   it('confirms terminal status even when the cancel request itself failed', async () => {
     const result = await freeze(geminiFixture({
       order: geminiOrder({ is_cancelled: true }),

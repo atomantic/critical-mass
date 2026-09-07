@@ -1064,7 +1064,21 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             { bodyId: body.id, orderId: body.tpOrderId, status: orderStatus.status, filledSize: orderStatus.filledSize }
           );
           orderExecutor.markSettled(body.tpOrderId);
-          await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', orderStatus));
+          // Contain per body. handleOrderFill THROWS when the partial sell's
+          // cancellation is unresolved (issue #316) — e.g. the open-order
+          // cross-check failed. Without this, one unresolved body aborts the
+          // whole offline-recovery pass and every remaining body is skipped.
+          // The reconcile loop re-checks each body on its own tick anyway, so
+          // logging and moving on is the correct degradation (mirrors the
+          // reconcile loop's terminal guard, issue #99).
+          try {
+            await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', orderStatus));
+          } catch (err) {
+            logger.error(
+              `❌ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} offline partial-fill recovery failed: ${err.message} — retrying on next reconcile`,
+              { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', error: err.message }
+            );
+          }
           continue;
         }
 
@@ -5931,6 +5945,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       mergeBody: _mergeBodyImpl,
       handleOrderFill,
       reconcileTick,
+      checkOfflineOrderFills,
       // Clear the background TTL timers a merge/fill schedules (5-min dedup
       // sweeps) so a test process can exit without waiting on them.
       clearTimers: () => { for (const t of ttlTimers) clearTimeout(t); ttlTimers.clear(); },
