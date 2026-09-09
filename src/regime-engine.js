@@ -25,6 +25,7 @@ const { createRegimeDetector } = require('./regime-detector');
 const { createPositionSizer } = require('./position-sizer');
 const { createRiskManager } = require('./risk-manager');
 const { createOrderExecutor } = require('./order-executor');
+const { classifyBodyTpCancellation } = require('./cancellation-result');
 const { createDryRunExecutor } = require('./dry-run-executor');
 const { createRecoveryModule } = require('./recovery');
 const { createTpOptimizer } = require('./tp-optimizer');
@@ -2766,11 +2767,12 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           pendingMergeTpOrders.set(mergeTarget.tpOrderId, { ...mergeTarget });
         }
         const cancelResult = await orderExecutor.cancelBodyTpOrder(mergeTarget.id, mergeTarget.tpOrderId);
-        if (!cancelResult.cancelled) {
+        const cancellationOutcome = classifyBodyTpCancellation(cancelResult);
+        if (cancellationOutcome === 'filled' || cancellationOutcome === 'unresolved') {
           if (mergeTarget.tpOrderId) pendingMergeTpOrders.delete(mergeTarget.tpOrderId);
-          logger.warn(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancelResult.filled ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
+          logger.warn(`⚠️ [${exchange}] Body ${mergeTarget.id.slice(-8)} TP ${cancellationOutcome === 'filled' ? 'already filled' : 'cancel failed'}, redirecting buy to new body`);
           mergeTarget = null;
-        } else if (cancelResult.filledSize > 0) {
+        } else if (cancellationOutcome === 'cancelled_with_execution') {
           // Partial-during-cancel race (issue #227): the pre-check above saw the
           // target TP clean, but it partially filled WHILE we were cancelling.
           // safeCancelOrder now surfaces the sold quantity via filledSize, so we
@@ -5944,6 +5946,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       consolidateDustBodies,
       mergeBody: _mergeBodyImpl,
       handleOrderFill,
+      getMergeTpSnapshots: () => ({ pending: new Map(pendingMergeTpOrders), completed: new Map(completedMergeTpOrders) }),
       reconcileTick,
       checkOfflineOrderFills,
       // Clear the background TTL timers a merge/fill schedules (5-min dedup

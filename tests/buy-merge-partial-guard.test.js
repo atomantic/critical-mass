@@ -139,6 +139,7 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     // it to its own body; (2) books the sold tranche itself immediately, rather
     // than deferring to a future WS/poll event that may never arrive once
     // cancelBodyTpOrder has already removed the order from executor tracking.
+    const calls = [];
     let getOrderCalls = 0;
     let cancelCalls = 0;
     const target = makeBody('target', 50000, 0.01, 'tp-target');
@@ -147,16 +148,24 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
       adapter: {
         // Pre-check is clean — the partial only surfaces from the cancel result.
         getOrder: async () => {
+          calls.push('status:tp-target');
           getOrderCalls++;
           return getOrderCalls === 1
             ? { filledSize: 0, status: 'OPEN' }
             : { filledSize: 0.004, status: 'CANCELLED', averageFilledPrice: 50500 };
         },
-        getOpenOrders: async () => [],
+        getOpenOrders: async () => { calls.push('open-orders'); return []; },
         // Fills are keyed by orderId: the buy's own fill for 'buy-new', and the
         // target TP's partial sell fill for 'tp-target' (the immediate booking).
         getOrderFills: async (orderId) => {
+          calls.push(`fills:${orderId}`);
           if (orderId === 'tp-target') {
+            const snapshots = eng._test.getMergeTpSnapshots();
+            assert.equal(snapshots.pending.has(orderId), false);
+            assert.equal(snapshots.completed.get(orderId).assetQty, 0.01);
+            assert.equal(target.tpOrderId, null);
+            assert.equal(target.assetOnOrder, 0);
+            assert.equal(target.tpPrice, 0);
             return [{
               tradeId: 'tp-target-t1',
               orderId: 'tp-target',
@@ -173,7 +182,9 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
         },
       },
       executor: {
+        placeBodyTpOrder: async () => { calls.push('place'); return { success: true, orderId: `tp-new-${calls.length}` }; },
         cancelBodyTpOrder: async () => {
+          calls.push('cancel:tp-target');
           cancelCalls++;
           return { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
         },
@@ -182,6 +193,8 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
 
     await eng._test.handleOrderFill({ orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 });
 
+    assert.deepEqual(calls, ['fills:buy-new', 'status:tp-target', 'cancel:tp-target', 'status:tp-target', 'open-orders', 'fills:tp-target', 'place', 'place']);
+    assert.equal(eng._test.getMergeTpSnapshots().completed.has('tp-target'), false);
     const bodies = eng._getPositionState().celestialBodies;
     assert.equal(getOrderCalls, 2, 'pre-check saw a clean target, then terminal status was verified');
     assert.equal(cancelCalls, 1, 'the merge proceeded to cancel the clean target TP');
@@ -192,6 +205,13 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     // 0.01 - 0.004 sold = 0.006 remaining — deducted immediately, not deferred.
     assert.ok(Math.abs(liveTarget.assetQty - 0.006) < 1e-9, `sold tranche deducted immediately, got ${liveTarget.assetQty}`);
     assert.ok(liveTarget.tpOrderId && liveTarget.tpOrderId !== 'tp-target', 'a fresh, correctly-sized TP was re-placed on the deducted body');
+    assert.equal(liveTarget.costBasis, 300, 'sold tranche cost is deducted immediately');
+    const ledger = JSON.parse(fs.readFileSync(path.join(JUNK_DIR, 'fill-ledger.json'), 'utf8'));
+    const sell = ledger.find(fill => fill.orderId === 'tp-target');
+    assert.equal(sell.price, 50500);
+    assert.equal(sell.size, 0.004);
+    assert.equal(sell.fee, 0.02);
+    assert.ok(Math.abs(sell.bodyPnl - 1.98) < 1e-9, 'value and fees reach the booked sale');
 
     const newBody = bodies.find(b => b.id !== 'target');
     assert.ok(
@@ -216,4 +236,64 @@ describe('#201 buy-fill merge — partial-fill pre-check', () => {
     assert.equal(bodies.length, 1, 'clean target absorbs the buy (one merged body)');
     assert.ok(bodies[0].assetQty > 0.019, `merged qty ~0.02, got ${bodies[0].assetQty}`);
   });
+});
+
+
+describe('buy-merge cancellation outcomes — characterization (#331)', () => {
+  for (const [name, result, merges] of [
+    ['clean', { cancelled: true, filled: false, filledSize: 0 }, true],
+    ['fully filled', { cancelled: false, filled: true, filledSize: 0.009 }, false],
+    ['unresolved', { cancelled: false, filled: false, filledSize: 0 }, false],
+    ['rejected', null, false],
+  ]) {
+    it(`preserves ordered effects for ${name} cancellation`, async () => {
+      const calls = [];
+      const target = makeBody('target', 50000, 0.01, 'tp-target');
+      const before = structuredClone(target);
+      const eng = makeEngine({
+        bodies: [target],
+        adapter: {
+          getOrderFills: async (id) => { calls.push(`fills:${id}`); return buyFills(id, 0.01, 50000); },
+          getOrder: async (id) => { calls.push(`status:${id}`); return { filledSize: 0, status: 'OPEN' }; },
+        },
+        executor: {
+          cancelBodyTpOrder: async (bodyId, id) => {
+            calls.push(`cancel:${id}`);
+            assert.equal(bodyId, 'target');
+            assert.deepEqual(eng._test.getMergeTpSnapshots().pending.get(id), before);
+            if (!result) throw new Error('cancel rejected');
+            return result;
+          },
+          placeBodyTpOrder: async () => {
+            calls.push('place');
+            const snapshots = eng._test.getMergeTpSnapshots();
+            assert.equal(snapshots.pending.has('tp-target'), false);
+            assert.equal(snapshots.completed.has('tp-target'), merges);
+            if (merges) {
+              const snapshot = snapshots.completed.get('tp-target');
+              assert.equal(snapshot.assetQty, before.assetQty);
+              assert.equal(snapshot.costBasis, before.costBasis);
+              assert.equal(snapshot.tpOrderId, 'tp-target');
+              // Existing snapshots are shallow: merge appends to the shared order arrays.
+              assert.ok(snapshot.sourceOrderIds.includes('buy-new'));
+            }
+            return { success: true, orderId: 'tp-replacement' };
+          },
+        },
+      });
+      const fill = { orderId: 'buy-new', side: 'buy', filledSize: 0.01, averageFilledPrice: 50000 };
+      if (!result) await assert.rejects(eng._test.handleOrderFill(fill), /cancel rejected/);
+      else await eng._test.handleOrderFill(fill);
+      assert.deepEqual(calls, ['fills:buy-new', 'status:tp-target', 'cancel:tp-target', ...(result ? ['place'] : [])]);
+      const bodies = eng._getPositionState().celestialBodies;
+      assert.equal(bodies.length, merges || !result ? 1 : 2);
+      if (merges) {
+        assert.ok(Math.abs(bodies[0].assetQty - 0.02) < 1e-9);
+        assert.equal(bodies[0].tpOrderId, 'tp-replacement');
+      } else assert.deepEqual(target, before);
+      const snapshots = eng._test.getMergeTpSnapshots();
+      assert.equal(snapshots.pending.has('tp-target'), !result);
+      assert.equal(snapshots.completed.has('tp-target'), merges);
+    });
+  }
 });
