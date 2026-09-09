@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-342] Candle charts reuse timestamp labels** — Bound per-chart label storage to displayed buckets and invalidate on exchange, interval, or browser time-zone changes while preserving live snapshots.
 - **[issue-340] UpDown signal cycles name momentum and history steps** — Extract private helpers while preserving tick arithmetic, history debounce, paper fills, and ordered persistence and publication.
 - **[issue-331] Buy-merge decisions name body TP cancellation outcomes** — Make execution-bearing cancellations explicit while preserving immediate fill booking, result compatibility, and polling ownership.
 - **[issue-329] Filled Orders reuses historical groups across ticker updates** — Memoize cycle accounting by fill snapshot while retaining live reserve valuation, search, and pending-TP orphan visibility.
