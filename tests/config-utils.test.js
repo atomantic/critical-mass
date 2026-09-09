@@ -377,6 +377,29 @@ describe('validateRegimeConfig', () => {
     assert.equal(validateRegimeConfig({ atrPeriod: 14 }).valid, true);
   });
 
+  it('re-exports the preset contract and accepts all complete defaults', () => {
+    const contract = require('../src/regime-preset-contract');
+    assert.equal(DEFAULT_AGGRESSIVENESS_PRESETS, contract.DEFAULT_AGGRESSIVENESS_PRESETS);
+    assert.equal(configUtils.MERGE_PROXIMITY_BOUNDS, contract.MERGE_PROXIMITY_BOUNDS);
+    assert.equal(validateRegimeConfig(REGIME_DEFAULTS).valid, true);
+    for (const preset of Object.values(DEFAULT_AGGRESSIVENESS_PRESETS)) {
+      assert.deepStrictEqual(validateRegimeConfig(preset), { valid: true, errors: [] });
+    }
+  });
+
+  it('uses the preset rules for all shared field boundaries and malformed values', () => {
+    const { PRESET_KEYS, PRESET_FIELD_RULES } = require('../src/regime-preset-contract');
+    for (const key of PRESET_KEYS) {
+      const { min, max } = PRESET_FIELD_RULES[key];
+      for (const value of [min, max]) {
+        assert.equal(validateRegimeConfig({ [key]: value }).valid, true, key);
+      }
+      for (const value of [min - 1, max + 1, NaN, Infinity, -Infinity, null, '2', true]) {
+        assert.equal(validateRegimeConfig({ [key]: value }).valid, false, key);
+      }
+    }
+  });
+
   it('reports kFactor out of range', () => {
     assert.equal(validateRegimeConfig({ kFactor: 0.1 }).valid, false);
     assert.equal(validateRegimeConfig({ kFactor: 0.9 }).valid, false);

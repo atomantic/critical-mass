@@ -9,6 +9,8 @@ const {
   AGGRESSIVENESS_SCHEMA,
 } = require('../src/config-validator');
 
+const { DEFAULT_AGGRESSIVENESS_PRESETS, PRESET_KEYS, PRESET_FIELD_RULES, LEGACY_PRESET_FIELD_RULES } = require('../src/regime-preset-contract');
+
 describe('validateConfigUpdate', () => {
   it('returns empty value and error for non-object input', () => {
     for (const bad of [null, undefined, 'str', 42, true, [1, 2]]) {
@@ -105,14 +107,48 @@ describe('validateConfigUpdate', () => {
     }
   });
 
-  it('AGGRESSIVENESS_SCHEMA includes all preset fields', () => {
-    const expected = [
-      'kFactor', 'minIntervalMs', 'maxIntervalMs',
-      'entryOffsetBps', 'entryOffsetUpBps', 'entryOffsetDownBps', 'orderStaleMs',
-      'cautionScale', 'trendScale', 'maxCycleBuys',
-    ];
-    for (const field of expected) {
-      assert.ok(AGGRESSIVENESS_SCHEMA[field], `missing field: ${field}`);
+  it('covers exactly the declared preset keys and preserves every complete preset', () => {
+    const declaredKeys = [...new Set(Object.values(DEFAULT_AGGRESSIVENESS_PRESETS).flatMap(Object.keys))].sort();
+    assert.deepStrictEqual([...PRESET_KEYS].sort(), declaredKeys);
+    assert.deepStrictEqual(Object.keys(PRESET_FIELD_RULES).sort(), declaredKeys);
+    for (const [level, preset] of Object.entries(DEFAULT_AGGRESSIVENESS_PRESETS)) {
+      const { value, errors } = validateConfigUpdate(AGGRESSIVENESS_SCHEMA, preset);
+      assert.deepStrictEqual(errors, [], level);
+      assert.deepStrictEqual(value, preset, level);
+    }
+  });
+
+  it('accepts shared boundaries and rejects invalid values for every canonical field', () => {
+    for (const key of PRESET_KEYS) {
+      const { min, max } = PRESET_FIELD_RULES[key];
+      for (const boundary of [min, max]) {
+        const result = validateConfigUpdate(AGGRESSIVENESS_SCHEMA, { [key]: boundary });
+        assert.deepStrictEqual(result.errors, [], key);
+        assert.deepStrictEqual(result.value, { [key]: boundary });
+      }
+      for (const invalid of [min - 1, max + 1, NaN, Infinity, -Infinity, null, '2', true]) {
+        const result = validateConfigUpdate(AGGRESSIVENESS_SCHEMA, { [key]: invalid });
+        assert.equal(result.errors.length, 1, key);
+        assert.deepStrictEqual(result.value, {});
+      }
+    }
+  });
+
+  it('rejects the four values formerly accepted at save but rejected at application', () => {
+    for (const update of [{ kFactor: 0.9 }, { minIntervalMs: 1000 }, { maxIntervalMs: 86400000 }, { maxCycleBuys: 1 }]) {
+      assert.equal(validateConfigUpdate(AGGRESSIVENESS_SCHEMA, update).errors.length, 1);
+    }
+  });
+
+  it('keeps legacy schema-only keys separate and preserves unknown-key behavior', () => {
+    const legacy = { targetMarkup: 0.1, minMarkup: 0.01, maxMarkup: 1, sizeMultiplier: 2 };
+    assert.deepStrictEqual(Object.keys(LEGACY_PRESET_FIELD_RULES).sort(), Object.keys(legacy).sort());
+    assert.ok(Object.keys(legacy).every(key => !PRESET_KEYS.includes(key)));
+    assert.deepStrictEqual(validateConfigUpdate(AGGRESSIVENESS_SCHEMA, { ...legacy, obsolete: 42 }),
+      { value: legacy, errors: [] });
+    for (const key of Object.keys(legacy)) {
+      assert.equal(validateConfigUpdate(AGGRESSIVENESS_SCHEMA, { [key]: -1 }).errors.length, 1);
+      assert.equal(validateConfigUpdate(AGGRESSIVENESS_SCHEMA, { [key]: 'bad' }).errors.length, 1);
     }
   });
 

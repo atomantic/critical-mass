@@ -1094,6 +1094,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                               <FormInput label="Caution Scale" value={params.cautionScale} onChange={(v) => handlePresetParamChange(id, 'cautionScale', v)} type="number" />
                               <FormInput label="Trend Scale" value={params.trendScale} onChange={(v) => handlePresetParamChange(id, 'trendScale', v)} type="number" />
                               <FormInput label="Max Cycle Buys" value={params.maxCycleBuys} onChange={(v) => handlePresetParamChange(id, 'maxCycleBuys', v)} type="number" />
+                              <FormInput label="Merge Proximity Scale" hint="0.25–3.0; higher values merge nearby bodies more readily" value={params.mergeProximityScale} onChange={(v) => handlePresetParamChange(id, 'mergeProximityScale', v)} type="number" />
                             </div>
                           </div>
                         )}
