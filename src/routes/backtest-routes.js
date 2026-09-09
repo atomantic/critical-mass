@@ -202,7 +202,8 @@ module.exports = (app, deps) => {
       onProgress: (progress) => {
         io.emit('optimizer:progress', { ...progress, runId, exchange, pair, requestKey });
         if (progress.latestResult) {
-          if (!currentBestResult || progress.latestResult.metrics.totalValue > currentBestResult.metrics.totalValue) {
+          // The engine owns ranking for both streaming and completed results.
+          if (!currentBestResult || optimizerEngine.compareOptimizerResults(progress.latestResult, currentBestResult) < 0) {
             currentBestResult = progress.latestResult;
             io.emit('optimizer:newBest', { ...currentBestResult, runId, exchange, pair, requestKey });
           }

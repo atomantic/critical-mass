@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-327] Order consolidation separates cancellation and recovery** — Extract private operational steps while preserving sequential exchange calls, gap-fill exclusions, result shapes, and replacement-order mappings.
 
 ### Fixed
+- **[issue-338] Streaming optimizer winners use domain ranking** — Keep Current Best consistent with completed results by preferring full coverage before total value and retaining the first result on ties.
 - **[issue-336] Trade History retains rejected edits** — Reuse dashboard actions for save/delete feedback, preserve the editor on failures, and disable conflicting controls while mutations are pending.
 - **[issue-334] TP minimum checks use shared increment rounding** — Preserve valid minimum-size sells and holdback at floating-point boundaries while keeping genuinely sub-minimum bodies eligible for dust consolidation.
 - **Generated release notes link to versioned setup instructions** — Replace the broken copy-and-start recipe with the release's README guide for installation, operator enrollment, exchange credentials, and building the dashboard.

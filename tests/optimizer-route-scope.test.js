@@ -4,12 +4,14 @@ const assert = require('node:assert/strict');
 const { SimulationRunCoordinator } = require('../src/simulation-run-coordinator');
 
 const optimizerPath = require.resolve('../src/optimizer-engine');
+const { compareOptimizerResults } = require(optimizerPath);
 const pending = [];
 require.cache[optimizerPath] = {
   id: optimizerPath,
   filename: optimizerPath,
   loaded: true,
   exports: {
+    compareOptimizerResults,
     runOptimizer: (options) => new Promise((resolve, reject) => pending.push({ options, resolve, reject })),
     getTopResults: (results) => results,
   },
@@ -205,4 +207,72 @@ describe('optimizer route event scoping', () => {
     assert.equal(res.body.cached, true);
     assert.equal(pending.length, 0);
   });
+});
+
+describe('optimizer streaming ranking matches completed ranking', () => {
+  const record = (period, totalValue, underCovered) => ({
+    params: { intervalType: 'daily', sellMarkupPercent: 2, period, underCovered },
+    metrics: { totalValue },
+  });
+  const covered = record('30D', 11000, false);
+  const uncovered = record('1Y', 12000, true);
+  const improved = record('60D', 11500, false);
+  const tied = record('90D', 11500, false);
+  const uncoveredImproved = record('90D', 13000, true);
+  const uncoveredTied = record('60D', 13000, true);
+
+  for (const { name, records, promotions } of [
+    { name: 'covered result arrives first', records: [covered, uncovered], promotions: [covered] },
+    { name: 'covered result arrives last', records: [uncovered, covered], promotions: [uncovered, covered] },
+    { name: 'same coverage improvements and ties', records: [covered, improved, tied, covered], promotions: [covered, improved] },
+    { name: 'all under-covered improvements and ties', records: [uncovered, uncoveredImproved, uncoveredTied, uncovered], promotions: [uncovered, uncoveredImproved] },
+  ]) {
+    it(name, async () => {
+      pending.length = 0;
+      let runHandler;
+      const events = [];
+      const writes = [];
+      registerBacktestRoutes({
+        get: () => {}, delete: () => {},
+        post: (path, handler) => { if (path.endsWith('/optimizer/run')) runHandler = handler; },
+      }, {
+        io: { emit: (name, payload) => events.push({ name, payload }) },
+        readJSON: () => null,
+        writeJSON: (path, payload) => writes.push(payload),
+        DATA_DIR: '/tmp',
+      });
+      let acknowledgement;
+      runHandler({
+        params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' },
+        body: { forceRefresh: true, runId: 'ranking_run_338' },
+      }, {
+        json(body) { acknowledgement = body; return this; },
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(pending.length, 1);
+      records.forEach((latestResult, index) => pending[0].options.onProgress({
+        current: index + 1, total: records.length,
+        percentComplete: (index + 1) / records.length * 100, latestResult,
+      }));
+      const sorted = [...records].sort(compareOptimizerResults);
+      const result = { ...resultFor('BTC-USDC', 0), bestResult: sorted[0], results: sorted };
+      pending[0].resolve(result);
+      await new Promise(resolve => setImmediate(resolve));
+
+      const winners = events.filter(event => event.name === 'optimizer:newBest');
+      assert.deepEqual(winners.map(({ payload }) => ({ params: payload.params, metrics: payload.metrics })), promotions);
+      const completed = events.filter(event => event.name === 'optimizer:complete');
+      assert.equal(completed.length, 1);
+      assert.equal(winners.at(-1).payload.params, completed[0].payload.bestResult.params);
+      assert.equal(winners.at(-1).payload.metrics, completed[0].payload.bestResult.metrics);
+      for (const { name, payload } of events) {
+        assert.equal(payload.runId, acknowledgement.runId);
+        assert.equal(payload.exchange, 'coinbase');
+        assert.equal(payload.pair, 'BTC-USDC');
+        if (name !== 'optimizer:complete') assert.equal(payload.requestKey, acknowledgement.requestKey);
+      }
+      assert.deepEqual(completed[0].payload.topResults, sorted);
+      assert.deepEqual(writes, [completed[0].payload]);
+    });
+  }
 });
