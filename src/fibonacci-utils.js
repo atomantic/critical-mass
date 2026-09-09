@@ -100,6 +100,23 @@ const createInitialFibState = () => ({
 });
 
 /**
+ * Read buys outside the active sell's placement-time coverage, including holdback.
+ * Missing covered-asset means legacy fully-covered state; explicit zero is a real
+ * snapshot. Asset presence alone selects all three differences, preserving the
+ * arithmetic of incomplete snapshots without normalization.
+ * @param {Partial<import('./types').BotState>} state - Current cumulative and covered fields
+ * @returns {{ asset: number, cost: number, position: number }} Uncovered buys
+ */
+const getUncoveredFibBuys = (state) => {
+  const hasCoverageSnapshot = state.fibSellOrderCoveredAsset !== undefined;
+  return {
+    asset: hasCoverageSnapshot ? (state.fibCumulativeAsset || 0) - state.fibSellOrderCoveredAsset : 0,
+    cost: hasCoverageSnapshot ? (state.fibCumulativeCost || 0) - state.fibSellOrderCoveredCost : 0,
+    position: hasCoverageSnapshot ? (state.fibPosition || 0) - state.fibSellOrderCoveredPosition : 0,
+  };
+};
+
+/**
  * Reset Fibonacci state after a cycle completes
  * @returns {Object} Reset Fibonacci state
  */
@@ -152,6 +169,7 @@ module.exports = {
   getFibonacciSellQuantity,
   createInitialFibState,
   resetFibState,
+  getUncoveredFibBuys,
   getFibonacciPreview,
   getFibonacciCumulativeSpend,
 };

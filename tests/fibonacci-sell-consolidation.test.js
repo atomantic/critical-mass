@@ -7,6 +7,7 @@ const {
   creditFibPartialSell,
   updateAfterFibSellOrder,
   updateAfterFibSellFill,
+  settleFibSellAndCarryUncoveredBuys,
   updateAfterFibBuy,
 } = require('../src/state-tracker');
 const { getFibonacciSellQuantity, createInitialFibState } = require('../src/fibonacci-utils');
@@ -320,4 +321,77 @@ describe('creditFibPartialSell (Bug B) — book executed portion without resetti
     assert.ok(Math.abs(state.netFees - (4 + 1.4)) < 1e-9);
     assert.ok(Math.abs(state.totalFees - (5 + 1.6)) < 1e-9);
   });
+});
+
+
+describe('completed Fibonacci sell carry contract', () => {
+  const cases = [
+    { name: 'multiple uncovered buys', asset: 0.75, cost: 1503, position: 3, covered: [0.5, 1000, 1], carry: [0.25, 503, 2] },
+    { name: 'fully covered', asset: 0.5, cost: 1000, position: 1, covered: [0.5, 1000, 1] },
+    { name: 'absent asset coverage ignores other snapshot fields', asset: 0.5, cost: 1000, position: 1, covered: [undefined, 0, 0] },
+    { name: 'explicit zero coverage carries all buys', asset: 0.5, cost: 1000, position: 1, covered: [0, 0, 0], carry: [0.5, 1000, 1] },
+    { name: 'below dust threshold', asset: 0.5e-8, cost: 2, position: 2, covered: [0, 0, 0] },
+    { name: 'equal to dust threshold', asset: 1e-8, cost: 2, position: 2, covered: [0, 0, 0] },
+    { name: 'above dust threshold with minimum position', asset: 2e-8, cost: 2, position: 0, covered: [0, 0, 0], carry: [2e-8, 2, 1] },
+    { name: 'incomplete snapshot preserves NaN arithmetic', asset: 0.5, cost: 1000, position: 1, covered: [0, undefined, undefined], carry: [0.5, NaN, NaN] },
+  ];
+  for (const scenario of cases) {
+    it(scenario.name, (t) => {
+      const state = {
+        ...createInitialFibState(),
+        fibCumulativeAsset: scenario.asset,
+        fibCumulativeCost: scenario.cost,
+        fibPosition: scenario.position,
+        fibCycleStartTime: 123,
+        fibActiveSellOrderId: 'completed-sell',
+        fibPendingHoldback: 0.125,
+        fibSellOrderCoveredAsset: scenario.covered[0],
+        fibSellOrderCoveredCost: scenario.covered[1],
+        fibSellOrderCoveredPosition: scenario.covered[2],
+        usdcFundSize: 5000,
+        totalAllocated: 1500,
+        totalIntervalsRun: 3,
+        lastRunId: 'prior-interval',
+        lastRunTimestamp: 100,
+        totalFees: 5,
+        totalRebates: 1,
+        netFees: 4,
+        assetReserves: 0.25,
+        outstandingOrdersAsset: 0.5,
+        outstandingOrdersUSDC: 80,
+      };
+      const before = { ...state };
+      const now = t.mock.method(Date, 'now', () => {
+        assert.equal(state.fibActiveSellOrderId, null, 'clock read follows reset');
+        assert.equal(state.fibCumulativeAsset, 0);
+        return 456;
+      });
+      const result = updateAfterFibSellFill(state, {
+        filledSize: 0.375, fillValue: 100, fees: 3, rebates: 1, netFees: 2, netProceeds: 0,
+      });
+      assert.equal(result, state);
+      assert.deepEqual(state, {
+        ...before,
+        ...createInitialFibState(),
+        usdcFundSize: 5098,
+        totalFees: 8,
+        totalRebates: 2,
+        netFees: 6,
+        assetReserves: 0.375,
+        outstandingOrdersAsset: 0.125,
+        outstandingOrdersUSDC: 0,
+        ...(scenario.carry ? {
+          fibCumulativeAsset: scenario.carry[0],
+          fibCumulativeCost: scenario.carry[1],
+          fibPosition: scenario.carry[2],
+          fibCycleStartTime: 456,
+        } : {}),
+      });
+      assert.equal(now.mock.callCount(), scenario.carry ? 1 : 0);
+    });
+  }
+});
+
+it('keeps the legacy settlement export as the same function', () => {
+  assert.equal(updateAfterFibSellFill, settleFibSellAndCarryUncoveredBuys);
 });
