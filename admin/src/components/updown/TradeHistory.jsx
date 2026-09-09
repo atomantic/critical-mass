@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { History, Plus, Trash2, Edit3, Check, X, ArrowUp, ArrowDown } from 'lucide-react'
+import { useToast } from '../Toast'
+import { runDashboardAction } from '../../utils/dashboardAction.mjs'
 import { parseTradeAmountExpression } from './tradeAmountExpression'
 
 function fmt(v) {
@@ -26,6 +28,8 @@ function isExpression(str) {
 const INVALID_AMOUNT_MESSAGE = 'Enter a finite number or sum, such as 200+300.'
 
 export default function TradeHistory() {
+  const { addToast } = useToast()
+  const [busy, setBusy] = useState(false)
   const [trades, setTrades] = useState([])
   const [summary, setSummary] = useState(null)
   const [showForm, setShowForm] = useState(false)
@@ -61,6 +65,7 @@ export default function TradeHistory() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (busy) return
     const errors = {
       cost: Number.isNaN(parsedCost) ? INVALID_AMOUNT_MESSAGE : undefined,
       returnAmount: Number.isNaN(parsedReturnAmount) ? INVALID_AMOUNT_MESSAGE : undefined,
@@ -77,24 +82,25 @@ export default function TradeHistory() {
       direction: form.direction || undefined,
     }
 
-    if (editId != null) {
-      await fetch(`/api/updown/trades/${editId}`, {
-        method: 'PUT',
+    await runDashboardAction({
+      setBusy,
+      addToast,
+      failureTitle: editId != null ? 'Update trade failed' : 'Save trade failed',
+      failureMessage: 'Unable to save trade. Please try again.',
+      request: () => fetch(editId != null ? `/api/updown/trades/${editId}` : '/api/updown/trades', {
+        method: editId != null ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      })
-    } else {
-      await fetch('/api/updown/trades', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-    }
-    resetForm()
-    fetchTrades()
+      }),
+      onSuccess: () => {
+        resetForm()
+        return fetchTrades()
+      },
+    })
   }
 
   const handleEdit = (trade) => {
+    if (busy) return
     setForm({
       date: trade.date || '',
       cost: trade.cost?.toString() || '',
@@ -108,8 +114,15 @@ export default function TradeHistory() {
   }
 
   const handleDelete = async (id) => {
-    await fetch(`/api/updown/trades/${id}`, { method: 'DELETE' })
-    fetchTrades()
+    if (busy) return
+    await runDashboardAction({
+      setBusy,
+      addToast,
+      failureTitle: 'Delete trade failed',
+      failureMessage: 'Unable to delete trade. Please try again.',
+      request: () => fetch(`/api/updown/trades/${id}`, { method: 'DELETE' }),
+      onSuccess: fetchTrades,
+    })
   }
 
   const pnlColor = (v) => v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : 'text-gray-400'
@@ -126,6 +139,7 @@ export default function TradeHistory() {
           )}
         </div>
         <button
+          disabled={busy}
           onClick={() => { resetForm(); setShowForm(!showForm) }}
           className="flex items-center gap-1 px-2 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 rounded transition-colors"
         >
@@ -189,6 +203,7 @@ export default function TradeHistory() {
             <div>
               <label className="text-[10px] text-gray-500 block mb-0.5">Date</label>
               <input
+                disabled={busy}
                 type="date"
                 value={form.date}
                 onChange={e => setForm({ ...form, date: e.target.value })}
@@ -198,6 +213,7 @@ export default function TradeHistory() {
             <div>
               <label className="text-[10px] text-gray-500 block mb-0.5">Cost (Open)</label>
               <input
+                disabled={busy}
                 type="text"
                 inputMode="decimal"
                 value={form.cost}
@@ -218,6 +234,7 @@ export default function TradeHistory() {
             <div>
               <label className="text-[10px] text-gray-500 block mb-0.5">Return (Close)</label>
               <input
+                disabled={busy}
                 type="text"
                 inputMode="decimal"
                 value={form.returnAmount}
@@ -241,6 +258,7 @@ export default function TradeHistory() {
             <div className="flex gap-1">
               {['', 'up', 'down'].map(d => (
                 <button
+                  disabled={busy}
                   key={d}
                   type="button"
                   onClick={() => setForm({ ...form, direction: d })}
@@ -258,6 +276,7 @@ export default function TradeHistory() {
           <div>
             <label className="text-[10px] text-gray-500 block mb-0.5">Note (optional)</label>
             <input
+              disabled={busy}
               type="text"
               value={form.note}
               onChange={e => setForm({ ...form, note: e.target.value })}
@@ -275,12 +294,14 @@ export default function TradeHistory() {
           )}
           <div className="flex gap-2">
             <button
+              disabled={busy}
               type="submit"
               className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
             >
               <Check size={12} /> {editId != null ? 'Update' : 'Save'}
             </button>
             <button
+              disabled={busy}
               type="button"
               onClick={resetForm}
               className="flex-1 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
@@ -315,10 +336,10 @@ export default function TradeHistory() {
                   </td>
                   <td className="py-1 pl-1">
                     <div className="flex gap-0.5">
-                      <button onClick={() => handleEdit(t)} className="text-gray-500 hover:text-blue-400 transition-colors" title="Edit">
+                      <button disabled={busy} onClick={() => handleEdit(t)} className="text-gray-500 hover:text-blue-400 transition-colors" title="Edit">
                         <Edit3 size={11} />
                       </button>
-                      <button onClick={() => handleDelete(t.id)} className="text-gray-500 hover:text-red-400 transition-colors" title="Delete">
+                      <button disabled={busy} onClick={() => handleDelete(t.id)} className="text-gray-500 hover:text-red-400 transition-colors" title="Delete">
                         <Trash2 size={11} />
                       </button>
                     </div>
