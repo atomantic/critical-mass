@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-329] Filled Orders reuses historical groups across ticker updates** — Memoize cycle accounting by fill snapshot while retaining live reserve valuation, search, and pending-TP orphan visibility.
 - **[issue-327] Order consolidation separates cancellation and recovery** — Extract private operational steps while preserving sequential exchange calls, gap-fill exclusions, result shapes, and replacement-order mappings.
 
 ### Fixed
