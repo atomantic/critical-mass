@@ -63,14 +63,8 @@ jobs:
 
           ## Installation
 
-          \`\`\`bash
-          git clone https://github.com/atomantic/critical-mass.git
-          cd critical-mass
-          npm run install:all
-          cp config.json.example config.json
-          # Edit config.json with your exchange credentials
-          npm run pm2:start
-          \`\`\`"
+          Follow the [installation guide](https://github.com/atomantic/critical-mass/blob/v${VERSION}/README.md#installation) for this release, including operator authentication setup.
+          Then configure [exchange API keys and bot settings](https://github.com/atomantic/critical-mass/blob/v${VERSION}/README.md#configuration) and follow the [dashboard startup instructions](https://github.com/atomantic/critical-mass/blob/v${VERSION}/README.md#usage)."
           fi
 
           echo "changelog<<EOF" >> $GITHUB_OUTPUT
