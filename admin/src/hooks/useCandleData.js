@@ -8,6 +8,7 @@ import {
   computeMACDSeries,
 } from '../utils/computeIndicatorSeries'
 import computeHeikinAshi from '../utils/computeHeikinAshi'
+import { createCandleLabelCache } from '../utils/candleLabels.mjs'
 
 /**
  * Default view configurations for BTC price charts.
@@ -252,6 +253,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   const [isLoading, setIsLoading] = useState(true)
 
   const bucketsRef = useRef(new Map())
+  const labelCacheRef = useRef(null)
+  if (labelCacheRef.current === null) labelCacheRef.current = createCandleLabelCache()
   const lastBucketKeyRef = useRef(null)
   const historicalCandlesRef = useRef(null)
   const lastHARef = useRef(null) // previous bucket's HA values for live tick updates
@@ -271,12 +274,11 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     for (const bucket of map.values()) bucket.signalChange = null
     applySignalAnnotations(map, signalAnnotationsRef.current, bucketMs)
 
-    const arr = [...map.entries()]
+    const displayed = [...map.entries()]
       .sort(([a], [b]) => a - b)
       .slice(-maxBuckets)
-      .map(([key, d]) => ({ ...d, label: formatBucketLabel(key, bucketMs) }))
-    setChartData(arr)
-  }, [maxBuckets, bucketMs])
+    setChartData(labelCacheRef.current.sync(displayed, { exchange, bucketMs }))
+  }, [maxBuckets, bucketMs, exchange])
 
   /**
    * Compute HA values on sorted bucket array and write them back into the map.
@@ -436,6 +438,7 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
       populateFromCandles(candles[candleTf])
       syncChart()
     } else {
+      labelCacheRef.current.clear()
       setChartData([])
     }
   }, [view, interval, timeRange, candleTf, populateFromCandles, syncChart, isLoading])
@@ -493,6 +496,8 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
     lastBucketKeyRef.current = bKey
   }, [tickPrice, tickTimestamp, bucketMs, maxBuckets, syncChart, legacyMode])
 
+  useEffect(() => () => labelCacheRef.current.clear(), [])
+
   // Periodic sync (renders chart at most every 5s)
   // NOTE: must use window.setInterval to avoid the custom setInterval (line ~187) shadowing
   useEffect(() => {
@@ -516,20 +521,4 @@ export default function useCandleData(exchange, tickPrice, tickTimestamp, option
   }
 }
 
-/**
- * Format a bucket timestamp for the X axis label
- * @param {number} ts - bucket timestamp
- * @param {number} bucketMs - bucket duration in ms
- * @returns {string}
- */
-export function formatBucketLabel(ts, bucketMs) {
-  const d = new Date(ts)
-  if (bucketMs >= 86_400_000) {
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-  }
-  if (bucketMs >= 3_600_000) {
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
-      d.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })
-  }
-  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
-}
+export { formatBucketLabel } from '../utils/candleLabels.mjs'
