@@ -34,6 +34,31 @@ const isFreshPrice = (price, lastTickAt, now = Date.now(), maxAgeMs = PRICE_STAL
   lastTickAt > 0 && now - lastTickAt >= 0 && now - lastTickAt <= maxAgeMs;
 
 /**
+ * Adjust the original result without letting transient ticks create or cancel a direction.
+ */
+const applyTickMomentumAdjustment = (result, tickMomentum, position) => {
+  const typeBeforeTick = result.type;
+  if (Math.abs(result.score) >= 5 && tickMomentum.magnitude > 0) {
+    const scoreDir = result.score > 0 ? 'up' : 'down';
+    let adjusted = result.score;
+    if (tickMomentum.direction === scoreDir) {
+      const boostFactor = 1 + 0.25 * Math.min(1, tickMomentum.magnitude / 20);
+      adjusted = Math.round(result.score * boostFactor * 100) / 100;
+    } else if (tickMomentum.direction !== 'neutral') {
+      const dampFactor = 1 - 0.15 * Math.min(1, tickMomentum.magnitude / 20);
+      adjusted = Math.round(result.score * dampFactor * 100) / 100;
+    }
+    const atrRatio = result.volatility?.ratio ?? 1;
+    result.score = clampScoreToExistingType(typeBeforeTick, result.score, adjusted, atrRatio);
+    const adjustedRaw = scoreToSignalDynamic(result.score, atrRatio);
+    const gated = applyUpOnlyGate(adjustedRaw, result.trendGate?.open !== false, position);
+    const candidate = resolveNoTradeZoneType(gated, result.noTradeZone, position);
+    result.type = preventTickCreatedSignal(typeBeforeTick, candidate);
+    result.confidence = Math.round(Math.min(1, Math.abs(result.score) / 60) * 100) / 100;
+  }
+};
+
+/**
  * Create the UpDown service
  * @param {Object} io - Socket.IO server instance
  * @param {Object} deps
@@ -235,6 +260,34 @@ const createUpDownService = (io, deps) => {
   };
 
   /**
+   * Append a type change to the bounded journal, retaining consecutive-type debounce.
+   */
+  const appendSignalHistory = (result, action, price) => {
+    // Record all signal changes including NEUTRAL (skip only NO_TRADE_ZONE)
+    // Debounce: skip only consecutive same-type entries within SIGNAL_DEBOUNCE_MS
+    // (BUY→NEUTRAL→BUY is NOT debounced — the intervening signal makes it meaningful)
+    if (result.type !== 'NO_TRADE_ZONE') {
+      const lastEntry = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1] : null;
+      const isConsecutiveDuplicate = lastEntry &&
+        lastEntry.type === result.type &&
+        (result.timestamp - lastEntry.timestamp) < SIGNAL_DEBOUNCE_MS;
+      if (!isConsecutiveDuplicate) {
+        signalHistory.push({
+          type: result.type,
+          action,
+          score: result.score,
+          confidence: result.confidence,
+          timestamp: result.timestamp,
+          price,
+        });
+        if (signalHistory.length > MAX_SIGNAL_HISTORY) {
+          signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
+        }
+      }
+    }
+  };
+
+  /**
    * Run signal computation and emit results
    */
   const runSignalCycle = () => {
@@ -271,25 +324,7 @@ const createUpDownService = (io, deps) => {
     // Must not create or cancel a published type: 5s tick boosts were shoving
     // HOLD (14.5) across the BUY line as a fake 18.3 print.
     const tickMomentum = computeTickMomentum();
-    const typeBeforeTick = result.type;
-    if (Math.abs(result.score) >= 5 && tickMomentum.magnitude > 0) {
-      const scoreDir = result.score > 0 ? 'up' : 'down';
-      let adjusted = result.score;
-      if (tickMomentum.direction === scoreDir) {
-        const boostFactor = 1 + 0.25 * Math.min(1, tickMomentum.magnitude / 20);
-        adjusted = Math.round(result.score * boostFactor * 100) / 100;
-      } else if (tickMomentum.direction !== 'neutral') {
-        const dampFactor = 1 - 0.15 * Math.min(1, tickMomentum.magnitude / 20);
-        adjusted = Math.round(result.score * dampFactor * 100) / 100;
-      }
-      const atrRatio = result.volatility?.ratio ?? 1;
-      result.score = clampScoreToExistingType(typeBeforeTick, result.score, adjusted, atrRatio);
-      const adjustedRaw = scoreToSignalDynamic(result.score, atrRatio);
-      const gated = applyUpOnlyGate(adjustedRaw, result.trendGate?.open !== false, position);
-      const candidate = resolveNoTradeZoneType(gated, result.noTradeZone, position);
-      result.type = preventTickCreatedSignal(typeBeforeTick, candidate);
-      result.confidence = Math.round(Math.min(1, Math.abs(result.score) / 60) * 100) / 100;
-    }
+    applyTickMomentumAdjustment(result, tickMomentum, position);
 
     lastSignalResult = result;
 
@@ -350,28 +385,7 @@ const createUpDownService = (io, deps) => {
     // Emit signal change event only when signal changes
     if (result.type !== lastSignal) {
       lastSignal = result.type;
-      // Record all signal changes including NEUTRAL (skip only NO_TRADE_ZONE)
-      // Debounce: skip only consecutive same-type entries within SIGNAL_DEBOUNCE_MS
-      // (BUY→NEUTRAL→BUY is NOT debounced — the intervening signal makes it meaningful)
-      if (result.type !== 'NO_TRADE_ZONE') {
-        const lastEntry = signalHistory.length > 0 ? signalHistory[signalHistory.length - 1] : null;
-        const isConsecutiveDuplicate = lastEntry &&
-          lastEntry.type === result.type &&
-          (result.timestamp - lastEntry.timestamp) < SIGNAL_DEBOUNCE_MS;
-        if (!isConsecutiveDuplicate) {
-          signalHistory.push({
-            type: result.type,
-            action,
-            score: result.score,
-            confidence: result.confidence,
-            timestamp: result.timestamp,
-            price: lastPrice,
-          });
-          if (signalHistory.length > MAX_SIGNAL_HISTORY) {
-            signalHistory.splice(0, signalHistory.length - MAX_SIGNAL_HISTORY);
-          }
-        }
-      }
+      appendSignalHistory(result, action, lastPrice);
 
       persistState();
 
