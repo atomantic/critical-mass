@@ -1217,7 +1217,19 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
-   * Cancel a specific body TP order
+   * Cancel a specific body TP order.
+   *
+   * `cancelled` confirms cancellation; `filled` denotes the fully-filled outcome,
+   * not whether any asset sold. `filledSize` is known cumulative execution,
+   * including a prior polling high-water mark when terminal size is omitted.
+   * Value, average price, and fees accompany cancelled execution for immediate
+   * booking; optional fields remain absent on other outcomes.
+   *
+   * Body-TP postconditions (not the legacy cancelTpOrder wrapper): cancellation
+   * removes pendingOrders, tpOrderToKey, and bodyTpOrders tracking, so callers
+   * must handle any executed tranche immediately instead of waiting for polling.
+   * A fully-filled outcome removes the body mappings but retains pendingOrders
+   * for polling to process the fill. An unresolved outcome retains all tracking.
    * @param {string} bodyId - Celestial body ID
    * @param {string} [fallbackOrderId] - Order ID to cancel if body isn't in executor tracking
    * @returns {Promise<{cancelled: boolean, filled: boolean, filledSize: number, filledValue?: number, averageFilledPrice?: number, totalFees?: number}>}

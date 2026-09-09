@@ -347,6 +347,29 @@ describe('safeCancelOrder — surfaces cancelled-with-partials filledSize (issue
     assert.equal(result.filledSize, 0.003, 'the sold quantity is surfaced directly');
   });
 
+  for (const [status, expected] of [
+    ['CANCELLED', { cancelled: true, filled: false, filledSize: 0.003, filledValue: 153, averageFilledPrice: 51000, totalFees: 0.02 }],
+    ['FILLED', { cancelled: false, filled: true, filledSize: 0.003 }],
+    ['OPEN', { cancelled: false, filled: false, filledSize: 0 }],
+  ]) {
+    it(`preserves the exact ${status} result and body-specific tracking`, async () => {
+      const captured = [];
+      const adapter = makeCancelAdapter({ status, filledSize: 0.003, filledValue: 153, averageFilledPrice: 51000, totalFees: 0.02, side: 'SELL' });
+      const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {
+        onFillDetected: (id) => captured.push(id),
+      });
+      exec.restoreBodyTpOrder('body-shape', 'tp-shape', 0.01, 51000);
+      assert.deepEqual(await exec.cancelBodyTpOrder('body-shape'), expected);
+      assert.equal(exec.isBodyTpOrder('tp-shape'), status === 'OPEN');
+      assert.equal(exec.getPendingOrdersList().some(o => o.orderId === 'tp-shape'), status !== 'CANCELLED');
+      if (status !== 'OPEN') {
+        assert.deepEqual(await exec.cancelBodyTpOrder('body-shape'), { cancelled: true, filled: false, filledSize: 0 });
+        await exec.checkPendingOrderFills();
+        assert.deepEqual(captured, status === 'FILLED' ? ['tp-shape'] : []);
+      }
+    });
+  }
+
   it('cancelBodyTpOrder reports filledSize 0 on a clean cancel (guard is specific)', async () => {
     const adapter = makeCancelAdapter({ status: 'CANCELLED', filledSize: 0, side: 'SELL' });
     const exec = createOrderExecutor('coinbase', baseConfig(), adapter, 'BTC-USDC', {});
