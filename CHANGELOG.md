@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-327] Order consolidation separates cancellation and recovery** — Extract private operational steps while preserving sequential exchange calls, gap-fill exclusions, result shapes, and replacement-order mappings.
 
 ### Fixed
+- **Native production setup installs PM2 before starting services** — The README now identifies PM2 as a separate prerequisite and includes its installation command; installing project dependencies alone does not provide the required executable.
 - **[issue-338] Streaming optimizer winners use domain ranking** — Keep Current Best consistent with completed results by preferring full coverage before total value and retaining the first result on ties.
 - **[issue-336] Trade History retains rejected edits** — Reuse dashboard actions for save/delete feedback, preserve the editor on failures, and disable conflicting controls while mutations are pending.
 - **[issue-334] TP minimum checks use shared increment rounding** — Preserve valid minimum-size sells and holdback at floating-point boundaries while keeping genuinely sub-minimum bodies eligible for dust consolidation.
