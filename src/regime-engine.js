@@ -4472,11 +4472,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     if (productDetails?.baseMinSize) {
       const baseMinSize = parseFloat(productDetails.baseMinSize);
       const baseIncrement = parseFloat(productDetails.baseIncrement) || 0.00000001;
-      const roundedSellQty = Math.floor(sellQty / baseIncrement) * baseIncrement;
+      const roundedSellQty = floorToIncrement(sellQty, baseIncrement);
 
       if (roundedSellQty < baseMinSize) {
         const fullQty = roundAsset(body.assetQty);
-        const roundedFullQty = Math.floor(fullQty / baseIncrement) * baseIncrement;
+        const roundedFullQty = floorToIncrement(fullQty, baseIncrement);
 
         if (roundedFullQty >= baseMinSize) {
           const fullProceeds = fullQty * tpPrice * (1 - feeRatePerSide);

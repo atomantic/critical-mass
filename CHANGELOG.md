@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-327] Order consolidation separates cancellation and recovery** — Extract private operational steps while preserving sequential exchange calls, gap-fill exclusions, result shapes, and replacement-order mappings.
 
 ### Fixed
+- **[issue-334] TP minimum checks use shared increment rounding** — Preserve valid minimum-size sells and holdback at floating-point boundaries while keeping genuinely sub-minimum bodies eligible for dust consolidation.
 - **Generated release notes link to versioned setup instructions** — Replace the broken copy-and-start recipe with the release's README guide for installation, operator enrollment, exchange credentials, and building the dashboard.
 - **[issue-325] Daily candle refresh replaces stale prices** — Share incoming-wins merging with backtests and revalidate disk history once per store instance to repair frozen daily snapshots.
 - **[issue-323] Aggressiveness presets share field validation with fund application** — Preserve merge proximity through preset saves, reject incompatible ranges before saving, and expose the preset merge proximity control.
