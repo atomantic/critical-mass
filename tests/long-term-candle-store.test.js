@@ -48,6 +48,7 @@ describe('dedupeAndSort', () => {
       { timestamp: 1, close: 99 }, // dup
     ]);
     assert.equal(out.length, 2);
+    assert.equal(out[0].close, 99);
   });
 
   it('sorts oldest-first', () => {
@@ -61,6 +62,9 @@ describe('dedupeAndSort', () => {
 
   it('drops candles missing a timestamp', () => {
     const out = dedupeAndSort([
+      null,
+      { timestamp: 0, close: 99 },
+      { timestamp: NaN, close: 99 },
       { timestamp: null, close: 99 },
       { timestamp: undefined, close: 99 },
       { timestamp: 5, close: 5 },
@@ -234,4 +238,115 @@ describe('createLongTermCandleStore', () => {
     // pagination loop), not three times
     assert.ok(calls <= 2, `expected ≤2 adapter calls for 3 concurrent refreshes, got ${calls}`);
   });
+});
+
+// Fixed UTC buckets exercise revisions rather than accidentally inserting new rows.
+describe('daily candle revision recovery', () => {
+  const DAY = 86400 * 1000;
+  const MIDNIGHT = Date.UTC(2026, 8, 9);
+  const NOW = MIDNIGHT + DAY / 2;
+  const history = (count) => Array.from({ length: count }, (_, i) => ({
+    timestamp: MIDNIGHT - (count - 1 - i) * DAY,
+    open: 100, high: 100, low: 90, close: 100, volume: 1,
+  }));
+  const seed = (candles) => {
+    const file = cachePath(TEST_EXCHANGE, TEST_PRODUCT);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ candles }));
+  };
+  const reload = () => {
+    const store = createLongTermCandleStore(TEST_EXCHANGE, {}, TEST_PRODUCT);
+    store.loadFromDisk();
+    return store.getCandles();
+  };
+  beforeEach((t) => {
+    cleanup();
+    t.mock.method(Date, 'now', () => NOW);
+  });
+  afterEach(cleanup);
+
+  it('refreshes current-day OHLCV, persists revisions, and corrects the depression score', async () => {
+    const { computeDepressionScore } = require('../src/depression-score');
+    let response = history(60);
+    const store = createLongTermCandleStore(TEST_EXCHANGE, { getCandles: async () => response }, TEST_PRODUCT, { lookbackDays: 60 });
+    await store.refresh();
+    const original = store.getCandles();
+    assert.equal(computeDepressionScore(100, original).score, 0);
+    const revised = { timestamp: MIDNIGHT, open: 110, high: 200, low: 80, close: 180, volume: 50 };
+    response = [revised, null, { close: 999 }];
+    await store.refresh();
+    assert.equal(store.getCandles().length, 60);
+    assert.deepEqual(store.getCandles().at(-1), revised);
+    assert.deepEqual(store.getCandles().map(c => c.timestamp), history(60).map(c => c.timestamp));
+    assert.equal(original.at(-1).close, 100);
+    assert.deepEqual(reload(), store.getCandles());
+    const score = computeDepressionScore(100, store.getCandles());
+    assert.ok(score.score > 0.79 && score.score < 0.80);
+    assert.equal(score.suggestedLevel, 'maximum');
+  });
+
+  it('revalidates a full legacy cache once, then resumes incremental refresh', async () => {
+    const old = history(365);
+    seed(old);
+    const revised = { ...old[10], high: 200, close: 180, volume: 50 };
+    const calls = [];
+    const adapter = { getCandles: async (product, start, end, granularity) => {
+      calls.push({ start, end, granularity });
+      return revised.timestamp / 1000 >= start && revised.timestamp / 1000 < end ? [revised] : [];
+    } };
+    const store = createLongTermCandleStore(TEST_EXCHANGE, adapter, TEST_PRODUCT);
+    store.loadFromDisk();
+    store.loadFromDisk();
+    assert.equal(store.getStats().health, 'full');
+    await store.refresh();
+    assert.deepEqual(calls, [
+      { start: NOW / 1000 - 365 * 86400, end: NOW / 1000 - 65 * 86400, granularity: 'ONE_DAY' },
+      { start: NOW / 1000 - 65 * 86400, end: NOW / 1000, granularity: 'ONE_DAY' },
+    ]);
+    assert.deepEqual(store.getCandles()[10], revised);
+    assert.deepEqual(reload(), store.getCandles());
+    calls.length = 0;
+    await store.refresh();
+    assert.deepEqual(calls, [{ start: MIDNIGHT / 1000 - 86400, end: NOW / 1000, granularity: 'ONE_DAY' }]);
+    assert.deepEqual(store.getCandles()[10], revised);
+  });
+
+  it('merges successful recovery pages and retains cached rows when a later page fails', async () => {
+    const old = history(365);
+    seed(old);
+    const revised = { ...old[10], close: 180 };
+    let calls = 0;
+    const adapter = { getCandles: async () => {
+      if (++calls === 1) return [revised];
+      throw new Error('historical page unavailable');
+    } };
+    const store = createLongTermCandleStore(TEST_EXCHANGE, adapter, TEST_PRODUCT);
+    await store.refresh();
+    const expected = old.map((c, i) => i === 10 ? revised : c);
+    assert.equal(calls, 2);
+    assert.deepEqual(store.getCandles(), expected);
+    assert.deepEqual(reload(), expected);
+    await store.refresh();
+    assert.deepEqual(store.getCandles(), expected);
+    assert.deepEqual(reload(), expected);
+  });
+
+  for (const fails of [false, true]) {
+    it(`preserves full disk history when initial recovery ${fails ? 'fails' : 'returns no data'}`, async () => {
+      const old = history(60);
+      seed(old);
+      const starts = [];
+      const adapter = { getCandles: async (product, start) => {
+        starts.push(start);
+        if (fails) throw new Error('unavailable');
+        return [];
+      } };
+      const store = createLongTermCandleStore(TEST_EXCHANGE, adapter, TEST_PRODUCT, { lookbackDays: 60 });
+      await store.refresh();
+      await store.refresh();
+      assert.deepEqual(starts, [NOW / 1000 - 60 * 86400, MIDNIGHT / 1000 - 86400]);
+      assert.deepEqual(store.getCandles(), old);
+      assert.deepEqual(reload(), old);
+    });
+  }
 });

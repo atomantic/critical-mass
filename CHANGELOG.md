@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-325] Daily candle refresh replaces stale prices** — Share incoming-wins merging with backtests and revalidate disk history once per store instance to repair frozen daily snapshots.
 - **[issue-323] Aggressiveness presets share field validation with fund application** — Preserve merge proximity through preset saves, reject incompatible ranges before saving, and expose the preset merge proximity control.
 - **[issue-321] Live and historical scorecard analytics share outcome interpretation** — Move pure scoring and historical aggregation into one domain owner, restoring legacy perp accuracy while preserving explicit scratches, contract settlement, and paper P&L.
 - **[issue-316] Partial sells retain tracking until terminal status is verified** — Reconcile cancellation failures against order status and open orders, wait for complete final fills, and retry partially filled Gemini orders before resizing or placing a replacement.
