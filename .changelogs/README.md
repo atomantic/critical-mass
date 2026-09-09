@@ -36,6 +36,8 @@ Brief summary of the release.
 
 ## Creating a New Changelog
 
+See [the release procedure](../docs/RELEASING.md) for the complete PR, CI, and publication workflow.
+
 1. Create changelog file: `.changelogs/v{version}.md`
 2. Update `package.json` version
 3. Commit both together
