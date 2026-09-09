@@ -62,6 +62,7 @@ limits; see [Simulation endpoint limits](docs/simulation-limits.md).
 ## Requirements
 
 - Node.js 20+
+- PM2 available on your `PATH` for the production commands below (installed separately from the project dependencies)
 - Exchange API key with View and Trade permissions
 
 ## Installation
@@ -188,6 +189,7 @@ Each exchange can run either the fixed DCA strategy or the adaptive regime strat
 npm run dev
 
 # Production
+npm install -g pm2   # One-time prerequisite for a native install; Docker includes PM2
 npm run build
 npm run pm2:start
 ```
