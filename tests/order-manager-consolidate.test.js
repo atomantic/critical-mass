@@ -234,3 +234,122 @@ describe('consolidatePendingOrders — gap-fill double-sell guard (issue #150)',
     assert.ok(!restorePlaces.includes(0.2), 'gap-filled order must not be re-placed');
   });
 });
+
+/** A strict exchange script pins both call order and the absence of later calls. */
+const scriptedAdapter = (steps) => {
+  let cursor = 0;
+  const adapter = Object.fromEntries(['getOrder', 'cancelOrder', 'placeLimitSell'].map(method => [
+    method,
+    async (...args) => {
+      const step = steps[cursor++];
+      assert.ok(step, `Unexpected ${method} call`);
+      assert.deepEqual([method, ...args], step.call);
+      if (step.error) throw step.error;
+      return step.result;
+    },
+  ]));
+  return { adapter, assertComplete: () => assert.equal(cursor, steps.length) };
+};
+const getStep = (id, result = { completionPercentage: 0 }) => ({ call: ['getOrder', id], result });
+const cancelStep = (id) => ({ call: ['cancelOrder', id], result: { success: true } });
+const placeStep = (qty, price, result) => ({ call: ['placeLimitSell', 'BTC-USD', qty, price], result });
+
+describe('consolidatePendingOrders — ordered public contracts', () => {
+  it('aborts after a rejected cancel, preserving only the existing failure keys', async () => {
+    const orders = [order('skip', 1, 90), order('a', 1, 100), order('gap', 1, 150), order('b', 2, 250), order('c', 1, 300)];
+    const script = scriptedAdapter([
+      getStep('skip', { completionPercentage: 10 }), ...['a', 'gap', 'b', 'c'].map(id => getStep(id)),
+      cancelStep('a'), getStep('a'),
+      cancelStep('gap'), getStep('gap', { completionPercentage: 100, status: 'FILLED' }),
+      { call: ['cancelOrder', 'b'], result: { success: false } },
+    ]);
+    assert.deepEqual(await consolidatePendingOrders(baseConfig(), orders, script.adapter), {
+      success: false, error: 'Failed to cancel order b', cancelledOrderIds: ['a'], skippedOrderIds: ['skip'],
+    });
+    script.assertComplete();
+  });
+
+  for (const { name, orders, steps, expected } of [
+    { name: 'too few input orders', orders: [order('a', 1, 100)], steps: [],
+      expected: { success: false, error: 'At least 2 pending orders required for consolidation' } },
+    { name: 'too few real orders', orders: [order('dry-run-a', 1, 100), order('b', 1, 100)], steps: [],
+      expected: { success: false, error: 'Only 1 real orders after filtering dry-run orders' } },
+    { name: 'too few unfilled orders', orders: [order('dry-run-a', 1, 100), order('a', 1, 100), order('b', 1, 100), order('c', 1, 100)],
+      steps: [getStep('a', { completionPercentage: 5 }), getStep('b'), getStep('c', { completionPercentage: 100 })],
+      expected: { success: false, error: 'Only 1 eligible orders after filtering partial fills', skippedOrderIds: ['a', 'c'] } },
+  ]) {
+    it(`returns the exact eligibility result for ${name} without cancelling`, async () => {
+      const script = scriptedAdapter(steps);
+      assert.deepEqual(await consolidatePendingOrders(baseConfig(), orders, script.adapter), expected);
+      script.assertComplete();
+    });
+  }
+
+  it('excludes FILLED at zero percent and undefined responses while preserving weighted placement', async () => {
+    const orders = [order('a', 1, 100), order('filled', 9, 999), order('missing', 8, 888), order('b', 2, 250)];
+    const script = scriptedAdapter([
+      ...orders.map(o => getStep(o.orderId)),
+      cancelStep('a'), getStep('a'),
+      cancelStep('filled'), getStep('filled', { completionPercentage: 0, status: 'FILLED' }),
+      cancelStep('missing'), { call: ['getOrder', 'missing'], result: undefined },
+      cancelStep('b'), getStep('b'),
+      placeStep(3, 200, { success: true, orderId: 'merged' }),
+    ]);
+    assert.deepEqual(await consolidatePendingOrders(baseConfig(), orders, script.adapter), {
+      success: true, newOrderId: 'merged', consolidatedPrice: 200, consolidatedAsset: 3, consolidatedCount: 2,
+      skippedOrderIds: [], cancelledOrderIds: ['a', 'b'], filledDuringCancelOrderIds: ['filled', 'missing'],
+    });
+    script.assertComplete();
+  });
+
+  it('returns the exact all-excluded result without placing anything', async () => {
+    const script = scriptedAdapter([
+      getStep('a'), getStep('b'), cancelStep('a'),
+      getStep('a', { completionPercentage: 0, status: 'FILLED' }),
+      cancelStep('b'), { call: ['getOrder', 'b'], result: undefined },
+    ]);
+    assert.deepEqual(await consolidatePendingOrders(baseConfig(), [order('a', 1, 100), order('b', 2, 250)], script.adapter), {
+      success: true, newOrderId: null, consolidatedPrice: 0, consolidatedAsset: 0, consolidatedCount: 0,
+      skippedOrderIds: [], cancelledOrderIds: [], filledDuringCancelOrderIds: ['a', 'b'],
+    });
+    script.assertComplete();
+  });
+
+  it('restores only confirmed orders in order and returns the exact recovery envelope', async () => {
+    const orders = [order('a', 1, 100), order('gap', 9, 900), order('b', 2, 250), order('c', 1, 200)];
+    const script = scriptedAdapter([
+      ...orders.map(o => getStep(o.orderId)),
+      cancelStep('a'), getStep('a'), cancelStep('gap'), getStep('gap', { completionPercentage: 20 }),
+      cancelStep('b'), getStep('b'), cancelStep('c'), getStep('c'),
+      placeStep(4, 200, { success: false, errorMessage: 'rejected' }),
+      placeStep(1, 100, { success: true, orderId: 'restored-a' }),
+      placeStep(2, 250, { success: false, errorMessage: 'restore rejected' }),
+      placeStep(1, 200, { success: true, orderId: 'restored-c' }),
+    ]);
+    assert.deepEqual(await consolidatePendingOrders(baseConfig(), orders, script.adapter), {
+      success: false, error: 'Failed to place consolidated order: rejected',
+      cancelledOrderIds: ['a', 'b', 'c'], skippedOrderIds: [], filledDuringCancelOrderIds: ['gap'],
+      restoredOrders: [{ oldOrderId: 'a', newOrderId: 'restored-a' }, { oldOrderId: 'c', newOrderId: 'restored-c' }],
+      failedRestoreOrderIds: ['b'],
+    });
+    script.assertComplete();
+  });
+
+  for (const phase of ['cancel', 're-fetch', 'restore']) {
+    it(`propagates the original ${phase} exception and stops exchange calls`, async () => {
+      const error = new Error(`${phase} unavailable`);
+      const steps = [getStep('a'), getStep('b'), getStep('c'), cancelStep('a'), getStep('a')];
+      if (phase === 'cancel') steps.push({ call: ['cancelOrder', 'b'], error });
+      if (phase === 're-fetch') steps.push(cancelStep('b'), { call: ['getOrder', 'b'], error });
+      if (phase === 'restore') steps.push(
+        cancelStep('b'), getStep('b'), cancelStep('c'), getStep('c'),
+        placeStep(4, 200, { success: false, errorMessage: 'rejected' }),
+        placeStep(1, 100, { success: true, orderId: 'restored-a' }),
+        { call: ['placeLimitSell', 'BTC-USD', 2, 250], error },
+      );
+      const script = scriptedAdapter(steps);
+      await assert.rejects(consolidatePendingOrders(baseConfig(), [order('a', 1, 100), order('b', 2, 250), order('c', 1, 200)], script.adapter), thrown => thrown === error);
+      script.assertComplete();
+    });
+  }
+});
