@@ -24,7 +24,7 @@ const { getExchangeDataDir, getFundDataDir, resolveFundDataDir } = require('./mi
  * @typedef {import('./types').RegimeState} RegimeState
  */
 
-const { createInitialFibState, resetFibState, getAverageCostBasis } = require('./fibonacci-utils');
+const { createInitialFibState, resetFibState, getUncoveredFibBuys, getAverageCostBasis } = require('./fibonacci-utils');
 const { migrateFromLegacy, createInitialCelestialState } = require('./celestial-hierarchy');
 const { loadRawConfig } = require('./config-utils');
 const { createContextLogger } = require('./logger');
@@ -634,12 +634,12 @@ const updateAfterFibSellOrder = (state, sellOrder, sellQuantity, holdbackAsset) 
 };
 
 /**
- * Update state when a Fibonacci cycle sell fills
+ * Credit the completed sell and holdback, clear its cycle, and carry uncovered buys without booking another buy.
  * @param {BotState} state - Current state
  * @param {FibonacciFillDetails} fillDetails - Fill details
- * @returns {BotState} Updated state with cycle reset
+ * @returns {BotState} Same state with the completed cycle cleared and uncovered buys carried forward
  */
-const updateAfterFibSellFill = (state, fillDetails) => {
+const settleFibSellAndCarryUncoveredBuys = (state, fillDetails) => {
   const sellFees = fillDetails.fees || 0;
   const sellRebates = fillDetails.rebates || 0;
   const sellNetFees = fillDetails.netFees || 0;
@@ -660,31 +660,18 @@ const updateAfterFibSellFill = (state, fillDetails) => {
   state.totalRebates = (state.totalRebates || 0) + sellRebates;
   state.netFees = (state.netFees || 0) + sellNetFees;
 
-  // A buy can fold into fibCumulative* (via updateAfterFibBuy) AFTER the
-  // sell that's filling right now was last consolidated — e.g. a
-  // placeFibonacciSellOrder retry threw before it could re-snapshot
-  // fibSellOrderCovered* (issue #200, Bug A). That excess is NOT covered by
-  // this fill and must survive the reset below instead of being discarded.
-  // In the normal, uninterrupted flow fibCumulative* always equals the
-  // covered snapshot at fill time, so excess is 0 and this is a no-op.
-  // A state persisted before this field existed has no snapshot at all
-  // (undefined, not 0) — treat that as "fully covered" rather than "nothing
-  // covered", or every engine's first fill after upgrading mid-cycle would
-  // wrongly re-seed its entire current cumulative as spurious excess.
-  const hasCoverageSnapshot = state.fibSellOrderCoveredAsset !== undefined;
-  const excessAsset = hasCoverageSnapshot ? (state.fibCumulativeAsset || 0) - state.fibSellOrderCoveredAsset : 0;
-  const excessCost = hasCoverageSnapshot ? (state.fibCumulativeCost || 0) - state.fibSellOrderCoveredCost : 0;
-  const excessPosition = hasCoverageSnapshot ? (state.fibPosition || 0) - state.fibSellOrderCoveredPosition : 0;
+  // Capture uncovered buys before reset clears both cumulative and coverage fields.
+  const uncoveredBuys = getUncoveredFibBuys(state);
 
   // Reset Fibonacci cycle state (including fibPendingHoldback)
   const fibReset = resetFibState();
   Object.assign(state, fibReset);
 
-  if (excessAsset > 1e-8) {
+  if (uncoveredBuys.asset > 1e-8) {
     state.fibCycleStartTime = Date.now();
-    state.fibCumulativeAsset = excessAsset;
-    state.fibCumulativeCost = excessCost;
-    state.fibPosition = Math.max(1, excessPosition);
+    state.fibCumulativeAsset = uncoveredBuys.asset;
+    state.fibCumulativeCost = uncoveredBuys.cost;
+    state.fibPosition = Math.max(1, uncoveredBuys.position);
   }
 
   return state;
@@ -1106,7 +1093,8 @@ module.exports = {
   initFibonacciState,
   updateAfterFibBuy,
   updateAfterFibSellOrder,
-  updateAfterFibSellFill,
+  settleFibSellAndCarryUncoveredBuys,
+  updateAfterFibSellFill: settleFibSellAndCarryUncoveredBuys,
   creditFibPartialSell,
   getFibonacciCycleInfo,
   // Regime state management

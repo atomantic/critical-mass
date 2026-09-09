@@ -11,6 +11,7 @@ const {
   getFibonacciSellQuantity,
   createInitialFibState,
   resetFibState,
+  getUncoveredFibBuys,
   getFibonacciPreview,
   getFibonacciCumulativeSpend,
 } = require('../src/fibonacci-utils');
@@ -258,4 +259,24 @@ describe('getFibonacciCumulativeSpend', () => {
   it('returns 0 when baseAmount is 0', () => {
     assert.equal(getFibonacciCumulativeSpend(10, 0), 0);
   });
+});
+
+
+describe('getUncoveredFibBuys', () => {
+  const cases = [
+    ['legacy absent coverage', { fibCumulativeAsset: 3, fibCumulativeCost: 60, fibPosition: 4, fibSellOrderCoveredCost: 20 }, { asset: 0, cost: 0, position: 0 }],
+    ['explicit zero coverage', { fibCumulativeAsset: 3, fibCumulativeCost: 60, fibPosition: 4, fibSellOrderCoveredAsset: 0, fibSellOrderCoveredCost: 0, fibSellOrderCoveredPosition: 0 }, { asset: 3, cost: 60, position: 4 }],
+    ['multiple uncovered buys', { fibCumulativeAsset: 3, fibCumulativeCost: 60, fibPosition: 4, fibSellOrderCoveredAsset: 1, fibSellOrderCoveredCost: 20, fibSellOrderCoveredPosition: 2 }, { asset: 2, cost: 40, position: 2 }],
+    ['fully covered', { fibCumulativeAsset: 1, fibCumulativeCost: 20, fibPosition: 2, fibSellOrderCoveredAsset: 1, fibSellOrderCoveredCost: 20, fibSellOrderCoveredPosition: 2 }, { asset: 0, cost: 0, position: 0 }],
+    ['missing cumulative fields retain zero fallback and negative differences', { fibSellOrderCoveredAsset: 1, fibSellOrderCoveredCost: 20, fibSellOrderCoveredPosition: 2 }, { asset: -1, cost: -20, position: -2 }],
+    ['incomplete snapshot retains NaN', { fibCumulativeAsset: 3, fibSellOrderCoveredAsset: 0 }, { asset: 3, cost: NaN, position: NaN }],
+    ['null asset snapshot uses arithmetic coercion', { fibCumulativeAsset: 3, fibSellOrderCoveredAsset: null, fibSellOrderCoveredCost: null, fibSellOrderCoveredPosition: null }, { asset: 3, cost: 0, position: 0 }],
+  ];
+  for (const [name, state, expected] of cases) {
+    it(name, () => {
+      const before = { ...state };
+      assert.deepEqual(getUncoveredFibBuys(Object.freeze(state)), expected);
+      assert.deepEqual(state, before);
+    });
+  }
 });
