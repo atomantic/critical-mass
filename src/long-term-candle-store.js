@@ -6,7 +6,7 @@
  * to back the long-term depression score (Phase 1 of auto-aggressiveness).
  *
  * Design notes:
- * - Disk-cached so PM2 restarts don't refetch the full history
+ * - Disk-cached for immediate availability; revalidate history once per instance
  * - Incremental refresh: only fetches the gap between cache tail and now
  * - Adapter-agnostic via the standard `getCandles` interface, with per-adapter
  *   pagination quirks handled inline (Coinbase 350-candle limit, Gemini ~500
@@ -19,6 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./paths');
+const { upsertCandles } = require('./candle-utils');
 const { createContextLogger } = require('./logger');
 
 /**
@@ -102,17 +103,11 @@ const saveCache = (exchange, productId, candles) => {
 };
 
 /**
- * Deduplicate candles by timestamp and sort oldest-first.
+ * Deduplicate candles by timestamp (last row wins) and sort oldest-first.
  * @param {Candle[]} candles
  * @returns {Candle[]}
  */
-const dedupeAndSort = (candles) => {
-  const seen = new Map();
-  for (const c of candles) {
-    if (c && c.timestamp && !seen.has(c.timestamp)) seen.set(c.timestamp, c);
-  }
-  return Array.from(seen.values()).sort((a, b) => a.timestamp - b.timestamp);
-};
+const dedupeAndSort = (candles) => upsertCandles([], candles.filter(c => c && c.timestamp));
 
 /**
  * Fetch a daily-candle window from the adapter, paginating as needed.
@@ -178,6 +173,7 @@ const createLongTermCandleStore = (exchange, adapter, productId, options = {}) =
   let refreshInFlight = null;
   let refreshTimer = null;
   let loaded = false;
+  let revalidateHistory = false;
 
   /**
    * Load cache from disk (idempotent).
@@ -186,6 +182,7 @@ const createLongTermCandleStore = (exchange, adapter, productId, options = {}) =
     if (loaded) return;
     candles = dedupeAndSort(loadCache(exchange, productId));
     loaded = true;
+    revalidateHistory = candles.length > 0;
     if (candles.length) {
       logger.info(`ℹ️ 🗓️ [${exchange}] long-term candles loaded from disk: ${candles.length} candles for ${productId}`, {
         action: 'load-from-disk',
@@ -221,12 +218,13 @@ const createLongTermCandleStore = (exchange, adapter, productId, options = {}) =
       const isUnderfilled = candles.length < expectedMin;
 
       // Determine the start of the fetch window:
+      // - Once after loading disk history, revalidate older frozen snapshots
       // - If cache is underfilled, refetch the full window
       // - Else if cache has data, fetch from the day before the most recent
       //   candle (re-fetching the latest day handles partial-day candles)
       // - Otherwise, fetch the full lookback window
       let fetchStartSec = fullStartSec;
-      if (candles.length && !isUnderfilled) {
+      if (candles.length && !isUnderfilled && !revalidateHistory) {
         const lastTsSec = Math.floor(candles[candles.length - 1].timestamp / 1000);
         fetchStartSec = Math.max(fullStartSec, lastTsSec - SECONDS_PER_DAY);
       } else if (isUnderfilled && candles.length) {
@@ -238,12 +236,15 @@ const createLongTermCandleStore = (exchange, adapter, productId, options = {}) =
         });
       }
 
-      if (fetchStartSec >= nowSec - SECONDS_PER_DAY / 2 && candles.length && !isUnderfilled) {
+      if (fetchStartSec >= nowSec - SECONDS_PER_DAY / 2 && candles.length && !isUnderfilled && !revalidateHistory) {
         // Cache is fresh and complete — nothing to do
         lastRefresh = Date.now();
         return { added: 0, total: candles.length };
       }
 
+      // Attempt legacy-history recovery once per loaded instance, even if a
+      // page is unavailable. Cached rows remain the fallback.
+      revalidateHistory = false;
       const fetched = await fetchDailyWindow(adapter, productId, fetchStartSec, nowSec);
       if (!fetched.length) {
         logger.warn(`⚠️ 🗓️ [${exchange}] long-term refresh returned 0 candles for ${productId} (cache=${candles.length})`, {
