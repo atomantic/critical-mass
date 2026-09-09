@@ -420,66 +420,19 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
 };
 
 /**
- * Consolidate multiple pending orders into a single order at weighted average price
- * @param {ExchangeConfig} config - Configuration
- * @param {TrackedOrder[]} pendingOrders - List of pending orders to consolidate
- * @param {ExchangeAdapter} adapter - Exchange adapter
- * @returns {Promise<ConsolidationResult>} Consolidation result
+ * Cancel sequentially and partition orders by their post-cancel fill state.
+ * @param {TrackedOrder[]} eligibleOrders
+ * @param {string[]} skippedOrderIds
+ * @param {ExchangeAdapter} adapter
+ * @param {ReturnType<typeof orderLogger>} logger
+ * @returns {Promise<{failure: ConsolidationResult} | {failure?: undefined, cancelledOrders: TrackedOrder[], cancelledOrderIds: string[], filledDuringCancelOrderIds: string[]}>}
  */
-const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
-  if (pendingOrders.length < 2) {
-    return {
-      success: false,
-      error: 'At least 2 pending orders required for consolidation',
-    };
-  }
-
-  // Filter out dry-run orders - they don't exist on the exchange
-  const realOrders = pendingOrders.filter(o => !o.orderId?.startsWith('dry-run-'));
-  if (realOrders.length < 2) {
-    return {
-      success: false,
-      error: `Only ${realOrders.length} real orders after filtering dry-run orders`,
-    };
-  }
-
-  const eligibleOrders = [];
-  const skippedOrderIds = [];
+const cancelOrdersForConsolidation = async (eligibleOrders, skippedOrderIds, adapter, logger) => {
   const cancelledOrders = [];
   const cancelledOrderIds = [];
   const filledDuringCancelOrderIds = [];
 
-  const logger = orderLogger(adapter, config.productId);
-
-  // Step 1: Check each order for partial fills
-  logger.info(`ℹ️ Checking ${realOrders.length} orders for partial fills...`, { orderCount: realOrders.length });
-  for (const order of realOrders) {
-    const orderDetails = await adapter.getOrder(order.orderId);
-
-    // Skip orders that have partial fills
-    if (orderDetails.completionPercentage > 0) {
-      logger.warn(`⚠️ Order ${order.orderId} has ${orderDetails.completionPercentage}% filled, skipping`, {
-        orderId: order.orderId,
-        completionPercentage: orderDetails.completionPercentage,
-      });
-      skippedOrderIds.push(order.orderId);
-      continue;
-    }
-
-    eligibleOrders.push(order);
-  }
-
-  if (eligibleOrders.length < 2) {
-    return {
-      success: false,
-      error: `Only ${eligibleOrders.length} eligible orders after filtering partial fills`,
-      skippedOrderIds,
-    };
-  }
-
-  const baseCurrency = getBaseCurrency(config.productId);
-
-  // Step 2: Cancel all eligible orders, then re-fetch each to confirm it was
+  // Cancel all eligible orders, then re-fetch each to confirm it was
   // actually cancelled and not filled in the gap between the up-front eligibility
   // check and the cancel (issue #150). cancelOrder returns success on an
   // already-terminal (filled) order, so a fill landing in that window would
@@ -492,10 +445,12 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     if (!cancelResult.success) {
       // Abort consolidation if any cancel fails
       return {
-        success: false,
-        error: `Failed to cancel order ${order.orderId}`,
-        cancelledOrderIds,
-        skippedOrderIds,
+        failure: {
+          success: false,
+          error: `Failed to cancel order ${order.orderId}`,
+          cancelledOrderIds,
+          skippedOrderIds,
+        },
       };
     }
 
@@ -527,6 +482,99 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
     cancelledOrders.push(order);
     cancelledOrderIds.push(order.orderId);
   }
+
+  return { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds };
+};
+
+/**
+ * Restore confirmed-cancelled sells and report replacement IDs and failures.
+ * @param {string} productId
+ * @param {TrackedOrder[]} cancelledOrders
+ * @param {ExchangeAdapter} adapter
+ * @param {ReturnType<typeof orderLogger>} logger
+ * @returns {Promise<{restoredOrders: {oldOrderId: string, newOrderId: string}[], failedRestoreOrderIds: string[]}>}
+ */
+const restoreCancelledSellOrders = async (productId, cancelledOrders, adapter, logger) => {
+  const restoredOrders = [];
+  const failedRestoreOrderIds = [];
+  for (const order of cancelledOrders) {
+    const restoreResult = await adapter.placeLimitSell(productId, order.sellQuantity, order.sellPrice);
+    if (restoreResult.success) {
+      // Capture the old→new mapping so the caller can re-point tracked state
+      // at the new exchange order IDs (the cancelled IDs no longer exist).
+      restoredOrders.push({ oldOrderId: order.orderId, newOrderId: restoreResult.orderId });
+    } else {
+      failedRestoreOrderIds.push(order.orderId);
+      logger.error(`❌ Failed to restore sell for cancelled order ${order.orderId}: ${restoreResult.errorMessage}`, {
+        orderId: order.orderId,
+        sellQuantity: order.sellQuantity,
+        sellPrice: order.sellPrice,
+        error: restoreResult.errorMessage,
+      });
+    }
+  }
+  return { restoredOrders, failedRestoreOrderIds };
+};
+
+/**
+ * Consolidate multiple pending orders into a single order at weighted average price
+ * @param {ExchangeConfig} config - Configuration
+ * @param {TrackedOrder[]} pendingOrders - List of pending orders to consolidate
+ * @param {ExchangeAdapter} adapter - Exchange adapter
+ * @returns {Promise<ConsolidationResult>} Consolidation result
+ */
+const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
+  if (pendingOrders.length < 2) {
+    return {
+      success: false,
+      error: 'At least 2 pending orders required for consolidation',
+    };
+  }
+
+  // Filter out dry-run orders - they don't exist on the exchange
+  const realOrders = pendingOrders.filter(o => !o.orderId?.startsWith('dry-run-'));
+  if (realOrders.length < 2) {
+    return {
+      success: false,
+      error: `Only ${realOrders.length} real orders after filtering dry-run orders`,
+    };
+  }
+
+  const eligibleOrders = [];
+  const skippedOrderIds = [];
+  const logger = orderLogger(adapter, config.productId);
+
+  // Step 1: Check each order for partial fills
+  logger.info(`ℹ️ Checking ${realOrders.length} orders for partial fills...`, { orderCount: realOrders.length });
+  for (const order of realOrders) {
+    const orderDetails = await adapter.getOrder(order.orderId);
+
+    // Skip orders that have partial fills
+    if (orderDetails.completionPercentage > 0) {
+      logger.warn(`⚠️ Order ${order.orderId} has ${orderDetails.completionPercentage}% filled, skipping`, {
+        orderId: order.orderId,
+        completionPercentage: orderDetails.completionPercentage,
+      });
+      skippedOrderIds.push(order.orderId);
+      continue;
+    }
+
+    eligibleOrders.push(order);
+  }
+
+  if (eligibleOrders.length < 2) {
+    return {
+      success: false,
+      error: `Only ${eligibleOrders.length} eligible orders after filtering partial fills`,
+      skippedOrderIds,
+    };
+  }
+
+  const baseCurrency = getBaseCurrency(config.productId);
+
+  const cancellation = await cancelOrdersForConsolidation(eligibleOrders, skippedOrderIds, adapter, logger);
+  if (cancellation.failure) return cancellation.failure;
+  const { cancelledOrders, cancelledOrderIds, filledDuringCancelOrderIds } = cancellation;
 
   if (cancelledOrders.length === 0) {
     // Every eligible order filled during its cancel window — nothing left to
@@ -579,24 +627,9 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
       nakedOrderCount: cancelledOrders.length,
       cancelledOrderIds,
     });
-    const restoredOrders = [];
-    const failedRestoreOrderIds = [];
-    for (const order of cancelledOrders) {
-      const restoreResult = await adapter.placeLimitSell(config.productId, order.sellQuantity, order.sellPrice);
-      if (restoreResult.success) {
-        // Capture the old→new mapping so the caller can re-point tracked state
-        // at the new exchange order IDs (the cancelled IDs no longer exist).
-        restoredOrders.push({ oldOrderId: order.orderId, newOrderId: restoreResult.orderId });
-      } else {
-        failedRestoreOrderIds.push(order.orderId);
-        logger.error(`❌ Failed to restore sell for cancelled order ${order.orderId}: ${restoreResult.errorMessage}`, {
-          orderId: order.orderId,
-          sellQuantity: order.sellQuantity,
-          sellPrice: order.sellPrice,
-          error: restoreResult.errorMessage,
-        });
-      }
-    }
+    const { restoredOrders, failedRestoreOrderIds } = await restoreCancelledSellOrders(
+      config.productId, cancelledOrders, adapter, logger,
+    );
 
     return {
       success: false,
