@@ -7,6 +7,7 @@ COPY admin/package.json admin/package-lock.json ./admin/
 RUN cd admin && npm ci
 
 COPY admin/ ./admin/
+COPY shared/ ./shared/
 RUN cd admin && npm run build
 
 # ─── Stage 2: Production runtime ──────────────────────────────
@@ -24,6 +25,7 @@ RUN npm ci --omit=dev
 # Copy application code
 COPY server.js ecosystem.config.cjs ./
 COPY src/ ./src/
+COPY shared/ ./shared/
 COPY engines/ ./engines/
 
 # Copy built admin UI from builder stage

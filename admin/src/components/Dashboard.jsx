@@ -1,3 +1,4 @@
+import { getIntervalMs } from '../utils/intervals.mjs'
 import { useState, useEffect, useCallback } from 'react'
 import ActivityFeed from './ActivityFeed'
 import { useToast } from './Toast'
@@ -376,14 +377,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             </div>
             {nextTrade && !nextTrade.fullyAllocated && nextTrade.nextTradeAmount > 0 && (() => {
               const intervalsRemaining = Math.ceil(stats.allocationRemaining / nextTrade.nextTradeAmount)
-              const intervalMs = {
-                '1min': 60 * 1000,
-                '5min': 5 * 60 * 1000,
-                'hourly': 60 * 60 * 1000,
-                '1hour': 60 * 60 * 1000,
-                'daily': 24 * 60 * 60 * 1000,
-                'weekly': 7 * 24 * 60 * 60 * 1000,
-              }[config.intervalType] || 24 * 60 * 60 * 1000
+              const intervalMs = getIntervalMs(config.intervalType)
               const expectedEndDate = new Date(Date.now() + (intervalsRemaining * intervalMs))
               return (
                 <div className="flex justify-between mt-1 text-xs text-gray-400">
