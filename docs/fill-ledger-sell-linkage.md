@@ -93,9 +93,9 @@ Strategy:
 The engine holds the fill ledger in memory and persists it to disk on annotation changes. **Any external disk edits will be overwritten** by the engine's in-memory state.
 
 To safely repair fill ledger data:
-1. `pm2 stop critical-mass` (stop the engine first)
-2. Run the repair script (`node scripts/repair-sell-linkage.js`)
-3. `pm2 start critical-mass` (engine loads the repaired file)
+1. `pm2 stop critical-mass-coinbase` (stop the associated engine first; `pm2 stop critical-mass` only stops the API gateway, leaving the engine active to overwrite disk changes. Alternatively, `pm2 stop ecosystem.config.cjs` stops all processes)
+2. Run the repair script (`node scripts/repair-sell-linkage.js` — for modern multi-pair funds, ensure the script targets `data/<exchange>/<pair>/fill-ledger.json`)
+3. `pm2 start critical-mass-coinbase` (engine loads the repaired file; or `pm2 start ecosystem.config.cjs`)
 
 The repair script also sets `isSatellite: true` on all repaired buys. This prevents the engine's core TP annotation path from reclaiming them on subsequent restarts.
 
