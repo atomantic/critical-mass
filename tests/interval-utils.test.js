@@ -331,3 +331,35 @@ describe('shouldRunConsolidation', () => {
     assert.equal(shouldRunConsolidation(oldId, 'daily'), true);
   });
 });
+
+describe('shared admin trading intervals', () => {
+  it('offers every canonical interval with the backend label and exact duration', async () => {
+    const { INTERVAL_OPTIONS, getIntervalMs } = await import('../admin/src/utils/intervals.mjs');
+    assert.deepEqual(INTERVAL_OPTIONS, Object.entries(INTERVAL_DEFINITIONS)
+      .map(([value, { label }]) => ({ value, label })));
+    for (const [value, definition] of Object.entries(INTERVAL_DEFINITIONS)) {
+      assert.equal(getIntervalMs(value), definition.ms);
+      assert.ok(Number.isFinite(getIntervalMs(value)) && getIntervalMs(value) > 0);
+    }
+    assert.ok(!INTERVAL_OPTIONS.some(({ value }) => ['hourly', 'weekly'].includes(value)));
+  });
+
+  it('projects 60 remaining intervals using their actual duration', async () => {
+    const { getIntervalMs } = await import('../admin/src/utils/intervals.mjs');
+    const now = Date.parse('2026-01-01T00:00:00Z');
+    for (const [interval, expected] of [
+      ['10min', '2026-01-01T10:00:00.000Z'],
+      ['30min', '2026-01-02T06:00:00.000Z'],
+      ['4hour', '2026-01-11T00:00:00.000Z'],
+    ]) {
+      assert.equal(new Date(now + 60 * getIntervalMs(interval)).toISOString(), expected);
+    }
+  });
+
+  it('retains the daily fallback for missing or unsupported trading intervals', async () => {
+    const { getIntervalMs } = await import('../admin/src/utils/intervals.mjs');
+    for (const value of [undefined, null, '', 'unknown', 'hourly', 'weekly', 'toString']) {
+      assert.equal(getIntervalMs(value), 86_400_000);
+    }
+  });
+});

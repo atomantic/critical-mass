@@ -1,17 +1,8 @@
+import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { useState, useEffect } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Bar } from 'recharts'
 import { formatCurrency, formatPrice, formatPriceCompact } from './charts/chartUtils'
 import { pairQuery } from '../utils/api'
-
-const INTERVAL_OPTIONS = [
-  { value: '1min', label: '1 min' },
-  { value: '5min', label: '5 min' },
-  { value: '10min', label: '10 min' },
-  { value: '30min', label: '30 min' },
-  { value: '1hour', label: '1 hour' },
-  { value: '4hour', label: '4 hours' },
-  { value: 'daily', label: 'Daily' }
-]
 
 // Time periods adjusted per interval type
 const getPeriodsForInterval = (intervalType) => {

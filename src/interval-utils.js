@@ -14,50 +14,7 @@
  * Interval definitions with ms values and Coinbase API granularity
  * @type {Record<IntervalType, IntervalDefinition>}
  */
-const INTERVAL_DEFINITIONS = {
-  '1min': {
-    ms: 1 * 60 * 1000,
-    label: '1 Minute',
-    granularity: 60,   // ONE_MINUTE candles
-    aggregateFactor: 1
-  },
-  '5min': {
-    ms: 5 * 60 * 1000,
-    label: '5 Minutes',
-    granularity: 300,  // FIVE_MINUTE candles
-    aggregateFactor: 1
-  },
-  '10min': {
-    ms: 10 * 60 * 1000,
-    label: '10 Minutes',
-    granularity: 300,  // Use 5-min candles, aggregate to 10-min
-    aggregateFactor: 2
-  },
-  '30min': {
-    ms: 30 * 60 * 1000,
-    label: '30 Minutes',
-    granularity: 1800,  // THIRTY_MINUTE candles
-    aggregateFactor: 1
-  },
-  '1hour': {
-    ms: 60 * 60 * 1000,
-    label: '1 Hour',
-    granularity: 3600,
-    aggregateFactor: 1
-  },
-  '4hour': {
-    ms: 4 * 60 * 60 * 1000,
-    label: '4 Hours',
-    granularity: 3600,  // Use 1-hour candles, aggregate to 4-hour
-    aggregateFactor: 4
-  },
-  'daily': {
-    ms: 24 * 60 * 60 * 1000,
-    label: 'Daily',
-    granularity: 86400,
-    aggregateFactor: 1
-  }
-};
+const INTERVAL_DEFINITIONS = require('../shared/interval-definitions.json');
 
 /**
  * Get interval config by type

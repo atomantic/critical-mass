@@ -1,3 +1,4 @@
+import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
 import { useState, useEffect, useId, useRef } from 'react'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 
@@ -425,15 +426,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     }
   }
 
-  const INTERVAL_OPTIONS = [
-    { value: '1min', label: '1 Min' },
-    { value: '5min', label: '5 Min' },
-    { value: '10min', label: '10 Min' },
-    { value: '1hour', label: '1 Hour' },
-    { value: '4hour', label: '4 Hour' },
-    { value: 'daily', label: 'Daily' }
-  ]
-
   const CONSOLIDATE_INTERVAL_OPTIONS = [
     { value: 'never', label: 'Off' },
     { value: 'daily', label: 'Daily' },
@@ -457,7 +449,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const intervalsToSpread = config.intervalsToSpread || config.daysToSpread || 1
   const intervalAmount = intervalsToSpread ? (config.totalAllocation / intervalsToSpread) : 0
   const intervalLabel = INTERVAL_OPTIONS.find(o => o.value === config.intervalType)?.label || 'Daily'
-
 
   // Describe consolidation behavior
   const getConsolidationStatus = () => {

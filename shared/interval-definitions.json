@@ -1,0 +1,44 @@
+{
+  "1min": {
+    "ms": 60000,
+    "label": "1 Minute",
+    "granularity": 60,
+    "aggregateFactor": 1
+  },
+  "5min": {
+    "ms": 300000,
+    "label": "5 Minutes",
+    "granularity": 300,
+    "aggregateFactor": 1
+  },
+  "10min": {
+    "ms": 600000,
+    "label": "10 Minutes",
+    "granularity": 300,
+    "aggregateFactor": 2
+  },
+  "30min": {
+    "ms": 1800000,
+    "label": "30 Minutes",
+    "granularity": 1800,
+    "aggregateFactor": 1
+  },
+  "1hour": {
+    "ms": 3600000,
+    "label": "1 Hour",
+    "granularity": 3600,
+    "aggregateFactor": 1
+  },
+  "4hour": {
+    "ms": 14400000,
+    "label": "4 Hours",
+    "granularity": 3600,
+    "aggregateFactor": 4
+  },
+  "daily": {
+    "ms": 86400000,
+    "label": "Daily",
+    "granularity": 86400,
+    "aggregateFactor": 1
+  }
+}
