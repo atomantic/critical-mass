@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - **[issue-327] Order consolidation separates cancellation and recovery** — Extract private operational steps while preserving sequential exchange calls, gap-fill exclusions, result shapes, and replacement-order mappings.
 
 ### Fixed
+- **[issue-349] Example config presets align with canonical regime preset contract** — Removed dead `aggressivenessPresets` block from `exchanges.coinbase`, updated `global.aggressivenessPresets` to match the canonical preset with correct `maxCycleBuys` limits (10/15/25/50), added missing fields (`entryOffsetUpBps`, `entryOffsetDownBps`, `orderStaleMs`, `mergeProximityScale`), and removed obsolete `baseSizeUsdc` field to prevent 10x capital exposure on fresh deployments.
 - **[issue-348] DCA completion estimates use canonical intervals** — Share backend durations and dashboard/editor/backtest options, correcting 10-minute, 30-minute, and 4-hour projections and adding the missing 30-minute editor option.
 - **Native production setup installs PM2 before starting services** — The README now identifies PM2 as a separate prerequisite and includes its installation command; installing project dependencies alone does not provide the required executable.
 - **[issue-338] Streaming optimizer winners use domain ranking** — Keep Current Best consistent with completed results by preferring full coverage before total value and retaining the first result on ties.
