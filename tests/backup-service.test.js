@@ -189,7 +189,9 @@ describe('backup-service — restoreBackup preserves existing keys', () => {
   });
 
   it('leaves the on-disk key file untouched while restoring non-key files', () => {
-    const result = restoreBackup(craftedFilename);
+    // The crafted archive has no #430 configuration manifest, so it is a
+    // legacy archive: accept it data-only, which is what this test is about.
+    const result = restoreBackup(craftedFilename, { acceptLegacyWithoutBase: true });
     assert.equal(result.success, true);
 
     // Key file on disk must retain its original (live) content.
