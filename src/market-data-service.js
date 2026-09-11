@@ -17,11 +17,10 @@ const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
 const { createHealthMonitor, instrumentAdapterForHealth } = require('./health-monitor');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
-const { loadRegimeState, LIFECYCLE } = require('./state-tracker');
+const { loadRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 const { fundKey } = require('./shared-utils');
-const { calculateApyMetrics } = require('./apy-calculator');
-const celestialHierarchy = require('./celestial-hierarchy');
+const { buildStoppedRegimeStatus } = require('./regime-status');
 const { createContextLogger } = require('./logger');
 
 // Store active market data services keyed by `${exchange}::${pair}`
@@ -793,47 +792,36 @@ const createMarketDataService = (exchange, pair) => {
     if (now - lastStatusEmit < STATUS_EMIT_INTERVAL) return;
     lastStatusEmit = now;
 
-    // Use cached regime state to avoid disk reads every second
+    // Use cached regime state to avoid disk reads every second — only for
+    // seeding trackPersistedOrders (new body TPs created since startup so
+    // the WS feed can detect their fills/cancels while the engine is
+    // stopped). Status synthesis below always re-reads via
+    // buildStoppedRegimeStatus so lifecycle/P&L changes (e.g. an operator
+    // edit, or another process closing the fund) aren't held stale for up
+    // to REGIME_STATE_CACHE_MS.
     if (!cachedRegimeState || now - cachedRegimeStateTime > REGIME_STATE_CACHE_MS) {
       cachedRegimeState = loadRegimeState(exchange, resolvedPair);
       cachedRegimeStateTime = now;
-      // Pick up any new body TPs created since startup so the WS feed can
-      // detect their fills/cancels while the engine is stopped.
       trackPersistedOrders(cachedRegimeState?.position);
     }
 
-    // Synthesize persisted TPs + the same enrichment fields the running
-    // engine emits (apy, lifecycle, celestial summary) so a hard refresh
-    // while the engine is stopped doesn't lose APY/capital sections or
-    // misreport celestial as off between cycles. Each tick from this
-    // service overwrites socketStatus, so the payload must be shape-
-    // compatible with the running-engine status.
-    const position = cachedRegimeState?.position || null;
-    const bodies = position?.celestialBodies || [];
-    const config = getRegimeConfig(exchange, resolvedPair);
+    // Delegate to the shared stopped/offline status synthesizer (issue #357)
+    // so this socket stream re-derives realizedPnL / realizedAssetPnL /
+    // heldAssetCostBasis from the fill ledger on every tick, the same as
+    // the engine's own IPC handler and the HTTP gateway fallback — previously
+    // this path broadcast the un-rederived persisted position, drifting from
+    // the other two enrichment paths. Drops persisted TPs the WS feed has
+    // already confirmed are no longer open (filled/cancelled while the
+    // engine was stopped) via getOrderStatus — the engine can't refresh
+    // state until it restarts, but we should not show phantom rows.
     const market = getMarketState();
-    // Drop persisted TPs the WS feed has already confirmed are no longer open
-    // (filled/cancelled while the engine was stopped) — the engine can't
-    // refresh state until it restarts, but we should not show phantom rows.
-    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(position, getOrderStatus);
-
-    onStatusUpdateCallback({
-      isRunning: false,
+    const status = buildStoppedRegimeStatus(exchange, resolvedPair, {
       market,
       regime: getRegimeState(),
-      position,
-      pendingOrders,
-      apy: position ? calculateApyMetrics(position, config, { lastPrice: market?.lastPrice || 0 }) : {},
-      lifecycle: {
-        lifecycle: position?.lifecycle || LIFECYCLE.ACTIVE,
-        lifecycleChangedAt: position?.lifecycleChangedAt || null,
-        lifecycleReason: position?.lifecycleReason || null,
-        lifecycleClosedCycle: position?.lifecycleClosedCycle || null,
-      },
-      celestial: celestialHierarchy.buildCelestialPayload(position, config),
-      health: { mode: 'STOPPED' },
-      isDryRun: cachedRegimeState?.isDryRun || false,
+      getOrderStatus,
+      mode: 'STOPPED',
     });
+    if (status) onStatusUpdateCallback(status);
   };
 
   /**
