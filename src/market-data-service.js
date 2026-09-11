@@ -14,7 +14,7 @@
 const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
-const { getAdapter } = require('./adapters');
+const { getAdapter, isSupported } = require('./adapters');
 const { createHealthMonitor, instrumentAdapterForHealth } = require('./health-monitor');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
@@ -33,9 +33,6 @@ const marketDataServices = new Map();
 // map and leaked forever (live WS feed + 60s interval + a second fillLedger
 // whose persist() fights the winner). De-duping on this map closes the gap.
 const startingMarketDataServices = new Map();
-
-// Only Coinbase is supported for WebSocket market data (other exchanges have different APIs)
-const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 
 // REST adapter methods this service actually calls (getOrderFills via
 // ingestNewFillsForOrder, getCandles via updateMetrics) — instrumented so a
@@ -1914,7 +1911,7 @@ const createMarketDataService = (exchange, pair) => {
  */
 const startMarketDataService = async (exchange, pair) => {
   // Only supported for certain exchanges
-  if (!SUPPORTED_EXCHANGES.includes(exchange)) {
+  if (!isSupported(exchange)) {
     return { success: false, error: `Market data service not supported for ${exchange}` };
   }
 
