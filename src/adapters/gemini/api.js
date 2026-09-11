@@ -592,19 +592,20 @@ const createGeminiAdapter = (keysPath = null) => {
   adapter.findOrderByClientOrderId = async (clientOrderId, _productId = null) => {
     if (!clientOrderId) return null;
 
+    const notFound = Symbol('order-not-found');
     const result = await makeRestRequest('/v1/order/status', { client_order_id: clientOrderId })
       .catch((err) => {
-        if (isOrderNotFound(err)) return null;
+        if (isOrderNotFound(err)) return notFound;
         throw err;
       });
 
-    if (!result) return null;
+    if (result === notFound) return null;
 
     // A decoded response that carries no order_id is INCONCLUSIVE, not absent.
     // Throwing keeps the placement unresolved (the caller re-raises rather than
     // re-placing); returning null here would invite a double-place, and
     // adopting it would register an undefined order id into pending tracking.
-    if (!result.order_id) {
+    if (!result?.order_id) {
       throw new Error(`Gemini order lookup for client_order_id ${clientOrderId} returned no order id — outcome still unresolved`);
     }
 

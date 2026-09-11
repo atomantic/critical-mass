@@ -218,6 +218,22 @@ for (const c of cases) {
       await assert.rejects(() => adapter.findOrderByClientOrderId('coid-427', c.pair));
     });
 
+    for (const value of [null, false, 0, '']) {
+      it(`keeps a placement pending when a successful lookup has invalid payload ${JSON.stringify(value)}`, async () => {
+        const adapter = c.create(keysPath);
+        stubProduct(adapter);
+        const { placements } = install((kind) => {
+          if (kind === 'placement') throw new Error('socket hang up');
+          return textResponse(JSON.stringify(c.name === 'cryptocom' ? { code: 0, result: value } : value));
+        });
+        const result = await placeWithUnknownReconcile(adapter, c.pair,
+          () => adapter.placeLimitBuy(c.pair, 0.019, 100), []);
+        assert.equal(result.pending, true);
+        assert.equal(result.success, false);
+        assert.equal(placements.length, 1);
+      });
+    }
+
     it('reconciles an ambiguous placement into the live order without placing a second one', async () => {
       const adapter = c.create(keysPath);
       stubProduct(adapter);

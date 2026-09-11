@@ -557,13 +557,14 @@ const createCryptocomAdapter = (keysPath = null) => {
   adapter.findOrderByClientOrderId = async (clientOrderId, _productId = null) => {
     if (!clientOrderId) return null;
 
+    const notFound = Symbol('order-not-found');
     const result = await makePrivateRequest('private/get-order-detail', { client_oid: clientOrderId })
       .catch((err) => {
-        if (isOrderNotFound(err)) return null;
+        if (isOrderNotFound(err)) return notFound;
         throw err;
       });
 
-    if (!result) return null;
+    if (result === notFound) return null;
 
     // A decoded response that carries no order_id is INCONCLUSIVE, not absent.
     // Throwing keeps the placement unresolved (the caller re-raises rather than
