@@ -36,14 +36,18 @@ describe('core utility structured logging', () => {
     fs.writeFileSync(filePath, 'not json{');
 
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = line => lines.push(line);
+    console.warn = line => lines.push(line);
+    console.error = line => lines.push(line);
 
     let result;
     try {
       result = readJSON(filePath, { fallback: true });
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
 

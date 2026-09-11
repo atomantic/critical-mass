@@ -170,7 +170,10 @@ describe('gemini getOrderFills', () => {
     const createdMs = 1750000000000;
     const warnings = [];
     const origLog = console.log;
-    console.log = (msg) => { if (typeof msg === 'string' && msg.includes('same second')) warnings.push(msg); };
+    const origWarn = console.warn;
+    const captureSameSecond = (msg) => { if (typeof msg === 'string' && msg.includes('same second')) warnings.push(msg); };
+    console.log = captureSameSecond;
+    console.warn = captureSameSecond;
     let fills;
     try {
       const { calls } = installFetchMock((endpoint) => {
@@ -194,6 +197,7 @@ describe('gemini getOrderFills', () => {
       assert.ok(mt.length <= 2, `must not loop forever, got ${mt.length} requests`);
     } finally {
       console.log = origLog;
+      console.warn = origWarn;
     }
 
     assert.equal(fills.length, 1);
@@ -311,12 +315,14 @@ describe('gemini heartbeat refcount', () => {
 
   it('attributes timer failures to the current owner set after a fund stops', async () => {
     mock.timers.enable({ apis: ['setInterval', 'Date'] });
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     const lines = [];
     let heartbeatAttempt = 0;
 
     try {
       console.log = line => lines.push(line);
+      console.warn = line => lines.push(line);
+      console.error = line => lines.push(line);
       const adapter = createGeminiAdapter(keysPath);
       installFetchMock((endpoint) => {
         if (endpoint !== '/v1/heartbeat') return { result: 'ok' };
@@ -342,7 +348,9 @@ describe('gemini heartbeat refcount', () => {
         error: 'Gemini API 500: Bad Request (simulated error)',
       });
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
       mock.timers.reset();
     }
   });

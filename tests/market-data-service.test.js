@@ -180,8 +180,10 @@ describe('ingestNewFillsForOrder', () => {
   it('preserves fill-recovery warning text while appending fund and order context', async () => {
     const adapter = makeAdapter([new Error('network down')]);
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = (line) => lines.push(line);
+    console.warn = (line) => lines.push(line);
+    console.error = (line) => lines.push(line);
 
     try {
       await ingestNewFillsForOrder(
@@ -189,7 +191,9 @@ describe('ingestNewFillsForOrder', () => {
         'order-1', trackedOrder, 0.5, 'partial fill'
       );
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     }
 
     assert.equal(

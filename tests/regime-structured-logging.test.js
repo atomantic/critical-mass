@@ -27,8 +27,10 @@ describe('regime stack structured logging', () => {
 
   it('preserves operator messages and appends fund-specific event context', () => {
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = line => lines.push(line);
+    console.warn = line => lines.push(line);
+    console.error = line => lines.push(line);
 
     try {
       createMacroRegime('coinbase', {}, {}, 'BTC-USDC').restoreState({
@@ -58,7 +60,9 @@ describe('regime stack structured logging', () => {
         stats: { totalCycleCount: 4, avgStepsUsed: 1.5, p90StepsUsed: 2 },
       });
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     }
 
     assert.deepEqual(

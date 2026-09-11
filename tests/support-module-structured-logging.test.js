@@ -52,15 +52,19 @@ const contextFor = (lines, prefix) => {
   };
 };
 
-/** Capture everything the logger writes while `run` executes. */
+/** Capture everything the logger writes (INFO/WARN/ERROR) while `run` executes. */
 const captureLogs = async (run) => {
   const lines = [];
-  const originalLog = console.log;
+  const original = { log: console.log, warn: console.warn, error: console.error };
   console.log = line => lines.push(line);
+  console.warn = line => lines.push(line);
+  console.error = line => lines.push(line);
   try {
     return { result: await run(), lines };
   } finally {
-    console.log = originalLog;
+    console.log = original.log;
+    console.warn = original.warn;
+    console.error = original.error;
   }
 };
 
