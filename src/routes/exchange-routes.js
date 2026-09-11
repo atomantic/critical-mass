@@ -15,6 +15,7 @@ const {
   getEnabledFunds,
   getFundsForExchange,
   getDefaultPair,
+  getRegimeConfig,
   updateExchangeConfig,
   updateFundConfig,
   setExchangeEnabled,
@@ -23,14 +24,14 @@ const {
   removeFund,
   getBaseCurrency,
   getQuoteCurrency,
-  resolveConfiguredPair,
+  productIdMatchesPair,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
-const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
+const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
-const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
-const { getIPC: getExchangeIPC } = require('./route-utils');
+const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+const { resolvePairParam, getSafeIPC } = require('./route-utils');
 
 /**
  * Context logger for the per-exchange fund routes. Every endpoint here is
@@ -49,28 +50,12 @@ const exchangeLogger = (exchange, pair, route) => createContextLogger({
 });
 
 /**
- * Resolve a query pair through the shared configured-fund boundary.
- *
- * @param {import('express').Request} req
- * @returns {{ pair: string | null, error: string | null }}
- */
-const validatePairParam = (req) => {
-  return resolveConfiguredPair(req.params.exchange, req.query?.pair);
-};
-
-/**
  * @param {import('express').Express} app
  * @param {{exchangeIPCMap: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
  */
 module.exports = (app, deps) => {
   const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
-  const getIPC = (exchange) => {
-    try {
-      return getExchangeIPC(exchangeIPCMap, exchange);
-    } catch (err) {
-      return { request: () => Promise.reject(err) };
-    }
-  };
+  const getIPC = (exchange) => getSafeIPC(exchangeIPCMap, exchange);
 
   // Get list of all exchanges (with each fund flattened into the array).
   // Returns one entry per (exchange, pair) — the legacy `name` field is the
@@ -145,6 +130,28 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: 'pair is required (e.g. "ETH-USDC")' });
     }
 
+    if (productId !== undefined && productId !== null && (typeof productId !== 'string' || !productId)) {
+      return res.status(400).json({ success: false, error: 'productId must be a non-empty string' });
+    }
+
+    // Guard against creating a fund whose stored identity (pair) doesn't
+    // match what it actually trades (productId) — the same base-asset rule
+    // PUT /api/:exchange/config enforces on updates. Enforced before any
+    // adapter lookup or persistence so a mismatched request never reaches
+    // the exchange API or the config file.
+    if (productId) {
+      const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, productId);
+      if (!ok) {
+        exchangeLogger(exchange, pair, '/api/:exchange/funds').warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected fund creation: productId "${productId}" trades ${incomingBase}, not ${pairBase}`, {
+          action: 'create-fund',
+          productId,
+          incomingBase,
+          pairBase,
+        });
+        return res.status(400).json({ success: false, error: `productId "${productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a fund's traded asset must match its pair` });
+      }
+    }
+
     // Verify the exchange has an adapter (guards against bogus exchange names)
     const { getAdapter } = require('../adapters');
     let adapter;
@@ -175,13 +182,32 @@ module.exports = (app, deps) => {
         enabled: false, // Operator must explicitly enable
         dryRun: dryRun !== false, // Default to dry-run for safety
       };
+      // The regime seed goes through the same sanitize+value-validate step every
+      // other regime write does (issue #452) — a fund created with an
+      // out-of-range value (e.g. maxDrawdownPercent: 999) would otherwise reach
+      // the live engine with no other save surface ever having checked it.
+      // There's no persisted config yet, so cross-field partner checks (e.g.
+      // tpMinPercent vs tpMaxPercent) fall back to REGIME_DEFAULTS via
+      // getRegimeConfig, exactly as they would for an existing fund with no
+      // regime overrides.
+      const regimeCandidate = regime === undefined ? {} : regime;
+      const { value: sanitizedRegime, droppedKeys, valid, errors } = validateAndSanitizeRegimeConfig(regimeCandidate, getRegimeConfig(exchange, pair));
+      if (valid === false) {
+        return res.status(400).json({ success: false, error: errors.join('; ') });
+      }
+      if (droppedKeys.length > 0) {
+        exchangeLogger(exchange, pair, '/api/:exchange/funds').warn(`⚠️ 🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on fund creation: ${droppedKeys.join(', ')}`, {
+          action: 'create-fund',
+          droppedKeys,
+        });
+      }
       // The "Total Allocation" entered in the Add Fund modal is the operator's
       // intended budget for this fund. The regime engine (the active engine)
       // does not read `totalAllocation` — it uses `regime.depositedCapital`
       // and `regime.maxUsdcDeployed`. Mirror the value into all three so the
       // dashboard's Deposited field and the engine's risk caps both reflect
       // what the operator entered, instead of leaving regime at 0.
-      const seedRegime = { enabled: true, ...(regime && typeof regime === 'object' ? regime : {}) };
+      const seedRegime = { enabled: true, ...sanitizedRegime };
       if (typeof totalAllocation === 'number' && totalAllocation > 0) {
         initialConfig.totalAllocation = totalAllocation;
         seedRegime.depositedCapital ??= totalAllocation;
@@ -242,7 +268,7 @@ module.exports = (app, deps) => {
   // Get config for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
     res.json(config);
@@ -251,7 +277,7 @@ module.exports = (app, deps) => {
   // Update config for an exchange/fund (?pair= optional)
   app.put('/api/:exchange/config', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error: pairError } = validatePairParam(req);
+    const { pair, error: pairError } = resolvePairParam(req);
     if (pairError) return res.status(400).json({ success: false, error: pairError });
     const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
@@ -265,9 +291,8 @@ module.exports = (app, deps) => {
     // feed. The pair is the fund's identity, so a saved productId must trade the
     // same base asset. Quote-only edits (USD→USDC) still pass.
     if (pair && typeof updates.productId === 'string' && updates.productId) {
-      const pairBase = getBaseCurrency(pair);
-      const incomingBase = getBaseCurrency(updates.productId);
-      if (pairBase !== incomingBase) {
+      const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, updates.productId);
+      if (!ok) {
         logger.warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected config save: productId "${updates.productId}" trades ${incomingBase}, not ${pairBase}`, {
           action: 'update-config',
           productId: updates.productId,
@@ -278,18 +303,26 @@ module.exports = (app, deps) => {
       }
     }
 
-    // regime is a nested object — sanitize keys against the allowlist before merging.
-    // Unknown keys are DROPPED (not rejected): the config editor GETs the full stored
-    // config and PUTs it back verbatim, so a hard 400 on a stale key — e.g. a field
-    // removed from the engine in a later version but still present in a fund's
-    // persisted config — would make that fund permanently unsaveable. Dropping keeps
-    // the security intent (unknown keys never enter the saved overrides or reach the
-    // engine) while letting the save succeed. Note this doesn't rewrite the base
-    // config.json: a stale key living there stays inert (saveConfig persists only a
-    // diff and computeDiff doesn't tombstone removals), but it's harmless — never
-    // forwarded and dropped again on every save.
-    if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
-      const { value: sanitizedRegime, droppedKeys } = sanitizeRegimeConfig(req.body.regime);
+    // regime is a nested object — sanitize keys against the allowlist, then value-
+    // validate the survivors, before merging. Unknown keys are DROPPED (not
+    // rejected): the config editor GETs the full stored config and PUTs it back
+    // verbatim, so a hard 400 on a stale key — e.g. a field removed from the engine
+    // in a later version but still present in a fund's persisted config — would make
+    // that fund permanently unsaveable. Dropping keeps the security intent (unknown
+    // keys never enter the saved overrides or reach the engine) while letting the
+    // save succeed. Note this doesn't rewrite the base config.json: a stale key
+    // living there stays inert (saveConfig persists only a diff and computeDiff
+    // doesn't tombstone removals), but it's harmless — never forwarded and dropped
+    // again on every save.
+    // Known values ARE rejected when out of range: this is the same
+    // validateRegimeConfig the dedicated PUT /api/:exchange/regime/config route
+    // enforces, reused here so a value it would reject (e.g. maxDrawdownPercent:
+    // 999) can't reach the live engine through this save surface instead (#452).
+    if (req.body?.regime !== undefined) {
+      const { value: sanitizedRegime, droppedKeys, valid, errors: regimeErrors } = validateAndSanitizeRegimeConfig(req.body.regime, getRegimeConfig(exchange, pair));
+      if (valid === false) {
+        return res.status(400).json({ error: regimeErrors.join('; ') });
+      }
       if (droppedKeys.length > 0) {
         logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on save: ${droppedKeys.join(', ')}`, {
           action: 'update-config',
@@ -334,7 +367,7 @@ module.exports = (app, deps) => {
   // Toggle enabled/dryRun for an exchange/fund (?pair= optional)
   app.patch('/api/:exchange/config', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { enabled, dryRun } = req.body;
     const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
@@ -380,7 +413,7 @@ module.exports = (app, deps) => {
   // Get state for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/state', (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
     const state = stateTracker.loadState(config, exchange, pair);
@@ -398,7 +431,7 @@ module.exports = (app, deps) => {
   // Get live status for an exchange
   app.get('/api/:exchange/status', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { getAdapter } = require('../adapters');
 
@@ -441,6 +474,7 @@ module.exports = (app, deps) => {
       apiError,
       config,
       state,
+      placementIntents: stateTracker.describePlacementIntents(exchange, pair),
       lastUpdated: new Date().toISOString(),
     });
   });
@@ -452,7 +486,7 @@ module.exports = (app, deps) => {
   // and has been silently 3+ months stale; everything below is rebuilt fresh.
   app.get('/api/:exchange/summary', (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
 
     const summary = buildFundSummary(exchange, pair);
@@ -462,7 +496,7 @@ module.exports = (app, deps) => {
   // Get candles for an exchange/fund (for charts)
   app.get('/api/:exchange/candles', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { granularity = 'ONE_MINUTE', limit = 60 } = req.query;
     const config = getFundConfig(exchange, pair);
@@ -490,7 +524,7 @@ module.exports = (app, deps) => {
   // Sync pending orders for an exchange/fund
   app.post('/api/:exchange/sync', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
 
     if (!getGlobalConfig().simpleDcaEnabled) {
@@ -517,7 +551,7 @@ module.exports = (app, deps) => {
   // Trigger trade for an exchange/fund
   app.post('/api/:exchange/trade', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
 
     if (!getGlobalConfig().simpleDcaEnabled) {
@@ -533,7 +567,7 @@ module.exports = (app, deps) => {
   // Consolidate pending orders for an exchange/fund
   app.post('/api/:exchange/consolidate', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { orderIds } = req.body || {};
 
@@ -564,4 +598,27 @@ module.exports = (app, deps) => {
       trigger: 'manual',
     });
   });
+
+  // Operator reconcile of an unresolved DCA placement intent. While one exists
+  // the interval cycle refuses to place, across restarts (#472).
+  app.post('/api/:exchange/reconcile-placement-intent', async (req, res) => {
+    const { exchange } = req.params;
+    const { intentId, action } = req.body || {};
+    if (!intentId || typeof intentId !== 'string') {
+      return res.status(400).json({ success: false, error: 'intentId is required' });
+    }
+    if (action !== 'adopt' && action !== 'discard') {
+      return res.status(400).json({ success: false, error: "action must be 'adopt' or 'discard'" });
+    }
+
+    const result = await reconcilePlacementIntent(exchange, intentId, action);
+    if (!result.success) return res.status(400).json(result);
+
+    exchangeLogger(exchange, undefined, '/api/:exchange/reconcile-placement-intent').info(
+      `ℹ️ 🧾 [${exchange}] Placement intent ${intentId} reconciled (${action})`,
+      { action: `${action}-placement-intent`, intentId },
+    );
+    res.json({ ...result, placementIntents: stateTracker.describePlacementIntents(exchange) });
+  });
+
 };

@@ -173,6 +173,7 @@ module.exports = (app, deps) => {
     updownService,
     candleCache,
     readJSON,
+    writeJSON,
     DATA_DIR,
     validateEndpointUrl: validateEndpointUrlFn = validateEndpointUrl,
     safeFetch: safeFetchFn = safeFetch,
@@ -527,34 +528,60 @@ module.exports = (app, deps) => {
   // --- Trade History ---
   const TRADES_PATH = path.join(DATA_DIR, 'updown-trades.json');
 
-  const readTrades = () => readJSON(TRADES_PATH, { trades: [], nextId: 1 });
-  const writeTrades = (data) => fs.writeFileSync(TRADES_PATH, JSON.stringify(data, null, 2));
+  const readTrades = () => {
+    const defaultValue = { trades: [], nextId: 1 };
+    // Missing or empty file is OK — return default. Corrupt file is an error.
+    if (fs.existsSync(TRADES_PATH)) {
+      const content = fs.readFileSync(TRADES_PATH, 'utf8');
+      if (content && content.trim() !== '') {
+        // File exists with content — it must be valid JSON, not silently corrupt.
+        try {
+          return JSON.parse(content);
+        } catch (err) {
+          const tmpPath = `${TRADES_PATH}.tmp`;
+          const tmpExists = fs.existsSync(tmpPath);
+          throw new Error(
+            `Trades file is corrupted or incomplete: ${err.message}. ` +
+            `Please restore from backup or repair ${TRADES_PATH}.` +
+            (tmpExists ? ` A recovery file may exist at ${tmpPath}.` : '')
+          );
+        }
+      }
+    }
+    return defaultValue;
+  };
+
+  const writeTrades = (data) => writeJSON(TRADES_PATH, data);
   app.get('/api/updown/trades', (req, res) => {
-    const data = readTrades();
-    const trades = data.trades || [];
-    const totalCost = trades.reduce((s, t) => s + (t.cost || 0), 0);
-    const totalReturn = trades.reduce((s, t) => s + (t.returnAmount || 0), 0);
-    const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
-    const wins = trades.filter(t => t.pnl > 0).length;
-    const losses = trades.filter(t => t.pnl <= 0).length;
+    try {
+      const data = readTrades();
+      const trades = data.trades || [];
+      const totalCost = trades.reduce((s, t) => s + (t.cost || 0), 0);
+      const totalReturn = trades.reduce((s, t) => s + (t.returnAmount || 0), 0);
+      const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+      const wins = trades.filter(t => t.pnl > 0).length;
+      const losses = trades.filter(t => t.pnl <= 0).length;
 
-    // Directional win rates
-    const upTrades = trades.filter(t => t.direction === 'up');
-    const downTrades = trades.filter(t => t.direction === 'down');
-    const upWins = upTrades.filter(t => t.pnl > 0).length;
-    const downWins = downTrades.filter(t => t.pnl > 0).length;
+      // Directional win rates
+      const upTrades = trades.filter(t => t.direction === 'up');
+      const downTrades = trades.filter(t => t.direction === 'down');
+      const upWins = upTrades.filter(t => t.pnl > 0).length;
+      const downWins = downTrades.filter(t => t.pnl > 0).length;
 
-    res.json({
-      success: true,
-      trades,
-      summary: {
-        totalCost, totalReturn, totalPnl, wins, losses, count: trades.length,
-        upWinRate: upTrades.length > 0 ? Math.round(upWins / upTrades.length * 10000) / 100 : null,
-        downWinRate: downTrades.length > 0 ? Math.round(downWins / downTrades.length * 10000) / 100 : null,
-        upCount: upTrades.length,
-        downCount: downTrades.length,
-      },
-    });
+      res.json({
+        success: true,
+        trades,
+        summary: {
+          totalCost, totalReturn, totalPnl, wins, losses, count: trades.length,
+          upWinRate: upTrades.length > 0 ? Math.round(upWins / upTrades.length * 10000) / 100 : null,
+          downWinRate: downTrades.length > 0 ? Math.round(downWins / downTrades.length * 10000) / 100 : null,
+          upCount: upTrades.length,
+          downCount: downTrades.length,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   app.post('/api/updown/trades', (req, res) => {
@@ -567,92 +594,104 @@ module.exports = (app, deps) => {
     if (!Number.isFinite(costNum) || !Number.isFinite(returnNum)) {
       return res.status(400).json({ success: false, error: 'cost and returnAmount must be numbers' });
     }
-    const data = readTrades();
+    try {
+      const data = readTrades();
 
-    // Auto-capture trade context from service
-    const ctx = updownService.getTradeContext?.() ?? {};
-    // UP-only: SELL is CLOSE, never a DOWN entry.
-    const signalDirection = ctx.latestSignal?.type?.includes('BUY') ? 'up' : null;
-    const inferredDirection = bodyDirection || ctx.position?.direction || ctx.contract?.direction || signalDirection;
-    const manualOverride = bodyDirection && signalDirection ? bodyDirection !== signalDirection : false;
+      // Auto-capture trade context from service
+      const ctx = updownService.getTradeContext?.() ?? {};
+      // UP-only: SELL is CLOSE, never a DOWN entry.
+      const signalDirection = ctx.latestSignal?.type?.includes('BUY') ? 'up' : null;
+      const inferredDirection = bodyDirection || ctx.position?.direction || ctx.contract?.direction || signalDirection;
+      const manualOverride = bodyDirection && signalDirection ? bodyDirection !== signalDirection : false;
 
-    const trade = {
-      id: data.nextId || (data.trades.length + 1),
-      date: date || new Date().toISOString().slice(0, 10),
-      cost: costNum,
-      returnAmount: returnNum,
-      pnl: returnNum - costNum,
-      note: note || '',
-      direction: inferredDirection || null,
-      entryTime: new Date().toISOString(),
-      exitTime: null,
-      btcPriceAtEntry: ctx.lastPrice || null,
-      btcPriceAtExit: null,
-      contract: ctx.contract?.target ? {
-        target: ctx.contract.target,
-        stop: ctx.contract.stop,
-        range: ctx.contract.range,
-        direction: ctx.contract.direction,
-        expiry: ctx.contract.expiry,
-      } : null,
-      signal: ctx.latestSignal ? {
-        type: ctx.latestSignal.type,
-        score: ctx.latestSignal.score,
-        confidence: ctx.latestSignal.confidence,
-      } : null,
-      manualOverride,
-    };
-    data.trades.push(trade);
-    data.nextId = trade.id + 1;
-    writeTrades(data);
-    updownRouteLogger('/api/updown/trades').info(`ℹ️ 📊 UpDown trade added: id=${trade.id} cost=${trade.cost} return=${trade.returnAmount} pnl=${trade.pnl} dir=${trade.direction}`, {
-      action: 'add-trade',
-      tradeId: trade.id,
-      cost: trade.cost,
-      returnAmount: trade.returnAmount,
-      pnl: trade.pnl,
-      direction: trade.direction,
-    });
-    res.json({ success: true, trade });
+      const trade = {
+        id: data.nextId || (data.trades.length + 1),
+        date: date || new Date().toISOString().slice(0, 10),
+        cost: costNum,
+        returnAmount: returnNum,
+        pnl: returnNum - costNum,
+        note: note || '',
+        direction: inferredDirection || null,
+        entryTime: new Date().toISOString(),
+        exitTime: null,
+        btcPriceAtEntry: ctx.lastPrice || null,
+        btcPriceAtExit: null,
+        contract: ctx.contract?.target ? {
+          target: ctx.contract.target,
+          stop: ctx.contract.stop,
+          range: ctx.contract.range,
+          direction: ctx.contract.direction,
+          expiry: ctx.contract.expiry,
+        } : null,
+        signal: ctx.latestSignal ? {
+          type: ctx.latestSignal.type,
+          score: ctx.latestSignal.score,
+          confidence: ctx.latestSignal.confidence,
+        } : null,
+        manualOverride,
+      };
+      data.trades.push(trade);
+      data.nextId = trade.id + 1;
+      writeTrades(data);
+      updownRouteLogger('/api/updown/trades').info(`ℹ️ 📊 UpDown trade added: id=${trade.id} cost=${trade.cost} return=${trade.returnAmount} pnl=${trade.pnl} dir=${trade.direction}`, {
+        action: 'add-trade',
+        tradeId: trade.id,
+        cost: trade.cost,
+        returnAmount: trade.returnAmount,
+        pnl: trade.pnl,
+        direction: trade.direction,
+      });
+      res.json({ success: true, trade });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   app.put('/api/updown/trades/:id', (req, res) => {
     const id = parseInt(req.params.id, 10);
-    const data = readTrades();
-    const trade = data.trades.find(t => t.id === id);
-    if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
+    try {
+      const data = readTrades();
+      const trade = data.trades.find(t => t.id === id);
+      if (!trade) return res.status(404).json({ success: false, error: 'Trade not found' });
 
-    // Reject non-numeric updates before mutating the trade (issue #151).
-    for (const field of ['cost', 'returnAmount', 'btcPriceAtExit']) {
-      if (req.body[field] != null && !Number.isFinite(parseFiniteNumber(req.body[field]))) {
-        return res.status(400).json({ success: false, error: `${field} must be a number` });
+      // Reject non-numeric updates before mutating the trade (issue #151).
+      for (const field of ['cost', 'returnAmount', 'btcPriceAtExit']) {
+        if (req.body[field] != null && !Number.isFinite(parseFiniteNumber(req.body[field]))) {
+          return res.status(400).json({ success: false, error: `${field} must be a number` });
+        }
       }
-    }
 
-    if (req.body.date != null) trade.date = req.body.date;
-    if (req.body.cost != null) trade.cost = parseFiniteNumber(req.body.cost);
-    if (req.body.returnAmount != null) trade.returnAmount = parseFiniteNumber(req.body.returnAmount);
-    if (req.body.note != null) trade.note = req.body.note;
-    if (req.body.direction != null) trade.direction = req.body.direction;
-    if (req.body.exitTime != null) trade.exitTime = req.body.exitTime;
-    if (req.body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFiniteNumber(req.body.btcPriceAtExit);
-    trade.pnl = trade.returnAmount - trade.cost;
-    writeTrades(data);
-    res.json({ success: true, trade });
+      if (req.body.date != null) trade.date = req.body.date;
+      if (req.body.cost != null) trade.cost = parseFiniteNumber(req.body.cost);
+      if (req.body.returnAmount != null) trade.returnAmount = parseFiniteNumber(req.body.returnAmount);
+      if (req.body.note != null) trade.note = req.body.note;
+      if (req.body.direction != null) trade.direction = req.body.direction;
+      if (req.body.exitTime != null) trade.exitTime = req.body.exitTime;
+      if (req.body.btcPriceAtExit != null) trade.btcPriceAtExit = parseFiniteNumber(req.body.btcPriceAtExit);
+      trade.pnl = trade.returnAmount - trade.cost;
+      writeTrades(data);
+      res.json({ success: true, trade });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   app.delete('/api/updown/trades/:id', (req, res) => {
     const id = parseInt(req.params.id, 10);
-    const data = readTrades();
-    const idx = data.trades.findIndex(t => t.id === id);
-    if (idx === -1) return res.status(404).json({ success: false, error: 'Trade not found' });
-    data.trades.splice(idx, 1);
-    writeTrades(data);
-    updownRouteLogger('/api/updown/trades/:id').info(`ℹ️ 📊 UpDown trade deleted: id=${id}`, {
-      action: 'delete-trade',
-      tradeId: id,
-    });
-    res.json({ success: true });
+    try {
+      const data = readTrades();
+      const idx = data.trades.findIndex(t => t.id === id);
+      if (idx === -1) return res.status(404).json({ success: false, error: 'Trade not found' });
+      data.trades.splice(idx, 1);
+      writeTrades(data);
+      updownRouteLogger('/api/updown/trades/:id').info(`ℹ️ 📊 UpDown trade deleted: id=${id}`, {
+        action: 'delete-trade',
+        tradeId: id,
+      });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 };
 

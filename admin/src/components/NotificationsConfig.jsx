@@ -29,26 +29,46 @@ function NotificationsConfig() {
   const [config, setConfig] = useState(null)
   const [rawToken, setRawToken] = useState('')
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [message, setMessage] = useState(null)
   const [stats, setStats] = useState(null)
+  const [refreshError, setRefreshError] = useState(null)
 
-  const fetchConfig = async () => {
-    setLoading(true)
-    const res = await fetch('/api/notifications/config')
-    if (res.ok) {
-      const data = await res.json()
-      setConfig(data)
-      setRawToken('')
+  // `silent` refreshes run after a completed save: they must never swap the page
+  // for the loading/error gate, or the save's own result message is erased.
+  const fetchConfig = async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true)
+      setError(null)
     }
-    setLoading(false)
+    const fail = (text) => (silent ? setRefreshError(text) : setError(text))
+    try {
+      const res = await fetch('/api/notifications/config')
+      if (res.ok) {
+        const data = await res.json()
+        setConfig(data)
+        setRawToken('')
+        setRefreshError(null)
+      } else {
+        fail(`Failed to load notifications config (HTTP ${res.status})`)
+      }
+    } catch (err) {
+      fail(err.message || 'Failed to load notifications config')
+    } finally {
+      if (!silent) setLoading(false)
+    }
   }
 
   const fetchStats = async () => {
-    const res = await fetch('/api/notifications/stats')
-    if (res.ok) {
-      setStats(await res.json())
+    try {
+      const res = await fetch('/api/notifications/stats')
+      if (res.ok) {
+        setStats(await res.json())
+      }
+    } catch (err) {
+      // Silently fail on stats fetch to avoid blocking the page
     }
   }
 
@@ -72,33 +92,43 @@ function NotificationsConfig() {
       delete payload.telegram.botToken
     }
 
-    const res = await fetch('/api/notifications/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    try {
+      const res = await fetch('/api/notifications/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
 
-    if (res.ok) {
-      setMessage({ type: 'success', text: 'Notification settings saved!' })
-      fetchConfig()
-      fetchStats()
-    } else {
-      setMessage({ type: 'error', text: 'Failed to save settings' })
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'Notification settings saved!' })
+        fetchConfig({ silent: true })
+        fetchStats()
+      } else {
+        setMessage({ type: 'error', text: 'Failed to save settings' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleTest = async () => {
     setTesting(true)
     setMessage(null)
-    const res = await fetch('/api/notifications/test', { method: 'POST' })
-    const result = await res.json()
-    if (result.success) {
-      setMessage({ type: 'success', text: 'Test message sent to Telegram!' })
-    } else {
-      setMessage({ type: 'error', text: `Test failed: ${result.error}` })
+    try {
+      const res = await fetch('/api/notifications/test', { method: 'POST' })
+      const result = await res.json()
+      if (result.success) {
+        setMessage({ type: 'success', text: 'Test message sent to Telegram!' })
+      } else {
+        setMessage({ type: 'error', text: `Test failed: ${result.error}` })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Test failed' })
+    } finally {
+      setTesting(false)
     }
-    setTesting(false)
     fetchStats()
   }
 
@@ -107,6 +137,25 @@ function NotificationsConfig() {
       ...prev,
       events: { ...prev.events, [key]: value },
     }))
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-32">
+        <div className="max-w-sm text-center">
+          <div className="bg-red-900/50 border border-red-700 text-red-200 p-4 rounded-lg mb-4">
+            {error}
+          </div>
+          <button
+            onClick={() => fetchConfig()}
+            disabled={loading}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+          >
+            {loading ? 'Retrying...' : 'Retry'}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   if (loading || !config) {
@@ -161,6 +210,18 @@ function NotificationsConfig() {
         </div>
       )}
 
+      {refreshError && (
+        <div className="p-3 rounded-lg bg-yellow-900/50 border border-yellow-700 text-yellow-200 flex items-center justify-between gap-3">
+          <span>Settings may be out of date: {refreshError}</span>
+          <button
+            onClick={() => fetchConfig({ silent: true })}
+            className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 rounded font-medium transition-colors"
+          >
+            Refresh
+          </button>
+        </div>
+      )}
+
       {/* Stats bar */}
       {stats && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4" role="group" aria-label="Notification statistics">
@@ -193,14 +254,16 @@ function NotificationsConfig() {
           <div className="bg-gray-800 rounded-lg p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold">Connection</h2>
-              <label className="relative inline-flex items-center cursor-pointer">
+              <label htmlFor="enable-notifications" className="relative inline-flex items-center cursor-pointer">
                 <input
+                  id="enable-notifications"
                   type="checkbox"
                   checked={config.enabled}
                   onChange={e => setConfig(prev => ({ ...prev, enabled: e.target.checked }))}
                   className="sr-only peer"
                 />
                 <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+                <span className="ml-3 text-sm font-medium">Enable notifications</span>
               </label>
             </div>
             <p className="text-gray-400 text-sm mb-5">
@@ -212,8 +275,9 @@ function NotificationsConfig() {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Bot Token</label>
+                <label htmlFor="bot-token" className="block text-sm font-medium text-gray-300 mb-1">Bot Token</label>
                 <input
+                  id="bot-token"
                   type="password"
                   value={rawToken || ''}
                   onChange={e => setRawToken(e.target.value)}
@@ -225,8 +289,9 @@ function NotificationsConfig() {
                 )}
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Chat ID</label>
+                <label htmlFor="chat-id" className="block text-sm font-medium text-gray-300 mb-1">Chat ID</label>
                 <input
+                  id="chat-id"
                   type="text"
                   value={config.telegram.chatId || ''}
                   onChange={e => setConfig(prev => ({
@@ -246,8 +311,9 @@ function NotificationsConfig() {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Rate Limit (ms)</label>
+                  <label htmlFor="rate-limit-ms" className="block text-sm font-medium text-gray-300 mb-1">Rate Limit (ms)</label>
                   <input
+                    id="rate-limit-ms"
                     type="number"
                     value={config.rateLimitMs}
                     onChange={e => setConfig(prev => ({ ...prev, rateLimitMs: parseInt(e.target.value) || 5000 }))}
@@ -258,8 +324,9 @@ function NotificationsConfig() {
                   <p className="mt-1 text-xs text-gray-500">Batch window for rapid events</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
+                  <label htmlFor="daily-summary-hour" className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
                   <input
+                    id="daily-summary-hour"
                     type="number"
                     value={config.dailySummaryHour}
                     onChange={e => setConfig(prev => ({ ...prev, dailySummaryHour: parseInt(e.target.value) || 20 }))}
@@ -274,8 +341,9 @@ function NotificationsConfig() {
               {/* Quiet hours */}
               <div>
                 <div className="flex items-center gap-3 mb-3">
-                  <label className="relative inline-flex items-center cursor-pointer">
+                  <label htmlFor="quiet-hours-enabled" className="relative inline-flex items-center cursor-pointer">
                     <input
+                      id="quiet-hours-enabled"
                       type="checkbox"
                       checked={config.quietHours.enabled}
                       onChange={e => setConfig(prev => ({
@@ -285,15 +353,16 @@ function NotificationsConfig() {
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+                    <span className="ml-3 text-sm font-medium">Quiet Hours</span>
                   </label>
-                  <span className="text-sm font-medium">Quiet Hours</span>
                   <span className="text-xs text-gray-500">(critical events still sent)</span>
                 </div>
                 {config.quietHours.enabled && (
                   <div className="grid grid-cols-2 gap-4 ml-14">
                     <div>
-                      <label className="block text-sm text-gray-400 mb-1">Start Hour</label>
+                      <label htmlFor="quiet-hours-start" className="block text-sm text-gray-400 mb-1">Start Hour</label>
                       <input
+                        id="quiet-hours-start"
                         type="number"
                         value={config.quietHours.start}
                         onChange={e => setConfig(prev => ({
@@ -306,8 +375,9 @@ function NotificationsConfig() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm text-gray-400 mb-1">End Hour</label>
+                      <label htmlFor="quiet-hours-end" className="block text-sm text-gray-400 mb-1">End Hour</label>
                       <input
+                        id="quiet-hours-end"
                         type="number"
                         value={config.quietHours.end}
                         onChange={e => setConfig(prev => ({

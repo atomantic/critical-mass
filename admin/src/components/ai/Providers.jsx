@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { createRunLifecycle } from '../../utils/runLifecycle.mjs'
 
 const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
 
@@ -18,16 +19,24 @@ export default function AIProviders() {
   const [showSamples, setShowSamples] = useState(false)
   const [loadingSamples, setLoadingSamples] = useState(false)
   const [addingSample, setAddingSample] = useState({})
-  const pollRef = useRef(null)
+  const [runPending, setRunPending] = useState(false)
+  const loadDataRef = useRef(null)
+  const lifecycleRef = useRef(null)
+  if (!lifecycleRef.current) {
+    lifecycleRef.current = createRunLifecycle({
+      setRunningId,
+      setRunOutput,
+      setPending: setRunPending,
+      refreshRuns: () => loadDataRef.current?.(),
+    })
+  }
 
   useEffect(() => { loadData() }, [])
 
-  // Clean up polling interval on unmount
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
+  // The lifecycle owner holds every runner timer and in-flight read; unmounting
+  // invalidates its generation so no pending continuation can revive polling on
+  // a detached view. Server-side work is only cancelled by an explicit Stop.
+  useEffect(() => () => lifecycleRef.current.dispose(), [])
 
   const loadData = async () => {
     setLoading(true)
@@ -40,6 +49,10 @@ export default function AIProviders() {
     setRuns(runsRes.runs || [])
     setLoading(false)
   }
+
+  // Keep the lifecycle owner's run-list refresh pointed at the current closure
+  // without rebuilding the owner (and losing its generation) on every render.
+  useEffect(() => { loadDataRef.current = loadData })
 
   const handleSetActive = async (id) => {
     await fetch('/api/providers/active', {
@@ -77,44 +90,12 @@ export default function AIProviders() {
     loadData()
   }
 
-  const handleExecuteRun = async () => {
+  const handleExecuteRun = () => {
     if (!runPrompt.trim() || !activeProviderId) return
-    setRunOutput('')
-    const result = await fetch('/api/runs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ providerId: activeProviderId, prompt: runPrompt })
-    }).then(r => r.json()).catch(err => ({ error: err.message }))
-
-    if (result.error) {
-      setRunOutput(`Error: ${result.error}`)
-      return
-    }
-
-    setRunningId(result.runId)
-    // Poll for completion
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(async () => {
-      const meta = await fetch(`/api/runs/${result.runId}`).then(r => r.json()).catch(() => null)
-      if (!meta || meta.endTime) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-        setRunningId(null)
-        if (meta) {
-          const output = await fetch(`/api/runs/${result.runId}/output`).then(r => r.text()).catch(() => '')
-          setRunOutput(output || meta.error || 'No output')
-        }
-        loadData()
-      }
-    }, 2000)
+    lifecycleRef.current.execute({ providerId: activeProviderId, prompt: runPrompt })
   }
 
-  const handleStopRun = async () => {
-    if (runningId) {
-      await fetch(`/api/runs/${runningId}/stop`, { method: 'POST' })
-      setRunningId(null)
-    }
-  }
+  const handleStopRun = () => lifecycleRef.current.stop()
 
   const handleLoadSamples = async () => {
     setLoadingSamples(true)
@@ -209,10 +190,10 @@ export default function AIProviders() {
           <div className="flex justify-between items-center">
             <button
               onClick={handleExecuteRun}
-              disabled={!runPrompt.trim() || !activeProviderId || runningId}
+              disabled={!runPrompt.trim() || !activeProviderId || !!runningId || runPending}
               className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
             >
-              {runningId ? 'Running...' : 'Execute'}
+              {runningId || runPending ? 'Running...' : 'Execute'}
             </button>
             {runningId && (
               <button
@@ -488,12 +469,32 @@ function ProviderForm({ provider, onClose, onSave }) {
     enabled: provider?.enabled !== false
   })
 
+  // Local state for textarea input to avoid premature parsing on each keystroke
+  const [modelsText, setModelsText] = useState((provider?.models || []).join(', '))
+
+  // Sync modelsText when provider changes (e.g., switching between providers in modal)
+  useEffect(() => {
+    setModelsText((provider?.models || []).join(', '))
+  }, [provider?.id])
+
   const availableModels = formData.models || []
+
+  const parseModelsText = (text) => {
+    return text.split(',').map(m => m.trim()).filter(Boolean)
+  }
+
+  const handleModelsBlur = () => {
+    const models = parseModelsText(modelsText)
+    setFormData(prev => ({ ...prev, models }))
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    // Parse modelsText in case the user hasn't blurred from the textarea yet
+    const models = parseModelsText(modelsText)
     const data = {
       ...formData,
+      models,
       args: formData.args ? formData.args.split(' ').filter(Boolean) : [],
       timeout: parseInt(formData.timeout)
     }
@@ -627,11 +628,9 @@ function ProviderForm({ provider, onClose, onSave }) {
               {formData.type === 'api' && <span className="text-xs text-gray-500 ml-2">(Use Refresh after saving)</span>}
             </label>
             <textarea
-              value={(formData.models || []).join(', ')}
-              onChange={(e) => {
-                const models = e.target.value.split(',').map(m => m.trim()).filter(Boolean)
-                setFormData(prev => ({ ...prev, models }))
-              }}
+              value={modelsText}
+              onChange={(e) => setModelsText(e.target.value)}
+              onBlur={handleModelsBlur}
               placeholder="model-1, model-2, model-3"
               rows={2}
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white resize-none focus:border-indigo-500 focus:outline-none"

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 
 function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrency = 'USDC' }) {
   const [filter, setFilter] = useState('all')
@@ -35,8 +35,6 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
     }
   }
 
-  // formatCurrency for totals, formatPrice for per-unit prices
-  const formatAsset = (n) => (n || 0).toFixed(8)
   // Show full timestamp if available, otherwise just the date
   const formatDateTime = (tx) => {
     // Prefer Timestamp column (full ISO) if available

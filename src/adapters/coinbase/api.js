@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
-const { createBaseAdapter } = require('../base-adapter');
+const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -48,17 +48,21 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
     if (!keysFile) return false;
 
-    const keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
-    const apiKey = keys.name || keys.apiKey;
-    const apiSecret = keys.privateKey || keys.apiSecret;
+    try {
+      const keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+      const apiKey = keys.name || keys.apiKey;
+      const apiSecret = keys.privateKey || keys.apiSecret;
 
-    // Check for valid-looking credentials
-    if (!apiKey || !apiSecret) return false;
-    if (apiKey.length < 10) return false;
-    // Coinbase private key should be PEM format or at least 50 chars
-    if (!apiSecret.includes('-----BEGIN') && apiSecret.length < 50) return false;
+      // Check for valid-looking credentials
+      if (!apiKey || !apiSecret) return false;
+      if (apiKey.length < 10) return false;
+      // Coinbase private key should be PEM format or at least 50 chars
+      if (!apiSecret.includes('-----BEGIN') && apiSecret.length < 50) return false;
 
-    return true;
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   /**
@@ -79,7 +83,12 @@ const createCoinbaseAdapter = (keysPath = null) => {
       throw new Error('API keys not configured. Please add your Coinbase API keys.');
     }
 
-    const keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+    let keys;
+    try {
+      keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+    } catch (err) {
+      throw new Error('Failed to parse API keys file: corrupted or invalid JSON');
+    }
     // Handle both old format (name/privateKey) and direct format
     const apiKey = keys.name || keys.apiKey;
     const apiSecret = keys.privateKey || keys.apiSecret;
@@ -164,22 +173,21 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
     let lastError;
     for (let attempt = 0; attempt <= retries; attempt++) {
+      // The abort deadline must stay armed through the awaited body read, not
+      // just the header phase: a reset or stalled body has no application
+      // deadline once the timer is cleared early, so it can hang forever
+      // instead of surfacing as a retryable/reconcilable failure. Cleared in
+      // `finally` only after the whole request (headers + body) settles —
+      // mirrors the Gemini/Crypto.com adapters, which keep body reads inside
+      // the same try/signal scope. (#428)
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30000);
-      let response;
       try {
-        response = await fetch(`${BASE_URL}${apiPath}`, {
+        const response = await fetch(`${BASE_URL}${apiPath}`, {
           ...fetchOptions,
           signal: controller.signal,
         });
-      } catch (err) {
-        lastError = err;
-        response = null;
-      } finally {
-        clearTimeout(timeout);
-      }
 
-      if (response) {
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
           const message = errData.message || errData.error_details || response.statusText;
@@ -189,16 +197,59 @@ const createCoinbaseAdapter = (keysPath = null) => {
           cleanError.endpoint = `${method} ${apiPath}`;
           throw cleanError;
         }
-        return response.json();
+
+        // A 2xx whose body we cannot decode (undecodable JSON, or the body
+        // stalls/resets and the deadline above aborts it) is the same
+        // ambiguity as a lost response on a placement POST: Coinbase accepted
+        // something we can't read, so the outcome is unknown, not a clean
+        // failure. (#427/#428)
+        if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
+          try {
+            return await response.json();
+          } catch (err) {
+            throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `undecodable response: ${err.message}`);
+          }
+        }
+        return await response.json();
+      } catch (err) {
+        lastError = err;
+        // Already-classified outcomes must propagate untouched: a definitive
+        // HTTP rejection (numeric status — the exchange read the request and
+        // refused it) and an ambiguous placement outcome (unknownOutcome —
+        // thrown above for exactly this attempt, never retried) both bypass
+        // the network-error classification below.
+        if (typeof lastError.status === 'number' || lastError.unknownOutcome) {
+          throw lastError;
+        }
+      } finally {
+        clearTimeout(timeout);
       }
 
-      // Only retry idempotent GETs on a network error. A POST that
-      // network-errors may have already reached the matching engine, so a blind
-      // retry re-sends the same client_order_id and risks a double-place — the
-      // same reasoning the Gemini adapter documents (gemini/api.js: "Network
-      // errors are NOT retried"). Non-GET methods fall through to a terminal
-      // throw below. (429/other HTTP errors are handled by the !response.ok
-      // branch above and are never network-retried here.)
+      // Only reachable for an unclassified transport/decode failure: either
+      // fetch() itself failed before headers arrived, or (new in #428) a
+      // non-placement success-body read stalled/reset/failed to parse after a
+      // 2xx. Both look identical here — neither carries a `.status`.
+
+      // Order-placement POST whose fetch() failed before headers arrived: the
+      // outcome is UNKNOWN — the order may have executed on the exchange.
+      // Surface a distinct status so the caller can reconcile against the
+      // exchange by the deterministic client_order_id the request carried,
+      // instead of blind-retrying or assuming a clean failure and re-buying.
+      // See issues #199/#226. (The 2xx-body-read case is handled above, before
+      // this classification, so this is a single attempt either way.)
+      if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
+        throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, lastError.message);
+      }
+
+      // Only retry idempotent GETs on a network error — including a body read
+      // that failed/stalled after 2xx headers, per the existing retry ceiling.
+      // A POST that network-errors may have already reached the matching
+      // engine, so a blind retry re-sends the same client_order_id and risks a
+      // double-place — the same reasoning the Gemini adapter documents
+      // (gemini/api.js: "Network errors are NOT retried"). Non-GET methods
+      // fall through to a terminal throw below. (429/other HTTP errors are
+      // handled by the !response.ok branch above and are never
+      // network-retried here.)
       if (attempt < retries && method === 'GET' && isTransientNetworkError(lastError)) {
         const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
         const endpoint = apiPath.split('?')[0];
@@ -213,25 +264,6 @@ const createCoinbaseAdapter = (keysPath = null) => {
         });
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
-      }
-
-      // Order-placement POST that network-errored: the outcome is UNKNOWN — the
-      // order may have executed on the exchange. Surface a distinct status so
-      // the caller can reconcile against the exchange (query by
-      // client_order_id) instead of blind-retrying or assuming a clean failure
-      // and re-buying. See issue #199.
-      if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
-        const unknownError = new Error(
-          `Coinbase API unknown order outcome on ${method} ${apiPath.split('?')[0]}: ${lastError.message} — order may have reached the matching engine; reconcile by client_order_id before re-placing`
-        );
-        unknownError.status = 'unknown';
-        unknownError.unknownOutcome = true;
-        unknownError.endpoint = `${method} ${apiPath}`;
-        // Surface the deterministic client_order_id from the request body so the
-        // caller can reconcile by querying the exchange for this exact order
-        // (issue #226) instead of blind-retrying or assuming a clean failure.
-        unknownError.clientOrderId = data?.client_order_id;
-        throw unknownError;
       }
 
       // Non-retryable error or out of retries

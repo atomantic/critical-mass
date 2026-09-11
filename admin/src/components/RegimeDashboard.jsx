@@ -4,13 +4,16 @@ import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import { useToast } from './Toast'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys } from '../utils/regimeFillGroups.mjs'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
 import RegimeTimeline from './charts/RegimeTimeline'
 import RegimeActionModals from './regime/RegimeActionModals'
+import { getPriceDecimals, formatPriceByMagnitude, formatCurrency } from './charts/chartUtils'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
+const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-center justify-center regime-order-touch-target'
 
 // Format duration in human readable form
 const formatDuration = (ms) => {
@@ -23,19 +26,6 @@ const formatDuration = (ms) => {
   if (minutes > 0) return `${minutes}m ${seconds % 60}s`
   return `${seconds}s`
 }
-
-// Dynamic price formatter: shows enough decimals for the asset's price magnitude
-const getPriceDecimals = (price) => {
-  if (!price || price >= 100) return 2
-  if (price >= 1) return 4
-  return 5
-}
-const formatPrice = (price) => {
-  if (price == null || isNaN(price)) return '-'
-  const d = getPriceDecimals(price)
-  return price.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
-}
-const formatCurrency = (value) => `$${(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 // Format timestamp as YYYY-MM-DD HH:MM:SS local time
 const formatTimestamp = (ts) => {
@@ -413,7 +403,7 @@ function LivePriceTicker({ price, prevPrice }) {
   return (
     <div className="flex items-center gap-1">
       <span className={`text-lg font-bold font-mono transition-colors duration-300 ${directionColors[direction]}`}>
-        ${formatPrice(price)}
+        ${formatPriceByMagnitude(price)}
       </span>
       {direction !== 'none' && (
         <span className={`text-sm ${directionColors[direction]} animate-pulse`}>
@@ -545,7 +535,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
       </div>
 
       {/* Level buttons */}
-      <div className="flex gap-1 mb-2">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 mb-2">
         {levels.map((level) => {
           const isActive = currentLevel === level.id
           const classes = colorClasses[level.color]
@@ -556,7 +546,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
               onMouseEnter={() => handlePreview(level.id)}
               onMouseLeave={() => setShowPreview(false)}
               disabled={updating}
-              className={`flex-1 px-2 py-1.5 text-xs font-medium rounded border transition-all ${
+              className={`min-w-0 min-h-11 xl:min-h-0 w-full px-2 py-1.5 text-xs font-medium rounded border transition-all ${
                 isActive ? classes.active : classes.inactive
               } ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
@@ -633,7 +623,7 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
       <div className="text-[10px] text-gray-500 mb-0.5">ATR Trigger Distance</div>
       <div className="flex items-center justify-between">
         <span className="text-xs font-mono text-gray-300">
-          ${formatPrice(distanceToTrigger)} to go
+          ${formatPriceByMagnitude(distanceToTrigger)} to go
         </span>
         <span className="text-[10px] text-gray-500">
           ({progress.toFixed(0)}%)
@@ -648,8 +638,8 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
         />
       </div>
       <div className="flex justify-between text-[10px] text-gray-600 mt-0.5">
-        <span>Anchor: ${formatPrice(anchorPrice)}</span>
-        <span>Target: ±${formatPrice(triggerDistance)}</span>
+        <span>Anchor: ${formatPriceByMagnitude(anchorPrice)}</span>
+        <span>Target: ±${formatPriceByMagnitude(triggerDistance)}</span>
       </div>
     </div>
   )
@@ -677,6 +667,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [collapsingAll, setCollapsingAll] = useState(false)
   const [resetCycleConfirm, setResetCycleConfirm] = useState(false)
   const [resettingCycle, setResettingCycle] = useState(false)
+  // { intent, action: 'adopt'|'discard' } — operator reconcile of an unresolved placement intent
+  const [intentConfirm, setIntentConfirm] = useState(null)
+  const [reconcilingIntent, setReconcilingIntent] = useState(false)
   const [tpEditModal, setTpEditModal] = useState(null) // { bodyId, currentTpPct, currentPrice, avgPrice, bodyLabel, inputValue, priceValue, mode: 'pct'|'price' }
   const [settingTp, setSettingTp] = useState(false)
   const [fillSearchId, setFillSearchId] = useState('')
@@ -697,6 +690,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [capitalAdjustValue, setCapitalAdjustValue] = useState('')
   const [capitalAdjusting, setCapitalAdjusting] = useState(false)
   const prevPriceRef = useRef(null)
+  // Per-mount ownership fence for fills reads (#508). Initial load, the live
+  // fill marker refresh and action handlers all refetch fills concurrently; only
+  // the newest read may commit, so a slow older response cannot resurrect a
+  // pre-fill snapshot over a newer one.
+  const [fillsOwner] = useState(createRequestOwner)
+  useEffect(() => () => fillsOwner.invalidate(), [fillsOwner])
   const { addToast } = useToast()
 
   const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange, pair)
@@ -785,14 +784,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }, [exchange])
 
-  // Fetch live fills from fill ledger
+  // Fetch live fills from fill ledger. Reads go through the per-mount request
+  // owner so overlapping refreshes always commit in request order (#508).
   const fetchFills = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/fills${pairQuery}`)
-    if (res.ok) {
-      const data = await res.json()
-      setLiveFills(data.fills || [])
-    }
-  }, [exchange])
+    const { owned, data } = await fillsOwner.read(`/api/${exchange}/regime/fills${pairQuery}`)
+    if (owned && data) setLiveFills(data.fills || [])
+  }, [exchange, pairQuery, fillsOwner])
 
   // Refresh the Filled Orders table when a fill lands. fetchFills otherwise ran
   // only on mount + manual actions, so the realized-P&L bar and cycle groupings
@@ -886,7 +883,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
       addToast({
         type: 'success',
         title: data.summary?.totalBodies ? 'DCA Orders Merged' : 'DCA Orders Converted',
-        message: `${data.summary?.pendingOrders || 0} positions imported. ${data.summary?.totalBodies ? `Total bodies: ${data.summary.totalBodies}.` : ''} Start the regime engine to place sell orders.`,
+        message: `${data.summary?.pendingOrders || 0} positions imported. ${data.summary?.totalBodies ? `Total bodies: ${data.summary.totalBodies}.` : ''} Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.`,
       })
       // Refresh status and fills
       fetchStatus()
@@ -1072,6 +1069,40 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }
 
+  // Operator: reconcile an unresolved placement intent. Until one is resolved
+  // the fund refuses every new placement (and keeps refusing across restarts),
+  // because an order we never got an answer for may be resting live.
+  const handleReconcileIntent = async () => {
+    if (!intentConfirm) return
+    const { intent, action } = intentConfirm
+    setReconcilingIntent(true)
+    try {
+      const res = await fetch(`/api/${exchange}/regime/reconcile-placement-intent${pairQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ intentId: intent.id, action }),
+      })
+      const data = await res.json().catch(() => ({ success: false, error: 'Bad response' }))
+      if (data.success) {
+        addToast({
+          type: 'success',
+          title: action === 'adopt' ? 'Order adopted' : 'Intent discarded',
+          message: data.message || 'Placements resume for this fund',
+        })
+        if (data.status) setSocketStatus(data.status)
+        fetchStatus()
+        fetchFills()
+      } else {
+        addToast({ type: 'error', title: 'Reconcile failed', message: data.error || data.message || 'Unknown error' })
+      }
+    } catch (err) {
+      addToast({ type: 'error', title: 'Reconcile failed', message: err.message })
+    } finally {
+      setReconcilingIntent(false)
+      setIntentConfirm(null)
+    }
+  }
+
   // Manually set TP target (by % or limit price) for a celestial body
   const handleSetTp = async (mode) => {
     if (settingTp) return // re-entry guard: Enter key bypasses the disabled button state
@@ -1208,6 +1239,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const dryRunState = status?.dryRun || {}
   // Use pendingOrders from dryRunState for dry-run, from status for live
   const pendingOrdersList = isDryRun ? (dryRunState?.pendingOrders || []) : (status?.pendingOrders || [])
+  // Only intents that actually need an operator: an in-flight dispatch is
+  // reported by the engine but resolves itself within moments.
+  const placementIntents = isDryRun ? [] : (status?.placementIntents || []).filter(i => i?.needsAttention)
 
   // New buys pause when the cycle buy-limit is reached; existing TPs stay active.
   const buysPaused = position?.cycleBuys != null && config?.maxCycleBuys != null && position.cycleBuys >= config.maxCycleBuys
@@ -1394,7 +1428,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   prevPrice={prevPriceRef.current}
                 />
                 <div className="text-[10px] text-gray-500">
-                  Spread: ${formatPrice(market.spread)} ({market.spread && market.lastPrice ? ((market.spread / market.lastPrice) * 10000).toFixed(1) : '-'} bps)
+                  Spread: ${formatPriceByMagnitude(market.spread)} ({market.spread && market.lastPrice ? ((market.spread / market.lastPrice) * 10000).toFixed(1) : '-'} bps)
                 </div>
               </div>
 
@@ -1544,15 +1578,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <div className="flex justify-between">
                   <span className="text-gray-500">ATR 1m</span>
-                  <span className="text-white font-mono">${formatPrice(market.atr1m)}</span>
+                  <span className="text-white font-mono">${formatPriceByMagnitude(market.atr1m)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">ATR 5m</span>
-                  <span className="text-white font-mono">${formatPrice(market.atr5m)}</span>
+                  <span className="text-white font-mono">${formatPriceByMagnitude(market.atr5m)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">VWAP</span>
-                  <span className="text-white font-mono">${formatPrice(market.vwap)}</span>
+                  <span className="text-white font-mono">${formatPriceByMagnitude(market.vwap)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">VWAP Dist</span>
@@ -1796,15 +1830,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="grid grid-cols-2 gap-1 text-[10px]">
                       <div>
                         <span className="text-gray-500">Entry:</span>{' '}
-                        <span className="text-white font-mono">${formatPrice(dryRunState.optimalTpAnalytics.currentCycle.entryPrice)}</span>
+                        <span className="text-white font-mono">${formatPriceByMagnitude(dryRunState.optimalTpAnalytics.currentCycle.entryPrice)}</span>
                       </div>
                       <div>
                         <span className="text-gray-500">Max seen:</span>{' '}
-                        <span className="text-green-400 font-mono">${formatPrice(dryRunState.optimalTpAnalytics.currentCycle.currentMaxPrice)}</span>
+                        <span className="text-green-400 font-mono">${formatPriceByMagnitude(dryRunState.optimalTpAnalytics.currentCycle.currentMaxPrice)}</span>
                       </div>
                       <div>
                         <span className="text-gray-500">Min seen:</span>{' '}
-                        <span className="text-red-400 font-mono">${formatPrice(dryRunState.optimalTpAnalytics.currentCycle.currentMinPrice)}</span>
+                        <span className="text-red-400 font-mono">${formatPriceByMagnitude(dryRunState.optimalTpAnalytics.currentCycle.currentMinPrice)}</span>
                       </div>
                       <div>
                         <span className="text-gray-500">Optimal TP:</span>{' '}
@@ -1993,7 +2027,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 </div>
                 <div className="min-w-0">
                   <div className="text-gray-500">Avg Cost</div>
-                  <div className="text-white font-mono truncate">${formatPrice(position.avgCostBasis)}</div>
+                  <div className="text-white font-mono truncate">${formatPriceByMagnitude(position.avgCostBasis)}</div>
                 </div>
                 <div className="min-w-0">
                   <div className="text-gray-500">Cycle</div>
@@ -2211,7 +2245,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="min-w-0 truncate">{asset} on Order: <span className="text-yellow-400">{dryRunState.pnl.assetOnOrder?.toFixed(8) || 0}</span></div>
                     <div className="min-w-0 truncate">{asset} Reserves: <span className="text-cyan-400">{position.realizedAssetPnL?.toFixed(8) || 0}</span></div>
                     <div>Filled Orders: {dryRunState.pnl.filledOrderCount || 0}</div>
-                    <div>Avg Entry: ${formatPrice(dryRunState.pnl.avgEntryPrice)}</div>
+                    <div>Avg Entry: ${formatPriceByMagnitude(dryRunState.pnl.avgEntryPrice)}</div>
                   </div>
                 </div>
               )}
@@ -2246,19 +2280,19 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                     <div className="flex justify-between">
                       <span className="text-gray-500">21h EMA</span>
-                      <span className="text-white font-mono">${formatPrice(m.emas?.h21)}</span>
+                      <span className="text-white font-mono">${formatPriceByMagnitude(m.emas?.h21)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">50h EMA</span>
-                      <span className="text-white font-mono">${formatPrice(m.emas?.h50)}</span>
+                      <span className="text-white font-mono">${formatPriceByMagnitude(m.emas?.h50)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">200h EMA</span>
-                      <span className="text-white font-mono">${formatPrice(m.emas?.h200)}</span>
+                      <span className="text-white font-mono">${formatPriceByMagnitude(m.emas?.h200)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">20d EMA</span>
-                      <span className="text-white font-mono">${formatPrice(m.emas?.d20)}</span>
+                      <span className="text-white font-mono">${formatPriceByMagnitude(m.emas?.d20)}</span>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-gray-700">
@@ -2526,7 +2560,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <div className="space-y-2">
                     <div className="flex items-center gap-4 text-xs text-gray-300">
                       <span>{ladderPreview.levelCount} levels</span>
-                      <span>{formatPrice(ladderPreview.levels[0]?.price)} — {formatPrice(ladderPreview.levels[ladderPreview.levels.length - 1]?.price)}</span>
+                      <span>{formatPriceByMagnitude(ladderPreview.levels[0]?.price)} — {formatPriceByMagnitude(ladderPreview.levels[ladderPreview.levels.length - 1]?.price)}</span>
                       <span title={`Max: ${formatCurrency(ladderPreview.maxUsdcDeployed)} − Allocated: ${formatCurrency(ladderPreview.allocatedCapital)}`}>Budget: {formatCurrency(ladderPreview.totalBudget)}</span>
                       <span>Range: {ladderPreview.lowerBoundPct?.toFixed(1)}%</span>
                     </div>
@@ -2545,7 +2579,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           {ladderPreview.levels.map((level, i) => (
                             <tr key={i} className="border-b border-gray-700/30 text-gray-300">
                               <td className="py-1 pr-2 text-gray-500">{i + 1}</td>
-                              <td className="text-right py-1 pr-2 font-mono">{formatPrice(level.price)}</td>
+                              <td className="text-right py-1 pr-2 font-mono">{formatPriceByMagnitude(level.price)}</td>
                               <td className="text-right py-1 pr-2 font-mono">${level.sizeUsdc?.toFixed(2)}</td>
                               <td className="text-right py-1 pr-2 font-mono">{level.assetQty?.toFixed(8)}</td>
                               <td className="text-right py-1 font-mono text-gray-500">{level.distancePct?.toFixed(2)}%</td>
@@ -2587,7 +2621,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     return (
                       <button
                         title="Edit TP target"
-                        className="text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none"
+                        className={`${REGIME_ORDER_TOUCH_TARGET} text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none`}
                         onClick={(e) => {
                           e.stopPropagation()
                           setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode })
@@ -2833,7 +2867,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                     return (
                                       <button
                                         title={`Roll up into ${tgtLabel}`}
-                                        className="px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded transition-colors"
+                                        className={`${REGIME_ORDER_TOUCH_TARGET} px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded transition-colors`}
                                         onClick={(e) => {
                                           e.stopPropagation()
                                           setRollUpConfirm({ bodyId: bodyData.id, bodyLabel: srcLabel, targetLabel: tgtLabel })
@@ -2936,6 +2970,59 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               </div>
             )}
           </div>
+
+          {/* Unresolved placement intents — while any exist the fund refuses new placements */}
+          {placementIntents.length > 0 && (
+            <div className="bg-gray-800 rounded-lg p-4 border border-amber-600/60">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-medium text-amber-400">
+                  Unresolved Placements ({placementIntents.length})
+                </h3>
+                <span className="text-xs text-gray-400">New orders are blocked until these are reconciled</span>
+              </div>
+              <div className="space-y-2">
+                {placementIntents.map(intent => (
+                  <div key={intent.id} className="rounded bg-gray-900/60 p-3 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-mono text-gray-200">
+                        <span className={intent.needsAttention ? 'text-amber-400' : 'text-gray-400'}>
+                          {intent.status === 'unresolved' ? 'UNRESOLVED' : 'DISPATCHING'}
+                        </span>
+                        {' · '}{intent.action || 'order'}{' · '}{intent.side || '?'}
+                        {intent.size ? ` ${intent.size} ${asset}` : ''}
+                        {intent.price ? ` @ ${formatPriceByMagnitude(intent.price)}` : ''}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setIntentConfirm({ intent, action: 'adopt' })}
+                          disabled={reconcilingIntent || !intent.clientOrderId}
+                          title={intent.clientOrderId ? 'Look the order up on the exchange and adopt it into tracking' : 'No client order id was recorded — check the exchange manually, then discard'}
+                          className="px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors disabled:opacity-50"
+                        >
+                          Adopt
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIntentConfirm({ intent, action: 'discard' })}
+                          disabled={reconcilingIntent}
+                          className="px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded transition-colors disabled:opacity-50"
+                        >
+                          Discard
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-gray-400">{intent.recoveryHint}</div>
+                    <div className="mt-1 text-gray-500 font-mono">
+                      {intent.clientOrderId ? `client_order_id ${intent.clientOrderId} · ` : ''}
+                      {formatTimestamp(intent.createdAt)}
+                      {intent.reason ? ` · ${intent.reason}` : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Filled Orders */}
           <div className="bg-gray-800 rounded-lg p-4">
@@ -3376,6 +3463,10 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
         resettingCycle={resettingCycle}
         onDismissResetCycle={() => setResetCycleConfirm(false)}
         onExecuteResetCycle={handleResetCycle}
+        intentConfirm={intentConfirm}
+        reconcilingIntent={reconcilingIntent}
+        onDismissIntent={() => setIntentConfirm(null)}
+        onExecuteIntent={handleReconcileIntent}
         drawdownResumeConfirm={drawdownResumeConfirm}
         onDismissResumeDrawdown={() => setDrawdownResumeConfirm(false)}
         onExecuteResumeDrawdown={handleResumeDrawdown}

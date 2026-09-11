@@ -433,7 +433,36 @@ const createCandleCache = () => {
     ]);
   };
 
-  return { seedFromPublicAPI, processTick, getCandles, getAllCandles, getAggregator, seedAll };
+  /**
+   * Drop every cached aggregator and volume baseline, then reseed from the
+   * public APIs.
+   *
+   * A backup restore replaces the data files the gateway serves from, but this
+   * cache lives only in memory: without an explicit invalidation the dashboard
+   * keeps being served candles accumulated BEFORE the restore, and the reseed
+   * would never happen because the engines that feed it are deliberately left
+   * stopped (issue #429).
+   *
+   * Reseeding is network work, so it is deliberately not awaited by the caller
+   * holding the maintenance lock — the cache is empty (honest) the moment this
+   * returns, and refills in the background. `reseed: false` drops the cache
+   * without touching the network, which is what tests want.
+   *
+   * @param {{reseed?: boolean}} [options] - Whether to refill from the public APIs
+   * @returns {Promise<void>} Resolves when the reseed settles
+   */
+  const invalidate = ({ reseed = true } = {}) => {
+    const cleared = aggregators.size;
+    aggregators.clear();
+    lastVolume24h.clear();
+    cacheLogger('all').info(`ℹ️ Candle cache invalidated: dropped ${cleared} aggregator(s), reseeding`, {
+      action: 'invalidate',
+      aggregators: cleared,
+    });
+    return reseed ? seedAll() : Promise.resolve();
+  };
+
+  return { seedFromPublicAPI, processTick, getCandles, getAllCandles, getAggregator, seedAll, invalidate };
 };
 
 module.exports = { createCandleCache, seedDerivedTimeframes, aggregateCandles };

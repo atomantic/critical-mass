@@ -82,7 +82,7 @@ export default function SentinelDashboard() {
   }
 
   const handleToggleEnabled = async () => {
-    const newEnabled = !status?.status?.config?.enabled
+    const newEnabled = !status?.config?.enabled
     await fetch('/api/sentinel/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -181,7 +181,8 @@ export default function SentinelDashboard() {
             </button>
             <button
               onClick={handleToggleEnabled}
-              className={`px-3 py-1.5 rounded text-sm ${status?.config?.enabled ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-gray-600 hover:bg-gray-700'}`}
+              disabled={!status?.config}
+              className={`px-3 py-1.5 rounded text-sm ${status?.config?.enabled ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-gray-600 hover:bg-gray-700'} ${!status?.config ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {status?.config?.enabled ? 'Disable' : 'Enable'}
             </button>

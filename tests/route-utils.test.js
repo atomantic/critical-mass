@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const migration = require('../src/migration');
-const { getPair, getIPC, withConfiguredPair } = require('../src/routes/route-utils');
+const { resolvePairParam, getIPC, getSafeIPC, withConfiguredPair } = require('../src/routes/route-utils');
 
 describe('getIPC', () => {
   it('returns only the exact exchange client', () => {
@@ -26,15 +26,30 @@ describe('getIPC', () => {
   });
 });
 
+describe('getSafeIPC', () => {
+  it('returns the exact exchange client, same as getIPC', () => {
+    const coinbase = { request: () => Promise.resolve() };
+    const gemini = { request: () => Promise.resolve() };
+    assert.equal(getSafeIPC({ coinbase, gemini }, 'gemini'), gemini);
+  });
+
+  it('returns a rejecting client instead of throwing when the exchange is missing', async () => {
+    const coinbase = { request: () => Promise.resolve() };
+    const safe = getSafeIPC({ coinbase }, 'gemini');
+    assert.equal(typeof safe.request, 'function');
+    await assert.rejects(() => safe.request(), /No IPC client for exchange: gemini/);
+  });
+});
+
 describe('configured pair boundary', () => {
   it('rejects traversal, absolute paths, arrays, and unknown but well-formed pairs', () => {
     const makeRequest = (pair) => ({ params: { exchange: 'coinbase' }, query: { pair } });
 
-    assert.equal(getPair(makeRequest('../keys')).pair, null);
-    assert.equal(getPair(makeRequest('%2e%2e%2fkeys')).pair, null);
-    assert.equal(getPair(makeRequest('/tmp/keys')).pair, null);
-    assert.equal(getPair(makeRequest(['BTC-USDC'])).pair, null);
-    assert.equal(getPair(makeRequest('ETH-USDC')).pair, null);
+    assert.equal(resolvePairParam(makeRequest('../keys')).pair, null);
+    assert.equal(resolvePairParam(makeRequest('%2e%2e%2fkeys')).pair, null);
+    assert.equal(resolvePairParam(makeRequest('/tmp/keys')).pair, null);
+    assert.equal(resolvePairParam(makeRequest(['BTC-USDC'])).pair, null);
+    assert.equal(resolvePairParam(makeRequest('ETH-USDC')).pair, null);
   });
 
   it('uses the configured pair and blocks invalid HTTP requests before their handler runs', () => {

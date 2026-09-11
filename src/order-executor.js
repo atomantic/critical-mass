@@ -31,10 +31,24 @@ const { createContextLogger } = require('./logger');
  * @param {Object} [callbacks] - Event callbacks
  * @param {Function} [callbacks.onFillDetected] - Called when fill is detected via polling: (orderId, orderStatus)
  * @param {Function} [callbacks.onEntryCancelled] - Called when an entry order is cancelled (stale timeout, refresh, etc.): (orderId)
+ * @param {string} [pair] - Fund pair name (the `data/<exchange>/<pair>/` directory), used to scope durable placement intents; defaults to productId
  * @returns {Object} Order executor instance
  */
-const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {}) => {
+const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {}, pair = productId) => {
   const logger = createContextLogger({ exchange, pair: productId });
+
+  /**
+   * Describe a placement so order-manager can persist a durable intent for it
+   * BEFORE the POST is dispatched, and refuse a second placement on this fund
+   * while an earlier one is unresolved — across restarts (#472).
+   * @param {string} action - What is being placed, e.g. 'entry_bid'
+   * @param {'buy'|'sell'} side - Order side
+   * @param {{price?: number, size?: number, sizeUsdc?: number, bodyId?: string, ladderIndex?: number}} [details] - Requested order parameters
+   * @returns {{intent: Object}} Options bag for placeWithUnknownReconcile
+   */
+  const intentFor = (action, side, details = {}) => ({
+    intent: { exchange, pair, action, side, ...details },
+  });
   /** @type {Map<string, PendingOrder>} */
   const pendingOrders = new Map();
   const baseCurrency = getBaseCurrency(productId);
@@ -287,7 +301,25 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
     // follow-up) instead of treating a network error as a clean failure — a
     // real entry bid may have reached the exchange despite it.
-    const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitBuy(productId, assetQty, bidPrice, { postOnly: true }));
+    const result = await placeWithUnknownReconcile(
+      adapter,
+      productId,
+      () => adapter.placeLimitBuy(productId, assetQty, bidPrice, { postOnly: true }),
+      intentFor('entry_bid', 'buy', { price: bidPrice, size: assetQty, sizeUsdc }),
+    );
+
+    // An unresolved outcome is NOT a clean failure: a real bid may be resting
+    // live on the exchange. Surface it as pending so the engine reports it and
+    // stops entering, instead of retrying into a double position.
+    if (result.pending) {
+      logger.error(`⏸️ [${exchange}] Entry bid outcome unresolved — placements are blocked for this fund until an operator reconciles: ${result.errorMessage}`, {
+        orderType: 'entry',
+        pending: true,
+        intentId: result.intentId ?? result.blockedByIntentId ?? null,
+        error: result.errorMessage,
+      });
+      return { success: false, pending: true, intentId: result.intentId ?? result.blockedByIntentId ?? null, errorMessage: result.errorMessage };
+    }
 
     if (result.success) {
       logger.info(`✅ [${exchange}] Entry bid placed: orderId=${result.orderId} ${assetQty} ${baseCurrency} @ ${fmtPrice(bidPrice)}`, {
@@ -476,7 +508,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue
         // #226 follow-up) instead of treating a network error as a clean
         // failure — a real TP sell may have reached the exchange despite it.
-        result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, roundedQty, roundedPrice));
+        result = await placeWithUnknownReconcile(
+          adapter,
+          productId,
+          () => adapter.placeLimitSell(productId, roundedQty, roundedPrice),
+          intentFor('take_profit', 'sell', { price: roundedPrice, size: roundedQty }),
+        );
       } catch (err) {
         // POST_ONLY_REJ means TP price is below current bid — price already passed TP level.
         // Retry without POST_ONLY so the order fills immediately as a taker.
@@ -486,7 +523,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
             price: roundedPrice,
             retryMode: 'taker',
           });
-          result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }));
+          result = await placeWithUnknownReconcile(
+            adapter,
+            productId,
+            () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }),
+            intentFor('take_profit_taker', 'sell', { price: roundedPrice, size: roundedQty }),
+          );
         } else {
           throw err;
         }
@@ -862,7 +904,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue
       // #226 follow-up) instead of treating a network error as a clean
       // failure — a real replacement order may have reached the exchange.
-      const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitBuy(productId, assetQty, price, { postOnly: true }));
+      const result = await placeWithUnknownReconcile(
+        adapter,
+        productId,
+        () => adapter.placeLimitBuy(productId, assetQty, price, { postOnly: true }),
+        intentFor('entry_replacement', 'buy', { price, size: assetQty, sizeUsdc: assetQty * price }),
+      );
+      if (result.pending) return { success: false, pending: true, reason: 'placement_unresolved', intentId: result.intentId ?? result.blockedByIntentId ?? null };
       if (result.success) {
         pendingOrders.set(result.orderId, {
           type: 'entry',
@@ -874,7 +922,13 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
         return { success: true, newOrderId: result.orderId };
       }
     } else {
-      const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, assetQty, price));
+      const result = await placeWithUnknownReconcile(
+        adapter,
+        productId,
+        () => adapter.placeLimitSell(productId, assetQty, price),
+        intentFor('take_profit_replacement', 'sell', { price, size: assetQty }),
+      );
+      if (result.pending) return { success: false, pending: true, reason: 'placement_unresolved', intentId: result.intentId ?? result.blockedByIntentId ?? null };
       if (result.success) {
         activeTpOrderId = result.orderId;
         lastTpPrice = price;
@@ -1181,7 +1235,12 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // Body TPs should not use post_only — when market reaches TP price, the order must fill.
       // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue #226
       // follow-up) instead of treating a network error as a clean failure.
-      const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }));
+      const result = await placeWithUnknownReconcile(
+        adapter,
+        productId,
+        () => adapter.placeLimitSell(productId, roundedQty, roundedPrice, { postOnly: false }),
+        intentFor('body_tp', 'sell', { price: roundedPrice, size: roundedQty, bodyId }),
+      );
 
       if (result.success) {
         logger.info(`✅ [${exchange}] Body TP placed: orderId=${result.orderId} ${roundedQty} ${baseCurrency} @ ${fmtPrice(roundedPrice)} (body=${bodyId.slice(-8)})`, {
@@ -1354,6 +1413,67 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
   };
 
   /**
+   * Map a durable placement intent's action onto the pendingOrders `type` the
+   * rest of the executor (fill routing, stale refresh, cancel-all) keys off.
+   */
+  const INTENT_ORDER_TYPES = Object.freeze({
+    entry_bid: 'entry',
+    entry_replacement: 'entry',
+    ladder_entry: 'ladder_entry',
+    take_profit: 'take_profit',
+    take_profit_taker: 'take_profit',
+    take_profit_replacement: 'take_profit',
+    body_tp: 'body_tp',
+  });
+
+  /**
+   * Adopt an exchange order that an operator matched back to an unresolved
+   * placement intent, putting it under normal tracking and fill processing as
+   * if the original placement had acknowledged.
+   *
+   * Adoption is idempotent: an order id already tracked is reported as such and
+   * never registered twice (the intent row is what makes it exactly-once, but a
+   * duplicate here would double-count a fill, so it is refused outright).
+   * @param {{orderId: string, price?: number, size?: number}} order - Order found on the exchange
+   * @param {{action?: string, price?: number, size?: number, sizeUsdc?: number, bodyId?: string, ladderIndex?: number, createdAt?: number}} intent - The intent it satisfies
+   * @returns {{tracked: boolean, message: string}} What was done
+   */
+  const adoptPlacement = (order, intent) => {
+    const orderId = order?.orderId;
+    if (!orderId) return { tracked: false, message: 'Exchange order carried no order id — nothing to adopt' };
+    if (pendingOrders.has(orderId)) {
+      return { tracked: false, message: `Order ${orderId} is already tracked — intent cleared, nothing further to adopt` };
+    }
+
+    const type = INTENT_ORDER_TYPES[intent?.action];
+    if (!type) {
+      return { tracked: false, message: `Intent action '${intent?.action ?? 'unknown'}' has no tracked order type — intent cleared; verify the order on the exchange` };
+    }
+
+    const price = intent?.price ?? order?.price ?? 0;
+    const size = intent?.size ?? order?.size ?? 0;
+    const placedAt = intent?.createdAt ?? Date.now();
+
+    if (type === 'body_tp') {
+      if (!intent?.bodyId) {
+        return { tracked: false, message: `Body TP intent carried no bodyId — intent cleared; cancel ${orderId} on the exchange if it is a duplicate` };
+      }
+      restoreBodyTpOrder(intent.bodyId, orderId, size, price, placedAt);
+      return { tracked: true, message: `Adopted body TP ${orderId} for body ${intent.bodyId}` };
+    }
+
+    restorePendingOrder(orderId, {
+      type,
+      price,
+      size,
+      sizeUsdc: intent?.sizeUsdc ?? size * price,
+      placedAt,
+      ...(intent?.ladderIndex === undefined ? {} : { ladderIndex: intent.ladderIndex }),
+    });
+    return { tracked: true, message: `Adopted ${type} order ${orderId} into tracking` };
+  };
+
+  /**
    * Remove body tracking after fill or cancel
    * @param {string} tpOrderId - Exchange sell order ID that was filled/cancelled
    */
@@ -1390,10 +1510,37 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
       // Reconcile an ambiguous 'unknown' outcome by client_order_id (issue
       // #226 follow-up) instead of treating a network error as a clean
       // failure — a real ladder entry may have reached the exchange despite it.
-      const result = await placeWithUnknownReconcile(adapter, productId, () => adapter.placeLimitBuy(productId, level.assetQty, level.price, { postOnly: true })).catch(err => {
-        logger.warn(`⚠️ [${exchange}] Error placing ladder order at $${level.price}: ${err.message}`, { price: level.price, error: err.message });
-        return { success: false, errorMessage: err.message };
+      const result = await placeWithUnknownReconcile(
+        adapter,
+        productId,
+        () => adapter.placeLimitBuy(productId, level.assetQty, level.price, { postOnly: true }),
+        intentFor('ladder_entry', 'buy', { price: level.price, size: level.assetQty, sizeUsdc: level.sizeUsdc, ladderIndex: level.index }),
+      ).catch(err => {
+        // A thrown reconcile is NOT a clean failure — folding it into
+        // {success:false} here is what let the next rung (and the next tick)
+        // place against an order that may already be live (#472). The durable
+        // intent is already on disk; mark the result pending and stop the loop.
+        const unresolved = err?.status === 'unknown' || err?.unknownOutcome === true || err?.placementPending === true;
+        logger[unresolved ? 'error' : 'warn'](`${unresolved ? '⏸️' : '⚠️'} [${exchange}] ${unresolved ? 'Unresolved' : 'Error'} placing ladder order at $${level.price}: ${err.message}`, {
+          price: level.price,
+          pending: unresolved,
+          error: err.message,
+        });
+        return { success: false, pending: unresolved, errorMessage: err.message };
       });
+
+      // Stop the ladder immediately on an unresolved placement: every later
+      // rung would be refused by order-manager anyway, and continuing would
+      // report them as ordinary failures the engine is free to retry.
+      if (result.pending) {
+        logger.error(`⏸️ [${exchange}] Ladder halted at level ${level.index} — placement unresolved, operator reconcile required: ${result.errorMessage}`, {
+          ladderIndex: level.index,
+          pending: true,
+          placed: results.length,
+          error: result.errorMessage,
+        });
+        return { orders: results, failedCount: levels.length - results.length, pending: true, errorMessage: result.errorMessage };
+      }
 
       if (result.success) {
         // Verify order is actually open (post-only can be immediately cancelled)
@@ -1539,6 +1686,7 @@ const createOrderExecutor = (exchange, config, adapter, productId, callbacks = {
     getBodyByTpOrderId,
     restoreBodyTpOrder,
     removeBodyTracking,
+    adoptPlacement,
     // Ladder mode functions
     placeLadderOrders,
     cancelAllLadderOrders,

@@ -234,6 +234,34 @@ describe('PUT /api/config validates against the allowlist (issue #146)', () => {
     assert.equal(written.exchanges.coinbase.amount, 40);
     assert.equal(written.exchanges.coinbase.regime.enabled, true);
   });
+
+  // Parity regression for #452: this unprefixed legacy path had the same nested-
+  // regime bypass as PUT /api/:exchange/config — known keys survived sanitizeRegimeConfig
+  // untouched regardless of value, so maxDrawdownPercent: 999 (outside the documented
+  // 10-30 range) was persisted and forwarded to the live engine.
+  for (const bad of [999, 'oops', '20', {}, [], true, null, NaN, Infinity, -Infinity]) {
+    it('rejects invalid maxDrawdownPercent before persistence (' + String(bad) + ')', async () => {
+      const { app, fsMocks } = setup();
+      const res = await invoke(app, 'PUT /api/config', {
+        body: { regime: { maxDrawdownPercent: bad } },
+      });
+      assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+      assert.match(res.body.error, /maxDrawdownPercent/);
+      assert.equal(fsMocks.written(), null, 'no config write should occur on a rejected nested regime value');
+    });
+  }
+
+  for (const bad of ['oops', 20, [], true, null]) {
+    it('rejects malformed regime containers before persistence (' + String(bad) + ')', async () => {
+      const { app, fsMocks } = setup();
+      const res = await invoke(app, 'PUT /api/config', {
+        body: { regime: bad },
+      });
+      assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+      assert.match(res.body.error, /regime update must be an object/);
+      assert.equal(fsMocks.written(), null, 'no config write should occur on a rejected nested regime value');
+    });
+  }
 });
 
 describe('PUT /api/notifications/config masked-token round-trip guard', () => {

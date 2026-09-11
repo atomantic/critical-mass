@@ -179,3 +179,61 @@ describe('sanitizeRegimeConfig', () => {
     assert.deepStrictEqual(sanitizeRegimeConfig([]), { value: {}, droppedKeys: [] });
   });
 });
+
+describe('regime unknown-to-validated boundary (#495)', () => {
+  const { REGIME_DEFAULTS, validateRegimeConfig } = require('../src/config-utils');
+  const { validateAndSanitizeRegimeConfig } = require('../src/config-validator');
+
+  for (const [key, defaultValue] of Object.entries(REGIME_DEFAULTS)) {
+    const invalid = typeof defaultValue === 'number'
+      ? ['oops', '20', {}, [], true, false, null, undefined, NaN, Infinity, -Infinity]
+      : typeof defaultValue === 'boolean'
+        ? ['true', 1, {}, [], null, undefined]
+        : [1, true, {}, [], null, undefined, 'invalid-enum'];
+    it('rejects malformed ' + key + ' without a successful value', () => {
+      for (const bad of invalid) {
+        for (const validate of [validateRegimeConfig, validateAndSanitizeRegimeConfig]) {
+          const result = validate({ [key]: bad });
+          assert.equal(result.valid, false, key + ': ' + String(bad));
+          assert.equal(result.value, undefined);
+          assert.ok(result.errors.some(error => error.includes(key)));
+        }
+      }
+    });
+  }
+
+  it('rejects non-object containers before sanitizing', () => {
+    for (const bad of [null, undefined, true, 20, 'oops', []]) {
+      assert.equal(validateRegimeConfig(bad).valid, false);
+      assert.equal(validateAndSanitizeRegimeConfig(bad).valid, false);
+    }
+  });
+
+  it('preserves defaults, empty updates, zero sentinels and unknown-key dropping', () => {
+    assert.equal(validateAndSanitizeRegimeConfig(REGIME_DEFAULTS).valid, true);
+    for (const value of [{}, { maxAssetExposure: 0, depositedCapital: 0, drawdownResetHours: 0, cycleResetHours: 0 }]) {
+      assert.deepEqual(validateAndSanitizeRegimeConfig(value).value, value);
+    }
+    assert.deepEqual(validateAndSanitizeRegimeConfig({ maxDrawdownPercent: 20, obsolete: {} }),
+      { valid: true, errors: [], value: { maxDrawdownPercent: 20 }, droppedKeys: ['obsolete'] });
+  });
+
+  it('accepts all documented enum values', () => {
+    const enums = {
+      aggressiveness: ['conservative', 'moderate', 'aggressive', 'maximum'],
+      entryMode: ['reactive', 'ladder'],
+      ladderSpacingMode: ['linear', 'sqrt', 'exponential'],
+      ladderSizeMode: ['flat', 'linear', 'sqrt', 'fibonacci'],
+    };
+    for (const [key, values] of Object.entries(enums)) {
+      for (const value of values) assert.equal(validateAndSanitizeRegimeConfig({ [key]: value }).valid, true);
+    }
+  });
+
+  it('uses current cross-field partners without forwarding them', () => {
+    assert.deepEqual(validateAndSanitizeRegimeConfig({ macroAccumulationThreshold: -10 }, REGIME_DEFAULTS).value,
+      { macroAccumulationThreshold: -10 });
+    assert.equal(validateAndSanitizeRegimeConfig({ macroAccumulationThreshold: 40 }, REGIME_DEFAULTS).valid, false);
+    assert.equal(validateAndSanitizeRegimeConfig({ macroAccumulationThreshold: -10, macroMarkupThreshold: undefined }, REGIME_DEFAULTS).valid, false);
+  });
+});
