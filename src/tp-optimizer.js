@@ -121,6 +121,13 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
   let cachedPercentiles = { p25: 0, p50: 0, p75: 0 };
   let percentileCacheValid = false;
 
+  // Set when importState() discards a persisted histogram because its bucket
+  // count doesn't match BUCKET_COUNT (e.g. after a BUCKET_COUNT change across
+  // an upgrade). Surfaced in getStatus() so the silent loss of learned TP
+  // distribution is observable rather than discovered later as "why did the
+  // TP recommendations reset".
+  let histogramShapeMismatch = false;
+
   /**
    * Apply time decay to both histograms.
    *
@@ -538,6 +545,16 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
 
     if (state.histogram && state.histogram.length === BUCKET_COUNT) {
       histogram = state.histogram.map(b => ({ ...b }));
+      histogramShapeMismatch = false;
+    } else if (state.histogram) {
+      // BUCKET_COUNT changed since this state was persisted — the persisted
+      // histogram can't be re-bucketed, so it's discarded and learning
+      // restarts from empty. This used to happen silently.
+      histogramShapeMismatch = true;
+      logger.warn(
+        `📊 [${exchange}] TP optimizer histogram shape mismatch: expected ${BUCKET_COUNT} buckets, got ${state.histogram.length} — discarding persisted histogram`,
+        { expectedBucketCount: BUCKET_COUNT, actualBucketCount: state.histogram.length }
+      );
     }
 
     if (state.recentCycles) {
@@ -598,6 +615,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
       lastVolEvaluationTime,
       lastEvaluationCycle,
       cyclesSinceEval: totalSampleCount - lastEvaluationCycle,
+      histogramShapeMismatch,
       adjustmentHistory: adjustmentHistory.slice(-10),
       currentConfig: {
         tpMinPercent: config.tpMinPercent,
@@ -625,6 +643,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
     lastVolEvaluationTime = Date.now();
     cachedPercentiles = { p25: 0, p50: 0, p75: 0 };
     percentileCacheValid = false;
+    histogramShapeMismatch = false;
     logger.info(`📊 [${exchange}] TP optimizer reset`, { lifecycle: 'reset' });
   };
 
@@ -643,6 +662,7 @@ const createTpOptimizer = (exchange, config, callbacks = {}, productId) => {
     _getVolSamples: () => volSamples,
     _getVolHistogram: () => volHistogram,
     _calculatePercentiles: calculatePercentiles,
+    _calculateAdjustment: calculateAdjustment,
   };
 };
 
