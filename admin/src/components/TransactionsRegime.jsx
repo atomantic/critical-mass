@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import ManualTrades from './ManualTrades'
@@ -15,9 +15,6 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [sortField, setSortField] = useState('timestamp')
   const [sortDir, setSortDir] = useState('desc')
   const [productId, setProductId] = useState(null)
-
-
-  const formatAsset = (n) => (n || 0).toFixed(8)
 
   const pairQuery = buildPairQuery(pair)
 

@@ -48,17 +48,21 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
     if (!keysFile) return false;
 
-    const keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
-    const apiKey = keys.name || keys.apiKey;
-    const apiSecret = keys.privateKey || keys.apiSecret;
+    try {
+      const keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+      const apiKey = keys.name || keys.apiKey;
+      const apiSecret = keys.privateKey || keys.apiSecret;
 
-    // Check for valid-looking credentials
-    if (!apiKey || !apiSecret) return false;
-    if (apiKey.length < 10) return false;
-    // Coinbase private key should be PEM format or at least 50 chars
-    if (!apiSecret.includes('-----BEGIN') && apiSecret.length < 50) return false;
+      // Check for valid-looking credentials
+      if (!apiKey || !apiSecret) return false;
+      if (apiKey.length < 10) return false;
+      // Coinbase private key should be PEM format or at least 50 chars
+      if (!apiSecret.includes('-----BEGIN') && apiSecret.length < 50) return false;
 
-    return true;
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   /**
@@ -79,7 +83,12 @@ const createCoinbaseAdapter = (keysPath = null) => {
       throw new Error('API keys not configured. Please add your Coinbase API keys.');
     }
 
-    const keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+    let keys;
+    try {
+      keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+    } catch (err) {
+      throw new Error('Failed to parse API keys file: corrupted or invalid JSON');
+    }
     // Handle both old format (name/privateKey) and direct format
     const apiKey = keys.name || keys.apiKey;
     const apiSecret = keys.privateKey || keys.apiSecret;

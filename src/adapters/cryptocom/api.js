@@ -56,15 +56,19 @@ const createCryptocomAdapter = (keysPath = null) => {
   adapter.hasValidKeys = () => {
     if (!fs.existsSync(resolvedKeysPath)) return false;
 
-    const keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
-    const apiKey = keys.apiKey || keys.key;
-    const apiSecret = keys.apiSecret || keys.secret;
+    try {
+      const keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
+      const apiKey = keys.apiKey || keys.key;
+      const apiSecret = keys.apiSecret || keys.secret;
 
-    // Check for valid-looking credentials
-    if (!apiKey || !apiSecret) return false;
-    if (apiKey.length < 10 || apiSecret.length < 10) return false;
+      // Check for valid-looking credentials
+      if (!apiKey || !apiSecret) return false;
+      if (apiKey.length < 10 || apiSecret.length < 10) return false;
 
-    return true;
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   /**
@@ -76,7 +80,12 @@ const createCryptocomAdapter = (keysPath = null) => {
       throw new Error('API keys not configured. Please add your Crypto.com API keys.');
     }
 
-    const keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
+    let keys;
+    try {
+      keys = JSON.parse(fs.readFileSync(resolvedKeysPath, 'utf8'));
+    } catch (err) {
+      throw new Error('Failed to parse API keys file: corrupted or invalid JSON');
+    }
     const apiKey = keys.apiKey || keys.key;
     const apiSecret = keys.apiSecret || keys.secret;
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 
@@ -32,9 +32,6 @@ function CostBasisDCA({ summary, quoteCurrency = 'USDC', exchange = 'coinbase', 
   }
 
   const { costBasis } = summary
-  // formatCurrency for totals, formatPrice for per-unit prices
-  const formatAsset = (n) => (n || 0).toFixed(8)
-
   // Calculate unrealized P&L
   const reservesCurrentValue = costBasis.reservesAsset * currentPrice
   const reservesUnrealizedPnL = reservesCurrentValue - costBasis.reservesCostBasis
