@@ -67,7 +67,7 @@ module.exports = (app, sharedDeps) => {
       }
     });
 
-    const security = createAiSecurity({ providerService: toolkit.services.providers });
+    const security = createAiSecurity({ providerService: toolkit.services.providers, runsDir: path.join(dataDir, 'runs') });
 
     aiRouter.use('/providers', security.constrainOutboundRequests, security.filterProviderSamples, security.redactJsonResponses, security.guardProviderMutation, security.guardProviderExecution, toolkit.routes.providers);
     aiRouter.use('/runs', security.constrainOutboundRequests, security.guardRun, toolkit.routes.runs);
