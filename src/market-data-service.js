@@ -34,6 +34,27 @@ const marketDataServices = new Map();
 // whose persist() fights the winner). De-duping on this map closes the gap.
 const startingMarketDataServices = new Map();
 
+// Monotonic per-key cancellation counter (issue #415). stopMarketDataService /
+// stopAllMarketDataServices are synchronous — their callers (the engine's
+// lifecycle-close callback, the regime:start handover, the SIGTERM path) can't
+// await — so they cannot wait for an in-flight start to settle. Instead they
+// bump the generation for the key; a start that finds the generation moved
+// since it began knows a stop raced it, tears its own service down and never
+// registers it. Without this, a stop issued inside the seconds-long start()
+// window (WS connect + REST candle fetch) is a silent no-op and the fund ends
+// up with two fill-ledger writers on the same file, each persist() erasing the
+// other's ingested fills. Never deleted: resetting a key's generation could
+// un-cancel a start still in flight, and the key set is bounded by fund count.
+const stopGenerations = new Map();
+
+/**
+ * Cancel any in-flight start for this key.
+ * @param {string} key
+ */
+const bumpStopGeneration = (key) => {
+  stopGenerations.set(key, (stopGenerations.get(key) || 0) + 1);
+};
+
 // REST adapter methods this service actually calls (getOrderFills via
 // ingestNewFillsForOrder, getCandles via updateMetrics) — instrumented so a
 // REST-error burst / rate-limit / latency spike here feeds this service's own
@@ -1919,10 +1940,19 @@ const startMarketDataService = async (exchange, pair) => {
   if (marketDataServices.has(key)) {
     return { success: true, message: 'Already running' };
   }
+  // Generation this start is bound to. If a stop bumps it before start()
+  // settles, the service below is torn down instead of registered.
+  const gen = stopGenerations.get(key) || 0;
   // Coalesce concurrent starts onto a single in-flight promise so the
-  // check-then-act window can't spawn two services for the same fund.
-  if (startingMarketDataServices.has(key)) {
-    return startingMarketDataServices.get(key);
+  // check-then-act window can't spawn two services for the same fund — but
+  // never onto a start a stop has already cancelled: that one resolves
+  // {success:false} and registers nothing, so coalescing onto it would leave
+  // the fund with no market data service at all (the regime:stop → start
+  // handover does exactly stop-then-start on one key). Starting fresh is safe
+  // because the cancelled start stops its own service and never publishes it.
+  const inFlight = startingMarketDataServices.get(key);
+  if (inFlight && inFlight.gen === gen) {
+    return inFlight.promise;
   }
 
   // service.start() → createFillLedger → load() can throw on cold-start
@@ -1935,26 +1965,42 @@ const startMarketDataService = async (exchange, pair) => {
   const startPromise = (async () => {
     const service = createMarketDataService(exchange, pair);
     const result = await service.start();
-    if (result.success) {
-      marketDataServices.set(key, service);
-    } else {
+    if (!result.success) {
       // Failed start must not leak its WS feed / interval timers.
       service.stop?.();
+      return result;
     }
+    if ((stopGenerations.get(key) || 0) !== gen) {
+      // A stop landed while we were connecting. Tear this service down and
+      // leave the settled map untouched — publishing it now would hand the
+      // fund a second fill-ledger writer nothing can reach to stop again.
+      service.stop?.();
+      return { success: false, error: 'stopped during start' };
+    }
+    marketDataServices.set(key, service);
     return result;
   })().finally(() => {
-    startingMarketDataServices.delete(key);
+    // Only clear our own entry: a cancelled start can be superseded by a
+    // newer one for the same key while it is still settling.
+    if (startingMarketDataServices.get(key)?.promise === startPromise) {
+      startingMarketDataServices.delete(key);
+    }
   });
 
-  startingMarketDataServices.set(key, startPromise);
+  startingMarketDataServices.set(key, { promise: startPromise, gen });
   return startPromise;
 };
 
 /**
- * Stop market data service for a fund (exchange + pair).
+ * Stop market data service for a fund (exchange + pair). Also cancels a start
+ * still in flight for that fund, so the service it is building is torn down
+ * rather than registered after this returns (issue #415).
  */
 const stopMarketDataService = (exchange, pair) => {
   const key = serviceKey(exchange, pair);
+  // Bump unconditionally: the settled map can be empty while a start is still
+  // connecting, and the generation is the only way that start learns it lost.
+  bumpStopGeneration(key);
   const service = marketDataServices.get(key);
   if (service) {
     service.stop();
@@ -1970,9 +2016,14 @@ const getMarketDataService = (exchange, pair) => {
 };
 
 /**
- * Stop all market data services
+ * Stop all market data services, including any whose start is still in flight.
  */
 const stopAllMarketDataServices = () => {
+  // Cancel in-flight starts too, so SIGTERM can't leave a WS feed and a 60s
+  // metrics interval behind holding the event loop open after shutdown.
+  for (const key of new Set([...marketDataServices.keys(), ...startingMarketDataServices.keys()])) {
+    bumpStopGeneration(key);
+  }
   for (const [, service] of marketDataServices) {
     service.stop();
   }
