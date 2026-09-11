@@ -335,3 +335,19 @@ describe('risk-manager resetCycleTracking', () => {
     assert.equal(result.peakEquity, 50);
   });
 });
+
+it('rejected regime updates cannot replace the drawdown safety threshold (#495)', () => {
+  const { validateAndSanitizeRegimeConfig } = require('../src/config-validator');
+  const config = makeConfig({ maxDrawdownPercent: 20 });
+  const risk = createRiskManager('coinbase', config, 'BTC-USDC');
+  assert.equal(risk.updateDrawdown(1, 100, 100).isPaused, false);
+  for (const maxDrawdownPercent of ['oops', '20', {}, [], true, null, NaN, Infinity]) {
+    const result = validateAndSanitizeRegimeConfig({ maxDrawdownPercent }, config);
+    if (result.valid) Object.assign(config, result.value);
+    assert.equal(result.valid, false);
+    assert.equal(config.maxDrawdownPercent, 20);
+  }
+  const drawdown = risk.updateDrawdown(1, 50, 100);
+  assert.equal(drawdown.drawdownPercent, 50);
+  assert.equal(drawdown.isPaused, true);
+});

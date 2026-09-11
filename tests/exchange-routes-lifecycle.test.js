@@ -216,19 +216,37 @@ describe('fund lifecycle routes', () => {
     // PUT /api/:exchange/regime/config route checked ranges), so a fund could be
     // created with e.g. maxDrawdownPercent: 999 — a value the risk manager can
     // never legitimately compare a 0-100% drawdown against.
-    it('rejects fund creation when the regime seed carries an out-of-range value (400, zero writes)', async () => {
-      mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
-      const { app, fsMocks } = setup();
+    for (const bad of [999, 'oops', '20', {}, [], true, null, NaN, Infinity, -Infinity]) {
+      it('rejects invalid maxDrawdownPercent before fund creation (' + String(bad) + ')', async () => {
+        mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+        const { app, fsMocks } = setup();
 
-      const res = await invoke(app, 'POST /api/:exchange/funds', {
-        params: { exchange: 'coinbase' },
-        body: { pair: 'SOL-USDC', regime: { maxDrawdownPercent: 999 } },
+        const res = await invoke(app, 'POST /api/:exchange/funds', {
+          params: { exchange: 'coinbase' },
+          body: { pair: 'SOL-USDC', regime: { maxDrawdownPercent: bad } },
+        });
+
+        assert.equal(res.statusCode, 400, JSON.stringify(res.body));
+        assert.match(res.body.error, /maxDrawdownPercent/);
+        assert.ok(!JSON.stringify(fsMocks.user() || {}).includes('SOL-USDC'), 'rejected fund must not be persisted');
       });
+    }
 
-      assert.equal(res.statusCode, 400, JSON.stringify(res.body));
-      assert.match(res.body.error, /maxDrawdownPercent/);
-      assert.ok(!JSON.stringify(fsMocks.user() || {}).includes('SOL-USDC'), 'rejected fund must not be persisted');
-    });
+    for (const bad of ['oops', 20, [], true, null]) {
+      it('rejects malformed regime containers before fund creation (' + String(bad) + ')', async () => {
+        mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+        const { app, fsMocks } = setup();
+
+        const res = await invoke(app, 'POST /api/:exchange/funds', {
+          params: { exchange: 'coinbase' },
+          body: { pair: 'SOL-USDC', regime: bad },
+        });
+
+        assert.equal(res.statusCode, 400, JSON.stringify(res.body));
+        assert.match(res.body.error, /regime update must be an object/);
+        assert.ok(!JSON.stringify(fsMocks.user() || {}).includes('SOL-USDC'), 'rejected fund must not be persisted');
+      });
+    }
 
     it('drops an unknown regime seed key but still creates the fund with the known ones', async () => {
       mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));

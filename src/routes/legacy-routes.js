@@ -53,9 +53,9 @@ module.exports = (app, deps) => {
     // overrides or reach the engine — while letting the save succeed. Known values
     // ARE rejected when out of range, closing the bypass this unprefixed path had
     // relative to the dedicated regime config route (#452).
-    if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
+    if (req.body?.regime !== undefined) {
       const { value: sanitizedRegime, droppedKeys, valid, errors: regimeErrors } = validateAndSanitizeRegimeConfig(req.body.regime, getRegimeConfig('coinbase'));
-      if (!valid) {
+      if (valid === false) {
         return res.status(400).json({ error: regimeErrors.join('; ') });
       }
       if (droppedKeys.length > 0) {

@@ -3,7 +3,7 @@
 /**
  * Pick only allowed keys from an update object, with optional type/range checks.
  * @param {Object} schema - Map of allowed field names to validation rules
- * @param {Object} update - The incoming update (e.g. req.body)
+ * @param {unknown} update - The incoming update (e.g. req.body)
  * @returns {{ value: Object, errors: string[] }}
  */
 const validateConfigUpdate = (schema, update) => {

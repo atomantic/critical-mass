@@ -384,7 +384,7 @@ describe('validateRegimeConfig', () => {
     assert.equal(configUtils.MERGE_PROXIMITY_BOUNDS, contract.MERGE_PROXIMITY_BOUNDS);
     assert.equal(validateRegimeConfig(REGIME_DEFAULTS).valid, true);
     for (const preset of Object.values(DEFAULT_AGGRESSIVENESS_PRESETS)) {
-      assert.deepStrictEqual(validateRegimeConfig(preset), { valid: true, errors: [] });
+      assert.deepStrictEqual(validateRegimeConfig(preset), { valid: true, errors: [], value: preset });
     }
   });
 
