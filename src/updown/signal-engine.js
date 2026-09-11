@@ -983,7 +983,7 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
     // Feature 9: Confluence filter — overcrowded signals perform worse than random
     const confluenceResult = applyConfluenceFilter(compositeScore, timeframes);
     compositeScore = confluenceResult.compositeScore;
-    const confluence = confluenceResult.confluence;
+    const { confluence } = confluenceResult;
 
     // Feature 1: Trend filter + weekly macro dampener — apply only the stronger dampener, not both
     compositeScore = applyMacroTrendDampener(compositeScore, trendFilter, weeklyTrend);
@@ -992,7 +992,7 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
     const candles1d = candleAggregator.getCandles('1d');
     const pivotResult = applyDailyPivotDampener(compositeScore, candles1d, candleAggregator, lastPivotDayTs, cachedPivots);
     compositeScore = pivotResult.compositeScore;
-    const pivotPoints = pivotResult.pivotPoints;
+    const { pivotPoints } = pivotResult;
     cachedPivots = pivotResult.cachedPivots;
     lastPivotDayTs = pivotResult.lastPivotDayTs;
 
@@ -1002,7 +1002,7 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
     compositeScore *= adxRegime.multiplier;
 
     // Feature 10: Score cap — soft ceiling instead of hard cap
-    compositeScore = compressScoreCeiling(compositeScore, 50, 0.5);
+    compositeScore = compressScoreCeiling(compositeScore);
 
     // Feature 11: Data-driven time-of-day weighting from scorecard per-hour accuracy
     const utcHour = new Date(now).getUTCHours();
