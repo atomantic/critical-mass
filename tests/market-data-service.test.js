@@ -2443,3 +2443,222 @@ describe('createMarketDataService: health monitor wiring (issue #228)', () => {
     svc.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// startMarketDataService / stopMarketDataService lifecycle races (issue #415)
+// ---------------------------------------------------------------------------
+// A service is only registered in the settled map after `await service.start()`
+// resolves — a window spanning a WS connect plus a REST candle fetch. A stop
+// issued inside that window used to be a silent no-op, so the fund ended up
+// running both a live regime engine and an orphaned market data service, each
+// with its own fillLedger persisting a full snapshot over the other's writes.
+// These tests drive that interleaving by gating the adapter's getCandles call
+// (the last await inside start()).
+describe('startMarketDataService stop-during-start cancellation (issue #415)', () => {
+  const MDS_PATH = require.resolve('../src/market-data-service');
+  const STUBBED = {
+    adapters: require.resolve('../src/adapters'),
+    wsFeed: require.resolve('../src/websocket-feed'),
+    fillLedger: require.resolve('../src/fill-ledger'),
+    stateTracker: require.resolve('../src/state-tracker'),
+    health: require.resolve('../src/health-monitor'),
+  };
+
+  const EXCHANGE = 'test-mds-415';
+
+  /** @type {Record<string, any>} */
+  let savedCache;
+  /** @type {any} */
+  let mds;
+  /** Services created so far — one WS feed is built per service.start(). */
+  let servicesCreated;
+  /** Times any service's stop() ran (stop() is the only wsFeed.disconnect() caller). */
+  let stopCount;
+  /** Mutable holder so each start in a test gets its own gated adapter. */
+  /** @type {any} */
+  let currentAdapter;
+  /** @type {Array<() => void>} */
+  let gateReleases;
+  /** @type {Array<Promise<any>>} */
+  let pendingStarts;
+
+  /**
+   * Start a service whose start() parks on the REST candle fetch until
+   * release() is called. Registered for afterEach cleanup so a failed
+   * assertion can't leak a live 60s metrics interval into the test run.
+   * @returns {{ started: Promise<any>, reached: Promise<void>, release: () => void }}
+   */
+  const beginGatedStart = () => {
+    /** @type {() => void} */
+    let release;
+    /** @type {() => void} */
+    let markReached;
+    const gate = new Promise((resolve) => { release = /** @type {any} */ (resolve); });
+    const reached = new Promise((resolve) => { markReached = /** @type {any} */ (resolve); });
+
+    currentAdapter = {
+      loadCredentials: () => ({ apiKey: 'k', apiSecret: 's' }),
+      getCandles: async () => {
+        markReached();
+        await gate;
+        return [];
+      },
+    };
+    gateReleases.push(() => release());
+
+    const started = mds.startMarketDataService(EXCHANGE);
+    pendingStarts.push(started);
+    return { started, reached, release: () => release() };
+  };
+
+  beforeEach(() => {
+    savedCache = {};
+    for (const p of [...Object.values(STUBBED), MDS_PATH]) {
+      savedCache[p] = require.cache[p];
+    }
+
+    servicesCreated = 0;
+    stopCount = 0;
+    currentAdapter = null;
+    gateReleases = [];
+    pendingStarts = [];
+
+    const realAdapters = require('../src/adapters');
+    const realHealth = require('../src/health-monitor');
+
+    /** @param {string} p @param {any} exports */
+    const stub = (p, exports) => {
+      require.cache[p] = /** @type {any} */ ({ id: p, filename: p, loaded: true, exports });
+    };
+
+    stub(STUBBED.adapters, {
+      ...realAdapters,
+      isSupported: () => true,
+      getAdapter: () => currentAdapter,
+    });
+    // Identity instrumentation: the health wrapper only adds REST telemetry,
+    // which is irrelevant to a lifecycle race.
+    stub(STUBBED.health, { ...realHealth, instrumentAdapterForHealth: (/** @type {any} */ a) => a });
+    stub(STUBBED.wsFeed, {
+      createWebSocketFeed: () => {
+        servicesCreated += 1;
+        return {
+          connect: () => {},
+          disconnect: () => { stopCount += 1; },
+        };
+      },
+    });
+    // Keep the race off the real data directory entirely.
+    stub(STUBBED.fillLedger, { createFillLedger: () => ({ persist: () => {}, ingestFill: () => {} }) });
+    stub(STUBBED.stateTracker, { loadRegimeState: () => ({ position: { celestialBodies: [] } }) });
+
+    delete require.cache[MDS_PATH];
+    mds = require('../src/market-data-service');
+  });
+
+  afterEach(async () => {
+    // Drain every gate and stop every service before restoring the cache, so
+    // a mid-test assertion failure can't leave a metrics interval running and
+    // hang the whole file.
+    mds.stopAllMarketDataServices();
+    for (const release of gateReleases) release();
+    await Promise.allSettled(pendingStarts);
+    mds.stopAllMarketDataServices();
+
+    for (const [p, entry] of Object.entries(savedCache)) {
+      if (entry) require.cache[p] = entry;
+      else delete require.cache[p];
+    }
+  });
+
+  it('stopMarketDataService mid-start tears the service down and never registers it', async () => {
+    const first = beginGatedStart();
+    await first.reached; // start() is parked on the REST candle fetch
+
+    // The settled map is still empty — this is exactly the blind spot.
+    assert.equal(mds.getMarketDataService(EXCHANGE), undefined, 'not registered yet');
+    mds.stopMarketDataService(EXCHANGE);
+
+    first.release();
+    const result = await first.started;
+
+    assert.equal(result.success, false, 'a cancelled start must not report success');
+    assert.equal(result.error, 'stopped during start');
+    assert.equal(mds.getMarketDataService(EXCHANGE), undefined,
+      'cancelled start must never publish its service');
+    assert.equal(stopCount, 1, 'the orphaned service must be stopped exactly once');
+  });
+
+  it('stopAllMarketDataServices cancels in-flight starts too', async () => {
+    const first = beginGatedStart();
+    await first.reached;
+
+    mds.stopAllMarketDataServices();
+
+    first.release();
+    const result = await first.started;
+
+    assert.equal(result.success, false);
+    assert.equal(mds.getMarketDataService(EXCHANGE), undefined,
+      'SIGTERM path must not leak a service that was still connecting');
+    assert.equal(stopCount, 1, 'the in-flight service must be stopped exactly once');
+  });
+
+  it('a later start for the same key still succeeds (the guard does not poison the key)', async () => {
+    const first = beginGatedStart();
+    await first.reached;
+    mds.stopMarketDataService(EXCHANGE);
+    first.release();
+    assert.equal((await first.started).success, false);
+
+    const second = beginGatedStart();
+    await second.reached;
+    second.release();
+
+    assert.equal((await second.started).success, true, 'a fresh start after a cancel must work');
+    assert.ok(mds.getMarketDataService(EXCHANGE), 'the new service is registered');
+    assert.equal(stopCount, 1, 'only the cancelled service was stopped');
+
+    mds.stopAllMarketDataServices();
+    assert.equal(stopCount, 2);
+  });
+
+  it('a start issued while a cancelled start is still settling is not coalesced onto it', async () => {
+    const first = beginGatedStart();
+    await first.reached;
+
+    // Stop lands mid-start, then the fund is immediately restarted — the
+    // regime:stop → handover sequence. Coalescing the restart onto the
+    // doomed first start would leave the fund with no service at all.
+    mds.stopMarketDataService(EXCHANGE);
+
+    const second = beginGatedStart();
+    await second.reached;
+    assert.equal(servicesCreated, 2, 'the restart must build its own service');
+
+    first.release();
+    assert.equal((await first.started).success, false);
+
+    second.release();
+    assert.equal((await second.started).success, true);
+    assert.ok(mds.getMarketDataService(EXCHANGE), 'the restart is the surviving service');
+    assert.equal(stopCount, 1, 'only the cancelled service was stopped');
+  });
+
+  it('concurrent starts with no stop in between still coalesce onto one service', async () => {
+    const first = beginGatedStart();
+    // Second caller overlaps the first; the coalescing map must absorb it.
+    const alsoStarted = mds.startMarketDataService(EXCHANGE);
+    pendingStarts.push(alsoStarted);
+
+    await first.reached;
+    assert.equal(servicesCreated, 1, 'overlapping starts must share one service');
+
+    first.release();
+    assert.equal((await first.started).success, true);
+    assert.equal((await alsoStarted).success, true);
+
+    mds.stopAllMarketDataServices();
+    assert.equal(stopCount, 1, 'only one service was ever created');
+  });
+});
