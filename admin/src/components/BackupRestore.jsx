@@ -24,23 +24,30 @@ function BackupRestore() {
   const [restoreTarget, setRestoreTarget] = useState(null)
   const [restoring, setRestoring] = useState(false)
   const [deleting, setDeleting] = useState(null)
+  const [refreshError, setRefreshError] = useState(null)
 
-  const fetchData = async () => {
-    setLoading(true)
-    setError(null)
+  // `silent` refreshes run after a completed action: they must never swap the page
+  // for the loading/error gate, or the action's own result message is erased.
+  const fetchData = async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true)
+      setError(null)
+    }
+    const fail = (text) => (silent ? setRefreshError(text) : setError(text))
     try {
       const res = await fetch('/api/backups')
       if (res.ok) {
         const data = await res.json()
         setBackups(data.backups || [])
         setConfig(data.config || {})
+        setRefreshError(null)
       } else {
-        setError(`Failed to load backups (HTTP ${res.status})`)
+        fail(`Failed to load backups (HTTP ${res.status})`)
       }
     } catch (err) {
-      setError(err.message || 'Failed to load backups')
+      fail(err.message || 'Failed to load backups')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -59,7 +66,7 @@ function BackupRestore() {
       })
       if (res.ok) {
         setMessage({ type: 'success', text: 'Backup settings saved!' })
-        fetchData()
+        fetchData({ silent: true })
       } else {
         setMessage({ type: 'error', text: 'Failed to save settings' })
       }
@@ -78,7 +85,7 @@ function BackupRestore() {
       if (res.ok) {
         const data = await res.json()
         setMessage({ type: 'success', text: `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})` })
-        fetchData()
+        fetchData({ silent: true })
       } else {
         const data = await res.json().catch(() => ({}))
         setMessage({ type: 'error', text: `Backup failed: ${data.error || 'Unknown error'}` })
@@ -96,7 +103,7 @@ function BackupRestore() {
       const res = await fetch(`/api/backups/${filename}`, { method: 'DELETE' })
       if (res.ok) {
         setMessage({ type: 'success', text: `Deleted ${filename}` })
-        fetchData()
+        fetchData({ silent: true })
       } else {
         setMessage({ type: 'error', text: 'Failed to delete backup' })
       }
@@ -125,7 +132,7 @@ function BackupRestore() {
       setRestoreTarget(null)
       setRestoring(false)
     }
-    fetchData()
+    fetchData({ silent: true })
   }
 
   if (error) {
@@ -136,7 +143,7 @@ function BackupRestore() {
             {error}
           </div>
           <button
-            onClick={fetchData}
+            onClick={() => fetchData()}
             disabled={loading}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
           >
@@ -168,6 +175,18 @@ function BackupRestore() {
               : 'bg-red-900/50 border border-red-700 text-red-200'
           }`}>
             {message.text}
+          </div>
+        )}
+
+        {refreshError && (
+          <div className="mb-4 p-3 rounded-lg bg-yellow-900/50 border border-yellow-700 text-yellow-200 flex items-center justify-between gap-3">
+            <span>Backup list may be out of date: {refreshError}</span>
+            <button
+              onClick={() => fetchData({ silent: true })}
+              className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 rounded font-medium transition-colors"
+            >
+              Refresh
+            </button>
           </div>
         )}
 

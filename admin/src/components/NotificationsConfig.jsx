@@ -34,23 +34,30 @@ function NotificationsConfig() {
   const [testing, setTesting] = useState(false)
   const [message, setMessage] = useState(null)
   const [stats, setStats] = useState(null)
+  const [refreshError, setRefreshError] = useState(null)
 
-  const fetchConfig = async () => {
-    setLoading(true)
-    setError(null)
+  // `silent` refreshes run after a completed save: they must never swap the page
+  // for the loading/error gate, or the save's own result message is erased.
+  const fetchConfig = async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true)
+      setError(null)
+    }
+    const fail = (text) => (silent ? setRefreshError(text) : setError(text))
     try {
       const res = await fetch('/api/notifications/config')
       if (res.ok) {
         const data = await res.json()
         setConfig(data)
         setRawToken('')
+        setRefreshError(null)
       } else {
-        setError(`Failed to load notifications config (HTTP ${res.status})`)
+        fail(`Failed to load notifications config (HTTP ${res.status})`)
       }
     } catch (err) {
-      setError(err.message || 'Failed to load notifications config')
+      fail(err.message || 'Failed to load notifications config')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -94,7 +101,7 @@ function NotificationsConfig() {
 
       if (res.ok) {
         setMessage({ type: 'success', text: 'Notification settings saved!' })
-        fetchConfig()
+        fetchConfig({ silent: true })
         fetchStats()
       } else {
         setMessage({ type: 'error', text: 'Failed to save settings' })
@@ -140,7 +147,7 @@ function NotificationsConfig() {
             {error}
           </div>
           <button
-            onClick={fetchConfig}
+            onClick={() => fetchConfig()}
             disabled={loading}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
           >
@@ -200,6 +207,18 @@ function NotificationsConfig() {
             : 'bg-red-900/50 border border-red-700 text-red-200'
         }`}>
           {message.text}
+        </div>
+      )}
+
+      {refreshError && (
+        <div className="p-3 rounded-lg bg-yellow-900/50 border border-yellow-700 text-yellow-200 flex items-center justify-between gap-3">
+          <span>Settings may be out of date: {refreshError}</span>
+          <button
+            onClick={() => fetchConfig({ silent: true })}
+            className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 rounded font-medium transition-colors"
+          >
+            Refresh
+          </button>
         </div>
       )}
 
