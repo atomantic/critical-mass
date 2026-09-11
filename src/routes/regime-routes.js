@@ -6,11 +6,11 @@
  * process via IPC WebSocket. Config reads/writes stay local (file-based).
  */
 
-const { getRegimeConfig, updateRegimeConfig, updateFundConfig, validateRegimeConfig, getFundConfig } = require('../config-utils');
+const { getRegimeConfig, updateRegimeConfig, updateFundConfig, getFundConfig } = require('../config-utils');
 const { resolvePlacementIntent } = require('../state-tracker');
 const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
-const { sanitizeRegimeConfig } = require('../config-validator');
+const { validateAndSanitizeRegimeConfig } = require('../config-validator');
 const { getSafeIPC, withConfiguredPair } = require('./route-utils');
 
 /**
@@ -118,33 +118,18 @@ module.exports = (app, deps) => {
     for (const [key, value] of Object.entries(rawUpdates)) {
       (FUND_LEVEL_FIELDS.includes(key) ? fundUpdates : rawRegimeUpdates)[key] = value;
     }
-    const { value: regimeUpdates, droppedKeys } = sanitizeRegimeConfig(rawRegimeUpdates);
+    const currentConfig = getRegimeConfig(exchange, pair);
+    const { value: regimeUpdates, droppedKeys, valid, errors } = validateAndSanitizeRegimeConfig(rawRegimeUpdates, currentConfig);
     if (droppedKeys.length > 0) {
       logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Ignored unknown regime config keys: ${droppedKeys.join(', ')}`, {
         action: 'update-config',
         droppedKeys,
       });
     }
+    if (!valid) {
+      return res.status(400).json({ success: false, errors });
+    }
     const updates = { ...regimeUpdates, ...fundUpdates };
-
-    const currentConfig = getRegimeConfig(exchange, pair);
-    const keysToValidate = Object.keys(regimeUpdates);
-    const crossFieldPairs = {
-      tpMinPercent: 'tpMaxPercent', tpMaxPercent: 'tpMinPercent',
-      macroDeclineThreshold: 'macroAccumulationThreshold', macroAccumulationThreshold: 'macroMarkupThreshold',
-      macroMarkupThreshold: 'macroAccumulationThreshold',
-    };
-    const validationSubset = { ...regimeUpdates };
-    for (const key of keysToValidate) {
-      const partner = crossFieldPairs[key];
-      if (partner && validationSubset[partner] === undefined) {
-        validationSubset[partner] = currentConfig[partner];
-      }
-    }
-    const validation = validateRegimeConfig(validationSubset);
-    if (!validation.valid) {
-      return res.status(400).json({ success: false, errors: validation.errors });
-    }
 
     // Split fund-level fields (dryRun, productId) from regime updates — they
     // persist on different parts of the config block and are read back from

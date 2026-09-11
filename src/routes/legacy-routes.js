@@ -4,10 +4,10 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun } = require('../config-utils');
+const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, getRegimeConfig } = require('../config-utils');
 const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
-const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 
 /**
  * Context logger for the unprefixed legacy routes. Every one of them is pinned
@@ -43,15 +43,21 @@ module.exports = (app, deps) => {
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
     if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
 
-    // regime is a nested object — sanitize keys against the allowlist before merging.
-    // Unknown keys are DROPPED (not rejected), mirroring PUT /api/:exchange/config:
-    // the config editor GETs the full stored config and PUTs it back verbatim, so a
-    // hard 400 on a stale key (e.g. a field removed from the engine in a later
-    // version but still present in a fund's persisted config) would make that fund
-    // permanently unsaveable. Dropping keeps the security intent — unknown keys never
-    // enter the saved overrides or reach the engine — while letting the save succeed.
+    // regime is a nested object — sanitize keys against the allowlist, then value-
+    // validate the survivors, before merging, mirroring PUT /api/:exchange/config.
+    // Unknown keys are DROPPED (not rejected): the config editor GETs the full
+    // stored config and PUTs it back verbatim, so a hard 400 on a stale key (e.g. a
+    // field removed from the engine in a later version but still present in a
+    // fund's persisted config) would make that fund permanently unsaveable.
+    // Dropping keeps the security intent — unknown keys never enter the saved
+    // overrides or reach the engine — while letting the save succeed. Known values
+    // ARE rejected when out of range, closing the bypass this unprefixed path had
+    // relative to the dedicated regime config route (#452).
     if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
-      const { value: sanitizedRegime, droppedKeys } = sanitizeRegimeConfig(req.body.regime);
+      const { value: sanitizedRegime, droppedKeys, valid, errors: regimeErrors } = validateAndSanitizeRegimeConfig(req.body.regime, getRegimeConfig('coinbase'));
+      if (!valid) {
+        return res.status(400).json({ error: regimeErrors.join('; ') });
+      }
       if (droppedKeys.length > 0) {
         legacyLogger('/api/config').warn(`⚠️ 🧹 [coinbase] Dropped ${droppedKeys.length} unknown regime key(s) on legacy config save: ${droppedKeys.join(', ')}`, {
           action: 'update-config',

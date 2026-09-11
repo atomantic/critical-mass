@@ -15,6 +15,7 @@ const {
   getEnabledFunds,
   getFundsForExchange,
   getDefaultPair,
+  getRegimeConfig,
   updateExchangeConfig,
   updateFundConfig,
   setExchangeEnabled,
@@ -29,7 +30,7 @@ const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterva
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
-const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { resolvePairParam, getSafeIPC } = require('./route-utils');
 
 /**
@@ -181,13 +182,32 @@ module.exports = (app, deps) => {
         enabled: false, // Operator must explicitly enable
         dryRun: dryRun !== false, // Default to dry-run for safety
       };
+      // The regime seed goes through the same sanitize+value-validate step every
+      // other regime write does (issue #452) — a fund created with an
+      // out-of-range value (e.g. maxDrawdownPercent: 999) would otherwise reach
+      // the live engine with no other save surface ever having checked it.
+      // There's no persisted config yet, so cross-field partner checks (e.g.
+      // tpMinPercent vs tpMaxPercent) fall back to REGIME_DEFAULTS via
+      // getRegimeConfig, exactly as they would for an existing fund with no
+      // regime overrides.
+      const regimeCandidate = (regime && typeof regime === 'object' && !Array.isArray(regime)) ? regime : {};
+      const { value: sanitizedRegime, droppedKeys, valid, errors } = validateAndSanitizeRegimeConfig(regimeCandidate, getRegimeConfig(exchange, pair));
+      if (!valid) {
+        return res.status(400).json({ success: false, error: errors.join('; ') });
+      }
+      if (droppedKeys.length > 0) {
+        exchangeLogger(exchange, pair, '/api/:exchange/funds').warn(`⚠️ 🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on fund creation: ${droppedKeys.join(', ')}`, {
+          action: 'create-fund',
+          droppedKeys,
+        });
+      }
       // The "Total Allocation" entered in the Add Fund modal is the operator's
       // intended budget for this fund. The regime engine (the active engine)
       // does not read `totalAllocation` — it uses `regime.depositedCapital`
       // and `regime.maxUsdcDeployed`. Mirror the value into all three so the
       // dashboard's Deposited field and the engine's risk caps both reflect
       // what the operator entered, instead of leaving regime at 0.
-      const seedRegime = { enabled: true, ...(regime && typeof regime === 'object' ? regime : {}) };
+      const seedRegime = { enabled: true, ...sanitizedRegime };
       if (typeof totalAllocation === 'number' && totalAllocation > 0) {
         initialConfig.totalAllocation = totalAllocation;
         seedRegime.depositedCapital ??= totalAllocation;
@@ -283,18 +303,26 @@ module.exports = (app, deps) => {
       }
     }
 
-    // regime is a nested object — sanitize keys against the allowlist before merging.
-    // Unknown keys are DROPPED (not rejected): the config editor GETs the full stored
-    // config and PUTs it back verbatim, so a hard 400 on a stale key — e.g. a field
-    // removed from the engine in a later version but still present in a fund's
-    // persisted config — would make that fund permanently unsaveable. Dropping keeps
-    // the security intent (unknown keys never enter the saved overrides or reach the
-    // engine) while letting the save succeed. Note this doesn't rewrite the base
-    // config.json: a stale key living there stays inert (saveConfig persists only a
-    // diff and computeDiff doesn't tombstone removals), but it's harmless — never
-    // forwarded and dropped again on every save.
+    // regime is a nested object — sanitize keys against the allowlist, then value-
+    // validate the survivors, before merging. Unknown keys are DROPPED (not
+    // rejected): the config editor GETs the full stored config and PUTs it back
+    // verbatim, so a hard 400 on a stale key — e.g. a field removed from the engine
+    // in a later version but still present in a fund's persisted config — would make
+    // that fund permanently unsaveable. Dropping keeps the security intent (unknown
+    // keys never enter the saved overrides or reach the engine) while letting the
+    // save succeed. Note this doesn't rewrite the base config.json: a stale key
+    // living there stays inert (saveConfig persists only a diff and computeDiff
+    // doesn't tombstone removals), but it's harmless — never forwarded and dropped
+    // again on every save.
+    // Known values ARE rejected when out of range: this is the same
+    // validateRegimeConfig the dedicated PUT /api/:exchange/regime/config route
+    // enforces, reused here so a value it would reject (e.g. maxDrawdownPercent:
+    // 999) can't reach the live engine through this save surface instead (#452).
     if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
-      const { value: sanitizedRegime, droppedKeys } = sanitizeRegimeConfig(req.body.regime);
+      const { value: sanitizedRegime, droppedKeys, valid, errors: regimeErrors } = validateAndSanitizeRegimeConfig(req.body.regime, getRegimeConfig(exchange, pair));
+      if (!valid) {
+        return res.status(400).json({ error: regimeErrors.join('; ') });
+      }
       if (droppedKeys.length > 0) {
         logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Dropped ${droppedKeys.length} unknown regime key(s) on save: ${droppedKeys.join(', ')}`, {
           action: 'update-config',

@@ -6,7 +6,7 @@
 
 const { validateConfigUpdate } = require('./config-validation');
 const { PRESET_FIELD_RULES, LEGACY_PRESET_FIELD_RULES } = require('./regime-preset-contract');
-const { REGIME_DEFAULTS } = require('./config-utils');
+const { REGIME_DEFAULTS, validateRegimeConfig } = require('./config-utils');
 
 const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
 
@@ -29,6 +29,54 @@ const sanitizeRegimeConfig = (update) => {
     else droppedKeys.push(key);
   }
   return { value, droppedKeys };
+};
+
+// Cross-field regime pairs whose validity depends on each other (e.g. a TP
+// floor must stay below the TP ceiling). A partial update touching only one
+// half of a pair must still be checked against the *other* half's real
+// current value, or a lone `tpMinPercent` bump would be validated against
+// `undefined` instead of the fund's actual `tpMaxPercent`.
+const REGIME_CROSS_FIELD_PARTNERS = {
+  tpMinPercent: 'tpMaxPercent',
+  tpMaxPercent: 'tpMinPercent',
+  macroDeclineThreshold: 'macroAccumulationThreshold',
+  macroAccumulationThreshold: 'macroMarkupThreshold',
+  macroMarkupThreshold: 'macroAccumulationThreshold',
+};
+
+/**
+ * Sanitize + value-validate a nested `regime` config update in one shared step.
+ * Every entry point that can persist into `regime.*` — the dedicated
+ * `PUT /api/:exchange/regime/config`, the full-config `PUT /api/:exchange/config`
+ * and legacy `PUT /api/config`, and fund creation's regime seed — must route
+ * through this before persistence or IPC. Without it, a value rejected by one
+ * save surface (e.g. `maxDrawdownPercent: 999`, outside the documented 10-30
+ * range) could still be persisted and forwarded to the live engine through
+ * another, defeating a safety limit it's supposed to enforce (issue #452).
+ *
+ * Unknown keys are DROPPED, not rejected — `sanitizeRegimeConfig`'s documented
+ * round-trip contract, which keeps a fund whose stored regime block carries a
+ * stale/removed key permanently saveable. Known values are then checked with
+ * `validateRegimeConfig`, filling in `currentConfig`'s value for any
+ * cross-field partner this update didn't touch, so partial updates are
+ * validated against the fund's real current state.
+ *
+ * @param {unknown} rawUpdate - Untrusted nested regime object from a request body
+ * @param {Object} [currentConfig] - The fund's current (defaults-merged) regime config, for cross-field checks
+ * @returns {{ value: Object, droppedKeys: string[], valid: boolean, errors: string[] }}
+ */
+const validateAndSanitizeRegimeConfig = (rawUpdate, currentConfig = {}) => {
+  const { value, droppedKeys } = sanitizeRegimeConfig(rawUpdate);
+
+  const validationSubset = { ...value };
+  for (const [key, partner] of Object.entries(REGIME_CROSS_FIELD_PARTNERS)) {
+    if (validationSubset[key] !== undefined && validationSubset[partner] === undefined) {
+      validationSubset[partner] = currentConfig?.[partner];
+    }
+  }
+  const { valid, errors } = validateRegimeConfig(validationSubset);
+
+  return { value, droppedKeys, valid, errors };
 };
 
 // ── Exchange config schema ───────────────────────────────────────
@@ -102,6 +150,7 @@ const validateNotificationConfigUpdate = (updates) => {
 module.exports = {
   validateConfigUpdate,
   sanitizeRegimeConfig,
+  validateAndSanitizeRegimeConfig,
   EXCHANGE_CONFIG_SCHEMA,
   AGGRESSIVENESS_SCHEMA,
   validateNotificationConfigUpdate,
