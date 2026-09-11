@@ -611,18 +611,6 @@ const applyUpOnlyGate = (rawType, trendGateOpen, heldPosition = null) => {
 
 // resolveActionLabel lives in signal-actions.js (OPEN / ADD / HOLD / CLOSE).
 
-/**
- * Map composite score to signal label (original fixed thresholds)
- * @param {number} score
- * @returns {'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL'}
- */
-const scoreToSignal = (score) => {
-  if (score > 30) return 'STRONG_BUY';
-  if (score > 15) return 'BUY';
-  if (score < -30) return 'STRONG_SELL';
-  if (score < -15) return 'SELL';
-  return 'NEUTRAL';
-};
 
 // --- Feature 3: Volume Surge Multiplier ---
 
@@ -1076,7 +1064,6 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
 
 module.exports = {
   createSignalEngine,
-  scoreToSignal,
   scoreToSignalDynamic,
   resolveNoTradeZoneType,
   computeTrendGate,
