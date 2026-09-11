@@ -133,9 +133,12 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
           />
         </div>
         <div className="flex justify-between text-xs text-gray-500">
-          <span>{totalPredictions} UP calls</span>
+          <span title="Each prediction is evaluated at 1m, 5m, 15m, and 1h windows">{totalEvaluated} outcomes</span>
           <span className="text-green-500">{overall?.correct ?? 0}W</span>
           <span className="text-red-500">{overall?.incorrect ?? 0}L</span>
+        </div>
+        <div className="flex justify-between text-xs text-gray-500 mt-1">
+          <span>{totalPredictions} UP calls</span>
           <span>{totalSkipped} skip</span>
         </div>
         {(overall?.avgCorrectBps > 0 || overall?.avgIncorrectBps > 0) && (
