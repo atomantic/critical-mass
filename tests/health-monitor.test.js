@@ -2,7 +2,7 @@
 const { describe, it, beforeEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createHealthMonitor, createInitialHealthState } = require('../src/health-monitor');
+const { createHealthMonitor, createInitialHealthState, instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
 
 /**
  * Build a minimal config with sensible defaults, overridable per-test
@@ -534,5 +534,177 @@ describe('Edge cases', () => {
     const monitor = createHealthMonitor('test', createTestConfig());
     monitor.pause();
     assert.equal(monitor.getState().reason, 'manual_pause');
+  });
+});
+
+// ============================================================================
+// Adapter instrumentation
+// ============================================================================
+describe('Adapter instrumentation', () => {
+  it('isRateLimitError detects HTTP 429 status', () => {
+    assert.ok(isRateLimitError({ status: 429 }));
+    assert.ok(isRateLimitError({ statusCode: 429 }));
+    assert.ok(isRateLimitError({ response: { status: 429 } }));
+  });
+
+  it('isRateLimitError detects rate-limit in message', () => {
+    assert.ok(isRateLimitError({ message: '429 rate limit exceeded' }));
+    assert.ok(isRateLimitError({ message: 'rate_limit error' }));
+    assert.ok(isRateLimitError({ message: 'rate-limit' }));
+  });
+
+  it('isRateLimitError returns false for non-rate-limit errors', () => {
+    assert.ok(!isRateLimitError({ status: 401 }));
+    assert.ok(!isRateLimitError({ status: 500 }));
+    assert.ok(!isRateLimitError({ message: 'some other error' }));
+  });
+
+  it('isAuthDeniedError detects HTTP 401/403', () => {
+    assert.ok(isAuthDeniedError({ status: 401 }));
+    assert.ok(isAuthDeniedError({ status: 403 }));
+    assert.ok(isAuthDeniedError({ statusCode: 401 }));
+    assert.ok(isAuthDeniedError({ response: { status: 403 } }));
+  });
+
+  it('isAuthDeniedError detects Crypto.com auth codes', () => {
+    assert.ok(isAuthDeniedError({ responseData: { code: 40101 } }));
+    assert.ok(isAuthDeniedError({ responseData: { code: 40103 } }));
+    assert.ok(isAuthDeniedError({ responseData: { code: 40104 } }));
+    assert.ok(isAuthDeniedError({ code: 40101 }));
+  });
+
+  it('isAuthDeniedError detects auth errors in message', () => {
+    assert.ok(isAuthDeniedError({ message: 'unauthorized' }));
+    assert.ok(isAuthDeniedError({ message: 'IP illegal' }));
+    assert.ok(isAuthDeniedError({ message: 'IP not whitelisted' }));
+    assert.ok(isAuthDeniedError({ message: 'code: 40101' }));
+    assert.ok(isAuthDeniedError({ message: 'invalid API key' }));
+  });
+
+  it('isAuthDeniedError returns false for non-auth errors', () => {
+    assert.ok(!isAuthDeniedError({ status: 429 }));
+    assert.ok(!isAuthDeniedError({ status: 500 }));
+    assert.ok(!isAuthDeniedError({ message: 'rate limit error' }));
+  });
+
+  it('instrumentAdapterForHealth wraps methods and records rate limits', async () => {
+    const monitor = createHealthMonitor('test', createTestConfig());
+    let recordedRateLimit = false;
+    monitor.recordRateLimit = () => { recordedRateLimit = true; };
+
+    const adapter = {
+      getCandles: () => Promise.resolve([]),
+    };
+    const wrapped = instrumentAdapterForHealth(adapter, monitor);
+
+    const err = new Error('Rate limit exceeded');
+    err.status = 429;
+    adapter.getCandles = () => Promise.reject(err);
+    const wrappedWithError = instrumentAdapterForHealth(adapter, monitor);
+
+    try {
+      await wrappedWithError.getCandles();
+    } catch (e) {
+      assert.ok(e === err);
+    }
+    assert.ok(recordedRateLimit);
+  });
+
+  it('instrumentAdapterForHealth wraps methods and records auth denials', async () => {
+    const monitor = createHealthMonitor('test', createTestConfig());
+    let recordedAuthDenial = false;
+    let authDenialMessage = null;
+    monitor.recordAuthDenied = (msg) => {
+      recordedAuthDenial = true;
+      authDenialMessage = msg;
+    };
+
+    const adapter = {
+      getOrderFills: () => Promise.resolve([]),
+    };
+    const err = new Error('Unauthorized');
+    err.status = 401;
+    adapter.getOrderFills = () => Promise.reject(err);
+    const wrapped = instrumentAdapterForHealth(adapter, monitor);
+
+    try {
+      await wrapped.getOrderFills('order-id');
+    } catch (e) {
+      assert.ok(e === err);
+    }
+    assert.ok(recordedAuthDenial);
+    assert.equal(authDenialMessage, 'Unauthorized');
+  });
+
+  it('instrumentAdapterForHealth clears auth denial on successful authenticated call', async () => {
+    const monitor = createHealthMonitor('test', createTestConfig());
+    let clearedAuthDenial = false;
+    monitor.clearAuthDenied = () => { clearedAuthDenial = true; };
+
+    // getOrderFills is an authenticated method
+    const adapter = {
+      getOrderFills: () => Promise.resolve([{ tradeId: '123', size: '1' }]),
+    };
+    const wrapped = instrumentAdapterForHealth(adapter, monitor);
+
+    await wrapped.getOrderFills('order-id');
+    assert.ok(clearedAuthDenial, 'clearAuthDenied should be called on authenticated method success');
+  });
+
+  it('instrumentAdapterForHealth does not clear auth denial on successful public call', async () => {
+    const monitor = createHealthMonitor('test', createTestConfig());
+    let clearedAuthDenial = false;
+    monitor.clearAuthDenied = () => { clearedAuthDenial = true; };
+
+    // getCandles is a public (non-authenticated) method
+    const adapter = {
+      getCandles: () => Promise.resolve([{ time: '2024-01-01', close: '100' }]),
+    };
+    const wrapped = instrumentAdapterForHealth(adapter, monitor);
+
+    await wrapped.getCandles();
+    assert.ok(!clearedAuthDenial, 'clearAuthDenied should NOT be called on public method success');
+  });
+
+  it('instrumentAdapterForHealth records latency on success and error', async () => {
+    const monitor = createHealthMonitor('test', createTestConfig());
+    const latencies = [];
+    monitor.recordRestLatency = (ms) => { latencies.push(ms); };
+
+    const adapter = {
+      getCandles: async () => {
+        await new Promise(r => setTimeout(r, 10));
+        return [];
+      },
+    };
+    const wrapped = instrumentAdapterForHealth(adapter, monitor);
+
+    await wrapped.getCandles();
+    assert.equal(latencies.length, 1);
+    assert.ok(latencies[0] >= 10);
+
+    // Record latency even on error
+    const errAdapter = {
+      getOrderFills: () => Promise.reject(new Error('Network error')),
+    };
+    const wrappedErr = instrumentAdapterForHealth(errAdapter, monitor);
+    try {
+      await wrappedErr.getOrderFills('order-id');
+    } catch (e) {
+      // Expected
+    }
+    assert.equal(latencies.length, 2);
+  });
+
+  it('instrumentAdapterForHealth returns original adapter if no monitor', () => {
+    const adapter = { getCandles: () => Promise.resolve([]) };
+    const wrapped = instrumentAdapterForHealth(adapter, null);
+    assert.equal(wrapped, adapter);
+  });
+
+  it('instrumentAdapterForHealth no-ops if adapter is null', () => {
+    const monitor = createHealthMonitor('test', createTestConfig());
+    const wrapped = instrumentAdapterForHealth(null, monitor);
+    assert.equal(wrapped, null);
   });
 });

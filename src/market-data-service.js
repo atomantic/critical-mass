@@ -15,7 +15,7 @@ const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
 const { calculateAllMetrics } = require('./volatility-utils');
 const { getAdapter } = require('./adapters');
-const { createHealthMonitor } = require('./health-monitor');
+const { createHealthMonitor, instrumentAdapterForHealth } = require('./health-monitor');
 const { getRegimeConfig, getFundConfig, getDefaultPair, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState, LIFECYCLE } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
@@ -41,55 +41,9 @@ const SUPPORTED_EXCHANGES = ['coinbase', 'cryptocom', 'gemini'];
 // REST adapter methods this service actually calls (getOrderFills via
 // ingestNewFillsForOrder, getCandles via updateMetrics) — instrumented so a
 // REST-error burst / rate-limit / latency spike here feeds this service's own
-// health monitor. Mirrors regime-engine.js's instrumentAdapterForHealth
+// health monitor. Uses instrumentAdapterForHealth from health-monitor.js
 // (issue #211-B), narrowed to this file's actual call sites rather than the
-// full REST surface the live trading engine exercises (issue #228 follow-up:
-// market-data-service previously had no health-monitor wiring at all).
-const INSTRUMENTED_REST_METHODS = ['getCandles', 'getOrderFills'];
-
-/**
- * Detect a rate-limit (HTTP 429) from a thrown adapter error. Same detection
- * rules as regime-engine.js's isRateLimitError.
- * @param {any} err
- * @returns {boolean}
- */
-const isRateLimitError = (err) =>
-  err?.status === 429 || err?.statusCode === 429 || err?.response?.status === 429 ||
-  /\b429\b|rate.?limit/i.test(err?.message || '');
-
-/**
- * Wrap an adapter's REST methods so every call feeds the health monitor's
- * latency / error / rate-limit triggers (issue #228). Non-REST methods (WS,
- * credentials) and any method not in INSTRUMENTED_REST_METHODS pass through
- * untouched. Pure functional wrapper — no try/catch, errors re-thrown after
- * recording, so callers' existing error handling is unaffected.
- * @param {Object} adapter
- * @param {Object} healthMonitor
- * @returns {Object} instrumented adapter
- */
-const instrumentAdapterForHealth = (adapter, healthMonitor) => {
-  if (!adapter || !healthMonitor) return adapter;
-  const wrapped = { ...adapter };
-  for (const name of INSTRUMENTED_REST_METHODS) {
-    const fn = adapter[name];
-    if (typeof fn !== 'function') continue;
-    wrapped[name] = (...args) => {
-      const startedAt = Date.now();
-      return Promise.resolve(fn.apply(adapter, args))
-        .then((result) => {
-          healthMonitor.recordRestLatency(Date.now() - startedAt);
-          return result;
-        })
-        .catch((err) => {
-          healthMonitor.recordRestLatency(Date.now() - startedAt);
-          if (isRateLimitError(err)) healthMonitor.recordRateLimit();
-          else healthMonitor.recordRestError();
-          throw err;
-        });
-    };
-  }
-  return wrapped;
-};
+// full REST surface the live trading engine exercises (issue #228).
 
 /**
  * Fetch and ingest any new fills for an order, advancing the
@@ -2050,6 +2004,4 @@ module.exports = {
   settleCancelledOrder,
   createTimerTracker,
   createWorkQueue,
-  instrumentAdapterForHealth,
-  isRateLimitError,
 };
