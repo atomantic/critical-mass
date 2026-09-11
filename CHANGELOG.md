@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **[issue-403] Risk manager unit test suite** — Add `tests/risk-manager.test.js` covering asset/USDC caps, cycle-buys limit enforcement and time-based auto-reset, drawdown peak tracking, pause activation, 50% recovery resumption, drawdown auto-reset, `canPlaceEntry`/`checkAllCaps` reason aggregation, and `forceResume`, using mocked `Date.now()` for deterministic time-based behavior.
+
 ### Changed
 - **[issue-369] Historical fill annotation repair extracted from engine startup** — Extract 188-line orphan recovery, size fuzzy-match, and cycle-ID rewriting heuristics from `startImpl` into dedicated `repairHistoricalFillAnnotations` helper, reducing mixed-abstraction cognitive load and enabling isolated testing of self-healing logic.
 - **[issue-356] Remove obsolete updateRegimeStateAfterEntry and scoreToSignal methods** — Delete unreferenced functions `updateRegimeStateAfterEntry` (state-tracker.js), `scoreToSignal` (signal-engine.js), and `prefixedTs` (time-utils.js) to eliminate dead code clutter and reduce architectural risk from unused state mutation paths.
