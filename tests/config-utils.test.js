@@ -1404,3 +1404,151 @@ describe('deep merge behavior (via loadRawConfig)', () => {
     assert.equal(result.global.schedulerInterval, 10000);
   });
 });
+
+// ============================================================================
+// Fund deletion tombstones (issue #441)
+//
+// saveConfig persists only computeDiff(base, merged), and computeDiff walks
+// Object.keys(modified) — so a pair deleted outright from the merged tree is
+// absent from the diff rather than recorded as deleted, and the next
+// deepMerge(base, diff) restored it from the base config.json. Funds defined
+// in the base layer therefore "deleted" successfully and then resurrected.
+// These tests pin the tombstone contract end to end.
+// ============================================================================
+
+/**
+ * fs mocks that feed saveConfig's output back in as the user-override layer,
+ * so a later load sees exactly what a fresh process would read off disk.
+ * That round-trip (computeDiff -> data/config.json -> deepMerge) is the whole
+ * point of these cases.
+ * @param {Object} base - Base config.json contents
+ * @returns {{ user: () => Object|null, restart: () => void }}
+ */
+const setupRoundTripFsMocks = (base) => {
+  let userData = null;
+  configUtils._resetConfigCacheForTests();
+
+  mock.method(fs, 'existsSync', (filePath) => {
+    if (filePath === BASE_CONFIG_FILE) return true;
+    if (filePath === USER_CONFIG_FILE) return userData !== null;
+    return false;
+  });
+  mock.method(fs, 'readFileSync', (filePath) => {
+    if (filePath === BASE_CONFIG_FILE) return JSON.stringify(base);
+    if (filePath === USER_CONFIG_FILE && userData !== null) return JSON.stringify(userData);
+    throw new Error(`ENOENT: no such file: ${filePath}`);
+  });
+  let mtimeCounter = 0;
+  mock.method(fs, 'statSync', (filePath) => {
+    if (filePath === BASE_CONFIG_FILE) return { mtimeMs: ++mtimeCounter, mode: 0o100600 };
+    if (filePath === USER_CONFIG_FILE && userData !== null) return { mtimeMs: ++mtimeCounter, mode: 0o100600 };
+    const err = new Error(`ENOENT: no such file: ${filePath}`);
+    err.code = 'ENOENT';
+    throw err;
+  });
+  mock.method(fs, 'writeFileSync', (_filePath, data) => { userData = JSON.parse(data); });
+  mock.method(fs, 'renameSync', () => {});
+  mock.method(fs, 'mkdirSync', () => {});
+
+  // A fresh process keeps the files and loses the in-process cache.
+  return { user: () => userData, restart: () => configUtils._resetConfigCacheForTests() };
+};
+
+// Both funds live in the BASE layer — the case that used to resurrect.
+const TOMBSTONE_BASE = {
+  exchanges: {
+    coinbase: {
+      pairs: {
+        'BTC-USDC': { productId: 'BTC-USDC', enabled: true, dryRun: false },
+        'ETH-USDC': { productId: 'ETH-USDC', enabled: true, dryRun: false },
+      },
+    },
+  },
+};
+
+describe('fund deletion tombstones', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('keeps a base-config fund deleted across a fresh load', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+
+    configUtils.removeFund('coinbase', 'ETH-USDC');
+    assert.deepStrictEqual(configUtils.getFundsForExchange('coinbase'), ['BTC-USDC']);
+
+    mocks.restart();
+    assert.deepStrictEqual(configUtils.getFundsForExchange('coinbase'), ['BTC-USDC'],
+      'deleted base-config fund must not resurrect on the next load');
+    assert.deepStrictEqual(configUtils.getConfiguredFunds(), [{ exchange: 'coinbase', pair: 'BTC-USDC' }]);
+  });
+
+  it('persists the tombstone as a plain array the raw loader reads without throwing', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+    configUtils.removeFund('coinbase', 'ETH-USDC');
+
+    assert.deepStrictEqual(mocks.user().exchanges.coinbase.deletedPairs, ['ETH-USDC']);
+
+    // deepMerge replaces arrays wholesale, so the marker survives the merge and
+    // the base definition is still present-but-suppressed (not rewritten).
+    mocks.restart();
+    const raw = configUtils.loadRawConfig();
+    assert.deepStrictEqual(raw.exchanges.coinbase.deletedPairs, ['ETH-USDC']);
+    assert.ok(raw.exchanges.coinbase.pairs['ETH-USDC'], 'base definition stays inert, not mutated');
+  });
+
+  it('never surfaces a tombstoned pair as the default pair', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+    assert.equal(configUtils.getDefaultPair('coinbase'), 'BTC-USDC');
+
+    configUtils.removeFund('coinbase', 'BTC-USDC');
+    mocks.restart();
+    assert.equal(configUtils.getDefaultPair('coinbase'), 'ETH-USDC');
+  });
+
+  it('does not let an unrelated fund save resurrect a deleted fund', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+    configUtils.removeFund('coinbase', 'ETH-USDC');
+
+    configUtils.updateExchangeConfig('coinbase', { dryRun: true });
+
+    mocks.restart();
+    assert.deepStrictEqual(configUtils.getFundsForExchange('coinbase'), ['BTC-USDC']);
+    assert.deepStrictEqual(mocks.user().exchanges.coinbase.deletedPairs, ['ETH-USDC']);
+  });
+
+  it('clears the tombstone when the pair is re-added', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+    configUtils.removeFund('coinbase', 'ETH-USDC');
+    mocks.restart();
+
+    configUtils.addFund('coinbase', 'ETH-USDC', { productId: 'ETH-USDC' });
+    assert.deepStrictEqual(mocks.user().exchanges.coinbase.deletedPairs, [],
+      'stale marker must not suppress a legitimate re-add');
+
+    mocks.restart();
+    assert.ok(configUtils.getFundsForExchange('coinbase').includes('ETH-USDC'));
+    assert.equal(configUtils.getFundConfig('coinbase', 'ETH-USDC').productId, 'ETH-USDC');
+  });
+
+  it('leaves configs without tombstones byte-identical (no deletedPairs noise)', () => {
+    const mocks = setupRoundTripFsMocks(TOMBSTONE_BASE);
+    configUtils.updateFundConfig('coinbase', 'BTC-USDC', { dryRun: true });
+    assert.ok(!JSON.stringify(mocks.user()).includes('deletedPairs'),
+      'ordinary saves must not introduce a tombstone key');
+  });
+
+  it('suppresses a tombstoned pair in a legacy flat exchange block', () => {
+    const flat = { productId: 'BTC-USDC', enabled: true, deletedPairs: ['BTC-USDC'] };
+    assert.deepStrictEqual(configUtils.normalizeExchangeBlock(flat).pairs, {});
+
+    const live = { productId: 'BTC-USDC', enabled: true, deletedPairs: ['ETH-USDC'] };
+    assert.deepStrictEqual(Object.keys(configUtils.normalizeExchangeBlock(live).pairs), ['BTC-USDC']);
+  });
+
+  it('tolerates a malformed deletedPairs value without hiding funds', () => {
+    for (const bad of ['BTC-USDC', 42, { 'BTC-USDC': true }, null]) {
+      const block = { deletedPairs: bad, pairs: { 'BTC-USDC': { productId: 'BTC-USDC' } } };
+      assert.deepStrictEqual(Object.keys(configUtils.normalizeExchangeBlock(block).pairs), ['BTC-USDC'],
+        `deletedPairs=${JSON.stringify(bad)} must be ignored, not treated as a tombstone`);
+    }
+  });
+});
