@@ -128,20 +128,11 @@ const buildIndicatorTimeframeHeatmap = (
 };
 
 /**
- * Aggregate historical journal records without mutating retained data.
- * Date selection belongs to the transport; semantic deduplication belongs here.
- * @param {Array<Object|null>} journalRecords
- * @returns {Object}
+ * Build hourly accuracy buckets from outcomes
+ * @param {Array<Object>} outcomes
+ * @returns {Array<Object>}
  */
-const buildScorecardAnalysis = (journalRecords) => {
-  const records = dedupeScorecardRecords(journalRecords);
-  const predictions = records.filter(r => r.type === 'prediction');
-  const predictionById = new Map(predictions.map(p => [p.id, p]));
-  const outcomes = records.filter(r => r.type === 'outcome' && r.compositeDirection !== 'down');
-  const weights = records.filter(r => r.type === 'weights');
-  const perpFills = records.filter(r => r.type === 'perp_fill');
-
-  // --- accuracyOverTime: hourly accuracy buckets ---
+const buildAccuracyOverTime = (outcomes) => {
   const hourlyBuckets = {};
   for (const o of outcomes) {
     if (o.compositeCorrect == null) continue;
@@ -151,7 +142,7 @@ const buildScorecardAnalysis = (journalRecords) => {
     hourlyBuckets[hour].total++;
     if (o.compositeCorrect) hourlyBuckets[hour].correct++;
   }
-  const accuracyOverTime = Object.entries(hourlyBuckets)
+  return Object.entries(hourlyBuckets)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([hour, data]) => ({
       hour,
@@ -159,11 +150,14 @@ const buildScorecardAnalysis = (journalRecords) => {
       correct: data.correct,
       total: data.total,
     }));
+};
 
-  // --- heatmap: indicator × timeframe accuracy ---
-  const heatmap = buildIndicatorTimeframeHeatmap(predictions, outcomes, INDICATORS, ALL_TFS);
-
-  // --- indicatorAccuracyOverTime: per-indicator hourly trends ---
+/**
+ * Build per-indicator hourly accuracy trends
+ * @param {Array<Object>} outcomes
+ * @returns {Array<Object>}
+ */
+const buildIndicatorAccuracyOverTime = (outcomes) => {
   const indHourly = {};
   for (const ind of INDICATORS) indHourly[ind] = {};
   for (const o of outcomes) {
@@ -179,7 +173,7 @@ const buildScorecardAnalysis = (journalRecords) => {
   }
   // Collect all unique hours across all indicators
   const allHours = [...new Set(Object.values(indHourly).flatMap(h => Object.keys(h)))].sort();
-  const indicatorAccuracyOverTime = allHours.map(hour => {
+  return allHours.map(hour => {
     const point = { hour };
     for (const ind of INDICATORS) {
       const data = indHourly[ind][hour];
@@ -187,14 +181,14 @@ const buildScorecardAnalysis = (journalRecords) => {
     }
     return point;
   });
+};
 
-  // --- weightEvolution: weight snapshots over time ---
-  const weightEvolution = weights.map(w => ({
-    ts: w.ts,
-    ...w.weights,
-  }));
-
-  // --- failurePatterns: indicator combos that predict wrong together ---
+/**
+ * Build failure patterns for indicator combinations
+ * @param {Array<Object>} outcomes
+ * @returns {Array<Object>}
+ */
+const buildFailurePatterns = (outcomes) => {
   const comboFailures = {};
   for (const o of outcomes) {
     if (o.compositeCorrect !== false) continue;
@@ -221,7 +215,7 @@ const buildScorecardAnalysis = (journalRecords) => {
       if (allPresent) comboFailures[key].total++;
     }
   }
-  const failurePatterns = Object.values(comboFailures)
+  return Object.values(comboFailures)
     .filter(p => p.total >= 3)
     .map(p => ({
       indicators: p.indicators,
@@ -231,11 +225,20 @@ const buildScorecardAnalysis = (journalRecords) => {
     }))
     .sort((a, b) => b.failureRate - a.failureRate)
     .slice(0, 20);
+};
 
-  // --- summary ---
+/**
+ * Build summary statistics and rankings
+ * @param {Array<Object>} outcomes
+ * @returns {Object}
+ */
+const buildSummaryStats = (outcomes) => {
+  // Overall accuracy
   const totalOutcomes = outcomes.filter(o => o.compositeCorrect != null).length;
   const totalCorrect = outcomes.filter(o => o.compositeCorrect === true).length;
   const overallAccuracy = totalOutcomes > 0 ? Math.round(totalCorrect / totalOutcomes * 10000) / 100 : null;
+
+  // Perp directional accuracy
   const perpOutcomes = outcomes.map(resolvePerpCorrect).filter(correct => correct != null);
   const perpCorrect = perpOutcomes.filter(correct => correct === true).length;
   const perpDirectionalAccuracy = perpOutcomes.length > 0
@@ -273,6 +276,23 @@ const buildScorecardAnalysis = (journalRecords) => {
   const sortedTfs = Object.entries(tfStats).filter(([, v]) => v.accuracy != null).sort(([, a], [, b]) => b.accuracy - a.accuracy);
   const bestTimeframe = sortedTfs[0]?.[0] ?? null;
 
+  return {
+    accuracy: overallAccuracy,
+    perpDirectionalAccuracy,
+    bestIndicator,
+    worstIndicator,
+    bestTimeframe,
+  };
+};
+
+/**
+ * Build window performance and contract/perp statistics
+ * @param {Array<Object>} outcomes
+ * @param {Map<string, Object>} predictionById
+ * @param {Array<Object>} perpFills
+ * @returns {Object}
+ */
+const buildWindowAndContractStats = (outcomes, predictionById, perpFills) => {
   // Best window
   const windowStats = {};
   for (const o of outcomes) {
@@ -308,15 +328,16 @@ const buildScorecardAnalysis = (journalRecords) => {
     byRange: contractByRange,
   } : null;
 
+  // Perp analysis
   const closedRounds = perpFills
     .filter(f => f.action === 'CLOSE' && f.trade)
     .map(f => ({
       ...f,
       normalizedPnl: calculatePerpPnl(f.trade.avgEntry, f.trade.exitPrice, f.trade.contracts),
-    }))
-  const perpWins = closedRounds.filter(f => f.normalizedPnl > 0)
-  const perpLosses = closedRounds.filter(f => f.normalizedPnl <= 0)
-  const perpRealized = closedRounds.reduce((s, f) => s + f.normalizedPnl, 0)
+    }));
+  const perpWins = closedRounds.filter(f => f.normalizedPnl > 0);
+  const perpLosses = closedRounds.filter(f => f.normalizedPnl <= 0);
+  const perpRealized = closedRounds.reduce((s, f) => s + f.normalizedPnl, 0);
   const perpAnalysis = perpFills.length > 0 ? {
     opens: perpFills.filter(f => f.action === 'OPEN').length,
     adds: perpFills.filter(f => f.action === 'ADD').length,
@@ -327,7 +348,39 @@ const buildScorecardAnalysis = (journalRecords) => {
       ? Math.round(perpWins.length / closedRounds.length * 10000) / 100
       : null,
     realizedPnl: Math.round(perpRealized * 100) / 100,
-  } : null
+  } : null;
+
+  return {
+    bestWindow,
+    contractAnalysis,
+    perpAnalysis,
+  };
+};
+
+/**
+ * Aggregate historical journal records without mutating retained data.
+ * Date selection belongs to the transport; semantic deduplication belongs here.
+ * @param {Array<Object|null>} journalRecords
+ * @returns {Object}
+ */
+const buildScorecardAnalysis = (journalRecords) => {
+  const records = dedupeScorecardRecords(journalRecords);
+  const predictions = records.filter(r => r.type === 'prediction');
+  const predictionById = new Map(predictions.map(p => [p.id, p]));
+  const outcomes = records.filter(r => r.type === 'outcome' && r.compositeDirection !== 'down');
+  const weights = records.filter(r => r.type === 'weights');
+  const perpFills = records.filter(r => r.type === 'perp_fill');
+
+  const accuracyOverTime = buildAccuracyOverTime(outcomes);
+  const heatmap = buildIndicatorTimeframeHeatmap(predictions, outcomes, INDICATORS, ALL_TFS);
+  const indicatorAccuracyOverTime = buildIndicatorAccuracyOverTime(outcomes);
+  const weightEvolution = weights.map(w => ({
+    ts: w.ts,
+    ...w.weights,
+  }));
+  const failurePatterns = buildFailurePatterns(outcomes);
+  const summaryStats = buildSummaryStats(outcomes);
+  const windowAndContractStats = buildWindowAndContractStats(outcomes, predictionById, perpFills);
 
   return {
     success: true,
@@ -341,20 +394,20 @@ const buildScorecardAnalysis = (journalRecords) => {
     indicatorAccuracyOverTime,
     weightEvolution,
     failurePatterns,
-    contractAnalysis,
-    perpAnalysis,
+    contractAnalysis: windowAndContractStats.contractAnalysis,
+    perpAnalysis: windowAndContractStats.perpAnalysis,
     summary: {
-      accuracy: overallAccuracy,
-      perpDirectionalAccuracy,
+      accuracy: summaryStats.accuracy,
+      perpDirectionalAccuracy: summaryStats.perpDirectionalAccuracy,
       predictions: predictions.length,
-      outcomes: totalOutcomes,
-      bestIndicator,
-      worstIndicator,
-      bestTimeframe,
-      bestWindow,
-      perpRealizedPnl: perpAnalysis?.realizedPnl ?? null,
-      perpWinRate: perpAnalysis?.winRate ?? null,
-      perpRounds: perpAnalysis?.closes ?? 0,
+      outcomes: outcomes.filter(o => o.compositeCorrect != null).length,
+      bestIndicator: summaryStats.bestIndicator,
+      worstIndicator: summaryStats.worstIndicator,
+      bestTimeframe: summaryStats.bestTimeframe,
+      bestWindow: windowAndContractStats.bestWindow,
+      perpRealizedPnl: windowAndContractStats.perpAnalysis?.realizedPnl ?? null,
+      perpWinRate: windowAndContractStats.perpAnalysis?.winRate ?? null,
+      perpRounds: windowAndContractStats.perpAnalysis?.closes ?? 0,
     },
   };
 }
