@@ -29,6 +29,7 @@ const {
   recoverIncompleteRestore,
   guardIncompleteRestore,
   JOURNAL_FILENAME,
+  JOURNAL_VERSION,
   STATUS,
 } = require('../src/restore-apply');
 const { createBackup, restoreBackup } = require('../src/backup-service');
@@ -56,6 +57,11 @@ const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : nu
 
 /** Relative paths of the restore's leftover bookkeeping, if any. */
 const artifactNames = () => fs.readdirSync(dataDir).filter((n) => n.startsWith('.restore-'));
+
+/** Every path under a directory, so a leaked temp file anywhere is visible. */
+const walkAll = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (
+  e.isDirectory() ? walkAll(path.join(dir, e.name)) : [path.join(dir, e.name)]
+));
 
 /**
  * Fail `fs.renameSync` for chosen destinations, counting per destination so a
@@ -149,6 +155,7 @@ describe('restore-apply — transactional application (#431)', () => {
     assert.deepEqual(preRestoreState(), before, 'alpha must be reverted, beta untouched, gamma never created');
     assert.equal(fs.existsSync(path.join(dataDir, 'sub', 'gamma.json')), false, 'a file created solely by the attempt is removed');
     assert.deepEqual(artifactNames(), [], 'a clean rollback cleans its own journal and originals');
+    assert.deepEqual(walkAll(dataDir).filter((f) => f.endsWith('.tmp')), [], 'a failed replacement leaves no temp file for the next backup to archive');
   });
 
   it('removes the directories it created for the attempt when it rolls back', () => {
@@ -235,7 +242,7 @@ describe('restore-apply — transactional application (#431)', () => {
     const originals = path.join(dataDir, '.restore-originals-committed');
     write(path.join(originals, 'alpha.json'), '{"gen":"current-alpha"}');
     write(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify({
-      journalVersion: 1,
+      journalVersion: JOURNAL_VERSION,
       restoreId: 'committed',
       filename: 'backup-ok.zip',
       status: STATUS.COMMITTED,
@@ -253,7 +260,7 @@ describe('restore-apply — transactional application (#431)', () => {
 
   it('blocks startup when an interrupted restore cannot be rolled back', () => {
     write(path.join(dataDir, JOURNAL_FILENAME), JSON.stringify({
-      journalVersion: 1,
+      journalVersion: JOURNAL_VERSION,
       restoreId: 'torn',
       filename: 'backup-torn.zip',
       status: STATUS.APPLYING,

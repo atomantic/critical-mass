@@ -94,6 +94,11 @@ const fsyncDir = (dir) => {
 /**
  * Write a file so that a crash leaves either the previous content or the new
  * content: temp file, fsync, atomic rename, fsync of the parent directory.
+ *
+ * Deliberately not `state-tracker.atomicWriteSync`: that helper does not fsync
+ * the data or the directory entry, and surviving a power loss is the entire
+ * reason the journal exists (config-utils.js makes the same call for the same
+ * reason). A failed write leaves no temp file behind.
  * @param {string} file - Destination path
  * @param {string|Buffer} data - Bytes to write
  * @param {number} [mode] - Permission mode for the new inode
@@ -101,12 +106,18 @@ const fsyncDir = (dir) => {
  */
 const writeFileDurable = (file, data, mode) => {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  const fd = fs.openSync(tmp, 'w', mode);
-  fs.writeFileSync(fd, data);
-  fs.fsyncSync(fd);
-  fs.closeSync(fd);
-  fs.renameSync(tmp, file);
-  fsyncDir(path.dirname(file));
+  const written = attempt(() => {
+    const fd = fs.openSync(tmp, 'w', mode);
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmp, file);
+    fsyncDir(path.dirname(file));
+  });
+  if (!written.ok) {
+    fs.rmSync(tmp, { force: true });
+    throw written.error;
+  }
 };
 
 /**
@@ -124,12 +135,20 @@ const writeFileDurable = (file, data, mode) => {
 const replaceFileAtomic = (src, dest) => {
   const existingMode = attempt(() => fs.statSync(dest).mode & 0o777);
   const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.${Date.now()}.restore-tmp`);
-  fs.copyFileSync(src, tmp);
-  if (existingMode.ok && existingMode.value) fs.chmodSync(tmp, existingMode.value);
-  const fd = fs.openSync(tmp, 'r+');
-  fs.fsyncSync(fd);
-  fs.closeSync(fd);
-  fs.renameSync(tmp, dest);
+  const replaced = attempt(() => {
+    fs.copyFileSync(src, tmp);
+    if (existingMode.ok && existingMode.value) fs.chmodSync(tmp, existingMode.value);
+    const fd = fs.openSync(tmp, 'r+');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmp, dest);
+  });
+  // A half-written temp file left in data/ would be picked up by the next
+  // backup and outlive the failure that created it.
+  if (!replaced.ok) {
+    fs.rmSync(tmp, { force: true });
+    throw replaced.error;
+  }
 };
 
 /**
@@ -308,6 +327,37 @@ const describeArtifacts = (journal) => ({
 });
 
 /**
+ * Move the journal to `rolling-back`, revert, and settle it: cleaned away on
+ * success, flipped to `incomplete` and RETAINED on failure. Shared verbatim by
+ * the in-flight failure path and by restart recovery so the two can never drift
+ * on which artifacts survive.
+ *
+ * The journal transitions are best-effort — a filesystem that cannot take the
+ * status update is exactly the one whose rollback is about to fail anyway, and
+ * the on-disk `applying` marker already routes the next start back here.
+ *
+ * @param {Object} params
+ * @param {string} params.dataDir - Data directory
+ * @param {Object} params.journal - Journal object
+ * @param {{info: Function, warn: Function, error: Function}} params.logger - Context logger
+ * @returns {{ok: boolean, restored: number, removed: number, failures: string[], recovery?: Object}} Outcome
+ */
+const revertAndSettle = ({ dataDir, journal, logger }) => {
+  const marked = writeJournal(dataDir, journal, STATUS.ROLLING_BACK);
+  const current = marked.ok ? marked.journal : journal;
+
+  const rolled = rollbackFromJournal({ dataDir, journal: current, logger });
+  if (rolled.ok) {
+    cleanupArtifacts(dataDir, current);
+    return rolled;
+  }
+
+  const incomplete = writeJournal(dataDir, current, STATUS.INCOMPLETE);
+  const retained = incomplete.ok ? incomplete.journal : { ...current, status: STATUS.INCOMPLETE };
+  return { ...rolled, recovery: { ...describeArtifacts(retained), failures: rolled.failures } };
+};
+
+/**
  * Apply an extracted archive to the data directory as one recoverable
  * transaction. See the module header for the full contract.
  *
@@ -318,7 +368,11 @@ const describeArtifacts = (journal) => ({
  * @param {(name: string, isRoot: boolean) => boolean} [params.skip] - Staged-entry filter
  * @param {{info: Function, warn: Function, error: Function}} [params.logger] - Context logger
  * @returns {{success: true, filesRestored: number} |
- *   {success: false, code: string, error: string, rolledBack: boolean, recovery?: Object}} Application outcome
+ *   {success: false, code: string, error: string, rolledBack: boolean, recovery?: Object}} Application outcome.
+ *   `rolledBack: true` is the caller's guarantee that the data directory is at
+ *   its pre-restore state — whether the attempt was refused before the first
+ *   write or reverted after one. `false` means it is a mixed generation and
+ *   `recovery` names the artifacts a retry needs.
  */
 const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logger = NOOP_LOGGER }) => {
   const startedAt = Date.now();
@@ -375,7 +429,7 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
     });
     return { success: false, code: 'journal-write-failed', error: `Could not persist the restore rollback journal: ${journalWrite.error.message}. No files were changed.`, rolledBack: true };
   }
-  let journal = journalWrite.journal;
+  const journal = journalWrite.journal;
 
   logger.info(`ℹ️ 💾 Restore applying ${files.length} file(s) from ${filename} (restoreId=${restoreId}, rollback journal written)`, {
     action: 'restore-apply', filename, restoreId, files: files.length,
@@ -392,21 +446,16 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
     logger.error(`❌ 💾 Restore failed after ${Date.now() - startedAt}ms applying ${filename}: ${message} — rolling back ${entries.length} destination(s)`, {
       action: 'restore-apply', filename, restoreId, error: message, elapsedMs: Date.now() - startedAt,
     });
-    const marked = writeJournal(dataDir, journal, STATUS.ROLLING_BACK);
-    if (marked.ok) journal = marked.journal;
-    const rolled = rollbackFromJournal({ dataDir, journal, logger });
+    const rolled = revertAndSettle({ dataDir, journal, logger });
     if (!rolled.ok) {
-      const incomplete = writeJournal(dataDir, journal, STATUS.INCOMPLETE);
-      const retained = incomplete.ok ? incomplete.journal : { ...journal, status: STATUS.INCOMPLETE };
       return {
         success: false,
         code: 'restore-incomplete-recovery',
         error: `Restore failed (${message}) AND the rollback could not fully revert the data directory: ${rolled.failures.join('; ')}. Original files are retained in ${originalsDir}; startup will retry recovery.`,
         rolledBack: false,
-        recovery: { ...describeArtifacts(retained), failures: rolled.failures },
+        recovery: rolled.recovery,
       };
     }
-    cleanupArtifacts(dataDir, journal);
     logger.info(`ℹ️ 💾 Restore rolled back cleanly in ${Date.now() - startedAt}ms: ${rolled.restored} file(s) reverted, ${rolled.removed} removed`, {
       action: 'restore-apply', filename, restoreId, reverted: rolled.restored, removed: rolled.removed, elapsedMs: Date.now() - startedAt,
     });
@@ -415,8 +464,7 @@ const applyStagedFiles = ({ dataDir, stageDir, filename = 'archive', skip, logge
 
   // ---- Commit: one durable flip, then the artifacts go ------------------
   const committed = writeJournal(dataDir, journal, STATUS.COMMITTED);
-  if (committed.ok) journal = committed.journal;
-  cleanupArtifacts(dataDir, journal);
+  cleanupArtifacts(dataDir, committed.ok ? committed.journal : journal);
   logger.info(`ℹ️ 💾 Restore applied and committed in ${Date.now() - startedAt}ms: ${files.length} file(s) from ${filename}`, {
     action: 'restore-apply', filename, restoreId, filesRestored: files.length, elapsedMs: Date.now() - startedAt,
   });
@@ -458,21 +506,17 @@ const recoverIncompleteRestore = ({ dataDir = DATA_DIR, logger = NOOP_LOGGER } =
     action: 'restore-recovery', restoreId: journal.restoreId, status: journal.status, filename: journal.filename,
   });
 
-  const marked = writeJournal(dataDir, journal, STATUS.ROLLING_BACK);
-  const rolled = rollbackFromJournal({ dataDir, journal: marked.ok ? marked.journal : journal, logger });
+  const rolled = revertAndSettle({ dataDir, journal, logger });
   if (!rolled.ok) {
-    const incomplete = writeJournal(dataDir, journal, STATUS.INCOMPLETE);
-    const retained = incomplete.ok ? incomplete.journal : { ...journal, status: STATUS.INCOMPLETE };
     return {
       pending: true,
       recovered: false,
       blocked: true,
       error: `Rollback of restore ${journal.restoreId} could not revert every file: ${rolled.failures.join('; ')}. Originals are retained in ${journal.originalsDir}.`,
-      recovery: { ...describeArtifacts(retained), failures: rolled.failures },
+      recovery: rolled.recovery,
     };
   }
 
-  cleanupArtifacts(dataDir, journal);
   logger.info(`ℹ️ 💾 Incomplete restore rolled back: ${rolled.restored} file(s) reverted, ${rolled.removed} removed (restoreId=${journal.restoreId})`, {
     action: 'restore-recovery', restoreId: journal.restoreId, reverted: rolled.restored, removed: rolled.removed,
   });
@@ -509,7 +553,6 @@ module.exports = {
   applyStagedFiles,
   recoverIncompleteRestore,
   guardIncompleteRestore,
-  collectStagedSet,
   JOURNAL_FILENAME,
   JOURNAL_VERSION,
   ORIGINALS_PREFIX,

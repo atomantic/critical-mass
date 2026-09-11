@@ -527,8 +527,9 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
       || (isRoot && name === MANIFEST_FILENAME),
   });
 
-  // The staging directory is cleaned by the applier on every safe outcome; this
-  // covers the paths where it retains artifacts but staging is no longer needed.
+  // The applier cleans staging itself once a journal exists; this covers the
+  // earlier refusals (invalid staged set, snapshot or journal write failure),
+  // which return before one is written.
   if (applied.success || applied.rolledBack) fs.rmSync(tempDir, { recursive: true, force: true });
 
   if (!applied.success) {
