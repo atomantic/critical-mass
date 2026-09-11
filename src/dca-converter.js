@@ -12,18 +12,54 @@ const path = require('path');
 const { loadState, saveState, loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { createFillLedger } = require('./fill-ledger');
 const { createNewBody, classifyTier, syncPositionState } = require('./celestial-hierarchy');
-const { setExchangeEnabled, getRegimeConfig, getExchangeConfig } = require('./config-utils');
-const { getExchangeDataDir } = require('./migration');
+const { setExchangeEnabled, getRegimeConfig, getFundConfig } = require('./config-utils');
+const { resolveFundDataDir } = require('./migration');
 const { log } = require('./logger');
 
 const CONVERSION_FILES = ['state.json', 'fill-ledger.json', 'regime-state.json'];
 
 /**
+ * Log label for a fund. Conversion logs must name the pair — an
+ * exchange-only label is ambiguous on a multi-fund exchange.
+ * @param {string} exchange
+ * @param {string} [pair]
+ * @returns {string}
+ */
+const fundLabel = (exchange, pair) => (pair ? `${exchange}/${pair}` : exchange);
+
+/**
+ * Enable/disable the fund being converted. setExchangeEnabled's 2-arg form
+ * targets the exchange's DEFAULT fund, which is the wrong fund whenever a
+ * non-default pair is being converted — so forward the pair when we have one.
+ * @param {string} exchange
+ * @param {string|undefined} pair
+ * @param {boolean} enabled
+ */
+const setFundEnabled = (exchange, pair, enabled) => (
+  pair ? setExchangeEnabled(exchange, pair, enabled) : setExchangeEnabled(exchange, enabled)
+);
+
+/**
  * Back up the state files involved in a DCA conversion.
- * @param {string} dataDir
+ *
+ * Resolves the per-fund directory with the SAME resolver the conversion's
+ * writes use (resolveFundDataDir, via getStateFile / getFillLedgerPath /
+ * getRegimeStateFile), so the backup and the mutation can never target
+ * different directories. Backing up `data/<exchange>/` instead silently
+ * copied nothing on every install that had run migrateExchangeToPairs,
+ * while the writes still landed in `data/<exchange>/<pair>/`.
+ *
+ * Throws when nothing was backed up: rewriting the fill ledger (the
+ * documented source of truth for realized P&L) with no rollback point is
+ * not a conversion worth starting. Callers must invoke this BEFORE any
+ * mutation so the throw leaves state untouched.
+ *
+ * @param {string} exchange
+ * @param {string} [pair] - Fund pair; defaults to the exchange's default pair
  * @returns {{ backupSuffix: string, backedUpFiles: string[] }}
  */
-const backupConversionFiles = (dataDir) => {
+const backupConversionFiles = (exchange, pair) => {
+  const dataDir = resolveFundDataDir(exchange, pair);
   const backupSuffix = `.backup-dca-convert-${Date.now()}`;
   const backedUpFiles = [];
 
@@ -33,6 +69,12 @@ const backupConversionFiles = (dataDir) => {
       fs.copyFileSync(src, path.join(dataDir, file + backupSuffix));
       backedUpFiles.push(file);
     }
+  }
+
+  if (backedUpFiles.length === 0) {
+    throw new Error(
+      `No DCA conversion state found for ${fundLabel(exchange, pair)} — refusing to convert without a rollback backup`,
+    );
   }
 
   return { backupSuffix, backedUpFiles };
@@ -75,11 +117,12 @@ const categorizeOrders = (orders) => {
 /**
  * Preview DCA-to-Regime conversion without making changes
  * @param {string} exchange
+ * @param {string} [pair] - Fund pair; defaults to the exchange's default pair
  * @returns {{ pending: number, filled: number, skipped: number, totalBaseQty: number, totalCostBasis: number, pendingBaseQty: number, pendingCostBasis: number, sellOrderIds: string[], productId: string, assetReserves: number }}
  */
-const previewConversion = (exchange) => {
-  const state = loadState(null, exchange);
-  const exchangeConfig = getExchangeConfig(exchange);
+const previewConversion = (exchange, pair) => {
+  const state = loadState(null, exchange, pair);
+  const exchangeConfig = getFundConfig(exchange, pair);
   const orders = state.orders || [];
   const { pending, filled, skipped } = categorizeOrders(orders);
 
@@ -89,7 +132,7 @@ const previewConversion = (exchange) => {
   const pendingCostBasis = pending.reduce((sum, o) => sum + (o.buyCostBasis || o.buyUSDC || 0), 0);
 
   // Check if existing regime state has celestial bodies (merge mode)
-  const existingRegime = loadRegimeState(exchange);
+  const existingRegime = loadRegimeState(exchange, pair);
   const existingBodies = existingRegime?.position?.celestialBodies?.length || 0;
   const existingAsset = existingRegime?.position?.totalAsset || 0;
   const existingCostBasis = existingRegime?.position?.totalCostBasis || 0;
@@ -116,21 +159,21 @@ const previewConversion = (exchange) => {
 /**
  * Execute DCA-to-Regime conversion
  * @param {string} exchange
+ * @param {string} [pair] - Fund pair; defaults to the exchange's default pair
  * @returns {{ success: boolean, backupDir: string, summary: Object }}
  */
-const executeConversion = (exchange) => {
-  const dataDir = getExchangeDataDir(exchange);
-  const { backupSuffix, backedUpFiles } = backupConversionFiles(dataDir);
-
-  // 1. Backup existing state files
-  log('INFO', `💾 [${exchange}] DCA conversion backup: ${backedUpFiles.join(', ')} → ${backupSuffix}`);
+const executeConversion = (exchange, pair) => {
+  // 1. Backup existing state files. Throws (before anything is mutated and
+  // before the DCA engine is disabled) when there is nothing to roll back to.
+  const { backupSuffix, backedUpFiles } = backupConversionFiles(exchange, pair);
+  log('INFO', `💾 [${fundLabel(exchange, pair)}] DCA conversion backup: ${backedUpFiles.join(', ')} → ${backupSuffix}`);
 
   // 2. Disable DCA engine
-  setExchangeEnabled(exchange, false);
-  log('INFO', `⏹️ [${exchange}] DCA engine disabled`);
+  setFundEnabled(exchange, pair, false);
+  log('INFO', `⏹️ [${fundLabel(exchange, pair)}] DCA engine disabled`);
 
   // 3. Load DCA state and categorize orders
-  const state = loadState(null, exchange);
+  const state = loadState(null, exchange, pair);
   const orders = state.orders || [];
   const { pending, filled } = categorizeOrders(orders);
 
@@ -141,16 +184,18 @@ const executeConversion = (exchange) => {
   // repair the file and re-run the conversion.
   let fillLedger;
   try {
-    fillLedger = createFillLedger(exchange);
+    // `pair` doubles as the productId (fund keys are product ids) — it only
+    // drives the ledger's log labels, but a wrong one mislabels every line.
+    fillLedger = createFillLedger(exchange, pair, pair);
   } catch (err) {
-    setExchangeEnabled(exchange, true);
-    log('ERROR', `❌ [${exchange}] Fill ledger init failed during conversion: ${err.message} — DCA engine re-enabled, conversion aborted`);
+    setFundEnabled(exchange, pair, true);
+    log('ERROR', `❌ [${fundLabel(exchange, pair)}] Fill ledger init failed during conversion: ${err.message} — DCA engine re-enabled, conversion aborted`);
     // Throw a sanitized message: the IPC handler at coinbase-engine.js:
     // regime:convert-dca surfaces this back to the client. Keeping the
     // absolute ledger path / parser internals out of the API surface
     // mirrors the regime:start sanitization. Full detail stays in the
     // ERROR log above for the operator to investigate.
-    throw new Error(`Fill ledger init failed for ${exchange} during DCA conversion — see engine logs for details`);
+    throw new Error(`Fill ledger init failed for ${fundLabel(exchange, pair)} during DCA conversion — see engine logs for details`);
   }
 
   // Ingest filled (completed) DCA orders as completed cycles
@@ -221,7 +266,7 @@ const executeConversion = (exchange) => {
   }
 
   fillLedger.persist();
-  log('INFO', `📝 [${exchange}] Fill ledger: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
+  log('INFO', `📝 [${fundLabel(exchange, pair)}] Fill ledger: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
 
   // 5. Build regime state
   const recalcResult = fillLedger.recalculateCycles();
@@ -230,7 +275,7 @@ const executeConversion = (exchange) => {
   fillLedger.persist();
 
   // Create celestial bodies from pending DCA orders
-  const regimeConfig = getRegimeConfig(exchange);
+  const regimeConfig = getRegimeConfig(exchange, pair);
   const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 500;
   const celestialBodies = [];
 
@@ -294,11 +339,11 @@ const executeConversion = (exchange) => {
     lastVolatilityCheck: null,
   };
 
-  saveRegimeState(position, regime, exchange);
-  log('INFO', `🚀 [${exchange}] Regime state created: ${celestialBodies.length} celestial bodies, ${recalcResult.cyclesCompleted} completed cycles`);
+  saveRegimeState(position, regime, exchange, null, null, pair);
+  log('INFO', `🚀 [${fundLabel(exchange, pair)}] Regime state created: ${celestialBodies.length} celestial bodies, ${recalcResult.cyclesCompleted} completed cycles`);
 
   // 6. Mark converted orders in DCA state so dashboard no longer shows them
-  const dcaState = loadState(null, exchange);
+  const dcaState = loadState(null, exchange, pair);
   const convertedOrderIds = new Set([
     ...pending.map(o => o.orderId),
     ...filled.map(o => o.orderId),
@@ -310,8 +355,8 @@ const executeConversion = (exchange) => {
       migratedCount++;
     }
   }
-  saveState(dcaState, exchange);
-  log('INFO', `🧹 [${exchange}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
+  saveState(dcaState, exchange, pair);
+  log('INFO', `🧹 [${fundLabel(exchange, pair)}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
 
   return {
     success: true,
@@ -334,19 +379,19 @@ const executeConversion = (exchange) => {
  * Merge DCA positions into an existing regime state (non-destructive)
  * Unlike executeConversion, this preserves existing celestial bodies, regime state, and optimizers.
  * @param {string} exchange
+ * @param {string} [pair] - Fund pair; defaults to the exchange's default pair
  * @returns {{ success: boolean, backupDir: string, summary: Object }}
  */
-const mergeToRegime = (exchange) => {
-  const dataDir = getExchangeDataDir(exchange);
-  const { backupSuffix, backedUpFiles } = backupConversionFiles(dataDir);
-
-  // 1. Backup existing state files
-  log('INFO', `💾 [${exchange}] DCA merge backup: ${backedUpFiles.join(', ')} → ${backupSuffix}`);
+const mergeToRegime = (exchange, pair) => {
+  // 1. Backup existing state files. Throws before anything is mutated when
+  // there is nothing to roll back to.
+  const { backupSuffix, backedUpFiles } = backupConversionFiles(exchange, pair);
+  log('INFO', `💾 [${fundLabel(exchange, pair)}] DCA merge backup: ${backedUpFiles.join(', ')} → ${backupSuffix}`);
 
   // 2. Load existing regime state and DCA state
-  const existingState = loadRegimeState(exchange);
+  const existingState = loadRegimeState(exchange, pair);
   const position = existingState.position;
-  const state = loadState(null, exchange);
+  const state = loadState(null, exchange, pair);
   const orders = state.orders || [];
   const { pending, filled } = categorizeOrders(orders);
 
@@ -359,11 +404,12 @@ const mergeToRegime = (exchange) => {
   // filesystem-level message.
   let fillLedger;
   try {
-    fillLedger = createFillLedger(exchange);
+    // `pair` doubles as the productId — see executeConversion above.
+    fillLedger = createFillLedger(exchange, pair, pair);
   } catch (err) {
-    log('ERROR', `❌ [${exchange}] Fill ledger init failed during DCA merge: ${err.message}`);
+    log('ERROR', `❌ [${fundLabel(exchange, pair)}] Fill ledger init failed during DCA merge: ${err.message}`);
     // Sanitized message — see executeConversion's catch above for rationale.
-    throw new Error(`Fill ledger init failed for ${exchange} during DCA merge — see engine logs for details`);
+    throw new Error(`Fill ledger init failed for ${fundLabel(exchange, pair)} during DCA merge — see engine logs for details`);
   }
 
   // Ingest filled (completed) DCA orders as completed cycle fills
@@ -429,10 +475,10 @@ const mergeToRegime = (exchange) => {
   }
 
   fillLedger.persist();
-  log('INFO', `📝 [${exchange}] Fill ledger merge: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
+  log('INFO', `📝 [${fundLabel(exchange, pair)}] Fill ledger merge: ${filledIngested} filled + ${pendingIngested} pending orders ingested`);
 
   // 4. Create celestial bodies from pending DCA orders
-  const regimeConfig = getRegimeConfig(exchange);
+  const regimeConfig = getRegimeConfig(exchange, pair);
   const maxUsdcDeployed = regimeConfig.maxUsdcDeployed || 500;
   const newBodies = [];
 
@@ -489,11 +535,11 @@ const mergeToRegime = (exchange) => {
   position.depositedCapital = (position.depositedCapital || 0) + (state.totalAllocated || 0);
 
   // 10. Save regime state (preserving existing regime, tpOptimizer, sizeOptimizer)
-  saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer);
-  log('INFO', `🔗 [${exchange}] Regime state merged: +${newBodies.length} celestial bodies (total: ${position.celestialBodies.length})`);
+  saveRegimeState(position, existingState.regime, exchange, existingState.tpOptimizer, existingState.sizeOptimizer, pair);
+  log('INFO', `🔗 [${fundLabel(exchange, pair)}] Regime state merged: +${newBodies.length} celestial bodies (total: ${position.celestialBodies.length})`);
 
   // 11. Mark converted orders in DCA state
-  const dcaState = loadState(null, exchange);
+  const dcaState = loadState(null, exchange, pair);
   const convertedOrderIds = new Set([
     ...pending.map(o => o.orderId),
     ...filled.map(o => o.orderId),
@@ -505,8 +551,8 @@ const mergeToRegime = (exchange) => {
       migratedCount++;
     }
   }
-  saveState(dcaState, exchange);
-  log('INFO', `🧹 [${exchange}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
+  saveState(dcaState, exchange, pair);
+  log('INFO', `🧹 [${fundLabel(exchange, pair)}] DCA state cleanup: ${migratedCount} orders marked as migrated_to_regime`);
 
   return {
     success: true,

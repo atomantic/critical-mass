@@ -1188,7 +1188,7 @@ ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
   const { previewConversion, executeConversion, mergeToRegime } = require('../src/dca-converter');
 
   if (preview) {
-    return { success: true, preview: true, exchange, pair: resolvedPair, ...previewConversion(exchange) };
+    return { success: true, preview: true, exchange, pair: resolvedPair, ...previewConversion(exchange, resolvedPair) };
   }
 
   // executeConversion re-enables the DCA engine on its own throw path
@@ -1198,7 +1198,7 @@ ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
   // structured {success:false} response the rest of the IPC API uses.
   let result;
   try {
-    result = merge ? mergeToRegime(exchange) : executeConversion(exchange);
+    result = merge ? mergeToRegime(exchange, resolvedPair) : executeConversion(exchange, resolvedPair);
   } catch (err) {
     return { success: false, exchange, pair: resolvedPair, error: err.message };
   }
