@@ -68,10 +68,10 @@ function ModalDialog({ onClose, labelledBy, describedBy, dismissible = true, max
   }, [])
 
   const handleBackdropClick = (event) => {
-    // The dialog element's own box covers the backdrop area outside the
-    // rendered content (which lives in a child wrapper via `children`), so
-    // a click landing directly on it — not on any descendant — is a
-    // backdrop click.
+    // The <dialog> box is sized to exactly match its single child (the
+    // padded wrapper below), so a click whose target is the dialog itself —
+    // rather than the wrapper or anything inside it — landed on the
+    // ::backdrop area outside the visible card, i.e. a real backdrop click.
     if (event.target === dialogRef.current && dismissibleRef.current) {
       dialogRef.current?.close()
     }
@@ -83,9 +83,9 @@ function ModalDialog({ onClose, labelledBy, describedBy, dismissible = true, max
       aria-labelledby={labelledBy}
       aria-describedby={describedBy}
       onClick={handleBackdropClick}
-      className={`bg-gray-800 border border-gray-600 rounded-lg p-6 ${maxWidthClassName} w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto backdrop:bg-black/60 ${className}`}
+      className={`bg-gray-800 border border-gray-600 rounded-lg ${maxWidthClassName} w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto backdrop:bg-black/60 ${className}`}
     >
-      {children}
+      <div className="p-6">{children}</div>
     </dialog>
   )
 }
