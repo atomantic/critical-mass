@@ -197,7 +197,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
         addToast({
           type: 'success',
           title: 'Positions Exported to Regime',
-          message: `${data.summary?.pendingOrders || 0} positions exported. Start the regime engine to place sell orders.`,
+          message: `${data.summary?.pendingOrders || 0} positions exported. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.`,
         })
         onRefresh?.()
       },
@@ -534,8 +534,8 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             <h3 className="text-white text-lg font-medium mb-3">Export to Regime Engine</h3>
             <p className="text-gray-300 text-sm mb-4">
               {convertPreview.merge
-                ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}).`
-                : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state.`}
+                ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`
+                : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`}
             </p>
             <div className="bg-gray-900 rounded-lg p-3 mb-4 text-sm space-y-1.5">
               <div className="flex justify-between">
@@ -558,7 +558,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
               )}
             </div>
             <p className="text-gray-500 text-xs mb-4">
-              New sell orders will be placed automatically when the regime engine is started.
+              Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.
             </p>
             <div className="flex justify-end gap-3">
               <button
