@@ -177,6 +177,14 @@ function BackupRestore() {
         // Nothing was written. Keep the target selected and offer the override.
         blocked = data.unconfirmed || []
         setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
+      } else if (data.code === 'restore-incomplete-recovery') {
+        // The application failed AND could not be rolled back: data/ is a mix of
+        // archive-era and current-era files. Say so plainly — the recovery
+        // artifacts are retained and every startup retries the rollback (#431).
+        setMessage({
+          type: 'error',
+          text: `${data.error || 'Restore failed and could not be rolled back.'} Do NOT start engines: restart the gateway to retry the rollback, and keep the retained recovery files until it succeeds.`,
+        })
       } else {
         setMessage({ type: 'error', text: `Restore failed: ${data.error || 'Unknown error'}` })
       }

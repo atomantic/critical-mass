@@ -5,8 +5,9 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
-const { log } = require('./src/logger');
+const { log, createContextLogger } = require('./src/logger');
 const { runMigrationIfNeeded } = require('./src/migration');
+const { guardIncompleteRestore } = require('./src/restore-apply');
 const {
   getExchangeConfig,
   getEnabledExchanges,
@@ -42,6 +43,13 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { createOperatorAuth } = require('./src/operator-auth');
 const { resolveListenHosts, isGatewayOrigin } = require('./src/gateway-listen');
+
+// A backup restore that a crash interrupted leaves data/ as a mix of
+// archive-era and current-era files. Finish its rollback BEFORE anything reads
+// persisted state (migration included) — and refuse to start at all if the
+// rollback cannot complete, rather than serving mismatched accounting data
+// (issue #431).
+guardIncompleteRestore({ processLabel: 'gateway', logger: createContextLogger({ module: 'server' }) });
 
 // Run migration on startup
 runMigrationIfNeeded();
