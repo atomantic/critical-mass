@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-358] Fund summary aggregation extracted into domain module** — Extract fill ledger aggregation logic from exchange route handler into pure `buildFundSummary` function in `src/fund-summary.js` with dedicated unit tests, enabling reuse by other components and eliminating transport-domain entanglement.
 - **[issue-353] Cycle summary calculations consolidated in fill-ledger** — Extract the duplicated 40-line cycle statistics derivation into a single module-level helper (computeCycleStats) to fix the high drift risk from manual code duplication and eliminate hidden dependencies between recalculateCycles and rebuildPositionFromFills.
 - **[issue-350] UpDown signal action resolution unified across server and client** — Consolidate UpDown action classification logic from two independent implementations into a single shared module, reconciling contracts for null/undefined signals ('CALCULATING...'), action string passthrough (OPEN|ADD|HOLD|CLOSE), and chronological history relabeling.
 - **[issue-354] Remove unreferenced legacy admin UI components** — Deleted three unused React components (IndicatorCharts, MiniPriceSparkline, OrbitalRing) totaling 512 lines of dead code, reducing cognitive friction and build overhead.

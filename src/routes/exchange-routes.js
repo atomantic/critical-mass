@@ -4,6 +4,7 @@
  */
 
 const stateTracker = require('../state-tracker');
+const { buildFundSummary } = require('../fund-summary');
 const {
   getExchangeConfig,
   getFundConfig,
@@ -453,97 +454,9 @@ module.exports = (app, deps) => {
     const { exchange } = req.params;
     const { pair, error } = validatePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
-    const config = getFundConfig(exchange, pair);
 
-    const { loadRegimeState } = require('../state-tracker');
-    const { getCachedFillLedger } = require('../fill-ledger');
-    const regimeState = loadRegimeState(exchange, pair);
-    const position = regimeState.position || {};
-    // Read-only, cached: this endpoint is polled every 30s by the dashboard.
-    // Reconstructing (and re-parsing the multi-MB ledger) on each poll blocks
-    // the gateway event loop; the cache reloads only on file change (#183).
-    const fillLedger = getCachedFillLedger(exchange, config.productId, pair);
-    const allFills = fillLedger.getAllFills();
-
-    const buyFills = allFills.filter(f => f.side === 'buy');
-    const sellFills = allFills.filter(f => f.side === 'sell');
-    const totalBought = buyFills.reduce((s, f) => s + (f.quoteAmount || 0), 0);
-    const totalSold = sellFills.reduce((s, f) => s + (f.quoteAmount || 0), 0);
-    const totalAssetBought = buyFills.reduce((s, f) => s + (f.size || 0), 0);
-    const totalAssetSold = sellFills.reduce((s, f) => s + (f.size || 0), 0);
-    const totalFees = allFills.reduce((s, f) => s + (f.netFee || 0), 0);
-
-    const derived = fillLedger.getDerivedRealizedPnL();
-
-    // Cost basis breakdown derived from regime bodies (pending = on TP orders;
-    // reserves = accumulated holdback not currently in a body).
-    const bodies = position.celestialBodies || [];
-    const pendingCostBasis = bodies.reduce((s, b) => s + (b.costBasis || 0), 0);
-    const pendingAsset = bodies.reduce((s, b) => s + (b.assetQty || 0), 0);
-    const totalCostBasis = totalBought; // gross capital ever deployed on buys
-    const avgCostPerAsset = totalAssetBought > 0 ? totalCostBasis / totalAssetBought : 0;
-    // Reserves are zero-cost in the cycle-pair model (their cost was attributed
-    // to the paired sell), but the dashboard's "reserves cost basis" panel
-    // expects an avg-cost figure for display only. Use running avg.
-    const reservesAsset = derived.realizedAssetPnL;
-    const reservesCostBasis = reservesAsset * avgCostPerAsset;
-
-    // Map regime shape onto the legacy `state` shape Dashboard.jsx expects.
-    const state = {
-      usdcFundSize: position.depositedCapital || 0,
-      assetReserves: reservesAsset,
-      outstandingOrdersUSDC: bodies.reduce((s, b) => s + (b.assetQty || 0) * (b.tpPrice || 0), 0),
-      outstandingOrdersAsset: position.assetOnOrder || 0,
-      totalAllocated: position.depositedCapital || 0,
-      totalFees,
-      totalRebates: 0,
-      netFees: totalFees,
-      totalIntervalsRun: position.cyclesCompleted || 0,
-      orders: [], // legacy DCA-style orders; regime engine doesn't use this shape
-    };
-
-    res.json({
-      exchange,
-      config,
-      state,
-      stats: {
-        totalBuys: buyFills.length,
-        totalSells: sellFills.length,
-        pendingOrders: (position.pendingEntryOrders || []).length,
-        totalBought,
-        totalSold,
-        totalBTCBought: totalAssetBought,
-        totalBTCSold: totalAssetSold,
-        totalFees,
-        totalRebates: 0,
-        netFees: totalFees,
-        assetReserves: state.assetReserves,
-        usdcFundSize: state.usdcFundSize,
-        outstandingOrdersUSDC: state.outstandingOrdersUSDC,
-        outstandingOrdersAsset: state.outstandingOrdersAsset,
-        allocationUsed: state.totalAllocated,
-        allocationRemaining: (config.totalAllocation || state.totalAllocated || 0) - state.totalAllocated,
-        intervalsRun: state.totalIntervalsRun,
-        realizedProfit: derived.realizedPnL,
-        // Diagnostic: sells with no paired buys (e.g. manual sells, recovery
-        // sells with no linkage). Their proceeds are not counted in realizedPnL.
-        unpairedSellQty: derived.unpairedSellQty || 0,
-      },
-      costBasis: {
-        totalCostBasis,
-        totalAssetBought,
-        avgCostPerAsset,
-        reservesAsset,
-        reservesCostBasis,
-        reservesAvgCost: reservesAsset > 0 ? reservesCostBasis / reservesAsset : 0,
-        pendingAsset,
-        pendingCostBasis,
-        pendingAvgCost: pendingAsset > 0 ? pendingCostBasis / pendingAsset : 0,
-        orderBreakdown: [],
-      },
-      nextTrade: { nextRunTime: null, intervalsRemaining: 0, allocationRemaining: 0 },
-      transactions: [], // legacy DCA transaction log no longer maintained
-    });
+    const summary = buildFundSummary(exchange, pair);
+    res.json(summary);
   });
 
   // Get candles for an exchange/fund (for charts)
