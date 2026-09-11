@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3 } from 'lucide-react'
+import { Play, Square, RotateCcw, Volume2, VolumeX, BarChart3, Crosshair, FileText, ChevronDown, ChevronUp } from 'lucide-react'
 import { useUpDownSocket } from '../../hooks/useUpDownSocket'
 import PriceChart from './PriceChart'
 import ContractSetup from './ContractSetup'
@@ -12,6 +12,7 @@ import TradeHistory from './TradeHistory'
 import ScorecardPanel from './ScorecardPanel'
 import TimeWarningBanner, { parseExpiry } from './TimeWarningBanner'
 import { isFreshTick } from './position-tracker-math'
+import { SECTION_IDS, focusSection } from './dashboard-layout'
 import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 
@@ -35,6 +36,29 @@ export default function UpDownDashboard() {
   const [error, setError] = useState(null)
   const prevSignalRef = useRef(null)
   const [signalAnnotations, setSignalAnnotations] = useState([])
+
+  // Contract Setup starts collapsed; the shortcut expands (if needed) and
+  // scrolls/focuses it. A token (rather than just `setupOpen`) drives the
+  // scroll/focus effect so a repeat click still jumps back even when the
+  // section is already open.
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [setupJumpToken, setSetupJumpToken] = useState(0)
+  const positionSectionRef = useRef(null)
+  const setupSectionRef = useRef(null)
+
+  const jumpToPosition = useCallback(() => {
+    focusSection(positionSectionRef.current)
+  }, [])
+
+  const jumpToSetup = useCallback(() => {
+    setSetupOpen(true)
+    setSetupJumpToken(token => token + 1)
+  }, [])
+
+  // Focus/scroll the setup section once it's open (and mounted-visible).
+  useEffect(() => {
+    if (setupJumpToken > 0) focusSection(setupSectionRef.current)
+  }, [setupJumpToken])
 
   const seededRef = useRef(false)
   const fetchStatus = useCallback(async () => {
@@ -258,7 +282,67 @@ export default function UpDownDashboard() {
 
       <TimeWarningBanner timeRemaining={timeRemaining} expiry={status?.contract?.expiry} />
 
-      {/* TimeframeGrid/Signal + Price Chart/Trade History + Scorecard/Position */}
+      {/* Above-the-fold shortcuts: jump straight to the operational controls
+          without traversing signal history or charts. */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={jumpToPosition}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium text-purple-300 hover:text-purple-200 transition-colors"
+        >
+          <Crosshair size={14} />
+          Position
+        </button>
+        <button
+          onClick={jumpToSetup}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs font-medium text-blue-300 hover:text-blue-200 transition-colors"
+        >
+          <FileText size={14} />
+          Contract Setup
+        </button>
+      </div>
+
+      {/* Operational section: current signal + position first, on both
+          desktop and mobile. Contract Setup starts collapsed. */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 flex flex-col gap-4">
+          <SignalBanner
+            signal={signal || status?.latestSignal}
+            indicators={liveIndicators}
+            timeRemaining={msLeft}
+            position={status?.position}
+          />
+          <div ref={positionSectionRef} id={SECTION_IDS.position} tabIndex={-1}>
+            <PositionTracker
+              initialPosition={status?.position}
+              currentPrice={currentPrice}
+              contractPnl={tickFresh ? tick?.pnl?.pnl : null}
+              priceFresh={priceFresh}
+            />
+          </div>
+        </div>
+        <div ref={setupSectionRef} id={SECTION_IDS.contractSetup} tabIndex={-1} className="flex flex-col gap-2">
+          <button
+            onClick={() => setSetupOpen(open => !open)}
+            aria-expanded={setupOpen}
+            aria-controls="updown-contract-setup-panel"
+            className="w-full flex items-center justify-between px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium text-gray-200 transition-colors"
+          >
+            <span className="flex items-center gap-2">
+              <FileText size={14} className="text-blue-400" />
+              Contract Setup
+            </span>
+            {setupOpen ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
+          </button>
+          {/* ContractSetup stays mounted at all times so its unsaved form
+              values survive collapsing, and toggling never issues a write. */}
+          <div id="updown-contract-setup-panel" hidden={!setupOpen}>
+            <ContractSetup initialContract={status?.contract} />
+          </div>
+        </div>
+      </div>
+
+      {/* Historical analysis: trade history, timeframe detail charts and the
+          scorecard render after the operational section. */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <div className="flex flex-col gap-4">
           <TimeframeGrid indicators={rawIndicators} tickMomentum={tick?.tickMomentum} />
@@ -276,22 +360,9 @@ export default function UpDownDashboard() {
           />
         </div>
         <div className="flex flex-col gap-4">
-          <SignalBanner
-            signal={signal || status?.latestSignal}
-            indicators={liveIndicators}
-            timeRemaining={msLeft}
-            position={status?.position}
-          />
           <ScorecardPanel
             scorecard={socketScorecard || status?.scorecard}
             perp={rawIndicators?.perp || tick?.perp || status?.perp}
-          />
-          <ContractSetup initialContract={status?.contract} />
-          <PositionTracker
-            initialPosition={status?.position}
-            currentPrice={currentPrice}
-            contractPnl={tickFresh ? tick?.pnl?.pnl : null}
-            priceFresh={priceFresh}
           />
         </div>
       </div>
