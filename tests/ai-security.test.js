@@ -113,6 +113,40 @@ describe('AI toolkit security boundary', () => {
     ]);
   });
 
+  it('rejects prompt stage names with path traversal sequences', async () => {
+    const traversal = '../../../README';
+
+    const getTemplate = await callMiddleware(security.guardPrompts, { method: 'GET', path: `/stages/${traversal}/template` });
+    assert.equal(getTemplate.res.statusCode, 400);
+    assert.match(getTemplate.res.body.error, /Stage name must contain only/);
+
+    const put = await callMiddleware(security.guardPrompts, { method: 'PUT', path: `/stages/${traversal}`, body: { template: 'x' } });
+    assert.equal(put.res.statusCode, 400);
+
+    const del = await callMiddleware(security.guardPrompts, { method: 'DELETE', path: `/stages/${traversal}` });
+    assert.equal(del.res.statusCode, 400);
+
+    const encoded = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/stages/..%2F..%2F..%2FREADME/template' });
+    assert.equal(encoded.res.statusCode, 400);
+
+    const create = await callMiddleware(security.guardPrompts, { method: 'POST', path: '/stages', body: { name: traversal } });
+    assert.equal(create.res.statusCode, 400);
+  });
+
+  it('allows normal prompt stage requests through unmodified', async () => {
+    const list = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/stages' });
+    assert.equal(list.next, true);
+
+    const get = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/stages/summarize' });
+    assert.equal(get.next, true);
+
+    const create = await callMiddleware(security.guardPrompts, { method: 'POST', path: '/stages', body: { name: 'summarize' } });
+    assert.equal(create.next, true);
+
+    const variables = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/variables' });
+    assert.equal(variables.next, true);
+  });
+
   it('normalizes allowed workspaces and blocks escapes', async () => {
     assert.equal(resolveWorkspace('.', [process.cwd()]), process.cwd());
     const outside = resolveWorkspace(os.tmpdir(), [path.join(process.cwd(), 'data')]);
