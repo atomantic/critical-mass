@@ -13,6 +13,13 @@ export function formatCurrency(value) {
   return `$${(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+// Full currency format via Intl.NumberFormat (locale-standard negative sign placement,
+// e.g. "-$5.00" instead of formatCurrency's "$-5.00"). Renders '---' for null/undefined.
+export function formatCurrencyIntl(value) {
+  if (value == null) return '---'
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
+}
+
 // Smart price format - adjusts decimals based on price magnitude
 // For high prices like BTC ($100k): 2 decimals
 // For low prices like CRO ($0.10): up to 5 decimals
@@ -23,6 +30,22 @@ export function formatPrice(value) {
   if (absValue >= 1) return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
   if (absValue >= 0.01) return `$${value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 5 })}`
   return `$${value.toLocaleString('en-US', { minimumFractionDigits: 5, maximumFractionDigits: 8 })}`
+}
+
+// Dynamic decimal count for a price, by magnitude tier (2/4/5 decimals).
+// Distinct from formatPrice's own magnitude breakpoints below — used by formatPriceByMagnitude.
+export function getPriceDecimals(price) {
+  if (!price || price >= 100) return 2
+  if (price >= 1) return 4
+  return 5
+}
+
+// Price formatted with getPriceDecimals' fixed decimal count and no currency symbol
+// (callers that prepend their own "$"). Renders '-' for null/NaN.
+export function formatPriceByMagnitude(price) {
+  if (price == null || isNaN(price)) return '-'
+  const d = getPriceDecimals(price)
+  return price.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
 // Compact price format for axes/charts
@@ -36,9 +59,12 @@ export function formatPriceCompact(value) {
   return `$${value.toFixed(5)}`
 }
 
-// Asset format (default: BTC)
-export function formatAsset(value, currency = 'BTC') {
-  return `${(value || 0).toFixed(8)} ${currency}`
+// Asset format. Pass `currency` to append a unit suffix (omit/empty for a bare number).
+// `stripTrailingZeros` drops trailing zeros from the 8-decimal value (e.g. "0.5" instead of "0.50000000").
+export function formatAsset(value, currency = '', { stripTrailingZeros = false } = {}) {
+  const fixed = (value || 0).toFixed(8)
+  const formatted = stripTrailingZeros ? String(parseFloat(fixed)) : fixed
+  return currency ? `${formatted} ${currency}` : formatted
 }
 
 // Short asset format for axes

@@ -7,7 +7,7 @@
  */
 
 const { tradeEvents } = require('./trade-events');
-const { getNotificationConfig, getConfiguredExchanges, getRegimeConfig, getBaseCurrency } = require('./config-utils');
+const { getNotificationConfig, getConfiguredFunds, getFundConfig, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 
@@ -20,6 +20,27 @@ const notifierLogger = createContextLogger({ module: 'notifier' });
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 const MAX_MESSAGE_LENGTH = 4000;
+
+/**
+ * Characters reserved by Telegram's legacy Markdown parse_mode. Trade event
+ * messages built by regime-engine/risk-manager are plain text, not intentional
+ * markdown, so an unescaped `[`, `]`, `_`, `*`, or `` ` `` (e.g. "[DRY-RUN]",
+ * "usdc_cap_exceeded") makes Telegram's parser reject the whole sendMessage
+ * call with a 400 "can't parse entities" error, silently dropping delivery.
+ */
+const TELEGRAM_MARKDOWN_RESERVED_RE = /[_*`[\]]/g;
+
+/**
+ * Escape Telegram Markdown v1 reserved characters by prepending a backslash,
+ * so plain-text event messages render literally instead of breaking the
+ * parser or being interpreted as (possibly unbalanced) formatting.
+ * @param {unknown} text
+ * @returns {string}
+ */
+const escapeTelegramMarkdown = (text) => {
+  if (typeof text !== 'string') return '';
+  return text.replace(TELEGRAM_MARKDOWN_RESERVED_RE, '\\$&');
+};
 
 /**
  * Event emoji map
@@ -67,6 +88,96 @@ const CRITICAL_EVENTS = new Set([
 ]);
 
 /**
+ * Build the daily-summary lines for one fund. Pure with respect to its
+ * inputs (no disk/network access) so the multi-fund formatting logic is
+ * unit-testable without mocking the whole config/state layer.
+ * @param {string} exchange
+ * @param {string} pair
+ * @param {Object} state - `loadRegimeState(exchange, pair)` result
+ * @param {Object} fundConfig - `getFundConfig(exchange, pair)` result
+ * @returns {string[]}
+ */
+const formatFundSummaryLines = (exchange, pair, state, fundConfig) => {
+  const regime = state.regime?.mode || 'N/A';
+  const pos = state.position || {};
+  const assetQty = pos.totalAsset || 0;
+  const pnl = pos.realizedPnL || 0;
+  const cycles = pos.cyclesCompleted || 0;
+  const buys = pos.cycleBuys || 0;
+  const asset = getBaseCurrency(fundConfig?.productId);
+
+  return [
+    `*${exchange}* ${pair} (${regime})`,
+    `  Position: ${assetQty.toFixed(8)} ${asset}`,
+    `  Realized P&L: $${pnl.toFixed(2)}`,
+    `  Cycles: ${cycles}, Current buys: ${buys}`,
+    '',
+  ];
+};
+
+/**
+ * Check whether `now` falls inside the configured quiet-hours window.
+ * Pure function of config + a Date (defaulting to the real clock at call
+ * time) so the overnight-range branch (`start > end`, e.g. 23-7) is
+ * independently testable without real timers.
+ * @param {{enabled: boolean, start: number, end: number}} quietHours
+ * @param {Date} [now]
+ * @returns {boolean}
+ */
+const isQuietHours = (quietHours, now = new Date()) => {
+  if (!quietHours.enabled) return false;
+  const hour = now.getHours();
+  const { start, end } = quietHours;
+  // Handle overnight ranges (e.g., 23-7)
+  if (start > end) {
+    return hour >= start || hour < end;
+  }
+  return hour >= start && hour < end;
+};
+
+/**
+ * Decide whether an event type should be delivered right now. Pure function
+ * of the full notification config + event type, so the gating order
+ * (operator event-toggle checked *before* the quiet-hours/critical-bypass
+ * check) is independently testable and pinned against regression.
+ * @param {Object} config - Full notification config (`getNotificationConfig()` shape)
+ * @param {string} eventType
+ * @param {Date} [now]
+ * @returns {boolean}
+ */
+const shouldSendEvent = (config, eventType, now = new Date()) => {
+  if (!config.enabled) return false;
+  if (!config.telegram.botToken || !config.telegram.chatId) return false;
+
+  // Check event toggle
+  if (config.events[eventType] === false) return false;
+
+  // Quiet hours check - critical events bypass
+  if (isQuietHours(config.quietHours, now) && !CRITICAL_EVENTS.has(eventType)) return false;
+
+  return true;
+};
+
+/**
+ * Compute the delay (ms) until the next occurrence of `hour:00` local time,
+ * rolling to tomorrow when that time has already passed today. Pure
+ * function of hour + now so scheduleDailySummary's two branches
+ * ("target already passed" vs "target still ahead") are independently
+ * testable without real timers.
+ * @param {number} hour - Target hour in [0, 23]
+ * @param {Date} [now]
+ * @returns {number} Non-negative delay in milliseconds
+ */
+const computeDailySummaryDelay = (hour, now = new Date()) => {
+  const target = new Date(now);
+  target.setHours(hour, 0, 0, 0);
+  if (target <= now) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target.getTime() - now.getTime();
+};
+
+/**
  * Create a notifier instance
  * @returns {Object} Notifier instance
  */
@@ -90,48 +201,17 @@ const createNotifier = () => {
   };
 
   /**
-   * Check if currently in quiet hours
-   * @returns {boolean}
-   */
-  const isQuietHours = () => {
-    if (!config.quietHours.enabled) return false;
-    const hour = new Date().getHours();
-    const { start, end } = config.quietHours;
-    // Handle overnight ranges (e.g., 23-7)
-    if (start > end) {
-      return hour >= start || hour < end;
-    }
-    return hour >= start && hour < end;
-  };
-
-  /**
-   * Check if an event should be sent
-   * @param {string} eventType
-   * @returns {boolean}
-   */
-  const shouldSendEvent = (eventType) => {
-    if (!config.enabled) return false;
-    if (!config.telegram.botToken || !config.telegram.chatId) return false;
-
-    // Check event toggle
-    if (config.events[eventType] === false) return false;
-
-    // Quiet hours check - critical events bypass
-    if (isQuietHours() && !CRITICAL_EVENTS.has(eventType)) return false;
-
-    return true;
-  };
-
-  /**
    * Format a trade event into a Telegram message
    * @param {Object} event - Trade event
    * @returns {string}
    */
   const formatEvent = (event) => {
     const emoji = EVENT_EMOJI[event.type] || 'ℹ️';
+    // event.exchange is an internal identifier (e.g. "coinbase"), not
+    // user/feed-derived text, so it's safe to wrap in bold unescaped.
     const exchange = event.exchange ? `*${event.exchange}*` : '';
     const lines = [`${emoji} ${exchange}`];
-    lines.push(event.message);
+    lines.push(escapeTelegramMarkdown(event.message));
     return lines.join('\n');
   };
 
@@ -240,7 +320,7 @@ const createNotifier = () => {
    * @param {Object} event
    */
   const handleTradeEvent = (event) => {
-    if (!shouldSendEvent(event.type)) return;
+    if (!shouldSendEvent(config, event.type)) return;
     const text = formatEvent(event);
     enqueue(text);
   };
@@ -254,14 +334,7 @@ const createNotifier = () => {
       dailySummaryTimer = null;
     }
 
-    const now = new Date();
-    const target = new Date();
-    target.setHours(config.dailySummaryHour, 0, 0, 0);
-    if (target <= now) {
-      target.setDate(target.getDate() + 1);
-    }
-
-    const delay = target.getTime() - now.getTime();
+    const delay = computeDailySummaryDelay(config.dailySummaryHour);
     dailySummaryTimer = setTimeout(() => {
       // setTimeout callback: a throw in sendDailySummary would crash the
       // process and skip the reschedule, silently killing all future
@@ -288,23 +361,14 @@ const createNotifier = () => {
     const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     const lines = [`📊 *Daily Summary* (${date})\n`];
 
-    const exchanges = getConfiguredExchanges();
-    for (const exchange of exchanges) {
-      const state = loadRegimeState(exchange);
-      const regime = state.regime?.mode || 'N/A';
-      const pos = state.position || {};
-      const assetQty = pos.totalAsset || 0;
-      const pnl = pos.realizedPnL || 0;
-      const cycles = pos.cyclesCompleted || 0;
-      const buys = pos.cycleBuys || 0;
-      const regimeConfig = getRegimeConfig(exchange);
-      const asset = getBaseCurrency(regimeConfig.productId);
-
-      lines.push(`*${exchange}* (${regime})`);
-      lines.push(`  Position: ${assetQty.toFixed(8)} ${asset}`);
-      lines.push(`  Realized P&L: $${pnl.toFixed(2)}`);
-      lines.push(`  Cycles: ${cycles}, Current buys: ${buys}`);
-      lines.push('');
+    // Iterate configured FUNDS (exchange+pair), not just exchanges — an
+    // exchange can carry multiple funds (e.g. BTC-USDC and ETH-USDC), and
+    // productId lives on the fund config block, not the regime config.
+    const funds = getConfiguredFunds();
+    for (const { exchange, pair } of funds) {
+      const state = loadRegimeState(exchange, pair);
+      const fundConfig = getFundConfig(exchange, pair);
+      lines.push(...formatFundSummaryLines(exchange, pair, state, fundConfig));
     }
 
     // Add notification stats
@@ -387,6 +451,11 @@ const createNotifier = () => {
       start(getEngines);
     } else if (!config.enabled && wasRunning) {
       stop();
+    } else if (wasRunning) {
+      // Already running: `start()` only re-subscribes/reschedules on an
+      // enabled-transition, so a live dailySummaryHour change would
+      // otherwise sit unused until the process restarts (issue #426).
+      scheduleDailySummary();
     }
   };
 
@@ -452,4 +521,12 @@ const createNotifier = () => {
   };
 };
 
-module.exports = { createNotifier };
+module.exports = {
+  createNotifier,
+  escapeTelegramMarkdown,
+  formatFundSummaryLines,
+  isQuietHours,
+  shouldSendEvent,
+  computeDailySummaryDelay,
+  CRITICAL_EVENTS,
+};

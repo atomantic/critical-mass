@@ -2,7 +2,7 @@ import { getIntervalMs } from '../utils/intervals.mjs'
 import { useState, useEffect, useCallback } from 'react'
 import ActivityFeed from './ActivityFeed'
 import { useToast } from './Toast'
-import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import { runDashboardAction } from '../utils/dashboardAction.mjs'
@@ -197,7 +197,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
         addToast({
           type: 'success',
           title: 'Positions Exported to Regime',
-          message: `${data.summary?.pendingOrders || 0} positions exported. Start the regime engine to place sell orders.`,
+          message: `${data.summary?.pendingOrders || 0} positions exported. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.`,
         })
         onRefresh?.()
       },
@@ -219,8 +219,9 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
   const totalAssetHeld = (state.assetReserves || 0) + (state.outstandingOrdersAsset || 0)
   const totalAssetCostBasis = (costBasis?.reservesCostBasis || 0) + (costBasis?.pendingCostBasis || 0)
 
-  // formatCurrency for balances/totals, formatPrice for prices
-  const formatAsset = (n) => `${parseFloat((n || 0).toFixed(8))} ${baseCurrency}`
+  // formatCurrency for balances/totals, formatPrice for prices.
+  // Local wrapper preserves this page's trailing-zero-stripped "0.5 BTC" rendering.
+  const formatAssetHeld = (n) => formatAsset(n, baseCurrency, { stripTrailingZeros: true })
 
   return (
     <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 overflow-hidden">
@@ -285,19 +286,19 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
               <div className="grid grid-cols-3 gap-2 text-xs">
                 <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Pending Sale</div>
-                  <div className="text-yellow-400 font-semibold truncate">{formatAsset(state.outstandingOrdersAsset || 0)}</div>
+                  <div className="text-yellow-400 font-semibold truncate">{formatAssetHeld(state.outstandingOrdersAsset || 0)}</div>
                   <div className="text-gray-500 truncate">Cost: {formatCurrency(costBasis?.pendingCostBasis || 0)}</div>
                   <div className="text-green-400 truncate">Exp: {formatCurrency(state.outstandingOrdersUSDC || 0)}</div>
                 </div>
                 <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Reserves</div>
-                  <div className="text-orange-400 font-semibold truncate">{formatAsset(state.assetReserves || 0)}</div>
+                  <div className="text-orange-400 font-semibold truncate">{formatAssetHeld(state.assetReserves || 0)}</div>
                   <div className="text-gray-500 truncate">Cost: {formatCurrency(costBasis?.reservesCostBasis || 0)}</div>
                   <div className="text-gray-500 truncate">Val: {formatCurrency(assetValue)}</div>
                 </div>
                 <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Total {baseCurrency}</div>
-                  <div className="text-purple-400 font-semibold truncate">{formatAsset(totalAssetHeld)}</div>
+                  <div className="text-purple-400 font-semibold truncate">{formatAssetHeld(totalAssetHeld)}</div>
                   <div className="text-gray-500 truncate">Cost: {formatCurrency(totalAssetCostBasis)}</div>
                   <div className="text-gray-500 truncate">Avg: {formatPrice(totalAssetHeld > 0 ? totalAssetCostBasis / totalAssetHeld : 0)}/{baseCurrency}</div>
                 </div>
@@ -533,8 +534,8 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             <h3 className="text-white text-lg font-medium mb-3">Export to Regime Engine</h3>
             <p className="text-gray-300 text-sm mb-4">
               {convertPreview.merge
-                ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}).`
-                : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state.`}
+                ? `Merge ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} ${baseCurrency}). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`
+                : `Export ${convertPreview.pending} DCA position${convertPreview.pending !== 1 ? 's' : ''} to a new regime engine state. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open.`}
             </p>
             <div className="bg-gray-900 rounded-lg p-3 mb-4 text-sm space-y-1.5">
               <div className="flex justify-between">
@@ -557,7 +558,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
               )}
             </div>
             <p className="text-gray-500 text-xs mb-4">
-              New sell orders will be placed automatically when the regime engine is started.
+              Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.
             </p>
             <div className="flex justify-end gap-3">
               <button

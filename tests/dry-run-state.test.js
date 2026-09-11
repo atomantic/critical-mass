@@ -45,13 +45,17 @@ describe('dry-run-state structured logging', () => {
     const { loadState, STATE_FILE } = setup(t);
     fs.writeFileSync(STATE_FILE, JSON.stringify({ exchanges: {}, version: 0 }));
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = line => lines.push(line);
+    console.warn = line => lines.push(line);
+    console.error = line => lines.push(line);
 
     try {
       assert.equal(loadState('coinbase', 'BTC-USD'), null);
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     }
 
     assert.deepEqual(
@@ -70,13 +74,17 @@ describe('dry-run-state structured logging', () => {
       version: 1,
     }));
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = line => lines.push(line);
+    console.warn = line => lines.push(line);
+    console.error = line => lines.push(line);
 
     try {
       assert.equal(loadState('coinbase', 'BTC-USD'), null);
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     }
 
     assert.deepEqual(

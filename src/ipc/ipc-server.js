@@ -10,6 +10,7 @@
 const WebSocket = require('ws');
 const { MSG_TYPE, createMessage, serialize, deserialize } = require('./ipc-protocol');
 const { createContextLogger } = require('../logger');
+const { setEngineMaintenance, refuseDuringMaintenance } = require('../engine-maintenance');
 
 /**
  * Context logger for the engine-side IPC server. `peer` is the engine process
@@ -34,6 +35,21 @@ const createIPCServer = (port, name) => {
   const clients = new Set();
   /** @type {Map<string, (payload: any, exchange: string|null, pair: string|null) => Promise<any>>} */
   const requestHandlers = new Map();
+
+  // Built-in, registered for every engine: the gateway opens a maintenance
+  // window here before a backup restore so this process stops mutating the
+  // files being replaced (issue #429). Registering it centrally keeps the three
+  // engine entry points identical and impossible to forget.
+  requestHandlers.set('engine:maintenance', async (payload) => {
+    const ack = setEngineMaintenance(payload);
+    logger.info(
+      ack.maintenance
+        ? `ℹ️ 🔗 [${name}] Maintenance window OPEN (${ack.maintenance.reason}), mutating requests blocked until ${new Date(ack.maintenance.expiresAt).toISOString()}`
+        : `ℹ️ 🔗 [${name}] Maintenance window closed, mutating requests accepted again`,
+      { channel: 'engine:maintenance', active: Boolean(ack.maintenance), reason: ack.maintenance?.reason },
+    );
+    return ack;
+  });
 
   const start = () => {
     wss = new WebSocket.Server({ port, host: '127.0.0.1' });
@@ -112,6 +128,17 @@ const createIPCServer = (port, name) => {
           error: `No handler for channel: ${msg.channel}`,
         });
         ws.send(serialize(response));
+        return;
+      }
+
+      // A restore in flight outranks every mutating request: answering one
+      // would write the exact files the gateway is replacing.
+      const refusal = refuseDuringMaintenance(msg.channel);
+      if (refusal) {
+        logger.warn(`⚠️ 🔗 [${name}] Refused "${msg.channel}" during maintenance (${refusal.heldBy})`, {
+          channel: msg.channel, exchange: msg.exchange, pair: msg.pair,
+        });
+        ws.send(serialize(createMessage(MSG_TYPE.RESPONSE, msg.channel, refusal, { id: msg.id })));
         return;
       }
 

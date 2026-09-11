@@ -127,11 +127,18 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const [expandedPresets, setExpandedPresets] = useState(new Set())
   const prevExchangeRef = useRef(exchange)
   const prevStrategyRef = useRef(strategy)
-  // Count of in-flight toggle auto-saves. The background summary poll refreshes
-  // initialConfig every ~30s; without this guard, a poll landing between an
-  // optimistic toggle and its persisted write would fire the sync effect below
-  // (isDirty is never set for a toggle) and snap the switch back to stale state.
-  const togglePendingRef = useRef(0)
+  // Count of in-flight configuration writes. Full-form saves AND both
+  // top-level toggle auto-saves share this one ref so the write paths can
+  // never overlap — a slow full save can no longer be raced by a toggle
+  // PATCH (or vice versa), which previously let Save submit a PUT containing
+  // an unconfirmed optimistic toggle value (#455). It is checked synchronously
+  // at the top of handleSave/handleToggleDryRun/handleToggleEnabled, so a
+  // rapid double-click can't slip a second write in before React commits the
+  // disabled controls. It also still guards the background-refresh sync
+  // effect below: the summary poll refreshes initialConfig every ~30s, and
+  // without this check a poll landing mid-write would fire that effect
+  // (isDirty is never set for a toggle) and snap the UI back to stale state.
+  const pendingWriteRef = useRef(0)
 
   // Determine if showing regime config based on URL strategy prop
   const isRegime = strategy === 'regime'
@@ -160,10 +167,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const restartNeeded = isRegime && engineRunning && config.dryRun !== engineDryRun
 
   // Sync with initialConfig when not dirty (e.g., server-side refresh). Skip
-  // while a toggle auto-save is in flight so a background poll can't clobber the
-  // optimistic value before the write resolves.
+  // while any configuration write (full save or toggle auto-save) is in
+  // flight so a background poll can't clobber the optimistic/pending value
+  // before the write resolves.
   useEffect(() => {
-    if (initialConfig && !isDirty && togglePendingRef.current === 0) {
+    if (initialConfig && !isDirty && pendingWriteRef.current === 0) {
       setConfig(initialConfig)
     }
   }, [initialConfig]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -255,6 +263,8 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   const pairQuery = pair ? `?pair=${encodeURIComponent(pair)}` : ''
 
   const handleSave = async () => {
+    if (pendingWriteRef.current > 0) return // a toggle (or another save) is already in flight
+    pendingWriteRef.current += 1
     setSaving(true)
     setMessage(null)
     try {
@@ -286,6 +296,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to save' })
     } finally {
+      pendingWriteRef.current -= 1
       setSaving(false)
     }
   }
@@ -303,13 +314,15 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   // the saved state. A persisted-but-not-live response keeps the saved value and
   // surfaces the required restart. `enabled`/`dryRun` write where the Save button
   // does — see the PATCH /api/:exchange/config and PUT regime/config handlers.
-  // Serialized via togglePendingRef (see the click guard in the handlers): only
-  // one toggle save is ever in flight, so out-of-order responses can't persist
-  // the opposite of the final UI state. try/finally is required here — a network
-  // rejection must still decrement the ref, or the sync effect stays blocked
-  // forever and the toggle is stuck showing an unsaved value.
+  // Serialized via the shared pendingWriteRef (see the click guard in the
+  // handlers, and in handleSave): only one write of any kind — toggle or
+  // full save — is ever in flight, so out-of-order responses can't persist
+  // the opposite of the final UI state, and a full save can't submit an
+  // unconfirmed optimistic toggle value. try/finally is required here — a
+  // network rejection must still decrement the ref, or the sync effect stays
+  // blocked forever and the toggle is stuck showing an unsaved value.
   const persistToggle = async (label, doFetch, optimistic, revert, adoptPersisted) => {
-    togglePendingRef.current += 1
+    pendingWriteRef.current += 1
     setToggleBusy(true)
     optimistic()
     try {
@@ -338,7 +351,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       revert()
       setMessage({ type: 'error', text: `Failed to save ${label}` })
     } finally {
-      togglePendingRef.current -= 1
+      pendingWriteRef.current -= 1
       setToggleBusy(false)
     }
   }
@@ -370,7 +383,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   }
 
   const handleToggleDryRun = () => {
-    if (togglePendingRef.current > 0) return // a toggle save is already in flight
+    if (pendingWriteRef.current > 0) return // a save or another toggle is already in flight
     const next = !config.dryRun
     persistToggle(
       'Dry Run',
@@ -386,7 +399,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
   }
 
   const handleToggleEnabled = () => {
-    if (togglePendingRef.current > 0) return // a toggle save is already in flight
+    if (pendingWriteRef.current > 0) return // a save or another toggle is already in flight
     if (isRegime) {
       // Regime funds track activation in regime.enabled — persist via the regime
       // config endpoint (a fund-level PATCH would write the wrong field).
@@ -426,6 +439,13 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
     }
   }
 
+  // Render-state mirror of pendingWriteRef: true while a full-form save OR a
+  // top-level toggle autosave is in flight. Drives the disabled state of every
+  // fund-config control (inputs, selects, both toggles, Save, Reset) so the
+  // two write paths can't be interleaved from the UI, while global preset
+  // editing (savingPresets/presetsDirty) stays on its own, independent gate.
+  const locked = saving || toggleBusy
+
   const CONSOLIDATE_INTERVAL_OPTIONS = [
     { value: 'never', label: 'Off' },
     { value: 'daily', label: 'Daily' },
@@ -463,6 +483,48 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   return (
     <div>
+      {/* Sticky action bar for fund configuration save/reset */}
+      <div className="sticky top-0 z-10 bg-gray-800 border-b border-gray-700 p-4 mb-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleSave}
+              disabled={locked}
+              className={`px-4 py-2 rounded font-medium transition-colors ${
+                isDirty
+                  ? 'bg-blue-600 hover:bg-blue-700'
+                  : 'bg-blue-600/50 hover:bg-blue-600'
+              } disabled:bg-blue-800 disabled:cursor-not-allowed`}
+            >
+              {saving ? 'Saving...' : 'Save Configuration'}
+            </button>
+            {isDirty && (
+              <button
+                onClick={handleReset}
+                disabled={locked}
+                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Reset
+              </button>
+            )}
+            {isDirty && (
+              <span className="text-sm font-medium text-yellow-400">Unsaved changes</span>
+            )}
+          </div>
+          {message && (
+            <div className={`p-2 rounded text-sm w-full sm:w-auto ${
+              message.type === 'success'
+                ? 'bg-green-900/50 border border-green-700 text-green-200'
+                : message.type === 'warning'
+                  ? 'bg-amber-900/40 border border-amber-700 text-amber-200'
+                  : 'bg-red-900/50 border border-red-700 text-red-200'
+            }`}>
+              {message.text}
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="bg-gray-800 rounded-lg p-4">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Bot Configuration</h2>
@@ -471,30 +533,18 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               label="Enabled"
               checked={Boolean(isRegime ? regimeConfig.enabled : config.enabled)}
               onClick={handleToggleEnabled}
-              disabled={toggleBusy}
+              disabled={locked}
               activeClassName="bg-green-500"
             />
             <ToggleSwitch
               label="Dry Run"
               checked={Boolean(config.dryRun)}
               onClick={handleToggleDryRun}
-              disabled={toggleBusy}
+              disabled={locked}
               activeClassName="bg-yellow-500"
             />
           </div>
         </div>
-
-        {message && (
-          <div className={`mb-3 p-2 rounded text-sm ${
-            message.type === 'success'
-              ? 'bg-green-900/50 border border-green-700 text-green-200'
-              : message.type === 'warning'
-                ? 'bg-amber-900/40 border border-amber-700 text-amber-200'
-                : 'bg-red-900/50 border border-red-700 text-red-200'
-          }`}>
-            {message.text}
-          </div>
-        )}
 
         {restartNeeded && (
           <div className="mb-3 p-2 rounded text-sm bg-amber-900/40 border border-amber-700 text-amber-200 flex items-center justify-between gap-3">
@@ -585,7 +635,11 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
         {/* Regular DCA Trading Settings - 3 column grid */}
         {!isRegime && (
-          <>
+          // A native disabled fieldset gates every input/select/checkbox below in
+          // one place (browser-enforced, no per-field disabled prop needed) while
+          // display:contents keeps it out of the layout so the grid/flex classes
+          // on its children behave exactly as they did inside the old Fragment.
+          <fieldset disabled={locked} className="contents">
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-4">
               <FormInput label="Product ID" value={config.productId} onChange={(v) => handleChange('productId', v)} />
               {!isFibonacci && (
@@ -690,12 +744,19 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 </div>
               </div>
             </div>
-          </>
+          </fieldset>
         )}
 
         {/* Regime Engine Settings - 2-column card grid */}
         {isRegime && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Every card up to (but excluding) Aggressiveness Presets sits inside
+                this fieldset, same rationale as the DCA one above: one disabled
+                boolean gates the whole fund config, and display:contents lets its
+                children remain direct grid items so the lg:col-span-2 cards still
+                span correctly. Presets are a sibling outside it — global preset
+                editing (savingPresets) stays independent of this save/toggle gate. */}
+            <fieldset disabled={locked} className="contents">
 
             {/* Volatility Clock */}
             <SectionCard title="Volatility Clock">
@@ -1047,6 +1108,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 System enters SAFE mode when health thresholds are exceeded. Safe Recovery is time healthy before exiting SAFE.
               </div>
             </SectionCard>
+            </fieldset>
 
             {/* Aggressiveness Presets Editor — full width */}
             {editingPresets && (
@@ -1124,28 +1186,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
           </div>
         )}
 
-        {/* Save Button */}
-        <div className="flex gap-2 mt-4">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className={`flex-1 px-4 py-2 rounded font-medium transition-colors ${
-              isDirty
-                ? 'bg-blue-600 hover:bg-blue-700'
-                : 'bg-blue-600/50 hover:bg-blue-600'
-            } disabled:bg-blue-800 disabled:cursor-not-allowed`}
-          >
-            {saving ? 'Saving...' : isDirty ? 'Save Configuration *' : 'Save Configuration'}
-          </button>
-          {isDirty && (
-            <button
-              onClick={handleReset}
-              className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium transition-colors"
-            >
-              Reset
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Warning - more compact */}

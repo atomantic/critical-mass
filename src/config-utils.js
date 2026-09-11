@@ -8,6 +8,7 @@
 
 const { DEFAULT_AGGRESSIVENESS_PRESETS, MERGE_PROXIMITY_BOUNDS, PRESET_FIELD_RULES } = require('./regime-preset-contract');
 const { validateConfigUpdate } = require('./config-validation');
+const { isDeepStrictEqual } = require('util');
 const fs = require('fs');
 const path = require('path');
 const { normalizeConfig: normalizeIntervalConfig } = require('./interval-utils');
@@ -313,16 +314,26 @@ const _statMtimeMs = (file) => {
 };
 
 /**
- * Test-only hook to bust the in-process config cache. Tests that mock
- * `fs.existsSync`/`fs.readFileSync` should call this between cases since
- * the cache key is based on `fs.statSync` mtime (which the tests don't
- * mock, so the cache would otherwise stick across cases).
+ * Drop the in-process merged-config cache so the next read comes from disk.
+ *
+ * Normally the mtime-keyed cache self-invalidates, but a backup restore
+ * rewrites `config.json` wholesale and must not depend on filesystem timestamp
+ * resolution to be observed — the gateway would keep serving (and re-saving)
+ * the pre-restore config (issue #429).
  */
-const _resetConfigCacheForTests = () => {
+const invalidateConfigCache = () => {
   _configCache = null;
   _configCacheKey = null;
   _configReloadFailedLogged = false;
 };
+
+/**
+ * Test-only alias for `invalidateConfigCache`. Tests that mock
+ * `fs.existsSync`/`fs.readFileSync` should call this between cases since
+ * the cache key is based on `fs.statSync` mtime (which the tests don't
+ * mock, so the cache would otherwise stick across cases).
+ */
+const _resetConfigCacheForTests = invalidateConfigCache;
 
 /**
  * Load raw configuration from base config, with user overrides from data/config.json merged on top.
@@ -379,18 +390,19 @@ const loadRawConfig = () => {
 };
 
 /**
- * Save configuration to user config file (data/config.json).
- * Only persists the diff (overrides) from the base config.
- * @param {MultiExchangeConfig} config - Full merged configuration to save
+ * Atomically replace the user override file (data/config.json) with `override`.
+ *
+ * Split out of `saveConfig` so backup restore can rebuild the override file at
+ * an explicit path (temp-directory tests, and the restore path that reconstructs
+ * overrides against the destination's base config) without going through the
+ * live config cache (issue #430).
+ *
+ * @param {Object} override - Base-relative override object to persist
+ * @param {string} [file] - Target path; defaults to the live data/config.json
  * @returns {void}
  */
-const saveConfig = (config) => {
-  const baseFile = resolveBaseConfigFile();
-  const base = fs.existsSync(baseFile)
-    ? JSON.parse(fs.readFileSync(baseFile, 'utf8'))
-    : {};
-  const diff = computeDiff(base, config);
-  fs.mkdirSync(path.dirname(USER_CONFIG_FILE), { recursive: true });
+const writeUserConfigFile = (override, file = USER_CONFIG_FILE) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   // Atomic write (tmp + rename): a crash mid-write would otherwise leave a
   // truncated config.json, and loadRawConfig throws on parse failure — which
   // takes down the gateway AND every engine process at boot, with no recovery
@@ -401,7 +413,7 @@ const saveConfig = (config) => {
   // gateway handles a settings PUT) can't rename each other's tmp file — which
   // would ENOENT the second rename or persist the wrong payload. The rename
   // itself is atomic, so the last writer wins cleanly (#110 M7 / review).
-  const tmpPath = `${USER_CONFIG_FILE}.${process.pid}.${++_saveConfigTmpSeq}.tmp`;
+  const tmpPath = `${file}.${process.pid}.${++_saveConfigTmpSeq}.tmp`;
   // Preserve the existing file's permission mode across the atomic replace.
   // tmp+rename creates a NEW inode at the default umask mode (commonly 0644),
   // so without this an operator who locked down config.json to 0600 (it can
@@ -410,11 +422,35 @@ const saveConfig = (config) => {
   // file since it may contain secrets (#110 review).
   let mode = 0o600;
   try {
-    const existing = fs.statSync(USER_CONFIG_FILE).mode & 0o777;
+    const existing = fs.statSync(file).mode & 0o777;
     if (existing) mode = existing; // keep the operator's chosen mode; ignore a 0/absent mode
   } catch { /* new file → restrictive default */ }
-  fs.writeFileSync(tmpPath, JSON.stringify(diff, null, 2), { mode });
-  fs.renameSync(tmpPath, USER_CONFIG_FILE);
+  fs.writeFileSync(tmpPath, JSON.stringify(override, null, 2), { mode });
+  fs.renameSync(tmpPath, file);
+};
+
+/**
+ * Save configuration to user config file (data/config.json).
+ * Only persists the diff (overrides) from the base config.
+ * @param {MultiExchangeConfig} config - Full merged configuration to save
+ * @returns {void}
+ */
+const saveConfig = (config) => {
+  const baseFile = resolveBaseConfigFile();
+  // Guard the parse the same way loadRawConfig does (#185): the base config
+  // can be transiently unreadable (mid-write from another process, disk
+  // hiccup), and a raw SyntaxError here would abort the whole save — and the
+  // caller (e.g. updateRegimeConfig) has already mutated its own working
+  // copy expecting saveConfig to either persist it or throw a clear error.
+  let base;
+  try {
+    base = fs.existsSync(baseFile)
+      ? JSON.parse(fs.readFileSync(baseFile, 'utf8'))
+      : {};
+  } catch (err) {
+    throw new Error(`saveConfig: base config file is unreadable/corrupt (${baseFile}): ${err.message}`);
+  }
+  writeUserConfigFile(computeDiff(base, config));
   // Bust the cache so the next read picks up our write immediately, even
   // before the OS updates mtime.
   _configCache = null;
@@ -465,11 +501,19 @@ const normalizeToMultiExchange = (config) => {
 
 /**
  * Load and normalize configuration
+ *
+ * Returns a fresh deep clone on every call. loadRawConfig()/_configCache stay
+ * shared for the O(N)-disk-read win that motivated the cache, but every
+ * update*Config helper below mutates the object loadConfig() hands back
+ * before calling saveConfig — if that were the live cache, a saveConfig
+ * throw would leave the process running on a value that was never persisted
+ * (issue #416). Node >= 20 per package.json `engines`, so structuredClone is
+ * available.
  * @returns {MultiExchangeConfig} Normalized multi-exchange configuration
  */
 const loadConfig = () => {
   const raw = loadRawConfig();
-  return normalizeToMultiExchange(raw);
+  return structuredClone(normalizeToMultiExchange(raw));
 };
 
 // ============================================================================
@@ -531,12 +575,80 @@ const getQuoteCurrency = (productId) => {
   return 'USD';
 };
 
+/**
+ * Check whether a productId trades the same base asset as a fund's pair. A
+ * fund's pair IS its identity, so a productId supplied at creation (POST
+ * /api/:exchange/funds) or update (PUT /api/:exchange/config) must trade the
+ * same base asset as the pair — a quote-only difference (e.g. USD -> USDC)
+ * is allowed. Shared by both routes (and by `addFund`'s defensive check) so
+ * the identity rule can't drift between entry points.
+ *
+ * @param {string} pair
+ * @param {string} productId
+ * @returns {{ ok: boolean, pairBase: string, incomingBase: string }}
+ */
+const productIdMatchesPair = (pair, productId) => {
+  const pairBase = getBaseCurrency(pair);
+  const incomingBase = getBaseCurrency(productId);
+  return { ok: pairBase === incomingBase, pairBase, incomingBase };
+};
+
 /** Keys that stay at the exchange level (shared across all funds on that exchange) */
 const EXCHANGE_LEVEL_KEYS = new Set([
   'pairs',
+  'deletedPairs',
   'schedulerInterval',
   'aggressivenessPresets',
 ]);
+
+/**
+ * Exchange-level key holding fund deletion tombstones (issue #441).
+ *
+ * `saveConfig` persists only `computeDiff(base, merged)`, and `computeDiff`
+ * walks `Object.keys(modified)` — so a pair *removed* from the merged tree is
+ * simply absent from the diff, not recorded as deleted, and the next
+ * `deepMerge(base, userDiff)` restores it from the base `config.json`. Making
+ * `computeDiff` emit a marker for every missing base key would be wrong: the
+ * config editor deliberately drops unknown/dead `regime` keys on the way
+ * through and they must stay inert in base rather than be tombstoned
+ * (tests/exchange-routes-config.test.js).
+ *
+ * So the tombstone is narrow and explicit: a string array of deleted pair
+ * names stored at the exchange level. It lives OUTSIDE `pairs` on purpose —
+ * every writer round-trips the block through `normalizeExchangeBlock`, which
+ * filters tombstoned pairs out of `pairs` but carries the marker list through
+ * untouched, so no ordinary save can resurrect a deleted fund. It is a plain
+ * JSON array, so `loadRawConfig`/`deepMerge` (arrays are replaced wholesale)
+ * round-trip it without any format awareness, and older builds reading a
+ * tombstoned `data/config.json` just see an unknown key rather than throwing.
+ */
+const DELETED_PAIRS_KEY = 'deletedPairs';
+
+/**
+ * Read an exchange block's deletion tombstones, tolerating absent/garbage values.
+ * @param {Object} [exchangeBlock]
+ * @returns {string[]} Deleted pair names (possibly empty)
+ */
+const getDeletedPairs = (exchangeBlock) => {
+  const list = exchangeBlock?.[DELETED_PAIRS_KEY];
+  return Array.isArray(list) ? list.filter((p) => typeof p === 'string' && p) : [];
+};
+
+/**
+ * Drop a pair's tombstone so a legitimate re-add isn't suppressed. Returns the
+ * block unchanged (same reference) when there is nothing to clear, so ordinary
+ * saves never introduce a `deletedPairs` key. Keeps an emptied list as `[]`
+ * rather than deleting the key — the diff has to be able to override a
+ * tombstone that lives in the base config.
+ * @param {Object} exchangeBlock
+ * @param {string} pair
+ * @returns {Object}
+ */
+const clearDeletedPair = (exchangeBlock, pair) => {
+  const list = getDeletedPairs(exchangeBlock);
+  if (!list.includes(pair)) return exchangeBlock;
+  return { ...exchangeBlock, [DELETED_PAIRS_KEY]: list.filter((p) => p !== pair) };
+};
 
 /**
  * Global sub-objects that must NEVER be merged into per-fund configs.
@@ -564,6 +676,44 @@ const omitExcludedGlobals = (globalConfig) => {
   const safe = { ...(globalConfig || {}) };
   for (const key of GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG) delete safe[key];
   return safe;
+};
+
+/**
+ * Resolve one fund's effective settings from a raw fund block.
+ *
+ * Pure counterpart of `getFundConfig` (which adds interval normalization on
+ * top): DEFAULTS < non-excluded globals < the fund's own block. Shared with
+ * `buildConfigSnapshot` so an archived snapshot materializes exactly the
+ * values a reader would have seen (issue #430).
+ *
+ * @param {Object|undefined} globalConfig - The config's `global` block
+ * @param {Object|undefined} fundBlock - Raw per-pair block
+ * @returns {Object} Effective fund settings
+ */
+const resolveFundConfig = (globalConfig, fundBlock) => ({
+  ...DEFAULTS,
+  ...omitExcludedGlobals(globalConfig),
+  ...(fundBlock || {}),
+});
+
+/**
+ * Resolve one fund's effective regime settings from a raw fund block.
+ *
+ * Pure counterpart of `getRegimeConfig`, including the on-disk migration of
+ * the pre-rename exposure cap key.
+ *
+ * @param {Object|undefined} fundBlock - Raw per-pair block
+ * @returns {Object} Effective regime settings
+ */
+const resolveRegimeConfig = (fundBlock) => {
+  const merged = { ...REGIME_DEFAULTS, ...(fundBlock?.regime || {}) };
+  // Migrate old config key from disk
+  const _oldKey = 'max' + 'BtcExposure'; // constructed to avoid refactoring scripts
+  if (_oldKey in merged) {
+    merged.maxAssetExposure = merged[_oldKey];
+    delete merged[_oldKey];
+  }
+  return merged;
 };
 
 /**
@@ -602,8 +752,13 @@ const normalizeExchangeBlock = (exchangeBlock) => {
     // does `normalized.pairs[pair].regime = merged` IN PLACE — so the inner pair
     // objects must be cloned too, or a saveConfig throw leaves the cache showing
     // the new value while disk doesn't (#113 / review).
+    // Tombstoned pairs are filtered out here (the single read chokepoint) but
+    // the `deletedPairs` marker list rides along in the spread, so writers that
+    // save the normalized block back keep the deletion (#441).
+    const deleted = new Set(getDeletedPairs(exchangeBlock));
     const pairsCopy = {};
     for (const [p, block] of Object.entries(exchangeBlock.pairs)) {
+      if (deleted.has(p)) continue;
       pairsCopy[p] = (block && typeof block === 'object') ? { ...block } : block;
     }
     return { ...exchangeBlock, pairs: pairsCopy };
@@ -621,9 +776,9 @@ const normalizeExchangeBlock = (exchangeBlock) => {
   }
   return {
     ...exchangeLevel,
-    pairs: {
-      [productId]: fundBlock,
-    },
+    pairs: getDeletedPairs(exchangeBlock).includes(productId)
+      ? {}
+      : { [productId]: fundBlock },
   };
 };
 
@@ -638,11 +793,16 @@ const getDefaultPair = (exchange) => {
   const config = loadConfig();
   const block = config.exchanges?.[exchange];
   if (!block) return null;
+  // Tombstoned pairs are skipped so a deleted fund can never become an
+  // exchange's default (#441). Filtered inline rather than via
+  // normalizeExchangeBlock to keep the legacy-flat semantics exactly as they
+  // were: a flat block with no productId still resolves to null, not DEFAULTS.
+  const deleted = new Set(getDeletedPairs(block));
   if (block.pairs && typeof block.pairs === 'object') {
-    const keys = Object.keys(block.pairs);
+    const keys = Object.keys(block.pairs).filter((p) => !deleted.has(p));
     return keys.length > 0 ? keys[0] : null;
   }
-  return block.productId || null;
+  return (block.productId && !deleted.has(block.productId)) ? block.productId : null;
 };
 
 /**
@@ -726,13 +886,7 @@ const getFundConfig = (exchange, pair) => {
   const resolvedPair = pair || Object.keys(normalized.pairs || {})[0];
   const fundBlock = normalized.pairs?.[resolvedPair] || {};
 
-  const merged = {
-    ...DEFAULTS,
-    ...omitExcludedGlobals(config.global),
-    ...fundBlock,
-  };
-
-  return normalizeIntervalConfig(merged);
+  return normalizeIntervalConfig(resolveFundConfig(config.global, fundBlock));
 };
 
 /**
@@ -826,6 +980,10 @@ const updateFundConfig = (exchange, pair, updates) => {
     config.exchanges[exchange] = normalized;
   }
 
+  // Writing a fund re-establishes it: drop any deletion tombstone so a re-add
+  // of a previously removed pair isn't suppressed on the next load (#441).
+  config.exchanges[exchange] = clearDeletedPair(config.exchanges[exchange], pair);
+
   saveConfig(config);
   return config;
 };
@@ -873,6 +1031,21 @@ const addFund = (exchange, pair, initialConfig = {}) => {
     throw new Error(`Fund ${exchange}/${pair} already exists`);
   }
 
+  // Defensive invariant: a fund's pair IS its identity, so a supplied
+  // productId must trade the same base asset (quote-only differences, e.g.
+  // USD -> USDC, are fine). POST /api/:exchange/funds already enforces this
+  // at the request boundary, but that's an easy check to route around —
+  // this repeats it here so no other caller can recreate the mismatch.
+  if (initialConfig.productId !== undefined && initialConfig.productId !== null) {
+    if (typeof initialConfig.productId !== 'string' || !initialConfig.productId) {
+      throw new Error('productId must be a non-empty string');
+    }
+    const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, initialConfig.productId);
+    if (!ok) {
+      throw new Error(`productId "${initialConfig.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a fund's traded asset must match its pair`);
+    }
+  }
+
   // Build the new fund block
   const fundBlock = {
     enabled: false,         // safer default — operator must explicitly enable
@@ -911,6 +1084,10 @@ const removeFund = (exchange, pair) => {
 
   const normalized = normalizeExchangeBlock(block);
   delete normalized.pairs[pair];
+  // Deleting the key is not enough on its own: saveConfig persists only the
+  // diff against the base config.json, so a pair defined there would re-merge
+  // on the next load. Record an explicit tombstone (#441).
+  normalized[DELETED_PAIRS_KEY] = [...new Set([...getDeletedPairs(normalized), pair])];
   config.exchanges[exchange] = normalized;
   saveConfig(config);
   return config;
@@ -1039,20 +1216,7 @@ const getRegimeConfig = (exchange, pair) => {
   const block = config.exchanges?.[exchange] || {};
   const normalized = normalizeExchangeBlock(block);
   const resolvedPair = pair || Object.keys(normalized.pairs || {})[0];
-  const fundBlock = normalized.pairs?.[resolvedPair] || {};
-  const regimeConfig = fundBlock.regime || {};
-
-  const merged = {
-    ...REGIME_DEFAULTS,
-    ...regimeConfig,
-  };
-  // Migrate old config key from disk
-  const _oldKey = 'max' + 'BtcExposure'; // constructed to avoid refactoring scripts
-  if (_oldKey in merged) {
-    merged.maxAssetExposure = merged[_oldKey];
-    delete merged[_oldKey];
-  }
-  return merged;
+  return resolveRegimeConfig(normalized.pairs?.[resolvedPair]);
 };
 
 /**
@@ -1101,13 +1265,128 @@ const updateRegimeConfig = (exchange, pairOrUpdates, maybeUpdates) => {
   return config;
 };
 
+/** Primitive contract for every supported regime setting; preset bounds stay shared. */
+const REGIME_FIELD_RULES = {
+  enabled: { type: 'boolean' },
+  aggressiveness: { type: 'string', enum: ['conservative', 'moderate', 'aggressive', 'maximum'] },
+  atrPeriod: { type: 'number' },
+  kFactor: { type: 'number' },
+  minIntervalMs: { type: 'number' },
+  maxIntervalMs: { type: 'number' },
+  momentumMult: { type: 'number' },
+  volExpansionMult: { type: 'number' },
+  volContractionMult: { type: 'number' },
+  vwapPeriodHours: { type: 'number' },
+  trendConfirmationPeriods: { type: 'number' },
+  minOrderSizeUsdc: { type: 'number' },
+  baseSizeUsdc: { type: 'number' },
+  harvestScale: { type: 'number' },
+  cautionScale: { type: 'number' },
+  trendScale: { type: 'number' },
+  maxCycleBuys: { type: 'number' },
+  cycleResetHours: { type: 'number' },
+  liquidityFactorCap: { type: 'number' },
+  divergenceScalePct: { type: 'number' },
+  tpMult: { type: 'number' },
+  tpMinPercent: { type: 'number' },
+  tpMaxPercent: { type: 'number' },
+  tpUpdateThresholdPct: { type: 'number' },
+  holdbackRatio: { type: 'number' },
+  celestialEnabled: { type: 'boolean' },
+  maxCelestialBodies: { type: 'number' },
+  mergeProximityScale: { type: 'number' },
+  tpAutoManaged: { type: 'boolean' },
+  tpEvaluationCycles: { type: 'number' },
+  tpEvaluationMaxHours: { type: 'number' },
+  tpMinSampleSize: { type: 'number' },
+  tpAbsoluteMin: { type: 'number' },
+  tpAbsoluteMax: { type: 'number' },
+  tpMaxChangePercent: { type: 'number' },
+  sizeAutoManaged: { type: 'boolean' },
+  sizeEvaluationCycles: { type: 'number' },
+  sizeEvaluationMaxHours: { type: 'number' },
+  sizeMinSampleSize: { type: 'number' },
+  sizeAbsoluteMinBase: { type: 'number' },
+  sizeAbsoluteMaxBase: { type: 'number' },
+  sizeTargetUtilization: { type: 'number' },
+  sizeMaxChangePercent: { type: 'number' },
+  sizeAutoCycleBuys: { type: 'boolean' },
+  sizeMinCycleBuys: { type: 'number' },
+  sizeMaxCycleBuys: { type: 'number' },
+  maxAssetExposure: { type: 'number' },
+  depositedCapital: { type: 'number' },
+  maxUsdcDeployed: { type: 'number' },
+  maxDrawdownPercent: { type: 'number' },
+  drawdownResetHours: { type: 'number' },
+  entryOffsetBps: { type: 'number' },
+  entryOffsetUpBps: { type: 'number' },
+  entryOffsetDownBps: { type: 'number' },
+  entryMaxRetries: { type: 'number' },
+  cancelRateLimitMs: { type: 'number' },
+  orderStaleMs: { type: 'number' },
+  staleDataMs: { type: 'number' },
+  staleOrdersMs: { type: 'number' },
+  maxRestErrors: { type: 'number' },
+  maxRateLimits: { type: 'number' },
+  maxLatencyMs: { type: 'number' },
+  safeRecoveryMs: { type: 'number' },
+  maxOpenOrders: { type: 'number' },
+  reconcileIntervalMs: { type: 'number' },
+  maxSpreadBps: { type: 'number' },
+  spreadPauseMs: { type: 'number' },
+  minDepthUsdc: { type: 'number' },
+  depthPauseMs: { type: 'number' },
+  flashMoveMult: { type: 'number' },
+  flashCooldownMs: { type: 'number' },
+  cancelEntriesOnFlash: { type: 'boolean' },
+  macroEnabled: { type: 'boolean' },
+  macroUpdateIntervalMs: { type: 'number' },
+  macroHysteresis: { type: 'number' },
+  macroAccumulationThreshold: { type: 'number' },
+  macroDeclineThreshold: { type: 'number' },
+  macroMarkupThreshold: { type: 'number' },
+  macroAccumulationSizeMult: { type: 'number' },
+  macroAccumulationTpMult: { type: 'number' },
+  macroAccumulationOffsetMult: { type: 'number' },
+  macroMarkupSizeMult: { type: 'number' },
+  macroMarkupTpMult: { type: 'number' },
+  macroMarkupOffsetMult: { type: 'number' },
+  macroDeclineSizeMult: { type: 'number' },
+  macroDeclineTpMult: { type: 'number' },
+  macroDeclineOffsetMult: { type: 'number' },
+  longTermBiasEnabled: { type: 'boolean' },
+  longTermLookbackDays: { type: 'number' },
+  longTermUpdateIntervalMs: { type: 'number' },
+  autoAggressivenessEnabled: { type: 'boolean' },
+  entryMode: { type: 'string', enum: ['reactive', 'ladder'] },
+  ladderMaxAthDropPct: { type: 'number' },
+  ladderSpacingMode: { type: 'string', enum: ['linear', 'sqrt', 'exponential'] },
+  ladderSizeMode: { type: 'string', enum: ['flat', 'linear', 'sqrt', 'fibonacci'] },
+  ladderAutoSwitch: { type: 'boolean' },
+  ladderAutoSwitchVolMult: { type: 'number' },
+  ladderMinSpacingPct: { type: 'number' },
+  ...PRESET_FIELD_RULES,
+};
+
+/**
+ * Prove the primitive and enum contract before any coercive comparisons.
+ * @param {unknown} config
+ * @returns {config is Partial<RegimeStrategyConfig>}
+ */
+const hasRegimeFieldTypes = (config) => typeof config === 'object'
+  && config !== null && !Array.isArray(config)
+  && validateConfigUpdate(REGIME_FIELD_RULES, config).errors.length === 0;
+
 /**
  * Validate regime strategy configuration
- * @param {Partial<RegimeStrategyConfig>} config - Regime config to validate
- * @returns {ValidationResult}
+ * @param {unknown} config - Untrusted regime config to validate
+ * @returns {import('./types').RegimeValidationResult}
  */
 const validateRegimeConfig = (config) => {
-  const { errors } = validateConfigUpdate(PRESET_FIELD_RULES, config);
+  if (!hasRegimeFieldTypes(config)) {
+    return { valid: false, errors: validateConfigUpdate(REGIME_FIELD_RULES, config).errors };
+  }
+  const errors = [];
 
   // Aggressiveness level validation
   if (config.aggressiveness !== undefined) {
@@ -1276,10 +1555,9 @@ const validateRegimeConfig = (config) => {
     errors.push('drawdownResetHours must be between 0 (disabled) and 720 (30 days)');
   }
 
-  return {
-    valid: errors.length === 0,
-    errors,
-  };
+  return errors.length > 0
+    ? { valid: false, errors }
+    : { valid: true, errors: [], value: config };
 };
 
 /**
@@ -1460,10 +1738,282 @@ const updateSentinelConfig = (updates) => {
   return config;
 };
 
+// ============================================================================
+// Backup archive configuration snapshot (issue #430)
+//
+// data/config.json holds only the DIFF against the machine-local base
+// config.json (or, on a fresh clone, the shipped config.example.json). An
+// archive of the data directory alone therefore carries no fund identity at
+// all when the operator's funds are defined in the base file: restoring onto a
+// new machine silently adopts the destination's base — a different pair and a
+// different allocation — while the restored state files describe the original
+// fund.
+//
+// The archive fixes that by carrying a self-contained, schema-allowlisted
+// snapshot of the EFFECTIVE configuration (every value already materialized,
+// so it does not depend on any base file), which restore replays against
+// whatever base the destination has.
+// ============================================================================
+
+/** Snapshot format version. Bump only for a breaking shape change. */
+const CONFIG_SNAPSHOT_VERSION = 1;
+
+/**
+ * Fund-level fields carried by a snapshot. Allowlisted from the fund schema so
+ * a stray/unknown key on disk — or a crafted archive — can never smuggle a
+ * credential through the snapshot.
+ */
+const SNAPSHOT_FUND_KEYS = Object.freeze(Object.keys(DEFAULTS));
+
+/** Regime (strategy) fields carried by a snapshot. */
+const SNAPSHOT_REGIME_KEYS = Object.freeze(Object.keys(REGIME_DEFAULTS));
+
+/**
+ * Global fields carried by a snapshot.
+ *
+ * Deliberately EXCLUDES `notifications` and `sentinel`: those hold the Telegram
+ * bot token and the AI-classification credentials. Restore leaves the
+ * destination's own copies of both untouched.
+ */
+const SNAPSHOT_GLOBAL_KEYS = Object.freeze([
+  ...Object.keys(GLOBAL_DEFAULTS),
+  'aggressivenessPresets',
+]);
+
+/**
+ * Copy only the allowlisted, defined keys of `source`, in allowlist order (so
+ * two snapshots of equal content are structurally identical).
+ * @param {Object|undefined} source
+ * @param {ReadonlyArray<string>} keys
+ * @returns {Object}
+ */
+const pickAllowed = (source, keys) => {
+  const out = {};
+  for (const key of keys) {
+    if (source?.[key] !== undefined) out[key] = source[key];
+  }
+  return out;
+};
+
+const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * Build a self-contained snapshot of the effective non-secret configuration.
+ *
+ * @param {Object} config - A full (already merged) configuration object
+ * @returns {{version: number, exchanges: Object, global: Object}} Snapshot
+ */
+const buildConfigSnapshot = (config) => {
+  const normalized = normalizeToMultiExchange(isPlainObject(config) ? config : {});
+  const exchanges = {};
+  for (const [exchange, block] of Object.entries(normalized.exchanges || {})) {
+    const pairs = {};
+    for (const [pair, fundBlock] of Object.entries(normalizeExchangeBlock(block).pairs || {})) {
+      const fund = pickAllowed(resolveFundConfig(normalized.global, fundBlock), SNAPSHOT_FUND_KEYS);
+      // The pair key IS the fund identity; never let it drift from productId.
+      fund.productId = fundBlock?.productId ?? pair;
+      fund.regime = pickAllowed(resolveRegimeConfig(fundBlock), SNAPSHOT_REGIME_KEYS);
+      pairs[pair] = fund;
+    }
+    // An exchange with no live funds is represented by its absence, which is
+    // what reconstruction tombstones against the destination base.
+    if (Object.keys(pairs).length > 0) exchanges[exchange] = { pairs };
+  }
+  return {
+    version: CONFIG_SNAPSHOT_VERSION,
+    exchanges,
+    global: pickAllowed(normalized.global, SNAPSHOT_GLOBAL_KEYS),
+  };
+};
+
+/**
+ * Schema-validate a snapshot read back out of an archive.
+ *
+ * Strict by design: an unknown key is a rejection, not a value to pass through,
+ * because the snapshot is replayed into the destination's live config file.
+ *
+ * @param {*} snapshot - Untrusted snapshot from an archive manifest
+ * @returns {{valid: boolean, error?: string}}
+ */
+const validateConfigSnapshot = (snapshot) => {
+  if (!isPlainObject(snapshot)) {
+    return { valid: false, error: 'configuration snapshot is missing or is not an object' };
+  }
+  if (snapshot.version !== CONFIG_SNAPSHOT_VERSION) {
+    return {
+      valid: false,
+      error: `configuration snapshot version ${JSON.stringify(snapshot.version)} is not supported by this build (expected ${CONFIG_SNAPSHOT_VERSION}) — upgrade critical-mass before restoring this archive`,
+    };
+  }
+  if (!isPlainObject(snapshot.exchanges)) {
+    return { valid: false, error: 'configuration snapshot has no `exchanges` object' };
+  }
+  if (snapshot.global !== undefined && !isPlainObject(snapshot.global)) {
+    return { valid: false, error: 'configuration snapshot `global` is not an object' };
+  }
+  for (const key of Object.keys(snapshot.global || {})) {
+    if (!SNAPSHOT_GLOBAL_KEYS.includes(key)) {
+      return { valid: false, error: `configuration snapshot carries unsupported global field "${key}"` };
+    }
+  }
+  const allowedFundKeys = new Set([...SNAPSHOT_FUND_KEYS, 'regime']);
+  for (const [exchange, block] of Object.entries(snapshot.exchanges)) {
+    if (!isPlainObject(block) || !isPlainObject(block.pairs)) {
+      return { valid: false, error: `configuration snapshot entry for exchange "${exchange}" has no \`pairs\` object` };
+    }
+    for (const [pair, fund] of Object.entries(block.pairs)) {
+      if (!PAIR_RE.test(pair)) {
+        return { valid: false, error: `configuration snapshot has an invalid pair identifier "${exchange}/${pair}"` };
+      }
+      if (!isPlainObject(fund)) {
+        return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" is not an object` };
+      }
+      if (typeof fund.productId !== 'string' || !fund.productId) {
+        return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" has no productId` };
+      }
+      for (const key of Object.keys(fund)) {
+        if (!allowedFundKeys.has(key)) {
+          return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" carries unsupported field "${key}"` };
+        }
+      }
+      if (fund.regime !== undefined) {
+        if (!isPlainObject(fund.regime)) {
+          return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" has a non-object regime block` };
+        }
+        for (const key of Object.keys(fund.regime)) {
+          if (!SNAPSHOT_REGIME_KEYS.includes(key)) {
+            return { valid: false, error: `configuration snapshot fund "${exchange}/${pair}" carries unsupported regime field "${key}"` };
+          }
+        }
+      }
+    }
+  }
+  return { valid: true };
+};
+
+/**
+ * Resolution a merged config would produce for one fund if the override
+ * carried NOTHING for it. Used to drop redundant keys from the reconstructed
+ * override so a restore doesn't freeze a fully-materialized copy of every
+ * setting into data/config.json (which would then shadow later edits to the
+ * base config.json).
+ *
+ * Note the base's LEGACY-FLAT fields are deliberately ignored: the
+ * reconstructed block always carries a `pairs` map, and `normalizeExchangeBlock`
+ * only synthesizes a fund from flat fields when there is no `pairs` map at all.
+ *
+ * @param {Object|null} baseBlock - Destination base block for the exchange
+ * @param {string} pair
+ * @param {Object} globalConfig - The reconstructed `global` block
+ * @returns {{fund: Object, regime: Object}}
+ */
+const resolveOverrideBaseline = (baseBlock, pair, globalConfig) => {
+  const basePair = isPlainObject(baseBlock?.pairs) ? baseBlock.pairs[pair] : undefined;
+  return {
+    fund: resolveFundConfig(globalConfig, basePair),
+    regime: resolveRegimeConfig(basePair),
+  };
+};
+
+/**
+ * Strip fund/regime keys the destination would resolve to the same value
+ * anyway. Verified by the caller — on any mismatch the unpruned target wins.
+ * @param {Object} target - Full reconstructed configuration
+ * @param {Object} base - Destination base configuration
+ * @returns {Object} Pruned clone of `target`
+ */
+const minimizeReconstructedTarget = (target, base) => {
+  const pruned = structuredClone(target);
+  for (const [exchange, block] of Object.entries(pruned.exchanges || {})) {
+    const baseBlock = isPlainObject(base.exchanges?.[exchange]) ? base.exchanges[exchange] : null;
+    for (const [pair, fund] of Object.entries(block.pairs || {})) {
+      const baseline = resolveOverrideBaseline(baseBlock, pair, pruned.global);
+      for (const key of Object.keys(fund)) {
+        if (key !== 'regime' && key !== 'productId' && isDeepStrictEqual(fund[key], baseline.fund[key])) delete fund[key];
+      }
+      for (const key of Object.keys(fund.regime || {})) {
+        if (isDeepStrictEqual(fund.regime[key], baseline.regime[key])) delete fund.regime[key];
+      }
+      if (fund.regime && Object.keys(fund.regime).length === 0) delete fund.regime;
+    }
+  }
+  return pruned;
+};
+
+/**
+ * Rebuild the base-relative override file (data/config.json) that makes the
+ * DESTINATION reproduce the archived configuration.
+ *
+ * Pure — computes and verifies the result in memory so the caller can abort
+ * before mutating anything on the destination.
+ *
+ * @param {Object} args
+ * @param {*} args.snapshot - Snapshot from the archive manifest (validated here)
+ * @param {Object} [args.baseConfig] - Destination's raw base config.json contents
+ * @param {Object} [args.destinationGlobal] - Destination's effective `global` block,
+ *   read BEFORE the restore, so its credentials (Telegram, Sentinel) survive.
+ * @returns {{ok: true, override: Object} | {ok: false, error: string}}
+ */
+const reconstructConfigOverride = ({ snapshot, baseConfig, destinationGlobal }) => {
+  const validation = validateConfigSnapshot(snapshot);
+  if (!validation.valid) return { ok: false, error: validation.error };
+
+  const base = isPlainObject(baseConfig) ? baseConfig : {};
+  const target = structuredClone(base);
+  target.exchanges = { ...(base.exchanges || {}) };
+
+  const exchanges = new Set([...Object.keys(base.exchanges || {}), ...Object.keys(snapshot.exchanges)]);
+  for (const exchange of exchanges) {
+    const baseBlock = isPlainObject(base.exchanges?.[exchange]) ? base.exchanges[exchange] : null;
+    const snapshotPairs = snapshot.exchanges[exchange]?.pairs || {};
+    // computeDiff only emits keys present in the target, so a pair the base
+    // defines but the source did not would merge straight back in. Tombstone it
+    // instead — the same mechanism fund deletion uses (#441).
+    const basePairs = isPlainObject(baseBlock?.pairs) ? Object.keys(baseBlock.pairs) : [];
+    const tombstones = basePairs.filter((pair) => !(pair in snapshotPairs));
+    const block = { ...(baseBlock || {}), pairs: structuredClone(snapshotPairs) };
+    if (tombstones.length > 0 || (Array.isArray(baseBlock?.[DELETED_PAIRS_KEY]) && baseBlock[DELETED_PAIRS_KEY].length > 0)) {
+      block[DELETED_PAIRS_KEY] = tombstones;
+    } else {
+      delete block[DELETED_PAIRS_KEY];
+    }
+    target.exchanges[exchange] = block;
+  }
+
+  // Non-secret globals come from the archive; everything else (notifications,
+  // sentinel) stays on the destination's own effective values.
+  target.global = deepMerge(
+    isPlainObject(destinationGlobal) ? destinationGlobal : (base.global || {}),
+    snapshot.global || {},
+  );
+
+  // Prove the round trip before the caller writes anything: replay each
+  // candidate override through the exact merge+normalize path loadConfig uses
+  // and re-derive a snapshot from it. Any drift (a base pair that survived, a
+  // value the diff failed to carry) is caught here instead of silently trading
+  // the wrong fund. The minimized candidate is preferred so the override file
+  // stays a diff; the fully-materialized one is the fallback that always works.
+  const reproduces = (candidate) =>
+    isDeepStrictEqual(buildConfigSnapshot(deepMerge(base, candidate)).exchanges, snapshot.exchanges);
+
+  for (const candidate of [minimizeReconstructedTarget(target, base), target]) {
+    const override = computeDiff(base, candidate);
+    if (reproduces(override)) return { ok: true, override };
+  }
+
+  const describe = (entry) => Object.keys(entry || {}).sort().join(', ') || 'none';
+  const reproduced = buildConfigSnapshot(deepMerge(base, computeDiff(base, target)));
+  return {
+    ok: false,
+    error: `restored configuration would not reproduce the archived funds (archived: ${describe(snapshot.exchanges)}; reconstructed: ${describe(reproduced.exchanges)}) — destination config left unchanged`,
+  };
+};
+
 module.exports = {
   loadConfig,
   saveConfig,
   loadRawConfig,
+  invalidateConfigCache,
   _resetConfigCacheForTests,
   getExchangeConfig,
   getEnabledExchanges,
@@ -1513,6 +2063,16 @@ module.exports = {
   // Currency parsing
   getBaseCurrency,
   getQuoteCurrency,
+  productIdMatchesPair,
+  // Backup archive config portability (#430)
+  CONFIG_SNAPSHOT_VERSION,
+  buildConfigSnapshot,
+  validateConfigSnapshot,
+  reconstructConfigOverride,
+  writeUserConfigFile,
+  resolveBaseConfigFile,
+  USER_CONFIG_FILE,
+  deepMerge,
   // Secret handling
   GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG,
   maskSecret,

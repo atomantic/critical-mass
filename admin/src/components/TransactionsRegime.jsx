@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { formatCurrency, formatPrice } from './charts/chartUtils'
+import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import ManualTrades from './ManualTrades'
 import { computeFillsWithPnL } from './transactionsRegimePnl'
+import { compareCycleIds } from '../utils/regimeFillGroups.mjs'
 
 function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [fills, setFills] = useState([])
@@ -15,9 +16,6 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [sortField, setSortField] = useState('timestamp')
   const [sortDir, setSortDir] = useState('desc')
   const [productId, setProductId] = useState(null)
-
-
-  const formatAsset = (n) => (n || 0).toFixed(8)
 
   const pairQuery = buildPairQuery(pair)
 
@@ -65,7 +63,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const baseCurrency = getBaseCurrency(productId)
 
   // Get unique cycle IDs for filtering
-  const cycleIds = [...new Set(fills.map(f => f.cycleId || 'current'))].sort().reverse()
+  const cycleIds = [...new Set(fills.map(f => f.cycleId || 'current'))].sort(compareCycleIds)
 
   // Filter predicate shared by the raw fill list and the P&L-enriched list
   // below, so both stay in sync without relying on object-identity checks.

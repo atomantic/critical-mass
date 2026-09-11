@@ -6,11 +6,13 @@
  * process via IPC WebSocket. Config reads/writes stay local (file-based).
  */
 
-const { getRegimeConfig, updateRegimeConfig, updateFundConfig, validateRegimeConfig, getFundConfig } = require('../config-utils');
+const { getRegimeConfig, updateRegimeConfig, updateFundConfig, getFundConfig } = require('../config-utils');
+const { resolvePlacementIntent } = require('../state-tracker');
 const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
-const { sanitizeRegimeConfig } = require('../config-validator');
-const { getIPC: getExchangeIPC, withConfiguredPair } = require('./route-utils');
+const { validateAndSanitizeRegimeConfig } = require('../config-validator');
+const { readBooleanFlag } = require('../shared-utils');
+const { getSafeIPC, withConfiguredPair } = require('./route-utils');
 
 /**
  * Context logger for the regime routes. Every endpoint here is fund-scoped, so
@@ -85,27 +87,24 @@ module.exports = (app, deps) => {
     app[method] = (route, handler) => originalApp[method](route, withConfiguredPair(handler));
   }
   const { exchangeIPCMap } = deps;
-  const getIPC = (exchange) => {
-    try {
-      return getExchangeIPC(exchangeIPCMap, exchange);
-    } catch (err) {
-      return { request: () => Promise.reject(err) };
-    }
-  };
-  const getPair = (req) => req.fundPair;
+  const getIPC = (exchange) => getSafeIPC(exchangeIPCMap, exchange);
+  // Reads the pair already validated and attached by withConfiguredPair —
+  // distinct from route-utils' resolvePairParam, which resolves one from
+  // params/query before that validation happens.
+  const getFundPair = (req) => req.fundPair;
 
   // ============ Config (file-based, stays in gateway) ============
 
   app.get('/api/:exchange/regime/config', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const config = buildClientConfig(exchange, pair);
     res.json({ success: true, exchange, pair, config });
   });
 
   app.put('/api/:exchange/regime/config', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const logger = regimeLogger(exchange, pair, '/api/:exchange/regime/config');
     const rawUpdates = req.body;
     if (typeof rawUpdates !== 'object' || rawUpdates === null || Array.isArray(rawUpdates)) {
@@ -120,33 +119,18 @@ module.exports = (app, deps) => {
     for (const [key, value] of Object.entries(rawUpdates)) {
       (FUND_LEVEL_FIELDS.includes(key) ? fundUpdates : rawRegimeUpdates)[key] = value;
     }
-    const { value: regimeUpdates, droppedKeys } = sanitizeRegimeConfig(rawRegimeUpdates);
+    const currentConfig = getRegimeConfig(exchange, pair);
+    const { value: regimeUpdates, droppedKeys, valid, errors } = validateAndSanitizeRegimeConfig(rawRegimeUpdates, currentConfig);
     if (droppedKeys.length > 0) {
       logger.warn(`⚠️ 🧹 [${exchange}/${pair}] Ignored unknown regime config keys: ${droppedKeys.join(', ')}`, {
         action: 'update-config',
         droppedKeys,
       });
     }
+    if (valid === false) {
+      return res.status(400).json({ success: false, errors });
+    }
     const updates = { ...regimeUpdates, ...fundUpdates };
-
-    const currentConfig = getRegimeConfig(exchange, pair);
-    const keysToValidate = Object.keys(regimeUpdates);
-    const crossFieldPairs = {
-      tpMinPercent: 'tpMaxPercent', tpMaxPercent: 'tpMinPercent',
-      macroDeclineThreshold: 'macroAccumulationThreshold', macroAccumulationThreshold: 'macroMarkupThreshold',
-      macroMarkupThreshold: 'macroAccumulationThreshold',
-    };
-    const validationSubset = { ...regimeUpdates };
-    for (const key of keysToValidate) {
-      const partner = crossFieldPairs[key];
-      if (partner && validationSubset[partner] === undefined) {
-        validationSubset[partner] = currentConfig[partner];
-      }
-    }
-    const validation = validateRegimeConfig(validationSubset);
-    if (!validation.valid) {
-      return res.status(400).json({ success: false, errors: validation.errors });
-    }
 
     // Split fund-level fields (dryRun, productId) from regime updates — they
     // persist on different parts of the config block and are read back from
@@ -208,7 +192,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/status', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:status', {}, exchange, pair).catch(engineError);
     if (!result.success) {
       // Engine unreachable: serve a read-only status from disk so the dashboard
@@ -231,7 +215,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/start', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:start', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -239,7 +223,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/stop', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:stop', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -247,7 +231,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/pause', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:pause', { reason: req.body?.reason }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -255,7 +239,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/resume', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:resume', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -265,7 +249,7 @@ module.exports = (app, deps) => {
   // then auto-stops the engine and marks lifecycle 'closed'.
   app.post('/api/:exchange/regime/close', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
     const result = await getIPC(exchange).request('regime:close', { reason }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
@@ -279,7 +263,7 @@ module.exports = (app, deps) => {
   // Reopen a closed fund: lifecycle 'closed' → 'active'. Does not restart the engine.
   app.post('/api/:exchange/regime/reopen', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:reopen', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     regimeLogger(exchange, pair, '/api/:exchange/regime/reopen').info(`ℹ️ 🔓 [${exchange}/${pair}] Fund reopened`, { action: 'reopen-fund' });
@@ -288,7 +272,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/force-regime', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const { regime, reason } = req.body;
 
     const validRegimes = ['HARVEST', 'CAUTION', 'TREND'];
@@ -303,7 +287,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/resume-drawdown', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:resume-drawdown', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -311,7 +295,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/preview-ladder', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:preview-ladder', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -319,7 +303,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/rebuild-ladder', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:rebuild-ladder', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -327,7 +311,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/cancel-ladder', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:cancel-ladder', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -335,7 +319,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/rollup-body', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const { bodyId } = req.body || {};
     if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
 
@@ -347,7 +331,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/rollup-all', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     // Collapse serializes multiple roll-ups, each with exchange settlement checks.
     const result = await getIPC(exchange).request('regime:rollup-all', {}, exchange, pair, 300_000).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
@@ -356,15 +340,59 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/reset-cycle', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:reset-cycle', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
+  // Operator reconcile of an unresolved placement intent. While one exists, the
+  // fund refuses every new placement (across restarts), so this is the only way
+  // to release it — deliberately: nothing auto-clears an ambiguous placement on
+  // a timer or on an empty lookup.
+  app.post('/api/:exchange/regime/reconcile-placement-intent', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getFundPair(req);
+    const { intentId, action } = req.body || {};
+    if (!intentId || typeof intentId !== 'string') {
+      return res.status(400).json({ success: false, error: 'intentId is required' });
+    }
+    if (action !== 'adopt' && action !== 'discard') {
+      return res.status(400).json({ success: false, error: "action must be 'adopt' or 'discard'" });
+    }
+
+    const result = await getIPC(exchange)
+      .request('regime:reconcile-placement-intent', { intentId, action }, exchange, pair)
+      .catch(engineError);
+
+    if (!result.success) {
+      // With the engine down there is no in-memory tracking to adopt into, but
+      // a discard is purely a disk operation and must stay available — an
+      // intent left by a crash is exactly the case where the engine is down.
+      if (action === 'discard') {
+        const removed = resolvePlacementIntent(exchange, pair, intentId);
+        if (removed) {
+          regimeLogger(exchange, pair, '/api/:exchange/regime/reconcile-placement-intent').warn(
+            `⚠️ 🧹 [${exchange}/${pair}] Operator discarded placement intent ${intentId} with the engine down`,
+            { action: 'discard-placement-intent', intentId, engineDown: true },
+          );
+          return res.json({ success: true, engineDown: true, message: 'Discarded the placement intent; placements resume when the engine starts' });
+        }
+        return res.status(404).json({ success: false, error: `No pending placement intent ${intentId} on this fund` });
+      }
+      return res.status(errStatus(result)).json(result);
+    }
+
+    regimeLogger(exchange, pair, '/api/:exchange/regime/reconcile-placement-intent').info(
+      `ℹ️ 🧾 [${exchange}/${pair}] Placement intent ${intentId} reconciled (${action})`,
+      { action: `${action}-placement-intent`, intentId },
+    );
+    res.json(result);
+  });
+
   app.post('/api/:exchange/regime/set-body-tp', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const { bodyId, tpPct } = req.body || {};
     if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
     const pct = parseFloat(tpPct);
@@ -377,7 +405,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/set-body-tp-price', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const { bodyId, limitPrice } = req.body || {};
     if (!bodyId) return res.status(400).json({ success: false, error: 'bodyId is required' });
     const price = parseFloat(limitPrice);
@@ -392,7 +420,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/chart-data', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const data = await getIPC(exchange).request('regime:chart-data', {}, exchange, pair).catch(() =>
       ({ priceHistory: [], atrHistory: [], regimeHistory: [], exchange, pair, timestamp: Date.now() })
     );
@@ -401,7 +429,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/fills', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:fills', {}, exchange, pair).catch(engineError);
     if (result.success === false) return res.status(errStatus(result)).json(result);
     res.json({ success: true, exchange, pair, ...result });
@@ -409,7 +437,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/open-orders', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:open-orders', {}, exchange, pair).catch(engineError);
     if (result.success === false) return res.status(errStatus(result)).json(result);
     res.json({ success: true, exchange, pair, ...result });
@@ -417,18 +445,23 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/recalculate', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
-    const { apply = false } = req.body;
-    const result = await getIPC(exchange).request('regime:recalculate', { apply }, exchange, pair).catch(engineError);
+    const pair = getFundPair(req);
+    const applyFlag = readBooleanFlag(req.body || {}, 'apply', false);
+    if (applyFlag.error) return res.status(400).json({ success: false, error: applyFlag.error });
+    const result = await getIPC(exchange).request('regime:recalculate', { apply: applyFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/convert-dca', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
-    const { preview = true, merge = false } = req.body;
-    const result = await getIPC(exchange).request('regime:convert-dca', { preview, merge }, exchange, pair).catch(engineError);
+    const pair = getFundPair(req);
+    const body = req.body || {};
+    const previewFlag = readBooleanFlag(body, 'preview', true);
+    if (previewFlag.error) return res.status(400).json({ success: false, error: previewFlag.error });
+    const mergeFlag = readBooleanFlag(body, 'merge', false);
+    if (mergeFlag.error) return res.status(400).json({ success: false, error: mergeFlag.error });
+    const result = await getIPC(exchange).request('regime:convert-dca', { preview: previewFlag.value, merge: mergeFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -437,7 +470,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/unaccounted-fills', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const { startDate } = req.query;
     if (!startDate) return res.status(400).json({ success: false, error: 'startDate query parameter is required' });
     const result = await getIPC(exchange).request('regime:unaccounted-fills', { startDate }, exchange, pair).catch(engineError);
@@ -447,7 +480,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/manual-trades', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:manual-trades', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -455,7 +488,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/manual-trade', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:manual-trade', req.body, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -463,7 +496,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/manual-trade/:tradeId/check', async (req, res) => {
     const { exchange, tradeId } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:manual-trade-check', { tradeId }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -471,15 +504,18 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/manual-trade-buy', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
-    const result = await getIPC(exchange).request('regime:manual-trade-buy', req.body, exchange, pair).catch(engineError);
+    const pair = getFundPair(req);
+    const body = req.body || {};
+    const createBodyFlag = readBooleanFlag(body, 'createBody', true);
+    if (createBodyFlag.error) return res.status(400).json({ success: false, error: createBodyFlag.error });
+    const result = await getIPC(exchange).request('regime:manual-trade-buy', { ...body, createBody: createBodyFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
 
   app.post('/api/:exchange/regime/manual-trade-pair', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:manual-trade-pair', req.body, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -487,7 +523,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/dismiss-fills', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const { orderIds } = req.body;
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
       return res.status(400).json({ success: false, error: 'orderIds array is required' });
@@ -501,7 +537,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/dry-run/log', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const limit = parseInt(req.query.limit) || 100;
     const result = await getIPC(exchange).request('regime:dry-run-log', { limit }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
@@ -510,7 +546,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/dry-run/pnl', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:dry-run-pnl', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -518,7 +554,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/:exchange/regime/dry-run/reset', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:dry-run-reset', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
@@ -526,7 +562,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/:exchange/regime/dry-run/state', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:dry-run-state', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);

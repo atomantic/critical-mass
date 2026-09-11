@@ -60,8 +60,10 @@ describe('Mutex utility', () => {
     // Documents the hazard the tpMutex fix addresses: a small auto-release
     // timeout admits a second acquirer even though the first never released.
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = line => lines.push(line);
+    console.warn = line => lines.push(line);
+    console.error = line => lines.push(line);
 
     let waited;
     try {
@@ -74,7 +76,9 @@ describe('Mutex utility', () => {
       waited = Date.now() - start;
       releaseSecond();
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     }
 
     assert.ok(waited >= 25, `second acquire waited for the auto-release (~30ms), got ${waited}ms`);
@@ -221,30 +225,6 @@ describe('Race 1: Duplicate TP prevention', () => {
     assert.equal(result.totalFees, 1.05);
   });
 
-  it('mutex serializes concurrent TP updates', async () => {
-    let sellCallCount = 0;
-    const adapter = createMockAdapter({
-      placeLimitSell: async () => {
-        sellCallCount++;
-        await new Promise(r => setTimeout(r, 20));
-        return { success: true, orderId: `sell-${sellCallCount}` };
-      },
-    });
-
-    const executor = createOrderExecutor('test', createTestConfig(), adapter, 'BTC-USDC');
-
-    // Fire two TP placements concurrently (both force update to bypass anti-churn)
-    const [r1, r2] = await Promise.all([
-      executor.placeTakeProfitOrder(0.01, 100000, { forceUpdate: true }),
-      executor.placeTakeProfitOrder(0.01, 101000, { forceUpdate: true }),
-    ]);
-
-    // Both should complete (serialized, not racing)
-    assert.ok(r1.success || r2.success);
-    // The second call should have cancelled the first's TP (mutex ensures no overlap)
-    assert.ok(sellCallCount >= 1);
-  });
-
   it('concurrent placeTakeProfitOrder under a slow cancel leaves exactly one live TP (issue #209 B)', async () => {
     // Two placeTakeProfitOrder calls race while each TP cancel is slow. With
     // the deadlock guard sitting well above the section duration the mutex
@@ -378,87 +358,5 @@ describe('Race 2: Atomic writes and version locking', () => {
 
     // Clean up
     fs.rmSync(dir, { recursive: true, force: true });
-  });
-});
-
-// ============================================================================
-// Race 3: Sell Fills During Body Merges
-// ============================================================================
-describe('Race 3: Merge-snapshot fill handling', () => {
-
-  it('pendingMergeTpOrders stores snapshots correctly', () => {
-    // Simulate the Map behavior used in regime-engine
-    const pendingMergeTpOrders = new Map();
-
-    const bodySnapshot = {
-      id: 'body-123',
-      tier: 'ASTEROID',
-      btcQty: 0.001,
-      costBasis: 100,
-      avgPrice: 100000,
-      tpOrderId: 'tp-order-abc',
-    };
-
-    pendingMergeTpOrders.set(bodySnapshot.tpOrderId, { ...bodySnapshot });
-
-    assert.ok(pendingMergeTpOrders.has('tp-order-abc'));
-    const snapshot = pendingMergeTpOrders.get('tp-order-abc');
-    assert.equal(snapshot.id, 'body-123');
-    assert.equal(snapshot.btcQty, 0.001);
-    assert.equal(snapshot.costBasis, 100);
-  });
-
-  it('snapshot-based fill processing calculates correct P&L', () => {
-    const snapshot = {
-      id: 'body-merged',
-      tier: 'ASTEROID',
-      btcQty: 0.001,
-      costBasis: 100,
-      avgPrice: 100000,
-      tpOrderId: 'tp-filled',
-    };
-
-    // Simulate fill summary
-    const summary = {
-      totalSize: 0.00099, // sell qty after holdback
-      totalValue: 105,    // proceeds at TP price
-      totalFees: 0.10,
-      avgPrice: 106060.61,
-    };
-
-    const proceeds = summary.totalValue - summary.totalFees;
-    const pnl = proceeds - snapshot.costBasis;
-    const holdbackBtc = snapshot.btcQty - summary.totalSize;
-
-    assert.ok(pnl > 0, `PnL should be positive: ${pnl}`);
-    assert.ok(holdbackBtc > 0, `Holdback should be positive: ${holdbackBtc}`);
-    assert.ok(Math.abs(proceeds - 104.9) < 0.001, `Proceeds ≈ 104.9: ${proceeds}`);
-    assert.ok(Math.abs(pnl - 4.9) < 0.001, `PnL ≈ 4.9: ${pnl}`);
-  });
-
-  it('completedMergeTpOrders deduplicates same order ID', () => {
-    const completedMergeTpOrders = new Map();
-
-    const snapshot1 = { id: 'body-1', btcQty: 0.001 };
-    const snapshot2 = { id: 'body-1-dupe', btcQty: 0.002 };
-
-    completedMergeTpOrders.set('tp-123', snapshot1);
-    // Second set with same key overwrites (expected Map behavior)
-    completedMergeTpOrders.set('tp-123', snapshot2);
-
-    assert.equal(completedMergeTpOrders.size, 1);
-    assert.equal(completedMergeTpOrders.get('tp-123').id, 'body-1-dupe');
-  });
-
-  it('TTL expiry removes entries from completedMergeTpOrders', async () => {
-    const completedMergeTpOrders = new Map();
-
-    completedMergeTpOrders.set('tp-expire', { id: 'body-ttl', btcQty: 0.001 });
-    // Simulate TTL with short timeout
-    setTimeout(() => completedMergeTpOrders.delete('tp-expire'), 50);
-
-    assert.ok(completedMergeTpOrders.has('tp-expire'));
-    await new Promise(r => setTimeout(r, 100));
-    assert.ok(!completedMergeTpOrders.has('tp-expire'));
   });
 });

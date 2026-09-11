@@ -14,7 +14,7 @@
  * here.
  */
 
-const { loadRegimeState, LIFECYCLE } = require('./state-tracker');
+const { loadRegimeState, LIFECYCLE, describePlacementIntents } = require('./state-tracker');
 const { getCachedFillLedger, createFillLedger } = require('./fill-ledger');
 const { calculateApyMetrics } = require('./apy-calculator');
 const celestialHierarchy = require('./celestial-hierarchy');
@@ -145,6 +145,10 @@ const buildStoppedRegimeStatus = (exchange, pair, options = {}) => {
       lifecycleClosedCycle: position?.lifecycleClosedCycle || null,
     },
     celestial,
+    // Unresolved placement intents must be visible precisely when the engine is
+    // NOT running — a crash inside the dispatch window is the case that leaves
+    // one behind (#472).
+    placementIntents: describePlacementIntents(exchange, pair),
     isDryRun: savedState?.isDryRun || false,
   };
 

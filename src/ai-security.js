@@ -6,6 +6,7 @@ const REDACTED = '[REDACTED]';
 const SECRET_KEYS = /(api[-_]?key|authorization|credential|password|private[-_]?key|secret|token)$/i;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const STAGE_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const outboundPolicy = new AsyncLocalStorage();
 const nativeFetch = globalThis.fetch;
 let fetchGuardInstalled = false;
@@ -160,6 +161,17 @@ const createAiSecurity = ({
     }).catch(next);
   };
 
+  const guardPrompts = (req, res, next) => {
+    const segments = req.path.split('/').filter(Boolean);
+    if (segments[0] !== 'stages') return next();
+    const stageName = segments.length >= 2 ? segments[1] : req.body?.name;
+    if (stageName === undefined) return next();
+    if (typeof stageName !== 'string' || !STAGE_NAME_PATTERN.test(stageName)) {
+      return res.status(400).json({ error: 'Stage name must contain only letters, numbers, hyphens, and underscores' });
+    }
+    next();
+  };
+
   const guardRun = (req, res, next) => {
     if (req.method === 'POST' && req.path === '/') {
       const workspacePath = resolveWorkspace(req.body?.workspacePath, roots);
@@ -177,7 +189,7 @@ const createAiSecurity = ({
     return next();
   };
 
-  return { constrainOutboundRequests, filterProviderSamples, guardProviderExecution, guardProviderMutation, guardRun, redactJsonResponses, validateProvider };
+  return { constrainOutboundRequests, filterProviderSamples, guardProviderExecution, guardProviderMutation, guardPrompts, guardRun, redactJsonResponses, validateProvider };
 };
 
 module.exports = { REDACTED, createAiSecurity, redactSecrets, resolveWorkspace, restoreRedactedValues };

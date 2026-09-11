@@ -483,6 +483,8 @@ const createSizeOptimizer = (exchange, config, callbacks = {}, productId) => {
     reset,
     // Utility export
     calculateTotalStepMultiplier,
+    // For testing
+    _calculateAdjustment: calculateAdjustment,
   };
 };
 

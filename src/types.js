@@ -537,6 +537,10 @@
  */
 
 /**
+ * @typedef {{valid: true, value: Partial<RegimeStrategyConfig>, errors: string[]} | {valid: false, value?: never, errors: string[]}} RegimeValidationResult
+ */
+
+/**
  * @typedef {Object} RegimeStrategyConfig
  * Mode Flags
  * @property {boolean} enabled - Whether regime engine is enabled (default: false)
@@ -623,6 +627,47 @@
  * @property {boolean} [ladderAutoSwitch] - Auto-switch to ladder on high vol (default: false)
  * @property {number} [ladderAutoSwitchVolMult] - Vol expansion threshold for auto-switch (default: 2.0)
  * @property {number} [ladderMinSpacingPct] - Min % between rungs (default: 0.5)
+ *
+ * Additional managed and macro settings
+ * @property {boolean} celestialEnabled - Regime setting (default: true)
+ * @property {number} maxCelestialBodies - Regime setting (default: 10)
+ * @property {boolean} tpAutoManaged - Regime setting (default: false)
+ * @property {number} tpEvaluationCycles - Regime setting (default: 5)
+ * @property {number} tpEvaluationMaxHours - Regime setting (default: 24)
+ * @property {number} tpMinSampleSize - Regime setting (default: 10)
+ * @property {number} tpAbsoluteMin - Regime setting (default: 0.05)
+ * @property {number} tpAbsoluteMax - Regime setting (default: 5.0)
+ * @property {number} tpMaxChangePercent - Regime setting (default: 25)
+ * @property {boolean} sizeAutoManaged - Regime setting (default: false)
+ * @property {number} sizeEvaluationCycles - Regime setting (default: 5)
+ * @property {number} sizeEvaluationMaxHours - Regime setting (default: 24)
+ * @property {number} sizeMinSampleSize - Regime setting (default: 5)
+ * @property {number} sizeAbsoluteMinBase - Regime setting (default: 10)
+ * @property {number} sizeAbsoluteMaxBase - Regime setting (default: 500)
+ * @property {number} sizeTargetUtilization - Regime setting (default: 0.90)
+ * @property {number} sizeMaxChangePercent - Regime setting (default: 25)
+ * @property {boolean} sizeAutoCycleBuys - Regime setting (default: false)
+ * @property {number} sizeMinCycleBuys - Regime setting (default: 10)
+ * @property {number} sizeMaxCycleBuys - Regime setting (default: 100)
+ * @property {boolean} macroEnabled - Regime setting (default: false)
+ * @property {number} macroUpdateIntervalMs - Regime setting (default: 300000)
+ * @property {number} macroHysteresis - Regime setting (default: 5)
+ * @property {number} macroAccumulationThreshold - Regime setting (default: -15)
+ * @property {number} macroDeclineThreshold - Regime setting (default: -50)
+ * @property {number} macroMarkupThreshold - Regime setting (default: 35)
+ * @property {number} macroAccumulationSizeMult - Regime setting (default: 1.3)
+ * @property {number} macroAccumulationTpMult - Regime setting (default: 0.85)
+ * @property {number} macroAccumulationOffsetMult - Regime setting (default: 0.8)
+ * @property {number} macroMarkupSizeMult - Regime setting (default: 0.7)
+ * @property {number} macroMarkupTpMult - Regime setting (default: 1.3)
+ * @property {number} macroMarkupOffsetMult - Regime setting (default: 1.2)
+ * @property {number} macroDeclineSizeMult - Regime setting (default: 0.4)
+ * @property {number} macroDeclineTpMult - Regime setting (default: 0.7)
+ * @property {number} macroDeclineOffsetMult - Regime setting (default: 1.5)
+ * @property {boolean} longTermBiasEnabled - Regime setting (default: true)
+ * @property {number} longTermLookbackDays - Regime setting (default: 365)
+ * @property {number} longTermUpdateIntervalMs - Regime setting (default: 3600000)
+ * @property {boolean} autoAggressivenessEnabled - Regime setting (default: false)
  */
 
 /**
@@ -744,6 +789,7 @@
  * @property {(productId: string, quoteAmount: number) => Promise<MarketBuyResult>} placeMarketBuy - Place market buy
  * @property {(productId: string, baseAmount: number, price: number, options?: {postOnly?: boolean}) => Promise<LimitSellResult>} placeLimitSell - Place limit sell
  * @property {(orderId: string) => Promise<OrderDetails>} getOrder - Get order details
+ * @property {(clientOrderId: string, productId?: string|null) => Promise<OrderDetails|null>} [findOrderByClientOrderId] - Resolve an ambiguous placement by the client order id we sent; null only when the exchange positively has no such order
  * @property {(productId: string) => Promise<OpenOrder[]>} getOpenOrders - Get open orders
  * @property {(orderId: string) => Promise<CancelResult>} cancelOrder - Cancel an order
  * @property {(orderId: string) => Promise<OrderFill[]>} getOrderFills - Get order fills

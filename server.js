@@ -5,8 +5,9 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
-const { log } = require('./src/logger');
+const { log, createContextLogger } = require('./src/logger');
 const { runMigrationIfNeeded } = require('./src/migration');
+const { guardIncompleteRestore } = require('./src/restore-apply');
 const {
   getExchangeConfig,
   getEnabledExchanges,
@@ -35,12 +36,20 @@ const {
   getNextTradeInfo,
 } = require('./src/shared-utils');
 const { createIPCClient } = require('./src/ipc/ipc-client');
+const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { createOperatorAuth } = require('./src/operator-auth');
 const { resolveListenHosts, isGatewayOrigin } = require('./src/gateway-listen');
+
+// A backup restore that a crash interrupted leaves data/ as a mix of
+// archive-era and current-era files. Finish its rollback BEFORE anything reads
+// persisted state (migration included) — and refuse to start at all if the
+// rollback cannot complete, rather than serving mismatched accounting data
+// (issue #431).
+guardIncompleteRestore({ processLabel: 'gateway', logger: createContextLogger({ module: 'server' }) });
 
 // Run migration on startup
 runMigrationIfNeeded();
@@ -91,6 +100,10 @@ app.use(express.json());
 
 operatorAuth.registerSessionRoutes(app);
 app.use('/api', operatorAuth.requireAuth);
+// Hold every mutating API request while a backup restore is applying files, so
+// nothing can land between "writers confirmed stopped" and "archive applied"
+// and silently overwrite the recovered snapshot (issue #429).
+app.use('/api', maintenanceGuard);
 io.use(operatorAuth.socketMiddleware);
 log('INFO', operatorAuth.hasPassword()
   ? '🔐 Operator sign-in is required (password in data/operator-auth.json)'
@@ -241,7 +254,7 @@ const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSO
 
 require('./src/routes/sentinel-routes')(app, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(app, sharedDeps);
-require('./src/routes/settings-routes')(app, sharedDeps);
+require('./src/routes/settings-routes')(app, { ...sharedDeps, updownService, sentinelService, candleCache });
 require('./src/routes/candle-routes')(app, { candleCache });
 require('./src/routes/updown-routes')(app, { ...sharedDeps, updownService, candleCache });
 require('./src/routes/exchange-routes')(app, sharedDeps);
@@ -327,7 +340,9 @@ app.get('*splat', (req, res) => {
 
 // ============ PM2 Log Streaming ============
 
-const activeLogStreams = new Map(); // socketId -> { process, processName }
+const { createLogStreamRegistry, registerLogStreamHandlers, disconnectLogStream } = require('./src/log-stream-manager');
+
+const activeLogStreams = createLogStreamRegistry(); // socketId -> { process, processName }
 
 const ALLOWED_LOG_PROCESSES = new Set([
   'critical-mass', 'critical-mass-coinbase', 'critical-mass-gemini',
@@ -345,12 +360,7 @@ tradeEvents.on('trade', (event) => {
 io.on('connection', (socket) => {
   log('INFO', `WebSocket client connected: ${socket.id}`);
   socket.on('disconnect', () => {
-    const entry = activeLogStreams.get(socket.id);
-    if (entry?.process) {
-      entry.process.kill();
-      activeLogStreams.delete(socket.id);
-      log('INFO', `📋 Log stream cleaned up for ${entry.processName} → ${socket.id}`);
-    }
+    disconnectLogStream({ socket, registry: activeLogStreams, log });
     log('INFO', `WebSocket client disconnected: ${socket.id}`);
   });
 
@@ -368,90 +378,12 @@ io.on('connection', (socket) => {
   socket.on('sentinel:unsubscribe', () => socket.leave('sentinel'));
 
   // PM2 log streaming
-  socket.on('logs:subscribe', ({ processName, lines }) => {
-    if (!ALLOWED_LOG_PROCESSES.has(processName)) {
-      socket.emit('logs:error', { error: `Invalid process: ${processName}` });
-      return;
-    }
-    const tailLines = Math.min(Math.max(parseInt(lines) || 500, 1), 5000);
-
-    // Kill existing stream for this socket
-    const existing = activeLogStreams.get(socket.id);
-    if (existing?.process) {
-      existing.process.kill();
-    }
-
-    const logProcess = spawn('pm2', ['logs', processName, '--raw', '--lines', String(tailLines)], { shell: false });
-    activeLogStreams.set(socket.id, { process: logProcess, processName });
-
-    let stdoutBuf = '';
-    let stderrBuf = '';
-
-    logProcess.stdout.on('data', (chunk) => {
-      stdoutBuf += chunk.toString();
-      const lines = stdoutBuf.split('\n');
-      stdoutBuf = lines.pop();
-      for (const line of lines) {
-        if (line.trim()) {
-          socket.emit('logs:line', { processName, line, type: 'stdout', timestamp: Date.now() });
-        }
-      }
-    });
-
-    logProcess.stderr.on('data', (chunk) => {
-      stderrBuf += chunk.toString();
-      const lines = stderrBuf.split('\n');
-      stderrBuf = lines.pop();
-      for (const line of lines) {
-        if (line.trim()) {
-          socket.emit('logs:line', { processName, line, type: 'stderr', timestamp: Date.now() });
-        }
-      }
-    });
-
-    logProcess.on('error', (err) => {
-      log('ERROR', `📋 Log stream error for ${processName}: ${err.message}`);
-      socket.emit('logs:error', { error: err.message });
-    });
-
-    logProcess.on('close', () => {
-      const entry = activeLogStreams.get(socket.id);
-      if (entry?.process === logProcess) {
-        activeLogStreams.delete(socket.id);
-      }
-    });
-
-    socket.emit('logs:subscribed', { processName });
-    log('INFO', `📋 Log stream started for ${processName} (${tailLines} lines) → ${socket.id}`);
-  });
-
-  socket.on('logs:unsubscribe', () => {
-    const entry = activeLogStreams.get(socket.id);
-    if (entry?.process) {
-      entry.process.kill();
-      activeLogStreams.delete(socket.id);
-      socket.emit('logs:unsubscribed');
-      log('INFO', `📋 Log stream stopped for ${entry.processName} → ${socket.id}`);
-    }
-  });
-
-  socket.on('logs:flush', ({ processName }) => {
-    if (!ALLOWED_LOG_PROCESSES.has(processName)) {
-      socket.emit('logs:error', { error: `Invalid process: ${processName}` });
-      return;
-    }
-    const flushProc = spawn('pm2', ['flush', processName], { shell: false });
-    let output = '';
-    flushProc.stdout.on('data', (chunk) => { output += chunk.toString(); });
-    flushProc.stderr.on('data', (chunk) => { output += chunk.toString(); });
-    flushProc.on('close', (code) => {
-      socket.emit('logs:flushed', { processName, success: code === 0 });
-      log('INFO', `📋 Log flush ${code === 0 ? 'succeeded' : 'failed'} for ${processName}`);
-    });
-    flushProc.on('error', (err) => {
-      socket.emit('logs:flushed', { processName, success: false });
-      log('ERROR', `📋 Log flush error for ${processName}: ${err.message}`);
-    });
+  registerLogStreamHandlers({
+    socket,
+    registry: activeLogStreams,
+    spawnFn: spawn,
+    log,
+    allowedProcesses: ALLOWED_LOG_PROCESSES,
   });
 });
 
@@ -461,6 +393,11 @@ const schedulerState = {};
 
 const checkAndRunIntervalTrade = () => {
   if (!getGlobalConfig().simpleDcaEnabled) return;
+  // A scheduled DCA buy writes the same files a restore is replacing.
+  if (isMaintenanceActive()) {
+    log('INFO', '⏸️  Scheduled trade check skipped: gateway is in restore maintenance');
+    return;
+  }
 
   const enabledExchanges = getEnabledExchanges();
 
@@ -557,7 +494,7 @@ const gracefulShutdown = async (signal) => {
   sentinelService.stop();
 
   // Kill all active log streams
-  for (const [socketId, entry] of activeLogStreams) {
+  for (const [, entry] of activeLogStreams.entries()) {
     entry.process?.kill();
   }
   activeLogStreams.clear();

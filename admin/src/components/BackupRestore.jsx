@@ -17,86 +17,216 @@ function BackupRestore() {
   const [config, setConfig] = useState(null)
   const [backups, setBackups] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [creating, setCreating] = useState(false)
   const [message, setMessage] = useState(null)
   const [restoreTarget, setRestoreTarget] = useState(null)
   const [restoring, setRestoring] = useState(false)
+  // Set when the gateway refuses a restore because a writer never confirmed it
+  // stopped (HTTP 409 `writers-not-quiesced`). Holds the blocking writers so the
+  // operator can see WHAT is still alive before deciding to override (issue #429).
+  const [blockedBy, setBlockedBy] = useState(null)
+  const [forceAcknowledged, setForceAcknowledged] = useState(false)
+  // Pre-flight result for the selected archive: whether it carries a #430
+  // configuration manifest, which funds it would restore, and whether that
+  // replays cleanly onto THIS machine's base config. Read-only — fetched when
+  // the operator selects an archive, before any restore is submitted.
+  const [compatibility, setCompatibility] = useState(null)
+  const [compatibilityLoading, setCompatibilityLoading] = useState(false)
+  const [compatibilityError, setCompatibilityError] = useState(null)
+  const [legacyAcknowledged, setLegacyAcknowledged] = useState(false)
   const [deleting, setDeleting] = useState(null)
+  const [refreshError, setRefreshError] = useState(null)
 
-  const fetchData = async () => {
-    setLoading(true)
-    const res = await fetch('/api/backups')
-    if (res.ok) {
-      const data = await res.json()
-      setBackups(data.backups || [])
-      setConfig(data.config || {})
+  // `silent` refreshes run after a completed action: they must never swap the page
+  // for the loading/error gate, or the action's own result message is erased.
+  const fetchData = async ({ silent = false } = {}) => {
+    if (!silent) {
+      setLoading(true)
+      setError(null)
     }
-    setLoading(false)
+    const fail = (text) => (silent ? setRefreshError(text) : setError(text))
+    try {
+      const res = await fetch('/api/backups')
+      if (res.ok) {
+        const data = await res.json()
+        setBackups(data.backups || [])
+        setConfig(data.config || {})
+        setRefreshError(null)
+      } else {
+        fail(`Failed to load backups (HTTP ${res.status})`)
+      }
+    } catch (err) {
+      fail(err.message || 'Failed to load backups')
+    } finally {
+      if (!silent) setLoading(false)
+    }
   }
 
   useEffect(() => {
     fetchData()
   }, [])
 
+  useEffect(() => {
+    if (!restoreTarget) {
+      setCompatibility(null)
+      setCompatibilityError(null)
+      return
+    }
+    let cancelled = false
+    setCompatibilityLoading(true)
+    setCompatibility(null)
+    setCompatibilityError(null)
+    fetch(`/api/backups/${restoreTarget}/compatibility`)
+      .then(res => res.json().then(data => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (cancelled) return
+        if (ok && data?.success) setCompatibility(data)
+        else setCompatibilityError(data?.error || 'Unknown error')
+      })
+      .catch(err => { if (!cancelled) setCompatibilityError(err.message || 'Request failed') })
+      .finally(() => { if (!cancelled) setCompatibilityLoading(false) })
+    return () => { cancelled = true }
+  }, [restoreTarget])
+
   const handleSaveConfig = async () => {
     setSaving(true)
     setMessage(null)
-    const res = await fetch('/api/backups/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    })
-    if (res.ok) {
-      setMessage({ type: 'success', text: 'Backup settings saved!' })
-      fetchData()
-    } else {
-      setMessage({ type: 'error', text: 'Failed to save settings' })
+    try {
+      const res = await fetch('/api/backups/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      })
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'Backup settings saved!' })
+        fetchData({ silent: true })
+      } else {
+        setMessage({ type: 'error', text: 'Failed to save settings' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleCreateBackup = async () => {
     setCreating(true)
     setMessage(null)
-    const res = await fetch('/api/backups', { method: 'POST' })
-    if (res.ok) {
-      const data = await res.json()
-      setMessage({ type: 'success', text: `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})` })
-      fetchData()
-    } else {
-      const data = await res.json().catch(() => ({}))
-      setMessage({ type: 'error', text: `Backup failed: ${data.error || 'Unknown error'}` })
+    try {
+      const res = await fetch('/api/backups', { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        setMessage({ type: 'success', text: `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})` })
+        fetchData({ silent: true })
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: `Backup failed: ${data.error || 'Unknown error'}` })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to create backup' })
+    } finally {
+      setCreating(false)
     }
-    setCreating(false)
   }
 
   const handleDelete = async (filename) => {
     setDeleting(filename)
-    const res = await fetch(`/api/backups/${filename}`, { method: 'DELETE' })
-    if (res.ok) {
-      setMessage({ type: 'success', text: `Deleted ${filename}` })
-      fetchData()
-    } else {
-      setMessage({ type: 'error', text: 'Failed to delete backup' })
+    try {
+      const res = await fetch(`/api/backups/${filename}`, { method: 'DELETE' })
+      if (res.ok) {
+        setMessage({ type: 'success', text: `Deleted ${filename}` })
+        fetchData({ silent: true })
+      } else {
+        setMessage({ type: 'error', text: 'Failed to delete backup' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to delete backup' })
+    } finally {
+      setDeleting(null)
     }
-    setDeleting(null)
   }
 
-  const handleRestore = async () => {
+  const handleRestore = async ({ force = false } = {}) => {
     if (!restoreTarget) return
     setRestoring(true)
     setMessage(null)
-    const res = await fetch(`/api/backups/${restoreTarget}/restore`, { method: 'POST' })
-    const data = await res.json().catch(() => ({}))
-    if (res.ok && data.success) {
-      setMessage({ type: 'success', text: data.message || `Restored ${data.filesRestored} files` })
-    } else {
-      setMessage({ type: 'error', text: `Restore failed: ${data.error || 'Unknown error'}` })
+    let blocked = null
+    try {
+      const res = await fetch(`/api/backups/${restoreTarget}/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force, acceptLegacyWithoutBase: legacyAcknowledged }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        setMessage({
+          type: data.forced ? 'error' : 'success',
+          text: [
+            data.forced
+              ? `${data.message || `Restored ${data.filesRestored} files`} — FORCED past ${data.unconfirmed?.length || 0} unconfirmed writer(s); verify your data before restarting engines.`
+              : (data.message || `Restored ${data.filesRestored} files`),
+            data.configRestored
+              ? 'Fund configuration was restored from the archive manifest.'
+              : 'Data files only — this machine kept its existing fund configuration.',
+          ].join(' '),
+        })
+      } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
+        // Nothing was written. Keep the target selected and offer the override.
+        blocked = data.unconfirmed || []
+        setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
+      } else if (data.code === 'restore-incomplete-recovery') {
+        // The application failed AND could not be rolled back: data/ is a mix of
+        // archive-era and current-era files. Say so plainly — the recovery
+        // artifacts are retained and every startup retries the rollback (#431).
+        setMessage({
+          type: 'error',
+          text: `${data.error || 'Restore failed and could not be rolled back.'} Do NOT start engines: restart the gateway to retry the rollback, and keep the retained recovery files until it succeeds.`,
+        })
+      } else {
+        setMessage({ type: 'error', text: `Restore failed: ${data.error || 'Unknown error'}` })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to restore backup' })
+    } finally {
+      setBlockedBy(blocked)
+      setForceAcknowledged(false)
+      if (!blocked) setRestoreTarget(null)
+      setRestoring(false)
     }
+    fetchData({ silent: true })
+  }
+
+  const cancelRestore = () => {
     setRestoreTarget(null)
-    setRestoring(false)
-    fetchData()
+    setBlockedBy(null)
+    setForceAcknowledged(false)
+    setLegacyAcknowledged(false)
+  }
+
+  // A legacy archive carries no configuration, so restoring it is a data-only
+  // operation the operator has to opt into explicitly (issue #430).
+  const restoreBlocked = compatibilityLoading || (compatibility?.legacy === true && !legacyAcknowledged)
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-32">
+        <div className="max-w-sm text-center">
+          <div className="bg-red-900/50 border border-red-700 text-red-200 p-4 rounded-lg mb-4">
+            {error}
+          </div>
+          <button
+            onClick={() => fetchData()}
+            disabled={loading}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+          >
+            {loading ? 'Retrying...' : 'Retry'}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   if (loading || !config) {
@@ -120,6 +250,18 @@ function BackupRestore() {
               : 'bg-red-900/50 border border-red-700 text-red-200'
           }`}>
             {message.text}
+          </div>
+        )}
+
+        {refreshError && (
+          <div className="mb-4 p-3 rounded-lg bg-yellow-900/50 border border-yellow-700 text-yellow-200 flex items-center justify-between gap-3">
+            <span>Backup list may be out of date: {refreshError}</span>
+            <button
+              onClick={() => fetchData({ silent: true })}
+              className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 rounded font-medium transition-colors"
+            >
+              Refresh
+            </button>
           </div>
         )}
 
@@ -217,21 +359,108 @@ function BackupRestore() {
             This will stop all running engines and overwrite current data files.
             API keys will NOT be affected. You will need to restart engines manually from the dashboard.
           </p>
+          {compatibilityLoading && (
+            <div className="bg-gray-800/60 border border-gray-600 rounded-lg p-4 mb-4 text-sm text-gray-300">
+              Checking archive configuration compatibility...
+            </div>
+          )}
+          {compatibility && !compatibilityLoading && (
+            compatibility.compatible ? (
+              <div className="bg-green-900/30 border border-green-700 rounded-lg p-4 mb-4">
+                <p className="text-sm font-semibold text-green-200 mb-2">
+                  Archive carries its fund configuration (manifest v{compatibility.manifestVersion}).
+                  It will be replayed onto this machine's config, replacing the funds below.
+                </p>
+                <ul className="text-xs text-green-200/90 font-mono space-y-1">
+                  {compatibility.funds?.map(f => (
+                    <li key={`${f.exchange}:${f.pair}`}>
+                      {f.exchange} &middot; {f.pair} &middot; {f.totalAllocation ?? '—'}
+                      {f.enabled ? ' · enabled' : ' · disabled'}{f.dryRun ? ' · dry-run' : ''}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-green-200/70 mt-2">
+                  API keys, Telegram and Sentinel credentials on this machine are preserved.
+                </p>
+              </div>
+            ) : (
+              <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
+                <p className="text-sm font-semibold text-red-200 mb-2">
+                  {compatibility.legacy ? 'Legacy archive: no configuration manifest' : 'Archive configuration cannot be applied'}
+                </p>
+                <p className="text-xs text-red-200/90 mb-3">{compatibility.error}</p>
+                {compatibility.legacy && (
+                  <label className="flex items-center gap-2 text-xs text-red-200">
+                    <input
+                      type="checkbox"
+                      checked={legacyAcknowledged}
+                      onChange={e => setLegacyAcknowledged(e.target.checked)}
+                      className="accent-red-500"
+                    />
+                    Restore data files only and keep this machine's current fund configuration
+                  </label>
+                )}
+              </div>
+            )
+          )}
+          {compatibilityError && !compatibilityLoading && (
+            <div className="bg-yellow-900/40 border border-yellow-700 rounded-lg p-4 mb-4 text-xs text-yellow-200">
+              Could not check archive compatibility: {compatibilityError}
+            </div>
+          )}
+          {blockedBy && (
+            <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
+              <p className="text-sm font-semibold text-red-200 mb-2">
+                Blocked: {blockedBy.length} writer(s) did not confirm shutdown. No files were changed.
+              </p>
+              <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
+                {blockedBy.map(w => (
+                  <li key={`${w.exchange}:${w.reason}`}>
+                    {w.exchange} &middot; {w.reason}{w.error ? ` — ${w.error}` : ''}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-red-200/80 mb-3">
+                Forcing the restore applies the archive anyway. If one of these writers is
+                still alive it will overwrite the recovered files with its own pre-restore
+                snapshot. Only force when you know the process is dead (e.g. a crashed
+                engine that cannot be reached over IPC).
+              </p>
+              <label className="flex items-center gap-2 text-xs text-red-200">
+                <input
+                  type="checkbox"
+                  checked={forceAcknowledged}
+                  onChange={e => setForceAcknowledged(e.target.checked)}
+                  className="accent-red-500"
+                />
+                I have verified the listed writers are not running
+              </label>
+            </div>
+          )}
           <div className="flex gap-3">
             <button
-              onClick={() => setRestoreTarget(null)}
+              onClick={cancelRestore}
               disabled={restoring}
               className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-lg font-medium transition-colors"
             >
               Cancel
             </button>
             <button
-              onClick={handleRestore}
-              disabled={restoring}
+              onClick={() => handleRestore()}
+              disabled={restoring || restoreBlocked}
               className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
             >
-              {restoring ? 'Restoring...' : 'Confirm Restore'}
+              {restoring ? 'Restoring...' : blockedBy ? 'Retry Restore' : 'Confirm Restore'}
             </button>
+            {blockedBy && (
+              <button
+                onClick={() => handleRestore({ force: true })}
+                disabled={restoring || restoreBlocked || !forceAcknowledged}
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 disabled:bg-red-900 disabled:text-red-400 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+              >
+                Force Restore Anyway
+              </button>
+            )}
           </div>
         </div>
       )}

@@ -29,45 +29,59 @@ export default function GatewayAccess() {
       return
     }
     setSaving(true)
-    const res = await fetch('/api/auth/password', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password, currentPassword: currentPassword || undefined }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (res.ok) {
-      setRequired(true)
-      setPassword('')
-      setConfirm('')
-      setCurrentPassword('')
-      setMessage({ type: 'success', text: 'Password saved. Sign-in is now required.' })
-    } else {
-      setMessage({ type: 'error', text: data.error || 'Could not save password' })
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password, currentPassword: currentPassword || undefined }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setRequired(true)
+        setPassword('')
+        setConfirm('')
+        setCurrentPassword('')
+        setMessage({ type: 'success', text: 'Password saved. Sign-in is now required.' })
+      } else {
+        setMessage({ type: 'error', text: data.error || 'Could not save password' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Could not save password' })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleClear = async () => {
     setMessage(null)
     setClearing(true)
-    const res = await fetch('/api/auth/password', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: currentPassword }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (res.ok) {
-      setMessage({ type: 'success', text: 'Password removed. Gateway is restarting in protected setup mode.' })
-      setTimeout(() => window.location.reload(), 1500)
-    } else {
-      setMessage({ type: 'error', text: data.error || 'Could not remove password' })
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: currentPassword }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'Password removed. Gateway is restarting in protected setup mode.' })
+        setTimeout(() => window.location.reload(), 1500)
+      } else {
+        setMessage({ type: 'error', text: data.error || 'Could not remove password' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Could not remove password' })
+    } finally {
+      setClearing(false)
     }
-    setClearing(false)
   }
 
   const handleSignOut = async () => {
-    await fetch('/api/auth/session', { method: 'DELETE' })
-    window.location.reload()
+    try {
+      await fetch('/api/auth/session', { method: 'DELETE' })
+      window.location.reload()
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Sign out failed' })
+    }
   }
 
   return (

@@ -24,15 +24,19 @@ const contextFor = (lines, prefix) => {
   };
 };
 
-/** Capture everything the logger writes while `run` executes. */
+/** Capture everything the logger writes (INFO/WARN/ERROR) while `run` executes. */
 const captureLogs = async (run) => {
   const lines = [];
-  const originalLog = console.log;
+  const original = { log: console.log, warn: console.warn, error: console.error };
   console.log = line => lines.push(line);
+  console.warn = line => lines.push(line);
+  console.error = line => lines.push(line);
   try {
     return { result: await run(), lines };
   } finally {
-    console.log = originalLog;
+    console.log = original.log;
+    console.warn = original.warn;
+    console.error = original.error;
   }
 };
 
@@ -117,9 +121,10 @@ describe('core trading module structured logging', () => {
     assert.equal(result.success, false);
 
     const { context, message } = contextFor(lines, '❌ Unknown order outcome and cannot reconcile');
+    assert.equal(result.pending, true, 'an unreconcilable outcome stays pending, not an ordinary failure');
     assert.equal(
       message,
-      '❌ Unknown order outcome and cannot reconcile (clientOrderId=coid-2) — treating as failed',
+      '❌ Unknown order outcome and cannot reconcile (clientOrderId=coid-2) — holding the placement pending; no replacement will be submitted until an operator reconciles',
     );
     assert.deepStrictEqual(context, {
       module: 'order-manager',
@@ -127,6 +132,7 @@ describe('core trading module structured logging', () => {
       pair: 'ETHUSD',
       clientOrderId: 'coid-2',
       reconcilable: false,
+      pending: true,
       error: 'unknown order outcome — reconcile by client_order_id',
     });
   });
