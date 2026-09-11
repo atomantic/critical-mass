@@ -36,7 +36,7 @@ const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
-const { loadRegimeState, saveRegimeState, LIFECYCLE } = require('./state-tracker');
+const { loadRegimeState, saveRegimeState, LIFECYCLE, createInitialRegimePositionState } = require('./state-tracker');
 const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
@@ -294,38 +294,10 @@ const createInitialMarketState = () => ({
 
 /**
  * Create initial position state
+ * Alias for createInitialRegimePositionState (unified factory in state-tracker.js)
  * @returns {RegimePositionState}
  */
-const createInitialPositionState = () => ({
-  totalAsset: 0,
-  totalCostBasis: 0,
-  avgCostBasis: 0,
-  cycleBuys: 0,
-  lastEntryPrice: 0,
-  lastEntryTime: 0,
-  anchorPrice: 0,
-  activeTpOrderId: null,
-  lastTpPrice: 0,
-  cyclesCompleted: 0,
-  unrealizedPnL: 0,
-  realizedPnL: 0,
-  realizedAssetPnL: 0,
-  assetOnOrder: 0,
-  maxDrawdownSeen: 0,
-  scalingDisabled: false,
-  scalingDisabledReason: null,
-  // APY tracking fields
-  engineStartTime: null,    // Timestamp when engine first started with capital
-  initialCapital: 0,        // Initial capital (maxUsdcDeployed from config) - may be updated on restart
-  originalCapital: 0,       // DEPRECATED: use depositedCapital instead
-  depositedCapital: 0,      // Total user deposits (excludes profits) - updated when user adds capital
-  // Ladder mode state
-  ladderActive: false,
-  ladderPlacedAt: null,
-  ladderLowerBound: 0,
-  pendingLadderOrders: [],  // [{orderId, price, sizeUsdc, ladderIndex}]
-  // Legacy satellite state (migrated into celestialState on load)
-});
+const createInitialPositionState = createInitialRegimePositionState;
 
 /**
  * Create regime engine instance.
