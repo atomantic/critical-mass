@@ -570,9 +570,59 @@ const productIdMatchesPair = (pair, productId) => {
 /** Keys that stay at the exchange level (shared across all funds on that exchange) */
 const EXCHANGE_LEVEL_KEYS = new Set([
   'pairs',
+  'deletedPairs',
   'schedulerInterval',
   'aggressivenessPresets',
 ]);
+
+/**
+ * Exchange-level key holding fund deletion tombstones (issue #441).
+ *
+ * `saveConfig` persists only `computeDiff(base, merged)`, and `computeDiff`
+ * walks `Object.keys(modified)` — so a pair *removed* from the merged tree is
+ * simply absent from the diff, not recorded as deleted, and the next
+ * `deepMerge(base, userDiff)` restores it from the base `config.json`. Making
+ * `computeDiff` emit a marker for every missing base key would be wrong: the
+ * config editor deliberately drops unknown/dead `regime` keys on the way
+ * through and they must stay inert in base rather than be tombstoned
+ * (tests/exchange-routes-config.test.js).
+ *
+ * So the tombstone is narrow and explicit: a string array of deleted pair
+ * names stored at the exchange level. It lives OUTSIDE `pairs` on purpose —
+ * every writer round-trips the block through `normalizeExchangeBlock`, which
+ * filters tombstoned pairs out of `pairs` but carries the marker list through
+ * untouched, so no ordinary save can resurrect a deleted fund. It is a plain
+ * JSON array, so `loadRawConfig`/`deepMerge` (arrays are replaced wholesale)
+ * round-trip it without any format awareness, and older builds reading a
+ * tombstoned `data/config.json` just see an unknown key rather than throwing.
+ */
+const DELETED_PAIRS_KEY = 'deletedPairs';
+
+/**
+ * Read an exchange block's deletion tombstones, tolerating absent/garbage values.
+ * @param {Object} [exchangeBlock]
+ * @returns {string[]} Deleted pair names (possibly empty)
+ */
+const getDeletedPairs = (exchangeBlock) => {
+  const list = exchangeBlock?.[DELETED_PAIRS_KEY];
+  return Array.isArray(list) ? list.filter((p) => typeof p === 'string' && p) : [];
+};
+
+/**
+ * Drop a pair's tombstone so a legitimate re-add isn't suppressed. Returns the
+ * block unchanged (same reference) when there is nothing to clear, so ordinary
+ * saves never introduce a `deletedPairs` key. Keeps an emptied list as `[]`
+ * rather than deleting the key — the diff has to be able to override a
+ * tombstone that lives in the base config.
+ * @param {Object} exchangeBlock
+ * @param {string} pair
+ * @returns {Object}
+ */
+const clearDeletedPair = (exchangeBlock, pair) => {
+  const list = getDeletedPairs(exchangeBlock);
+  if (!list.includes(pair)) return exchangeBlock;
+  return { ...exchangeBlock, [DELETED_PAIRS_KEY]: list.filter((p) => p !== pair) };
+};
 
 /**
  * Global sub-objects that must NEVER be merged into per-fund configs.
@@ -638,8 +688,13 @@ const normalizeExchangeBlock = (exchangeBlock) => {
     // does `normalized.pairs[pair].regime = merged` IN PLACE — so the inner pair
     // objects must be cloned too, or a saveConfig throw leaves the cache showing
     // the new value while disk doesn't (#113 / review).
+    // Tombstoned pairs are filtered out here (the single read chokepoint) but
+    // the `deletedPairs` marker list rides along in the spread, so writers that
+    // save the normalized block back keep the deletion (#441).
+    const deleted = new Set(getDeletedPairs(exchangeBlock));
     const pairsCopy = {};
     for (const [p, block] of Object.entries(exchangeBlock.pairs)) {
+      if (deleted.has(p)) continue;
       pairsCopy[p] = (block && typeof block === 'object') ? { ...block } : block;
     }
     return { ...exchangeBlock, pairs: pairsCopy };
@@ -657,9 +712,9 @@ const normalizeExchangeBlock = (exchangeBlock) => {
   }
   return {
     ...exchangeLevel,
-    pairs: {
-      [productId]: fundBlock,
-    },
+    pairs: getDeletedPairs(exchangeBlock).includes(productId)
+      ? {}
+      : { [productId]: fundBlock },
   };
 };
 
@@ -674,11 +729,16 @@ const getDefaultPair = (exchange) => {
   const config = loadConfig();
   const block = config.exchanges?.[exchange];
   if (!block) return null;
+  // Tombstoned pairs are skipped so a deleted fund can never become an
+  // exchange's default (#441). Filtered inline rather than via
+  // normalizeExchangeBlock to keep the legacy-flat semantics exactly as they
+  // were: a flat block with no productId still resolves to null, not DEFAULTS.
+  const deleted = new Set(getDeletedPairs(block));
   if (block.pairs && typeof block.pairs === 'object') {
-    const keys = Object.keys(block.pairs);
+    const keys = Object.keys(block.pairs).filter((p) => !deleted.has(p));
     return keys.length > 0 ? keys[0] : null;
   }
-  return block.productId || null;
+  return (block.productId && !deleted.has(block.productId)) ? block.productId : null;
 };
 
 /**
@@ -862,6 +922,10 @@ const updateFundConfig = (exchange, pair, updates) => {
     config.exchanges[exchange] = normalized;
   }
 
+  // Writing a fund re-establishes it: drop any deletion tombstone so a re-add
+  // of a previously removed pair isn't suppressed on the next load (#441).
+  config.exchanges[exchange] = clearDeletedPair(config.exchanges[exchange], pair);
+
   saveConfig(config);
   return config;
 };
@@ -962,6 +1026,10 @@ const removeFund = (exchange, pair) => {
 
   const normalized = normalizeExchangeBlock(block);
   delete normalized.pairs[pair];
+  // Deleting the key is not enough on its own: saveConfig persists only the
+  // diff against the base config.json, so a pair defined there would re-merge
+  // on the next load. Record an explicit tombstone (#441).
+  normalized[DELETED_PAIRS_KEY] = [...new Set([...getDeletedPairs(normalized), pair])];
   config.exchanges[exchange] = normalized;
   saveConfig(config);
   return config;
