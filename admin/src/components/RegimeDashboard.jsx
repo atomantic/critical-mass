@@ -4,6 +4,7 @@ import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import { useToast } from './Toast'
 import { getBaseCurrency, getQuoteCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { createRequestOwner } from '../utils/requestOwner.mjs'
 import { deriveRegimeFillGroups, searchRegimeFillGroups, visibleOrphanBuys } from '../utils/regimeFillGroups.mjs'
 import RegimePriceChart from './charts/RegimePriceChart'
 import VolatilityChart from './charts/VolatilityChart'
@@ -689,6 +690,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
   const [capitalAdjustValue, setCapitalAdjustValue] = useState('')
   const [capitalAdjusting, setCapitalAdjusting] = useState(false)
   const prevPriceRef = useRef(null)
+  // Per-mount ownership fence for fills reads (#508). Initial load, the live
+  // fill marker refresh and action handlers all refetch fills concurrently; only
+  // the newest read may commit, so a slow older response cannot resurrect a
+  // pre-fill snapshot over a newer one.
+  const [fillsOwner] = useState(createRequestOwner)
+  useEffect(() => () => fillsOwner.invalidate(), [fillsOwner])
   const { addToast } = useToast()
 
   const { status: socketStatus, setStatus: setSocketStatus } = useRegimeEvents(exchange, pair)
@@ -777,14 +784,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
     }
   }, [exchange])
 
-  // Fetch live fills from fill ledger
+  // Fetch live fills from fill ledger. Reads go through the per-mount request
+  // owner so overlapping refreshes always commit in request order (#508).
   const fetchFills = useCallback(async () => {
-    const res = await fetch(`/api/${exchange}/regime/fills${pairQuery}`)
-    if (res.ok) {
-      const data = await res.json()
-      setLiveFills(data.fills || [])
-    }
-  }, [exchange])
+    const { owned, data } = await fillsOwner.read(`/api/${exchange}/regime/fills${pairQuery}`)
+    if (owned && data) setLiveFills(data.fills || [])
+  }, [exchange, pairQuery, fillsOwner])
 
   // Refresh the Filled Orders table when a fill lands. fetchFills otherwise ran
   // only on mount + manual actions, so the realized-P&L bar and cycle groupings

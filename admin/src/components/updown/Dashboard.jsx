@@ -15,6 +15,7 @@ import { isFreshTick } from './position-tracker-math'
 import { SECTION_IDS, focusSection } from './dashboard-layout'
 import { labelHistoryActions } from '../../constants/signals'
 import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
+import { createRequestOwner } from '../../utils/requestOwner.mjs'
 
 export default function UpDownDashboard() {
   const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
@@ -61,10 +62,17 @@ export default function UpDownDashboard() {
   }, [setupJumpToken])
 
   const seededRef = useRef(false)
+  // Per-mount ownership fence for status reads (#508). The 10s poll overlaps the
+  // initial load and the post-Start/Stop refresh; without sequencing a pre-action
+  // poll could land last and restore Running after a successful Stop.
+  const [statusOwner] = useState(createRequestOwner)
+
   const fetchStatus = useCallback(async () => {
-    const res = await fetch('/api/updown/status').catch(() => null)
-    if (res?.ok) {
-      const data = await res.json()
+    const { owned, data } = await statusOwner.read('/api/updown/status')
+    // A superseded read commits nothing — not even the loading reset, so it can
+    // never clear state belonging to a newer request.
+    if (!owned) return
+    if (data) {
       setStatus(data)
       // Seed signal annotations from backend history on first load
       if (!seededRef.current && data.signalHistory?.length) {
@@ -79,13 +87,16 @@ export default function UpDownDashboard() {
       }
     }
     setLoading(false)
-  }, [])
+  }, [statusOwner])
 
   useEffect(() => {
     fetchStatus()
     const interval = setInterval(fetchStatus, 10000)
-    return () => clearInterval(interval)
-  }, [fetchStatus])
+    return () => {
+      clearInterval(interval)
+      statusOwner.invalidate()
+    }
+  }, [fetchStatus, statusOwner])
 
   // Track signal changes for chart annotations + audio alerts
   useEffect(() => {
@@ -121,6 +132,9 @@ export default function UpDownDashboard() {
   const handleStart = async () => {
     setStarting(true)
     setError(null)
+    // Any status read started before this action describes the pre-action
+    // service; drop it so only the post-action refresh may commit (#508).
+    statusOwner.invalidate()
     try {
       const res = await fetch('/api/updown/start', { method: 'POST' })
       if (!res.ok) {
@@ -138,6 +152,7 @@ export default function UpDownDashboard() {
   const handleStop = async () => {
     setStopping(true)
     setError(null)
+    statusOwner.invalidate()
     try {
       const res = await fetch('/api/updown/stop', { method: 'POST' })
       if (!res.ok) {
