@@ -3,7 +3,7 @@
  * Pure scorecard outcome interpretation and historical analysis.
  * Runtime lifecycle belongs in scorecard.js; journal I/O belongs to callers.
  */
-const { INDICATORS, INDICATOR_LABELS } = require('./indicator-config')
+const { INDICATORS, INDICATOR_LABELS, INDICATOR_WEIGHTS } = require('./indicator-config')
 const { ALL_SIGNAL_TFS: ALL_TFS } = require('./signal-engine')
 const { calculatePerpPnl } = require('./perp-contract')
 
@@ -333,6 +333,7 @@ const buildScorecardAnalysis = (journalRecords) => {
     success: true,
     catalog: {
       indicators: INDICATORS.map(key => ({ key, label: INDICATOR_LABELS[key] ?? key })),
+      baseWeights: INDICATOR_WEIGHTS,
       timeframes: [...ALL_TFS],
     },
     accuracyOverTime,

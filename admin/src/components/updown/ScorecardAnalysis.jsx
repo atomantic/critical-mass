@@ -5,6 +5,7 @@ import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   ReferenceLine, CartesianGrid, Legend,
 } from 'recharts'
+import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-config.js'
 
 const RANGES = [
   { label: '1d', days: 1 },
@@ -12,13 +13,6 @@ const RANGES = [
   { label: '7d', days: 7 },
   { label: '30d', days: 30 },
 ]
-
-const DEFAULT_INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum', 'obv', 'williamsR', 'cci']
-const DEFAULT_INDICATOR_LABELS = {
-  rsi: 'RSI', stochastic: 'Stoch', macd: 'MACD',
-  bollinger: 'Bollinger', vwap: 'VWAP', momentum: 'Momentum',
-  obv: 'OBV', williamsR: 'Will %R', cci: 'CCI',
-}
 const INDICATOR_COLORS = {
   rsi: '#f97316', stochastic: '#06b6d4', macd: '#a855f7',
   bollinger: '#eab308', vwap: '#22c55e', momentum: '#ec4899',
@@ -81,11 +75,10 @@ export default function ScorecardAnalysis() {
 
   const s = data?.summary
   const indicatorCatalog = data?.catalog?.indicators
-  const indicators = indicatorCatalog?.map(item => item.key) || DEFAULT_INDICATORS
-  const indicatorLabels = {
-    ...DEFAULT_INDICATOR_LABELS,
-    ...(indicatorCatalog ? Object.fromEntries(indicatorCatalog.map(item => [item.key, item.label])) : {}),
-  }
+  const indicators = indicatorCatalog?.map(item => item.key) || INDICATORS
+  const indicatorLabels = indicatorCatalog
+    ? Object.fromEntries(indicatorCatalog.map(item => [item.key, item.label]))
+    : INDICATOR_LABELS
   const timeframes = data?.catalog?.timeframes || DEFAULT_TF_ORDER
 
   return (

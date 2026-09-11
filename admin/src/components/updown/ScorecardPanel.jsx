@@ -1,20 +1,8 @@
 import { Target, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { INDICATORS, INDICATOR_LABELS, INDICATOR_WEIGHTS } from '../../../../shared/indicator-config.js'
 
 const WINDOW_ORDER = ['1m', '5m', '15m', '1h']
 const TF_ORDER = ['1d', '4h', '2h', '1h', '30m', '15m', '10m', '5m', '3m', '1m']
-const INDICATOR_LABELS = {
-  rsi: 'RSI',
-  stochastic: 'Stoch',
-  macd: 'MACD',
-  bollinger: 'Bollinger',
-  vwap: 'VWAP',
-  momentum: 'Momentum',
-  obv: 'OBV',
-  williamsR: 'Will %R',
-  cci: 'CCI',
-}
-
-const BASE_WEIGHTS = { rsi: 0.10, stochastic: 0.08, macd: 0.22, bollinger: 0.07, vwap: 0.08, momentum: 0.15, obv: 0.17, williamsR: 0.06, cci: 0.07 }
 
 function accuracyColor(accuracy) {
   if (accuracy == null) return 'text-gray-500'
@@ -232,7 +220,8 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
         <div className="mb-4">
           <div className="text-xs text-gray-500 mb-1.5 font-medium">By Indicator</div>
           <div className="space-y-1">
-            {Object.entries(INDICATOR_LABELS).map(([key, label]) => {
+            {INDICATORS.map(key => {
+              const label = INDICATOR_LABELS[key] ?? key
               const data = byIndicator?.[key]
               return (
                 <AccuracyBar
@@ -252,9 +241,10 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
         <div>
           <div className="text-xs text-gray-500 mb-1.5 font-medium">Adaptive Weights</div>
           <div className="space-y-0.5">
-            {Object.entries(INDICATOR_LABELS).map(([key, label]) => {
-              const current = adaptiveWeights[key] ?? BASE_WEIGHTS[key]
-              const base = BASE_WEIGHTS[key]
+            {INDICATORS.map(key => {
+              const label = INDICATOR_LABELS[key] ?? key
+              const current = adaptiveWeights[key] ?? INDICATOR_WEIGHTS[key]
+              const base = INDICATOR_WEIGHTS[key]
               const delta = current - base
               const deltaColor = delta > 0.005 ? 'text-green-400' : delta < -0.005 ? 'text-red-400' : 'text-gray-500'
               return (
