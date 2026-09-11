@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **[issue-406] Fund lifecycle route tests for creation defaults, deletion guards, and live toggles** — Add `tests/exchange-routes-lifecycle.test.js` covering `POST /api/:exchange/funds` safe defaults (`enabled:false`, `dryRun:true`, `totalAllocation` mirrored into `regime.depositedCapital`/`maxUsdcDeployed`) and adapter-verification rejections, `DELETE /api/:exchange/funds/:pair` lifecycle/engine-running safety guards, and `PATCH /api/:exchange/config` live `enabled`/`dryRun` toggles including the IPC `regime:update-config` dispatch and 503 engine-rejection path.
 - **[issue-403] Risk manager unit test suite** — Add `tests/risk-manager.test.js` covering asset/USDC caps, cycle-buys limit enforcement and time-based auto-reset, drawdown peak tracking, pause activation, 50% recovery resumption, drawdown auto-reset, `canPlaceEntry`/`checkAllCaps` reason aggregation, and `forceResume`, using mocked `Date.now()` for deterministic time-based behavior.
 
 ### Changed
