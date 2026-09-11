@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { getAuthHeaders } = require('./auth');
-const { createBaseAdapter } = require('../base-adapter');
+const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -198,6 +198,14 @@ const createCoinbaseAdapter = (keysPath = null) => {
           cleanError.endpoint = `${method} ${apiPath}`;
           throw cleanError;
         }
+        // A 2xx whose body we cannot decode is the same ambiguity as a lost
+        // response on a placement POST: Coinbase accepted something we can't
+        // read, so the outcome is unknown, not a clean failure. (#427)
+        if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
+          return response.json().catch((err) => {
+            throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, `undecodable response: ${err.message}`);
+          });
+        }
         return response.json();
       }
 
@@ -229,18 +237,11 @@ const createCoinbaseAdapter = (keysPath = null) => {
       // the caller can reconcile against the exchange (query by
       // client_order_id) instead of blind-retrying or assuming a clean failure
       // and re-buying. See issue #199.
+      // The deterministic client_order_id from the request body rides along so
+      // the caller can reconcile by querying the exchange for this exact order
+      // (issue #226) instead of blind-retrying or assuming a clean failure.
       if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
-        const unknownError = new Error(
-          `Coinbase API unknown order outcome on ${method} ${apiPath.split('?')[0]}: ${lastError.message} — order may have reached the matching engine; reconcile by client_order_id before re-placing`
-        );
-        unknownError.status = 'unknown';
-        unknownError.unknownOutcome = true;
-        unknownError.endpoint = `${method} ${apiPath}`;
-        // Surface the deterministic client_order_id from the request body so the
-        // caller can reconcile by querying the exchange for this exact order
-        // (issue #226) instead of blind-retrying or assuming a clean failure.
-        unknownError.clientOrderId = data?.client_order_id;
-        throw unknownError;
+        throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, lastError.message);
       }
 
       // Non-retryable error or out of retries

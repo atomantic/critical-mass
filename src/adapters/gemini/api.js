@@ -4,7 +4,7 @@ const path = require('path');
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const { getWebSocketAuthHeaders, getRestAuthHeaders } = require('./auth');
-const { createBaseAdapter } = require('../base-adapter');
+const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -36,6 +36,12 @@ const WS_MARKET_DATA_URL = 'wss://api.gemini.com/v1/marketdata';
 const REST_MIN_INTERVAL_MS = 200;
 const RATE_LIMIT_MAX_RETRIES = 2;   // attempts beyond the first, on HTTP 429 only
 const RATE_LIMIT_BACKOFF_MS = 500;  // linear: 500ms, 1000ms
+
+// The only endpoint that can create an order. A transport or response-decoding
+// failure here is AMBIGUOUS (Gemini may already hold the order), so it surfaces
+// as an unknown outcome carrying the client_order_id instead of a plain network
+// error that a caller would read as "it never happened". (#427)
+const ORDER_PLACEMENT_ENDPOINT = '/v1/order/new';
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -180,6 +186,11 @@ const createGeminiAdapter = (keysPath = null) => {
         clearTimeout(timeout);
         // Network errors are NOT retried: the request may have reached the
         // matching engine, so a blind retry could double-place an order.
+        // Placement specifically must not degrade to a plain network error —
+        // its outcome is unknown and must stay reconcilable by client_order_id.
+        if (endpoint === ORDER_PLACEMENT_ENDPOINT) {
+          throw createAmbiguousPlacementError('Gemini', `POST ${endpoint}`, payload?.client_order_id, err.message);
+        }
         const cleanError = new Error(`Gemini API network: ${err.message}`);
         cleanError.status = 'network';
         cleanError.endpoint = `POST ${endpoint}`;
@@ -203,7 +214,16 @@ const createGeminiAdapter = (keysPath = null) => {
       }
 
       const preserved = rawText.replace(/"(order_id|tid)":\s*(\d{15,})/g, '"$1":"$2"');
-      return JSON.parse(preserved);
+      // A 2xx whose body we cannot decode is the same ambiguity as a lost
+      // response: Gemini accepted something we can't read. Only placement needs
+      // the reconcilable shape; every other endpoint can surface the raw parse
+      // failure. A try/catch is required — JSON.parse signals by throwing.
+      if (endpoint !== ORDER_PLACEMENT_ENDPOINT) return JSON.parse(preserved);
+      try {
+        return JSON.parse(preserved);
+      } catch (err) {
+        throw createAmbiguousPlacementError('Gemini', `POST ${endpoint}`, payload?.client_order_id, `undecodable response: ${err.message}`);
+      }
     }
   };
 
@@ -478,15 +498,23 @@ const createGeminiAdapter = (keysPath = null) => {
     placeLimitOrder('buy', productId, baseAmount, price, options);
 
   /**
-   * Get order status
-   * @param {string} orderId - Order ID (kept as string to preserve precision for large IDs)
-   * @returns {Promise<OrderDetails>} Order details
+   * Gemini's "this order does not exist" signal: HTTP 404, or a reason code of
+   * OrderNotFound on any status. Anything else is an inconclusive lookup.
+   * @param {any} err
+   * @returns {boolean}
    */
-  adapter.getOrder = async (orderId) => {
-    // Gemini order IDs can exceed JavaScript's MAX_SAFE_INTEGER
-    // Pass as number but let JSON serialization handle it
-    const result = await makeRestRequest('/v1/order/status', { order_id: orderId });
+  const isOrderNotFound = (err) =>
+    err?.status === 404 || /ordernotfound/i.test(err?.responseData?.reason ?? '');
 
+  /**
+   * Normalize a /v1/order/status response into the shared OrderDetails shape.
+   * Shared by getOrder and findOrderByClientOrderId so both lookups classify
+   * status identically — a reconcile must not see a different verdict than the
+   * ordinary poll for the same order.
+   * @param {any} result - Raw order/status payload
+   * @returns {OrderDetails}
+   */
+  const normalizeOrderStatus = (result) => {
     const executedAmount = parseFloat(result.executed_amount || 0);
     const originalAmount = parseFloat(result.original_amount || 0);
     const avgPrice = parseFloat(result.avg_execution_price || 0);
@@ -533,6 +561,54 @@ const createGeminiAdapter = (keysPath = null) => {
       totalFees: 0, // Gemini fees are deducted from proceeds, need to calculate separately
       createdTime: new Date(result.timestampms).toISOString(),
     };
+  };
+
+  /**
+   * Get order status
+   * @param {string} orderId - Order ID (kept as string to preserve precision for large IDs)
+   * @returns {Promise<OrderDetails>} Order details
+   */
+  adapter.getOrder = async (orderId) => {
+    // Gemini order IDs can exceed JavaScript's MAX_SAFE_INTEGER
+    // Pass as number but let JSON serialization handle it
+    const result = await makeRestRequest('/v1/order/status', { order_id: orderId });
+    return normalizeOrderStatus(result);
+  };
+
+  /**
+   * Find an order on the exchange by the deterministic client_order_id we sent.
+   * Resolves an ambiguous placement outcome (#427): Gemini's order/status
+   * endpoint accepts client_order_id in place of order_id, so this is an
+   * authoritative point lookup rather than a scan of recent history.
+   *
+   * Returns null ONLY when Gemini positively reports the order does not exist —
+   * i.e. the placement never landed and is safe to re-place. Any other lookup
+   * failure propagates: "we could not check" must never be read as "it isn't
+   * there", which is exactly how a live order gets double-placed.
+   * @param {string} clientOrderId - Deterministic client order id we submitted
+   * @param {string|null} [_productId] - Unused; Gemini's lookup is global by id
+   * @returns {Promise<OrderDetails|null>} Normalized order details, or null if absent
+   */
+  adapter.findOrderByClientOrderId = async (clientOrderId, _productId = null) => {
+    if (!clientOrderId) return null;
+
+    const result = await makeRestRequest('/v1/order/status', { client_order_id: clientOrderId })
+      .catch((err) => {
+        if (isOrderNotFound(err)) return null;
+        throw err;
+      });
+
+    if (!result) return null;
+
+    // A decoded response that carries no order_id is INCONCLUSIVE, not absent.
+    // Throwing keeps the placement unresolved (the caller re-raises rather than
+    // re-placing); returning null here would invite a double-place, and
+    // adopting it would register an undefined order id into pending tracking.
+    if (!result.order_id) {
+      throw new Error(`Gemini order lookup for client_order_id ${clientOrderId} returned no order id — outcome still unresolved`);
+    }
+
+    return normalizeOrderStatus(result);
   };
 
   /**
