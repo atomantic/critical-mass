@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-360] Scorecard analysis calculation steps extracted from monolithic function** — Decompose buildScorecardAnalysis into focused pure helpers (buildAccuracyOverTime, buildIndicatorAccuracyOverTime, buildFailurePatterns, buildSummaryStats, buildWindowAndContractStats) to reduce cyclomatic complexity from 58 to 5 and improve maintainability.
 - **[issue-359] Regime operational modals extracted from monolithic RegimeDashboard** — Extract 6 confirmation dialogs (Collapse All, Reset Cycle, Resume Drawdown, Roll Up, Set TP, DCA Convert) into a dedicated RegimeActionModals component, reducing coupling between presentation/telemetry and operational mutations and enabling independent testing.
 - **[issue-358] Fund summary aggregation extracted into domain module** — Extract fill ledger aggregation logic from exchange route handler into pure `buildFundSummary` function in `src/fund-summary.js` with dedicated unit tests, enabling reuse by other components and eliminating transport-domain entanglement.
 - **[issue-355] Position state factory unified between state-tracker and regime-engine** — Replace divergent schema definitions with a single canonical factory in state-tracker.js; regime-engine.js now imports and re-exports the unified function, eliminating schema divergence and 30 lines of duplicated initialization code.
