@@ -171,6 +171,27 @@ describe('API key routes', () => {
       assert.ok(!responseStr.includes('my-key-name'), 'response must not contain raw key name');
     });
 
+    it('client-contract guard (issue #419): never resurrects a top-level "keys" object', async () => {
+      // admin/src/components/KeysConfig.jsx reads `configured`/`fields`/`createdAt` — NOT
+      // `data.keys` — from this response. A regression back to a `keys` object silently
+      // disables the whole API Keys tab (Save/Test/Delete all stay stuck in their
+      // unconfigured state) without failing any type check, so pin the shape here.
+      const app = createFakeApp();
+      const writeJSON = (filePath, data) => fs.writeFileSync(filePath, JSON.stringify(data));
+      registerKeysRoutes(app, { writeJSON });
+
+      const keysFilePath = path.join(tempKeysDir, 'gemini-keys.json');
+      writeJSON(keysFilePath, { apiKey: 'k', apiSecret: 's', createdAt: '2024-01-01T00:00:00Z' });
+
+      const res = await invoke(app, 'GET /api/:exchange/keys', {
+        params: { exchange: 'gemini' },
+      });
+
+      assert.ok(!('keys' in res.body), 'response must not carry a "keys" key when configured');
+      assert.equal(typeof res.body.configured, 'boolean');
+      assert.equal(typeof res.body.fields, 'object');
+    });
+
     it('returns boolean flags for Crypto.com/Gemini keys (apiKey and apiSecret)', async () => {
       const app = createFakeApp();
       const writeJSON = (filePath, data) => fs.writeFileSync(filePath, JSON.stringify(data));
