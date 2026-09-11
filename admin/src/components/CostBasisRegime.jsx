@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
+import { compareCycleIds } from '../utils/regimeFillGroups.mjs'
 
 function CostBasisRegime({ exchange = 'coinbase', pair }) {
   const [status, setStatus] = useState(null)
@@ -80,12 +81,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
     return acc
   }, {})
 
-  const cycles = Object.values(cycleData).sort((a, b) => {
-    // Sort current cycle first, then by most recent
-    if (a.cycleId === 'current') return -1
-    if (b.cycleId === 'current') return 1
-    return b.cycleId.localeCompare(a.cycleId)
-  })
+  const cycles = Object.values(cycleData).sort((a, b) => compareCycleIds(a.cycleId, b.cycleId))
 
   // Calculate totals
   const totalAsset = position.totalAsset || 0
