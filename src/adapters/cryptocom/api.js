@@ -578,19 +578,18 @@ const createCryptocomAdapter = (keysPath = null) => {
   };
 
   /**
-   * Crypto.com's "this order does not exist" signal: HTTP 404, or the
-   * NOT_FOUND/ORDER_NOT_FOUND reject codes. Anything else (auth, rate limit,
-   * transport) is an inconclusive lookup and must NOT read as absent.
+   * Crypto.com's positive "this order does not exist" signal: HTTP 404, the
+   * 40401 NOT_FOUND / 316 NO_ORDER reject codes, or a not-found message.
+   * Anything else (auth, rate limit, transport) is an INCONCLUSIVE lookup and
+   * must NOT read as absent — that reading is what permits a double-place.
    * @param {any} err
    * @returns {boolean}
    */
-  const isOrderNotFound = (err) => {
-    if (err?.status === 404) return true;
-    const code = Number(err?.code);
-    // 40401 NOT_FOUND, 40004/316 order not found variants returned by v1.
-    if (code === 40401 || code === 316) return true;
-    return /order\s*not\s*found|no\s*order\s*found/i.test(err?.message ?? '');
-  };
+  const isOrderNotFound = (err) =>
+    err?.status === 404
+    || Number(err?.code) === 40401
+    || Number(err?.code) === 316
+    || /order\s*not\s*found|no\s*order\s*found/i.test(err?.message ?? '');
 
   /**
    * Unwrap the order payload, which the API nests under `order_info`.

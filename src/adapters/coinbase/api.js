@@ -234,12 +234,9 @@ const createCoinbaseAdapter = (keysPath = null) => {
 
       // Order-placement POST that network-errored: the outcome is UNKNOWN — the
       // order may have executed on the exchange. Surface a distinct status so
-      // the caller can reconcile against the exchange (query by
-      // client_order_id) instead of blind-retrying or assuming a clean failure
-      // and re-buying. See issue #199.
-      // The deterministic client_order_id from the request body rides along so
-      // the caller can reconcile by querying the exchange for this exact order
-      // (issue #226) instead of blind-retrying or assuming a clean failure.
+      // the caller can reconcile against the exchange by the deterministic
+      // client_order_id the request carried, instead of blind-retrying or
+      // assuming a clean failure and re-buying. See issues #199/#226.
       if (method === 'POST' && isOrderPlacementEndpoint(apiPath)) {
         throw createAmbiguousPlacementError('Coinbase', `${method} ${apiPath.split('?')[0]}`, data?.client_order_id, lastError.message);
       }
