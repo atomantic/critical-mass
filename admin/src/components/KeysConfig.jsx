@@ -20,7 +20,13 @@ const EXCHANGE_FIELD_CONFIGS = {
 }
 
 function KeysConfig({ exchange, onSave }) {
+  // Local edit state — what the operator is typing. The server never echoes back
+  // secret values, so this always starts blank regardless of stored state.
   const [keys, setKeys] = useState({})
+  // Server-reported contract: whether keys exist, which fields are stored, and when.
+  const [configured, setConfigured] = useState(false)
+  const [fields, setFields] = useState({})
+  const [createdAt, setCreatedAt] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -39,26 +45,33 @@ function KeysConfig({ exchange, onSave }) {
     ],
   }
 
-  useEffect(() => {
-    const fetchKeys = async () => {
-      setLoading(true)
-      setMessage(null)
-      setTestResult(null)
-      try {
-        const res = await fetch(`/api/${exchange}/keys`)
-        if (res.ok) {
-          const data = await res.json().catch(() => ({}))
-          setKeys(data.keys || {})
-        } else if (res.status !== 404) {
-          setMessage({ type: 'error', text: 'Failed to load keys' })
-        }
-      } catch (err) {
-        setMessage({ type: 'error', text: err.message || 'Failed to load keys' })
-      } finally {
-        setLoading(false)
+  // `silent` skips the full-page loading state so a post-save/post-delete refetch
+  // doesn't blank out the success message that was just set.
+  const fetchKeys = async (silent = false) => {
+    if (!silent) setLoading(true)
+    setTestResult(null)
+    try {
+      const res = await fetch(`/api/${exchange}/keys`)
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setConfigured(Boolean(data.configured))
+        setFields(data.fields || {})
+        setCreatedAt(data.createdAt || null)
+      } else if (res.status !== 404) {
+        setMessage({ type: 'error', text: 'Failed to load keys' })
       }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to load keys' })
+    } finally {
+      if (!silent) setLoading(false)
     }
+  }
+
+  useEffect(() => {
+    setKeys({})
+    setMessage(null)
     fetchKeys()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exchange])
 
   const handleChange = (key, value) => {
@@ -77,6 +90,8 @@ function KeysConfig({ exchange, onSave }) {
       })
       if (res.ok) {
         setMessage({ type: 'success', text: 'API keys saved successfully!' })
+        setKeys({})
+        await fetchKeys(true)
         onSave?.()
       } else {
         const error = await res.json().catch(() => ({}))
@@ -103,8 +118,16 @@ function KeysConfig({ exchange, onSave }) {
     }
   }
 
+  // Save requires every field to be freshly typed — the server never echoes stored
+  // values back, so there's nothing to submit unless the operator supplies them all.
   const hasAllFields = config.fields.every(f => keys[f.key]?.trim())
-  const hasAnyKeys = config.fields.some(f => keys[f.key]?.trim())
+  // Credentials exist whenever the server says so, regardless of what (if anything)
+  // is currently typed in the form.
+  const hasAnyKeys = configured
+  // Testing is safe against whatever is currently saved on disk, so it should be
+  // enabled for already-configured keys without forcing a retype, OR for a fresh,
+  // fully-typed set the operator hasn't saved yet.
+  const canTest = configured || hasAllFields
 
   const handleDelete = async () => {
     setDeleting(true)
@@ -115,6 +138,7 @@ function KeysConfig({ exchange, onSave }) {
         setKeys({})
         setConfirmDelete(false)
         setMessage({ type: 'success', text: 'API keys deleted successfully!' })
+        await fetchKeys(true)
         onSave?.()
       } else {
         setMessage({ type: 'error', text: 'Failed to delete keys' })
@@ -138,7 +162,18 @@ function KeysConfig({ exchange, onSave }) {
     <div className="max-w-2xl">
       <div className="bg-gray-800 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">{config.title}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl font-semibold">{config.title}</h2>
+            {configured ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-900/50 border border-green-700 text-green-200">
+                Configured
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-700 border border-gray-600 text-gray-300">
+                Not configured
+              </span>
+            )}
+          </div>
           <button
             onClick={() => setShowSecrets(!showSecrets)}
             className="text-sm text-gray-400 hover:text-white flex items-center gap-1"
@@ -162,7 +197,10 @@ function KeysConfig({ exchange, onSave }) {
           </button>
         </div>
 
-        <p className="text-gray-400 text-sm mb-6">{config.description}</p>
+        <p className="text-gray-400 text-sm mb-1">{config.description}</p>
+        <p className="text-gray-500 text-xs mb-6">
+          {configured && createdAt ? `Stored on ${new Date(createdAt).toLocaleString()}` : ' '}
+        </p>
 
         {message && (
           <div className={`mb-4 p-3 rounded-lg ${
@@ -175,17 +213,27 @@ function KeysConfig({ exchange, onSave }) {
         )}
 
         <div className="space-y-4">
-          {config.fields.map(field => (
+          {config.fields.map(field => {
+            const isStored = Boolean(fields[field.key])
+            const placeholder = isStored
+              ? 'stored — enter a new value to replace'
+              : field.placeholder
+            return (
             <div key={field.key}>
-              <label htmlFor={field.key} className="block text-sm font-medium text-gray-300 mb-1">
+              <label htmlFor={field.key} className="block text-sm font-medium text-gray-300 mb-1 flex items-center gap-2">
                 {field.label}
+                {isStored && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-900/50 border border-green-700 text-green-200">
+                    configured
+                  </span>
+                )}
               </label>
               {field.type === 'textarea' ? (
                 <textarea
                   id={field.key}
                   value={keys[field.key] || ''}
                   onChange={(e) => handleChange(field.key, e.target.value)}
-                  placeholder={field.placeholder}
+                  placeholder={placeholder}
                   rows={5}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-blue-500 resize-none"
                 />
@@ -195,13 +243,14 @@ function KeysConfig({ exchange, onSave }) {
                   type={field.type === 'password' && !showSecrets ? 'password' : 'text'}
                   value={keys[field.key] || ''}
                   onChange={(e) => handleChange(field.key, e.target.value)}
-                  placeholder={field.placeholder}
+                  placeholder={placeholder}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
                 />
               )}
               {field.help && <p className="mt-1 text-xs text-gray-500">{field.help}</p>}
             </div>
-          ))}
+            )
+          })}
         </div>
 
         {/* Test Connection Result */}
@@ -236,7 +285,7 @@ function KeysConfig({ exchange, onSave }) {
           </button>
           <button
             onClick={handleTest}
-            disabled={testing || !hasAllFields}
+            disabled={testing || !canTest}
             className="min-h-11 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
           >
             {testing ? 'Testing...' : 'Test Connection'}
