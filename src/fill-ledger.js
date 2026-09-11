@@ -131,6 +131,20 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   const baseCurrency = getBaseCurrency(productId);
   const fmtPrice = fmtCurrency;
 
+  // Monotonic counter bumped on every mutation to `fills` (or to metadata
+  // read by the derived-P&L / fill-time-stats computations below). Used
+  // ONLY to invalidate the memoized results in computeRealizedFromCyclePairs
+  // and getFillTimeStats — it never feeds a computed value itself, so a
+  // missed bump can only cause a stale read, never a wrong formula. Every
+  // mutator (resetCaches/load, ingestFill, recalculateCycles,
+  // updateFillCycleId, annotateFillsByOrderIds, claimCapitalCredit, and the
+  // external markDirty() escape hatch for direct fill-object edits) calls
+  // bumpLedgerVersion() alongside its existing dirtySinceLastPersist flag.
+  let ledgerVersion = 0;
+  const bumpLedgerVersion = () => {
+    ledgerVersion += 1;
+  };
+
   /**
    * Load fill ledger from disk
    */
@@ -154,6 +168,11 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // persists are a no-op" contract that avoids file churn on every
     // retry-loop call to persist().
     dirtySinceLastPersist = false;
+    // The ledger contents are about to change (cleared, then possibly
+    // repopulated by load()) — invalidate the memoized derived-P&L /
+    // fill-time-stats caches unconditionally, even though this leaves
+    // the ledger empty when there is no file to reload from.
+    bumpLedgerVersion();
   };
 
   const load = () => {
@@ -477,6 +496,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       orderSizeIndex.set(fill.orderId, roundAsset(next));
     }
     dirtySinceLastPersist = true;
+    bumpLedgerVersion();
     if (!options.skipPersist) persist();
 
     const fillTimeStr = fillTimeMs !== null ? ` (fill time: ${(fillTimeMs / 1000).toFixed(1)}s)` : '';
@@ -747,7 +767,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * @param {number} [sinceDays=7] - Only include fills from the last N days
    * @returns {{count: number, avgMs: number, minMs: number, maxMs: number, p50Ms: number, p90Ms: number, staleCount: number, staleRate: number}}
    */
-  const getFillTimeStats = (sinceDays = 7) => {
+  const getFillTimeStatsUncached = (sinceDays = 7) => {
     const cutoff = Date.now() - (sinceDays * 24 * 60 * 60 * 1000);
 
     // Get buy fills with fill time data
@@ -790,6 +810,36 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       staleCount,
       staleRate: roundUSDC((staleCount / fillsWithTime.length) * 100),
     };
+  };
+
+  // Memoization for getFillTimeStatsUncached (issue #365), same
+  // ledgerVersion-based invalidation as computeRealizedFromCyclePairs. This
+  // one also depends on wall-clock time (the `sinceDays` cutoff slides
+  // forward every millisecond, aging fills out of the window even with no
+  // ledger mutation), so the cache key additionally includes a coarse
+  // "time bucket" — the cached value is reused only within the same
+  // 1-minute window, which is far more granular than the multi-day
+  // `sinceDays` cutoff it approximates and keeps the 1Hz status-tick caller
+  // (getState()) hitting cache on every call in between.
+  const FILL_TIME_STATS_BUCKET_MS = 60 * 1000;
+  let cachedFillTimeStats = null; // { sinceDays, bucket, version, result }
+  // Test-only: counts actual (non-cached) recomputations, mirroring
+  // realizedRecomputeCount above.
+  let fillTimeStatsRecomputeCount = 0;
+  const getFillTimeStats = (sinceDays = 7) => {
+    const bucket = Math.floor(Date.now() / FILL_TIME_STATS_BUCKET_MS);
+    if (
+      cachedFillTimeStats &&
+      cachedFillTimeStats.sinceDays === sinceDays &&
+      cachedFillTimeStats.bucket === bucket &&
+      cachedFillTimeStats.version === ledgerVersion
+    ) {
+      return { ...cachedFillTimeStats.result };
+    }
+    const result = getFillTimeStatsUncached(sinceDays);
+    fillTimeStatsRecomputeCount += 1;
+    cachedFillTimeStats = { sinceDays, bucket, version: ledgerVersion, result };
+    return { ...result };
   };
 
   /**
@@ -985,6 +1035,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
           cycleIndex.get(cycleId).add(fill.tradeId);
           orphansFixed++;
           dirtySinceLastPersist = true;
+          bumpLedgerVersion();
         }
 
         // Check if this is a completed cycle using BTC balance ratio
@@ -1058,6 +1109,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
             fill.cycleId = idMap.get(fill.cycleId);
             fills.set(fill.tradeId, fill);
             dirtySinceLastPersist = true;
+            bumpLedgerVersion();
           }
           if (fill.cycleId) {
             if (!cycleIndex.has(fill.cycleId)) cycleIndex.set(fill.cycleId, new Set());
@@ -1096,6 +1148,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
           fill.sellOrderId = sellId;
           linkedCount++;
           dirtySinceLastPersist = true;
+          bumpLedgerVersion();
         }
       }
     }
@@ -1222,6 +1275,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       fill.cycleId = cycleId;
       fills.set(tradeId, fill);
       dirtySinceLastPersist = true;
+      bumpLedgerVersion();
       // Add to new cycle index
       if (cycleId) {
         if (!cycleIndex.has(cycleId)) cycleIndex.set(cycleId, new Set());
@@ -1245,6 +1299,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         dirtySinceLastPersist = true;
       }
     }
+    if (matched) bumpLedgerVersion();
     // Persist when sellOrderId is set to ensure it survives restarts
     if (matched && metadata.sellOrderId) {
       persist();
@@ -1279,6 +1334,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         dirtySinceLastPersist = true;
       }
     }
+    if (matched) bumpLedgerVersion();
     if (alreadyCredited) return false;
     if (matched) persist();
     return true;
@@ -1311,7 +1367,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
    * Side-effect-free — safe to call on every status emit and state save.
    * @returns {{realizedPnL: number, realizedAssetPnL: number, heldOpenBuyCostBasis: number, unpairedSellQty: number}}
    */
-  const computeRealizedFromCyclePairs = () => {
+  const computeRealizedFromCyclePairsUncached = () => {
     // bodyPnl/satellitePnl annotations are written by annotateFillsByOrderId
     // to ALL partial fill rows of the same orderId (same value on each), so
     // we take ONE value per orderId — not summed.
@@ -1430,6 +1486,29 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       heldOpenBuyCostBasis: roundUSDC(heldOpenBuyCostBasis),
       unpairedSellQty: roundAsset(unpairedSellQty),
     };
+  };
+
+  // Memoization for computeRealizedFromCyclePairsUncached (issue #365). The
+  // ledger is immutable between order fills/annotations, yet getState()
+  // calls this on every ~1s status tick — cache the result and only
+  // recompute when ledgerVersion has moved since the cached call. A stale
+  // read is unacceptable, so this NEVER changes what's returned — it only
+  // skips re-scanning `fills` and re-allocating the aggregation Maps when
+  // nothing has mutated. Returns a shallow copy so a caller mutating the
+  // result (there are none today, but the contract should hold regardless)
+  // can't corrupt the cached value for the next reader.
+  let cachedRealized = null; // { version: number, result: object }
+  // Test-only: counts actual (non-cached) recomputations so tests can prove
+  // memoization without relying on wall-clock timing.
+  let realizedRecomputeCount = 0;
+  const computeRealizedFromCyclePairs = () => {
+    if (cachedRealized && cachedRealized.version === ledgerVersion) {
+      return { ...cachedRealized.result };
+    }
+    const result = computeRealizedFromCyclePairsUncached();
+    realizedRecomputeCount += 1;
+    cachedRealized = { version: ledgerVersion, result };
+    return { ...result };
   };
 
   /**
@@ -1572,13 +1651,18 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
      * this only for the sellOrderId annotation, which is metadata. For
      * indexed-field changes use the dedicated mutators
      * (annotateFillsByOrderId, updateFillCycleId). */
-    markDirty: () => { dirtySinceLastPersist = true; },
+    markDirty: () => { dirtySinceLastPersist = true; bumpLedgerVersion(); },
     load,
     // Test-only handle: returns the number of times persist() actually
     // wrote to disk (skipping the no-op short-circuit). Lets tests
     // assert "no-op when clean" without relying on filesystem mtime,
     // which has variable granularity across CI runners.
-    _test: { getWriteCount: () => writeCount },
+    _test: {
+      getWriteCount: () => writeCount,
+      getLedgerVersion: () => ledgerVersion,
+      getRealizedRecomputeCount: () => realizedRecomputeCount,
+      getFillTimeStatsRecomputeCount: () => fillTimeStatsRecomputeCount,
+    },
   };
 };
 

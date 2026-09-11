@@ -1830,4 +1830,235 @@ describe('Fill Ledger', () => {
       assert.equal(result.fill.netFee, 0.25);
     });
   });
+
+  // =======================================================================
+  // Derived-P&L / fill-time-stats memoization (issue #365). getState() calls
+  // getDerivedRealizedPnL() and getFillTimeStats(7) on every ~1s status tick;
+  // between fills the ledger is immutable, so these must be served from
+  // cache. `_test.getRealizedRecomputeCount()` / `getFillTimeStatsRecomputeCount()`
+  // count only actual (non-cached) recomputations, letting these tests prove
+  // "served from cache" deterministically instead of via wall-clock timing.
+  // =======================================================================
+  describe('derived realized P&L caching (issue #365)', () => {
+    it('serves consecutive calls from cache with an identical result', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'c-b1', orderId: 'c-buy-1' }));
+
+      const first = ledger.getDerivedRealizedPnL();
+      const second = ledger.getDerivedRealizedPnL();
+      const third = ledger.getDerivedRealizedPnL();
+
+      assert.deepStrictEqual(second, first, 'cached result must equal the freshly-computed result');
+      assert.deepStrictEqual(third, first, 'cached result must equal the freshly-computed result');
+      assert.equal(ledger._test.getRealizedRecomputeCount(), 1,
+        'repeat calls on an unmodified ledger must not trigger a recomputation');
+    });
+
+    it('invalidates and recomputes when a fill is ingested', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'inv-b1', orderId: 'inv-buy-1', price: '100000', size: '0.001' }));
+
+      const before = ledger.getDerivedRealizedPnL();
+      ledger.getDerivedRealizedPnL();
+      assert.equal(ledger._test.getRealizedRecomputeCount(), 1, 'repeat call must hit cache');
+
+      ledger.ingestFill(makeBuyFill({ tradeId: 'inv-b2', orderId: 'inv-buy-2', price: '100000', size: '0.001' }));
+      const after = ledger.getDerivedRealizedPnL();
+
+      assert.equal(ledger._test.getRealizedRecomputeCount(), 2, 'ingestFill must invalidate the cache');
+      assert.notStrictEqual(after.heldOpenBuyCostBasis, before.heldOpenBuyCostBasis,
+        'the new buy must be reflected once the cache is invalidated');
+    });
+
+    it('invalidates and recomputes when annotateFillsByOrderId writes a bodyPnl annotation', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'ann-b1', orderId: 'ann-buy-1', price: '100000', size: '0.001' }));
+      ledger.annotateFillsByOrderId('ann-buy-1', { sellOrderId: 'ann-tp-1' });
+      ledger.ingestFill(makeSellFill({ tradeId: 'ann-s1', orderId: 'ann-tp-1', price: '105000', size: '0.001' }));
+
+      const before = ledger.getDerivedRealizedPnL();
+      ledger.getDerivedRealizedPnL();
+      const countAfterCacheHit = ledger._test.getRealizedRecomputeCount();
+
+      ledger.annotateFillsByOrderId('ann-tp-1', { bodyPnl: 3.33, bodyHoldbackAsset: 0, isBodyOwned: true });
+      const after = ledger.getDerivedRealizedPnL();
+
+      assert.equal(ledger._test.getRealizedRecomputeCount(), countAfterCacheHit + 1,
+        'annotateFillsByOrderId must invalidate the cache');
+      assert.equal(after.realizedPnL, 3.33, 'bodyPnl annotation must be picked up after invalidation');
+      assert.notStrictEqual(after.realizedPnL, before.realizedPnL);
+    });
+
+    it('invalidates and recomputes when an externally-mutated fill is flushed via markDirty', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'md-b1', orderId: 'md-buy-1', price: '100000', size: '0.001' }));
+      ledger.annotateFillsByOrderId('md-buy-1', { sellOrderId: 'md-tp-1' });
+      ledger.ingestFill(makeSellFill({ tradeId: 'md-s1', orderId: 'md-tp-1', price: '105000', size: '0.001' }));
+
+      const before = ledger.getDerivedRealizedPnL();
+      const countBefore = ledger._test.getRealizedRecomputeCount();
+
+      // Contract documented on markDirty(): callers may mutate a fill object
+      // returned by getFillsForOrder/getAllFills directly, then call
+      // markDirty() to flag the change — this must invalidate the cache too,
+      // since bodyPnl feeds computeRealizedFromCyclePairs.
+      const [sellFill] = ledger.getFillsForOrder('md-tp-1');
+      sellFill.bodyPnl = 9.99;
+      ledger.markDirty();
+
+      const after = ledger.getDerivedRealizedPnL();
+
+      assert.equal(ledger._test.getRealizedRecomputeCount(), countBefore + 1,
+        'markDirty must invalidate the cache');
+      assert.equal(after.realizedPnL, 9.99);
+      assert.notStrictEqual(after.realizedPnL, before.realizedPnL);
+    });
+
+    it('invalidates and recomputes on recalculateCycles and updateFillCycleId', () => {
+      const ledger = createTestLedger();
+      // Orphan fills (no cycleId) so recalculateCycles has real cycle-index
+      // work to do rather than short-circuiting as a no-op.
+      ledger.ingestFill(makeBuyFill({ tradeId: 'rc-b1', orderId: 'rc-buy-1' }), null, { cycleId: null });
+      ledger.ingestFill(makeSellFill({ tradeId: 'rc-s1', orderId: 'rc-sell-1', size: '0.001' }), null, { cycleId: null });
+
+      ledger.getDerivedRealizedPnL();
+      const countAfterFirst = ledger._test.getRealizedRecomputeCount();
+      ledger.getDerivedRealizedPnL();
+      assert.equal(ledger._test.getRealizedRecomputeCount(), countAfterFirst, 'unmodified ledger must stay cached');
+
+      ledger.recalculateCycles();
+      ledger.getDerivedRealizedPnL();
+      assert.equal(ledger._test.getRealizedRecomputeCount(), countAfterFirst + 1,
+        'recalculateCycles must invalidate the cache');
+
+      const countAfterRecalc = ledger._test.getRealizedRecomputeCount();
+      ledger.updateFillCycleId('rc-b1', 'cycle-99');
+      ledger.getDerivedRealizedPnL();
+      assert.equal(ledger._test.getRealizedRecomputeCount(), countAfterRecalc + 1,
+        'updateFillCycleId must invalidate the cache');
+    });
+
+    it('invalidates and recomputes when load() picks up an externally-written fill', () => {
+      const exchange = 'test-exchange-365-load';
+      const pair = 'BTC-USD';
+      const { createFillLedger } = freshFillLedgerModule();
+      const ledger = createFillLedger(exchange, pair, pair);
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'load-b1', orderId: 'load-buy-1', price: '100000', size: '0.001' }));
+
+      const first = ledger.getDerivedRealizedPnL();
+      ledger.getDerivedRealizedPnL();
+      assert.equal(ledger._test.getRealizedRecomputeCount(), 1, 'repeat call must hit cache');
+
+      // Simulate an operator edit / another process appending a fill to the
+      // on-disk ledger, then a live SIGUSR1-style reload.
+      const filePath = path.join(migration.resolveFundDataDir(exchange, pair), 'fill-ledger.json');
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      onDisk.push({
+        tradeId: 'load-b2',
+        orderId: 'load-buy-2',
+        side: 'buy',
+        size: 0.001,
+        price: 100000,
+        quoteAmount: 100,
+        netFee: 0.1,
+        timestamp: Date.now(),
+      });
+      fs.writeFileSync(filePath, JSON.stringify(onDisk, null, 2));
+
+      ledger.load();
+      const second = ledger.getDerivedRealizedPnL();
+
+      assert.equal(ledger._test.getRealizedRecomputeCount(), 2, 'load() must invalidate the cache');
+      assert.equal(second.heldOpenBuyCostBasis, first.heldOpenBuyCostBasis + 100.10,
+        'reload must reflect the externally-added fill, not the stale cached value');
+    });
+  });
+
+  describe('fill-time-stats caching (issue #365)', () => {
+    it('serves consecutive calls from cache and invalidates on ingestFill', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      const now = Date.now();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'ft-b1', orderId: 'ft-buy-1' }), now - 5000);
+
+      const first = ledger.getFillTimeStats(7);
+      ledger.getFillTimeStats(7);
+      assert.deepStrictEqual(ledger.getFillTimeStats(7), first);
+      assert.equal(ledger._test.getFillTimeStatsRecomputeCount(), 1,
+        'repeat calls within the same time bucket must not recompute');
+      assert.equal(first.count, 1);
+
+      ledger.ingestFill(makeBuyFill({ tradeId: 'ft-b2', orderId: 'ft-buy-2' }), now - 10000);
+      const second = ledger.getFillTimeStats(7);
+
+      assert.equal(ledger._test.getFillTimeStatsRecomputeCount(), 2,
+        'ingestFill must invalidate the fill-time-stats cache');
+      assert.equal(second.count, 2);
+    });
+
+    it('keys the cache by sinceDays so different windows do not collide', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      ledger.ingestFill(makeBuyFill({ tradeId: 'ft-b3', orderId: 'ft-buy-3' }), Date.now() - 1000);
+
+      const stats7 = ledger.getFillTimeStats(7);
+      const stats1 = ledger.getFillTimeStats(1);
+
+      assert.equal(stats7.count, 1);
+      assert.equal(stats1.count, 1);
+    });
+  });
+
+  describe('memoization performance (issue #365)', () => {
+    it('serves 100 consecutive calls from cache without a single extra recomputation', () => {
+      const ledger = createTestLedger();
+      ledger.startNewCycle();
+      const n = 500;
+      for (let i = 0; i < n; i++) {
+        const buyOrderId = `perf-buy-${i}`;
+        const sellOrderId = `perf-sell-${i}`;
+        ledger.ingestFill(
+          makeBuyFill({ tradeId: `perf-b-${i}`, orderId: buyOrderId, price: '100000', size: '0.001' }),
+          Date.now() - 5000,
+          { skipPersist: true },
+        );
+        ledger.annotateFillsByOrderId(buyOrderId, { sellOrderId });
+        ledger.ingestFill(
+          makeSellFill({ tradeId: `perf-s-${i}`, orderId: sellOrderId, price: '105000', size: '0.001' }),
+          null,
+          { skipPersist: true },
+        );
+        ledger.annotateFillsByOrderId(sellOrderId, { bodyPnl: 1, bodyHoldbackAsset: 0, isBodyOwned: true });
+      }
+
+      // Warm both caches once.
+      const baselineRealized = ledger.getDerivedRealizedPnL();
+      const baselineFillTime = ledger.getFillTimeStats(7);
+      const realizedCountBefore = ledger._test.getRealizedRecomputeCount();
+      const fillTimeCountBefore = ledger._test.getFillTimeStatsRecomputeCount();
+
+      const start = process.hrtime.bigint();
+      for (let i = 0; i < 100; i++) {
+        const derived = ledger.getDerivedRealizedPnL();
+        assert.deepStrictEqual(derived, baselineRealized);
+        const fillTime = ledger.getFillTimeStats(7);
+        assert.deepStrictEqual(fillTime, baselineFillTime);
+      }
+      const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+
+      assert.equal(ledger._test.getRealizedRecomputeCount(), realizedCountBefore,
+        '100 cached getDerivedRealizedPnL calls must not trigger any recomputation');
+      assert.equal(ledger._test.getFillTimeStatsRecomputeCount(), fillTimeCountBefore,
+        '100 cached getFillTimeStats calls must not trigger any recomputation');
+      // Generous, CI-safe bound: cached reads over 1000 fills should be far
+      // below the ~2.7ms/call uncached cost measured against 25,440
+      // production fills (issue #365 audit), even on a slow/shared runner.
+      assert.ok(elapsedMs < 100, `expected 100 cached calls to complete quickly, took ${elapsedMs}ms`);
+    });
+  });
 });
