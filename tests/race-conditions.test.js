@@ -60,8 +60,10 @@ describe('Mutex utility', () => {
     // Documents the hazard the tpMutex fix addresses: a small auto-release
     // timeout admits a second acquirer even though the first never released.
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = line => lines.push(line);
+    console.warn = line => lines.push(line);
+    console.error = line => lines.push(line);
 
     let waited;
     try {
@@ -74,7 +76,9 @@ describe('Mutex utility', () => {
       waited = Date.now() - start;
       releaseSecond();
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     }
 
     assert.ok(waited >= 25, `second acquire waited for the auto-release (~30ms), got ${waited}ms`);

@@ -222,8 +222,21 @@ const LOG_EMOJI = {
   ERROR: '❌',
 };
 
+// Route each level to the console channel PM2 (and node) treat as
+// stdout/stderr, so error-file-only inspection still sees WARN/ERROR.
+// Looked up by name (not by reference) at call time so tests that stub
+// console.log/warn/error after this module loads are still honored.
+const LOG_CHANNEL = {
+  INFO: 'log',
+  WARN: 'warn',
+  ERROR: 'error',
+};
+
 /**
- * Log a message to console with emoji prefix (pm2 handles timestamps)
+ * Log a message to console with emoji prefix (pm2 handles timestamps).
+ * INFO goes to stdout (console.log); WARN and ERROR go to stderr
+ * (console.warn / console.error) so PM2's error-file routing and any
+ * stdout/stderr-splitting consumer see the correct severity.
  * @param {'INFO' | 'WARN' | 'ERROR'} level - Log level
  * @param {string} message - Log message
  * @param {Object|null} [data] - Optional data to include
@@ -234,7 +247,8 @@ const log = (level, message, data = null, options = {}) => {
   const emoji = LOG_EMOJI[level] || 'ℹ️';
   const formattedMessage = options.preserveMessage ? message : `${emoji} ${message}`;
   const output = data ? `${formattedMessage} ${JSON.stringify(data)}` : formattedMessage;
-  console.log(output);
+  const channel = LOG_CHANNEL[level] || 'log';
+  console[channel](output);
 };
 
 /**
