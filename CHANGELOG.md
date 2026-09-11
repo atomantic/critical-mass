@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-497] Regime order controls now stay tappable on touch layouts** — TP-edit and roll-up actions expose 44px hit areas on narrow or coarse-pointer screens while keeping wide fine-pointer tables compact.
 - **[issue-499] Cost Basis monitoring now stays readable on narrow screens** — price, average-cost, position summaries, and cycle metrics wrap into responsive cards while current-cycle fills scroll inside their card when needed.
 - **[issue-498] Aggressiveness choices now stay inside narrow dashboard cards** — Mobile and tablet operators can see and tap every configuration preset without page-level horizontal overflow, while wide dashboard cards retain the compact four-choice layout.
 - **[issue-496] Own the two-process development launcher** — Replace concurrently and its exclusive dependency tree with a built-in Node launcher, preserving attributed output, aggregate completion, and SIGINT/SIGTERM/SIGHUP cleanup including the server watch child. Add fixture lifecycle tests.

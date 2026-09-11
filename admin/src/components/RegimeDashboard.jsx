@@ -12,6 +12,7 @@ import RegimeActionModals from './regime/RegimeActionModals'
 import { getPriceDecimals, formatPriceByMagnitude, formatCurrency } from './charts/chartUtils'
 
 const CelestialVisualization = lazy(() => import('./celestial/CelestialVisualization'))
+const REGIME_ORDER_TOUCH_TARGET = 'min-h-11 min-w-11 inline-flex items-center justify-center regime-order-touch-target'
 
 // Format duration in human readable form
 const formatDuration = (ms) => {
@@ -2615,7 +2616,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     return (
                       <button
                         title="Edit TP target"
-                        className="text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none"
+                        className={`${REGIME_ORDER_TOUCH_TARGET} text-gray-400 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors ml-1 px-1 py-0.5 rounded text-sm leading-none`}
                         onClick={(e) => {
                           e.stopPropagation()
                           setTpEditModal({ bodyId: bd.id, currentTpPct: order.tpPercent, currentPrice: order.price, avgPrice: bd.avgPrice, bodyLabel: bd.id.slice(-8), inputValue: String(order.tpPercent ?? ''), priceValue: String(order.price ?? ''), mode })
@@ -2861,7 +2862,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                     return (
                                       <button
                                         title={`Roll up into ${tgtLabel}`}
-                                        className="px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded transition-colors"
+                                        className={`${REGIME_ORDER_TOUCH_TARGET} px-1 py-0.5 text-xs text-yellow-400 hover:text-yellow-300 hover:bg-yellow-900/30 rounded transition-colors`}
                                         onClick={(e) => {
                                           e.stopPropagation()
                                           setRollUpConfirm({ bodyId: bodyData.id, bodyLabel: srcLabel, targetLabel: tgtLabel })
