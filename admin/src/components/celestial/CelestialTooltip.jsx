@@ -1,16 +1,6 @@
 import { Html } from '@react-three/drei'
 import { TIER_EMOJIS } from './celestialConstants'
-
-const getPriceDecimals = (price) => {
-  if (!price || price >= 100) return 2
-  if (price >= 1) return 4
-  return 5
-}
-const fmtPrice = (p) => {
-  if (p == null || isNaN(p)) return '-'
-  const d = getPriceDecimals(p)
-  return p.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
-}
+import { formatPriceByMagnitude } from '../charts/chartUtils'
 
 /**
  * HTML overlay tooltip shown on hover over a celestial body
@@ -35,9 +25,9 @@ const CelestialTooltip = ({ body, position, maxUsdcDeployed, baseCurrency = 'BTC
         <div className="space-y-0.5 text-gray-300">
           <div>{baseCurrency}: <span className="text-orange-400 font-mono">{body.assetQty?.toFixed(6)}</span></div>
           <div>Cost: <span className="text-white font-mono">${body.costBasis?.toFixed(2)}</span></div>
-          <div>Avg: <span className="text-white font-mono">${fmtPrice(body.avgPrice)}</span></div>
+          <div>Avg: <span className="text-white font-mono">${formatPriceByMagnitude(body.avgPrice)}</span></div>
           {body.tpPrice > 0 && (
-            <div>TP: <span className="text-purple-400 font-mono">${fmtPrice(body.tpPrice)}</span> <span className="text-green-400">+{pnlPercent}%</span></div>
+            <div>TP: <span className="text-purple-400 font-mono">${formatPriceByMagnitude(body.tpPrice)}</span> <span className="text-green-400">+{pnlPercent}%</span></div>
           )}
         </div>
       </div>

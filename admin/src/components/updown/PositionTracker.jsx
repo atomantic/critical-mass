@@ -1,11 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Crosshair, Save, Trash2 } from 'lucide-react'
 import { calculateManualPositionPnl } from './position-tracker-math'
-
-function formatCurrency(value) {
-  if (value == null) return '---'
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
-}
+import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 
 export default function PositionTracker({ initialPosition, currentPrice, contractPnl, priceFresh }) {
   const [entryPrice, setEntryPrice] = useState('')
