@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getSocket } from './useTradeEvents'
+import { shouldAcceptFlushResult } from '../utils/flushResult.mjs'
 
 const MAX_LINES = 2000
 
@@ -7,11 +8,19 @@ export function useLogStream(processName, { lines = 500 } = {}) {
   const [logs, setLogs] = useState([])
   const [subscribed, setSubscribed] = useState(false)
   const [flushing, setFlushing] = useState(false)
+  // Latest completed flush outcome — { success, reason? } — one new object
+  // per completion, consumed by LogViewer to fire exactly one toast (#451).
+  const [flushResult, setFlushResult] = useState(null)
   // Set once the current process's PM2 log child stops streaming on its own
   // (spawn error, clean exit, or crash) while the socket stays connected —
   // { reason: 'error' | 'exited' | 'crashed', message?, code?, signal? }.
   const [terminal, setTerminal] = useState(null)
   const logsRef = useRef([])
+  // The in-flight flush request (if any): { processName }. Cleared the
+  // instant it settles — success, failure, disconnect, or a process switch —
+  // so a duplicate or stale 'logs:flushed' can never be double-applied or
+  // applied to the wrong process.
+  const pendingFlushRef = useRef(null)
 
   useEffect(() => {
     if (!processName) return
@@ -43,9 +52,10 @@ export function useLogStream(processName, { lines = 500 } = {}) {
       setTerminal({ reason: data.reason, message: data.message, code: data.code, signal: data.signal })
     }
     const handleFlushed = (data) => {
-      if (data.processName === processName) {
-        setFlushing(false)
-      }
+      if (!shouldAcceptFlushResult(pendingFlushRef.current, data, processName)) return
+      pendingFlushRef.current = null
+      setFlushing(false)
+      setFlushResult({ success: data.success, reason: data.reason })
     }
     // On the shared singleton socket, a reconnect (gateway restart, network
     // blip) drops the server-side subscription without telling this hook —
@@ -59,6 +69,14 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     const handleDisconnect = () => {
       setSubscribed(false)
       setTerminal(null)
+      // A flush in flight when the socket drops never gets its 'logs:flushed'
+      // response — settle it as a failure instead of leaving the button
+      // stuck on "Flushing..." forever or silently doing nothing.
+      if (pendingFlushRef.current) {
+        pendingFlushRef.current = null
+        setFlushing(false)
+        setFlushResult({ success: false, reason: 'disconnected' })
+      }
     }
 
     socket.on('logs:line', handleLine)
@@ -86,6 +104,12 @@ export function useLogStream(processName, { lines = 500 } = {}) {
       socket.off('disconnect', handleDisconnect)
       setSubscribed(false)
       setTerminal(null)
+      // Switching processes (or unmounting) mid-flush: drop the pending
+      // request silently — no completion event means no toast — rather than
+      // leaving the button stuck on "Flushing..." for whichever process is
+      // now selected.
+      pendingFlushRef.current = null
+      setFlushing(false)
     }
   }, [processName, lines])
 
@@ -95,8 +119,10 @@ export function useLogStream(processName, { lines = 500 } = {}) {
   }, [])
 
   const flush = useCallback(() => {
-    if (!processName) return
+    if (!processName || pendingFlushRef.current) return
+    pendingFlushRef.current = { processName }
     setFlushing(true)
+    setFlushResult(null)
     const socket = getSocket()
     socket.emit('logs:flush', { processName })
   }, [processName])
@@ -110,5 +136,5 @@ export function useLogStream(processName, { lines = 500 } = {}) {
     socket.emit('logs:subscribe', { processName, lines })
   }, [processName, lines])
 
-  return { logs, subscribed, clear, flush, flushing, terminal, retry }
+  return { logs, subscribed, clear, flush, flushing, flushResult, terminal, retry }
 }

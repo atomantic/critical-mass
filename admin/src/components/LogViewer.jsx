@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLogStream } from '../hooks/useLogStream'
 import { useToast } from './Toast'
+import { flushResultToast } from '../utils/flushResult.mjs'
 
 const TAIL_OPTIONS = [100, 250, 500, 1000, 2000]
 
@@ -21,19 +22,17 @@ const describeStatus = (subscribed, terminal) => {
 export default function LogViewer({ processName }) {
   const [tailLines, setTailLines] = useState(500)
   const [fullscreen, setFullscreen] = useState(false)
-  const { logs, subscribed, clear, flush, flushing, terminal, retry } = useLogStream(processName, { lines: tailLines })
+  const { logs, subscribed, clear, flush, flushing, flushResult, terminal, retry } = useLogStream(processName, { lines: tailLines })
   const { addToast } = useToast()
   const containerRef = useRef(null)
   const autoScrollRef = useRef(true)
-  const prevFlushing = useRef(false)
 
-  // Track flush completion for toast feedback
+  // Fire exactly one toast per completed flush — success or failure — and
+  // never for a duplicate/stale/disconnect-abandoned response (#451).
   useEffect(() => {
-    if (prevFlushing.current && !flushing) {
-      addToast({ type: 'success', title: 'Logs Flushed', message: `Flushed logs for ${processName}` })
-    }
-    prevFlushing.current = flushing
-  }, [flushing, processName, addToast])
+    if (!flushResult) return
+    addToast(flushResultToast(flushResult, processName))
+  }, [flushResult, processName, addToast])
 
   // Auto-scroll to bottom on new lines (unless user scrolled up)
   useEffect(() => {
