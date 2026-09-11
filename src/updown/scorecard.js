@@ -785,21 +785,13 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     }
   }
 
-  const getMetrics = () => {
-    const scored = outcomeBuffer.filter(o => o.compositeDirection !== 'down')
-    const evaluated = scored.filter(o => o.compositeCorrect != null)
-    const correct = evaluated.filter(o => o.compositeCorrect === true)
-    const incorrect = evaluated.filter(o => o.compositeCorrect === false)
-    const perpEvaluated = scored.filter(o => resolvePerpCorrect(o) != null)
-    const perpCorrectHits = perpEvaluated.filter(o => resolvePerpCorrect(o) === true)
-
-    // Streak (consecutive correct/incorrect from most recent)
+  const computeOutcomeStreak = (evaluatedOutcomes) => {
     let streak = 0
-    for (let i = evaluated.length - 1; i >= 0; i--) {
-      if (i === evaluated.length - 1) {
-        streak = evaluated[i].compositeCorrect ? 1 : -1
+    for (let i = evaluatedOutcomes.length - 1; i >= 0; i--) {
+      if (i === evaluatedOutcomes.length - 1) {
+        streak = evaluatedOutcomes[i].compositeCorrect ? 1 : -1
       } else {
-        const prev = evaluated[i].compositeCorrect
+        const prev = evaluatedOutcomes[i].compositeCorrect
         if ((streak > 0 && prev) || (streak < 0 && !prev)) {
           streak += streak > 0 ? 1 : -1
         } else {
@@ -807,21 +799,15 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
         }
       }
     }
+    return streak
+  }
 
-    // Average BPS for correct/incorrect
-    const avgCorrectBps = correct.length > 0
-      ? Math.round(correct.reduce((s, o) => s + Math.abs(o.priceChangeBps), 0) / correct.length * 100) / 100
-      : 0
-    const avgIncorrectBps = incorrect.length > 0
-      ? Math.round(incorrect.reduce((s, o) => s + Math.abs(o.priceChangeBps), 0) / incorrect.length * 100) / 100
-      : 0
-
-    // By window
+  const computeWindowMetrics = (scoredOutcomes) => {
     const byWindow = {}
     for (const label of Object.values(WINDOW_LABELS)) {
-      const windowOutcomes = scored.filter(o => o.window === label && o.compositeCorrect != null)
+      const windowOutcomes = scoredOutcomes.filter(o => o.window === label && o.compositeCorrect != null)
       const wCorrect = windowOutcomes.filter(o => o.compositeCorrect === true).length
-      const perpWindow = scored.filter(o => o.window === label && resolvePerpCorrect(o) != null)
+      const perpWindow = scoredOutcomes.filter(o => o.window === label && resolvePerpCorrect(o) != null)
       const perpHits = perpWindow.filter(o => resolvePerpCorrect(o) === true).length
       byWindow[label] = {
         accuracy: windowOutcomes.length > 0 ? Math.round(wCorrect / windowOutcomes.length * 10000) / 100 : null,
@@ -834,13 +820,15 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
         primary: PRIMARY_WINDOWS.includes(label),
       }
     }
+    return byWindow
+  }
 
-    // By timeframe
+  const computeTimeframeMetrics = (scoredOutcomes) => {
     const byTimeframe = {}
     for (const tf of ALL_TFS) {
       let tfTotal = 0
       let tfCorrect = 0
-      for (const o of scored) {
+      for (const o of scoredOutcomes) {
         const tfResult = o.tfResults?.[tf]
         if (tfResult?.correct == null) continue
         tfTotal++
@@ -851,6 +839,47 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
         predictions: tfTotal,
       }
     }
+    return byTimeframe
+  }
+
+  const computeContractMetrics = (scoredOutcomes) => {
+    const contractOutcomes = scoredOutcomes.filter(o => o.window === 'contract' &&
+      (o.contractOutcome === 'win' || o.contractOutcome === 'loss'))
+    if (contractOutcomes.length === 0) return null
+    const contractWins = contractOutcomes.filter(o => o.contractOutcome === 'win').length
+    const contractLosses = contractOutcomes.filter(o => o.contractOutcome === 'loss').length
+    return {
+      accuracy: Math.round(contractWins / contractOutcomes.length * 10000) / 100,
+      wins: contractWins,
+      losses: contractLosses,
+      total: contractOutcomes.length,
+    }
+  }
+
+  const getMetrics = () => {
+    const scored = outcomeBuffer.filter(o => o.compositeDirection !== 'down')
+    const evaluated = scored.filter(o => o.compositeCorrect != null)
+    const correct = evaluated.filter(o => o.compositeCorrect === true)
+    const incorrect = evaluated.filter(o => o.compositeCorrect === false)
+    const perpEvaluated = scored.filter(o => resolvePerpCorrect(o) != null)
+    const perpCorrectHits = perpEvaluated.filter(o => resolvePerpCorrect(o) === true)
+
+    // Streak (consecutive correct/incorrect from most recent)
+    const streak = computeOutcomeStreak(evaluated)
+
+    // Average BPS for correct/incorrect
+    const avgCorrectBps = correct.length > 0
+      ? Math.round(correct.reduce((s, o) => s + Math.abs(o.priceChangeBps), 0) / correct.length * 100) / 100
+      : 0
+    const avgIncorrectBps = incorrect.length > 0
+      ? Math.round(incorrect.reduce((s, o) => s + Math.abs(o.priceChangeBps), 0) / incorrect.length * 100) / 100
+      : 0
+
+    // By window
+    const byWindow = computeWindowMetrics(scored)
+
+    // By timeframe
+    const byTimeframe = computeTimeframeMetrics(scored)
 
     // By indicator — weighted by composite signal strength so strong signals influence
     // adaptive weights more than marginal ones (score 30 = 1x, score 60+ = 2x).
@@ -866,16 +895,7 @@ const createScorecard = ({ io, lastPriceFn, contractFn, journalWriter = appendRe
     })))
 
     // Contract-aware accuracy
-    const contractOutcomes = scored.filter(o => o.window === 'contract' &&
-      (o.contractOutcome === 'win' || o.contractOutcome === 'loss'))
-    const contractWins = contractOutcomes.filter(o => o.contractOutcome === 'win').length
-    const contractLosses = contractOutcomes.filter(o => o.contractOutcome === 'loss').length
-    const contractAware = contractOutcomes.length > 0 ? {
-      accuracy: Math.round(contractWins / contractOutcomes.length * 10000) / 100,
-      wins: contractWins,
-      losses: contractLosses,
-      total: contractOutcomes.length,
-    } : null
+    const contractAware = computeContractMetrics(scored)
 
     // Last prediction info
     const lastPred = scored.length > 0 ? scored[scored.length - 1] : null
