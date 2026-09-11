@@ -42,9 +42,10 @@ const { createSocketIOProxy } = require('../src/ipc/socket-io-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel, readBooleanFlag } = require('../src/shared-utils');
 const { stopAllRegimeEngines } = require('../src/engine-stop-all');
 const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-handlers');
+const { registerEngineRecalculateHandler } = require('../src/engine-recalculate-handler');
 const { migrateExchangeToPairs } = require('../src/migration');
 const { guardIncompleteRestore } = require('../src/restore-apply');
-const { LIFECYCLE, loadRegimeState } = require('../src/state-tracker');
+const { LIFECYCLE, loadRegimeState, saveRegimeState } = require('../src/state-tracker');
 const { getAdapter } = require('../src/adapters');
 
 /**
@@ -544,118 +545,18 @@ ipcServer.onRequest('funds:list', async (payload, exchange) => {
   };
 });
 
-ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
-  const resolvedPair = resolvePair(exchange, pair);
-  // Reject before any ledger/store read so a direct IPC caller (bypassing the
-  // gateway route's own validation) cannot flip a preview into an apply with
-  // a non-boolean value such as the string "false".
-  const applyFlag = readBooleanFlag(payload, 'apply', false);
-  if (applyFlag.error) return { success: false, error: applyFlag.error };
-  const apply = applyFlag.value;
-  const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
-
-  const currentState = loadRegimeState(exchange, resolvedPair);
-  const before = {
-    cyclesCompleted: currentState.position?.cyclesCompleted || 0,
-    realizedPnL: currentState.position?.realizedPnL || 0,
-    realizedAssetPnL: currentState.position?.realizedAssetPnL || 0,
-  };
-
-  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
-
-  // P&L source of truth is the cycle-pair derivation (realizedPnL = Σ per-sell
-  // bodyPnl; realizedAssetPnL = Σ bodyHoldbackAsset). NOT FIFO globals and NOT
-  // closed-trades — both over-count (closed-trades prorates buy cost by sold
-  // qty, leaving holdback cost unattributed; FIFO ignores cycle boundaries).
-  // When the engine is running, recompute on ITS ledger and re-derive in place
-  // so we never (a) open a second ledger on the same file, (b) write a
-  // FIFO/closed-trades number to disk, or (c) blind-merge a rebuilt position
-  // that nulls activeTpOrderId / resurrects stale bodies (issue #96).
-  let result;
-  if (engine?.recalculateAndRefresh) {
-    if (!apply) {
-      // Preview only: derive P&L read-only via getDerivedRealizedPnL, and full
-      // per-cycle detail + orphan-fix count via previewRecalculateCycles — both
-      // are side-effect-free (issue #132). The full recalculateCycles() mutates
-      // the live ledger (stamps orphan cycleIds, sets the dirty flag), which we
-      // must NOT do during a preview the operator may cancel (the engine's
-      // periodic save could persist an unapplied recalc). The read-only preview
-      // computes the same cycleDetails/orphansFixed over local state, so the
-      // running-engine preview no longer omits them.
-      const fillLedger = engine.getFillLedger();
-      const derived = fillLedger.getDerivedRealizedPnL();
-      const preview = fillLedger.previewRecalculateCycles();
-      const cycleFills = fillLedger.getCurrentCycleFills();
-      result = {
-        cyclesCompleted: preview.cyclesCompleted,
-        realizedPnL: derived.realizedPnL,
-        realizedAssetPnL: derived.realizedAssetPnL,
-        cycleDetails: preview.cycleDetails,
-        orphansFixed: preview.orphansFixed,
-        activeCycleId: preview.activeCycleId,
-        currentCycleFills: cycleFills.length,
-      };
-    } else {
-      const r = engine.recalculateAndRefresh();
-      result = { ...r, currentCycleFills: engine.getFillLedger().getCurrentCycleFills().length };
-    }
-  } else {
-    // Engine not running — operate on the standalone ledger directly.
-    invalidateStandaloneLedger(exchange, resolvedPair);
-    let fillLedger;
-    try {
-      fillLedger = getStandaloneLedger(exchange, resolvedPair);
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
-    const recalc = fillLedger.recalculateCycles();
-    const derived = fillLedger.getDerivedRealizedPnL();
-    const cycleFills = fillLedger.getCurrentCycleFills();
-    result = {
-      cyclesCompleted: recalc.cyclesCompleted,
-      realizedPnL: derived.realizedPnL,
-      realizedAssetPnL: derived.realizedAssetPnL,
-      cycleDetails: recalc.cycleDetails,
-      orphansFixed: recalc.orphansFixed,
-      activeCycleId: recalc.activeCycleId,
-      currentCycleFills: cycleFills.length,
-    };
-
-    if (apply) {
-      // Persist ONLY the cycle-derived P&L fields onto the existing position —
-      // do not rebuild/overwrite order tracking, lifecycle, or bodies.
-      const position = {
-        ...currentState.position,
-        cyclesCompleted: recalc.cyclesCompleted,
-        realizedPnL: derived.realizedPnL,
-        realizedAssetPnL: derived.realizedAssetPnL,
-        heldAssetCostBasis: derived.heldOpenBuyCostBasis,
-      };
-      if (position.celestialState) {
-        position.celestialState = {
-          ...position.celestialState,
-          bodiesRealizedPnL: derived.realizedPnL,
-          bodiesRealizedAssetPnL: derived.realizedAssetPnL,
-        };
-      }
-      saveRegimeState(position, currentState.regime, exchange, currentState.tpOptimizer, currentState.sizeOptimizer, resolvedPair);
-      fillLedger.persist();
-    }
-  }
-
-  const changes = {
-    cyclesCompleted: { before: before.cyclesCompleted, after: result.cyclesCompleted },
-    realizedPnL: { before: before.realizedPnL, after: result.realizedPnL },
-    realizedAssetPnL: { before: before.realizedAssetPnL, after: result.realizedAssetPnL },
-  };
-
-  return {
-    success: true, exchange, pair: resolvedPair, applied: apply, changes,
-    cycleDetails: result.cycleDetails,
-    orphansFixed: result.orphansFixed,
-    activeCycleId: result.activeCycleId,
-    currentCycleFills: result.currentCycleFills,
-  };
+// regime:recalculate — extracted to src/engine-recalculate-handler.js
+// (issue #505) so the preview-vs-apply / live-vs-stopped selection it
+// enforces can be tested directly against these production callbacks.
+registerEngineRecalculateHandler(ipcServer, {
+  regimeEngines,
+  resolvePair,
+  fundKey,
+  readBooleanFlag,
+  loadRegimeState,
+  saveRegimeState,
+  invalidateStandaloneLedger,
+  getStandaloneLedger,
 });
 
 
