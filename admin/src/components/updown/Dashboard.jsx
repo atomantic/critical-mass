@@ -13,11 +13,7 @@ import ScorecardPanel from './ScorecardPanel'
 import TimeWarningBanner, { parseExpiry } from './TimeWarningBanner'
 import { isFreshTick } from './position-tracker-math'
 import { labelHistoryActions } from '../../constants/signals'
-
-function formatCurrency(value) {
-  if (value == null) return '---'
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
-}
+import { formatCurrencyIntl as formatCurrency } from '../charts/chartUtils'
 
 export default function UpDownDashboard() {
   const { connected, tick, indicators: rawIndicators, signal, scorecard: socketScorecard } = useUpDownSocket()
