@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-361] UpDown signal dampener steps extracted from computeSignals** — Extract confluence filtering, macro trend dampening, daily pivot dampening, and score-ceiling compression into named, independently-tested helpers, cutting `computeSignals` cyclomatic complexity from 45 to reduce the risk of subtle ordering defects in future changes.
 - **[issue-360] Scorecard analysis calculation steps extracted from monolithic function** — Decompose buildScorecardAnalysis into focused pure helpers (buildAccuracyOverTime, buildIndicatorAccuracyOverTime, buildFailurePatterns, buildSummaryStats, buildWindowAndContractStats) to reduce cyclomatic complexity from 58 to 5 and improve maintainability.
 - **[issue-359] Regime operational modals extracted from monolithic RegimeDashboard** — Extract 6 confirmation dialogs (Collapse All, Reset Cycle, Resume Drawdown, Roll Up, Set TP, DCA Convert) into a dedicated RegimeActionModals component, reducing coupling between presentation/telemetry and operational mutations and enabling independent testing.
 - **[issue-358] Fund summary aggregation extracted into domain module** — Extract fill ledger aggregation logic from exchange route handler into pure `buildFundSummary` function in `src/fund-summary.js` with dedicated unit tests, enabling reuse by other components and eliminating transport-domain entanglement.

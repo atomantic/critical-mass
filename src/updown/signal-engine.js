@@ -778,6 +778,132 @@ const computeTimeframeSignals = (candles, prevIndicators, weights, trendBias = '
 };
 
 /**
+ * Feature 9: Confluence filter — overcrowded signals perform worse than random.
+ * Counts how many timeframes agree with the composite direction and dampens
+ * the score when agreement is too high (overcrowded) or elevated (moderate).
+ * @param {number} compositeScore
+ * @param {Record<string, {score: number}>} timeframes
+ * @returns {{compositeScore: number, confluence: {agreeing: number, totalDirectional: number, quality: 'overcrowded'|'moderate'|'selective'}}}
+ */
+const applyConfluenceFilter = (compositeScore, timeframes) => {
+  const compositeDir = compositeScore > 0 ? 1 : compositeScore < 0 ? -1 : 0;
+  let agreeing = 0;
+  let totalDirectional = 0;
+  for (const tf of ALL_SIGNAL_TFS) {
+    const tfScore = timeframes[tf]?.score ?? 0;
+    if (Math.abs(tfScore) > 15) {
+      totalDirectional++;
+      if ((tfScore > 0 ? 1 : -1) === compositeDir) agreeing++;
+    }
+  }
+  const quality = agreeing >= 8 ? 'overcrowded' : agreeing >= 7 ? 'moderate' : 'selective';
+  let dampenedScore = compositeScore;
+  if (quality === 'overcrowded') {
+    dampenedScore *= 0.85;
+  } else if (quality === 'moderate') {
+    dampenedScore *= 0.95;
+  }
+  return { compositeScore: dampenedScore, confluence: { agreeing, totalDirectional, quality } };
+};
+
+/**
+ * Feature 1: Trend filter + weekly macro dampener — apply only the stronger
+ * dampener, not both. Stacking both multiplicatively (0.80 × 0.85 = 0.68x)
+ * crushes signals during prolonged bearish trends, making BUY signals nearly
+ * unreachable.
+ * @param {number} compositeScore
+ * @param {{trendBias: 'bullish'|'bearish'|'neutral', multiplier: number}} trendFilter
+ * @param {{weeklyBias: 'bullish'|'bearish'|'neutral', multiplier: number}} weeklyTrend
+ * @returns {number} dampened composite score
+ */
+const applyMacroTrendDampener = (compositeScore, trendFilter, weeklyTrend) => {
+  const trendCounterSignal = (trendFilter.trendBias === 'bullish' && compositeScore < 0) ||
+                             (trendFilter.trendBias === 'bearish' && compositeScore > 0);
+  const weeklyCounterSignal = (weeklyTrend.weeklyBias === 'bullish' && compositeScore < 0) ||
+                              (weeklyTrend.weeklyBias === 'bearish' && compositeScore > 0);
+
+  if (trendCounterSignal && weeklyCounterSignal) {
+    // Both disagree — apply the stronger (lower) multiplier only
+    return compositeScore * Math.min(trendFilter.multiplier, weeklyTrend.multiplier);
+  }
+  if (trendCounterSignal) {
+    return compositeScore * trendFilter.multiplier;
+  }
+  if (weeklyCounterSignal) {
+    return compositeScore * weeklyTrend.multiplier;
+  }
+  return compositeScore;
+};
+
+/**
+ * Feature 6: Daily pivot point dampening. Caches pivots per calendar day
+ * (recomputing only when the latest daily candle rolls to a new day) and
+ * dampens scores that push further into a nearby support/resistance level.
+ * @param {number} compositeScore
+ * @param {Array<{timestamp: number}>} candles1d
+ * @param {{getCandles: (tf: string) => Array}} candleAggregator
+ * @param {number} lastPivotDayTs - Previously cached pivot day timestamp
+ * @param {object|null} cachedPivots - Previously cached pivot levels
+ * @returns {{compositeScore: number, pivotPoints: object|null, cachedPivots: object|null, lastPivotDayTs: number}}
+ */
+const applyDailyPivotDampener = (compositeScore, candles1d, candleAggregator, lastPivotDayTs, cachedPivots) => {
+  let pivotPoints = null;
+  let nextCachedPivots = cachedPivots;
+  let nextLastPivotDayTs = lastPivotDayTs;
+  let dampenedScore = compositeScore;
+
+  if (candles1d?.length > 0) {
+    const latestDaily = candles1d[candles1d.length - 1];
+    const dayTs = latestDaily.timestamp;
+    if (dayTs !== nextLastPivotDayTs) {
+      nextCachedPivots = calculatePivotPoints(latestDaily);
+      nextLastPivotDayTs = dayTs;
+    }
+    if (nextCachedPivots) {
+      const closes5m = candleAggregator.getCandles('5m');
+      const currentPrice = closes5m?.length > 0 ? closes5m[closes5m.length - 1].close : 0;
+      const prevPrice5m = closes5m?.length > 1 ? closes5m[closes5m.length - 2].close : null;
+      if (currentPrice > 0) {
+        pivotPoints = computePivotDampening(currentPrice, nextCachedPivots, 0.001, prevPrice5m);
+        // Dampen positive scores near resistance, negative scores near support
+        if (pivotPoints.nearLevel) {
+          const isResistance = pivotPoints.nearLevel.startsWith('R');
+          if (isResistance && dampenedScore > 0) {
+            dampenedScore *= pivotPoints.dampMultiplier;
+          } else if (!isResistance && dampenedScore < 0) {
+            dampenedScore *= pivotPoints.dampMultiplier;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    compositeScore: dampenedScore,
+    pivotPoints,
+    cachedPivots: nextCachedPivots,
+    lastPivotDayTs: nextLastPivotDayTs,
+  };
+};
+
+/**
+ * Feature 10: Score cap — soft ceiling instead of hard cap.
+ * A hard cap at ±35 made BUY (threshold 40) mathematically impossible.
+ * This applies linear compression above the threshold — scores can reach
+ * ±70 but with diminishing returns.
+ * @param {number} score
+ * @param {number} [threshold=50]
+ * @param {number} [factor=0.5] - Compression factor applied to the excess above threshold
+ * @returns {number}
+ */
+const compressScoreCeiling = (score, threshold = 50, factor = 0.5) => {
+  if (Math.abs(score) <= threshold) return score;
+  const sign = score > 0 ? 1 : -1;
+  const excess = Math.abs(score) - threshold;
+  return sign * (threshold + excess * factor);
+};
+
+/**
  * Create a signal engine instance
  * @param {{getCandles: (tf: string) => Array}} candleAggregator
  * @param {{now?: () => number}} [options] - Instance clock for isolated historical replay
@@ -855,69 +981,20 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
     }
 
     // Feature 9: Confluence filter — overcrowded signals perform worse than random
-    const compositeDir = compositeScore > 0 ? 1 : compositeScore < 0 ? -1 : 0;
-    let agreeing = 0;
-    let totalDirectional = 0;
-    for (const tf of ALL_SIGNAL_TFS) {
-      const tfScore = timeframes[tf]?.score ?? 0;
-      if (Math.abs(tfScore) > 15) {
-        totalDirectional++;
-        if ((tfScore > 0 ? 1 : -1) === compositeDir) agreeing++;
-      }
-    }
-    const confluenceQuality = agreeing >= 8 ? 'overcrowded' : agreeing >= 7 ? 'moderate' : 'selective';
-    if (confluenceQuality === 'overcrowded') {
-      compositeScore *= 0.85;
-    } else if (confluenceQuality === 'moderate') {
-      compositeScore *= 0.95;
-    }
-    const confluence = { agreeing, totalDirectional, quality: confluenceQuality };
+    const confluenceResult = applyConfluenceFilter(compositeScore, timeframes);
+    compositeScore = confluenceResult.compositeScore;
+    const { confluence } = confluenceResult;
 
-    // Feature 1: Trend filter + weekly macro — apply only the stronger dampener, not both
-    // Stacking both multiplicatively (0.80 × 0.85 = 0.68x) crushes signals during
-    // prolonged bearish trends, making BUY signals nearly unreachable.
-    const trendCounterSignal = (trendFilter.trendBias === 'bullish' && compositeScore < 0) ||
-                               (trendFilter.trendBias === 'bearish' && compositeScore > 0);
-    const weeklyCounterSignal = (weeklyTrend.weeklyBias === 'bullish' && compositeScore < 0) ||
-                                (weeklyTrend.weeklyBias === 'bearish' && compositeScore > 0);
-
-    if (trendCounterSignal && weeklyCounterSignal) {
-      // Both disagree — apply the stronger (lower) multiplier only
-      compositeScore *= Math.min(trendFilter.multiplier, weeklyTrend.multiplier);
-    } else if (trendCounterSignal) {
-      compositeScore *= trendFilter.multiplier;
-    } else if (weeklyCounterSignal) {
-      compositeScore *= weeklyTrend.multiplier;
-    }
+    // Feature 1: Trend filter + weekly macro dampener — apply only the stronger dampener, not both
+    compositeScore = applyMacroTrendDampener(compositeScore, trendFilter, weeklyTrend);
 
     // Feature 6: Pivot point dampening
     const candles1d = candleAggregator.getCandles('1d');
-    let pivotPoints = null;
-    if (candles1d?.length > 0) {
-      const latestDaily = candles1d[candles1d.length - 1];
-      const dayTs = latestDaily.timestamp;
-      if (dayTs !== lastPivotDayTs) {
-        cachedPivots = calculatePivotPoints(latestDaily);
-        lastPivotDayTs = dayTs;
-      }
-      if (cachedPivots) {
-        const closes5m = candleAggregator.getCandles('5m');
-        const currentPrice = closes5m?.length > 0 ? closes5m[closes5m.length - 1].close : 0;
-        const prevPrice5m = closes5m?.length > 1 ? closes5m[closes5m.length - 2].close : null;
-        if (currentPrice > 0) {
-          pivotPoints = computePivotDampening(currentPrice, cachedPivots, 0.001, prevPrice5m);
-          // Dampen positive scores near resistance, negative scores near support
-          if (pivotPoints.nearLevel) {
-            const isResistance = pivotPoints.nearLevel.startsWith('R');
-            if (isResistance && compositeScore > 0) {
-              compositeScore *= pivotPoints.dampMultiplier;
-            } else if (!isResistance && compositeScore < 0) {
-              compositeScore *= pivotPoints.dampMultiplier;
-            }
-          }
-        }
-      }
-    }
+    const pivotResult = applyDailyPivotDampener(compositeScore, candles1d, candleAggregator, lastPivotDayTs, cachedPivots);
+    compositeScore = pivotResult.compositeScore;
+    const { pivotPoints } = pivotResult;
+    cachedPivots = pivotResult.cachedPivots;
+    lastPivotDayTs = pivotResult.lastPivotDayTs;
 
     // ADX regime modulation — boost trending, dampen ranging
     const adx1h = timeframes['1h']?.indicators?.adx;
@@ -925,13 +1002,7 @@ const createSignalEngine = (candleAggregator, { now: clock = () => Date.now() } 
     compositeScore *= adxRegime.multiplier;
 
     // Feature 10: Score cap — soft ceiling instead of hard cap
-    // Previous hard cap at ±35 made BUY (threshold 40) mathematically impossible.
-    // Now: linear compression above ±35 — scores can reach ±70 but with diminishing returns.
-    if (Math.abs(compositeScore) > 50) {
-      const sign = compositeScore > 0 ? 1 : -1;
-      const excess = Math.abs(compositeScore) - 50;
-      compositeScore = sign * (50 + excess * 0.5); // 50% compression above 50
-    }
+    compositeScore = compressScoreCeiling(compositeScore);
 
     // Feature 11: Data-driven time-of-day weighting from scorecard per-hour accuracy
     const utcHour = new Date(now).getUTCHours();
@@ -1028,6 +1099,10 @@ module.exports = {
   computeVolatilityContext,
   computeVolumeSurge,
   computeHorizonPrediction,
+  applyConfluenceFilter,
+  applyMacroTrendDampener,
+  applyDailyPivotDampener,
+  compressScoreCeiling,
   INDICATOR_WEIGHTS,
   TIMEFRAME_WEIGHTS,
   ALL_SIGNAL_TFS,
