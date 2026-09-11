@@ -83,6 +83,34 @@ const REQUIRED_METHODS = [
 ];
 
 /**
+ * Build the ambiguous-placement error every adapter throws when an order POST
+ * fails in transport (socket reset, timeout, abort) or when its response cannot
+ * be decoded. In both cases the exchange may ALREADY hold the order, so the
+ * outcome is UNKNOWN — never a clean failure and never safe to blind-retry.
+ *
+ * `clientOrderId` is the deterministic id the adapter sent with the placement:
+ * order-manager's placeWithUnknownReconcile reconciles by it (via the adapter's
+ * findOrderByClientOrderId) and adopts the real exchange order instead of
+ * placing a second one. Dropping the id here is what turns an accepted-but-
+ * unacknowledged order into an untracked live position. (#199/#226/#427)
+ * @param {string} exchange - Human-readable exchange name for the message
+ * @param {string} endpoint - Endpoint label, e.g. 'POST /v1/order/new'
+ * @param {string|undefined} clientOrderId - Deterministic client order id we sent
+ * @param {string} cause - Underlying failure message
+ * @returns {Error & {status: string, unknownOutcome: boolean, endpoint: string, clientOrderId: string|undefined}}
+ */
+const createAmbiguousPlacementError = (exchange, endpoint, clientOrderId, cause) => {
+  const err = /** @type {any} */ (new Error(
+    `${exchange} API unknown order outcome on ${endpoint}: ${cause} — order may have reached the matching engine; reconcile by client_order_id before re-placing`
+  ));
+  err.status = 'unknown';
+  err.unknownOutcome = true;
+  err.endpoint = endpoint;
+  err.clientOrderId = clientOrderId;
+  return err;
+};
+
+/**
  * Validate that an adapter implements all required methods
  * @param {Object} adapter - Adapter instance to validate
  * @param {string} name - Adapter name for error messages
@@ -143,4 +171,5 @@ module.exports = {
   REQUIRED_METHODS,
   validateAdapter,
   createBaseAdapter,
+  createAmbiguousPlacementError,
 };
