@@ -386,9 +386,19 @@ const loadRawConfig = () => {
  */
 const saveConfig = (config) => {
   const baseFile = resolveBaseConfigFile();
-  const base = fs.existsSync(baseFile)
-    ? JSON.parse(fs.readFileSync(baseFile, 'utf8'))
-    : {};
+  // Guard the parse the same way loadRawConfig does (#185): the base config
+  // can be transiently unreadable (mid-write from another process, disk
+  // hiccup), and a raw SyntaxError here would abort the whole save — and the
+  // caller (e.g. updateRegimeConfig) has already mutated its own working
+  // copy expecting saveConfig to either persist it or throw a clear error.
+  let base;
+  try {
+    base = fs.existsSync(baseFile)
+      ? JSON.parse(fs.readFileSync(baseFile, 'utf8'))
+      : {};
+  } catch (err) {
+    throw new Error(`saveConfig: base config file is unreadable/corrupt (${baseFile}): ${err.message}`);
+  }
   const diff = computeDiff(base, config);
   fs.mkdirSync(path.dirname(USER_CONFIG_FILE), { recursive: true });
   // Atomic write (tmp + rename): a crash mid-write would otherwise leave a
@@ -465,11 +475,19 @@ const normalizeToMultiExchange = (config) => {
 
 /**
  * Load and normalize configuration
+ *
+ * Returns a fresh deep clone on every call. loadRawConfig()/_configCache stay
+ * shared for the O(N)-disk-read win that motivated the cache, but every
+ * update*Config helper below mutates the object loadConfig() hands back
+ * before calling saveConfig — if that were the live cache, a saveConfig
+ * throw would leave the process running on a value that was never persisted
+ * (issue #416). Node >= 20 per package.json `engines`, so structuredClone is
+ * available.
  * @returns {MultiExchangeConfig} Normalized multi-exchange configuration
  */
 const loadConfig = () => {
   const raw = loadRawConfig();
-  return normalizeToMultiExchange(raw);
+  return structuredClone(normalizeToMultiExchange(raw));
 };
 
 // ============================================================================
