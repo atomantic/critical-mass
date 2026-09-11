@@ -211,6 +211,39 @@ describe('fund lifecycle routes', () => {
       assert.equal(res.body.config.regime.maxUsdcDeployed, 5000, 'totalAllocation must seed regime.maxUsdcDeployed');
     });
 
+    // Parity regression for #452: a supplied regime seed used to be spread into
+    // the new fund's config with no value validation at all (only the dedicated
+    // PUT /api/:exchange/regime/config route checked ranges), so a fund could be
+    // created with e.g. maxDrawdownPercent: 999 — a value the risk manager can
+    // never legitimately compare a 0-100% drawdown against.
+    it('rejects fund creation when the regime seed carries an out-of-range value (400, zero writes)', async () => {
+      mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+      const { app, fsMocks } = setup();
+
+      const res = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' },
+        body: { pair: 'SOL-USDC', regime: { maxDrawdownPercent: 999 } },
+      });
+
+      assert.equal(res.statusCode, 400, JSON.stringify(res.body));
+      assert.match(res.body.error, /maxDrawdownPercent/);
+      assert.ok(!JSON.stringify(fsMocks.user() || {}).includes('SOL-USDC'), 'rejected fund must not be persisted');
+    });
+
+    it('drops an unknown regime seed key but still creates the fund with the known ones', async () => {
+      mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+      const { app } = setup();
+
+      const res = await invoke(app, 'POST /api/:exchange/funds', {
+        params: { exchange: 'coinbase' },
+        body: { pair: 'SOL-USDC', regime: { baseSizeUsdc: 25, bogusRegimeKey: 1 } },
+      });
+
+      assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+      assert.equal(res.body.config.regime.baseSizeUsdc, 25, 'known regime seed field must persist');
+      assert.equal(res.body.config.regime.bogusRegimeKey, undefined, 'unknown regime seed key must be dropped');
+    });
+
     it('rejects an unknown exchange (no adapter registered) with 400', async () => {
       // Real (unmocked) adapter registry — 'unobtainium' is not coinbase/gemini/cryptocom.
       const { app } = setup();

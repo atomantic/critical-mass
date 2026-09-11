@@ -153,6 +153,52 @@ describe('PUT /api/:exchange/config tolerates stale regime keys', () => {
   });
 });
 
+// Parity regression for #452: this route used to only sanitize regime key NAMES
+// (sanitizeRegimeConfig), never their values, so a payload rejected by the
+// dedicated PUT /api/:exchange/regime/config route — e.g. maxDrawdownPercent: 999,
+// outside the documented 10-30 range — was persisted here and forwarded to the
+// live engine anyway. It now runs through the same validateRegimeConfig check.
+describe('PUT /api/:exchange/config rejects out-of-range nested regime values', () => {
+  afterEach(() => mock.restoreAll());
+
+  const setup = (coinbaseRequest = () => Promise.resolve({ success: true })) => {
+    const fsMocks = setupFsMocks(BASE_CONFIG);
+    const app = createFakeApp();
+    registerExchangeRoutes(app, {
+      exchangeIPCMap: { coinbase: { request: coinbaseRequest } },
+      parseTSV: () => [],
+      calculateCostBasis: () => ({}),
+      getNextTradeInfo: () => ({}),
+    });
+    return { app, fsMocks };
+  };
+
+  const reqFor = (body) => ({ params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' }, body });
+
+  it('rejects maxDrawdownPercent: 999 with 400, zero writes, zero IPC calls', async () => {
+    let ipcCalls = 0;
+    const { app, fsMocks } = setup(() => { ipcCalls += 1; return Promise.resolve({ success: true }); });
+    const before = JSON.stringify(fsMocks.user());
+
+    const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ regime: { maxDrawdownPercent: 999 } }));
+
+    assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    assert.match(res.body.error, /maxDrawdownPercent/);
+    assert.equal(JSON.stringify(fsMocks.user()), before, 'a rejected value must never be persisted');
+    assert.equal(ipcCalls, 0, 'a rejected value must never reach the live engine');
+  });
+
+  it('still allows a valid partial regime update on the same route (no false positive)', async () => {
+    const { app } = setup();
+
+    const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ regime: { baseSizeUsdc: 75 } }));
+
+    assert.equal(res.statusCode, 200, `valid value must not 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    const after = await invoke(app, 'GET /api/:exchange/config', reqFor({}));
+    assert.equal(after.body.regime.baseSizeUsdc, 75, 'valid regime field must persist');
+  });
+});
+
 describe('configured fund selection', () => {
   afterEach(() => mock.restoreAll());
 

@@ -234,6 +234,20 @@ describe('PUT /api/config validates against the allowlist (issue #146)', () => {
     assert.equal(written.exchanges.coinbase.amount, 40);
     assert.equal(written.exchanges.coinbase.regime.enabled, true);
   });
+
+  // Parity regression for #452: this unprefixed legacy path had the same nested-
+  // regime bypass as PUT /api/:exchange/config — known keys survived sanitizeRegimeConfig
+  // untouched regardless of value, so maxDrawdownPercent: 999 (outside the documented
+  // 10-30 range) was persisted and forwarded to the live engine.
+  it('rejects an out-of-range nested regime value with 400 and persists nothing', async () => {
+    const { app, fsMocks } = setup();
+    const res = await invoke(app, 'PUT /api/config', {
+      body: { regime: { maxDrawdownPercent: 999 } },
+    });
+    assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    assert.match(res.body.error, /maxDrawdownPercent/);
+    assert.equal(fsMocks.written(), null, 'no config write should occur on a rejected nested regime value');
+  });
 });
 
 describe('PUT /api/notifications/config masked-token round-trip guard', () => {
