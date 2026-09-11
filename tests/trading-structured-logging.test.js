@@ -121,9 +121,10 @@ describe('core trading module structured logging', () => {
     assert.equal(result.success, false);
 
     const { context, message } = contextFor(lines, '❌ Unknown order outcome and cannot reconcile');
+    assert.equal(result.pending, true, 'an unreconcilable outcome stays pending, not an ordinary failure');
     assert.equal(
       message,
-      '❌ Unknown order outcome and cannot reconcile (clientOrderId=coid-2) — treating as failed',
+      '❌ Unknown order outcome and cannot reconcile (clientOrderId=coid-2) — holding the placement pending; no replacement will be submitted until an operator reconciles',
     );
     assert.deepStrictEqual(context, {
       module: 'order-manager',
@@ -131,6 +132,7 @@ describe('core trading module structured logging', () => {
       pair: 'ETHUSD',
       clientOrderId: 'coid-2',
       reconcilable: false,
+      pending: true,
       error: 'unknown order outcome — reconcile by client_order_id',
     });
   });

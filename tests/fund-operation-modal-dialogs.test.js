@@ -109,13 +109,13 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
     assert.match(regimeActionModalsSource, /import ModalDialog from '\.\.\/ModalDialog'/)
   })
 
-  it('no longer renders any of its six dialogs as bare overlay divs', () => {
+  it('no longer renders any of its dialogs as bare overlay divs', () => {
     assert.doesNotMatch(regimeActionModalsSource, /bg-black\/60/)
     assert.doesNotMatch(regimeActionModalsSource, /fixed inset-0/)
   })
 
-  it('renders exactly six ModalDialog usages', () => {
-    assert.equal(dialogUsages(regimeActionModalsSource).length, 6)
+  it('renders exactly seven ModalDialog usages', () => {
+    assert.equal(dialogUsages(regimeActionModalsSource).length, 7)
   })
 
   const confirmations = [
@@ -123,6 +123,7 @@ describe('RegimeActionModals.jsx body/regime dialogs use ModalDialog (issue #434
     { name: 'Reset Cycle', titleId: 'reset-cycle-title', descId: 'reset-cycle-description', dismissible: '!resettingCycle', cancelDisabled: 'resettingCycle' },
     { name: 'Roll Up', titleId: 'roll-up-title', descId: 'roll-up-description', dismissible: '!rollingUp', cancelDisabled: 'rollingUp' },
     { name: 'DCA conversion', titleId: 'convert-dca-title', descId: 'convert-dca-description', dismissible: '!converting', cancelDisabled: 'converting' },
+    { name: 'placement-intent reconcile', titleId: 'reconcile-intent-title', descId: 'reconcile-intent-description', dismissible: '!reconcilingIntent', cancelDisabled: 'reconcilingIntent' },
   ]
 
   for (const { name, titleId, descId, dismissible, cancelDisabled } of confirmations) {

@@ -14,6 +14,12 @@ const RegimeActionModals = ({
   onDismissResetCycle,
   onExecuteResetCycle,
 
+  // Unresolved placement-intent reconcile state & handlers
+  intentConfirm,
+  reconcilingIntent,
+  onDismissIntent,
+  onExecuteIntent,
+
   // Resume Drawdown state & handlers
   drawdownResumeConfirm,
   onDismissResumeDrawdown,
@@ -115,6 +121,48 @@ const RegimeActionModals = ({
               disabled={resettingCycle}
             >
               {resettingCycle ? 'Resetting…' : 'Reset cycle & resume buying'}
+            </button>
+          </div>
+        </ModalDialog>
+      )}
+
+      {/* Unresolved placement-intent reconcile dialog */}
+      {intentConfirm && (
+        <ModalDialog
+          onClose={() => onDismissIntent()}
+          dismissible={!reconcilingIntent}
+          labelledBy="reconcile-intent-title"
+          describedBy="reconcile-intent-description"
+        >
+          <h3 id="reconcile-intent-title" className="text-white text-lg font-medium mb-3">
+            {intentConfirm.action === 'adopt' ? 'Adopt the exchange order' : 'Discard the placement intent'}
+          </h3>
+          <p id="reconcile-intent-description" className="text-gray-300 text-sm mb-4">
+            {intentConfirm.action === 'adopt'
+              ? 'Looks this placement up on the exchange by its client order id and, only if a live or filled order comes back, brings it under normal tracking. Nothing is adopted on an empty or failed lookup.'
+              : 'Clears the record so this fund can place orders again. Do this only once you have checked the exchange yourself and confirmed no order from this placement is live — a duplicate would trade against the same capital twice.'}
+          </p>
+          <p className="text-gray-500 text-xs mb-4 font-mono break-all">
+            {intentConfirm.intent?.action || 'order'} · {intentConfirm.intent?.side || '?'}
+            {intentConfirm.intent?.clientOrderId ? ` · client_order_id ${intentConfirm.intent.clientOrderId}` : ' · no client order id recorded'}
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+              onClick={() => onDismissIntent()}
+              disabled={reconcilingIntent}
+              autoFocus
+            >
+              Cancel
+            </button>
+            <button
+              className={`px-4 py-2 text-sm text-white rounded transition-colors disabled:opacity-50 ${intentConfirm.action === 'adopt' ? 'bg-blue-600 hover:bg-blue-500' : 'bg-amber-600 hover:bg-amber-500'}`}
+              onClick={onExecuteIntent}
+              disabled={reconcilingIntent}
+            >
+              {reconcilingIntent
+                ? 'Working…'
+                : intentConfirm.action === 'adopt' ? 'Look up & adopt' : 'Discard intent'}
             </button>
           </div>
         </ModalDialog>

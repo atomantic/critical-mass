@@ -236,7 +236,7 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange) => {
 
     let sellOrder;
     try {
-      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter);
+      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange });
     } catch (err) {
       stateTracker.markSellPlacementFailed(state, order.buyOrderId, err.message);
       cycleLogger.error(`❌ 🔧 [${exchange}] Recovery sell failed for buy ${order.buyOrderId} — marked sell_failed: ${err.message}`, {
@@ -326,6 +326,30 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
         stateTracker.saveState(state, exchange);
       }
     }
+  }
+
+  // A placement whose outcome we could not establish (ambiguous response we
+  // could not reconcile, or a crash inside the dispatch window) leaves a
+  // durable intent on disk. An order we cannot see may be resting live against
+  // this fund's capital, so no new buy may be submitted until an operator
+  // reconciles it — and because the record is on disk, the block survives a
+  // restart. Status, fill sync and awaiting-sell recovery above all still run.
+  const blockingIntents = stateTracker.getBlockingPlacementIntents(exchange);
+  if (blockingIntents.length > 0) {
+    const [oldest] = blockingIntents;
+    cycleLogger.error(`⏸️ [${exchange}] Interval cycle held — ${blockingIntents.length} unresolved placement intent(s); oldest ${oldest.action ?? 'order'} ${oldest.id} needs operator reconcile`, {
+      pendingIntents: blockingIntents.length,
+      intentId: oldest.id,
+      action: oldest.action ?? null,
+      clientOrderId: oldest.clientOrderId ?? null,
+    });
+    return {
+      status: 'placement_unresolved',
+      exchange,
+      pendingIntents: blockingIntents.length,
+      intentId: oldest.id,
+      message: `Unresolved placement intent ${oldest.id} — reconcile it before this fund places another order`,
+    };
   }
 
   // Check current price against max threshold
@@ -508,7 +532,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
   } else {
     // Execute real trades
-    buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter);
+    buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter, { exchange });
     tradeEvents.buyFilled(exchange, buyResult.assetAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
 
     /**
@@ -557,7 +581,8 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
           cycleInfo.cumulativeAsset,
           cycleInfo.avgCostBasis,
           state.fibActiveSellOrderId,
-          adapter
+          adapter,
+          { exchange }
         );
 
         if (fibSellResult.alreadyFilled) {
@@ -578,7 +603,8 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
             buyResult.assetAmount,
             buyResult.price + (buyResult.netFees || 0) / buyResult.assetAmount,
             null,
-            adapter
+            adapter,
+            { exchange }
           );
           sellOrder = newFibSellResult.sellOrder;
           holdbackAsset = newFibSellResult.holdbackAsset;
@@ -611,7 +637,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       logger.logBuy(buyResult, state, exchange);
 
       try {
-        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter);
+        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange });
       } catch (err) {
         stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message);
         stateTracker.saveState(state, exchange);
@@ -740,6 +766,7 @@ const checkStatus = async (exchange = 'coinbase') => {
   return {
     exchange,
     currentPrice,
+    placementIntents: stateTracker.describePlacementIntents(exchange),
     config: {
       productId: config.productId,
       totalAllocation: config.totalAllocation,
@@ -768,7 +795,78 @@ const checkStatus = async (exchange = 'coinbase') => {
   };
 };
 
+/**
+ * Operator reconcile of one unresolved DCA placement intent.
+ *
+ * `adopt` re-runs the authoritative client-order-id lookup and clears the
+ * intent only on a positive find, naming the exchange order so the operator can
+ * bring it into the ledger through the existing manual-trade import (the DCA
+ * cycle books a buy from its confirmed fill, so there is no in-memory order map
+ * to graft it onto). `discard` clears an intent the operator has confirmed
+ * never became a live order.
+ *
+ * Nothing auto-clears on a timer or on an empty lookup: "we did not find it" is
+ * not "it is not there".
+ * @param {string} exchange - Exchange name
+ * @param {string} intentId - Intent id to reconcile
+ * @param {'adopt'|'discard'} action - Operator decision
+ * @returns {Promise<{success: boolean, message?: string, error?: string, orderId?: string}>} Result
+ */
+const reconcilePlacementIntent = async (exchange, intentId, action) => {
+  if (action !== 'adopt' && action !== 'discard') {
+    return { success: false, error: `Unknown reconcile action '${action}' (expected 'adopt' or 'discard')` };
+  }
+  const intent = stateTracker.describePlacementIntents(exchange).find(i => i.id === intentId && stateTracker.isBlockingPlacementIntent(i));
+  if (!intent) return { success: false, error: `No unresolved placement intent ${intentId} on this fund (an in-flight dispatch is not reconcilable)` };
+
+  const cycleLogger = dcaLogger(exchange);
+
+  if (action === 'discard') {
+    const removed = stateTracker.resolvePlacementIntent(exchange, undefined, intentId);
+    if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
+    cycleLogger.warn(`🧹 [${exchange}] Operator discarded placement intent ${intentId} (${intent.action ?? 'order'}) — interval cycles resume`, {
+      intentId,
+      action: intent.action ?? null,
+      clientOrderId: intent.clientOrderId ?? null,
+    });
+    return { success: true, message: `Discarded ${intent.action ?? 'placement'} intent — interval cycles resume for this fund` };
+  }
+
+  if (!intent.clientOrderId) {
+    return { success: false, error: 'This intent carries no client order id (the process died before the response), so it cannot be looked up. Check the exchange manually, cancel any duplicate, then discard it.' };
+  }
+
+  const adapter = getAdapter(exchange);
+  if (typeof adapter.findOrderByClientOrderId !== 'function') {
+    return { success: false, error: `${exchange} cannot look up an order by client id; check the exchange manually, then discard the intent` };
+  }
+
+  const config = loadConfig(exchange);
+  const found = await adapter.findOrderByClientOrderId(intent.clientOrderId, config.productId).catch((err) => ({ __lookupError: err }));
+  if (found?.__lookupError) {
+    return { success: false, error: `Lookup failed (${found.__lookupError.message}) — the intent stays pending; we must not assume the order is absent` };
+  }
+  if (!found) {
+    return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup is never auto-cleared.` };
+  }
+
+  const removed = stateTracker.resolvePlacementIntent(exchange, undefined, intentId);
+  if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
+  cycleLogger.info(`ℹ️ ✅ [${exchange}] Operator matched placement intent ${intentId} to exchange order ${found.orderId} (status ${found.status})`, {
+    intentId,
+    orderId: found.orderId,
+    clientOrderId: intent.clientOrderId,
+    status: found.status,
+  });
+  return {
+    success: true,
+    orderId: found.orderId,
+    message: `Exchange order ${found.orderId} (status ${found.status}) matched this intent. Intent cleared; import the fill through Transactions → Import so the ledger books it.`,
+  };
+};
+
 module.exports = {
+  reconcilePlacementIntent,
   runIntervalCycle,
   checkStatus,
   syncOrderStatuses,
