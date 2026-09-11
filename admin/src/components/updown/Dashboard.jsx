@@ -37,8 +37,12 @@ export default function UpDownDashboard() {
   const prevSignalRef = useRef(null)
   const [signalAnnotations, setSignalAnnotations] = useState([])
 
-  // Contract Setup starts collapsed; the shortcut expands + scrolls/focuses it.
+  // Contract Setup starts collapsed; the shortcut expands (if needed) and
+  // scrolls/focuses it. A token (rather than just `setupOpen`) drives the
+  // scroll/focus effect so a repeat click still jumps back even when the
+  // section is already open.
   const [setupOpen, setSetupOpen] = useState(false)
+  const [setupJumpToken, setSetupJumpToken] = useState(0)
   const positionSectionRef = useRef(null)
   const setupSectionRef = useRef(null)
 
@@ -48,12 +52,13 @@ export default function UpDownDashboard() {
 
   const jumpToSetup = useCallback(() => {
     setSetupOpen(true)
+    setSetupJumpToken(token => token + 1)
   }, [])
 
-  // Focus/scroll the setup section once it's expanded (and mounted-visible).
+  // Focus/scroll the setup section once it's open (and mounted-visible).
   useEffect(() => {
-    if (setupOpen) focusSection(setupSectionRef.current)
-  }, [setupOpen])
+    if (setupJumpToken > 0) focusSection(setupSectionRef.current)
+  }, [setupJumpToken])
 
   const seededRef = useRef(false)
   const fetchStatus = useCallback(async () => {
