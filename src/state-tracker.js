@@ -1051,29 +1051,6 @@ const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = 
   atomicWriteSync(stateFile, JSON.stringify(stateData, null, 2));
 };
 
-/**
- * Update regime position state after entry
- * @param {RegimePositionState} state - Current state
- * @param {Object} entryDetails - Entry details
- * @param {number} entryDetails.assetAmount - BTC purchased
- * @param {number} entryDetails.costBasis - Cost including fees
- * @param {number} entryDetails.price - Entry price
- * @returns {RegimePositionState} Updated state
- */
-const updateRegimeStateAfterEntry = (state, entryDetails) => {
-  const { assetAmount, costBasis, price } = entryDetails;
-
-  state.totalAsset += assetAmount;
-  state.totalCostBasis += costBasis;
-  state.avgCostBasis = state.totalAsset > 0 ? state.totalCostBasis / state.totalAsset : 0;
-  state.cycleBuys += 1;
-  state.lastEntryPrice = price;
-  state.lastEntryTime = Date.now();
-  state.anchorPrice = price;
-
-  return state;
-};
-
 module.exports = {
   LIFECYCLE,
   loadState,
@@ -1108,7 +1085,6 @@ module.exports = {
   createInitialRegimeState,
   loadRegimeState,
   saveRegimeState,
-  updateRegimeStateAfterEntry,
   // Atomic write utility (exposed for fill-ledger and testing)
   atomicWriteSync,
 };
