@@ -718,22 +718,6 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
 };
 
 /**
- * Run cycle for all enabled exchanges
- * @returns {Promise<Object<string, CycleResult>>} Results per exchange
- */
-const runAllExchangeCycles = async () => {
-  const enabledExchanges = getEnabledExchanges();
-  const results = {};
-
-  for (const exchange of enabledExchanges) {
-    dcaLogger(exchange).info(`ℹ️ Running cycle for ${exchange}...`);
-    results[exchange] = await runIntervalCycle(exchange);
-  }
-
-  return results;
-};
-
-/**
  * Check status only (no trading) for an exchange
  * @param {string} [exchange] - Exchange name (default: coinbase)
  * @returns {Promise<StatusResult>} Current status
@@ -784,13 +768,8 @@ const checkStatus = async (exchange = 'coinbase') => {
   };
 };
 
-// Legacy alias for backward compatibility
-const runDailyCycle = runIntervalCycle;
-
 module.exports = {
   runIntervalCycle,
-  runDailyCycle,
-  runAllExchangeCycles,
   checkStatus,
   syncOrderStatuses,
   reconcileAwaitingSells,

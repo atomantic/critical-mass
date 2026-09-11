@@ -6,7 +6,8 @@
  * GET /api/candles/:exchange — returns all 4 timeframes or a single one via ?tf=
  */
 
-const VALID_EXCHANGES = new Set(['cryptocom', 'coinbase', 'gemini']);
+const { getSupportedExchanges, isSupported } = require('../adapters');
+
 const VALID_TIMEFRAMES = new Set(['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']);
 
 /**
@@ -18,8 +19,8 @@ module.exports = (app, deps) => {
 
   app.get('/api/candles/:candleExchange', (req, res) => {
     const exchange = req.params.candleExchange;
-    if (!VALID_EXCHANGES.has(exchange)) {
-      return res.status(400).json({ success: false, error: `Unknown candle exchange: ${exchange}. Valid: ${[...VALID_EXCHANGES].join(', ')}` });
+    if (!isSupported(exchange)) {
+      return res.status(400).json({ success: false, error: `Unknown candle exchange: ${exchange}. Valid: ${getSupportedExchanges().join(', ')}` });
     }
 
     const tf = req.query.tf;
