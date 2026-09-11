@@ -2066,82 +2066,89 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Mark as not running FIRST to prevent callbacks from taking action
     isRunning = false;
 
-    // Save state before stopping
-    if (isDryRun) {
-      dryRunState.forceSave(exchange, {
-        isDryRun: true,
-        executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
-        position: { ...positionState },
-        tpOptimizer: tpOptimizer.exportState(),
-        // Include sizeOptimizer so dry-run restarts don't lose sizing
-        // adjustments (saveDryRunState persists it; forceSave omitted it) (#113).
-        sizeOptimizer: sizeOptimizer.exportState(),
-      }, pair);
-    } else {
-      // Save live state on shutdown
-      saveLiveState();
-      // Force-persist the fill ledger: if the on-disk file became
-      // unreadable mid-run (truncation, partial write by another tool,
-      // etc.), the dirty-flag short-circuit + existsSync check would
-      // skip the write, and the next cold start's load() would fail on
-      // the corrupt file even though a recoverable in-memory ledger
-      // existed. force=true rewrites the healthy snapshot unconditionally.
-      fillLedger.persist({ force: true });
-      logger.info(`💾 [${exchange}] Saved live state and fill ledger`);
-      // Remove SIGUSR1 handler
-      if (positionState._sigusr1Handler) {
-        process.removeListener('SIGUSR1', positionState._sigusr1Handler);
-        delete positionState._sigusr1Handler;
+    // Persist-then-cleanup, with the teardown in `finally`: a throwing state
+    // save used to abandon stop() before the timer/websocket cleanup below, so
+    // a "stopped" engine kept ticking and kept writing. The rejection still
+    // reaches callers (the backup-restore quiescence gate, issue #429) — the
+    // engine is quiet, but its last state was not saved.
+    try {
+      // Save state before stopping
+      if (isDryRun) {
+        dryRunState.forceSave(exchange, {
+          isDryRun: true,
+          executor: orderExecutor.exportState ? orderExecutor.exportState() : {},
+          position: { ...positionState },
+          tpOptimizer: tpOptimizer.exportState(),
+          // Include sizeOptimizer so dry-run restarts don't lose sizing
+          // adjustments (saveDryRunState persists it; forceSave omitted it) (#113).
+          sizeOptimizer: sizeOptimizer.exportState(),
+        }, pair);
+      } else {
+        // Save live state on shutdown
+        saveLiveState();
+        // Force-persist the fill ledger: if the on-disk file became
+        // unreadable mid-run (truncation, partial write by another tool,
+        // etc.), the dirty-flag short-circuit + existsSync check would
+        // skip the write, and the next cold start's load() would fail on
+        // the corrupt file even though a recoverable in-memory ledger
+        // existed. force=true rewrites the healthy snapshot unconditionally.
+        fillLedger.persist({ force: true });
+        logger.info(`💾 [${exchange}] Saved live state and fill ledger`);
+        // Remove SIGUSR1 handler
+        if (positionState._sigusr1Handler) {
+          process.removeListener('SIGUSR1', positionState._sigusr1Handler);
+          delete positionState._sigusr1Handler;
+        }
       }
-    }
+    } finally {
+      // Deregister this fund from the shared heartbeat (the adapter only
+      // clears the timer when no other fund still needs it). Mirrors the
+      // !isDryRun condition in start() so a dry-run engine can never
+      // deregister a live fund's heartbeat.
+      if (!isDryRun && adapter.stopHeartbeat) {
+        adapter.stopHeartbeat(fundLabel);
+      }
 
-    // Deregister this fund from the shared heartbeat (the adapter only
-    // clears the timer when no other fund still needs it). Mirrors the
-    // !isDryRun condition in start() so a dry-run engine can never
-    // deregister a live fund's heartbeat.
-    if (!isDryRun && adapter.stopHeartbeat) {
-      adapter.stopHeartbeat(fundLabel);
-    }
+      // Stop intervals first
+      if (metricsInterval) {
+        clearInterval(metricsInterval);
+        metricsInterval = null;
+      }
 
-    // Stop intervals first
-    if (metricsInterval) {
-      clearInterval(metricsInterval);
-      metricsInterval = null;
-    }
+      if (reconcileInterval) {
+        clearInterval(reconcileInterval);
+        reconcileInterval = null;
+      }
 
-    if (reconcileInterval) {
-      clearInterval(reconcileInterval);
-      reconcileInterval = null;
-    }
+      if (stateSaveInterval) {
+        clearInterval(stateSaveInterval);
+        stateSaveInterval = null;
+      }
 
-    if (stateSaveInterval) {
-      clearInterval(stateSaveInterval);
-      stateSaveInterval = null;
-    }
+      // Stop macro regime
+      if (macroRegime) {
+        macroRegime.stop();
+      }
 
-    // Stop macro regime
-    if (macroRegime) {
-      macroRegime.stop();
-    }
+      tailEvents.cleanup();
 
-    tailEvents.cleanup();
+      // Clear all TTL timers to prevent post-shutdown state mutations
+      for (const t of ttlTimers) clearTimeout(t);
+      ttlTimers.clear();
+      recentlyProcessedFills.clear();
+      recentlyProcessedSellFills.clear();
+      recentlyProcessedBuyFills.clear();
+      pendingMergeTpOrders.clear();
+      completedMergeTpOrders.clear();
 
-    // Clear all TTL timers to prevent post-shutdown state mutations
-    for (const t of ttlTimers) clearTimeout(t);
-    ttlTimers.clear();
-    recentlyProcessedFills.clear();
-    recentlyProcessedSellFills.clear();
-    recentlyProcessedBuyFills.clear();
-    pendingMergeTpOrders.clear();
-    completedMergeTpOrders.clear();
+      // Clear order executor stale timers
+      if (orderExecutor.clearTimers) orderExecutor.clearTimers();
 
-    // Clear order executor stale timers
-    if (orderExecutor.clearTimers) orderExecutor.clearTimers();
-
-    // Disconnect WebSocket last (callbacks will check isRunning)
-    if (wsFeed) {
-      wsFeed.disconnect();
-      wsFeed = null;
+      // Disconnect WebSocket last (callbacks will check isRunning)
+      if (wsFeed) {
+        wsFeed.disconnect();
+        wsFeed = null;
+      }
     }
 
     logger.info(`✅ [${exchange}] Regime engine stopped`);

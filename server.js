@@ -35,6 +35,7 @@ const {
   getNextTradeInfo,
 } = require('./src/shared-utils');
 const { createIPCClient } = require('./src/ipc/ipc-client');
+const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
 const { createUpDownService } = require('./src/updown/updown-service');
 const { createCandleCache } = require('./src/candle-cache');
 const { createSentinelService } = require('./src/sentinel/sentinel-service');
@@ -91,6 +92,10 @@ app.use(express.json());
 
 operatorAuth.registerSessionRoutes(app);
 app.use('/api', operatorAuth.requireAuth);
+// Hold every mutating API request while a backup restore is applying files, so
+// nothing can land between "writers confirmed stopped" and "archive applied"
+// and silently overwrite the recovered snapshot (issue #429).
+app.use('/api', maintenanceGuard);
 io.use(operatorAuth.socketMiddleware);
 log('INFO', operatorAuth.hasPassword()
   ? '🔐 Operator sign-in is required (password in data/operator-auth.json)'
@@ -241,7 +246,7 @@ const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSO
 
 require('./src/routes/sentinel-routes')(app, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(app, sharedDeps);
-require('./src/routes/settings-routes')(app, sharedDeps);
+require('./src/routes/settings-routes')(app, { ...sharedDeps, updownService });
 require('./src/routes/candle-routes')(app, { candleCache });
 require('./src/routes/updown-routes')(app, { ...sharedDeps, updownService, candleCache });
 require('./src/routes/exchange-routes')(app, sharedDeps);
@@ -461,6 +466,11 @@ const schedulerState = {};
 
 const checkAndRunIntervalTrade = () => {
   if (!getGlobalConfig().simpleDcaEnabled) return;
+  // A scheduled DCA buy writes the same files a restore is replacing.
+  if (isMaintenanceActive()) {
+    log('INFO', '⏸️  Scheduled trade check skipped: gateway is in restore maintenance');
+    return;
+  }
 
   const enabledExchanges = getEnabledExchanges();
 
