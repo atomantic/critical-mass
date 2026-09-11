@@ -39,7 +39,7 @@ const { createFillLedger } = require('../src/fill-ledger');
 const { createManualTradeImporter } = require('../src/manual-trade-import');
 const { createIPCServer } = require('../src/ipc/ipc-server');
 const { createSocketIOProxy } = require('../src/ipc/socket-io-proxy');
-const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel } = require('../src/shared-utils');
+const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel, readBooleanFlag } = require('../src/shared-utils');
 const { stopAllRegimeEngines } = require('../src/engine-stop-all');
 const { migrateExchangeToPairs } = require('../src/migration');
 const { LIFECYCLE } = require('../src/state-tracker');
@@ -655,7 +655,12 @@ ipcServer.onRequest('funds:list', async (payload, exchange) => {
 
 ipcServer.onRequest('regime:recalculate', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
-  const { apply = false } = payload || {};
+  // Reject before any ledger/store read so a direct IPC caller (bypassing the
+  // gateway route's own validation) cannot flip a preview into an apply with
+  // a non-boolean value such as the string "false".
+  const applyFlag = readBooleanFlag(payload, 'apply', false);
+  if (applyFlag.error) return { success: false, error: applyFlag.error };
+  const apply = applyFlag.value;
   const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
 
   const currentState = loadRegimeState(exchange, resolvedPair);
@@ -875,7 +880,15 @@ ipcServer.onRequest('regime:convert-dca', async (payload, exchange, pair) => {
   if (regimeEngines.has(fundKey(exchange, resolvedPair))) {
     return { success: false, error: 'Regime engine is running — stop it before converting DCA orders' };
   }
-  const { preview = true, merge = false } = payload || {};
+  // Reject before any ledger/adapter read so a direct IPC caller cannot
+  // select execution over preview (or the cross-cycle merge path) with a
+  // non-boolean value such as the string "false" or a numeric 0.
+  const previewFlag = readBooleanFlag(payload, 'preview', true);
+  if (previewFlag.error) return { success: false, error: previewFlag.error };
+  const mergeFlag = readBooleanFlag(payload, 'merge', false);
+  if (mergeFlag.error) return { success: false, error: mergeFlag.error };
+  const preview = previewFlag.value;
+  const merge = mergeFlag.value;
   const { previewConversion, executeConversion, mergeToRegime } = require('../src/dca-converter');
 
   if (preview) {

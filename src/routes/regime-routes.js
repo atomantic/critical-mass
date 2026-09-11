@@ -11,6 +11,7 @@ const { resolvePlacementIntent } = require('../state-tracker');
 const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
 const { validateAndSanitizeRegimeConfig } = require('../config-validator');
+const { readBooleanFlag } = require('../shared-utils');
 const { getSafeIPC, withConfiguredPair } = require('./route-utils');
 
 /**
@@ -445,8 +446,9 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/recalculate', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const { apply = false } = req.body;
-    const result = await getIPC(exchange).request('regime:recalculate', { apply }, exchange, pair).catch(engineError);
+    const applyFlag = readBooleanFlag(req.body || {}, 'apply', false);
+    if (applyFlag.error) return res.status(400).json({ success: false, error: applyFlag.error });
+    const result = await getIPC(exchange).request('regime:recalculate', { apply: applyFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -454,8 +456,12 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/convert-dca', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const { preview = true, merge = false } = req.body;
-    const result = await getIPC(exchange).request('regime:convert-dca', { preview, merge }, exchange, pair).catch(engineError);
+    const body = req.body || {};
+    const previewFlag = readBooleanFlag(body, 'preview', true);
+    if (previewFlag.error) return res.status(400).json({ success: false, error: previewFlag.error });
+    const mergeFlag = readBooleanFlag(body, 'merge', false);
+    if (mergeFlag.error) return res.status(400).json({ success: false, error: mergeFlag.error });
+    const result = await getIPC(exchange).request('regime:convert-dca', { preview: previewFlag.value, merge: mergeFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
@@ -499,7 +505,10 @@ module.exports = (app, deps) => {
   app.post('/api/:exchange/regime/manual-trade-buy', async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
-    const result = await getIPC(exchange).request('regime:manual-trade-buy', req.body, exchange, pair).catch(engineError);
+    const body = req.body || {};
+    const createBodyFlag = readBooleanFlag(body, 'createBody', true);
+    if (createBodyFlag.error) return res.status(400).json({ success: false, error: createBodyFlag.error });
+    const result = await getIPC(exchange).request('regime:manual-trade-buy', { ...body, createBody: createBodyFlag.value }, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
     res.json(result);
   });
