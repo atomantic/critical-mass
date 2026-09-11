@@ -549,6 +549,24 @@ const getQuoteCurrency = (productId) => {
   return 'USD';
 };
 
+/**
+ * Check whether a productId trades the same base asset as a fund's pair. A
+ * fund's pair IS its identity, so a productId supplied at creation (POST
+ * /api/:exchange/funds) or update (PUT /api/:exchange/config) must trade the
+ * same base asset as the pair — a quote-only difference (e.g. USD -> USDC)
+ * is allowed. Shared by both routes (and by `addFund`'s defensive check) so
+ * the identity rule can't drift between entry points.
+ *
+ * @param {string} pair
+ * @param {string} productId
+ * @returns {{ ok: boolean, pairBase: string, incomingBase: string }}
+ */
+const productIdMatchesPair = (pair, productId) => {
+  const pairBase = getBaseCurrency(pair);
+  const incomingBase = getBaseCurrency(productId);
+  return { ok: pairBase === incomingBase, pairBase, incomingBase };
+};
+
 /** Keys that stay at the exchange level (shared across all funds on that exchange) */
 const EXCHANGE_LEVEL_KEYS = new Set([
   'pairs',
@@ -889,6 +907,21 @@ const addFund = (exchange, pair, initialConfig = {}) => {
   const existing = getFundsForExchange(exchange);
   if (existing.includes(pair)) {
     throw new Error(`Fund ${exchange}/${pair} already exists`);
+  }
+
+  // Defensive invariant: a fund's pair IS its identity, so a supplied
+  // productId must trade the same base asset (quote-only differences, e.g.
+  // USD -> USDC, are fine). POST /api/:exchange/funds already enforces this
+  // at the request boundary, but that's an easy check to route around —
+  // this repeats it here so no other caller can recreate the mismatch.
+  if (initialConfig.productId !== undefined && initialConfig.productId !== null) {
+    if (typeof initialConfig.productId !== 'string' || !initialConfig.productId) {
+      throw new Error('productId must be a non-empty string');
+    }
+    const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, initialConfig.productId);
+    if (!ok) {
+      throw new Error(`productId "${initialConfig.productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a fund's traded asset must match its pair`);
+    }
   }
 
   // Build the new fund block
@@ -1531,6 +1564,7 @@ module.exports = {
   // Currency parsing
   getBaseCurrency,
   getQuoteCurrency,
+  productIdMatchesPair,
   // Secret handling
   GLOBAL_KEYS_EXCLUDED_FROM_FUND_CONFIG,
   maskSecret,
