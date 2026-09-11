@@ -4,7 +4,7 @@
  *
  * Handles scheduled and manual backups of trading data files.
  * Uses spawnSync for zip/unzip operations.
- * Excludes API keys and backup directory from archives.
+ * Excludes credentials, live configuration, and the backup directory from archives.
  *
  * Archives also carry a versioned manifest (`backup-manifest.json`) holding a
  * self-contained snapshot of the effective non-secret configuration, so a
@@ -37,6 +37,13 @@ const MANIFEST_FILENAME = 'backup-manifest.json';
 const MANIFEST_VERSION = 1;
 
 const SPAWN_TIMEOUT_MS = 60000;
+
+/** Root-level credential files that must remain machine-local. */
+const ROOT_CREDENTIAL_FILES = [
+  'operator-auth.json',
+  'providers.json',
+  'operator-bootstrap-secret',
+];
 
 /** Callers that have no context logger (CLI, tests) get silence, not console noise. */
 const SILENT_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
@@ -185,6 +192,8 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
     'backups/*',        // Don't include backups dir in backup
     '*-keys.json',      // Never include API keys
     '*/*-keys.json',    // Keys in subdirectories
+    ...ROOT_CREDENTIAL_FILES,
+    'config.json',      // Portable configuration is carried by the manifest
     MANIFEST_FILENAME,  // The manifest is generated below, never archived from data/
     // Restore bookkeeping (rollback journal, saved originals, extraction
     // staging). Archiving these would ship a stale journal into the next
@@ -214,7 +223,11 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
     timeout: SPAWN_TIMEOUT_MS,
   });
 
-  if (result.error || result.status !== 0) {
+  // zip exits 12 when the live data directory contains no entries after the
+  // exclusions. That is a valid backup: appendManifest creates the archive
+  // containing the portable configuration snapshot below.
+  const noDataFiles = !result.error && result.status === 12;
+  if (result.error || (result.status !== 0 && !noDataFiles)) {
     const error = result.error
       ? result.error.message
       : (result.stderr ? result.stderr.toString().trim() : 'Unknown zip error');
@@ -521,9 +534,11 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     stageDir: tempDir,
     filename,
     logger,
-    // Skip the backups directory, key files and the archive's own metadata.
+    // Skip the backups directory, root credential files, key files and the
+    // archive's own metadata.
     skip: (name, isRoot) => name === 'backups'
       || name.endsWith('-keys.json')
+      || (isRoot && ROOT_CREDENTIAL_FILES.includes(name))
       || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
   });
 

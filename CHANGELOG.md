@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-523] Backup archives now keep operator, AI provider, and notification credentials machine-local** — Backups omit live credential/config files while the portable manifest continues to restore funds without overwriting destination credentials.
 - **[issue-522] AI run screenshots are confined to the screenshots directory** — Reject malformed lists, traversal, symlink escapes, and non-image paths before toolkit execution.
 - **[issue-524] Bound operator authentication work** — Cap passwords at 256 bytes, limit login and password mutations by TCP peer, and use asynchronous scrypt with one active hash and no waiting queue, preserving session and current-password checks.
 - **[issue-512] DCA import confirmation now shows the correct asset symbol for non-BTC funds** — The merge description at `RegimeActionModals.jsx:366` was rendering a hard-coded "BTC" suffix even for ETH, SOL, or other assets; replaced it with a dynamic call to `getBaseCurrency(convertPreview.productId)` matching the helper used on the amount rows below.
