@@ -257,6 +257,72 @@ describe('fund lifecycle routes', () => {
       assert.match(res.body.error, /Failed to verify/i);
       assert.ok(!JSON.stringify(fsMocks.user() || {}).includes('SOL-USDC'), 'unverified fund must not be persisted');
     });
+
+    describe('base-asset identity guard (mirrors PUT /api/:exchange/config)', () => {
+      it('rejects a productId trading a different base asset (400, zero writes, no adapter lookup)', async () => {
+        const getAdapterMock = mock.fn(() => ({
+          hasValidKeys: () => true,
+          getProductDetails: mock.fn(async () => ({})),
+        }));
+        mock.method(adapters, 'getAdapter', getAdapterMock);
+        const { app, fsMocks } = setup();
+
+        const res = await invoke(app, 'POST /api/:exchange/funds', {
+          params: { exchange: 'coinbase' },
+          body: { pair: 'ETH-USDC', productId: 'BTC-USDC' },
+        });
+
+        assert.equal(res.statusCode, 400, JSON.stringify(res.body));
+        assert.match(res.body.error, /does not match fund/i);
+        assert.equal(getAdapterMock.mock.callCount(), 0, 'mismatched identity must be rejected before any adapter lookup');
+        assert.ok(!JSON.stringify(fsMocks.user() || {}).includes('ETH-USDC'), 'mismatched fund must not be persisted');
+      });
+
+      it('accepts a same-asset productId (quote-only difference)', async () => {
+        mock.method(adapters, 'getAdapter', () => ({
+          hasValidKeys: () => true,
+          getProductDetails: async () => ({}),
+        }));
+        const { app } = setup();
+
+        const res = await invoke(app, 'POST /api/:exchange/funds', {
+          params: { exchange: 'coinbase' },
+          body: { pair: 'ETH-USD', productId: 'ETH-USDC' },
+        });
+
+        assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+        assert.equal(res.body.productId, 'ETH-USDC');
+      });
+
+      it('accepts an omitted productId (defaults to pair)', async () => {
+        mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
+        const { app } = setup();
+
+        const res = await invoke(app, 'POST /api/:exchange/funds', {
+          params: { exchange: 'coinbase' },
+          body: { pair: 'SOL-USDC' },
+        });
+
+        assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+        assert.equal(res.body.productId, 'SOL-USDC');
+      });
+
+      it('rejects a non-string productId before any adapter invocation', async () => {
+        const getAdapterMock = mock.fn(() => ({ hasValidKeys: () => false }));
+        mock.method(adapters, 'getAdapter', getAdapterMock);
+        const { app, fsMocks } = setup();
+
+        const res = await invoke(app, 'POST /api/:exchange/funds', {
+          params: { exchange: 'coinbase' },
+          body: { pair: 'SOL-USDC', productId: 12345 },
+        });
+
+        assert.equal(res.statusCode, 400, JSON.stringify(res.body));
+        assert.match(res.body.error, /non-empty string/i);
+        assert.equal(getAdapterMock.mock.callCount(), 0, 'non-string productId must be rejected before adapter invocation');
+        assert.ok(!JSON.stringify(fsMocks.user() || {}).includes('SOL-USDC'), 'invalid fund must not be persisted');
+      });
+    });
   });
 
   describe('DELETE /api/:exchange/funds/:pair', () => {

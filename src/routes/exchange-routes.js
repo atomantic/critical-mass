@@ -23,6 +23,7 @@ const {
   removeFund,
   getBaseCurrency,
   getQuoteCurrency,
+  productIdMatchesPair,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
@@ -126,6 +127,28 @@ module.exports = (app, deps) => {
 
     if (!pair || typeof pair !== 'string') {
       return res.status(400).json({ success: false, error: 'pair is required (e.g. "ETH-USDC")' });
+    }
+
+    if (productId !== undefined && productId !== null && (typeof productId !== 'string' || !productId)) {
+      return res.status(400).json({ success: false, error: 'productId must be a non-empty string' });
+    }
+
+    // Guard against creating a fund whose stored identity (pair) doesn't
+    // match what it actually trades (productId) — the same base-asset rule
+    // PUT /api/:exchange/config enforces on updates. Enforced before any
+    // adapter lookup or persistence so a mismatched request never reaches
+    // the exchange API or the config file.
+    if (productId) {
+      const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, productId);
+      if (!ok) {
+        exchangeLogger(exchange, pair, '/api/:exchange/funds').warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected fund creation: productId "${productId}" trades ${incomingBase}, not ${pairBase}`, {
+          action: 'create-fund',
+          productId,
+          incomingBase,
+          pairBase,
+        });
+        return res.status(400).json({ success: false, error: `productId "${productId}" (${incomingBase}) does not match fund ${exchange}/${pair} (${pairBase}); a fund's traded asset must match its pair` });
+      }
     }
 
     // Verify the exchange has an adapter (guards against bogus exchange names)
@@ -248,9 +271,8 @@ module.exports = (app, deps) => {
     // feed. The pair is the fund's identity, so a saved productId must trade the
     // same base asset. Quote-only edits (USD→USDC) still pass.
     if (pair && typeof updates.productId === 'string' && updates.productId) {
-      const pairBase = getBaseCurrency(pair);
-      const incomingBase = getBaseCurrency(updates.productId);
-      if (pairBase !== incomingBase) {
+      const { ok, pairBase, incomingBase } = productIdMatchesPair(pair, updates.productId);
+      if (!ok) {
         logger.warn(`⚠️ 🛑 [${exchange}/${pair}] Rejected config save: productId "${updates.productId}" trades ${incomingBase}, not ${pairBase}`, {
           action: 'update-config',
           productId: updates.productId,
