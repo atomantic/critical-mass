@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { createAuthenticatedRequest } = require('./auth');
-const { createBaseAdapter } = require('../base-adapter');
+const { createBaseAdapter, createAmbiguousPlacementError } = require('../base-adapter');
 const { incrementToDecimals, floorToIncrement } = require('../../shared-utils');
 const { createContextLogger } = require('../../logger');
 
@@ -22,6 +22,12 @@ const { createContextLogger } = require('../../logger');
  */
 
 const REST_BASE_URL = 'https://api.crypto.com/exchange/v1';
+
+// The only method that can create an order. A transport or response-decoding
+// failure here is AMBIGUOUS (Crypto.com may already hold the order), so it
+// surfaces as an unknown outcome carrying the client_oid instead of a plain
+// network error a caller would read as "it never happened". (#427)
+const ORDER_PLACEMENT_METHOD = 'private/create-order';
 
 /**
  * Custom JSON parser that converts large integers to strings to avoid precision loss.
@@ -120,6 +126,12 @@ const createCryptocomAdapter = (keysPath = null) => {
       rawText = await response.text();
     } catch (err) {
       clearTimeout(timeout);
+      // Placement must not degrade to a plain network error: the request may
+      // have reached the matching engine, so the outcome is unknown and must
+      // stay reconcilable by client_oid rather than look like a clean failure.
+      if (method === ORDER_PLACEMENT_METHOD) {
+        throw createAmbiguousPlacementError('Crypto.com', method, params?.client_oid, err.message);
+      }
       const cleanError = new Error(`Crypto.com API network: ${err.message}`);
       cleanError.status = 'network';
       cleanError.endpoint = method;
@@ -135,13 +147,32 @@ const createCryptocomAdapter = (keysPath = null) => {
       cleanError.status = response.status;
       cleanError.endpoint = method;
       cleanError.responseData = errData;
+      cleanError.code = errData?.code;
       throw cleanError;
     }
 
-    const data = safeParseBigInt(rawText);
+    // A 2xx whose body we cannot decode is the same ambiguity as a lost
+    // response: Crypto.com accepted something we can't read. A try/catch is
+    // required here — JSON.parse signals only by throwing.
+    let data;
+    try {
+      data = safeParseBigInt(rawText);
+    } catch (err) {
+      if (method === ORDER_PLACEMENT_METHOD) {
+        throw createAmbiguousPlacementError('Crypto.com', method, params?.client_oid, `undecodable response: ${err.message}`);
+      }
+      throw err;
+    }
 
+    // A non-zero code is a DEFINITIVE exchange rejection (the order was read and
+    // refused), so it stays an ordinary error — only transport/decode ambiguity
+    // becomes an unknown outcome.
     if (data.code !== 0) {
-      throw new Error(`Crypto.com API error: ${data.message || 'Unknown error'} (code: ${data.code})`);
+      const cleanError = new Error(`Crypto.com API error: ${data.message || 'Unknown error'} (code: ${data.code})`);
+      cleanError.code = data.code;
+      cleanError.responseData = data;
+      cleanError.endpoint = method;
+      throw cleanError;
     }
 
     return data.result;
@@ -502,12 +533,83 @@ const createCryptocomAdapter = (keysPath = null) => {
       order_id: orderId,
     });
 
-    // API returns order nested under result.order_info
-    const order = result?.order_info || result;
-    if (!order || typeof order !== 'object') {
+    const order = extractOrderInfo(result);
+    if (!order) {
       throw new Error(`No order data returned for order ${orderId}`);
     }
 
+    return normalizeOrderDetail(order, orderId);
+  };
+
+  /**
+   * Find an order on the exchange by the deterministic client_oid we sent.
+   * Resolves an ambiguous placement outcome (#427): get-order-detail accepts
+   * client_oid in place of order_id, so this is an authoritative point lookup.
+   *
+   * Returns null ONLY when Crypto.com positively reports no such order — i.e.
+   * the placement never landed and is safe to re-place. Any other lookup
+   * failure propagates: "we could not check" must never be read as "it isn't
+   * there", which is exactly how a live order gets double-placed.
+   * @param {string} clientOrderId - Deterministic client order id we submitted
+   * @param {string|null} [_productId] - Unused; the lookup is global by id
+   * @returns {Promise<OrderDetails|null>} Normalized order details, or null if absent
+   */
+  adapter.findOrderByClientOrderId = async (clientOrderId, _productId = null) => {
+    if (!clientOrderId) return null;
+
+    const result = await makePrivateRequest('private/get-order-detail', { client_oid: clientOrderId })
+      .catch((err) => {
+        if (isOrderNotFound(err)) return null;
+        throw err;
+      });
+
+    if (!result) return null;
+
+    // A decoded response that carries no order_id is INCONCLUSIVE, not absent.
+    // Throwing keeps the placement unresolved (the caller re-raises rather than
+    // re-placing); returning null here would invite a double-place, and
+    // adopting it would register the client_oid as if it were an exchange id.
+    const order = extractOrderInfo(result);
+    if (!order?.order_id) {
+      throw new Error(`Crypto.com order lookup for client_oid ${clientOrderId} returned no order id — outcome still unresolved`);
+    }
+
+    return normalizeOrderDetail(order, clientOrderId);
+  };
+
+  /**
+   * Crypto.com's positive "this order does not exist" signal: HTTP 404, the
+   * 40401 NOT_FOUND / 316 NO_ORDER reject codes, or a not-found message.
+   * Anything else (auth, rate limit, transport) is an INCONCLUSIVE lookup and
+   * must NOT read as absent — that reading is what permits a double-place.
+   * @param {any} err
+   * @returns {boolean}
+   */
+  const isOrderNotFound = (err) =>
+    err?.status === 404
+    || Number(err?.code) === 40401
+    || Number(err?.code) === 316
+    || /order\s*not\s*found|no\s*order\s*found/i.test(err?.message ?? '');
+
+  /**
+   * Unwrap the order payload, which the API nests under `order_info`.
+   * @param {any} result
+   * @returns {any|null}
+   */
+  const extractOrderInfo = (result) => {
+    const order = result?.order_info || result;
+    return order && typeof order === 'object' ? order : null;
+  };
+
+  /**
+   * Normalize a get-order-detail payload into the shared OrderDetails shape.
+   * Shared by getOrder and findOrderByClientOrderId so a reconcile lookup never
+   * classifies the same order differently than the ordinary poll.
+   * @param {any} order - Raw order payload
+   * @param {string} fallbackId - Id to report when the payload omits order_id
+   * @returns {OrderDetails}
+   */
+  const normalizeOrderDetail = (order, fallbackId) => {
     const filledQuantity = parseFloat(order.cumulative_quantity || order.filled_quantity || 0);
     const originalQuantity = parseFloat(order.quantity || order.order_value || 0);
     const avgPrice = parseFloat(order.avg_price || order.filled_price || 0);
@@ -527,7 +629,7 @@ const createCryptocomAdapter = (keysPath = null) => {
     }
 
     return {
-      orderId: (order.order_id || orderId).toString(),
+      orderId: (order.order_id || fallbackId).toString(),
       productId: order.instrument_name || '',
       side: (order.side || '').toUpperCase(),
       status,
