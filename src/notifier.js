@@ -116,6 +116,68 @@ const formatFundSummaryLines = (exchange, pair, state, fundConfig) => {
 };
 
 /**
+ * Check whether `now` falls inside the configured quiet-hours window.
+ * Pure function of config + a Date (defaulting to the real clock at call
+ * time) so the overnight-range branch (`start > end`, e.g. 23-7) is
+ * independently testable without real timers.
+ * @param {{enabled: boolean, start: number, end: number}} quietHours
+ * @param {Date} [now]
+ * @returns {boolean}
+ */
+const isQuietHours = (quietHours, now = new Date()) => {
+  if (!quietHours.enabled) return false;
+  const hour = now.getHours();
+  const { start, end } = quietHours;
+  // Handle overnight ranges (e.g., 23-7)
+  if (start > end) {
+    return hour >= start || hour < end;
+  }
+  return hour >= start && hour < end;
+};
+
+/**
+ * Decide whether an event type should be delivered right now. Pure function
+ * of the full notification config + event type, so the gating order
+ * (operator event-toggle checked *before* the quiet-hours/critical-bypass
+ * check) is independently testable and pinned against regression.
+ * @param {Object} config - Full notification config (`getNotificationConfig()` shape)
+ * @param {string} eventType
+ * @param {Date} [now]
+ * @returns {boolean}
+ */
+const shouldSendEvent = (config, eventType, now = new Date()) => {
+  if (!config.enabled) return false;
+  if (!config.telegram.botToken || !config.telegram.chatId) return false;
+
+  // Check event toggle
+  if (config.events[eventType] === false) return false;
+
+  // Quiet hours check - critical events bypass
+  if (isQuietHours(config.quietHours, now) && !CRITICAL_EVENTS.has(eventType)) return false;
+
+  return true;
+};
+
+/**
+ * Compute the delay (ms) until the next occurrence of `hour:00` local time,
+ * rolling to tomorrow when that time has already passed today. Pure
+ * function of hour + now so scheduleDailySummary's two branches
+ * ("target already passed" vs "target still ahead") are independently
+ * testable without real timers.
+ * @param {number} hour - Target hour in [0, 23]
+ * @param {Date} [now]
+ * @returns {number} Non-negative delay in milliseconds
+ */
+const computeDailySummaryDelay = (hour, now = new Date()) => {
+  const target = new Date(now);
+  target.setHours(hour, 0, 0, 0);
+  if (target <= now) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target.getTime() - now.getTime();
+};
+
+/**
  * Create a notifier instance
  * @returns {Object} Notifier instance
  */
@@ -136,39 +198,6 @@ const createNotifier = () => {
     dailySent: 0,
     dailyErrors: 0,
     dailyResetAt: Date.now(),
-  };
-
-  /**
-   * Check if currently in quiet hours
-   * @returns {boolean}
-   */
-  const isQuietHours = () => {
-    if (!config.quietHours.enabled) return false;
-    const hour = new Date().getHours();
-    const { start, end } = config.quietHours;
-    // Handle overnight ranges (e.g., 23-7)
-    if (start > end) {
-      return hour >= start || hour < end;
-    }
-    return hour >= start && hour < end;
-  };
-
-  /**
-   * Check if an event should be sent
-   * @param {string} eventType
-   * @returns {boolean}
-   */
-  const shouldSendEvent = (eventType) => {
-    if (!config.enabled) return false;
-    if (!config.telegram.botToken || !config.telegram.chatId) return false;
-
-    // Check event toggle
-    if (config.events[eventType] === false) return false;
-
-    // Quiet hours check - critical events bypass
-    if (isQuietHours() && !CRITICAL_EVENTS.has(eventType)) return false;
-
-    return true;
   };
 
   /**
@@ -291,7 +320,7 @@ const createNotifier = () => {
    * @param {Object} event
    */
   const handleTradeEvent = (event) => {
-    if (!shouldSendEvent(event.type)) return;
+    if (!shouldSendEvent(config, event.type)) return;
     const text = formatEvent(event);
     enqueue(text);
   };
@@ -305,14 +334,7 @@ const createNotifier = () => {
       dailySummaryTimer = null;
     }
 
-    const now = new Date();
-    const target = new Date();
-    target.setHours(config.dailySummaryHour, 0, 0, 0);
-    if (target <= now) {
-      target.setDate(target.getDate() + 1);
-    }
-
-    const delay = target.getTime() - now.getTime();
+    const delay = computeDailySummaryDelay(config.dailySummaryHour);
     dailySummaryTimer = setTimeout(() => {
       // setTimeout callback: a throw in sendDailySummary would crash the
       // process and skip the reschedule, silently killing all future
@@ -429,6 +451,11 @@ const createNotifier = () => {
       start(getEngines);
     } else if (!config.enabled && wasRunning) {
       stop();
+    } else if (wasRunning) {
+      // Already running: `start()` only re-subscribes/reschedules on an
+      // enabled-transition, so a live dailySummaryHour change would
+      // otherwise sit unused until the process restarts (issue #426).
+      scheduleDailySummary();
     }
   };
 
@@ -494,4 +521,12 @@ const createNotifier = () => {
   };
 };
 
-module.exports = { createNotifier, escapeTelegramMarkdown, formatFundSummaryLines };
+module.exports = {
+  createNotifier,
+  escapeTelegramMarkdown,
+  formatFundSummaryLines,
+  isQuietHours,
+  shouldSendEvent,
+  computeDailySummaryDelay,
+  CRITICAL_EVENTS,
+};
