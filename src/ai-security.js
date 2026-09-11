@@ -5,6 +5,7 @@ const { AsyncLocalStorage } = require('async_hooks');
 const REDACTED = '[REDACTED]';
 const SECRET_KEYS = /(api[-_]?key|authorization|credential|password|private[-_]?key|secret|token)$/i;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const STAGE_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const outboundPolicy = new AsyncLocalStorage();
 const nativeFetch = globalThis.fetch;
@@ -96,6 +97,7 @@ const createAiSecurity = ({
   providerService,
   workspaceRoots = (process.env.AI_WORKSPACE_ROOTS || process.cwd()).split(','),
   allowedOrigins = parseAllowedOrigins(),
+  runsDir = path.join(process.cwd(), 'data', 'runs'),
 } = {}) => {
   installFetchGuard();
   const roots = workspaceRoots
@@ -103,6 +105,10 @@ const createAiSecurity = ({
     .filter((root) => fs.existsSync(root))
     .map((root) => fs.realpathSync(root));
   if (roots.length === 0) throw new Error('AI_WORKSPACE_ROOTS must contain at least one existing directory');
+
+  const resolvedRunsDir = path.resolve(runsDir);
+  const isValidRunId = (runId) => typeof runId === 'string' && RUN_ID_PATTERN.test(runId)
+    && path.resolve(resolvedRunsDir, runId) === path.join(resolvedRunsDir, runId);
 
   const validateProvider = (provider) => {
     if (provider?.type === 'cli') return 'CLI providers are disabled because this toolkit version executes them through a shell';
@@ -167,15 +173,20 @@ const createAiSecurity = ({
   };
 
   const guardRun = (req, res, next) => {
-    if (req.method !== 'POST' || req.path !== '/') return next();
-    const workspacePath = resolveWorkspace(req.body?.workspacePath, roots);
-    if (!workspacePath) return res.status(400).json({ error: 'Workspace path is outside AI_WORKSPACE_ROOTS' });
-    req.body.workspacePath = workspacePath;
-    providerService.getProviderById(req.body?.providerId).then((provider) => {
-      const error = validateProvider(provider);
-      if (error) return res.status(400).json({ error });
-      next();
-    }).catch(next);
+    if (req.method === 'POST' && req.path === '/') {
+      const workspacePath = resolveWorkspace(req.body?.workspacePath, roots);
+      if (!workspacePath) return res.status(400).json({ error: 'Workspace path is outside AI_WORKSPACE_ROOTS' });
+      req.body.workspacePath = workspacePath;
+      return providerService.getProviderById(req.body?.providerId).then((provider) => {
+        const error = validateProvider(provider);
+        if (error) return res.status(400).json({ error });
+        next();
+      }).catch(next);
+    }
+    const segments = req.path.split('/').filter(Boolean);
+    if (segments.length === 0) return next();
+    if (!isValidRunId(segments[0])) return res.status(400).json({ error: 'Invalid run ID' });
+    return next();
   };
 
   return { constrainOutboundRequests, filterProviderSamples, guardProviderExecution, guardProviderMutation, guardPrompts, guardRun, redactJsonResponses, validateProvider };
