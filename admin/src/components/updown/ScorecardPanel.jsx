@@ -1,5 +1,5 @@
 import { Target, TrendingUp, TrendingDown, Minus } from 'lucide-react'
-import { INDICATORS, INDICATOR_LABELS, INDICATOR_WEIGHTS } from '../../../../shared/indicator-config.mjs'
+import { INDICATORS, INDICATOR_LABELS, INDICATOR_WEIGHTS } from '../../../../shared/indicator-config.js'
 
 const WINDOW_ORDER = ['1m', '5m', '15m', '1h']
 const TF_ORDER = ['1d', '4h', '2h', '1h', '30m', '15m', '10m', '5m', '3m', '1m']

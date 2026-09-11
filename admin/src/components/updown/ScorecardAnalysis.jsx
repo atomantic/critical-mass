@@ -5,7 +5,7 @@ import {
   AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   ReferenceLine, CartesianGrid, Legend,
 } from 'recharts'
-import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-config.mjs'
+import { INDICATORS, INDICATOR_LABELS } from '../../../../shared/indicator-config.js'
 
 const RANGES = [
   { label: '1d', days: 1 },

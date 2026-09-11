@@ -1,42 +1,46 @@
 // @ts-check
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { INDICATORS: serverIndicators, INDICATOR_WEIGHTS: serverWeights, INDICATOR_LABELS: serverLabels } = require('../src/updown/indicator-config');
+const {
+  INDICATORS,
+  INDICATOR_WEIGHTS,
+  INDICATOR_LABELS,
+} = require('../src/updown/indicator-config');
+const { buildScorecardAnalysis } = require('../src/updown/scorecard-analytics');
 
 describe('scorecard indicator configuration', () => {
-  it('scorecard API exposes matching indicators and base weights', async () => {
-    // Dynamically import the ES6 shared config used by admin client
-    const sharedConfig = await import('../shared/indicator-config.mjs');
-    const sharedIndicators = sharedConfig.INDICATORS;
-    const sharedWeights = sharedConfig.INDICATOR_WEIGHTS;
-    const sharedLabels = sharedConfig.INDICATOR_LABELS;
+  it('re-exports the canonical shared catalog without drift', () => {
+    const shared = require('../shared/indicator-config');
+    assert.equal(INDICATORS, shared.INDICATORS);
+    assert.equal(INDICATOR_WEIGHTS, shared.INDICATOR_WEIGHTS);
+    assert.equal(INDICATOR_LABELS, shared.INDICATOR_LABELS);
+  });
 
-    // Verify server config matches shared config
-    assert.deepEqual(serverIndicators, sharedIndicators, 'server INDICATORS should match shared config');
-    assert.deepEqual(serverWeights, sharedWeights, 'server INDICATOR_WEIGHTS should match shared config');
-    assert.deepEqual(serverLabels, sharedLabels, 'server INDICATOR_LABELS should match shared config');
-
-    const { buildScorecardAnalysis } = require('../src/updown/scorecard-analytics');
-
-    // Mock journal records with no actual data
+  it('exposes every canonical indicator, label, and base weight through the scorecard API', () => {
     const result = buildScorecardAnalysis([]);
 
-    assert.equal(result.success, true, 'API should return success');
-    assert.ok(result.catalog, 'API should expose catalog');
-    assert.ok(result.catalog.indicators, 'catalog should have indicators');
-    assert.ok(result.catalog.baseWeights, 'catalog should have baseWeights');
+    assert.equal(result.success, true);
+    assert.ok(result.catalog, 'catalog should be present');
+    assert.deepEqual(
+      result.catalog.indicators.map((i) => i.key),
+      INDICATORS,
+      'catalog indicators should match the canonical catalog'
+    );
+    assert.deepEqual(
+      result.catalog.baseWeights,
+      INDICATOR_WEIGHTS,
+      'catalog baseWeights should match the canonical weights'
+    );
 
-    // Verify indicators in catalog match source
-    const catalogKeys = result.catalog.indicators.map(i => i.key);
-    assert.deepEqual(catalogKeys, sharedIndicators, 'catalog indicators should match shared config');
-
-    // Verify base weights in catalog match source
-    assert.deepEqual(result.catalog.baseWeights, sharedWeights, 'catalog baseWeights should match shared config');
-
-    // Verify all indicators have labels
     for (const { key, label } of result.catalog.indicators) {
-      assert.ok(label, `indicator ${key} should have a label in catalog`);
-      assert.equal(label, sharedLabels[key], `indicator ${key} label should match shared config`);
+      assert.equal(label, INDICATOR_LABELS[key], `indicator ${key} label should match the canonical label`);
+    }
+  });
+
+  it('gives every canonical indicator a label and a base weight', () => {
+    for (const key of INDICATORS) {
+      assert.ok(INDICATOR_LABELS[key], `indicator ${key} should have a display label`);
+      assert.equal(typeof INDICATOR_WEIGHTS[key], 'number', `indicator ${key} should have a numeric base weight`);
     }
   });
 });
