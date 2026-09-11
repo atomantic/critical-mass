@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-350] UpDown signal action resolution unified across server and client** — Consolidate UpDown action classification logic from two independent implementations into a single shared module, reconciling contracts for null/undefined signals ('CALCULATING...'), action string passthrough (OPEN|ADD|HOLD|CLOSE), and chronological history relabeling.
 - **[issue-354] Remove unreferenced legacy admin UI components** — Deleted three unused React components (IndicatorCharts, MiniPriceSparkline, OrbitalRing) totaling 512 lines of dead code, reducing cognitive friction and build overhead.
 - **[issue-344] Fibonacci sell completion names uncovered-buy carry** — Isolate placement coverage interpretation and preserve the legacy settlement export, accounting, and cycle-reset ordering.
 - **[issue-342] Candle charts reuse timestamp labels** — Bound per-chart label storage to displayed buckets and invalidate on exchange, interval, or browser time-zone changes while preserving live snapshots.
