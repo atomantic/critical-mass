@@ -17,6 +17,7 @@ function BackupRestore() {
   const [config, setConfig] = useState(null)
   const [backups, setBackups] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [creating, setCreating] = useState(false)
   const [message, setMessage] = useState(null)
@@ -26,13 +27,21 @@ function BackupRestore() {
 
   const fetchData = async () => {
     setLoading(true)
-    const res = await fetch('/api/backups')
-    if (res.ok) {
-      const data = await res.json()
-      setBackups(data.backups || [])
-      setConfig(data.config || {})
+    setError(null)
+    try {
+      const res = await fetch('/api/backups')
+      if (res.ok) {
+        const data = await res.json()
+        setBackups(data.backups || [])
+        setConfig(data.config || {})
+      } else {
+        setError(`Failed to load backups (HTTP ${res.status})`)
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to load backups')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   useEffect(() => {
@@ -42,61 +51,100 @@ function BackupRestore() {
   const handleSaveConfig = async () => {
     setSaving(true)
     setMessage(null)
-    const res = await fetch('/api/backups/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    })
-    if (res.ok) {
-      setMessage({ type: 'success', text: 'Backup settings saved!' })
-      fetchData()
-    } else {
-      setMessage({ type: 'error', text: 'Failed to save settings' })
+    try {
+      const res = await fetch('/api/backups/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      })
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'Backup settings saved!' })
+        fetchData()
+      } else {
+        setMessage({ type: 'error', text: 'Failed to save settings' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleCreateBackup = async () => {
     setCreating(true)
     setMessage(null)
-    const res = await fetch('/api/backups', { method: 'POST' })
-    if (res.ok) {
-      const data = await res.json()
-      setMessage({ type: 'success', text: `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})` })
-      fetchData()
-    } else {
-      const data = await res.json().catch(() => ({}))
-      setMessage({ type: 'error', text: `Backup failed: ${data.error || 'Unknown error'}` })
+    try {
+      const res = await fetch('/api/backups', { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        setMessage({ type: 'success', text: `Backup created: ${data.filename} (${formatBytes(data.sizeBytes)})` })
+        fetchData()
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setMessage({ type: 'error', text: `Backup failed: ${data.error || 'Unknown error'}` })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to create backup' })
+    } finally {
+      setCreating(false)
     }
-    setCreating(false)
   }
 
   const handleDelete = async (filename) => {
     setDeleting(filename)
-    const res = await fetch(`/api/backups/${filename}`, { method: 'DELETE' })
-    if (res.ok) {
-      setMessage({ type: 'success', text: `Deleted ${filename}` })
-      fetchData()
-    } else {
-      setMessage({ type: 'error', text: 'Failed to delete backup' })
+    try {
+      const res = await fetch(`/api/backups/${filename}`, { method: 'DELETE' })
+      if (res.ok) {
+        setMessage({ type: 'success', text: `Deleted ${filename}` })
+        fetchData()
+      } else {
+        setMessage({ type: 'error', text: 'Failed to delete backup' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to delete backup' })
+    } finally {
+      setDeleting(null)
     }
-    setDeleting(null)
   }
 
   const handleRestore = async () => {
     if (!restoreTarget) return
     setRestoring(true)
     setMessage(null)
-    const res = await fetch(`/api/backups/${restoreTarget}/restore`, { method: 'POST' })
-    const data = await res.json().catch(() => ({}))
-    if (res.ok && data.success) {
-      setMessage({ type: 'success', text: data.message || `Restored ${data.filesRestored} files` })
-    } else {
-      setMessage({ type: 'error', text: `Restore failed: ${data.error || 'Unknown error'}` })
+    try {
+      const res = await fetch(`/api/backups/${restoreTarget}/restore`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.success) {
+        setMessage({ type: 'success', text: data.message || `Restored ${data.filesRestored} files` })
+      } else {
+        setMessage({ type: 'error', text: `Restore failed: ${data.error || 'Unknown error'}` })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to restore backup' })
+    } finally {
+      setRestoreTarget(null)
+      setRestoring(false)
     }
-    setRestoreTarget(null)
-    setRestoring(false)
     fetchData()
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-32">
+        <div className="max-w-sm text-center">
+          <div className="bg-red-900/50 border border-red-700 text-red-200 p-4 rounded-lg mb-4">
+            {error}
+          </div>
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+          >
+            {loading ? 'Retrying...' : 'Retry'}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   if (loading || !config) {

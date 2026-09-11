@@ -29,6 +29,7 @@ function NotificationsConfig() {
   const [config, setConfig] = useState(null)
   const [rawToken, setRawToken] = useState('')
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [message, setMessage] = useState(null)
@@ -36,19 +37,31 @@ function NotificationsConfig() {
 
   const fetchConfig = async () => {
     setLoading(true)
-    const res = await fetch('/api/notifications/config')
-    if (res.ok) {
-      const data = await res.json()
-      setConfig(data)
-      setRawToken('')
+    setError(null)
+    try {
+      const res = await fetch('/api/notifications/config')
+      if (res.ok) {
+        const data = await res.json()
+        setConfig(data)
+        setRawToken('')
+      } else {
+        setError(`Failed to load notifications config (HTTP ${res.status})`)
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to load notifications config')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   const fetchStats = async () => {
-    const res = await fetch('/api/notifications/stats')
-    if (res.ok) {
-      setStats(await res.json())
+    try {
+      const res = await fetch('/api/notifications/stats')
+      if (res.ok) {
+        setStats(await res.json())
+      }
+    } catch (err) {
+      // Silently fail on stats fetch to avoid blocking the page
     }
   }
 
@@ -72,33 +85,43 @@ function NotificationsConfig() {
       delete payload.telegram.botToken
     }
 
-    const res = await fetch('/api/notifications/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    try {
+      const res = await fetch('/api/notifications/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
 
-    if (res.ok) {
-      setMessage({ type: 'success', text: 'Notification settings saved!' })
-      fetchConfig()
-      fetchStats()
-    } else {
-      setMessage({ type: 'error', text: 'Failed to save settings' })
+      if (res.ok) {
+        setMessage({ type: 'success', text: 'Notification settings saved!' })
+        fetchConfig()
+        fetchStats()
+      } else {
+        setMessage({ type: 'error', text: 'Failed to save settings' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Failed to save settings' })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleTest = async () => {
     setTesting(true)
     setMessage(null)
-    const res = await fetch('/api/notifications/test', { method: 'POST' })
-    const result = await res.json()
-    if (result.success) {
-      setMessage({ type: 'success', text: 'Test message sent to Telegram!' })
-    } else {
-      setMessage({ type: 'error', text: `Test failed: ${result.error}` })
+    try {
+      const res = await fetch('/api/notifications/test', { method: 'POST' })
+      const result = await res.json()
+      if (result.success) {
+        setMessage({ type: 'success', text: 'Test message sent to Telegram!' })
+      } else {
+        setMessage({ type: 'error', text: `Test failed: ${result.error}` })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message || 'Test failed' })
+    } finally {
+      setTesting(false)
     }
-    setTesting(false)
     fetchStats()
   }
 
@@ -107,6 +130,25 @@ function NotificationsConfig() {
       ...prev,
       events: { ...prev.events, [key]: value },
     }))
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-32">
+        <div className="max-w-sm text-center">
+          <div className="bg-red-900/50 border border-red-700 text-red-200 p-4 rounded-lg mb-4">
+            {error}
+          </div>
+          <button
+            onClick={fetchConfig}
+            disabled={loading}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+          >
+            {loading ? 'Retrying...' : 'Retry'}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   if (loading || !config) {
