@@ -75,7 +75,8 @@ describe('regime operator placement adoption', () => {
     const id = makeIntent('ladder_entry', { ladderIndex: 3 });
     await engine.reconcilePlacementIntent(id, 'adopt');
     assert.equal(diskPosition().ladderActive, true);
-    assert.deepEqual(diskPosition().pendingLadderOrders.map(o => [o.orderId, o.index, o.assetQty]), [['adopted', 3, 0.9]]);
+    assert.deepEqual(diskPosition().pendingLadderOrders.map(o => [o.orderId, o.ladderIndex, o.assetQty]), [['adopted', 3, 0.9]]);
+    assert.equal(diskPosition().pendingLadderOrders[0].ladderIndex, executor.getPendingLadderOrders()[0].ladderIndex);
     assert.equal(executor.isLadderOrder('adopted'), true);
   });
   it('persists legacy TP identity and links its current-cycle buys', async () => {

@@ -5076,7 +5076,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       positionState.pendingLadderOrders ||= [];
       if (!positionState.pendingLadderOrders.some(o => o.orderId === found.orderId)) {
         positionState.pendingLadderOrders.push({
-          orderId: found.orderId, index: intent.ladderIndex,
+          orderId: found.orderId, ladderIndex: intent.ladderIndex,
           price: intent.price ?? 0, assetQty: intent.size ?? 0,
           sizeUsdc: intent.sizeUsdc ?? 0, placedAt: intent.createdAt ?? Date.now(),
         });
