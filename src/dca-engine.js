@@ -11,6 +11,7 @@ const { getExchangeConfig, getEnabledExchanges, getBaseCurrency, getQuoteCurrenc
 const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
 const { getFibonacciBuyAmount } = require('./fibonacci-utils');
+const { trackPendingWrite } = require('./pending-writes');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -768,11 +769,17 @@ const checkStatus = async (exchange = 'coinbase') => {
   };
 };
 
+// The two mutating entry points are exported wrapped so a backup restore can
+// join a cycle that was already in flight when it took the maintenance lock
+// (issue #429). Internal calls (e.g. consolidation from inside a cycle) stay
+// unwrapped — they are already covered by the outer cycle's registration.
 module.exports = {
-  runIntervalCycle,
+  runIntervalCycle: (exchange = 'coinbase') =>
+    trackPendingWrite(`dca-cycle:${exchange}`, () => runIntervalCycle(exchange)),
   checkStatus,
   syncOrderStatuses,
   reconcileAwaitingSells,
   loadConfig,
-  executeConsolidation,
+  executeConsolidation: (exchange = 'coinbase', orderIds = null) =>
+    trackPendingWrite(`dca-consolidation:${exchange}`, () => executeConsolidation(exchange, orderIds)),
 };

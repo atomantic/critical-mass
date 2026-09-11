@@ -246,7 +246,7 @@ const sharedDeps = { io, parseTSV, calculateCostBasis, getNextTradeInfo, readJSO
 
 require('./src/routes/sentinel-routes')(app, { ...sharedDeps, sentinelService, getSentinelConfig, updateSentinelConfig });
 require('./src/routes/ai-routes')(app, sharedDeps);
-require('./src/routes/settings-routes')(app, { ...sharedDeps, updownService });
+require('./src/routes/settings-routes')(app, { ...sharedDeps, updownService, sentinelService, candleCache });
 require('./src/routes/candle-routes')(app, { candleCache });
 require('./src/routes/updown-routes')(app, { ...sharedDeps, updownService, candleCache });
 require('./src/routes/exchange-routes')(app, sharedDeps);

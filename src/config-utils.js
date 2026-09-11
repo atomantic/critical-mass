@@ -313,16 +313,26 @@ const _statMtimeMs = (file) => {
 };
 
 /**
- * Test-only hook to bust the in-process config cache. Tests that mock
- * `fs.existsSync`/`fs.readFileSync` should call this between cases since
- * the cache key is based on `fs.statSync` mtime (which the tests don't
- * mock, so the cache would otherwise stick across cases).
+ * Drop the in-process merged-config cache so the next read comes from disk.
+ *
+ * Normally the mtime-keyed cache self-invalidates, but a backup restore
+ * rewrites `config.json` wholesale and must not depend on filesystem timestamp
+ * resolution to be observed — the gateway would keep serving (and re-saving)
+ * the pre-restore config (issue #429).
  */
-const _resetConfigCacheForTests = () => {
+const invalidateConfigCache = () => {
   _configCache = null;
   _configCacheKey = null;
   _configReloadFailedLogged = false;
 };
+
+/**
+ * Test-only alias for `invalidateConfigCache`. Tests that mock
+ * `fs.existsSync`/`fs.readFileSync` should call this between cases since
+ * the cache key is based on `fs.statSync` mtime (which the tests don't
+ * mock, so the cache would otherwise stick across cases).
+ */
+const _resetConfigCacheForTests = invalidateConfigCache;
 
 /**
  * Load raw configuration from base config, with user overrides from data/config.json merged on top.
@@ -1515,6 +1525,7 @@ module.exports = {
   loadConfig,
   saveConfig,
   loadRawConfig,
+  invalidateConfigCache,
   _resetConfigCacheForTests,
   getExchangeConfig,
   getEnabledExchanges,

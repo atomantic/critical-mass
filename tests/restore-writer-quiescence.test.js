@@ -28,6 +28,14 @@ const maintenance = require('../src/restore-maintenance');
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
+/**
+ * Adapt an UpDown-shaped service (stop/start) to the coordinator's gateway
+ * writer descriptor.
+ * @param {{stop: Function, start: Function}} service - Service under test
+ * @returns {Array<{name: string, stop: Function, resume: Function}>} Writer list
+ */
+const updownWriter = (service) => [{ name: 'UpDown', stop: () => service.stop(), resume: () => service.start() }];
+
 const okIPC = (stopped = [{ exchange: 'coinbase', pair: 'BTC-USDC' }]) => ({
   isConnected: () => true,
   request: async () => ({ success: true, stopped }),
@@ -188,7 +196,7 @@ describe('restore drains and reloads the gateway UpDown writer', () => {
       start: async () => { order.push('updown-start'); },
     };
     const { status } = await runRestore({
-      updownService,
+      gatewayWriters: updownWriter(updownService),
       restore: (f) => { order.push(`restore:${f}`); return { success: true, filesRestored: 1 }; },
     });
     assert.equal(status, 200);
@@ -202,7 +210,7 @@ describe('restore drains and reloads the gateway UpDown writer', () => {
       exchangeIPCMap: { coinbase: { isConnected: () => true, request: async () => { throw new Error('nope'); } } },
       configuredExchanges: ['coinbase'],
       restore: () => { order.push('restore'); return { success: true, filesRestored: 1 }; },
-      updownService: { stop: () => order.push('updown-stop'), start: async () => order.push('updown-start') },
+      gatewayWriters: updownWriter({ stop: () => order.push('updown-stop'), start: async () => order.push('updown-start') }),
       logger: silentLogger,
     });
     assert.equal(status, 409);
@@ -211,7 +219,7 @@ describe('restore drains and reloads the gateway UpDown writer', () => {
 
   it('reports a failed UpDown reload as a warning without claiming a clean restore path', async () => {
     const { status, body } = await runRestore({
-      updownService: { stop: () => {}, start: async () => { throw new Error('scorecard hydration failed'); } },
+      gatewayWriters: updownWriter({ stop: () => {}, start: async () => { throw new Error('scorecard hydration failed'); } }),
     });
     assert.equal(status, 200);
     assert.equal(body.success, true);
@@ -221,7 +229,7 @@ describe('restore drains and reloads the gateway UpDown writer', () => {
   it('restarts UpDown and releases the lock when the applier throws mid-copy', async () => {
     const order = [];
     const { status, body } = await runRestore({
-      updownService: { stop: () => order.push('stop'), start: async () => order.push('start') },
+      gatewayWriters: updownWriter({ stop: () => order.push('stop'), start: async () => order.push('start') }),
       restore: () => { throw new Error('ENOSPC: no space left on device'); },
     });
     assert.equal(status, 500);
@@ -234,7 +242,7 @@ describe('restore drains and reloads the gateway UpDown writer', () => {
   it('restarts UpDown even when applying the archive fails', async () => {
     const order = [];
     const { status, body } = await runRestore({
-      updownService: { stop: () => order.push('stop'), start: async () => order.push('start') },
+      gatewayWriters: updownWriter({ stop: () => order.push('stop'), start: async () => order.push('start') }),
       restore: () => ({ success: false, error: 'unzip: bad archive' }),
     });
     assert.equal(status, 500);
@@ -250,7 +258,14 @@ describe('maintenance lock', () => {
     let release;
     const slow = performRestore({
       filename: 'first.zip',
-      exchangeIPCMap: { coinbase: { isConnected: () => true, request: () => new Promise((r) => { release = () => r({ success: true, stopped: [] }); }) } },
+      exchangeIPCMap: { coinbase: { isConnected: () => true, request: (channel) => (
+        // Only the stop acknowledgement is held open; the maintenance window
+        // handshake resolves immediately so the lock is genuinely held while
+        // the second restore arrives.
+        channel === 'engine:maintenance'
+          ? Promise.resolve({ success: true })
+          : new Promise((r) => { release = () => r({ success: true, stopped: [] }); })
+      ) } },
       configuredExchanges: ['coinbase'],
       restore: () => ({ success: true, filesRestored: 1 }),
       logger: silentLogger,
@@ -264,6 +279,9 @@ describe('maintenance lock', () => {
     });
     assert.equal(second.status, 409);
     assert.equal(second.body.code, 'restore-already-running');
+    // The held restore reaches `regime:stop-all` a few turns of the loop after
+    // the maintenance-window handshake; wait for it rather than racing it.
+    for (let i = 0; i < 50 && !release; i++) await new Promise(r => setImmediate(r));
     release();
     assert.equal((await slow).status, 200);
   });
@@ -366,7 +384,7 @@ describe('a drained writer cannot resurrect its pre-restore snapshot', () => {
       filename: 'backup-x.zip',
       exchangeIPCMap: { coinbase: okIPC() },
       configuredExchanges: ['coinbase'],
-      updownService: writer,
+      gatewayWriters: updownWriter(writer),
       restore: () => { fs.writeFileSync(file, JSON.stringify({ position: 'RESTORED' })); return { success: true, filesRestored: 1 }; },
       logger: silentLogger,
     });
@@ -476,5 +494,313 @@ describe('regime engine stop tears down timers even when the state save throws',
     assert.match(err.message, /EROFS/);
     assert.equal(clearedTimers, 1, 'order executor timers cleared despite the throw');
     assert.equal(engine._test.getFlags().isRunning, false);
+  });
+});
+
+describe('restore joins gateway work that was already in flight', () => {
+  const { trackPendingWrite, drainPendingWrites, getPendingWrites } = require('../src/pending-writes');
+
+  afterEach(() => maintenance.endMaintenance());
+
+  /** @returns {{promise: Promise<string>, finish: Function, fail: Function}} A cycle the test controls */
+  const controllableCycle = (label = 'dca-cycle:coinbase') => {
+    let finish;
+    let fail;
+    const gate = new Promise((resolve, reject) => { finish = resolve; fail = reject; });
+    const promise = trackPendingWrite(label, () => gate);
+    return { promise, finish, fail };
+  };
+
+  it('blocks the restore when a scheduled cycle is still running after the drain window', async () => {
+    const cycle = controllableCycle();
+    const { status, body, restoreCalls } = await runRestore({ drainPendingWrites, drainTimeoutMs: 20 });
+
+    assert.equal(status, 409);
+    assert.equal(body.code, 'writers-not-quiesced');
+    assert.deepEqual(restoreCalls, [], 'an in-flight cycle must leave every destination file untouched');
+    const gateway = body.unconfirmed.find(u => u.exchange === 'gateway');
+    assert.equal(gateway.reason, 'pending-writes-in-flight');
+    assert.deepEqual(gateway.pendingWrites.map(w => w.label), ['dca-cycle:coinbase']);
+
+    cycle.finish('done');
+    await cycle.promise;
+  });
+
+  it('applies the archive once the in-flight cycle finishes', async () => {
+    const cycle = controllableCycle();
+    setTimeout(() => cycle.finish('done'), 5);
+    const { status, restoreCalls } = await runRestore({ drainPendingWrites, drainTimeoutMs: 1_000 });
+
+    assert.equal(status, 200);
+    assert.deepEqual(restoreCalls, ['backup-2026-01-01.zip']);
+    await cycle.promise;
+  });
+
+  it('treats a cycle that threw as drained — it is no longer writing', async () => {
+    const cycle = controllableCycle();
+    // The caller's own rejection handler; without it node would abort the run.
+    const observed = cycle.promise.catch(err => err.message);
+    setTimeout(() => cycle.fail(new Error('exchange 500')), 5);
+
+    const { status, restoreCalls } = await runRestore({ drainPendingWrites, drainTimeoutMs: 1_000 });
+    assert.equal(status, 200);
+    assert.deepEqual(restoreCalls, ['backup-2026-01-01.zip']);
+    assert.equal(await observed, 'exchange 500');
+  });
+
+  it('force applies past work that will not drain, and says so', async () => {
+    const cycle = controllableCycle();
+    const { status, body } = await runRestore({ drainPendingWrites, drainTimeoutMs: 20, force: true });
+
+    assert.equal(status, 200);
+    assert.equal(body.forced, true);
+    assert.ok(body.unconfirmed.some(u => u.reason === 'pending-writes-in-flight'));
+
+    cycle.finish('done');
+    await cycle.promise;
+  });
+
+  it('stops tracking a write as soon as it settles', async () => {
+    const cycle = controllableCycle('dca-consolidation:gemini');
+    assert.deepEqual(getPendingWrites().map(w => w.label), ['dca-consolidation:gemini']);
+    cycle.finish('done');
+    await cycle.promise;
+    assert.deepEqual(getPendingWrites(), []);
+    assert.deepEqual(await drainPendingWrites(5), { drained: true, pending: [] });
+  });
+
+  it('wraps the exported DCA entry points so the scheduler is visible to the drain', () => {
+    // Invoking the real cycle here would talk to an exchange and write state
+    // files, so assert the wiring instead: both mutating entry points must be
+    // exported through the tracker, not as the raw implementations.
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'dca-engine.js'), 'utf8');
+    const exportsBlock = source.slice(source.lastIndexOf('module.exports = {'));
+    assert.match(exportsBlock, /runIntervalCycle:[\s\S]*?trackPendingWrite\(`dca-cycle:/);
+    assert.match(exportsBlock, /executeConsolidation:[\s\S]*?trackPendingWrite\(`dca-consolidation:/);
+  });
+});
+
+describe('restore drains and reloads the sentinel writer', () => {
+  const { createSentinelService } = require('../src/sentinel/sentinel-service');
+
+  afterEach(() => maintenance.endMaintenance());
+
+  it('reloads restored alerts instead of writing its pre-restore snapshot back', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-sentinel-429-'));
+    const stateFile = path.join(dir, 'sentinel-state.json');
+    fs.writeFileSync(stateFile, JSON.stringify({ alerts: [{ id: 'pre', dismissed: false }], seenGuids: { pre: Date.now() } }));
+
+    const io = { to: () => ({ emit: () => {} }) };
+    const sentinel = createSentinelService(io, {
+      readJSON: (f, fallback) => (fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : fallback),
+      writeJSON: (f, data) => fs.writeFileSync(f, JSON.stringify(data)),
+      DATA_DIR: dir,
+      // Disabled: start() must stay a no-op and the reload must happen anyway.
+      getSentinelConfig: () => ({ enabled: false, maxAlerts: 200 }),
+      fetchAllFeeds: async () => [],
+    });
+    assert.equal(sentinel.getStatus().totalAlerts, 1, 'pre-restore state is loaded eagerly');
+
+    const { status } = await performRestore({
+      filename: 'backup-x.zip',
+      exchangeIPCMap: { coinbase: okIPC() },
+      configuredExchanges: ['coinbase'],
+      gatewayWriters: [{
+        name: 'Sentinel',
+        stop: () => sentinel.stop(),
+        resume: () => { sentinel.reloadState(); sentinel.start(); },
+      }],
+      restore: () => {
+        fs.writeFileSync(stateFile, JSON.stringify({ alerts: [{ id: 'restored', dismissed: false }], seenGuids: {} }));
+        return { success: true, filesRestored: 1 };
+      },
+      logger: silentLogger,
+    });
+    assert.equal(status, 200);
+    assert.deepEqual(sentinel.getAlerts().map(a => a.id), ['restored']);
+
+    // The next persist (any dismiss/clear from the API) must carry restored state.
+    sentinel.clearAlerts();
+    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).alerts, []);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('restore invalidates in-memory views of the restored files', () => {
+  afterEach(() => maintenance.endMaintenance());
+
+  it('drops caches after applying the archive and before releasing the lock', async () => {
+    const order = [];
+    const { status } = await runRestore({
+      restore: (f) => { order.push(`restore:${f}`); return { success: true, filesRestored: 1 }; },
+      invalidateCaches: () => {
+        order.push('invalidate');
+        assert.equal(maintenance.isMaintenanceActive(), true, 'caches must be dropped while the lock is still held');
+      },
+    });
+    assert.equal(status, 200);
+    assert.deepEqual(order, ['restore:backup-2026-01-01.zip', 'invalidate']);
+  });
+
+  it('reports a failed invalidation as a warning rather than swallowing it', async () => {
+    const { status, body } = await runRestore({
+      invalidateCaches: () => { throw new Error('seed fetch refused'); },
+    });
+    assert.equal(status, 200);
+    assert.match(body.warnings.join(' '), /seed fetch refused/);
+  });
+
+  it('leaves caches alone when the gate blocks the restore', async () => {
+    let invalidated = 0;
+    const { status } = await performRestore({
+      filename: 'backup-x.zip',
+      exchangeIPCMap: { coinbase: { isConnected: () => true, request: async () => ({ success: false }) } },
+      configuredExchanges: ['coinbase'],
+      restore: () => ({ success: true, filesRestored: 1 }),
+      invalidateCaches: () => { invalidated++; },
+      logger: silentLogger,
+    });
+    assert.equal(status, 409);
+    assert.equal(invalidated, 0);
+  });
+
+  it('empties the shared candle cache so a pre-restore series is never served on', async () => {
+    const { createCandleCache } = require('../src/candle-cache');
+    const cache = createCandleCache();
+    cache.processTick('coinbase', 100, Date.now(), 1);
+    assert.ok(cache.getAggregator('coinbase').getCurrentCandle('1m'), 'cache is populated pre-restore');
+
+    // reseed: false keeps the public APIs out of the suite; the behaviour under
+    // test is that nothing pre-restore survives the call.
+    await cache.invalidate({ reseed: false });
+    assert.deepEqual(cache.getAllCandles('coinbase'), {});
+  });
+});
+
+describe('engine-side maintenance window', () => {
+  const engineMaintenance = require('../src/engine-maintenance');
+
+  afterEach(() => engineMaintenance.setEngineMaintenance({ active: false }));
+
+  it('refuses mutating channels and keeps reads and the stop path open', () => {
+    engineMaintenance.setEngineMaintenance({ active: true, reason: 'restore backup-1.zip' });
+
+    const refusal = engineMaintenance.refuseDuringMaintenance('regime:start');
+    assert.equal(refusal.success, false);
+    assert.equal(refusal.code, 'maintenance-in-progress');
+    assert.match(refusal.error, /restore backup-1\.zip/);
+
+    for (const channel of ['regime:stop-all', 'regime:stop', 'regime:status', 'engine:maintenance']) {
+      assert.equal(engineMaintenance.refuseDuringMaintenance(channel), null, `${channel} must stay available`);
+    }
+    // Every other mutating channel is refused by default (allowlist, not denylist).
+    for (const channel of ['regime:rebuild-ladder', 'regime:manual-trade', 'regime:reset-cycle', 'regime:convert-dca']) {
+      assert.equal(engineMaintenance.refuseDuringMaintenance(channel).code, 'maintenance-in-progress');
+    }
+  });
+
+  it('allows everything again once the window is closed', () => {
+    engineMaintenance.setEngineMaintenance({ active: true, reason: 'restore' });
+    engineMaintenance.setEngineMaintenance({ active: false });
+    assert.equal(engineMaintenance.refuseDuringMaintenance('regime:start'), null);
+    assert.equal(engineMaintenance.getEngineMaintenance(), null);
+  });
+
+  it('expires on its own so a gateway that dies mid-restore cannot brick the engine', () => {
+    engineMaintenance.setEngineMaintenance({ active: true, reason: 'restore', ttlMs: 1 });
+    const { expiresAt } = engineMaintenance.getEngineMaintenance();
+    assert.ok(expiresAt <= Date.now() + 1);
+    mock.timers.enable({ apis: ['Date'], now: Date.now() + 5 });
+    assert.equal(engineMaintenance.getEngineMaintenance(), null);
+    assert.equal(engineMaintenance.refuseDuringMaintenance('regime:start'), null);
+    mock.timers.reset();
+  });
+
+  it('clamps an absurd TTL instead of trusting the payload', () => {
+    engineMaintenance.setEngineMaintenance({ active: true, ttlMs: Number.MAX_SAFE_INTEGER });
+    const { startedAt, expiresAt } = engineMaintenance.getEngineMaintenance();
+    assert.equal(expiresAt - startedAt, engineMaintenance.MAX_MAINTENANCE_TTL_MS);
+  });
+
+  it('is opened before the engines are asked to stop and closed afterwards', async () => {
+    const channels = [];
+    const ipc = {
+      isConnected: () => true,
+      request: async (channel, payload) => {
+        channels.push(`${channel}:${channel === 'engine:maintenance' ? payload.active : 'x'}`);
+        return { success: true, stopped: [] };
+      },
+    };
+    const { status } = await performRestore({
+      filename: 'backup-x.zip',
+      exchangeIPCMap: { coinbase: ipc },
+      configuredExchanges: ['coinbase'],
+      restore: () => ({ success: true, filesRestored: 1 }),
+      logger: silentLogger,
+    });
+    assert.equal(status, 200);
+    assert.deepEqual(channels, ['engine:maintenance:true', 'regime:stop-all:x', 'engine:maintenance:false']);
+  });
+
+  it('closes the window even when the restore is blocked or throws', async () => {
+    const closes = [];
+    const ipc = {
+      isConnected: () => true,
+      request: async (channel, payload) => {
+        if (channel === 'engine:maintenance') { closes.push(payload.active); return { success: true }; }
+        throw new Error('socket hang up');
+      },
+    };
+    const { status } = await performRestore({
+      filename: 'backup-x.zip',
+      exchangeIPCMap: { coinbase: ipc },
+      configuredExchanges: ['coinbase'],
+      restore: () => ({ success: true, filesRestored: 1 }),
+      logger: silentLogger,
+    });
+    assert.equal(status, 409);
+    assert.deepEqual(closes, [true, false], 'a blocked restore must not leave engines in maintenance');
+  });
+});
+
+describe('engine IPC server enforces the maintenance window', () => {
+  const { createIPCServer } = require('../src/ipc/ipc-server');
+  const { createIPCClient } = require('../src/ipc/ipc-client');
+  const engineMaintenance = require('../src/engine-maintenance');
+  const PORT = 45_529;
+
+  after(() => engineMaintenance.setEngineMaintenance({ active: false }));
+
+  it('answers reads and refuses mutations while the gateway holds the window', async () => {
+    const server = createIPCServer(PORT, 'test-engine');
+    server.start();
+    let started = 0;
+    server.onRequest('regime:start', async () => { started++; return { success: true }; });
+    server.onRequest('regime:status', async () => ({ success: true, status: 'ok' }));
+
+    const client = createIPCClient(`ws://127.0.0.1:${PORT}`, 'test');
+    client.connect();
+    for (let i = 0; i < 100 && !client.isConnected(); i++) await new Promise(r => setTimeout(r, 10));
+    assert.ok(client.isConnected(), 'IPC client connected');
+
+    assert.deepEqual(await client.request('engine:maintenance', { active: true, reason: 'restore backup-1.zip' }, 'test', 1_000), {
+      success: true,
+      maintenance: engineMaintenance.getEngineMaintenance(),
+    });
+
+    const refused = await client.request('regime:start', {}, 'test', 1_000);
+    assert.equal(refused.code, 'maintenance-in-progress');
+    assert.equal(started, 0, 'the handler must never run during maintenance');
+
+    const read = await client.request('regime:status', {}, 'test', 1_000);
+    assert.equal(read.status, 'ok');
+
+    await client.request('engine:maintenance', { active: false }, 'test', 1_000);
+    assert.deepEqual(await client.request('regime:start', {}, 'test', 1_000), { success: true });
+    assert.equal(started, 1);
+
+    client.disconnect();
+    server.stop();
   });
 });

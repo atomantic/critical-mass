@@ -23,6 +23,11 @@ function BackupRestore() {
   const [message, setMessage] = useState(null)
   const [restoreTarget, setRestoreTarget] = useState(null)
   const [restoring, setRestoring] = useState(false)
+  // Set when the gateway refuses a restore because a writer never confirmed it
+  // stopped (HTTP 409 `writers-not-quiesced`). Holds the blocking writers so the
+  // operator can see WHAT is still alive before deciding to override (issue #429).
+  const [blockedBy, setBlockedBy] = useState(null)
+  const [forceAcknowledged, setForceAcknowledged] = useState(false)
   const [deleting, setDeleting] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
 
@@ -114,25 +119,47 @@ function BackupRestore() {
     }
   }
 
-  const handleRestore = async () => {
+  const handleRestore = async ({ force = false } = {}) => {
     if (!restoreTarget) return
     setRestoring(true)
     setMessage(null)
+    let blocked = null
     try {
-      const res = await fetch(`/api/backups/${restoreTarget}/restore`, { method: 'POST' })
+      const res = await fetch(`/api/backups/${restoreTarget}/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force }),
+      })
       const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
-        setMessage({ type: 'success', text: data.message || `Restored ${data.filesRestored} files` })
+        setMessage({
+          type: data.forced ? 'error' : 'success',
+          text: data.forced
+            ? `${data.message || `Restored ${data.filesRestored} files`} — FORCED past ${data.unconfirmed?.length || 0} unconfirmed writer(s); verify your data before restarting engines.`
+            : (data.message || `Restored ${data.filesRestored} files`),
+        })
+      } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
+        // Nothing was written. Keep the target selected and offer the override.
+        blocked = data.unconfirmed || []
+        setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
       } else {
         setMessage({ type: 'error', text: `Restore failed: ${data.error || 'Unknown error'}` })
       }
     } catch (err) {
       setMessage({ type: 'error', text: err.message || 'Failed to restore backup' })
     } finally {
-      setRestoreTarget(null)
+      setBlockedBy(blocked)
+      setForceAcknowledged(false)
+      if (!blocked) setRestoreTarget(null)
       setRestoring(false)
     }
     fetchData({ silent: true })
+  }
+
+  const cancelRestore = () => {
+    setRestoreTarget(null)
+    setBlockedBy(null)
+    setForceAcknowledged(false)
   }
 
   if (error) {
@@ -284,21 +311,59 @@ function BackupRestore() {
             This will stop all running engines and overwrite current data files.
             API keys will NOT be affected. You will need to restart engines manually from the dashboard.
           </p>
+          {blockedBy && (
+            <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
+              <p className="text-sm font-semibold text-red-200 mb-2">
+                Blocked: {blockedBy.length} writer(s) did not confirm shutdown. No files were changed.
+              </p>
+              <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
+                {blockedBy.map(w => (
+                  <li key={`${w.exchange}:${w.reason}`}>
+                    {w.exchange} &middot; {w.reason}{w.error ? ` — ${w.error}` : ''}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-red-200/80 mb-3">
+                Forcing the restore applies the archive anyway. If one of these writers is
+                still alive it will overwrite the recovered files with its own pre-restore
+                snapshot. Only force when you know the process is dead (e.g. a crashed
+                engine that cannot be reached over IPC).
+              </p>
+              <label className="flex items-center gap-2 text-xs text-red-200">
+                <input
+                  type="checkbox"
+                  checked={forceAcknowledged}
+                  onChange={e => setForceAcknowledged(e.target.checked)}
+                  className="accent-red-500"
+                />
+                I have verified the listed writers are not running
+              </label>
+            </div>
+          )}
           <div className="flex gap-3">
             <button
-              onClick={() => setRestoreTarget(null)}
+              onClick={cancelRestore}
               disabled={restoring}
               className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-lg font-medium transition-colors"
             >
               Cancel
             </button>
             <button
-              onClick={handleRestore}
+              onClick={() => handleRestore()}
               disabled={restoring}
               className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
             >
-              {restoring ? 'Restoring...' : 'Confirm Restore'}
+              {restoring ? 'Restoring...' : blockedBy ? 'Retry Restore' : 'Confirm Restore'}
             </button>
+            {blockedBy && (
+              <button
+                onClick={() => handleRestore({ force: true })}
+                disabled={restoring || !forceAcknowledged}
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 disabled:bg-red-900 disabled:text-red-400 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+              >
+                Force Restore Anyway
+              </button>
+            )}
           </div>
         </div>
       )}
