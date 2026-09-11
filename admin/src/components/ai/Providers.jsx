@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { createRunLifecycle } from '../../utils/runLifecycle.mjs'
 
 const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
 
@@ -18,16 +19,24 @@ export default function AIProviders() {
   const [showSamples, setShowSamples] = useState(false)
   const [loadingSamples, setLoadingSamples] = useState(false)
   const [addingSample, setAddingSample] = useState({})
-  const pollRef = useRef(null)
+  const [runPending, setRunPending] = useState(false)
+  const loadDataRef = useRef(null)
+  const lifecycleRef = useRef(null)
+  if (!lifecycleRef.current) {
+    lifecycleRef.current = createRunLifecycle({
+      setRunningId,
+      setRunOutput,
+      setPending: setRunPending,
+      refreshRuns: () => loadDataRef.current?.(),
+    })
+  }
 
   useEffect(() => { loadData() }, [])
 
-  // Clean up polling interval on unmount
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
+  // The lifecycle owner holds every runner timer and in-flight read; unmounting
+  // invalidates its generation so no pending continuation can revive polling on
+  // a detached view. Server-side work is only cancelled by an explicit Stop.
+  useEffect(() => () => lifecycleRef.current.dispose(), [])
 
   const loadData = async () => {
     setLoading(true)
@@ -40,6 +49,10 @@ export default function AIProviders() {
     setRuns(runsRes.runs || [])
     setLoading(false)
   }
+
+  // Keep the lifecycle owner's run-list refresh pointed at the current closure
+  // without rebuilding the owner (and losing its generation) on every render.
+  useEffect(() => { loadDataRef.current = loadData })
 
   const handleSetActive = async (id) => {
     await fetch('/api/providers/active', {
@@ -77,44 +90,12 @@ export default function AIProviders() {
     loadData()
   }
 
-  const handleExecuteRun = async () => {
+  const handleExecuteRun = () => {
     if (!runPrompt.trim() || !activeProviderId) return
-    setRunOutput('')
-    const result = await fetch('/api/runs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ providerId: activeProviderId, prompt: runPrompt })
-    }).then(r => r.json()).catch(err => ({ error: err.message }))
-
-    if (result.error) {
-      setRunOutput(`Error: ${result.error}`)
-      return
-    }
-
-    setRunningId(result.runId)
-    // Poll for completion
-    if (pollRef.current) clearInterval(pollRef.current)
-    pollRef.current = setInterval(async () => {
-      const meta = await fetch(`/api/runs/${result.runId}`).then(r => r.json()).catch(() => null)
-      if (!meta || meta.endTime) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-        setRunningId(null)
-        if (meta) {
-          const output = await fetch(`/api/runs/${result.runId}/output`).then(r => r.text()).catch(() => '')
-          setRunOutput(output || meta.error || 'No output')
-        }
-        loadData()
-      }
-    }, 2000)
+    lifecycleRef.current.execute({ providerId: activeProviderId, prompt: runPrompt })
   }
 
-  const handleStopRun = async () => {
-    if (runningId) {
-      await fetch(`/api/runs/${runningId}/stop`, { method: 'POST' })
-      setRunningId(null)
-    }
-  }
+  const handleStopRun = () => lifecycleRef.current.stop()
 
   const handleLoadSamples = async () => {
     setLoadingSamples(true)
@@ -209,10 +190,10 @@ export default function AIProviders() {
           <div className="flex justify-between items-center">
             <button
               onClick={handleExecuteRun}
-              disabled={!runPrompt.trim() || !activeProviderId || runningId}
+              disabled={!runPrompt.trim() || !activeProviderId || !!runningId || runPending}
               className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
             >
-              {runningId ? 'Running...' : 'Execute'}
+              {runningId || runPending ? 'Running...' : 'Execute'}
             </button>
             {runningId && (
               <button
