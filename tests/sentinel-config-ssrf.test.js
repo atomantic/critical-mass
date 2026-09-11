@@ -96,3 +96,35 @@ describe('PUT /api/sentinel/config rejects unsafe feed URLs (issue #215-A)', () 
     assert.deepEqual(getUpdatedWith(), { enabled: false });
   });
 });
+
+describe('GET /api/sentinel/status response structure (issue #456)', () => {
+  it('returns config at top level with enabled=true fixture (regression check for Dashboard toggle)', async () => {
+    const app = createFakeApp();
+    registerSentinelRoutes(app, {
+      sentinelService: { getStatus: () => ({ running: true, pollCount: 5 }) },
+      getSentinelConfig: () => ({ enabled: true, feeds: [] }),
+      updateSentinelConfig: () => {},
+    });
+    const res = createRes();
+    await app.handlers['GET /api/sentinel/status']({}, res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.config.enabled, true, 'config must be at top level');
+    assert.equal(res.body.running, true);
+  });
+
+  it('returns config at top level with enabled=false fixture (regression check for Dashboard toggle)', async () => {
+    const app = createFakeApp();
+    registerSentinelRoutes(app, {
+      sentinelService: { getStatus: () => ({ running: false, pollCount: 0 }) },
+      getSentinelConfig: () => ({ enabled: false, feeds: [] }),
+      updateSentinelConfig: () => {},
+    });
+    const res = createRes();
+    await app.handlers['GET /api/sentinel/status']({}, res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(res.body.config.enabled, false, 'config must be at top level');
+    assert.equal(res.body.running, false);
+  });
+});
