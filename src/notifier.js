@@ -7,7 +7,7 @@
  */
 
 const { tradeEvents } = require('./trade-events');
-const { getNotificationConfig, getConfiguredExchanges, getRegimeConfig, getBaseCurrency } = require('./config-utils');
+const { getNotificationConfig, getConfiguredFunds, getFundConfig, getBaseCurrency } = require('./config-utils');
 const { loadRegimeState } = require('./state-tracker');
 const { createContextLogger } = require('./logger');
 
@@ -20,6 +20,27 @@ const notifierLogger = createContextLogger({ module: 'notifier' });
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 const MAX_MESSAGE_LENGTH = 4000;
+
+/**
+ * Characters reserved by Telegram's legacy Markdown parse_mode. Trade event
+ * messages built by regime-engine/risk-manager are plain text, not intentional
+ * markdown, so an unescaped `[`, `]`, `_`, `*`, or `` ` `` (e.g. "[DRY-RUN]",
+ * "usdc_cap_exceeded") makes Telegram's parser reject the whole sendMessage
+ * call with a 400 "can't parse entities" error, silently dropping delivery.
+ */
+const TELEGRAM_MARKDOWN_RESERVED_RE = /[_*`[\]]/g;
+
+/**
+ * Escape Telegram Markdown v1 reserved characters by prepending a backslash,
+ * so plain-text event messages render literally instead of breaking the
+ * parser or being interpreted as (possibly unbalanced) formatting.
+ * @param {unknown} text
+ * @returns {string}
+ */
+const escapeTelegramMarkdown = (text) => {
+  if (typeof text !== 'string') return '';
+  return text.replace(TELEGRAM_MARKDOWN_RESERVED_RE, '\\$&');
+};
 
 /**
  * Event emoji map
@@ -65,6 +86,34 @@ const EVENT_EMOJI = {
 const CRITICAL_EVENTS = new Set([
   'safe_mode', 'error', 'flash_move', 'cap_reached', 'sentinel_critical',
 ]);
+
+/**
+ * Build the daily-summary lines for one fund. Pure with respect to its
+ * inputs (no disk/network access) so the multi-fund formatting logic is
+ * unit-testable without mocking the whole config/state layer.
+ * @param {string} exchange
+ * @param {string} pair
+ * @param {Object} state - `loadRegimeState(exchange, pair)` result
+ * @param {Object} fundConfig - `getFundConfig(exchange, pair)` result
+ * @returns {string[]}
+ */
+const formatFundSummaryLines = (exchange, pair, state, fundConfig) => {
+  const regime = state.regime?.mode || 'N/A';
+  const pos = state.position || {};
+  const assetQty = pos.totalAsset || 0;
+  const pnl = pos.realizedPnL || 0;
+  const cycles = pos.cyclesCompleted || 0;
+  const buys = pos.cycleBuys || 0;
+  const asset = getBaseCurrency(fundConfig?.productId);
+
+  return [
+    `*${exchange}* ${pair} (${regime})`,
+    `  Position: ${assetQty.toFixed(8)} ${asset}`,
+    `  Realized P&L: $${pnl.toFixed(2)}`,
+    `  Cycles: ${cycles}, Current buys: ${buys}`,
+    '',
+  ];
+};
 
 /**
  * Create a notifier instance
@@ -129,9 +178,11 @@ const createNotifier = () => {
    */
   const formatEvent = (event) => {
     const emoji = EVENT_EMOJI[event.type] || 'ℹ️';
+    // event.exchange is an internal identifier (e.g. "coinbase"), not
+    // user/feed-derived text, so it's safe to wrap in bold unescaped.
     const exchange = event.exchange ? `*${event.exchange}*` : '';
     const lines = [`${emoji} ${exchange}`];
-    lines.push(event.message);
+    lines.push(escapeTelegramMarkdown(event.message));
     return lines.join('\n');
   };
 
@@ -288,23 +339,14 @@ const createNotifier = () => {
     const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     const lines = [`📊 *Daily Summary* (${date})\n`];
 
-    const exchanges = getConfiguredExchanges();
-    for (const exchange of exchanges) {
-      const state = loadRegimeState(exchange);
-      const regime = state.regime?.mode || 'N/A';
-      const pos = state.position || {};
-      const assetQty = pos.totalAsset || 0;
-      const pnl = pos.realizedPnL || 0;
-      const cycles = pos.cyclesCompleted || 0;
-      const buys = pos.cycleBuys || 0;
-      const regimeConfig = getRegimeConfig(exchange);
-      const asset = getBaseCurrency(regimeConfig.productId);
-
-      lines.push(`*${exchange}* (${regime})`);
-      lines.push(`  Position: ${assetQty.toFixed(8)} ${asset}`);
-      lines.push(`  Realized P&L: $${pnl.toFixed(2)}`);
-      lines.push(`  Cycles: ${cycles}, Current buys: ${buys}`);
-      lines.push('');
+    // Iterate configured FUNDS (exchange+pair), not just exchanges — an
+    // exchange can carry multiple funds (e.g. BTC-USDC and ETH-USDC), and
+    // productId lives on the fund config block, not the regime config.
+    const funds = getConfiguredFunds();
+    for (const { exchange, pair } of funds) {
+      const state = loadRegimeState(exchange, pair);
+      const fundConfig = getFundConfig(exchange, pair);
+      lines.push(...formatFundSummaryLines(exchange, pair, state, fundConfig));
     }
 
     // Add notification stats
@@ -452,4 +494,4 @@ const createNotifier = () => {
   };
 };
 
-module.exports = { createNotifier };
+module.exports = { createNotifier, escapeTelegramMarkdown, formatFundSummaryLines };
