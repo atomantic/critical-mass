@@ -47,7 +47,7 @@ Critical-mass runs as 5 PM2 processes: a thin API gateway and 3 isolated engine 
 ## Gateway Routing
 
 - Regime/exchange routes → IPC proxy via `exchangeIPCMap` (per-exchange routing)
-- Settings backup/restore → sends `stop-all` to all engines in parallel
+- Settings backup/restore → sends `stop-all` to every **configured** engine in parallel and requires a positive `{ success: true, stopped: [...] }` acknowledgement from each before any file is overwritten. A rejection, IPC timeout, disconnected client, negative or malformed reply blocks the restore (HTTP 409, `code: writers-not-quiesced`) with zero destination writes; `POST` body `{ "force": true }` is the explicit operator override for an engine that is already dead. While a restore runs, `src/restore-maintenance.js` holds an exclusive lock that 503s every mutating `/api` request and skips the DCA scheduler, and the gateway's own UpDown writer is stopped before the copy and restarted after so it reloads the restored state.
 - Socket.IO events → forwarded via IPC clients
 
 ## PM2 Config
