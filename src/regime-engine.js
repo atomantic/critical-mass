@@ -5038,6 +5038,24 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       return { success: true, adoptedOrderId: found.orderId, message: `Intent cleared; this executor does not track orders, verify ${found.orderId} on the exchange` };
     }
     const adopted = orderExecutor.adoptPlacement(found, intent);
+
+    // Mirror what a normal entry placement persists, so restart recovery and
+    // the cancel/fill bookkeeping see the adopted order too. Deduped by order
+    // id, since this path is reachable only once per intent but the list is
+    // also rebuilt from disk on restart.
+    if (adopted.tracked && (intent.action === 'entry_bid' || intent.action === 'entry_replacement')) {
+      if (!positionState.pendingEntryOrders) positionState.pendingEntryOrders = [];
+      if (!positionState.pendingEntryOrders.some(e => e.orderId === found.orderId)) {
+        positionState.pendingEntryOrders.push({
+          orderId: found.orderId,
+          price: intent.price ?? 0,
+          assetQty: intent.size ?? 0,
+          sizeUsdc: intent.sizeUsdc ?? 0,
+          placedAt: intent.createdAt ?? Date.now(),
+        });
+      }
+    }
+
     logger.info(`ℹ️ ✅ [${exchange}] Operator adopted exchange order ${found.orderId} for placement intent ${intentId} (${intent.action ?? 'order'})`, {
       intentId,
       orderId: found.orderId,
