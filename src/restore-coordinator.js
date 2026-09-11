@@ -312,7 +312,10 @@ const applyRestoreUnderLock = async ({
     logger.error(`❌ 💾 Restore failed to apply ${filename}: ${error}`, {
       action: 'restore-backup', filename, error,
     });
-    return { status: 500, body: { success: false, code: 'restore-failed', error, stoppedEngines, ...(warnings.length > 0 ? { warnings } : {}) } };
+    // Surface the applier's own code (e.g. a legacy archive with no
+    // configuration manifest) so the UI can offer the right next step (#430).
+    const code = typeof applied.result?.code === 'string' ? applied.result.code : 'restore-failed';
+    return { status: 500, body: { success: false, code, error, stoppedEngines, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
   const result = applied.result;
 
@@ -323,6 +326,8 @@ const applyRestoreUnderLock = async ({
   return { status: 200, body: {
     success: true,
     filesRestored: result.filesRestored,
+    configRestored: result.configRestored === true,
+    legacy: result.legacy === true,
     stoppedEngines,
     ...(force && unconfirmed.length > 0 ? { forced: true, unconfirmed } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),

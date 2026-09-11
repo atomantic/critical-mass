@@ -28,6 +28,14 @@ function BackupRestore() {
   // operator can see WHAT is still alive before deciding to override (issue #429).
   const [blockedBy, setBlockedBy] = useState(null)
   const [forceAcknowledged, setForceAcknowledged] = useState(false)
+  // Pre-flight result for the selected archive: whether it carries a #430
+  // configuration manifest, which funds it would restore, and whether that
+  // replays cleanly onto THIS machine's base config. Read-only — fetched when
+  // the operator selects an archive, before any restore is submitted.
+  const [compatibility, setCompatibility] = useState(null)
+  const [compatibilityLoading, setCompatibilityLoading] = useState(false)
+  const [compatibilityError, setCompatibilityError] = useState(null)
+  const [legacyAcknowledged, setLegacyAcknowledged] = useState(false)
   const [deleting, setDeleting] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
 
@@ -59,6 +67,28 @@ function BackupRestore() {
   useEffect(() => {
     fetchData()
   }, [])
+
+  useEffect(() => {
+    if (!restoreTarget) {
+      setCompatibility(null)
+      setCompatibilityError(null)
+      return
+    }
+    let cancelled = false
+    setCompatibilityLoading(true)
+    setCompatibility(null)
+    setCompatibilityError(null)
+    fetch(`/api/backups/${restoreTarget}/compatibility`)
+      .then(res => res.json().then(data => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (cancelled) return
+        if (ok && data?.success) setCompatibility(data)
+        else setCompatibilityError(data?.error || 'Unknown error')
+      })
+      .catch(err => { if (!cancelled) setCompatibilityError(err.message || 'Request failed') })
+      .finally(() => { if (!cancelled) setCompatibilityLoading(false) })
+    return () => { cancelled = true }
+  }, [restoreTarget])
 
   const handleSaveConfig = async () => {
     setSaving(true)
@@ -128,15 +158,20 @@ function BackupRestore() {
       const res = await fetch(`/api/backups/${restoreTarget}/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force }),
+        body: JSON.stringify({ force, acceptLegacyWithoutBase: legacyAcknowledged }),
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
         setMessage({
           type: data.forced ? 'error' : 'success',
-          text: data.forced
-            ? `${data.message || `Restored ${data.filesRestored} files`} — FORCED past ${data.unconfirmed?.length || 0} unconfirmed writer(s); verify your data before restarting engines.`
-            : (data.message || `Restored ${data.filesRestored} files`),
+          text: [
+            data.forced
+              ? `${data.message || `Restored ${data.filesRestored} files`} — FORCED past ${data.unconfirmed?.length || 0} unconfirmed writer(s); verify your data before restarting engines.`
+              : (data.message || `Restored ${data.filesRestored} files`),
+            data.configRestored
+              ? 'Fund configuration was restored from the archive manifest.'
+              : 'Data files only — this machine kept its existing fund configuration.',
+          ].join(' '),
         })
       } else if (res.status === 409 && data.code === 'writers-not-quiesced') {
         // Nothing was written. Keep the target selected and offer the override.
@@ -160,7 +195,12 @@ function BackupRestore() {
     setRestoreTarget(null)
     setBlockedBy(null)
     setForceAcknowledged(false)
+    setLegacyAcknowledged(false)
   }
+
+  // A legacy archive carries no configuration, so restoring it is a data-only
+  // operation the operator has to opt into explicitly (issue #430).
+  const restoreBlocked = compatibilityLoading || (compatibility?.legacy === true && !legacyAcknowledged)
 
   if (error) {
     return (
@@ -311,6 +351,55 @@ function BackupRestore() {
             This will stop all running engines and overwrite current data files.
             API keys will NOT be affected. You will need to restart engines manually from the dashboard.
           </p>
+          {compatibilityLoading && (
+            <div className="bg-gray-800/60 border border-gray-600 rounded-lg p-4 mb-4 text-sm text-gray-300">
+              Checking archive configuration compatibility...
+            </div>
+          )}
+          {compatibility && !compatibilityLoading && (
+            compatibility.compatible ? (
+              <div className="bg-green-900/30 border border-green-700 rounded-lg p-4 mb-4">
+                <p className="text-sm font-semibold text-green-200 mb-2">
+                  Archive carries its fund configuration (manifest v{compatibility.manifestVersion}).
+                  It will be replayed onto this machine's config, replacing the funds below.
+                </p>
+                <ul className="text-xs text-green-200/90 font-mono space-y-1">
+                  {compatibility.funds?.map(f => (
+                    <li key={`${f.exchange}:${f.pair}`}>
+                      {f.exchange} &middot; {f.pair} &middot; {f.totalAllocation ?? '—'}
+                      {f.enabled ? ' · enabled' : ' · disabled'}{f.dryRun ? ' · dry-run' : ''}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-green-200/70 mt-2">
+                  API keys, Telegram and Sentinel credentials on this machine are preserved.
+                </p>
+              </div>
+            ) : (
+              <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
+                <p className="text-sm font-semibold text-red-200 mb-2">
+                  {compatibility.legacy ? 'Legacy archive: no configuration manifest' : 'Archive configuration cannot be applied'}
+                </p>
+                <p className="text-xs text-red-200/90 mb-3">{compatibility.error}</p>
+                {compatibility.legacy && (
+                  <label className="flex items-center gap-2 text-xs text-red-200">
+                    <input
+                      type="checkbox"
+                      checked={legacyAcknowledged}
+                      onChange={e => setLegacyAcknowledged(e.target.checked)}
+                      className="accent-red-500"
+                    />
+                    Restore data files only and keep this machine's current fund configuration
+                  </label>
+                )}
+              </div>
+            )
+          )}
+          {compatibilityError && !compatibilityLoading && (
+            <div className="bg-yellow-900/40 border border-yellow-700 rounded-lg p-4 mb-4 text-xs text-yellow-200">
+              Could not check archive compatibility: {compatibilityError}
+            </div>
+          )}
           {blockedBy && (
             <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">
               <p className="text-sm font-semibold text-red-200 mb-2">
@@ -350,7 +439,7 @@ function BackupRestore() {
             </button>
             <button
               onClick={() => handleRestore()}
-              disabled={restoring}
+              disabled={restoring || restoreBlocked}
               className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
             >
               {restoring ? 'Restoring...' : blockedBy ? 'Retry Restore' : 'Confirm Restore'}
@@ -358,7 +447,7 @@ function BackupRestore() {
             {blockedBy && (
               <button
                 onClick={() => handleRestore({ force: true })}
-                disabled={restoring || !forceAcknowledged}
+                disabled={restoring || restoreBlocked || !forceAcknowledged}
                 className="px-4 py-2 bg-red-700 hover:bg-red-600 disabled:bg-red-900 disabled:text-red-400 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
               >
                 Force Restore Anyway
