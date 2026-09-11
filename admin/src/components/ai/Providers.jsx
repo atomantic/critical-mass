@@ -488,12 +488,32 @@ function ProviderForm({ provider, onClose, onSave }) {
     enabled: provider?.enabled !== false
   })
 
+  // Local state for textarea input to avoid premature parsing on each keystroke
+  const [modelsText, setModelsText] = useState((provider?.models || []).join(', '))
+
+  // Sync modelsText when provider changes (e.g., switching between providers in modal)
+  useEffect(() => {
+    setModelsText((provider?.models || []).join(', '))
+  }, [provider?.id])
+
   const availableModels = formData.models || []
+
+  const parseModelsText = (text) => {
+    return text.split(',').map(m => m.trim()).filter(Boolean)
+  }
+
+  const handleModelsBlur = () => {
+    const models = parseModelsText(modelsText)
+    setFormData(prev => ({ ...prev, models }))
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    // Parse modelsText in case the user hasn't blurred from the textarea yet
+    const models = parseModelsText(modelsText)
     const data = {
       ...formData,
+      models,
       args: formData.args ? formData.args.split(' ').filter(Boolean) : [],
       timeout: parseInt(formData.timeout)
     }
@@ -627,11 +647,9 @@ function ProviderForm({ provider, onClose, onSave }) {
               {formData.type === 'api' && <span className="text-xs text-gray-500 ml-2">(Use Refresh after saving)</span>}
             </label>
             <textarea
-              value={(formData.models || []).join(', ')}
-              onChange={(e) => {
-                const models = e.target.value.split(',').map(m => m.trim()).filter(Boolean)
-                setFormData(prev => ({ ...prev, models }))
-              }}
+              value={modelsText}
+              onChange={(e) => setModelsText(e.target.value)}
+              onBlur={handleModelsBlur}
               placeholder="model-1, model-2, model-3"
               rows={2}
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white resize-none focus:border-indigo-500 focus:outline-none"

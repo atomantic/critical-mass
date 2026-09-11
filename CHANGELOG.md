@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **[issue-413] Available Models textarea comma-space stripping bug** — Decoupled textarea input drafting from array parsing by maintaining local `modelsText` state, updated only on keystroke without premature splitting/filtering, and parsing into `formData.models` on blur or form submission, allowing operators to type multi-model comma-separated entries without losing mid-keystroke input.
+
 ### Added
 - **[issue-405] API key routes integration test suite for credential safety and schema validation** — Add `tests/keys-routes.test.js` covering `GET /api/:exchange/keys/status`, `GET /api/:exchange/keys` (with strict assertions that field-flag responses never leak raw secrets), `POST`/`PUT /api/:exchange/keys` (exchange-specific schema validation: Coinbase requires `name` and `privateKey`; Crypto.com/Gemini require `apiKey` and `apiSecret`), `POST /api/:exchange/test-connection` (adapter error handling and balance reporting), and `DELETE /api/:exchange/keys` (file cleanup); integration tests verify no credentials appear in GET responses across multiple requests, and all validation rejects incomplete payloads consistently.
 - **[issue-407] Regime operational control route tests** — Add `tests/regime-routes-control.test.js` covering `GET /api/:exchange/regime/status` (live IPC passthrough, `buildStoppedRegimeStatus` offline fallback with `engineDown:true` on IPC connection failure, and the 503-not-masked-as-offline path on request timeout), `POST /close`/`reopen` IPC command forwarding, `POST /force-regime` regime-name validation, and `POST /set-body-tp`/`set-body-tp-price` bodyId and boundary validation.
