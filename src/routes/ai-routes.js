@@ -71,7 +71,7 @@ module.exports = (app, sharedDeps) => {
 
     aiRouter.use('/providers', security.constrainOutboundRequests, security.filterProviderSamples, security.redactJsonResponses, security.guardProviderMutation, security.guardProviderExecution, toolkit.routes.providers);
     aiRouter.use('/runs', security.constrainOutboundRequests, security.guardRun, toolkit.routes.runs);
-    aiRouter.use('/prompts', toolkit.routes.prompts);
+    aiRouter.use('/prompts', security.guardPrompts, toolkit.routes.prompts);
 
     aiRoutesLogger.info(`ℹ️ [${ts()}] 🤖 AI toolkit routes mounted at /api/providers, /api/runs, /api/prompts`, {
       action: 'mount',
