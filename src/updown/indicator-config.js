@@ -2,8 +2,8 @@
 /**
  * Single source of truth for indicator identity, weights, and display labels.
  * Imported by signal-engine.js (scoring), scorecard.js (accuracy tracking),
- * and the backfill replay script. Keeping these in one place prevents the
- * three modules from silently drifting apart when a new indicator is added.
+ * and the backfill replay script. The test suite verifies that the shared
+ * ES module version used by the admin client matches this canonical server version.
  */
 
 const INDICATORS = ['rsi', 'stochastic', 'macd', 'bollinger', 'vwap', 'momentum', 'obv', 'williamsR', 'cci'];
