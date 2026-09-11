@@ -153,24 +153,28 @@ describe('PUT/GET /api/:exchange/regime/config dryRun round-trip', () => {
     assert.equal(getRes.body.config.obsoleteThreshold, undefined);
   });
 
-  it('rejects an out-of-range regime value with 400, zero writes, zero IPC calls', async () => {
-    setupFsMocks(BASE_CONFIG);
-    let ipcCalls = 0;
-    const app = createFakeApp();
-    registerRegimeRoutes(app, {
-      exchangeIPCMap: { cryptocom: { request: () => { ipcCalls += 1; return Promise.resolve({ success: true }); } } },
+  for (const bad of [999, 'oops', '20', {}, [], true, null, NaN, Infinity, -Infinity]) {
+    it('rejects invalid maxDrawdownPercent before writes or IPC (' + String(bad) + ')', async () => {
+      setupFsMocks(BASE_CONFIG);
+      const writes = mock.method(fs, 'writeFileSync', () => {});
+      let ipcCalls = 0;
+      const app = createFakeApp();
+      registerRegimeRoutes(app, {
+        exchangeIPCMap: { cryptocom: { request: () => { ipcCalls += 1; return Promise.resolve({ success: true }); } } },
+      });
+
+      const res = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor({ maxDrawdownPercent: bad }));
+
+      assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+      assert.equal(res.body.success, false);
+      assert.match(res.body.errors.join('; '), /maxDrawdownPercent/);
+      assert.equal(ipcCalls, 0, 'a rejected value must never reach the live engine');
+      assert.equal(writes.mock.callCount(), 0);
+
+      const getRes = await invoke(app, 'GET /api/:exchange/regime/config', reqFor({}));
+      assert.equal(getRes.body.config.maxDrawdownPercent, 20, 'the fund must keep its original default, unmodified');
     });
-
-    const res = await invoke(app, 'PUT /api/:exchange/regime/config', reqFor({ maxDrawdownPercent: 999 }));
-
-    assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
-    assert.equal(res.body.success, false);
-    assert.match(res.body.errors.join('; '), /maxDrawdownPercent/);
-    assert.equal(ipcCalls, 0, 'a rejected value must never reach the live engine');
-
-    const getRes = await invoke(app, 'GET /api/:exchange/regime/config', reqFor({}));
-    assert.equal(getRes.body.config.maxDrawdownPercent, 20, 'the fund must keep its original default, unmodified');
-  });
+  }
 
   it('rejects a partial update whose value conflicts with the fund\'s current cross-field partner', async () => {
     // BASE_CONFIG's regime block never sets macroMarkupThreshold, so it's the

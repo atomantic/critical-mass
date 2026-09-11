@@ -175,18 +175,35 @@ describe('PUT /api/:exchange/config rejects out-of-range nested regime values', 
 
   const reqFor = (body) => ({ params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' }, body });
 
-  it('rejects maxDrawdownPercent: 999 with 400, zero writes, zero IPC calls', async () => {
-    let ipcCalls = 0;
-    const { app, fsMocks } = setup(() => { ipcCalls += 1; return Promise.resolve({ success: true }); });
-    const before = JSON.stringify(fsMocks.user());
+  for (const bad of [999, 'oops', '20', {}, [], true, null, NaN, Infinity, -Infinity]) {
+    it('rejects invalid maxDrawdownPercent before writes or IPC (' + String(bad) + ')', async () => {
+      let ipcCalls = 0;
+      const { app, fsMocks } = setup(() => { ipcCalls += 1; return Promise.resolve({ success: true }); });
+      const before = JSON.stringify(fsMocks.user());
 
-    const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ regime: { maxDrawdownPercent: 999 } }));
+      const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ regime: { maxDrawdownPercent: bad } }));
 
-    assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
-    assert.match(res.body.error, /maxDrawdownPercent/);
-    assert.equal(JSON.stringify(fsMocks.user()), before, 'a rejected value must never be persisted');
-    assert.equal(ipcCalls, 0, 'a rejected value must never reach the live engine');
-  });
+      assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+      assert.match(res.body.error, /maxDrawdownPercent/);
+      assert.equal(JSON.stringify(fsMocks.user()), before, 'a rejected value must never be persisted');
+      assert.equal(ipcCalls, 0, 'a rejected value must never reach the live engine');
+    });
+  }
+
+  for (const bad of ['oops', 20, [], true, null]) {
+    it('rejects malformed regime containers before writes or IPC (' + String(bad) + ')', async () => {
+      let ipcCalls = 0;
+      const { app, fsMocks } = setup(() => { ipcCalls += 1; return Promise.resolve({ success: true }); });
+      const before = JSON.stringify(fsMocks.user());
+
+      const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ regime: bad }));
+
+      assert.equal(res.statusCode, 400, `out-of-range value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+      assert.match(res.body.error, /regime update must be an object/);
+      assert.equal(JSON.stringify(fsMocks.user()), before, 'a rejected value must never be persisted');
+      assert.equal(ipcCalls, 0, 'a rejected value must never reach the live engine');
+    });
+  }
 
   it('still allows a valid partial regime update on the same route (no false positive)', async () => {
     const { app } = setup();

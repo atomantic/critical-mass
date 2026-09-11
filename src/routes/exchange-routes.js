@@ -190,9 +190,9 @@ module.exports = (app, deps) => {
       // tpMinPercent vs tpMaxPercent) fall back to REGIME_DEFAULTS via
       // getRegimeConfig, exactly as they would for an existing fund with no
       // regime overrides.
-      const regimeCandidate = (regime && typeof regime === 'object' && !Array.isArray(regime)) ? regime : {};
+      const regimeCandidate = regime === undefined ? {} : regime;
       const { value: sanitizedRegime, droppedKeys, valid, errors } = validateAndSanitizeRegimeConfig(regimeCandidate, getRegimeConfig(exchange, pair));
-      if (!valid) {
+      if (valid === false) {
         return res.status(400).json({ success: false, error: errors.join('; ') });
       }
       if (droppedKeys.length > 0) {
@@ -318,9 +318,9 @@ module.exports = (app, deps) => {
     // validateRegimeConfig the dedicated PUT /api/:exchange/regime/config route
     // enforces, reused here so a value it would reject (e.g. maxDrawdownPercent:
     // 999) can't reach the live engine through this save surface instead (#452).
-    if (req.body?.regime && typeof req.body.regime === 'object' && !Array.isArray(req.body.regime)) {
+    if (req.body?.regime !== undefined) {
       const { value: sanitizedRegime, droppedKeys, valid, errors: regimeErrors } = validateAndSanitizeRegimeConfig(req.body.regime, getRegimeConfig(exchange, pair));
-      if (!valid) {
+      if (valid === false) {
         return res.status(400).json({ error: regimeErrors.join('; ') });
       }
       if (droppedKeys.length > 0) {

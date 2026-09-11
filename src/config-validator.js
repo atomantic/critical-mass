@@ -15,13 +15,14 @@ const REGIME_ALLOWED_KEYS = new Set(Object.keys(REGIME_DEFAULTS));
  * Config editors round-trip stored objects, so unknown keys are ignored rather
  * than making an otherwise valid fund permanently unsaveable.
  * @param {unknown} update
- * @returns {{ value: Object, droppedKeys: string[] }}
+ * @returns {{ value: Record<string, unknown>, droppedKeys: string[] }}
  */
 const sanitizeRegimeConfig = (update) => {
   if (typeof update !== 'object' || update === null || Array.isArray(update)) {
     return { value: {}, droppedKeys: [] };
   }
 
+  /** @type {Record<string, unknown>} */
   const value = {};
   const droppedKeys = [];
   for (const [key, fieldValue] of Object.entries(update)) {
@@ -63,20 +64,28 @@ const REGIME_CROSS_FIELD_PARTNERS = {
  *
  * @param {unknown} rawUpdate - Untrusted nested regime object from a request body
  * @param {Object} [currentConfig] - The fund's current (defaults-merged) regime config, for cross-field checks
- * @returns {{ value: Object, droppedKeys: string[], valid: boolean, errors: string[] }}
+ * @returns {import('./types').RegimeValidationResult & {droppedKeys: string[]}}
  */
 const validateAndSanitizeRegimeConfig = (rawUpdate, currentConfig = {}) => {
+  if (typeof rawUpdate !== 'object' || rawUpdate === null || Array.isArray(rawUpdate)) {
+    return { valid: false, errors: ['regime update must be an object'], droppedKeys: [] };
+  }
   const { value, droppedKeys } = sanitizeRegimeConfig(rawUpdate);
 
   const validationSubset = { ...value };
   for (const [key, partner] of Object.entries(REGIME_CROSS_FIELD_PARTNERS)) {
-    if (validationSubset[key] !== undefined && validationSubset[partner] === undefined) {
-      validationSubset[partner] = currentConfig?.[partner];
+    if (validationSubset[key] !== undefined && !Object.prototype.hasOwnProperty.call(validationSubset, partner)) {
+      if (currentConfig?.[partner] !== undefined) validationSubset[partner] = currentConfig[partner];
     }
   }
-  const { valid, errors } = validateRegimeConfig(validationSubset);
+  const result = validateRegimeConfig(validationSubset);
+  if (result.valid === false) return { ...result, droppedKeys };
 
-  return { value, droppedKeys, valid, errors };
+  // Partners are validation context, not requested updates.
+  for (const key of Object.keys(result.value)) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) delete result.value[key];
+  }
+  return { ...result, droppedKeys };
 };
 
 // ── Exchange config schema ───────────────────────────────────────
