@@ -483,6 +483,48 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
 
   return (
     <div>
+      {/* Sticky action bar for fund configuration save/reset */}
+      <div className="sticky top-0 z-10 bg-gray-800 border-b border-gray-700 p-4 mb-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleSave}
+              disabled={locked}
+              className={`px-4 py-2 rounded font-medium transition-colors ${
+                isDirty
+                  ? 'bg-blue-600 hover:bg-blue-700'
+                  : 'bg-blue-600/50 hover:bg-blue-600'
+              } disabled:bg-blue-800 disabled:cursor-not-allowed`}
+            >
+              {saving ? 'Saving...' : 'Save Configuration'}
+            </button>
+            {isDirty && (
+              <button
+                onClick={handleReset}
+                disabled={locked}
+                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Reset
+              </button>
+            )}
+            {isDirty && (
+              <span className="text-sm font-medium text-yellow-400">Unsaved changes</span>
+            )}
+          </div>
+          {message && (
+            <div className={`p-2 rounded text-sm w-full sm:w-auto ${
+              message.type === 'success'
+                ? 'bg-green-900/50 border border-green-700 text-green-200'
+                : message.type === 'warning'
+                  ? 'bg-amber-900/40 border border-amber-700 text-amber-200'
+                  : 'bg-red-900/50 border border-red-700 text-red-200'
+            }`}>
+              {message.text}
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="bg-gray-800 rounded-lg p-4">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Bot Configuration</h2>
@@ -503,18 +545,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             />
           </div>
         </div>
-
-        {message && (
-          <div className={`mb-3 p-2 rounded text-sm ${
-            message.type === 'success'
-              ? 'bg-green-900/50 border border-green-700 text-green-200'
-              : message.type === 'warning'
-                ? 'bg-amber-900/40 border border-amber-700 text-amber-200'
-                : 'bg-red-900/50 border border-red-700 text-red-200'
-          }`}>
-            {message.text}
-          </div>
-        )}
 
         {restartNeeded && (
           <div className="mb-3 p-2 rounded text-sm bg-amber-900/40 border border-amber-700 text-amber-200 flex items-center justify-between gap-3">
@@ -1156,29 +1186,6 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
           </div>
         )}
 
-        {/* Save Button */}
-        <div className="flex gap-2 mt-4">
-          <button
-            onClick={handleSave}
-            disabled={locked}
-            className={`flex-1 px-4 py-2 rounded font-medium transition-colors ${
-              isDirty
-                ? 'bg-blue-600 hover:bg-blue-700'
-                : 'bg-blue-600/50 hover:bg-blue-600'
-            } disabled:bg-blue-800 disabled:cursor-not-allowed`}
-          >
-            {saving ? 'Saving...' : isDirty ? 'Save Configuration *' : 'Save Configuration'}
-          </button>
-          {isDirty && (
-            <button
-              onClick={handleReset}
-              disabled={locked}
-              className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Reset
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Warning - more compact */}
