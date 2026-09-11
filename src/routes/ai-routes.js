@@ -40,8 +40,10 @@ module.exports = (app, sharedDeps) => {
       sampleProvidersFile = path.join(toolkitSrcDir, 'defaults', 'providers.sample.json');
     } catch (_) { /* toolkit not found — samples won't auto-seed */ }
 
+    const screenshotsDir = path.join(dataDir, 'screenshots');
     const toolkit = createAIToolkit({
       dataDir,
+      screenshotsDir,
       sampleProvidersFile,
       io,
       maxConcurrentRuns: 3,
@@ -67,7 +69,7 @@ module.exports = (app, sharedDeps) => {
       }
     });
 
-    const security = createAiSecurity({ providerService: toolkit.services.providers, runsDir: path.join(dataDir, 'runs') });
+    const security = createAiSecurity({ providerService: toolkit.services.providers, screenshotsDir, runsDir: path.join(dataDir, 'runs') });
 
     aiRouter.use('/providers', security.constrainOutboundRequests, security.filterProviderSamples, security.redactJsonResponses, security.guardProviderMutation, security.guardProviderExecution, toolkit.routes.providers);
     aiRouter.use('/runs', security.constrainOutboundRequests, security.guardRun, toolkit.routes.runs);
