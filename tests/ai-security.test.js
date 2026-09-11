@@ -113,6 +113,34 @@ describe('AI toolkit security boundary', () => {
     ]);
   });
 
+  it('rejects path traversal in run ID sub-routes and allows normal IDs', async () => {
+    const traversalPaths = ['/..%2Fcoinbase', '/../backups', '/..%2f..%2f.git'];
+    for (const traversalPath of traversalPaths) {
+      for (const method of ['GET', 'DELETE']) {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await callMiddleware(security.guardRun, { method, path: decodeURIComponent(traversalPath) });
+        assert.equal(result.res.statusCode, 400, `expected 400 for ${method} ${traversalPath}`);
+        assert.match(result.res.body.error, /Invalid run ID/);
+      }
+    }
+
+    const subRoutes = ['/run-123', '/run-123/output', '/run-123/prompt'];
+    for (const subRoute of subRoutes) {
+      // eslint-disable-next-line no-await-in-loop
+      const result = await callMiddleware(security.guardRun, { method: 'GET', path: subRoute });
+      assert.equal(result.next, true, `expected pass-through for GET ${subRoute}`);
+    }
+
+    const stop = await callMiddleware(security.guardRun, { method: 'POST', path: '/run-123/stop' });
+    assert.equal(stop.next, true);
+
+    const del = await callMiddleware(security.guardRun, { method: 'DELETE', path: '/run-123' });
+    assert.equal(del.next, true);
+
+    const badId = await callMiddleware(security.guardRun, { method: 'DELETE', path: '/../etc' });
+    assert.equal(badId.res.statusCode, 400);
+  });
+
   it('rejects prompt stage names with path traversal sequences', async () => {
     const traversal = '../../../README';
 
