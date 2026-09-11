@@ -300,6 +300,221 @@ const createInitialMarketState = () => ({
 const createInitialPositionState = createInitialRegimePositionState;
 
 /**
+ * Repair historical fill annotations from ledger.
+ * Performs four steps of self-healing for fills that predate annotation code:
+ * 1. Recover orphan buys (unfilled bodies) by merging into historical bodies
+ * 2. Annotate buy fills for active celestial bodies
+ * 3. Match unannotated body sells to buys using 1% size fuzzy-match
+ * 4. Rewrite -recovered- cycle IDs to current cycle
+ * @param {Object} deps - Helper dependencies
+ * @param {Object} deps.fillLedger - Fill ledger instance
+ * @param {Object} deps.positionState - Current position state
+ * @param {Object} deps.config - Engine configuration
+ * @param {Object} deps.logger - Logger instance
+ * @param {string} deps.baseCurrency - Asset symbol (e.g., 'BTC')
+ * @param {number} deps.priceIncrement - Min price increment for TP rounding
+ * @param {string} deps.exchange - Exchange name for logging
+ * @param {Object} deps.celestialHierarchy - Celestial body manager
+ * @param {Function} deps.calculateDynamicTpPercent - TP % calculator
+ * @param {Function} deps.roundPrice - Price rounding utility
+ * @param {Function} deps.roundAsset - Asset qty rounding utility
+ * @param {Function} deps.fmtPrice - Price formatting utility
+ */
+const repairHistoricalFillAnnotations = ({
+  fillLedger, positionState, config, logger, baseCurrency, priceIncrement, exchange,
+  celestialHierarchy, calculateDynamicTpPercent, roundPrice, roundAsset, fmtPrice
+}) => {
+  // Retroactively annotate body fills that are missing isBodyOwned flag
+  // This fixes historical fills that were processed before annotation code was deployed
+  const currentCycleId = fillLedger.getCurrentCycleId();
+  if (currentCycleId) {
+    const cycleFills = fillLedger.getCurrentCycleFills();
+    const coreTpOrderId = positionState.activeTpOrderId;
+    let annotatedCount = 0;
+
+    // 0. Recover orphan buys: ledger fills from current cycle that have no
+    // bodyId AND aren't referenced by any body. These come from
+    // handleOrderFill being interrupted (e.g. SIGINT during pm2 restart)
+    // between fillLedger.ingestFill and the body-merge/annotation step.
+    // Merge each orphan order into the historically-eligible body whose TP
+    // is closest to where the orphan's TP would have landed. The body's
+    // reconcile loop will then detect the assetQty/assetOnOrder mismatch
+    // on the next tick and cancel-replace the TP at the new size.
+    const knownBuyOrderIds = new Set();
+    for (const body of (positionState.celestialBodies || [])) {
+      for (const oid of (body.sourceOrderIds || [])) knownBuyOrderIds.add(oid);
+      for (const buy of (body.buyOrders || [])) if (buy.orderId) knownBuyOrderIds.add(buy.orderId);
+    }
+    const orphanBuyFills = cycleFills.filter(f =>
+      f.side === 'buy' && !f.bodyId
+      && !String(f.tradeId).startsWith('dca-convert')
+      && !knownBuyOrderIds.has(f.orderId)
+    );
+    const orphansByOrderId = new Map();
+    for (const f of orphanBuyFills) {
+      if (!orphansByOrderId.has(f.orderId)) orphansByOrderId.set(f.orderId, []);
+      orphansByOrderId.get(f.orderId).push(f);
+    }
+
+    let recoveredCount = 0;
+    for (const [orderId, fills] of orphansByOrderId) {
+      const summary = fillLedger.aggregateFills(fills);
+      const fillTime = Math.max(...fills.map(f => f.timestamp));
+      const newBuy = {
+        assetQty: summary.totalSize,
+        costBasis: summary.totalValue + (summary.totalFees || 0),
+        avgPrice: summary.avgPrice,
+        buyOrderId: orderId,
+      };
+      const candidateTpPrice = roundPrice(summary.avgPrice * (1 + calculateDynamicTpPercent() / 100), priceIncrement);
+
+      // Restrict to bodies that existed at the orphan's fill time
+      const eligibleBodies = (positionState.celestialBodies || []).filter(b => !b.createdAt || b.createdAt <= fillTime);
+      let target = celestialHierarchy.findMergeTarget(
+        eligibleBodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
+        config.maxCelestialBodies || 10, 0, config.maxOpenOrders,
+        config.mergeProximityScale ?? 1.0
+      );
+      // Fallback: closest tpPrice among historical-eligible bodies
+      if (!target) {
+        let bestDist = Infinity;
+        for (const b of eligibleBodies) {
+          if (!b.tpPrice || b.tpPrice <= 0) continue;
+          const d = Math.abs(b.tpPrice - candidateTpPrice);
+          if (d < bestDist) { bestDist = d; target = b; }
+        }
+      }
+      if (!target) {
+        logger.warn(`⚠️ [${exchange}] Orphan buy ${orderId.slice(0, 8)} (${summary.totalSize.toFixed(8)} ${baseCurrency}): no eligible body to merge into, leaving unattributed`);
+        continue;
+      }
+
+      const merged = celestialHierarchy.mergeIntoBody(target, newBuy, config.maxUsdcDeployed, orderId, logger);
+      // Overwrite mergeIntoBody's Date.now() lastMergedAt with the orphan's
+      // actual fill time, and the appended buyOrder's filledAt likewise.
+      merged.lastMergedAt = fillTime;
+      if (merged.buyOrders && merged.buyOrders.length > 0) {
+        merged.buyOrders[merged.buyOrders.length - 1].filledAt = fillTime;
+      }
+
+      const annotation = { isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier };
+      if (merged.tpOrderId) annotation.sellOrderId = merged.tpOrderId;
+      fillLedger.annotateFillsByOrderId(orderId, annotation);
+
+      const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
+      logger.info(`🔧 [${exchange}] Recovered orphan buy ${orderId.slice(0, 8)} (${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}) → body ${merged.id.slice(-8)} ${tierCfg.emoji} ${merged.tier}`);
+      recoveredCount++;
+    }
+
+    if (recoveredCount > 0) {
+      celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
+      celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
+      logger.info(`🔧 [${exchange}] Recovered ${recoveredCount} orphan buy order(s) into bodies; reconcile loop will re-place affected TPs`);
+    }
+
+    // 1. Annotate buy fills for active celestial bodies (use both sourceOrderIds and buyOrders)
+    // Also fix fills that have isBodyOwned but are missing bodyId (e.g. from DCA merge converter)
+    for (const body of (positionState.celestialBodies || [])) {
+      const annotation = { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier };
+      if (body.tpOrderId) annotation.sellOrderId = body.tpOrderId;
+      const seen = new Set();
+      for (const srcOrderId of (body.sourceOrderIds || [])) {
+        const buyFills = cycleFills.filter(f => f.orderId === srcOrderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
+        if (buyFills.length > 0) {
+          fillLedger.annotateFillsByOrderId(srcOrderId, annotation);
+          annotatedCount += buyFills.length;
+        }
+        seen.add(srcOrderId);
+      }
+      for (const buyOrder of (body.buyOrders || [])) {
+        if (buyOrder.orderId === 'core-migration' || seen.has(buyOrder.orderId)) continue;
+        const buyFills = cycleFills.filter(f => f.orderId === buyOrder.orderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
+        if (buyFills.length > 0) {
+          fillLedger.annotateFillsByOrderId(buyOrder.orderId, annotation);
+          annotatedCount += buyFills.length;
+        }
+      }
+    }
+
+    // 2. Find unannotated or badly-annotated body sells
+    // (non-core-TP sells missing isBodyOwned, or with negative PnL/holdback)
+    const sellsToAnnotate = cycleFills.filter(f =>
+      f.side === 'sell' && f.orderId !== coreTpOrderId
+      && (!(f.isBodyOwned || f.isSatellite) || (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset) < 0)
+    );
+    const buyFills = cycleFills.filter(f => f.side === 'buy');
+    const consumedBuyOrderIds = new Set();
+
+    for (const sellFill of sellsToAnnotate) {
+      // Find matching buy: similar BTC size, closest in time to the sell
+      // (satellite TP is placed right after its buy, so the buy should be temporally close)
+      const candidates = buyFills.filter(buy => {
+        if (consumedBuyOrderIds.has(buy.orderId)) return false;
+        const sizeRatio = buy.size / sellFill.size;
+        return sizeRatio > 0.99 && sizeRatio < 1.01
+          && buy.timestamp < sellFill.timestamp;
+      });
+      // Pick the candidate closest in time to the sell
+      const matchingBuy = candidates.length > 0
+        ? candidates.reduce((best, buy) =>
+          (sellFill.timestamp - buy.timestamp) < (sellFill.timestamp - best.timestamp) ? buy : best
+        )
+        : null;
+
+      if (matchingBuy) {
+        consumedBuyOrderIds.add(matchingBuy.orderId);
+        const costBasis = matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0);
+        const proceeds = sellFill.quoteAmount - (sellFill.netFee || sellFill.fee || 0);
+        const pnl = proceeds - costBasis;
+        const holdbackAsset = roundAsset(matchingBuy.size - sellFill.size);
+
+        // Sanity check: body PnL should be positive and holdback non-negative
+        if (pnl >= 0 && holdbackAsset >= 0) {
+          fillLedger.annotateFillsByOrderId(sellFill.orderId, {
+            isBodyOwned: true,
+            bodyCostBasis: costBasis,
+            bodyAvgPrice: matchingBuy.price,
+            bodyBtcQty: matchingBuy.size,
+            bodyHoldbackAsset: holdbackAsset,
+            bodyPnl: pnl,
+          });
+          fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isBodyOwned: true, sellOrderId: sellFill.orderId });
+          annotatedCount += 2;
+          logger.info(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency}`);
+        } else {
+          // Mark as body-owned but without computed values (dashboard will show raw data)
+          fillLedger.annotateFillsByOrderId(sellFill.orderId, { isBodyOwned: true });
+          annotatedCount++;
+          logger.warn(`⚠️ [${exchange}] Marked body sell ${sellFill.orderId.slice(0, 8)} (no matching buy found with valid PnL)`);
+        }
+      }
+    }
+
+    // 3. Fix fills with wrong cycle IDs (e.g., recovered-* cycles that belong here)
+    // Only move fills that are within the current cycle's timeframe
+    const currentCycleFills = fillLedger.getCurrentCycleFills();
+    const cycleStartTs = currentCycleFills.length > 0
+      ? Math.min(...currentCycleFills.map(f => f.timestamp))
+      : Date.now();
+    const allFillsRaw = fillLedger.getAllFills();
+    for (const fill of allFillsRaw) {
+      if (fill.cycleId && fill.cycleId.includes('-recovered-')
+        && fill.cycleId !== currentCycleId && fill.timestamp >= cycleStartTs) {
+        const oldCycleId = fill.cycleId;
+        fillLedger.updateFillCycleId(fill.tradeId, currentCycleId);
+        annotatedCount++;
+        logger.info(`🔧 [${exchange}] Moved fill ${fill.tradeId.slice(0, 8)} from ${oldCycleId} to ${currentCycleId}`);
+      }
+    }
+
+    if (annotatedCount > 0) {
+      fillLedger.persist();
+      logger.info(`🔧 [${exchange}] Annotated ${annotatedCount} satellite fills for correct tracking`);
+    }
+  }
+};
+
+/**
  * Create regime engine instance.
  *
  * Two signatures (string-typed second arg disambiguates):
@@ -1423,194 +1638,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         }
       }
 
-      // Retroactively annotate body fills that are missing isBodyOwned flag
-      // This fixes historical fills that were processed before annotation code was deployed
-      const currentCycleId = fillLedger.getCurrentCycleId();
-      if (currentCycleId) {
-        const cycleFills = fillLedger.getCurrentCycleFills();
-        const coreTpOrderId = positionState.activeTpOrderId;
-        let annotatedCount = 0;
-
-        // 0. Recover orphan buys: ledger fills from current cycle that have no
-        // bodyId AND aren't referenced by any body. These come from
-        // handleOrderFill being interrupted (e.g. SIGINT during pm2 restart)
-        // between fillLedger.ingestFill and the body-merge/annotation step.
-        // Merge each orphan order into the historically-eligible body whose TP
-        // is closest to where the orphan's TP would have landed. The body's
-        // reconcile loop will then detect the assetQty/assetOnOrder mismatch
-        // on the next tick and cancel-replace the TP at the new size.
-        const knownBuyOrderIds = new Set();
-        for (const body of (positionState.celestialBodies || [])) {
-          for (const oid of (body.sourceOrderIds || [])) knownBuyOrderIds.add(oid);
-          for (const buy of (body.buyOrders || [])) if (buy.orderId) knownBuyOrderIds.add(buy.orderId);
-        }
-        const orphanBuyFills = cycleFills.filter(f =>
-          f.side === 'buy' && !f.bodyId
-          && !String(f.tradeId).startsWith('dca-convert')
-          && !knownBuyOrderIds.has(f.orderId)
-        );
-        const orphansByOrderId = new Map();
-        for (const f of orphanBuyFills) {
-          if (!orphansByOrderId.has(f.orderId)) orphansByOrderId.set(f.orderId, []);
-          orphansByOrderId.get(f.orderId).push(f);
-        }
-
-        let recoveredCount = 0;
-        for (const [orderId, fills] of orphansByOrderId) {
-          const summary = fillLedger.aggregateFills(fills);
-          const fillTime = Math.max(...fills.map(f => f.timestamp));
-          const newBuy = {
-            assetQty: summary.totalSize,
-            costBasis: summary.totalValue + (summary.totalFees || 0),
-            avgPrice: summary.avgPrice,
-            buyOrderId: orderId,
-          };
-          const candidateTpPrice = roundPrice(summary.avgPrice * (1 + calculateDynamicTpPercent() / 100), priceIncrement);
-
-          // Restrict to bodies that existed at the orphan's fill time
-          const eligibleBodies = (positionState.celestialBodies || []).filter(b => !b.createdAt || b.createdAt <= fillTime);
-          let target = celestialHierarchy.findMergeTarget(
-            eligibleBodies, newBuy, config.maxUsdcDeployed, candidateTpPrice,
-            config.maxCelestialBodies || 10, 0, config.maxOpenOrders,
-            config.mergeProximityScale ?? 1.0
-          );
-          // Fallback: closest tpPrice among historical-eligible bodies
-          if (!target) {
-            let bestDist = Infinity;
-            for (const b of eligibleBodies) {
-              if (!b.tpPrice || b.tpPrice <= 0) continue;
-              const d = Math.abs(b.tpPrice - candidateTpPrice);
-              if (d < bestDist) { bestDist = d; target = b; }
-            }
-          }
-          if (!target) {
-            logger.warn(`⚠️ [${exchange}] Orphan buy ${orderId.slice(0, 8)} (${summary.totalSize.toFixed(8)} ${baseCurrency}): no eligible body to merge into, leaving unattributed`);
-            continue;
-          }
-
-          const merged = celestialHierarchy.mergeIntoBody(target, newBuy, config.maxUsdcDeployed, orderId, logger);
-          // Overwrite mergeIntoBody's Date.now() lastMergedAt with the orphan's
-          // actual fill time, and the appended buyOrder's filledAt likewise.
-          merged.lastMergedAt = fillTime;
-          if (merged.buyOrders && merged.buyOrders.length > 0) {
-            merged.buyOrders[merged.buyOrders.length - 1].filledAt = fillTime;
-          }
-
-          const annotation = { isBodyOwned: true, bodyId: merged.id, bodyTier: merged.tier };
-          if (merged.tpOrderId) annotation.sellOrderId = merged.tpOrderId;
-          fillLedger.annotateFillsByOrderId(orderId, annotation);
-
-          const tierCfg = celestialHierarchy.getTierConfig(merged.tier);
-          logger.info(`🔧 [${exchange}] Recovered orphan buy ${orderId.slice(0, 8)} (${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}) → body ${merged.id.slice(-8)} ${tierCfg.emoji} ${merged.tier}`);
-          recoveredCount++;
-        }
-
-        if (recoveredCount > 0) {
-          celestialHierarchy.checkPromotions(positionState.celestialBodies, config.maxUsdcDeployed, logger);
-          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-          logger.info(`🔧 [${exchange}] Recovered ${recoveredCount} orphan buy order(s) into bodies; reconcile loop will re-place affected TPs`);
-        }
-
-        // 1. Annotate buy fills for active celestial bodies (use both sourceOrderIds and buyOrders)
-        // Also fix fills that have isBodyOwned but are missing bodyId (e.g. from DCA merge converter)
-        for (const body of (positionState.celestialBodies || [])) {
-          const annotation = { isBodyOwned: true, bodyId: body.id, bodyTier: body.tier };
-          if (body.tpOrderId) annotation.sellOrderId = body.tpOrderId;
-          const seen = new Set();
-          for (const srcOrderId of (body.sourceOrderIds || [])) {
-            const buyFills = cycleFills.filter(f => f.orderId === srcOrderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
-            if (buyFills.length > 0) {
-              fillLedger.annotateFillsByOrderId(srcOrderId, annotation);
-              annotatedCount += buyFills.length;
-            }
-            seen.add(srcOrderId);
-          }
-          for (const buyOrder of (body.buyOrders || [])) {
-            if (buyOrder.orderId === 'core-migration' || seen.has(buyOrder.orderId)) continue;
-            const buyFills = cycleFills.filter(f => f.orderId === buyOrder.orderId && !(f.isSatellite) && (!f.isBodyOwned || !f.bodyId));
-            if (buyFills.length > 0) {
-              fillLedger.annotateFillsByOrderId(buyOrder.orderId, annotation);
-              annotatedCount += buyFills.length;
-            }
-          }
-        }
-
-        // 2. Find unannotated or badly-annotated body sells
-        // (non-core-TP sells missing isBodyOwned, or with negative PnL/holdback)
-        const sellsToAnnotate = cycleFills.filter(f =>
-          f.side === 'sell' && f.orderId !== coreTpOrderId
-          && (!(f.isBodyOwned || f.isSatellite) || (f.bodyPnl ?? f.satellitePnl) < 0 || (f.bodyHoldbackAsset ?? f.satelliteHoldbackAsset) < 0)
-        );
-        const buyFills = cycleFills.filter(f => f.side === 'buy');
-        const consumedBuyOrderIds = new Set();
-
-        for (const sellFill of sellsToAnnotate) {
-          // Find matching buy: similar BTC size, closest in time to the sell
-          // (satellite TP is placed right after its buy, so the buy should be temporally close)
-          const candidates = buyFills.filter(buy => {
-            if (consumedBuyOrderIds.has(buy.orderId)) return false;
-            const sizeRatio = buy.size / sellFill.size;
-            return sizeRatio > 0.99 && sizeRatio < 1.01
-              && buy.timestamp < sellFill.timestamp;
-          });
-          // Pick the candidate closest in time to the sell
-          const matchingBuy = candidates.length > 0
-            ? candidates.reduce((best, buy) =>
-              (sellFill.timestamp - buy.timestamp) < (sellFill.timestamp - best.timestamp) ? buy : best
-            )
-            : null;
-
-          if (matchingBuy) {
-            consumedBuyOrderIds.add(matchingBuy.orderId);
-            const costBasis = matchingBuy.quoteAmount + (matchingBuy.netFee || matchingBuy.fee || 0);
-            const proceeds = sellFill.quoteAmount - (sellFill.netFee || sellFill.fee || 0);
-            const pnl = proceeds - costBasis;
-            const holdbackAsset = roundAsset(matchingBuy.size - sellFill.size);
-
-            // Sanity check: body PnL should be positive and holdback non-negative
-            if (pnl >= 0 && holdbackAsset >= 0) {
-              fillLedger.annotateFillsByOrderId(sellFill.orderId, {
-                isBodyOwned: true,
-                bodyCostBasis: costBasis,
-                bodyAvgPrice: matchingBuy.price,
-                bodyBtcQty: matchingBuy.size,
-                bodyHoldbackAsset: holdbackAsset,
-                bodyPnl: pnl,
-              });
-              fillLedger.annotateFillsByOrderId(matchingBuy.orderId, { isBodyOwned: true, sellOrderId: sellFill.orderId });
-              annotatedCount += 2;
-              logger.info(`🔧 [${exchange}] Annotated body sell: ${sellFill.orderId.slice(0, 8)} PnL=$${pnl.toFixed(4)}, holdback=${holdbackAsset.toFixed(8)} ${baseCurrency}`);
-            } else {
-              // Mark as body-owned but without computed values (dashboard will show raw data)
-              fillLedger.annotateFillsByOrderId(sellFill.orderId, { isBodyOwned: true });
-              annotatedCount++;
-              logger.warn(`⚠️ [${exchange}] Marked body sell ${sellFill.orderId.slice(0, 8)} (no matching buy found with valid PnL)`);
-            }
-          }
-        }
-
-        // 3. Fix fills with wrong cycle IDs (e.g., recovered-* cycles that belong here)
-        // Only move fills that are within the current cycle's timeframe
-        const currentCycleFills = fillLedger.getCurrentCycleFills();
-        const cycleStartTs = currentCycleFills.length > 0
-          ? Math.min(...currentCycleFills.map(f => f.timestamp))
-          : Date.now();
-        const allFillsRaw = fillLedger.getAllFills();
-        for (const fill of allFillsRaw) {
-          if (fill.cycleId && fill.cycleId.includes('-recovered-')
-            && fill.cycleId !== currentCycleId && fill.timestamp >= cycleStartTs) {
-            const oldCycleId = fill.cycleId;
-            fillLedger.updateFillCycleId(fill.tradeId, currentCycleId);
-            annotatedCount++;
-            logger.info(`🔧 [${exchange}] Moved fill ${fill.tradeId.slice(0, 8)} from ${oldCycleId} to ${currentCycleId}`);
-          }
-        }
-
-        if (annotatedCount > 0) {
-          fillLedger.persist();
-          logger.info(`🔧 [${exchange}] Annotated ${annotatedCount} satellite fills for correct tracking`);
-        }
-      }
+      // Repair historical fill annotations (orphan recovery, size fuzzy-match, -recovered- cycle rewrites)
+      repairHistoricalFillAnnotations({
+        fillLedger, positionState, config, logger, baseCurrency, priceIncrement, exchange,
+        celestialHierarchy, calculateDynamicTpPercent, roundPrice, roundAsset, fmtPrice
+      });
 
       // Sync position totals from celestial bodies (ensures recovery didn't zero them out)
       if ((positionState.celestialBodies || []).length > 0) {
@@ -5149,34 +5181,95 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ? (targetSnapshot.tpPrice / targetSnapshot.avgPrice - 1) * 100
       : null;
 
+    // A body TP that executes a tranche WHILE we're cancelling it (issue #368,
+    // mirrors the buy-merge precedent at #227) still reports cancelled: true —
+    // classifyBodyTpCancellation is what tells clean cancels apart from
+    // execution-bearing ones. The Race-3 snapshots set above (before either
+    // cancel call) let handleOrderFillImpl's merge-snapshot branch find the
+    // still-live body (neither source nor target has been removed from
+    // celestialBodies yet at this point), deduct the sold qty/prorated cost,
+    // and re-place a right-sized TP — all in one call, reusing the exact same
+    // booking path the buy-merge race already relies on. We call
+    // handleOrderFillImpl directly (not the handleOrderFill wrapper) because
+    // the wrapper defers to `mergeInProgress`, which THIS call holds — going
+    // through it would self-stall for its full 15s wait window every time.
+    const bookExecutionDuringCancel = async (body, snapshot, cancelResult) => {
+      const soldTp = snapshot.tpOrderId;
+      pendingMergeTpOrders.delete(soldTp);
+      completedMergeTpOrders.set(soldTp, snapshot);
+      const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
+      ttlTimers.add(t);
+      body.tpOrderId = null;
+      body.tpPrice = 0;
+      body.assetOnOrder = 0;
+      saveLiveState();
+      await handleOrderFillImpl(buildPartialFillData(soldTp, 'sell', {
+        status: 'CANCELLED',
+        filledSize: cancelResult.filledSize,
+        filledValue: cancelResult.filledValue,
+        averageFilledPrice: cancelResult.averageFilledPrice,
+      }, { totalFees: cancelResult.totalFees || 0 }), { set: null, key: null }).catch((err) => {
+        logger.warn(
+          `⚠️ [${exchange}] Failed to book body TP partial fill for ${soldTp.slice(0, 8)} immediately: ${err.message} — relying on a later WS/poll event`,
+          { orderId: soldTp, error: err.message }
+        );
+      });
+      return soldTp;
+    };
+
     // Cancel source TP
     const srcCancel = await orderExecutor.cancelBodyTpOrder(source.id, source.tpOrderId);
-    if (!srcCancel.cancelled) {
+    const srcOutcome = classifyBodyTpCancellation(srcCancel);
+    if (srcOutcome === 'filled' || srcOutcome === 'unresolved') {
       // Clean up snapshots
       if (source.tpOrderId) pendingMergeTpOrders.delete(source.tpOrderId);
       if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
-      const reason = srcCancel.filled ? 'already filled' : 'cancel failed';
+      const reason = srcOutcome === 'filled' ? 'already filled' : 'cancel failed';
       logger.warn(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP ${reason}, aborting roll-up`);
       return { success: false, message: `Source TP ${reason}` };
     }
-    // Clear source body TP fields after successful cancel
+    if (srcOutcome === 'cancelled_with_execution') {
+      // Target's TP was never touched (we cancel source first) — just drop its
+      // snapshot and abort; booking deducts the sold qty/cost from the
+      // still-live source body and re-arms a right-sized TP on it directly, so
+      // there's nothing left needing this roll-up attempt.
+      if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
+      const soldTp = await bookExecutionDuringCancel(source, sourceSnapshot, srcCancel);
+      logger.warn(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP filled ${srcCancel.filledSize} ${baseCurrency} during cancel — booked ${soldTp.slice(-8)}, aborting roll-up (#368)`);
+      return { success: false, message: `Source TP filled during cancel (${srcCancel.filledSize} ${baseCurrency}) — booked, roll-up aborted` };
+    }
+    // Clean cancel — clear source body TP fields
     source.tpOrderId = null;
     source.tpPrice = 0;
     source.assetOnOrder = 0;
 
     // Cancel target TP
     const tgtCancel = await orderExecutor.cancelBodyTpOrder(target.id, target.tpOrderId);
-    if (!tgtCancel.cancelled) {
+    const tgtOutcome = classifyBodyTpCancellation(tgtCancel);
+    if (tgtOutcome === 'filled' || tgtOutcome === 'unresolved') {
       // Clean up snapshots
       if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
       if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
       // Restore source TP to avoid leaving it dangling
-      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP cancel failed, restoring source TP`);
+      const reason = tgtOutcome === 'filled' ? 'already filled' : 'cancel failed';
+      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP ${reason}, restoring source TP`);
       await placeBodyTp(source);
       saveLiveState();
-      return { success: false, message: 'Target TP cancel failed, source restored' };
+      return { success: false, message: `Target TP ${reason}, source restored` };
     }
-    // Clear target body TP fields after successful cancel
+    if (tgtOutcome === 'cancelled_with_execution') {
+      // Source's TP was already cleanly cancelled above, so it needs restoring
+      // before we abort (mirrors the failed-cancel branch above). Booking
+      // deducts the sold qty/cost from the still-live target body and re-arms
+      // a right-sized TP on it directly.
+      if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
+      const soldTp = await bookExecutionDuringCancel(target, targetSnapshot, tgtCancel);
+      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP filled ${tgtCancel.filledSize} ${baseCurrency} during cancel — booked ${soldTp.slice(-8)}, restoring source TP, aborting roll-up (#368)`);
+      await placeBodyTp(source);
+      saveLiveState();
+      return { success: false, message: `Target TP filled during cancel (${tgtCancel.filledSize} ${baseCurrency}) — booked, source restored, roll-up aborted` };
+    }
+    // Clean cancel — clear target body TP fields
     target.tpOrderId = null;
     target.tpPrice = 0;
     target.assetOnOrder = 0;
