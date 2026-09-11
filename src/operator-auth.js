@@ -241,11 +241,20 @@ const createOperatorAuth = ({
       if (isBootstrapping() && !canBootstrap(req)) {
         return res.status(403).json({ error: 'Initial operator setup requires loopback access or a valid bootstrap secret' });
       }
-      if (hasPassword() && !passwordMatches(currentPassword) && !authenticate(req.headers)) {
-        return res.status(401).json({ error: 'Current password is required' });
+      const auth = authenticate(req.headers);
+      if (auth?.source === 'session' && !requestOriginMatches(req)) {
+        return res.status(403).json({ error: 'Request origin is not authorized' });
       }
-      if (hasPassword() && currentPassword && !passwordMatches(currentPassword)) {
-        return res.status(401).json({ error: 'Current password is incorrect' });
+      // A bearer token already proves knowledge of the current password (it IS the
+      // password); a session cookie does not, so it must not exempt the caller from
+      // the currentPassword check below.
+      if (hasPassword() && auth?.source !== 'bearer') {
+        if (!currentPassword) {
+          return res.status(401).json({ error: 'Current password is required' });
+        }
+        if (!passwordMatches(currentPassword)) {
+          return res.status(401).json({ error: 'Current password is incorrect' });
+        }
       }
       persist({
         ...makeRecord(password),
@@ -263,6 +272,9 @@ const createOperatorAuth = ({
       if (!hasPassword()) {
         return res.json({ authenticated: false, required: true, bootstrapRequired: true });
       }
+      if (authenticate(req.headers)?.source === 'session' && !requestOriginMatches(req)) {
+        return res.status(403).json({ error: 'Request origin is not authorized' });
+      }
       const currentPassword = submittedSecret(req.body);
       if (!passwordMatches(currentPassword)) {
         return res.status(401).json({ error: 'Current password is required to remove it' });
@@ -279,6 +291,9 @@ const createOperatorAuth = ({
     });
 
     app.delete('/api/auth/session', (req, res) => {
+      if (authenticate(req.headers)?.source === 'session' && !requestOriginMatches(req)) {
+        return res.status(403).json({ error: 'Request origin is not authorized' });
+      }
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
       res.status(204).send();
     });

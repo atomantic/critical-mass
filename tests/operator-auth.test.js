@@ -372,7 +372,7 @@ describe('operator authentication boundary', () => {
       const changed = await fetch(`${baseUrl}/api/auth/password`, {
         method: 'PUT',
         headers: { Cookie: oldCookie, Origin: baseUrl, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: NEW_PASSWORD }),
+        body: JSON.stringify({ password: NEW_PASSWORD, currentPassword: PASSWORD }),
       });
       assert.equal(changed.status, 200);
       const newCookie = changed.headers.get('set-cookie').split(';')[0];
@@ -448,6 +448,109 @@ describe('operator authentication boundary', () => {
     });
     assert.equal((await invoke())?.data?.code, 'UNAUTHORIZED');
     assert.equal(await invoke({}, { token: PASSWORD }), undefined);
+  });
+});
+
+describe('operator password change CSRF and reauthentication', () => {
+  it('rejects a cross-origin session-cookie password change with 403', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+
+      const response = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: { Cookie: cookie, Origin: 'https://attacker.invalid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: NEW_PASSWORD, currentPassword: PASSWORD }),
+      });
+      assert.equal(response.status, 403);
+    });
+  });
+
+  it('rejects a same-origin session-cookie password change with missing currentPassword', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+
+      const response = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: { Cookie: cookie, Origin: baseUrl, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: NEW_PASSWORD }),
+      });
+      assert.equal(response.status, 401);
+      assert.deepEqual(await response.json(), { error: 'Current password is required' });
+    });
+  });
+
+  it('rejects a session-cookie password change with an incorrect currentPassword', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+
+      const response = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: { Cookie: cookie, Origin: baseUrl, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: NEW_PASSWORD, currentPassword: 'totally-wrong' }),
+      });
+      assert.equal(response.status, 401);
+      assert.deepEqual(await response.json(), { error: 'Current password is incorrect' });
+    });
+  });
+
+  it('allows a bearer-authenticated password change without currentPassword', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${PASSWORD}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: NEW_PASSWORD }),
+      });
+      assert.equal(response.status, 200);
+    });
+  });
+
+  it('rejects a cross-origin session-cookie password removal and sign-out', async () => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const login = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const cookie = login.headers.get('set-cookie').split(';')[0];
+
+      const removed = await fetch(`${baseUrl}/api/auth/password`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, Origin: 'https://attacker.invalid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      assert.equal(removed.status, 403);
+
+      const signedOut = await fetch(`${baseUrl}/api/auth/session`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, Origin: 'https://attacker.invalid' },
+      });
+      assert.equal(signedOut.status, 403);
+    });
   });
 });
 
