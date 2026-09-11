@@ -236,13 +236,17 @@ describe('tp-optimizer exportState / importState round trip', () => {
     const before = optimizer._getHistogram().map(b => ({ ...b }));
 
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = (line) => lines.push(line);
+    console.warn = (line) => lines.push(line);
+    console.error = (line) => lines.push(line);
     try {
       // BUCKET_COUNT is 20; a length-1 histogram simulates a stale/incompatible persisted state.
       optimizer.importState({ histogram: [{ min: 0, max: 1, weight: 5, count: 5 }] });
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     }
 
     assert.deepEqual(optimizer._getHistogram(), before, 'a mismatched histogram must be discarded, not applied');

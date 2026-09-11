@@ -28,6 +28,7 @@ const {
   getAggressivenessPresets,
   getBackupConfig,
   updateExchangeConfig,
+  addFund,
   updateGlobalConfig,
   updateRegimeConfig,
   updateNotificationConfig,
@@ -556,12 +557,16 @@ describe('loadRawConfig', () => {
     mock.method(fs, 'readFileSync', () => 'not json{');
     const warnings = [];
     const origLog = console.log;
-    console.log = (...a) => warnings.push(a.join(' '));
+    const origWarn = console.warn;
+    const captureWarning = (...a) => warnings.push(a.join(' '));
+    console.log = captureWarning;
+    console.warn = captureWarning;
     let result;
     try {
       result = loadRawConfig(); // must not throw
     } finally {
       console.log = origLog;
+      console.warn = origWarn;
     }
     assert.deepStrictEqual(result, good, 'returns the last-good cached config');
     assert.ok(warnings.some(w => w.includes('reload failed')), 'logs a reload-failed warning');
@@ -588,13 +593,17 @@ describe('loadRawConfig', () => {
     mock.method(fs, 'readFileSync', () => 'not json{');
     const warnings = [];
     const origLog = console.log;
-    console.log = (...a) => warnings.push(a.join(' '));
+    const origWarn = console.warn;
+    const captureWarning = (...a) => warnings.push(a.join(' '));
+    console.log = captureWarning;
+    console.warn = captureWarning;
     try {
       loadRawConfig();
       loadRawConfig();
       loadRawConfig();
     } finally {
       console.log = origLog;
+      console.warn = origWarn;
     }
     assert.equal(warnings.length, 1, 'persistent corruption must warn once, not every call');
   });
@@ -917,6 +926,52 @@ describe('updateExchangeConfig', () => {
     assert.equal(result.exchanges.kraken.productId, 'XBT-USD');
     // Should have defaults filled in
     assert.equal(result.exchanges.kraken.dryRun, DEFAULTS.dryRun);
+  });
+});
+
+// ============================================================================
+// addFund — base-asset identity invariant (mirrors the PUT /api/:exchange/config
+// guard; see productIdMatchesPair). Route-level coverage for the same rule
+// lives in tests/exchange-routes-lifecycle.test.js — these cover addFund
+// directly so no other caller can recreate the mismatch.
+// ============================================================================
+
+describe('addFund', () => {
+  afterEach(() => mock.restoreAll());
+
+  const baseConfig = () => ({
+    exchanges: { coinbase: { pairs: { 'BTC-USDC': { productId: 'BTC-USDC', enabled: true } } } },
+    global: {},
+  });
+
+  it('rejects a productId trading a different base asset than the pair (no write)', () => {
+    const mocks = setupFsMocks({ base: baseConfig(), user: null });
+    assert.throws(
+      () => addFund('coinbase', 'ETH-USDC', { productId: 'BTC-USDC' }),
+      /does not match fund/i,
+    );
+    assert.equal(mocks.written(), null, 'mismatched fund must not be persisted');
+  });
+
+  it('accepts a same-asset productId (quote-only difference)', () => {
+    setupFsMocks({ base: baseConfig(), user: null });
+    const result = addFund('coinbase', 'ETH-USD', { productId: 'ETH-USDC' });
+    assert.equal(result.exchanges.coinbase.pairs['ETH-USD'].productId, 'ETH-USDC');
+  });
+
+  it('accepts an omitted productId (defaults to pair)', () => {
+    setupFsMocks({ base: baseConfig(), user: null });
+    const result = addFund('coinbase', 'SOL-USDC', {});
+    assert.equal(result.exchanges.coinbase.pairs['SOL-USDC'].productId, 'SOL-USDC');
+  });
+
+  it('rejects a non-string productId', () => {
+    const mocks = setupFsMocks({ base: baseConfig(), user: null });
+    assert.throws(
+      () => addFund('coinbase', 'SOL-USDC', { productId: 12345 }),
+      /non-empty string/i,
+    );
+    assert.equal(mocks.written(), null, 'invalid fund must not be persisted');
   });
 });
 
