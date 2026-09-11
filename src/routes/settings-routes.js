@@ -3,7 +3,6 @@
  * Settings Routes: Aggressiveness Presets, Notifications, Backups
  */
 
-const fs = require('fs');
 const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret, getConfiguredExchanges } = require('../config-utils');
 const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('../backup-service');
 const { createContextLogger } = require('../logger');
@@ -195,6 +194,8 @@ module.exports = (app, deps) => {
       filename,
       force: req.body?.force === true,
       exchangeIPCMap,
+      // Only exchanges this gateway actually proxies can own a live engine
+      // process; a config key with no IPC client has no writer to drain.
       configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
       restore: restoreBackup,
       updownService,

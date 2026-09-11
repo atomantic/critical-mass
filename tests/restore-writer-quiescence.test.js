@@ -136,6 +136,10 @@ describe('restore writer quiescence gate', () => {
     // success without the stopped list is shapeless — refuse it too.
     assert.equal(classifyStopAck({ success: true }).confirmed, false);
     assert.equal(classifyStopAck({ success: true, stopped: [] }).confirmed, true);
+    // Self-contradictory ack: believe the failures, not the success flag.
+    const contradictory = classifyStopAck({ success: true, stopped: [], failed: [{ pair: 'BTC-USDC', error: 'EIO' }] });
+    assert.equal(contradictory.confirmed, false);
+    assert.equal(contradictory.reason, 'stop-reported-failure');
   });
 
   it('applies the archive once when every configured engine confirms', async () => {
@@ -212,6 +216,19 @@ describe('restore drains and reloads the gateway UpDown writer', () => {
     assert.equal(status, 200);
     assert.equal(body.success, true);
     assert.match(body.warnings[0], /scorecard hydration failed/);
+  });
+
+  it('restarts UpDown and releases the lock when the applier throws mid-copy', async () => {
+    const order = [];
+    const { status, body } = await runRestore({
+      updownService: { stop: () => order.push('stop'), start: async () => order.push('start') },
+      restore: () => { throw new Error('ENOSPC: no space left on device'); },
+    });
+    assert.equal(status, 500);
+    assert.equal(body.code, 'restore-failed');
+    assert.match(body.error, /ENOSPC/);
+    assert.deepEqual(order, ['stop', 'start']);
+    assert.equal(maintenance.isMaintenanceActive(), false, 'a thrown applier must not leak the lock');
   });
 
   it('restarts UpDown even when applying the archive fails', async () => {

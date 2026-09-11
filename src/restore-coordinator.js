@@ -50,7 +50,12 @@ const classifyStopAck = (ack) => {
   if (!Array.isArray(ack.stopped)) {
     return { confirmed: false, reason: 'malformed-ack' };
   }
-  return { confirmed: true, stopped: ack.stopped, failed: Array.isArray(ack.failed) ? ack.failed : [] };
+  // An engine that reports both success and failed funds is self-contradictory;
+  // believe the failures.
+  if (Array.isArray(ack.failed) && ack.failed.length > 0) {
+    return { confirmed: false, reason: 'stop-reported-failure', failed: ack.failed };
+  }
+  return { confirmed: true, stopped: ack.stopped, failed: [] };
 };
 
 /**
@@ -98,8 +103,8 @@ const describeFund = (entry) => {
 };
 
 /**
- * Run the full restore lifecycle: acquire exclusive maintenance, confirm every
- * writer stopped, apply the archive, reload gateway caches, release.
+ * The restore body, run while the maintenance lock is held: confirm every
+ * writer stopped, apply the archive, then reload the gateway's writers.
  *
  * The returned object is an HTTP status plus a JSON body so the route stays a
  * thin adapter and this whole flow is testable without express or real IPC.
@@ -115,37 +120,17 @@ const describeFund = (entry) => {
  * @param {number} [params.stopTimeoutMs] - Per-engine acknowledgement timeout
  * @returns {Promise<{status: number, body: Object}>} HTTP status + response body
  */
-const performRestore = async ({
+const applyRestoreUnderLock = async ({
   filename,
-  force = false,
-  exchangeIPCMap = {},
-  configuredExchanges = [],
+  force,
+  exchangeIPCMap,
+  configuredExchanges,
   restore,
   updownService,
   logger,
-  stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
+  stopTimeoutMs,
 }) => {
   const startedAt = Date.now();
-  const lock = beginMaintenance(`restore ${filename}`);
-  if (!lock.acquired) {
-    logger.warn(`⚠️ 💾 Restore rejected: maintenance already held by "${lock.heldBy}" for ${lock.sinceMs}ms`, {
-      action: 'restore-backup', filename, heldBy: lock.heldBy, sinceMs: lock.sinceMs,
-    });
-    return {
-      status: 409,
-      body: {
-        success: false,
-        code: 'restore-already-running',
-        error: `Another maintenance operation is in progress (${lock.heldBy})`,
-      },
-    };
-  }
-
-  const finish = (status, body) => {
-    endMaintenance();
-    return { status, body };
-  };
-
   logger.info(`ℹ️ 💾 Restore starting: ${filename} — draining ${configuredExchanges.length} engine process(es)`, {
     action: 'restore-backup', filename, exchanges: configuredExchanges.join(',') || 'none', force,
   });
@@ -168,13 +153,13 @@ const performRestore = async ({
       logger.error(`❌ 💾 Restore blocked after ${Date.now() - startedAt}ms: writers not confirmed stopped (${summary}) — no files written`, {
         action: 'restore-backup', filename, unconfirmed: summary, elapsedMs: Date.now() - startedAt,
       });
-      return finish(409, {
+      return { status: 409, body: {
         success: false,
         code: 'writers-not-quiesced',
         error: `Cannot restore: ${unconfirmed.length} writer(s) did not confirm shutdown (${summary}). No files were changed.`,
         unconfirmed,
         stoppedEngines,
-      });
+      } };
     }
     logger.warn(`⚠️ 💾 Restore FORCED past unconfirmed writers (${summary}) — surviving writers may overwrite restored files`, {
       action: 'restore-backup', filename, unconfirmed: summary, force: true,
@@ -190,7 +175,12 @@ const performRestore = async ({
     logger.info('ℹ️ 💾 UpDown writer drained for restore', { action: 'restore-backup', filename });
   }
 
-  const result = restore(filename);
+  // A throwing applier (ENOSPC mid-copy, unreadable archive) must still reach
+  // the reload below — leaving UpDown dead after a failed restore would be a
+  // second outage on top of the first.
+  const applied = await Promise.resolve()
+    .then(() => restore(filename))
+    .then((r) => ({ ok: true, result: r }), (err) => ({ ok: false, err }));
 
   // Reload from the (possibly unchanged) files on disk before anything can
   // persist again — on failure this puts UpDown back on the pre-restore state.
@@ -207,18 +197,22 @@ const performRestore = async ({
     }
   }
 
-  if (!result.success) {
-    logger.error(`❌ 💾 Restore failed to apply ${filename}: ${result.error}`, {
-      action: 'restore-backup', filename, error: result.error,
+  const error = applied.ok
+    ? (applied.result?.success === true ? null : (applied.result?.error || 'Archive applier returned no result'))
+    : applied.err.message;
+  if (error) {
+    logger.error(`❌ 💾 Restore failed to apply ${filename}: ${error}`, {
+      action: 'restore-backup', filename, error,
     });
-    return finish(500, { success: false, code: 'restore-failed', error: result.error, stoppedEngines });
+    return { status: 500, body: { success: false, code: 'restore-failed', error, stoppedEngines, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
+  const result = applied.result;
 
   logger.info(`ℹ️ 💾 Restore complete in ${Date.now() - startedAt}ms: ${result.filesRestored} files from ${filename}, stopped=[${stoppedEngines.join(', ')}]`, {
     action: 'restore-backup', filename, filesRestored: result.filesRestored, elapsedMs: Date.now() - startedAt,
   });
 
-  return finish(200, {
+  return { status: 200, body: {
     success: true,
     filesRestored: result.filesRestored,
     stoppedEngines,
@@ -227,7 +221,54 @@ const performRestore = async ({
     message: stoppedEngines.length > 0
       ? `Restored ${result.filesRestored} files. Stopped engines: ${stoppedEngines.join(', ')}. Restart engines manually from dashboard.`
       : `Restored ${result.filesRestored} files.`,
+  } };
+};
+
+/**
+ * Acquire the exclusive maintenance lock and run the restore under it.
+ *
+ * The lock is released on EVERY exit path, including a thrown fs error inside
+ * the archive applier — a leaked lock would 503 every mutating API request for
+ * the rest of the process lifetime.
+ *
+ * @param {Object} params - See `applyRestoreUnderLock`
+ * @returns {Promise<{status: number, body: Object}>} HTTP status + response body
+ */
+const performRestore = async ({
+  filename,
+  force = false,
+  exchangeIPCMap = {},
+  configuredExchanges = [],
+  restore,
+  updownService,
+  logger,
+  stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
+}) => {
+  const lock = beginMaintenance(`restore ${filename}`);
+  if (!lock.acquired) {
+    logger.warn(`⚠️ 💾 Restore rejected: maintenance already held by "${lock.heldBy}" for ${lock.sinceMs}ms`, {
+      action: 'restore-backup', filename, heldBy: lock.heldBy, sinceMs: lock.sinceMs,
+    });
+    return {
+      status: 409,
+      body: {
+        success: false,
+        code: 'restore-already-running',
+        error: `Another maintenance operation is in progress (${lock.heldBy})`,
+      },
+    };
+  }
+
+  const outcome = await applyRestoreUnderLock({
+    filename, force, exchangeIPCMap, configuredExchanges, restore, updownService, logger, stopTimeoutMs,
+  }).catch((err) => {
+    logger.error(`❌ 💾 Restore aborted by an unexpected error on ${filename}: ${err.message}`, {
+      action: 'restore-backup', filename, error: err.message,
+    });
+    return { status: 500, body: { success: false, code: 'restore-error', error: err.message } };
   });
+  endMaintenance();
+  return outcome;
 };
 
 module.exports = {
