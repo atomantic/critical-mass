@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { formatCurrency, formatPrice } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
@@ -81,18 +81,6 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   // Filter fills
   const filteredFills = fills.filter(passesFilter)
 
-  // Sort fills
-  const sortedFills = [...filteredFills].sort((a, b) => {
-    const dir = sortDir === 'asc' ? 1 : -1
-    if (sortField === 'timestamp') {
-      return (a.timestamp - b.timestamp) * dir
-    }
-    const aVal = a[sortField]
-    const bVal = b[sortField]
-    if (typeof aVal === 'number') return (aVal - bVal) * dir
-    return String(aVal).localeCompare(String(bVal)) * dir
-  })
-
   const handleSort = (field) => {
     if (sortField === field) {
       setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -105,37 +93,53 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   // Calculate P&L for sell fills using buy-sell linkage (sellOrderId), running
   // avg fallback, and orderId-deduped/prorated server annotations. Uses ALL
   // fills (not just filteredFills) so the running avg and orderId aggregation
-  // are correct, then narrows to the currently-filtered rows for display.
-  const fillsWithPnL = computeFillsWithPnL(fills).filter(passesFilter)
+  // are correct. Memoize to avoid recomputing on every render.
+  const fillsWithPnLMemo = useMemo(() => computeFillsWithPnL(fills), [fills])
 
-  // Re-sort based on user preference
-  const displayFills = [...fillsWithPnL].sort((a, b) => {
-    const dir = sortDir === 'asc' ? 1 : -1
-    if (sortField === 'timestamp') {
-      return (a.timestamp - b.timestamp) * dir
+  // Memoize the filtered result so it doesn't change on every render
+  const fillsWithPnL = useMemo(() => fillsWithPnLMemo.filter(passesFilter), [fillsWithPnLMemo, filter, cycleFilter])
+
+  // Re-sort and compute summary stats in a single memoized pass
+  const { displayFills, totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = useMemo(() => {
+    const sorted = [...fillsWithPnL].sort((a, b) => {
+      const dir = sortDir === 'asc' ? 1 : -1
+      if (sortField === 'timestamp') {
+        return (a.timestamp - b.timestamp) * dir
+      }
+      const aVal = a[sortField]
+      const bVal = b[sortField]
+      if (typeof aVal === 'number') return (aVal - bVal) * dir
+      return String(aVal).localeCompare(String(bVal)) * dir
+    })
+
+    // Consolidate all summary stats into a single pass
+    let buys = 0, sells = 0, assetBought = 0, btcSold = 0, fees = 0, pnl = 0, holdbackBtc = 0, holdbackValue = 0
+    for (const f of fillsWithPnL) {
+      if (f.side === 'buy') {
+        buys++
+        assetBought += f.size
+      } else {
+        sells++
+        btcSold += f.size
+      }
+      fees += f.netFee || f.fee || 0
+      if (f.pnl !== null) pnl += f.pnl
+      if (f.holdbackAsset !== null) holdbackBtc += f.holdbackAsset
+      if (f.holdbackValue !== null) holdbackValue += f.holdbackValue
     }
-    return 0
-  })
 
-  // Calculate summary stats
-  const totalBuys = filteredFills.filter(f => f.side === 'buy').length
-  const totalSells = filteredFills.filter(f => f.side === 'sell').length
-  const totalAssetBought = filteredFills
-    .filter(f => f.side === 'buy')
-    .reduce((sum, f) => sum + f.size, 0)
-  const totalBtcSold = filteredFills
-    .filter(f => f.side === 'sell')
-    .reduce((sum, f) => sum + f.size, 0)
-  const totalFees = filteredFills.reduce((sum, f) => sum + (f.netFee || f.fee || 0), 0)
-  const totalPnL = fillsWithPnL
-    .filter(f => f.pnl !== null)
-    .reduce((sum, f) => sum + f.pnl, 0)
-  const totalHoldbackBtc = fillsWithPnL
-    .filter(f => f.holdbackAsset !== null)
-    .reduce((sum, f) => sum + f.holdbackAsset, 0)
-  const totalHoldbackValue = fillsWithPnL
-    .filter(f => f.holdbackValue !== null)
-    .reduce((sum, f) => sum + f.holdbackValue, 0)
+    return {
+      displayFills: sorted,
+      totalBuys: buys,
+      totalSells: sells,
+      totalAssetBought: assetBought,
+      totalBtcSold: btcSold,
+      totalFees: fees,
+      totalPnL: pnl,
+      totalHoldbackBtc: holdbackBtc,
+      totalHoldbackValue: holdbackValue,
+    }
+  }, [fillsWithPnL, sortField, sortDir])
 
   if (loading) {
     return (
@@ -309,7 +313,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
         </div>
 
         <span className="ml-auto text-gray-400 text-sm">
-          {sortedFills.length} transactions
+          {filteredFills.length} transactions
         </span>
       </div>
 
