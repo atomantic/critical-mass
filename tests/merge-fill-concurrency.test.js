@@ -722,3 +722,221 @@ describe('#316 partial sell terminal reconciliation', () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// #368: _mergeBodyImpl must not treat cancelled:true as "nothing sold" — a
+// body TP can execute a tranche WHILE its cancel is in flight. Mirrors the
+// #227 buy-merge precedent: classify the cancel outcome, book the executed
+// tranche via handleOrderFillImpl immediately (reusing the merge-snapshot
+// path so the still-live body is deducted and re-armed with a right-sized
+// TP), and abort the roll-up instead of folding stale qty/cost into the
+// merge target.
+// ---------------------------------------------------------------------------
+
+describe('#368 _mergeBodyImpl — execution-bearing cancellation during roll-up', () => {
+  it('books the sold tranche and aborts when the SOURCE TP fires during cancel', async () => {
+    const calls = [];
+    let getOrderSrcCalls = 0;
+    const source = makeBody('src', 50000, 0.01, 'tp-src');
+    const target = makeBody('tgt', 51000, 0.02, 'tp-tgt');
+    let cancelCalls = 0;
+    let placeCalls = 0;
+
+    const eng = makeEngine({
+      bodies: [source, target],
+      adapter: {
+        getOrder: async (orderId) => {
+          calls.push(`status:${orderId}`);
+          if (orderId === 'tp-src') {
+            getOrderSrcCalls++;
+            // Pre-check sees it clean; the terminal-confirm call (inside
+            // cancelPartialFillOrder) sees the partial that filled mid-cancel.
+            return getOrderSrcCalls === 1
+              ? { filledSize: 0, status: 'OPEN' }
+              : { status: 'CANCELLED', filledSize: 0.004, averageFilledPrice: 50500, totalFees: 0.02 };
+          }
+          return { filledSize: 0, status: 'OPEN' }; // target pre-check: clean
+        },
+        getOpenOrders: async () => { calls.push('open-orders'); return []; },
+        cancelOrder: async () => { calls.push('cancel-order:tp-src'); },
+        getOrderFills: async (orderId) => {
+          calls.push(`fills:${orderId}`);
+          assert.equal(orderId, 'tp-src', 'only the executed source TP needs its fills fetched');
+          return [{
+            tradeId: 'tp-src-t1',
+            orderId: 'tp-src',
+            side: 'sell',
+            price: '50500',
+            size: '0.004',
+            totalCommission: '0.02',
+            rebate: '0',
+            liquidityIndicator: 'MAKER',
+            tradeTime: new Date().toISOString(),
+          }];
+        },
+      },
+      executor: {
+        cancelBodyTpOrder: async (bodyId, orderId) => {
+          calls.push(`cancel:${orderId}`);
+          cancelCalls++;
+          assert.equal(bodyId, 'src', 'source is cancelled first');
+          return { cancelled: true, filled: false, filledSize: 0.004, filledValue: 202, averageFilledPrice: 50500, totalFees: 0.02 };
+        },
+        placeBodyTpOrder: async () => { calls.push('place'); placeCalls++; return { success: true, orderId: `tp-new-${placeCalls}` }; },
+      },
+    });
+
+    const result = await eng.manualMergeBody('src', { targetId: 'tgt' });
+
+    assert.equal(result.success, false, 'roll-up must abort, not merge stale source qty into target');
+    assert.match(result.message, /Source TP filled during cancel/);
+    assert.equal(cancelCalls, 1, 'target TP is never touched once the source race is detected');
+
+    const bodies = eng._getPositionState().celestialBodies;
+    assert.equal(bodies.length, 2, 'both bodies remain — no merge happened');
+
+    const liveSource = bodies.find(b => b.id === 'src');
+    assert.ok(liveSource, 'source body survives, deducted rather than merged');
+    assert.ok(Math.abs(liveSource.assetQty - 0.006) < 1e-9, `0.01 - 0.004 sold = 0.006 remaining, got ${liveSource.assetQty}`);
+    assert.equal(liveSource.costBasis, 300, '0.004/0.01 of 500 cost basis (202) deducted, 500-202=298... prorated by sold ratio');
+    assert.ok(liveSource.tpOrderId && liveSource.tpOrderId !== 'tp-src', 'a fresh, correctly-sized TP was re-armed on the deducted source');
+
+    const liveTarget = bodies.find(b => b.id === 'tgt');
+    assert.equal(liveTarget.tpOrderId, 'tp-tgt', 'target TP is completely untouched');
+    assert.equal(liveTarget.assetQty, 0.02, 'target qty untouched');
+
+    assert.equal(eng._test.getMergeTpSnapshots().pending.size, 0, 'no dangling pending snapshot after abort');
+    assert.equal(eng._test.getMergeTpSnapshots().completed.has('tp-src'), false, 'the booked snapshot is consumed, not left around');
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(JUNK_DIR, 'fill-ledger.json'), 'utf8'));
+    const sell = ledger.find(fill => fill.orderId === 'tp-src');
+    assert.ok(sell, 'the executed tranche was booked to the fill ledger');
+    assert.equal(sell.size, 0.004);
+    assert.equal(sell.fee, 0.02);
+  });
+
+  it('restores the source TP and books the sold tranche when the TARGET TP fires during cancel', async () => {
+    const calls = [];
+    let getOrderTgtCalls = 0;
+    const source = makeBody('src2', 50000, 0.01, 'tp-src2');
+    const target = makeBody('tgt2', 51000, 0.02, 'tp-tgt2');
+    let placeCalls = 0;
+    const cancelledOrders = [];
+
+    const eng = makeEngine({
+      bodies: [source, target],
+      adapter: {
+        getOrder: async (orderId) => {
+          calls.push(`status:${orderId}`);
+          if (orderId === 'tp-tgt2') {
+            getOrderTgtCalls++;
+            return getOrderTgtCalls === 1
+              ? { filledSize: 0, status: 'OPEN' }
+              : { status: 'CANCELLED', filledSize: 0.006, averageFilledPrice: 51500, totalFees: 0.03 };
+          }
+          return { filledSize: 0, status: 'OPEN' }; // source pre-check: clean
+        },
+        getOpenOrders: async () => { calls.push('open-orders'); return []; },
+        cancelOrder: async () => { calls.push('cancel-order:tp-tgt2'); },
+        getOrderFills: async (orderId) => {
+          calls.push(`fills:${orderId}`);
+          assert.equal(orderId, 'tp-tgt2', 'only the executed target TP needs its fills fetched');
+          return [{
+            tradeId: 'tp-tgt2-t1',
+            orderId: 'tp-tgt2',
+            side: 'sell',
+            price: '51500',
+            size: '0.006',
+            totalCommission: '0.03',
+            rebate: '0',
+            liquidityIndicator: 'MAKER',
+            tradeTime: new Date().toISOString(),
+          }];
+        },
+      },
+      executor: {
+        cancelBodyTpOrder: async (bodyId, orderId) => {
+          calls.push(`cancel:${orderId}`);
+          cancelledOrders.push(orderId);
+          if (orderId === 'tp-src2') return { cancelled: true }; // source cancels clean
+          return { cancelled: true, filled: false, filledSize: 0.006, filledValue: 309, averageFilledPrice: 51500, totalFees: 0.03 };
+        },
+        placeBodyTpOrder: async () => { calls.push('place'); placeCalls++; return { success: true, orderId: `tp-new-${placeCalls}` }; },
+      },
+    });
+
+    const result = await eng.manualMergeBody('src2', { targetId: 'tgt2' });
+
+    assert.equal(result.success, false, 'roll-up must abort, not merge stale target qty');
+    assert.match(result.message, /Target TP filled during cancel/);
+    assert.deepEqual(cancelledOrders, ['tp-src2', 'tp-tgt2'], 'source cancels cleanly before the target race is hit');
+
+    const bodies = eng._getPositionState().celestialBodies;
+    assert.equal(bodies.length, 2, 'both bodies remain — no merge happened');
+
+    const liveSource = bodies.find(b => b.id === 'src2');
+    assert.ok(liveSource.tpOrderId, 'source TP was restored after its clean cancel, since the roll-up aborted');
+    assert.notEqual(liveSource.tpOrderId, 'tp-src2', 'restored source TP is a fresh order, not the cancelled identity');
+    assert.equal(liveSource.assetQty, 0.01, 'source qty untouched');
+
+    const liveTarget = bodies.find(b => b.id === 'tgt2');
+    assert.ok(Math.abs(liveTarget.assetQty - 0.014) < 1e-9, `0.02 - 0.006 sold = 0.014 remaining, got ${liveTarget.assetQty}`);
+    assert.ok(liveTarget.tpOrderId && liveTarget.tpOrderId !== 'tp-tgt2', 'a fresh, correctly-sized TP was re-armed on the deducted target');
+
+    assert.equal(eng._test.getMergeTpSnapshots().pending.size, 0, 'no dangling pending snapshot after abort');
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(JUNK_DIR, 'fill-ledger.json'), 'utf8'));
+    const sell = ledger.find(fill => fill.orderId === 'tp-tgt2');
+    assert.ok(sell, 'the executed target tranche was booked to the fill ledger');
+    assert.equal(sell.size, 0.006);
+  });
+
+  it('fully consuming the source body during cancel leaves it deducted to zero with no TP re-armed', async () => {
+    const source = makeBody('src3', 50000, 0.01, 'tp-src3');
+    const target = makeBody('tgt3', 51000, 0.02, 'tp-tgt3');
+    let getOrderSrcCalls = 0;
+    let placeCalls = 0;
+
+    const eng = makeEngine({
+      bodies: [source, target],
+      adapter: {
+        getOrder: async (orderId) => {
+          if (orderId === 'tp-src3') {
+            getOrderSrcCalls++;
+            return getOrderSrcCalls === 1
+              ? { filledSize: 0, status: 'OPEN' }
+              // The whole body's qty (0.01) executed before the cancel landed.
+              : { status: 'CANCELLED', filledSize: 0.01, averageFilledPrice: 50500, totalFees: 0.05 };
+          }
+          return { filledSize: 0, status: 'OPEN' };
+        },
+        getOpenOrders: async () => [],
+        cancelOrder: async () => {},
+        getOrderFills: async () => [{
+          tradeId: 'tp-src3-t1',
+          orderId: 'tp-src3',
+          side: 'sell',
+          price: '50500',
+          size: '0.01',
+          totalCommission: '0.05',
+          rebate: '0',
+          liquidityIndicator: 'MAKER',
+          tradeTime: new Date().toISOString(),
+        }],
+      },
+      executor: {
+        cancelBodyTpOrder: async () => ({ cancelled: true, filled: false, filledSize: 0.01, filledValue: 505, averageFilledPrice: 50500, totalFees: 0.05 }),
+        placeBodyTpOrder: async () => { placeCalls++; return { success: true, orderId: `tp-new-${placeCalls}` }; },
+      },
+    });
+
+    const result = await eng.manualMergeBody('src3', { targetId: 'tgt3' });
+
+    assert.equal(result.success, false, 'roll-up aborts on the fully-consumed source');
+    const liveSource = eng._getPositionState().celestialBodies.find(b => b.id === 'src3');
+    assert.ok(liveSource, 'the body itself is not removed by this booking path');
+    assert.ok(Math.abs(liveSource.assetQty) < 1e-9, 'source body fully deducted to zero');
+    assert.equal(liveSource.tpOrderId, null, 'no TP is re-armed on a zero-qty body');
+    assert.equal(placeCalls, 0, 'placeBodyTpOrder is never called for a fully-consumed body');
+  });
+});

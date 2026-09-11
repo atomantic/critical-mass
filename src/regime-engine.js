@@ -5282,34 +5282,95 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       ? (targetSnapshot.tpPrice / targetSnapshot.avgPrice - 1) * 100
       : null;
 
+    // A body TP that executes a tranche WHILE we're cancelling it (issue #368,
+    // mirrors the buy-merge precedent at #227) still reports cancelled: true —
+    // classifyBodyTpCancellation is what tells clean cancels apart from
+    // execution-bearing ones. The Race-3 snapshots set above (before either
+    // cancel call) let handleOrderFillImpl's merge-snapshot branch find the
+    // still-live body (neither source nor target has been removed from
+    // celestialBodies yet at this point), deduct the sold qty/prorated cost,
+    // and re-place a right-sized TP — all in one call, reusing the exact same
+    // booking path the buy-merge race already relies on. We call
+    // handleOrderFillImpl directly (not the handleOrderFill wrapper) because
+    // the wrapper defers to `mergeInProgress`, which THIS call holds — going
+    // through it would self-stall for its full 15s wait window every time.
+    const bookExecutionDuringCancel = async (body, snapshot, cancelResult) => {
+      const soldTp = snapshot.tpOrderId;
+      pendingMergeTpOrders.delete(soldTp);
+      completedMergeTpOrders.set(soldTp, snapshot);
+      const t = setTimeout(() => { completedMergeTpOrders.delete(soldTp); ttlTimers.delete(t); }, 300000);
+      ttlTimers.add(t);
+      body.tpOrderId = null;
+      body.tpPrice = 0;
+      body.assetOnOrder = 0;
+      saveLiveState();
+      await handleOrderFillImpl(buildPartialFillData(soldTp, 'sell', {
+        status: 'CANCELLED',
+        filledSize: cancelResult.filledSize,
+        filledValue: cancelResult.filledValue,
+        averageFilledPrice: cancelResult.averageFilledPrice,
+      }, { totalFees: cancelResult.totalFees || 0 }), { set: null, key: null }).catch((err) => {
+        logger.warn(
+          `⚠️ [${exchange}] Failed to book body TP partial fill for ${soldTp.slice(0, 8)} immediately: ${err.message} — relying on a later WS/poll event`,
+          { orderId: soldTp, error: err.message }
+        );
+      });
+      return soldTp;
+    };
+
     // Cancel source TP
     const srcCancel = await orderExecutor.cancelBodyTpOrder(source.id, source.tpOrderId);
-    if (!srcCancel.cancelled) {
+    const srcOutcome = classifyBodyTpCancellation(srcCancel);
+    if (srcOutcome === 'filled' || srcOutcome === 'unresolved') {
       // Clean up snapshots
       if (source.tpOrderId) pendingMergeTpOrders.delete(source.tpOrderId);
       if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
-      const reason = srcCancel.filled ? 'already filled' : 'cancel failed';
+      const reason = srcOutcome === 'filled' ? 'already filled' : 'cancel failed';
       logger.warn(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP ${reason}, aborting roll-up`);
       return { success: false, message: `Source TP ${reason}` };
     }
-    // Clear source body TP fields after successful cancel
+    if (srcOutcome === 'cancelled_with_execution') {
+      // Target's TP was never touched (we cancel source first) — just drop its
+      // snapshot and abort; booking deducts the sold qty/cost from the
+      // still-live source body and re-arms a right-sized TP on it directly, so
+      // there's nothing left needing this roll-up attempt.
+      if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
+      const soldTp = await bookExecutionDuringCancel(source, sourceSnapshot, srcCancel);
+      logger.warn(`⚠️ [${exchange}] Source body ${source.id.slice(-8)} TP filled ${srcCancel.filledSize} ${baseCurrency} during cancel — booked ${soldTp.slice(-8)}, aborting roll-up (#368)`);
+      return { success: false, message: `Source TP filled during cancel (${srcCancel.filledSize} ${baseCurrency}) — booked, roll-up aborted` };
+    }
+    // Clean cancel — clear source body TP fields
     source.tpOrderId = null;
     source.tpPrice = 0;
     source.assetOnOrder = 0;
 
     // Cancel target TP
     const tgtCancel = await orderExecutor.cancelBodyTpOrder(target.id, target.tpOrderId);
-    if (!tgtCancel.cancelled) {
+    const tgtOutcome = classifyBodyTpCancellation(tgtCancel);
+    if (tgtOutcome === 'filled' || tgtOutcome === 'unresolved') {
       // Clean up snapshots
       if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
       if (target.tpOrderId) pendingMergeTpOrders.delete(target.tpOrderId);
       // Restore source TP to avoid leaving it dangling
-      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP cancel failed, restoring source TP`);
+      const reason = tgtOutcome === 'filled' ? 'already filled' : 'cancel failed';
+      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP ${reason}, restoring source TP`);
       await placeBodyTp(source);
       saveLiveState();
-      return { success: false, message: 'Target TP cancel failed, source restored' };
+      return { success: false, message: `Target TP ${reason}, source restored` };
     }
-    // Clear target body TP fields after successful cancel
+    if (tgtOutcome === 'cancelled_with_execution') {
+      // Source's TP was already cleanly cancelled above, so it needs restoring
+      // before we abort (mirrors the failed-cancel branch above). Booking
+      // deducts the sold qty/cost from the still-live target body and re-arms
+      // a right-sized TP on it directly.
+      if (sourceSnapshot.tpOrderId) pendingMergeTpOrders.delete(sourceSnapshot.tpOrderId);
+      const soldTp = await bookExecutionDuringCancel(target, targetSnapshot, tgtCancel);
+      logger.warn(`⚠️ [${exchange}] Target body ${target.id.slice(-8)} TP filled ${tgtCancel.filledSize} ${baseCurrency} during cancel — booked ${soldTp.slice(-8)}, restoring source TP, aborting roll-up (#368)`);
+      await placeBodyTp(source);
+      saveLiveState();
+      return { success: false, message: `Target TP filled during cancel (${tgtCancel.filledSize} ${baseCurrency}) — booked, source restored, roll-up aborted` };
+    }
+    // Clean cancel — clear target body TP fields
     target.tpOrderId = null;
     target.tpPrice = 0;
     target.assetOnOrder = 0;
