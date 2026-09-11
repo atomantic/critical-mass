@@ -229,6 +229,7 @@ describe('#367 offline recovery — final body fills offline triggers a full cyc
       },
     });
     const pos = eng._getPositionState();
+    Object.assign(eng._getConfig(), { tpAutoManaged: true, sizeAutoManaged: true });
     pos.cycleBuys = 3;
     pos.activeTpOrderId = 'stale-legacy-tp';
 
@@ -238,6 +239,8 @@ describe('#367 offline recovery — final body fills offline triggers a full cyc
     assert.equal(pos.cyclesCompleted, 1, 'resetCycle() incremented cyclesCompleted — the #367 defect left this at 0');
     assert.equal(pos.cycleBuys, 0, 'resetCycle() zeroed cycleBuys');
     assert.equal(pos.activeTpOrderId, null, 'resetCycle() cleared the stale legacy TP pointer');
+    assert.equal(eng.getState().tpOptimizer.sampleCount, 1);
+    assert.equal(eng.getState().sizeOptimizer.totalCycleCount, 1);
   });
 });
 
@@ -305,5 +308,138 @@ describe('#367 offline recovery — error containment (#316)', () => {
       (pos.celestialBodies[0].sourceOrderIds || []).includes('buy-ok'),
       'the entry BEHIND the failing one was still recovered',
     );
+  });
+});
+
+const setupLegacyTp = (eng, orderId) => {
+  Object.assign(eng._getPositionState(), {
+    activeTpOrderId: orderId,
+    totalAsset: 0.01,
+    totalCostBasis: 500,
+    avgCostBasis: 50000,
+    assetOnOrder: 0.009,
+    cycleBuys: 3,
+    ladderActive: true,
+    pendingLadderOrders: [{ orderId: 'resting-ladder' }],
+  });
+};
+
+const readClosedTrade = (orderId) => JSON.parse(
+  fs.readFileSync(path.join(JUNK_DIR, 'closed-trades.json'), 'utf8'),
+).find(t => t.sellOrderId === orderId);
+
+describe('#367 offline recovery — legacy TP', () => {
+  it('preserves legacy closed-trade fees, cost basis, holdback, and execution time', async () => {
+    const orderId = 'legacy-audit';
+    const fills = sellFill(orderId, 0.009, 51000);
+    fills[0].totalCommission = '1';
+    fills[0].tradeTime = '2026-09-01T12:00:00.000Z';
+    const eng = makeEngine({
+      adapter: {
+        getOrder: async () => ({ status: 'FILLED', filledSize: 0.009, averageFilledPrice: 51000 }),
+        getOrderFills: async () => fills,
+      },
+      executor: { cancelAllLadderOrders: async () => ({ cancelled: 1 }) },
+    });
+    setupLegacyTp(eng, orderId);
+    assert.equal((await eng._test.checkOfflineOrderFills()).tpFilled, true);
+    const trade = readClosedTrade(orderId);
+    assert.equal(trade.qtySold, 0.009);
+    assert.equal(trade.sellFees, 1);
+    assert.equal(trade.sellProceeds, 458);
+    assert.equal(trade.costBasis, 450);
+    assert.equal(trade.buyAvgPrice, 50000);
+    assert.equal(trade.pnl, 8);
+    assert.equal(trade.holdbackAsset, 0.001);
+    assert.equal(trade.timestamp, Date.parse(fills[0].tradeTime));
+    assert.equal(trade.source, 'offline');
+    assert.equal(eng._getPositionState().cyclesCompleted, 1);
+  });
+
+  it('uses canonical capital, buy linkage, optimizers, ladder cleanup, and live-fill dedup', async () => {
+    const orderId = 'legacy-lifecycle';
+    let cancellations = 0;
+    const eng = makeEngine({
+      adapter: {
+        getOrder: async () => ({ status: 'FILLED', filledSize: 0.009, averageFilledPrice: 51000 }),
+        getOrderFills: async () => sellFill(orderId, 0.009, 51000),
+      },
+      executor: { cancelAllLadderOrders: async () => { cancellations++; return { cancelled: 1 }; } },
+    });
+    setupLegacyTp(eng, orderId);
+    Object.assign(eng._getConfig(), { tpAutoManaged: true, sizeAutoManaged: true });
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(buyFill('legacy-source-buy', 0.01, 50000)[0]);
+    const beforeCapital = eng._getConfig().maxUsdcDeployed;
+    await eng._test.checkOfflineOrderFills();
+    await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    const state = eng.getState();
+    assert.equal(eng._getConfig().maxUsdcDeployed - beforeCapital, 9);
+    assert.equal(state.position.cyclesCompleted, 1);
+    assert.equal(state.position.activeTpOrderId, null);
+    assert.equal(state.position.cycleBuys, 0);
+    assert.equal(state.tpOptimizer.sampleCount, 1);
+    assert.equal(state.sizeOptimizer.totalCycleCount, 1);
+    assert.equal(cancellations, 1);
+    assert.equal(state.closedTradesSummary.count, 1);
+    assert.equal(ledger.getFillsForOrder('legacy-source-buy')[0].sellOrderId, orderId);
+    assert.deepEqual(readClosedTrade(orderId).buyOrderIds, ['legacy-source-buy']);
+  });
+
+  for (const failure of ['status', 'fills']) {
+    it(`contains legacy ${failure} lookup failure and recovers the next entry`, async () => {
+      const eng = makeEngine({
+        adapter: {
+          getOrder: async (id) => {
+            if (id === 'legacy-failed' && failure === 'status') throw new Error('status unavailable');
+            return { status: 'FILLED', filledSize: 0.01, averageFilledPrice: 50000 };
+          },
+          getOrderFills: async (id) => {
+            if (id === 'legacy-failed') throw new Error('fills unavailable');
+            return buyFill('entry-after-legacy', 0.01, 50000);
+          },
+        },
+        executor: { getPendingEntries: () => new Map([['entry-after-legacy', {}]]) },
+      });
+      setupLegacyTp(eng, 'legacy-failed');
+      const result = await eng._test.checkOfflineOrderFills();
+      assert.equal(result.tpFilled, false);
+      assert.equal(result.entriesFilled, 1);
+      assert.equal(eng._getPositionState().activeTpOrderId, 'legacy-failed');
+      assert.equal(eng._getPositionState().cyclesCompleted, 0);
+      assert.equal(eng._getPositionState().celestialBodies.length, 1);
+    });
+  }
+});
+
+
+describe('#367 canonical legacy sell audit', () => {
+  it('records a live legacy sell and excludes unrelated body-owned buys', async () => {
+    const orderId = 'legacy-live';
+    const eng = makeEngine({
+      adapter: { getOrderFills: async () => sellFill(orderId, 0.009, 51000) },
+      executor: { cancelAllLadderOrders: async () => ({ cancelled: 1 }) },
+    });
+    setupLegacyTp(eng, orderId);
+    const ledger = eng.getFillLedger();
+    ledger.startNewCycle();
+    ledger.ingestFill(buyFill('unrelated-body-buy', 0.01, 50000)[0]);
+    ledger.annotateFillsByOrderId('unrelated-body-buy', { isBodyOwned: true, bodyId: 'other-body' });
+    await eng._test.handleOrderFill({ orderId, side: 'sell', isPartialFill: false });
+    assert.equal(readClosedTrade(orderId).source, 'live');
+    assert.deepEqual(readClosedTrade(orderId).buyOrderIds, []);
+    assert.equal(ledger.getFillsForOrder('unrelated-body-buy')[0].sellOrderId, undefined);
+  });
+
+  it('does not record or reset an untracked sell while celestial bodies remain', async () => {
+    const eng = makeEngine({
+      bodies: [makeBody('still-active', 50000, 0.01)],
+      adapter: { getOrderFills: async () => sellFill('untracked-with-body', 0.009, 51000) },
+    });
+    await eng._test.handleOrderFill({ orderId: 'untracked-with-body', side: 'sell', isPartialFill: false });
+    assert.equal(eng.getState().closedTradesSummary.count, 0);
+    assert.equal(eng._getPositionState().cyclesCompleted, 0);
+    assert.equal(eng._getPositionState().celestialBodies.length, 1);
   });
 });
