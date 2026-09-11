@@ -76,45 +76,7 @@
       },
       "dcaStrategy": "fixed",
       "fibBaseAmount": 10,
-      "schedulerInterval": 30000,
-      "aggressivenessPresets": {
-        "conservative": {
-          "kFactor": 0.8,
-          "minIntervalMs": 180000,
-          "maxIntervalMs": 7200000,
-          "entryOffsetBps": 25,
-          "cautionScale": 0.15,
-          "trendScale": 0,
-          "maxCycleBuys": 100
-        },
-        "moderate": {
-          "kFactor": 0.65,
-          "minIntervalMs": 120000,
-          "maxIntervalMs": 3600000,
-          "entryOffsetBps": 18,
-          "cautionScale": 0.35,
-          "trendScale": 0.1,
-          "maxCycleBuys": 150
-        },
-        "aggressive": {
-          "kFactor": 0.5,
-          "minIntervalMs": 90000,
-          "maxIntervalMs": 2400000,
-          "entryOffsetBps": 12,
-          "cautionScale": 0.6,
-          "trendScale": 0.25,
-          "maxCycleBuys": 250
-        },
-        "maximum": {
-          "kFactor": 0.3,
-          "minIntervalMs": 60000,
-          "maxIntervalMs": 1200000,
-          "entryOffsetBps": 5,
-          "cautionScale": 1,
-          "trendScale": 0.5,
-          "maxCycleBuys": 500
-        }
-      }
+      "schedulerInterval": 30000
     },
     "gemini": {
       "enabled": false,
@@ -159,40 +121,52 @@
         "minIntervalMs": 180000,
         "maxIntervalMs": 7200000,
         "entryOffsetBps": 25,
-        "baseSizeUsdc": 50,
+        "entryOffsetUpBps": 13,
+        "entryOffsetDownBps": 38,
+        "orderStaleMs": 300000,
         "cautionScale": 0.15,
         "trendScale": 0,
-        "maxCycleBuys": 100
+        "maxCycleBuys": 10,
+        "mergeProximityScale": 0.5
       },
       "moderate": {
         "kFactor": 0.65,
         "minIntervalMs": 120000,
         "maxIntervalMs": 3600000,
         "entryOffsetBps": 18,
-        "baseSizeUsdc": 100,
+        "entryOffsetUpBps": 9,
+        "entryOffsetDownBps": 27,
+        "orderStaleMs": 180000,
         "cautionScale": 0.35,
         "trendScale": 0.1,
-        "maxCycleBuys": 150
+        "maxCycleBuys": 15,
+        "mergeProximityScale": 1.0
       },
       "aggressive": {
         "kFactor": 0.5,
         "minIntervalMs": 90000,
         "maxIntervalMs": 2400000,
         "entryOffsetBps": 12,
-        "baseSizeUsdc": 250,
+        "entryOffsetUpBps": 6,
+        "entryOffsetDownBps": 18,
+        "orderStaleMs": 120000,
         "cautionScale": 0.6,
         "trendScale": 0.25,
-        "maxCycleBuys": 250
+        "maxCycleBuys": 25,
+        "mergeProximityScale": 1.5
       },
       "maximum": {
         "kFactor": 0.3,
         "minIntervalMs": 60000,
         "maxIntervalMs": 1200000,
         "entryOffsetBps": 5,
-        "baseSizeUsdc": 500,
-        "cautionScale": 1,
+        "entryOffsetUpBps": 3,
+        "entryOffsetDownBps": 8,
+        "orderStaleMs": 60000,
+        "cautionScale": 1.0,
         "trendScale": 0.5,
-        "maxCycleBuys": 500
+        "maxCycleBuys": 50,
+        "mergeProximityScale": 2.5
       }
     }
   }
