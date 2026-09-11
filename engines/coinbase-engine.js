@@ -322,14 +322,15 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
 
   if (!engine) {
     const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
-    const celestialHierarchy = require('../src/celestial-hierarchy');
+    const { buildStoppedRegimeStatus } = require('../src/regime-status');
     const savedState = loadRegimeState(exchange, resolvedPair);
     const position = savedState?.position || null;
-    const config = getRegimeConfig(exchange, resolvedPair);
     const marketService = getMarketDataService(exchange, resolvedPair);
     const serviceStatus = marketService ? marketService.getStatus() : null;
 
-    // Auto-close: if fund is draining but position is fully empty, transition to closed
+    // Auto-close: if fund is draining but position is fully empty, transition to closed.
+    // This is an engine-owned state mutation (not status synthesis), so it stays
+    // here and runs before buildStoppedRegimeStatus re-loads state from disk.
     if (position && position.lifecycle === LIFECYCLE.DRAINING) {
       const bodies = position.celestialBodies || [];
       const hasPosition = (position.totalAsset || 0) > 0 || bodies.length > 0;
@@ -343,56 +344,19 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
       }
     }
 
-    const bodies = position?.celestialBodies || [];
-    const celestial = celestialHierarchy.buildCelestialPayload(position, config);
+    // Delegate to the shared stopped/offline status synthesizer (issue #357)
+    // so enrichment (P&L re-derivation, APY, pendingOrders, celestial) stays
+    // in one place shared with the HTTP gateway and the Socket.IO stream.
+    // Uses the read-only cached ledger (issue #183) rather than an uncached
+    // instance re-parsed on every stopped status poll.
+    const status = buildStoppedRegimeStatus(exchange, resolvedPair, {
+      market: serviceStatus?.market || null,
+      regime: serviceStatus?.regime || null,
+      getOrderStatus: marketService?.getOrderStatus,
+      mode: 'STOPPED',
+    });
 
-    // Re-derive over the ledger so realizedPnL / realizedAssetPnL /
-    // heldAssetCostBasis reflect current state — persisted values can be stale
-    // (engine stopped before a bugfix landed, or operator-edited ledger).
-    if (position) {
-      try {
-        const { createFillLedger } = require('../src/fill-ledger');
-        const productId = config.productId || resolvedPair;
-        const fl = createFillLedger(exchange, productId, resolvedPair);
-        const derived = fl.getDerivedRealizedPnL();
-        position.realizedPnL = derived.realizedPnL;
-        position.realizedAssetPnL = derived.realizedAssetPnL;
-        position.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
-      } catch (e) {
-        engineLogger(exchange, resolvedPair).warn(`⚠️ [${fundLabel(exchange, resolvedPair)}] offline cycle-pair derivation failed: ${e.message}`, { error: e.message });
-      }
-    }
-
-    const { calculateApyMetrics } = require('../src/apy-calculator');
-    const lastPrice = serviceStatus?.market?.lastPrice || 0;
-    const apy = position ? calculateApyMetrics(position, config, { lastPrice }) : {};
-
-    // Surface persisted TPs (bodies + legacy core) as pendingOrders so the
-    // dashboard keeps mapping buys to their open sells while the engine is
-    // stopped. Pass the market service's live tracker so any TP it's
-    // already seen filled/cancelled is dropped (no phantom open rows).
-    const pendingOrders = celestialHierarchy.buildPersistedPendingOrders(
-      position,
-      marketService?.getOrderStatus,
-    );
-
-    return {
-      success: true, exchange, pair: resolvedPair, running: false,
-      status: {
-        isRunning: false,
-        market: serviceStatus?.market || null,
-        regime: serviceStatus?.regime || null,
-        position, celestial, apy, pendingOrders,
-        health: { mode: 'STOPPED' },
-        isDryRun: savedState?.isDryRun || false,
-        lifecycle: {
-          lifecycle: position?.lifecycle || LIFECYCLE.ACTIVE,
-          lifecycleChangedAt: position?.lifecycleChangedAt || null,
-          lifecycleReason: position?.lifecycleReason || null,
-          lifecycleClosedCycle: position?.lifecycleClosedCycle || null,
-        },
-      },
-    };
+    return { success: true, exchange, pair: resolvedPair, running: false, status };
   }
 
   return { success: true, exchange, pair: resolvedPair, running: true, status: engine.getStatus() };

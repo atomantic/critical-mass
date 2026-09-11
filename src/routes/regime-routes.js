@@ -6,13 +6,8 @@
  * process via IPC WebSocket. Config reads/writes stay local (file-based).
  */
 
-const fs = require('fs');
-const path = require('path');
 const { getRegimeConfig, updateRegimeConfig, updateFundConfig, validateRegimeConfig, getFundConfig } = require('../config-utils');
-const { loadRegimeState, LIFECYCLE } = require('../state-tracker');
-const { resolveFundDataDir } = require('../migration');
-const { calculateApyMetrics } = require('../apy-calculator');
-const celestialHierarchy = require('../celestial-hierarchy');
+const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
 const { sanitizeRegimeConfig } = require('../config-validator');
 const { getIPC: getExchangeIPC, withConfiguredPair } = require('./route-utils');
@@ -50,106 +45,29 @@ const buildClientConfig = (exchange, pair) => {
   return config;
 };
 
-/**
- * Best-effort last market price from disk for the offline route fallback.
- * Reads the most recent fill from fill-ledger.json. Stale (engine has been
- * down for some time) but better than 0 — without this, APY's BTC component
- * shows zero until the engine restarts, and on a hard browser refresh
- * (which uses fetch as full replacement) the APY/capital panels would be
- * blank because the dashboard doesn't have a prior socket snapshot to merge.
- */
-const lastPriceFromLedger = (dataDir) => {
-  const ledgerPath = path.join(dataDir, 'fill-ledger.json');
-  if (!fs.existsSync(ledgerPath)) return 0;
-  try {
-    const raw = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-    const fills = Array.isArray(raw) ? raw : (raw.fills || []);
-    let latest = null;
-    for (const f of fills) {
-      if (!latest || (f.timestamp || 0) > (latest.timestamp || 0)) latest = f;
-    }
-    return Number(latest?.price) || 0;
-  } catch {
-    return 0;
-  }
-};
-
 /** Convert IPC connection errors to standard response */
 const engineError = (err) => ({ success: false, error: `Engine unavailable: ${err.message}` });
 
 /**
  * Read-only status synthesized from disk for when the engine IPC is dead.
+ * Delegates to the shared stopped/offline status synthesizer (issue #357),
+ * which re-derives P&L from the cached fill ledger and falls back to the
+ * ledger's last fill price for `market.lastPrice` when there's no live
+ * price to report — the same enrichment the engine's own IPC handler and
+ * the Socket.IO stream produce.
+ *
  * Returns null when there's no persisted state to fall back on, so a true
  * IPC outage (e.g., first-time fund or broken connection with no saved
  * data) still surfaces as 503 rather than masking as a stopped engine.
+ * `health.mode: 'ENGINE_DOWN'` (vs. the engine's own `'STOPPED'`) tells the
+ * dashboard this is an unreachable engine, not a clean operator stop, so
+ * the operator doesn't take an unsafe control action against a process
+ * that may still be running.
  */
-const buildOfflineStatus = (exchange, pair) => {
-  // loadRegimeState returns an initial empty state when no file exists, so
-  // checking the return value isn't enough — verify the file is on disk first.
-  const dataDir = resolveFundDataDir(exchange, pair);
-  const stateFile = path.join(dataDir, 'regime-state.json');
-  if (!fs.existsSync(stateFile)) return null;
-
-  let rs;
-  try {
-    rs = loadRegimeState(exchange, pair);
-  } catch {
-    return null;
-  }
-  const position = rs.position || {};
-  const bodies = position.celestialBodies || [];
-  const config = getRegimeConfig(exchange, pair);
-  // Use the most recent fill price as a stale-but-reasonable last price.
-  // A hard refresh uses fetch as full replacement (no socket snapshot to
-  // merge with), so omitting apy would leave capital/APY panels blank.
-  const lastPrice = lastPriceFromLedger(dataDir);
-
-  // Re-derive from the ledger — a stopped engine leaves stale values on disk.
-  try {
-    const { getCachedFillLedger } = require('../fill-ledger');
-    const productId = config.productId || pair;
-    // Read-only, cached (#183): the offline fallback fires on every status poll
-    // while the engine is unreachable; without caching each poll re-parses the
-    // whole multi-MB ledger on the gateway event loop.
-    const fl = getCachedFillLedger(exchange, productId, pair);
-    const derived = fl.getDerivedRealizedPnL();
-    position.realizedPnL = derived.realizedPnL;
-    position.realizedAssetPnL = derived.realizedAssetPnL;
-    position.heldAssetCostBasis = derived.heldOpenBuyCostBasis;
-  } catch (e) {
-    // Warn and fall through: a corrupt ledger must not turn the offline
-    // fallback into a 500 exactly when it's needed (issue #110 M5).
-    regimeLogger(exchange, pair).warn(`⚠️ [${exchange}/${pair}] offline cycle-pair derivation failed: ${e.message}`, {
-      action: 'offline-derive',
-      error: e.message,
-    });
-  }
-
-  return {
-    isRunning: false,
-    // Distinguish a real IPC outage from a clean operator stop. The dashboard
-    // reads health.mode; ENGINE_DOWN signals "the gateway can't reach the
-    // engine process" so the operator doesn't think the engine is cleanly
-    // halted and take an unsafe control action.
-    health: { mode: 'ENGINE_DOWN' },
-    engineDown: true,
-    position,
-    regime: rs.regime || null,
-    // Surface the stale price as market.lastPrice too — the live-price
-    // banner and cost-basis page read status.market.lastPrice and would
-    // otherwise show $0 on a hard refresh during an IPC outage.
-    market: { lastPrice, stale: true },
-    pendingOrders: celestialHierarchy.buildPersistedPendingOrders(position),
-    apy: calculateApyMetrics(position, config, { lastPrice }),
-    lifecycle: {
-      lifecycle: position.lifecycle || LIFECYCLE.ACTIVE,
-      lifecycleChangedAt: position.lifecycleChangedAt || null,
-      lifecycleReason: position.lifecycleReason || null,
-      lifecycleClosedCycle: position.lifecycleClosedCycle || null,
-    },
-    celestial: celestialHierarchy.buildCelestialPayload(position, config),
-  };
-};
+const buildOfflineStatus = (exchange, pair) => buildStoppedRegimeStatus(exchange, pair, {
+  mode: 'ENGINE_DOWN',
+  requireExistingState: true,
+});
 
 /** HTTP status code for error responses */
 const errStatus = (result) => result.error?.includes('unavailable') ? 503 : 400;
