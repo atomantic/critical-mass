@@ -765,6 +765,8 @@ const createInitialRegimePositionState = () => ({
   // APY tracking fields
   engineStartTime: null,
   initialCapital: 0,
+  originalCapital: 0,       // DEPRECATED: use depositedCapital instead
+  depositedCapital: 0,      // Total user deposits (excludes profits) - updated when user adds capital
   // Pending entry orders (persisted across restarts)
   pendingEntryOrders: [],
   // Ladder mode state
