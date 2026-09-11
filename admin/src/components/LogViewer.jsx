@@ -4,10 +4,20 @@ import { useToast } from './Toast'
 
 const TAIL_OPTIONS = [100, 250, 500, 1000, 2000]
 
+// Short, human status text for a stream that stopped on its own.
+const describeTerminal = (terminal) => {
+  if (!terminal) return null
+  if (terminal.reason === 'exited') return 'Stopped'
+  if (terminal.reason === 'error') return `Error: ${terminal.message || 'stream failed'}`
+  const codePart = terminal.code != null ? ` (code ${terminal.code})` : ''
+  const signalPart = terminal.signal ? ` (${terminal.signal})` : ''
+  return `Crashed${codePart}${signalPart}`
+}
+
 export default function LogViewer({ processName }) {
   const [tailLines, setTailLines] = useState(500)
   const [fullscreen, setFullscreen] = useState(false)
-  const { logs, subscribed, clear, flush, flushing } = useLogStream(processName, { lines: tailLines })
+  const { logs, subscribed, clear, flush, flushing, terminal, retry } = useLogStream(processName, { lines: tailLines })
   const { addToast } = useToast()
   const containerRef = useRef(null)
   const autoScrollRef = useRef(true)
@@ -64,10 +74,26 @@ export default function LogViewer({ processName }) {
         <div className="flex items-center gap-2 ml-auto">
           {/* Streaming status */}
           <div className="flex items-center gap-1.5 text-xs">
-            <span className={`w-2 h-2 rounded-full ${subscribed ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
-            <span className={subscribed ? 'text-green-400' : 'text-gray-400'}>
-              {subscribed ? 'Streaming' : 'Disconnected'}
+            <span
+              className={`w-2 h-2 rounded-full ${
+                subscribed ? 'bg-green-500 animate-pulse' : terminal ? (terminal.reason === 'exited' ? 'bg-yellow-500' : 'bg-red-500') : 'bg-gray-500'
+              }`}
+            />
+            <span
+              className={
+                subscribed ? 'text-green-400' : terminal ? (terminal.reason === 'exited' ? 'text-yellow-400' : 'text-red-400') : 'text-gray-400'
+              }
+            >
+              {subscribed ? 'Streaming' : terminal ? describeTerminal(terminal) : 'Disconnected'}
             </span>
+            {!subscribed && terminal && (
+              <button
+                onClick={retry}
+                className="px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded transition-colors"
+              >
+                Retry
+              </button>
+            )}
           </div>
 
           <button
@@ -102,7 +128,7 @@ export default function LogViewer({ processName }) {
       >
         {logs.length === 0 ? (
           <div className="text-gray-600 text-center py-8">
-            {subscribed ? 'Waiting for log output...' : `Connecting to ${processName}...`}
+            {subscribed ? 'Waiting for log output...' : terminal ? describeTerminal(terminal) : `Connecting to ${processName}...`}
           </div>
         ) : (
           logs.map((entry, i) => (
