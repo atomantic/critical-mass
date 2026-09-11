@@ -19,6 +19,21 @@ const parser = new XMLParser({
 });
 
 /**
+ * Only allow http(s) links through to storage/display — feed items are
+ * attacker-controlled, and a `javascript:`/`data:` link rendered as an
+ * `<a href>` in the admin dashboard would execute in the operator's
+ * browser session (issue #395).
+ * @param {string} link - Raw link from a feed item
+ * @returns {string} The link if it is http/https, otherwise ''
+ */
+const sanitizeLink = (link) => {
+  if (!link || typeof link !== 'string') return '';
+  if (!URL.canParse(link)) return '';
+  const { protocol } = new URL(link);
+  return protocol === 'http:' || protocol === 'https:' ? link : '';
+};
+
+/**
  * Normalize an RSS 2.0 item to common format
  * @param {Object} item - Raw RSS item
  * @param {string} sourceName - Feed name
@@ -28,7 +43,7 @@ const normalizeRSSItem = (item, sourceName) => ({
   guid: item.guid?.['#text'] || item.guid || item.link || `${sourceName}-${item.title}`,
   title: (item.title || '').trim(),
   description: (item.description || item['content:encoded'] || '').replace(/<[^>]+>/g, '').trim().slice(0, 500),
-  link: item.link || '',
+  link: sanitizeLink(item.link),
   pubDate: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
   source: sourceName,
 });
@@ -49,7 +64,7 @@ const normalizeAtomEntry = (entry, sourceName) => {
     guid: entry.id || href || `${sourceName}-${entry.title}`,
     title: (typeof entry.title === 'string' ? entry.title : entry.title?.['#text'] || '').trim(),
     description: (entry.summary || entry.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 500),
-    link: href,
+    link: sanitizeLink(href),
     pubDate: entry.updated || entry.published ? new Date(entry.updated || entry.published).toISOString() : new Date().toISOString(),
     source: sourceName,
   };
@@ -131,4 +146,4 @@ const fetchAllFeeds = async (feeds) => {
   return allItems;
 };
 
-module.exports = { fetchFeed, fetchAllFeeds };
+module.exports = { fetchFeed, fetchAllFeeds, sanitizeLink };
