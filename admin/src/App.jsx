@@ -2,6 +2,7 @@ import { Component, useState, useEffect, useLayoutEffect, useRef, lazy, Suspense
 import { Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom'
 import ExchangeSelector from './components/ExchangeSelector'
 import AddFundModal from './components/AddFundModal'
+import ModalDialog from './components/ModalDialog'
 const Dashboard = lazy(() => import('./components/Dashboard'))
 const ConfigEditor = lazy(() => import('./components/ConfigEditor'))
 const TransactionsDCA = lazy(() => import('./components/TransactionsDCA'))
@@ -863,58 +864,56 @@ function AppContent() {
 
         {/* Close Fund confirmation dialog */}
         {closeFundDialogOpen && (
-          <div
-            className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-            onClick={() => !closing && setCloseFundDialogOpen(false)}
+          <ModalDialog
+            onClose={() => setCloseFundDialogOpen(false)}
+            dismissible={!closing}
+            labelledBy="close-fund-title"
+            describedBy="close-fund-description"
           >
-            <div
-              className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4 w-full"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h3 className="text-white text-lg font-medium mb-3">
-                Close <span className="font-mono text-yellow-400">{currentExchange}/{currentPair}</span>?
-              </h3>
-              <p className="text-gray-300 text-sm mb-2">
-                This blocks all new entries immediately. The fund's existing take-profit
-                order(s) will remain in place, and the fund will close automatically
-                after the current cycle's TP fills.
-              </p>
-              <p className="text-gray-500 text-xs mb-4">
-                You can reopen the fund later, but it will not auto-resume on engine restart.
-              </p>
-              <div className="mb-4">
-                <label className="block text-xs uppercase tracking-wider text-gray-400 mb-1">
-                  Reason (optional)
-                </label>
-                <input
-                  type="text"
-                  value={closeFundReason}
-                  onChange={(e) => setCloseFundReason(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && submitCloseFund()}
-                  placeholder="e.g. winding down for tax season"
-                  className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white text-sm focus:border-yellow-500 focus:outline-none"
-                  disabled={closing}
-                  autoFocus
-                />
-              </div>
-              <div className="flex justify-end gap-3">
-                <button
-                  className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50"
-                  onClick={() => setCloseFundDialogOpen(false)}
-                  disabled={closing}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="px-4 py-2 text-sm text-white bg-yellow-600 hover:bg-yellow-500 rounded transition-colors disabled:opacity-50"
-                  onClick={submitCloseFund}
-                  disabled={closing}
-                >
-                  {closing ? 'Closing...' : 'Close Fund'}
-                </button>
-              </div>
+            <h3 id="close-fund-title" className="text-white text-lg font-medium mb-3">
+              Close <span className="font-mono text-yellow-400">{currentExchange}/{currentPair}</span>?
+            </h3>
+            <p id="close-fund-description" className="text-gray-300 text-sm mb-2">
+              This blocks all new entries immediately. The fund's existing take-profit
+              order(s) will remain in place, and the fund will close automatically
+              after the current cycle's TP fills.
+            </p>
+            <p className="text-gray-500 text-xs mb-4">
+              You can reopen the fund later, but it will not auto-resume on engine restart.
+            </p>
+            <div className="mb-4">
+              <label htmlFor="close-fund-reason" className="block text-xs uppercase tracking-wider text-gray-400 mb-1">
+                Reason (optional)
+              </label>
+              <input
+                id="close-fund-reason"
+                type="text"
+                value={closeFundReason}
+                onChange={(e) => setCloseFundReason(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submitCloseFund()}
+                placeholder="e.g. winding down for tax season"
+                className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white text-sm focus:border-yellow-500 focus:outline-none"
+                disabled={closing}
+              />
             </div>
-          </div>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50"
+                onClick={() => setCloseFundDialogOpen(false)}
+                disabled={closing}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-yellow-600 hover:bg-yellow-500 rounded transition-colors disabled:opacity-50"
+                onClick={submitCloseFund}
+                disabled={closing}
+              >
+                {closing ? 'Closing...' : 'Close Fund'}
+              </button>
+            </div>
+          </ModalDialog>
         )}
 
         {/* Add Fund modal (triggered from ExchangeSelector dropdown) */}
@@ -935,44 +934,42 @@ function AppContent() {
 
         {/* Reopen Fund confirmation dialog */}
         {reopenFundDialogOpen && (
-          <div
-            className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-            onClick={() => !reopening && setReopenFundDialogOpen(false)}
+          <ModalDialog
+            onClose={() => setReopenFundDialogOpen(false)}
+            dismissible={!reopening}
+            labelledBy="reopen-fund-title"
+            describedBy="reopen-fund-description"
           >
-            <div
-              className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-4 w-full"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h3 className="text-white text-lg font-medium mb-3">
-                Reopen <span className="font-mono text-blue-400">{currentExchange}/{currentPair}</span>?
-              </h3>
-              <p className="text-gray-300 text-sm mb-2">
-                This restores the fund's lifecycle to <span className="text-green-400">active</span> so the
-                regime engine can run again.
-              </p>
-              <p className="text-gray-500 text-xs mb-4">
-                Reopening does <strong>not</strong> restart the engine. After confirming, click
-                <span className="font-mono text-green-400"> Start </span>
-                to resume trading.
-              </p>
-              <div className="flex justify-end gap-3">
-                <button
-                  className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50"
-                  onClick={() => setReopenFundDialogOpen(false)}
-                  disabled={reopening}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded transition-colors disabled:opacity-50"
-                  onClick={submitReopenFund}
-                  disabled={reopening}
-                >
-                  {reopening ? 'Reopening...' : 'Reopen Fund'}
-                </button>
-              </div>
+            <h3 id="reopen-fund-title" className="text-white text-lg font-medium mb-3">
+              Reopen <span className="font-mono text-blue-400">{currentExchange}/{currentPair}</span>?
+            </h3>
+            <p id="reopen-fund-description" className="text-gray-300 text-sm mb-2">
+              This restores the fund's lifecycle to <span className="text-green-400">active</span> so the
+              regime engine can run again.
+            </p>
+            <p className="text-gray-500 text-xs mb-4">
+              Reopening does <strong>not</strong> restart the engine. After confirming, click
+              <span className="font-mono text-green-400"> Start </span>
+              to resume trading.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded transition-colors disabled:opacity-50"
+                onClick={() => setReopenFundDialogOpen(false)}
+                disabled={reopening}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-500 rounded transition-colors disabled:opacity-50"
+                onClick={submitReopenFund}
+                disabled={reopening}
+              >
+                {reopening ? 'Reopening...' : 'Reopen Fund'}
+              </button>
             </div>
-          </div>
+          </ModalDialog>
         )}
 
         {/* Main Content */}
