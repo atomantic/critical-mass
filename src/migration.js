@@ -384,7 +384,7 @@ const needsPairMigration = (exchange) => {
  * accidentally created by the API server before migration ran.
  *
  * @param {string} exchange
- * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string}}
+ * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, skippedFiles?: string[]}}
  */
 const migrateExchangeToPairs = (exchange) => {
   if (!needsPairMigration(exchange)) {
@@ -418,7 +418,7 @@ const migrateExchangeToPairs = (exchange) => {
   console.log(`  Target: ${fundDir}`);
 
   let moved = 0;
-  let skipped = 0;
+  const skippedFiles = [];
   const entries = fs.readdirSync(exchangeDir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isFile()) continue; // Don't move existing subdirectories
@@ -429,7 +429,7 @@ const migrateExchangeToPairs = (exchange) => {
 
     if (fs.existsSync(dst)) {
       console.log(`  ⚠️  Skip (target exists): ${entry.name}`);
-      skipped++;
+      skippedFiles.push(entry.name);
       continue;
     }
 
@@ -457,8 +457,8 @@ const migrateExchangeToPairs = (exchange) => {
     }
   }
 
-  console.log(`[Pair Migration] ${exchange}: moved ${moved} files (${skipped} skipped)`);
-  return { migrated: true, defaultPair, movedFiles: moved };
+  console.log(`[Pair Migration] ${exchange}: moved ${moved} files (${skippedFiles.length} skipped)`);
+  return { migrated: true, defaultPair, movedFiles: moved, skippedFiles };
 };
 
 /**
@@ -481,6 +481,7 @@ module.exports = {
   getFundDataDir,
   needsPairMigration,
   resolveFundDataDir,
+  resolveFundPath,
   migrateExchangeToPairs,
   isPerFundFile,
   PER_FUND_FILES,
