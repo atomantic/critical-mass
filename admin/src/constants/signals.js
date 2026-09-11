@@ -1,4 +1,9 @@
 import { TrendingUp, TrendingDown, Minus, Plus, CircleDot } from 'lucide-react'
+import {
+  resolveAction,
+  resolveActionLabel as getActionLabel,
+  labelHistoryActions,
+} from '../../../shared/signal-actions'
 
 export const SIGNAL_TYPES = {
   STRONG_BUY: 'STRONG_BUY',
@@ -45,45 +50,4 @@ export const signalIcons = {
 export const getSignalColor = (type) => signalBadgeColors[type] || signalBadgeColors.NEUTRAL
 export const getSignalIcon = (type) => signalIcons[type] || Minus
 
-const isBuyType = (type) => type === 'BUY' || type === 'STRONG_BUY'
-const isSellType = (type) => type === 'SELL' || type === 'STRONG_SELL'
-
-const isHeldLong = (held) => {
-  if (!held) return false
-  if (held === true) return true
-  if (typeof held.contracts === 'number') return held.contracts > 0 && held.direction !== 'down'
-  return held.direction === 'up'
-}
-
-/** Perp-long actions: Open / Add / Hold / Close. Never BUY DOWN. */
-export const resolveAction = (type, heldPosition) => {
-  const long = isHeldLong(heldPosition)
-  if (isBuyType(type)) return long ? 'ADD' : 'OPEN'
-  if (long) return 'CLOSE'
-  return 'HOLD'
-}
-
-export const getActionLabel = (type, heldPosition) => {
-  if (!type) return 'CALCULATING...'
-  if (type === 'OPEN' || type === 'ADD' || type === 'HOLD' || type === 'CLOSE') return type
-  return resolveAction(type, heldPosition)
-}
-
-/** Walk history oldest-first so OPEN cannot repeat until after CLOSE. */
-export const labelHistoryActions = (entries) => {
-  if (!Array.isArray(entries) || entries.length === 0) return []
-  const sorted = entries
-    .map((e, i) => ({ e, i, ts: Number(e?.timestamp) || 0 }))
-    .sort((a, b) => a.ts - b.ts || a.i - b.i)
-  let long = false
-  const byIndex = new Array(entries.length)
-  for (const { e, i } of sorted) {
-    const type = e?.type
-      || (e?.action === 'CLOSE' ? 'SELL' : e?.action === 'HOLD' ? 'NEUTRAL' : (e?.action === 'OPEN' || e?.action === 'ADD') ? 'BUY' : 'NEUTRAL')
-    const action = resolveAction(type, long)
-    if (action === 'OPEN' || action === 'ADD') long = true
-    else if (action === 'CLOSE') long = false
-    byIndex[i] = { ...e, action }
-  }
-  return byIndex
-}
+export { resolveAction, getActionLabel, labelHistoryActions }
