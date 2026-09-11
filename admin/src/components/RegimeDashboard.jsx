@@ -533,7 +533,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
       </div>
 
       {/* Level buttons */}
-      <div className="flex gap-1 mb-2">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 mb-2">
         {levels.map((level) => {
           const isActive = currentLevel === level.id
           const classes = colorClasses[level.color]
@@ -544,7 +544,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
               onMouseEnter={() => handlePreview(level.id)}
               onMouseLeave={() => setShowPreview(false)}
               disabled={updating}
-              className={`flex-1 px-2 py-1.5 text-xs font-medium rounded border transition-all ${
+              className={`min-w-0 min-h-11 xl:min-h-0 w-full px-2 py-1.5 text-xs font-medium rounded border transition-all ${
                 isActive ? classes.active : classes.inactive
               } ${updating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
