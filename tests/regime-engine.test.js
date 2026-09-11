@@ -2,7 +2,8 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody, instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/regime-engine');
+const { cancelPartialFillOrder, resolveEntryBudget, makeFillDedupKey, isBuyAlreadyCommitted, shouldSkipBuyRecommit, isStrandedDustBody } = require('../src/regime-engine');
+const { instrumentAdapterForHealth, isRateLimitError, isAuthDeniedError } = require('../src/health-monitor');
 
 describe('makeFillDedupKey', () => {
   it('uses order ID alone for terminal fills', () => {
