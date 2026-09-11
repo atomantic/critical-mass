@@ -1322,14 +1322,57 @@ const gracefulShutdown = async (signal) => {
     shutdownLogger.info(`ℹ️ Stopping regime engine for ${key}...`, { fundKey: key });
     stopPromises.push(engine.stop());
   }
-  await Promise.all(stopPromises);
 
-  shutdownAllBuffers();
-  ipcServer.stop();
+  // Use allSettled to capture rejections without aborting other shutdowns
+  const results = await Promise.allSettled(stopPromises);
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === 'rejected') {
+      const keys = Array.from(regimeEngines.keys());
+      const fundKey = keys[i];
+      shutdownLogger.error(`❌ Engine stop failed for ${fundKey}: ${results[i].reason.message}`, {
+        fundKey,
+        error: results[i].reason.message
+      });
+    }
+  }
+
+  // Ensure buffers flush even if engine stop failed
+  try {
+    shutdownAllBuffers();
+  } catch (err) {
+    shutdownLogger.error(`❌ Buffer shutdown failed: ${err.message}`, { error: err.message });
+  }
+
+  // Ensure IPC server closes even if other shutdowns failed
+  try {
+    ipcServer.stop();
+  } catch (err) {
+    shutdownLogger.error(`❌ IPC server stop failed: ${err.message}`, { error: err.message });
+  }
 
   shutdownLogger.info(`ℹ️ Shutdown complete`);
   process.exit(0);
 };
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+// Install signal handlers with error handling and watchdog
+const setupShutdownHandlers = () => {
+  const shutdownLogger = engineLogger(EXCHANGE_NAME);
+
+  const shutdownWithWatchdog = (signal) => {
+    gracefulShutdown(signal).catch((err) => {
+      shutdownLogger.error(`❌ Shutdown failed: ${err.message}`, { error: err.message });
+      process.exit(1);
+    });
+
+    // Force-exit watchdog: if shutdown hangs, kill after 5 seconds
+    setTimeout(() => {
+      shutdownLogger.error(`❌ Forcing exit after shutdown timeout (5s)`, { timeout: 5000 });
+      process.exit(1);
+    }, 5000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdownWithWatchdog('SIGTERM'));
+  process.on('SIGINT', () => shutdownWithWatchdog('SIGINT'));
+};
+
+setupShutdownHandlers();
