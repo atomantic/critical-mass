@@ -14,6 +14,7 @@ const {
   isLoopbackRequest,
   MIN_BOOTSTRAP_SECRET_LENGTH,
   MIN_PASSWORD_LENGTH,
+  MAX_PASSWORD_BYTES,
   SESSION_TTL_SECONDS,
 } = require('../src/operator-auth');
 const { readJSON, writeJSON } = require('../src/shared-utils');
@@ -65,8 +66,11 @@ const withServer = async (authOpts, run) => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
-  await run({ auth, baseUrl, reached });
-  await new Promise((resolve) => server.close(resolve));
+  try {
+    await run({ auth, baseUrl, reached });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 };
 
 describe('operator authentication bootstrap', () => {
@@ -562,5 +566,117 @@ describe('operator password length', () => {
 
   it('keeps browser sessions for 30 days', () => {
     assert.equal(SESSION_TTL_SECONDS, 30 * 24 * 60 * 60);
+  });
+});
+
+describe('operator authentication resource bounds', () => {
+  const send = (baseUrl, route, method, body, headers = {}) => fetch(baseUrl + route, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+
+  it('rejects oversized UTF-8 passwords on every mutation before invoking scrypt', async (t) => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    const hash = t.mock.method(crypto, 'scrypt', () => assert.fail('oversized password was hashed'));
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const oversized = 'é'.repeat(MAX_PASSWORD_BYTES / 2 + 1);
+      for (const [route, method, body] of [
+        ['/api/auth/session', 'POST', { password: oversized }],
+        ['/api/auth/session', 'POST', { token: oversized }],
+        ['/api/auth/password', 'PUT', { password: oversized, currentPassword: PASSWORD }],
+        ['/api/auth/password', 'PUT', { password: NEW_PASSWORD, currentPassword: oversized }],
+        ['/api/auth/password', 'DELETE', { password: oversized }],
+      ]) {
+        assert.equal((await send(baseUrl, route, method, body)).status, 400);
+      }
+      assert.equal(hash.mock.callCount(), 0);
+    });
+  });
+
+  it('shares a five-attempt peer budget across login and bootstrap, ignores forwarded IPs, and expires it', async () => {
+    let time = 1000;
+    await withServer({ authFile: tmpAuthFile(), readJSON, writeJSON, now: () => time }, async ({ baseUrl }) => {
+      for (let i = 0; i < 5; i++) {
+        const response = await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD },
+          { 'X-Forwarded-For': '192.0.2.' + i });
+        assert.equal(response.status, 401);
+      }
+      const limited = await send(baseUrl, '/api/auth/password', 'PUT', { password: PASSWORD });
+      assert.equal(limited.status, 429);
+      assert.equal(limited.headers.get('retry-after'), '60');
+      time += 60_000;
+      assert.equal((await send(baseUrl, '/api/auth/password', 'PUT', { password: PASSWORD })).status, 200);
+      const login = await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD });
+      assert.equal(login.status, 200);
+      assert.match(login.headers.get('set-cookie'), /HttpOnly/i);
+      assert.match(login.headers.get('set-cookie'), /SameSite=Strict/i);
+    });
+  });
+
+  it('limits wrong-password guesses before hashing and allows login after the window', async (t) => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    let time = 0;
+    const hash = t.mock.method(crypto, 'scrypt');
+    await withServer({ authFile, readJSON, writeJSON, now: () => time }, async ({ baseUrl }) => {
+      for (let i = 0; i < 5; i++) {
+        assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: 'wrong-password' })).status, 401);
+      }
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 429);
+      assert.equal(hash.mock.callCount(), 5);
+      time = 60_000;
+      assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 200);
+      assert.equal(hash.mock.callCount(), 6);
+    });
+  });
+
+  it('keeps the gateway responsive during hashing and rejects overlapping KDF work without queueing', async (t) => {
+    const authFile = tmpAuthFile();
+    seedPassword(authFile);
+    const original = crypto.scrypt;
+    let release;
+    let started;
+    const hashing = new Promise((resolve) => { started = resolve; });
+    t.mock.method(crypto, 'scrypt', (...args) => {
+      release = () => original(...args);
+      started();
+    });
+    t.mock.method(crypto, 'scryptSync', () => assert.fail('request used synchronous hashing'));
+    await withServer({ authFile, readJSON, writeJSON }, async ({ baseUrl }) => {
+      const login = send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD });
+      await hashing;
+      try {
+        assert.equal((await fetch(baseUrl + '/api/auth/session')).status, 200);
+        assert.equal((await send(baseUrl, '/api/auth/session', 'POST', { password: PASSWORD })).status, 429);
+      } finally {
+        release();
+      }
+      assert.equal((await login).status, 200);
+    });
+  });
+
+  it('fails closed when the bounded peer table is full and recovers after expiry', async () => {
+    let time = 0;
+    const routes = {};
+    const auth = createOperatorAuth({ now: () => time });
+    auth.registerSessionRoutes({
+      get() {}, put() {}, delete() {},
+      post(route, ...handlers) { routes[route] = handlers; },
+    });
+    const limiter = routes['/api/auth/session'][1];
+    let allowed = 0;
+    let status;
+    const res = { set() {}, status(value) { status = value; return this; }, json() {} };
+    for (let i = 0; i < 1024; i++) {
+      limiter({ socket: { remoteAddress: 'peer-' + i } }, res, () => allowed++);
+    }
+    limiter({ socket: { remoteAddress: 'new-peer' } }, res, () => allowed++);
+    assert.equal(status, 429);
+    assert.equal(allowed, 1024);
+    time = 60_000;
+    limiter({ socket: { remoteAddress: 'new-peer' } }, res, () => allowed++);
+    assert.equal(allowed, 1025);
   });
 });
