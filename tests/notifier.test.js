@@ -102,6 +102,12 @@ describe('formatFundSummaryLines multi-fund daily summary (issue #397)', () => {
     assert.match(lines[1], /BTC/);
   });
 
+  it('escapes Crypto.com pair separators in the Markdown daily summary', () => {
+    const lines = formatFundSummaryLines('cryptocom', 'CRO_USD', state, { productId: 'CRO_USD' });
+    assert.equal(lines[0], '*cryptocom* CRO\\_USD (active)');
+    assert.equal(lines[1], '  Position: 0.25000000 CRO');
+  });
+
   it('defaults position/pnl/cycle fields when state is missing pieces', () => {
     const lines = formatFundSummaryLines('kraken', 'BTC-USD', {}, { productId: 'BTC-USD' });
     assert.match(lines[0], /N\/A/);
