@@ -322,19 +322,24 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
   return (
     <div className="bg-gray-800 rounded-lg p-4">
-      <h3
-        className="text-sm font-medium text-gray-300 mb-3 cursor-pointer flex items-center gap-2"
-        onClick={handleExpand}
-      >
-        <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>&#9654;</span>
-        Manual Trades
+      <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleExpand}
+          aria-expanded={expanded}
+          aria-controls="manual-trades-content"
+          className="flex items-center gap-2 p-0 bg-transparent border-0 text-gray-300 hover:text-gray-100 transition-colors focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2 focus:ring-offset-gray-800 rounded"
+        >
+          <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>&#9654;</span>
+          Manual Trades
+        </button>
         {manualTrades.filter(t => t.status === 'buy_pending' || t.status === 'tp_pending').length > 0 && (
           <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
         )}
       </h3>
 
       {expanded && (
-        <div className="space-y-4">
+        <div id="manual-trades-content" className="space-y-4">
           {/* Unaccounted Fills Section */}
           <div className="bg-gray-900/40 rounded-lg p-3">
             <h4 className="text-xs font-medium text-purple-400 mb-2">Unaccounted Exchange Fills</h4>
