@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **[issue-353] Cycle summary calculations consolidated in fill-ledger** — Extract the duplicated 40-line cycle statistics derivation into a single module-level helper (computeCycleStats) to fix the high drift risk from manual code duplication and eliminate hidden dependencies between recalculateCycles and rebuildPositionFromFills.
+- **[issue-350] UpDown signal action resolution unified across server and client** — Consolidate UpDown action classification logic from two independent implementations into a single shared module, reconciling contracts for null/undefined signals ('CALCULATING...'), action string passthrough (OPEN|ADD|HOLD|CLOSE), and chronological history relabeling.
+- **[issue-354] Remove unreferenced legacy admin UI components** — Deleted three unused React components (IndicatorCharts, MiniPriceSparkline, OrbitalRing) totaling 512 lines of dead code, reducing cognitive friction and build overhead.
 - **[issue-344] Fibonacci sell completion names uncovered-buy carry** — Isolate placement coverage interpretation and preserve the legacy settlement export, accounting, and cycle-reset ordering.
 - **[issue-342] Candle charts reuse timestamp labels** — Bound per-chart label storage to displayed buckets and invalidate on exchange, interval, or browser time-zone changes while preserving live snapshots.
 - **[issue-340] UpDown signal cycles name momentum and history steps** — Extract private helpers while preserving tick arithmetic, history debounce, paper fills, and ordered persistence and publication.
@@ -14,6 +17,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **[issue-351] Source scorecard indicators and base weights from indicator-config** — Remove hardcoded indicator labels and base weights from ScorecardPanel and ScorecardAnalysis; source from canonical configuration to fix incorrect adaptive-weight deltas and ensure new indicators populate automatically.
+- **[issue-349] Example config presets align with canonical regime preset contract** — Removed dead `aggressivenessPresets` block from `exchanges.coinbase`, updated `global.aggressivenessPresets` to match the canonical preset with correct `maxCycleBuys` limits (10/15/25/50), added missing fields (`entryOffsetUpBps`, `entryOffsetDownBps`, `orderStaleMs`, `mergeProximityScale`), and removed obsolete `baseSizeUsdc` field to prevent 10x capital exposure on fresh deployments.
 - **[issue-348] DCA completion estimates use canonical intervals** — Share backend durations and dashboard/editor/backtest options, correcting 10-minute, 30-minute, and 4-hour projections and adding the missing 30-minute editor option.
 - **Native production setup installs PM2 before starting services** — The README now identifies PM2 as a separate prerequisite and includes its installation command; installing project dependencies alone does not provide the required executable.
 - **[issue-338] Streaming optimizer winners use domain ranking** — Keep Current Best consistent with completed results by preferring full coverage before total value and retaining the first result on ties.

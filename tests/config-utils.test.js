@@ -1150,6 +1150,53 @@ describe('updateAggressivenessPresets', () => {
 });
 
 // ============================================================================
+// Structural Parity: config.example.json vs DEFAULT_AGGRESSIVENESS_PRESETS
+// ============================================================================
+
+// Load the actual config.example.json from disk BEFORE any mocks are set up
+// This ensures we read the real file, not a mocked one
+const exampleConfigPath = path.join(__dirname, '..', 'config.example.json');
+let exampleConfigForParityTest;
+try {
+  const origReadFileSync = fs.readFileSync;
+  exampleConfigForParityTest = JSON.parse(origReadFileSync(exampleConfigPath, 'utf-8'));
+} catch (e) {
+  // Fallback for when the module loads (before mocks are set up)
+  exampleConfigForParityTest = null;
+}
+
+describe('config.example.json aggressivenessPresets structural parity', () => {
+  it('global.aggressivenessPresets matches DEFAULT_AGGRESSIVENESS_PRESETS exactly', () => {
+    // If config wasn't loaded at module load time, try loading it now
+    let exampleConfig = exampleConfigForParityTest;
+    if (!exampleConfig) {
+      mock.restoreAll();
+      exampleConfig = JSON.parse(require('fs').readFileSync(exampleConfigPath, 'utf-8'));
+    }
+
+    // Verify the global section exists and has aggressivenessPresets
+    assert.ok(exampleConfig.global, 'config.example.json must have global section');
+    assert.ok(exampleConfig.global.aggressivenessPresets, 'global section must have aggressivenessPresets');
+
+    // Verify no dead aggressivenessPresets block under exchanges.coinbase
+    assert.equal(
+      exampleConfig.exchanges.coinbase.aggressivenessPresets,
+      undefined,
+      'exchanges.coinbase must not have aggressivenessPresets (dead block)'
+    );
+
+    // Verify structural deep equality with canonical preset
+    assert.deepStrictEqual(
+      exampleConfig.global.aggressivenessPresets,
+      DEFAULT_AGGRESSIVENESS_PRESETS,
+      'global.aggressivenessPresets must exactly match DEFAULT_AGGRESSIVENESS_PRESETS'
+    );
+  });
+
+  afterEach(() => mock.restoreAll());
+});
+
+// ============================================================================
 // Backup Config
 // ============================================================================
 
