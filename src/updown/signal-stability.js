@@ -94,77 +94,86 @@ const preventTickCreatedSignal = (typeBefore, typeAfter) => {
 }
 
 /**
- * @param {{rawType: string, score: number, now: number}} input
- * @param {{publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}} [prev]
+ * Transition handler for when the published signal is BUY (or STRONG_BUY).
+ * Manages exit to SELL/NEUTRAL and possible upgrade to STRONG_BUY.
+ * @param {string} rawType
+ * @param {number} score
+ * @param {number} now
+ * @param {{publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}} state
+ * @param {Function} publish
  * @returns {{type: string, state: {publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}}}
  */
-const stabilizeSignal = (input, prev) => {
-  const rawType = input?.rawType || 'NEUTRAL'
-  const score = Number.isFinite(input?.score) ? input.score : 0
-  const now = Number.isFinite(input?.now) ? input.now : 0
-  const state = prev || createStabilityState()
-  const published = state.publishedType || 'NEUTRAL'
-
-  const publish = (type) => ({
-    type,
-    state: { publishedType: type, publishedAt: now, pendingType: null, pendingSince: 0 },
-  })
-
-  if (rawType === 'NO_TRADE_ZONE') return publish('NO_TRADE_ZONE')
-  if (isStrong(rawType)) return publish(rawType)
-
-  if (isBuy(published)) {
-    // A raw SELL is an EXIT path — do not dump to HOLD just because score is red.
-    if (isSell(rawType)) {
-      const pendingSince = state.pendingType === 'SELL' ? state.pendingSince : now
-      if (now - pendingSince >= MIN_EXIT_MS) return publish('SELL')
-      return {
-        type: published,
-        state: { publishedType: published, publishedAt: state.publishedAt, pendingType: 'SELL', pendingSince },
-      }
-    }
-    if (score < EXIT_BUY_SCORE && !isBuy(rawType)) return publish('NEUTRAL')
-    if (!isBuy(rawType)) {
-      const pendingSince = state.pendingType === 'NEUTRAL' ? state.pendingSince : now
-      if (now - pendingSince >= MIN_ENTER_MS) return publish('NEUTRAL')
-      return {
-        type: published,
-        state: { publishedType: published, publishedAt: state.publishedAt, pendingType: 'NEUTRAL', pendingSince },
-      }
-    }
-    const next = rawType === 'STRONG_BUY' ? 'STRONG_BUY' : 'BUY'
+const transitionFromBuyState = (rawType, score, now, state, publish) => {
+  // A raw SELL is an EXIT path — do not dump to HOLD just because score is red.
+  if (isSell(rawType)) {
+    const pendingSince = state.pendingType === 'SELL' ? state.pendingSince : now
+    if (now - pendingSince >= MIN_EXIT_MS) return publish('SELL')
     return {
-      type: next,
-      state: { publishedType: next, publishedAt: state.publishedAt, pendingType: null, pendingSince: 0 },
+      type: state.publishedType,
+      state: { publishedType: state.publishedType, publishedAt: state.publishedAt, pendingType: 'SELL', pendingSince },
     }
   }
-
-  if (isSell(published)) {
-    if (score > EXIT_SELL_SCORE && !isSell(rawType)) return publish('NEUTRAL')
-    if (isBuy(rawType)) {
-      const pendingSince = state.pendingType === 'BUY' ? state.pendingSince : now
-      if (now - pendingSince >= MIN_ENTER_MS) return publish('BUY')
-      return {
-        type: published,
-        state: { publishedType: published, publishedAt: state.publishedAt, pendingType: 'BUY', pendingSince },
-      }
-    }
-    if (!isSell(rawType)) {
-      const pendingSince = state.pendingType === 'NEUTRAL' ? state.pendingSince : now
-      if (now - pendingSince >= MIN_EXIT_MS) return publish('NEUTRAL')
-      return {
-        type: published,
-        state: { publishedType: published, publishedAt: state.publishedAt, pendingType: 'NEUTRAL', pendingSince },
-      }
-    }
-    const next = rawType === 'STRONG_SELL' ? 'STRONG_SELL' : 'SELL'
+  if (score < EXIT_BUY_SCORE && !isBuy(rawType)) return publish('NEUTRAL')
+  if (!isBuy(rawType)) {
+    const pendingSince = state.pendingType === 'NEUTRAL' ? state.pendingSince : now
+    if (now - pendingSince >= MIN_ENTER_MS) return publish('NEUTRAL')
     return {
-      type: next,
-      state: { publishedType: next, publishedAt: state.publishedAt, pendingType: null, pendingSince: 0 },
+      type: state.publishedType,
+      state: { publishedType: state.publishedType, publishedAt: state.publishedAt, pendingType: 'NEUTRAL', pendingSince },
     }
   }
+  const next = rawType === 'STRONG_BUY' ? 'STRONG_BUY' : 'BUY'
+  return {
+    type: next,
+    state: { publishedType: next, publishedAt: state.publishedAt, pendingType: null, pendingSince: 0 },
+  }
+}
 
-  // HOLD / NEUTRAL / unknown
+/**
+ * Transition handler for when the published signal is SELL (or STRONG_SELL).
+ * Manages exit to BUY/NEUTRAL and possible upgrade to STRONG_SELL.
+ * @param {string} rawType
+ * @param {number} score
+ * @param {number} now
+ * @param {{publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}} state
+ * @param {Function} publish
+ * @returns {{type: string, state: {publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}}}
+ */
+const transitionFromSellState = (rawType, score, now, state, publish) => {
+  if (score > EXIT_SELL_SCORE && !isSell(rawType)) return publish('NEUTRAL')
+  if (isBuy(rawType)) {
+    const pendingSince = state.pendingType === 'BUY' ? state.pendingSince : now
+    if (now - pendingSince >= MIN_ENTER_MS) return publish('BUY')
+    return {
+      type: state.publishedType,
+      state: { publishedType: state.publishedType, publishedAt: state.publishedAt, pendingType: 'BUY', pendingSince },
+    }
+  }
+  if (!isSell(rawType)) {
+    const pendingSince = state.pendingType === 'NEUTRAL' ? state.pendingSince : now
+    if (now - pendingSince >= MIN_EXIT_MS) return publish('NEUTRAL')
+    return {
+      type: state.publishedType,
+      state: { publishedType: state.publishedType, publishedAt: state.publishedAt, pendingType: 'NEUTRAL', pendingSince },
+    }
+  }
+  const next = rawType === 'STRONG_SELL' ? 'STRONG_SELL' : 'SELL'
+  return {
+    type: next,
+    state: { publishedType: next, publishedAt: state.publishedAt, pendingType: null, pendingSince: 0 },
+  }
+}
+
+/**
+ * Transition handler for when the published signal is NEUTRAL or HOLD.
+ * Manages pending entry into BUY or SELL states.
+ * @param {string} rawType
+ * @param {number} now
+ * @param {{publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}} state
+ * @param {Function} publish
+ * @returns {{type: string, state: {publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}}}
+ */
+const transitionFromNeutralState = (rawType, now, state, publish) => {
   if (isBuy(rawType)) {
     const pendingSince = state.pendingType === 'BUY' ? state.pendingSince : now
     if (now - pendingSince >= MIN_ENTER_MS) return publish('BUY')
@@ -186,6 +195,31 @@ const stabilizeSignal = (input, prev) => {
     type: 'NEUTRAL',
     state: { publishedType: 'NEUTRAL', publishedAt: state.publishedAt, pendingType: null, pendingSince: 0 },
   }
+}
+
+/**
+ * @param {{rawType: string, score: number, now: number}} input
+ * @param {{publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}} [prev]
+ * @returns {{type: string, state: {publishedType: string, publishedAt: number, pendingType: string|null, pendingSince: number}}}
+ */
+const stabilizeSignal = (input, prev) => {
+  const rawType = input?.rawType || 'NEUTRAL'
+  const score = Number.isFinite(input?.score) ? input.score : 0
+  const now = Number.isFinite(input?.now) ? input.now : 0
+  const state = prev || createStabilityState()
+  const published = state.publishedType || 'NEUTRAL'
+
+  const publish = (type) => ({
+    type,
+    state: { publishedType: type, publishedAt: now, pendingType: null, pendingSince: 0 },
+  })
+
+  if (rawType === 'NO_TRADE_ZONE') return publish('NO_TRADE_ZONE')
+  if (isStrong(rawType)) return publish(rawType)
+
+  if (isBuy(published)) return transitionFromBuyState(rawType, score, now, state, publish)
+  if (isSell(published)) return transitionFromSellState(rawType, score, now, state, publish)
+  return transitionFromNeutralState(rawType, now, state, publish)
 }
 
 module.exports = {
