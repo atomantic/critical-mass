@@ -4,9 +4,8 @@ const assert = require('node:assert/strict');
 
 const {
   ingestNewFillsForOrder, settleCancelledOrder, createTimerTracker, createWorkQueue, createMarketDataService,
-  instrumentAdapterForHealth, isRateLimitError,
 } = require('../src/market-data-service');
-const { createHealthMonitor } = require('../src/health-monitor');
+const { createHealthMonitor, instrumentAdapterForHealth, isRateLimitError } = require('../src/health-monitor');
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -2232,12 +2231,14 @@ describe('handleTicker carries volume24h into marketState (issue #202)', () => {
 
 /** Fake health monitor that just records what was called, for unit tests. */
 const makeHealthSpy = () => {
-  const calls = { latency: [], error: 0, rateLimit: 0 };
+  const calls = { latency: [], error: 0, rateLimit: 0, authDenied: 0, authCleared: 0 };
   return {
     calls,
     recordRestLatency: (ms) => calls.latency.push(ms),
     recordRestError: () => { calls.error += 1; },
     recordRateLimit: () => { calls.rateLimit += 1; },
+    recordAuthDenied: () => { calls.authDenied += 1; },
+    clearAuthDenied: () => { calls.authCleared += 1; },
   };
 };
 
