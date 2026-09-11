@@ -7,6 +7,10 @@ const { log } = require('./logger');
 const COOKIE_NAME = 'critical_mass_operator';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_BYTES = 256;
+const ATTEMPT_WINDOW_MS = 60_000;
+const MAX_ATTEMPTS = 5;
+const MAX_TRACKED_PEERS = 1024;
 const MIN_BOOTSTRAP_SECRET_LENGTH = 32;
 const BOOTSTRAP_HEADER = 'x-operator-bootstrap';
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -63,16 +67,36 @@ const submittedSecret = (body = {}) => {
   return typeof value === 'string' ? value : '';
 };
 
-const hashPassword = (password, saltHex) => crypto
-  .scryptSync(password, Buffer.from(saltHex, 'hex'), 32)
-  .toString('hex');
+// A single active KDF and no waiting queue bound CPU/memory across all peers.
+let hashBusy = false;
+const authError = (status, message) => Object.assign(new Error(message), { status });
+const checkPasswordSize = (password) => {
+  if (Buffer.byteLength(password) > MAX_PASSWORD_BYTES) {
+    throw authError(400, `Password must be at most ${MAX_PASSWORD_BYTES} bytes`);
+  }
+};
+const hashPassword = async (password, saltHex) => {
+  checkPasswordSize(password);
+  if (hashBusy) throw authError(429, 'Password verification is busy; retry later');
+  hashBusy = true;
+  try {
+    return await new Promise((resolve, reject) => {
+      crypto.scrypt(password, Buffer.from(saltHex, 'hex'), 32, (error, key) => {
+        if (error) return reject(error);
+        resolve(key.toString('hex'));
+      });
+    });
+  } finally {
+    hashBusy = false;
+  }
+};
 
-const makeRecord = (password) => {
+const makeRecord = async (password) => {
   const salt = crypto.randomBytes(16).toString('hex');
   return {
     kdf: 'scrypt',
     salt,
-    hash: hashPassword(password, salt),
+    hash: await hashPassword(password, salt),
     updatedAt: new Date().toISOString(),
   };
 };
@@ -89,6 +113,7 @@ const makeRecord = (password) => {
  * @param {string} [opts.bootstrapSecret]
  * @param {string} [opts.bootstrapSecretFile]
  * @param {Function} [opts.onPasswordRemoved]
+ * @param {() => number} [opts.now] Clock for the peer attempt window
  * @param {(req: import('express').Request) => boolean} [opts.isTrustedBootstrapRequest]
  */
 const createOperatorAuth = ({
@@ -99,7 +124,34 @@ const createOperatorAuth = ({
   bootstrapSecretFile = '',
   onPasswordRemoved = null,
   isTrustedBootstrapRequest = isLoopbackRequest,
+  now = Date.now,
 } = {}) => {
+  const attempts = new Map();
+  const limitAttempts = (req, res, next) => {
+    const time = now();
+    for (const [peer, entry] of attempts) {
+      if (time >= entry.expires) attempts.delete(peer);
+    }
+    // Forwarded headers never create a fresh budget. Unknown peers share one.
+    const peer = req.socket?.remoteAddress || 'unknown';
+    let entry = attempts.get(peer);
+    if (!entry && attempts.size < MAX_TRACKED_PEERS) {
+      entry = { count: 0, expires: time + ATTEMPT_WINDOW_MS };
+      attempts.set(peer, entry);
+    }
+    if (!entry || entry.count >= MAX_ATTEMPTS) {
+      res.set('Retry-After', String(Math.max(1, Math.ceil(((entry?.expires || time + ATTEMPT_WINDOW_MS) - time) / 1000))));
+      return res.status(429).json({ error: 'Too many authentication attempts; retry later' });
+    }
+    entry.count += 1;
+    next();
+  };
+  const validatePasswords = (req, res, next) => {
+    for (const value of [submittedSecret(req.body), req.body?.currentPassword, readBearerToken(req.headers.authorization)]) {
+      if (typeof value === 'string') checkPasswordSize(value);
+    }
+    next();
+  };
   let record = null;
   if (authFile && readJSON) {
     const saved = readJSON(authFile, null);
@@ -143,9 +195,11 @@ const createOperatorAuth = ({
     }
   };
 
-  const passwordMatches = (password) => {
+  const passwordMatches = async (password) => {
     if (!password || !record?.salt || !record?.hash) return false;
-    return timingSafeEqual(hashPassword(password, record.salt), record.hash);
+    const expected = record;
+    const hash = await hashPassword(password, expected.salt);
+    return record === expected && timingSafeEqual(hash, expected.hash);
   };
 
   const bootstrapSecretMatches = (req) => {
@@ -167,19 +221,19 @@ const createOperatorAuth = ({
     writeJSON(authFile, next);
   };
 
-  const authenticate = (headers = {}) => {
+  const authenticate = async (headers = {}) => {
     if (!hasPassword()) return null;
 
     const bearer = readBearerToken(headers.authorization);
-    if (bearer && passwordMatches(bearer)) return { source: 'bearer' };
+    if (bearer && await passwordMatches(bearer)) return { source: 'bearer' };
 
     const session = parseCookies(headers.cookie)[COOKIE_NAME];
     if (!session) return null;
     return verifySession(session) ? { source: 'session' } : null;
   };
 
-  const requireAuth = (req, res, next) => {
-    const auth = authenticate(req.headers);
+  const requireAuth = async (req, res, next) => {
+    const auth = await authenticate(req.headers);
     if (!auth) return res.status(401).json({ error: 'Operator authentication required' });
     if (auth.source === 'session' && MUTATING_METHODS.has(req.method) && !requestOriginMatches(req)) {
       return res.status(403).json({ error: 'Request origin is not authorized' });
@@ -191,10 +245,12 @@ const createOperatorAuth = ({
   const socketMiddleware = (socket, next) => {
     const headers = { ...socket.handshake.headers };
     if (socket.handshake.auth?.token) headers.authorization = `Bearer ${socket.handshake.auth.token}`;
-    if (authenticate(headers)) return next();
-    const error = new Error('Operator authentication required');
-    error.data = { code: 'UNAUTHORIZED' };
-    next(error);
+    authenticate(headers).then((auth) => {
+      if (auth) return next();
+      const error = new Error('Operator authentication required');
+      error.data = { code: 'UNAUTHORIZED' };
+      next(error);
+    }, next);
   };
 
   const setSessionCookie = (req, res) => {
@@ -210,8 +266,8 @@ const createOperatorAuth = ({
   };
 
   const registerSessionRoutes = (app) => {
-    app.get('/api/auth/session', (req, res) => {
-      const auth = authenticate(req.headers);
+    app.get('/api/auth/session', async (req, res) => {
+      const auth = await authenticate(req.headers);
       if (auth?.source === 'session') setSessionCookie(req, res);
       res.json({
         authenticated: Boolean(auth),
@@ -221,18 +277,19 @@ const createOperatorAuth = ({
       });
     });
 
-    app.post('/api/auth/session', (req, res) => {
+    app.post('/api/auth/session', validatePasswords, limitAttempts, async (req, res) => {
       if (isBootstrapping()) {
         return res.status(401).json({ error: 'Operator setup is required' });
       }
-      if (!passwordMatches(submittedSecret(req.body))) {
+      if (!await passwordMatches(submittedSecret(req.body))) {
         return res.status(401).json({ error: 'Invalid operator password' });
       }
       setSessionCookie(req, res);
       res.json({ authenticated: true, required: true });
     });
 
-    app.put('/api/auth/password', (req, res) => {
+    app.put('/api/auth/password', validatePasswords, limitAttempts, async (req, res) => {
+      const previousRecord = record;
       const password = typeof req.body?.password === 'string' ? req.body.password : '';
       const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
       if (Buffer.byteLength(password) < MIN_PASSWORD_LENGTH) {
@@ -241,7 +298,7 @@ const createOperatorAuth = ({
       if (isBootstrapping() && !canBootstrap(req)) {
         return res.status(403).json({ error: 'Initial operator setup requires loopback access or a valid bootstrap secret' });
       }
-      const auth = authenticate(req.headers);
+      const auth = await authenticate(req.headers);
       if (auth?.source === 'session' && !requestOriginMatches(req)) {
         return res.status(403).json({ error: 'Request origin is not authorized' });
       }
@@ -252,12 +309,14 @@ const createOperatorAuth = ({
         if (!currentPassword) {
           return res.status(401).json({ error: 'Current password is required' });
         }
-        if (!passwordMatches(currentPassword)) {
+        if (!await passwordMatches(currentPassword)) {
           return res.status(401).json({ error: 'Current password is incorrect' });
         }
       }
+      const nextRecord = await makeRecord(password);
+      if (record !== previousRecord) throw authError(409, 'Operator password changed; retry with current credentials');
       persist({
-        ...makeRecord(password),
+        ...nextRecord,
         bootstrapConsumedHash: bootstrapSecretHash || record?.bootstrapConsumedHash || null,
       });
       if (bootstrapSecretFile) {
@@ -268,15 +327,15 @@ const createOperatorAuth = ({
       res.json({ authenticated: true, required: true, bootstrapRequired: false });
     });
 
-    app.delete('/api/auth/password', (req, res) => {
+    app.delete('/api/auth/password', validatePasswords, limitAttempts, async (req, res) => {
       if (!hasPassword()) {
         return res.json({ authenticated: false, required: true, bootstrapRequired: true });
       }
-      if (authenticate(req.headers)?.source === 'session' && !requestOriginMatches(req)) {
+      if ((await authenticate(req.headers))?.source === 'session' && !requestOriginMatches(req)) {
         return res.status(403).json({ error: 'Request origin is not authorized' });
       }
       const currentPassword = submittedSecret(req.body);
-      if (!passwordMatches(currentPassword)) {
+      if (!await passwordMatches(currentPassword)) {
         return res.status(401).json({ error: 'Current password is required to remove it' });
       }
       persist({
@@ -290,8 +349,8 @@ const createOperatorAuth = ({
       onPasswordRemoved?.();
     });
 
-    app.delete('/api/auth/session', (req, res) => {
-      if (authenticate(req.headers)?.source === 'session' && !requestOriginMatches(req)) {
+    app.delete('/api/auth/session', async (req, res) => {
+      if ((await authenticate(req.headers))?.source === 'session' && !requestOriginMatches(req)) {
         return res.status(403).json({ error: 'Request origin is not authorized' });
       }
       res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict', path: '/' });
@@ -316,6 +375,7 @@ module.exports = {
   BOOTSTRAP_HEADER,
   MIN_BOOTSTRAP_SECRET_LENGTH,
   MIN_PASSWORD_LENGTH,
+  MAX_PASSWORD_BYTES,
   SESSION_TTL_SECONDS,
   createOperatorAuth,
   isLoopbackAddress: isLoopbackHost,
