@@ -107,7 +107,7 @@ const formatFundSummaryLines = (exchange, pair, state, fundConfig) => {
   const asset = getBaseCurrency(fundConfig?.productId);
 
   return [
-    `*${exchange}* ${pair} (${regime})`,
+    `*${exchange}* ${escapeTelegramMarkdown(pair)} (${escapeTelegramMarkdown(regime)})`,
     `  Position: ${assetQty.toFixed(8)} ${asset}`,
     `  Realized P&L: $${pnl.toFixed(2)}`,
     `  Cycles: ${cycles}, Current buys: ${buys}`,

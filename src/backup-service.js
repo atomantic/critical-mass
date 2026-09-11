@@ -524,7 +524,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // Skip the backups directory, key files and the archive's own metadata.
     skip: (name, isRoot) => name === 'backups'
       || name.endsWith('-keys.json')
-      || (isRoot && name === MANIFEST_FILENAME),
+      || (isRoot && (name === MANIFEST_FILENAME || (legacy && !override && name === 'config.json'))),
   });
 
   // The applier cleans staging itself once a journal exists; this covers the

@@ -331,17 +331,24 @@ describe('backup config portability — rejected archives (#430)', () => {
     assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
   });
 
-  it('restores a legacy archive data-only when the operator explicitly accepts it', () => {
-    const source = makeInstall('source', SOURCE_BASE);
+  it('restores legacy data while preserving the destination override byte-for-byte', () => {
+    const source = makeInstall('source', SOURCE_BASE, { global: { schedulerInterval: 11111 } });
+    writeJson(path.join(source.dataDir, 'legacy-state.json'), { restored: true });
     const filename = makeLegacyArchive(source, 'backup-legacy-0003.zip');
 
-    const dest = makeInstall('dest', DEST_BASE);
+    const dest = makeInstall('dest', DEST_BASE, {
+      exchanges: { coinbase: { pairs: { 'BTC-USDC': { totalAllocation: 4321, dryRun: true } } } },
+      global: { schedulerInterval: 98765 },
+    });
+    const configFile = path.join(dest.dataDir, 'config.json');
+    const before = fs.readFileSync(configFile, 'utf8');
     transferArchive(source, dest, filename);
 
     const result = restoreBackup(filename, { paths: dest.paths, acceptLegacyWithoutBase: true });
     assert.equal(result.success, true, result.error);
     assert.equal(result.configRestored, false);
-    // Data-only: the destination keeps its own fund configuration.
+    assert.equal(fs.readFileSync(configFile, 'utf8'), before);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dest.dataDir, 'legacy-state.json'), 'utf8')), { restored: true });
     assert.deepEqual(fundIdentities(dest), ['coinbase/BTC-USDC']);
   });
 

@@ -69,7 +69,7 @@ For each configured exchange (`coinbase`, `gemini`, `cryptocom`):
 
 ---
 
-## Backup Archives Carry Their Configuration (Unreleased)
+## Backup Archives Carry Their Configuration (v2.24.1)
 
 **Affects anyone restoring a backup onto a different machine or a fresh clone.**
 
@@ -93,12 +93,13 @@ Old archives have no manifest, so they cannot be made portable on their own. Res
 1. **Recommended — supply the source machine's base config.** Copy the *source* install's root `config.json` and pass it to the restore API as `legacyBaseConfig`:
 
    ```bash
-   curl -X POST http://localhost:3000/api/backups/backup-2026-01-01T00-00-00.zip/restore \
+   curl -X POST http://localhost:5570/api/backups/backup-2026-01-01T00-00-00.zip/restore \
+     -H "Authorization: Bearer $OPERATOR_PASSWORD" \
      -H 'Content-Type: application/json' \
      -d "{\"legacyBaseConfig\": $(cat /path/to/source/config.json)}"
    ```
 
-   The archive's stored override is merged onto that base to recover what the source machine actually ran.
+   Set `OPERATOR_PASSWORD` to your operator password in your local shell first (and use your configured gateway URL if it differs). The archive's stored override is merged onto that base to recover what the source machine actually ran.
 
 2. **Data-only restore.** Tick *"Restore data files only and keep this machine's current fund configuration"* in the restore dialog (or send `{"acceptLegacyWithoutBase": true}`). Your state files are recovered, but **you must configure the destination's funds yourself** so their pair identities match the restored state directories.
 

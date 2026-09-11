@@ -236,4 +236,18 @@ describe('regime unknown-to-validated boundary (#495)', () => {
     assert.equal(validateAndSanitizeRegimeConfig({ macroAccumulationThreshold: 40 }, REGIME_DEFAULTS).valid, false);
     assert.equal(validateAndSanitizeRegimeConfig({ macroAccumulationThreshold: -10, macroMarkupThreshold: undefined }, REGIME_DEFAULTS).valid, false);
   });
+
+  it('checks an accumulation-only update against both current macro boundaries', () => {
+    const current = { ...REGIME_DEFAULTS, macroDeclineThreshold: -30, macroMarkupThreshold: 20 };
+    for (const threshold of [-40, -30, 20, 25]) {
+      const result = validateAndSanitizeRegimeConfig({ macroAccumulationThreshold: threshold }, current);
+      assert.equal(result.valid, false, `must reject accumulation threshold ${threshold}`);
+      assert.equal(result.value, undefined);
+    }
+    assert.deepEqual(validateAndSanitizeRegimeConfig({ macroAccumulationThreshold: -20 }, current).value,
+      { macroAccumulationThreshold: -20 });
+    const update = { macroDeclineThreshold: -70, macroAccumulationThreshold: -60 };
+    assert.deepEqual(validateAndSanitizeRegimeConfig(update, current).value, update);
+    assert.equal(current.macroDeclineThreshold, -30);
+  });
 });

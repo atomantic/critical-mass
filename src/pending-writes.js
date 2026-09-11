@@ -61,7 +61,8 @@ const drainPendingWrites = async (timeoutMs = 30_000) => {
   let timer;
   const expired = new Promise((resolve) => {
     timer = setTimeout(() => resolve(false), timeoutMs);
-    timer.unref?.();
+    // This timer resolves an awaited drain; it must keep the process alive
+    // even when the outstanding writer has no active event-loop handles.
   });
   // allSettled: a cycle that rejected has stopped writing, which is what we need.
   const settled = Promise.allSettled(entries.map((e) => e.promise)).then(() => true);

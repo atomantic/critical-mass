@@ -29,6 +29,7 @@ const realFs = {
   writeFileSync: fs.writeFileSync.bind(fs),
   unlinkSync: fs.unlinkSync.bind(fs),
   mkdirSync: fs.mkdirSync.bind(fs),
+  mkdtempSync: fs.mkdtempSync.bind(fs),
   rmSync: fs.rmSync.bind(fs),
 };
 
@@ -75,7 +76,7 @@ describe('API key routes', () => {
 
   beforeEach(() => {
     // Create a real temp directory for this test
-    tempKeysDir = realFs.mkdirSync(path.join(os.tmpdir(), 'keys-routes-test-'), { recursive: true });
+    tempKeysDir = realFs.mkdtempSync(path.join(os.tmpdir(), 'keys-routes-test-'));
 
     // Replace migration.getExchangeKeysPath to use temp directory BEFORE reloading keys-routes
     migration.getExchangeKeysPath = (exchange) => {

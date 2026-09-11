@@ -38,11 +38,11 @@ const sanitizeRegimeConfig = (update) => {
 // current value, or a lone `tpMinPercent` bump would be validated against
 // `undefined` instead of the fund's actual `tpMaxPercent`.
 const REGIME_CROSS_FIELD_PARTNERS = {
-  tpMinPercent: 'tpMaxPercent',
-  tpMaxPercent: 'tpMinPercent',
-  macroDeclineThreshold: 'macroAccumulationThreshold',
-  macroAccumulationThreshold: 'macroMarkupThreshold',
-  macroMarkupThreshold: 'macroAccumulationThreshold',
+  tpMinPercent: ['tpMaxPercent'],
+  tpMaxPercent: ['tpMinPercent'],
+  macroDeclineThreshold: ['macroAccumulationThreshold'],
+  macroAccumulationThreshold: ['macroDeclineThreshold', 'macroMarkupThreshold'],
+  macroMarkupThreshold: ['macroAccumulationThreshold'],
 };
 
 /**
@@ -73,9 +73,12 @@ const validateAndSanitizeRegimeConfig = (rawUpdate, currentConfig = {}) => {
   const { value, droppedKeys } = sanitizeRegimeConfig(rawUpdate);
 
   const validationSubset = { ...value };
-  for (const [key, partner] of Object.entries(REGIME_CROSS_FIELD_PARTNERS)) {
-    if (validationSubset[key] !== undefined && !Object.prototype.hasOwnProperty.call(validationSubset, partner)) {
-      if (currentConfig?.[partner] !== undefined) validationSubset[partner] = currentConfig[partner];
+  for (const [key, partners] of Object.entries(REGIME_CROSS_FIELD_PARTNERS)) {
+    if (validationSubset[key] === undefined) continue;
+    for (const partner of partners) {
+      if (!Object.prototype.hasOwnProperty.call(validationSubset, partner) && currentConfig?.[partner] !== undefined) {
+        validationSubset[partner] = currentConfig[partner];
+      }
     }
   }
   const result = validateRegimeConfig(validationSubset);

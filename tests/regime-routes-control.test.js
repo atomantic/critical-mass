@@ -19,6 +19,7 @@ const path = require('path');
 
 const configUtils = require('../src/config-utils');
 const regimeStatusModule = require('../src/regime-status');
+const stateTracker = require('../src/state-tracker');
 const ROUTES_PATH = require.resolve('../src/routes/regime-routes');
 
 const BASE_CONFIG_FILE = path.join(__dirname, '..', 'config.json');
@@ -520,4 +521,48 @@ describe('POST /api/:exchange/regime/manual-trade-buy', () => {
     assert.equal(res.statusCode, 200);
     assert.equal(seen.createBody, false);
   });
+});
+
+
+describe('placement intent discard respects engine ownership', () => {
+  afterEach(() => mock.restoreAll());
+
+  const setup = (ipc) => {
+    const discard = mock.method(stateTracker, 'resolvePlacementIntent', () => true);
+    const register = requireFreshRoutes();
+    setupFsMocks(BASE_CONFIG);
+    const app = createFakeApp();
+    register(app, { exchangeIPCMap: ipc ? { cryptocom: ipc } : {} });
+    return { app, discard };
+  };
+
+  for (const kind of ['refusal', 'timeout']) {
+    it(`does not discard on disk after a connected engine ${kind}`, async () => {
+      const { app, discard } = setup({
+        isConnected: () => true,
+        request: () => kind === 'refusal'
+          ? Promise.resolve({ success: false, code: 'maintenance-in-progress', error: 'Engine in maintenance' })
+          : Promise.reject(new Error('IPC request timeout')),
+      });
+      const res = await invoke(app, 'POST /api/:exchange/regime/reconcile-placement-intent', reqFor({ intentId: 'intent-1', action: 'discard' }));
+      assert.equal(res.statusCode, kind === 'refusal' ? 400 : 503);
+      assert.equal(res.body.success, false);
+      assert.equal(res.body.engineDown, undefined);
+      assert.equal(discard.mock.callCount(), 0);
+    });
+  }
+
+  for (const missing of [false, true]) {
+    it(`allows explicit offline discard with ${missing ? 'missing' : 'disconnected'} IPC`, async () => {
+      const { app, discard } = setup(missing ? null : {
+        isConnected: () => false,
+        request: () => Promise.reject(new Error('IPC disconnected')),
+      });
+      const res = await invoke(app, 'POST /api/:exchange/regime/reconcile-placement-intent', reqFor({ intentId: 'intent-1', action: 'discard' }));
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body.success, true);
+      assert.equal(res.body.engineDown, true);
+      assert.deepEqual(discard.mock.calls[0].arguments, ['cryptocom', 'CRO_USD', 'intent-1']);
+    });
+  }
 });

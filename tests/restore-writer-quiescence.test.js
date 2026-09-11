@@ -804,3 +804,69 @@ describe('engine IPC server enforces the maintenance window', () => {
     server.stop();
   });
 });
+
+describe('release review restore failure boundaries', () => {
+  afterEach(() => {
+    maintenance.endMaintenance();
+    mock.restoreAll();
+  });
+
+  it('refuses archive application when a gateway writer rejects shutdown', async () => {
+    const order = [];
+    const result = await runRestore({
+      gatewayWriters: updownWriter({
+        stop: async () => { order.push('stop'); throw new Error('writer still active'); },
+        start: async () => { order.push('resume'); },
+      }),
+    });
+    assert.equal(result.status, 409);
+    assert.equal(result.body.code, 'writers-not-quiesced');
+    assert.equal(result.body.unconfirmed[0].reason, 'gateway-writer-stop-failed');
+    assert.deepEqual(result.restoreCalls, []);
+    assert.deepEqual(order, ['stop', 'resume']);
+    assert.equal(maintenance.isMaintenanceActive(), false);
+  });
+
+  it('allows an explicit force override for failed gateway shutdown and reports it', async () => {
+    const result = await runRestore({
+      force: true,
+      gatewayWriters: updownWriter({ stop: () => { throw new Error('failed drain'); }, start: () => {} }),
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.forced, true);
+    assert.equal(result.body.unconfirmed[0].writer, 'UpDown');
+    assert.equal(result.restoreCalls.length, 1);
+  });
+
+  it('keeps writers stopped and gateway mutations blocked after an incomplete rollback', async () => {
+    const order = [];
+    const recovery = { originalsDir: '.restore-originals-test' };
+    const result = await runRestore({
+      gatewayWriters: updownWriter({ stop: () => order.push('stop'), start: () => order.push('resume') }),
+      restore: () => ({ success: false, code: 'restore-incomplete-recovery', error: 'rollback failed', rolledBack: false, recovery }),
+    });
+    assert.equal(result.status, 500);
+    assert.equal(result.body.rolledBack, false);
+    assert.deepEqual(result.body.recovery, recovery);
+    assert.deepEqual(order, ['stop']);
+    assert.equal(maintenance.isMaintenanceActive(), true);
+    const response = { status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
+    maintenance.maintenanceGuard({ method: 'POST', path: '/coinbase/regime/start' }, response, () => assert.fail('mutation admitted'));
+    assert.equal(response.code, 503);
+  });
+
+  it('blocks engine mutations on a durable journal even after the window closes', () => {
+    const { JOURNAL_FILENAME } = require('../src/restore-apply');
+    const { setEngineMaintenance, refuseDuringMaintenance } = require('../src/engine-maintenance');
+    const { DATA_DIR } = require('../src/paths');
+    const originalExists = fs.existsSync;
+    const journalPath = path.join(DATA_DIR, JOURNAL_FILENAME);
+    let pendingRecovery = true;
+    mock.method(fs, 'existsSync', (file) => String(file) === journalPath ? pendingRecovery : originalExists(file));
+    setEngineMaintenance({ active: false });
+    assert.equal(refuseDuringMaintenance('regime:start').code, 'restore-incomplete-recovery');
+    assert.equal(refuseDuringMaintenance('regime:status'), null);
+    pendingRecovery = false;
+    assert.equal(refuseDuringMaintenance('regime:start'), null);
+  });
+});

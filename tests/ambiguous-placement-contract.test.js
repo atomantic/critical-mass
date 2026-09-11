@@ -218,6 +218,22 @@ for (const c of cases) {
       await assert.rejects(() => adapter.findOrderByClientOrderId('coid-427', c.pair));
     });
 
+    for (const value of [null, false, 0, '']) {
+      it(`keeps a placement pending when a successful lookup has invalid payload ${JSON.stringify(value)}`, async () => {
+        const adapter = c.create(keysPath);
+        stubProduct(adapter);
+        const { placements } = install((kind) => {
+          if (kind === 'placement') throw new Error('socket hang up');
+          return textResponse(JSON.stringify(c.name === 'cryptocom' ? { code: 0, result: value } : value));
+        });
+        const result = await placeWithUnknownReconcile(adapter, c.pair,
+          () => adapter.placeLimitBuy(c.pair, 0.019, 100), []);
+        assert.equal(result.pending, true);
+        assert.equal(result.success, false);
+        assert.equal(placements.length, 1);
+      });
+    }
+
     it('reconciles an ambiguous placement into the live order without placing a second one', async () => {
       const adapter = c.create(keysPath);
       stubProduct(adapter);
@@ -239,6 +255,28 @@ for (const c of cases) {
       assert.equal(result.orderId, c.expectedOrderId);
       assert.equal(placements.length, 1, 'the order must never be submitted twice');
       assert.equal(lookups.length, 1);
+    });
+
+    it('adopts a cancelled order that executed partially instead of dropping the bought asset', async () => {
+      const adapter = c.create(keysPath);
+      stubProduct(adapter);
+      const { placements } = install((kind) => {
+        if (kind === 'placement') throw new Error('socket hang up');
+        return textResponse(JSON.stringify(c.name === 'gemini' ? {
+          order_id: '55501', is_live: false, is_cancelled: true,
+          executed_amount: '0.01', original_amount: '0.019',
+          avg_execution_price: '100', timestampms: 1700000000000,
+        } : { code: 0, result: { order_info: {
+          order_id: '55501', status: 'CANCELED', quantity: '0.019',
+          cumulative_quantity: '0.01', avg_price: '100', create_time: 1700000000000,
+        } } }));
+      });
+      const result = await placeWithUnknownReconcile(adapter, c.pair,
+        () => adapter.placeMarketBuy(c.pair, 100), []);
+      assert.equal(result.success, true);
+      assert.equal(result.reconciled, true);
+      assert.equal(result.orderId, '55501');
+      assert.equal(placements.length, 1);
     });
 
     it('reports a clean failure only when the exchange positively never got the order', async () => {

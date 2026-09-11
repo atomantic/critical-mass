@@ -102,9 +102,8 @@ const waitForBuyFill = async (orderId, adapter, maxAttempts = 10, delayMs = 1000
 };
 
 /**
- * Terminal exchange statuses that mean an order never became (or is no longer) a
- * live/executed position. A reconciled order in one of these states is NOT
- * adopted — it's treated as a clean failure, safe to re-place next cycle.
+ * Terminal exchange statuses that cannot be adopted without execution. A
+ * cancelled IOC can still have filled partially; that execution must be booked.
  */
 const NON_ADOPTABLE_STATUSES = new Set(['CANCELLED', 'EXPIRED', 'FAILED', 'REJECTED']);
 
@@ -284,7 +283,7 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = 
     return holdIntentPending(clientOrderId, `${err.message} — reconcile lookup failed: ${lookupError.message}`);
   }
 
-  if (found && !NON_ADOPTABLE_STATUSES.has(found.status)) {
+  if (found && (!NON_ADOPTABLE_STATUSES.has(found.status) || found.filledSize > 0)) {
     // The order DID reach the exchange — adopt it rather than re-place (which
     // would double-spend against the already-executing order). Clearing the
     // intent here is what makes adoption exactly-once: the row is gone, so no

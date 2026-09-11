@@ -5,11 +5,21 @@
 // Covers issue #404: archive creation must exclude API keys, restore must
 // never clobber live key files, and deleteBackup/restoreBackup must reject
 // path traversal and symlink attacks; pruneBackups must enforce retention.
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, beforeEach, afterEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawnSync } = require('child_process');
+
+// The service's list/prune entry points use module-level paths. Bind this
+// isolated test process to a temporary data root before loading the service;
+// no test may enumerate, overwrite, or prune the operator's actual backups.
+const pathsModule = require('../src/paths');
+const originalPaths = { ...pathsModule };
+const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-backup-service-test-'));
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+Object.assign(pathsModule, { DATA_DIR, BACKUP_DIR });
 
 const {
   createBackup,
@@ -18,9 +28,10 @@ const {
   pruneBackups,
   restoreBackup,
 } = require('../src/backup-service');
-const { DATA_DIR, BACKUP_DIR } = require('../src/paths');
+Object.assign(pathsModule, originalPaths);
+after(() => fs.rmSync(DATA_DIR, { recursive: true, force: true }));
 
-// Isolate this suite's fixture files from any real data under DATA_DIR.
+// All fixtures and archive operations stay inside the temporary data root.
 const TEST_FILE = path.join(DATA_DIR, '__backup_service_test__.json');
 const originalPath = process.env.PATH;
 
