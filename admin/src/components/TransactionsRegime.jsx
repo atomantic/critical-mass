@@ -95,7 +95,9 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   // fills (not just filteredFills) so the running avg and orderId aggregation
   // are correct. Memoize to avoid recomputing on every render.
   const fillsWithPnLMemo = useMemo(() => computeFillsWithPnL(fills), [fills])
-  const fillsWithPnL = fillsWithPnLMemo.filter(passesFilter)
+
+  // Memoize the filtered result so it doesn't change on every render
+  const fillsWithPnL = useMemo(() => fillsWithPnLMemo.filter(passesFilter), [fillsWithPnLMemo, filter, cycleFilter])
 
   // Re-sort and compute summary stats in a single memoized pass
   const { displayFills, totalBuys, totalSells, totalAssetBought, totalBtcSold, totalFees, totalPnL, totalHoldbackBtc, totalHoldbackValue } = useMemo(() => {
