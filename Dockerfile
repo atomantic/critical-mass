@@ -18,6 +18,9 @@ WORKDIR /app
 # Install PM2 globally for multi-process orchestration
 RUN npm install -g pm2
 
+# zip/unzip are used by src/backup-service.js for archive create/restore
+RUN apk add --no-cache zip unzip
+
 # Install production dependencies
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
