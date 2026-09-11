@@ -7,7 +7,7 @@ const fs = require('fs');
 const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret } = require('../config-utils');
 const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('../backup-service');
 const { createContextLogger } = require('../logger');
-const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA } = require('../config-validator');
+const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA, validateNotificationConfigUpdate } = require('../config-validator');
 
 /**
  * Context logger for the settings routes. These endpoints are global (presets,
@@ -90,6 +90,12 @@ module.exports = (app, deps) => {
       delete telegram.botToken;
       updates.telegram = telegram;
     }
+
+    const { errors } = validateNotificationConfigUpdate(updates);
+    if (errors.length > 0) {
+      return res.status(400).json({ success: false, errors });
+    }
+
     updateNotificationConfig(updates);
     notifier.updateConfig(updates);
     res.json({ success: true });

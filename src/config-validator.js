@@ -51,9 +51,58 @@ const EXCHANGE_CONFIG_SCHEMA = {
 // ── Aggressiveness preset schema ─────────────────────────────────
 const AGGRESSIVENESS_SCHEMA = { ...PRESET_FIELD_RULES, ...LEGACY_PRESET_FIELD_RULES };
 
+// ── Notification config validation ───────────────────────────────
+const isIntegerInRange = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+
+/**
+ * Validate the subset of a `PUT /api/notifications/config` body that feeds
+ * timer arithmetic (`notifier.js` `scheduleDailySummary`/`enqueue`) or the
+ * quiet-hours gate, unlike `validateConfigUpdate` this only reports errors —
+ * it never strips unknown fields — because `telegram`/`events` still need to
+ * pass through untouched to the shallow-merge in `updateNotificationConfig`.
+ * @param {unknown} updates - Request body (post mask round-trip guard)
+ * @returns {{ errors: string[] }}
+ */
+const validateNotificationConfigUpdate = (updates) => {
+  const errors = [];
+  if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+    return { errors: ['update must be an object'] };
+  }
+
+  if (updates.enabled !== undefined && typeof updates.enabled !== 'boolean') {
+    errors.push('enabled: expected boolean');
+  }
+  if (updates.dailySummaryHour !== undefined && !isIntegerInRange(updates.dailySummaryHour, 0, 23)) {
+    errors.push('dailySummaryHour: must be an integer between 0 and 23');
+  }
+  if (updates.rateLimitMs !== undefined && !isIntegerInRange(updates.rateLimitMs, 1000, 300000)) {
+    errors.push('rateLimitMs: must be an integer between 1000 and 300000');
+  }
+
+  if (updates.quietHours !== undefined) {
+    const quietHours = updates.quietHours;
+    if (typeof quietHours !== 'object' || quietHours === null || Array.isArray(quietHours)) {
+      errors.push('quietHours: must be an object');
+    } else {
+      if (quietHours.enabled !== undefined && typeof quietHours.enabled !== 'boolean') {
+        errors.push('quietHours.enabled: expected boolean');
+      }
+      if (quietHours.start !== undefined && !isIntegerInRange(quietHours.start, 0, 23)) {
+        errors.push('quietHours.start: must be an integer between 0 and 23');
+      }
+      if (quietHours.end !== undefined && !isIntegerInRange(quietHours.end, 0, 23)) {
+        errors.push('quietHours.end: must be an integer between 0 and 23');
+      }
+    }
+  }
+
+  return { errors };
+};
+
 module.exports = {
   validateConfigUpdate,
   sanitizeRegimeConfig,
   EXCHANGE_CONFIG_SCHEMA,
   AGGRESSIVENESS_SCHEMA,
+  validateNotificationConfigUpdate,
 };
