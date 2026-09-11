@@ -127,7 +127,7 @@ module.exports = (app, deps) => {
         droppedKeys,
       });
     }
-    if (!valid) {
+    if (valid === false) {
       return res.status(400).json({ success: false, errors });
     }
     const updates = { ...regimeUpdates, ...fundUpdates };

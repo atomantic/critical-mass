@@ -1265,13 +1265,128 @@ const updateRegimeConfig = (exchange, pairOrUpdates, maybeUpdates) => {
   return config;
 };
 
+/** Primitive contract for every supported regime setting; preset bounds stay shared. */
+const REGIME_FIELD_RULES = {
+  enabled: { type: 'boolean' },
+  aggressiveness: { type: 'string', enum: ['conservative', 'moderate', 'aggressive', 'maximum'] },
+  atrPeriod: { type: 'number' },
+  kFactor: { type: 'number' },
+  minIntervalMs: { type: 'number' },
+  maxIntervalMs: { type: 'number' },
+  momentumMult: { type: 'number' },
+  volExpansionMult: { type: 'number' },
+  volContractionMult: { type: 'number' },
+  vwapPeriodHours: { type: 'number' },
+  trendConfirmationPeriods: { type: 'number' },
+  minOrderSizeUsdc: { type: 'number' },
+  baseSizeUsdc: { type: 'number' },
+  harvestScale: { type: 'number' },
+  cautionScale: { type: 'number' },
+  trendScale: { type: 'number' },
+  maxCycleBuys: { type: 'number' },
+  cycleResetHours: { type: 'number' },
+  liquidityFactorCap: { type: 'number' },
+  divergenceScalePct: { type: 'number' },
+  tpMult: { type: 'number' },
+  tpMinPercent: { type: 'number' },
+  tpMaxPercent: { type: 'number' },
+  tpUpdateThresholdPct: { type: 'number' },
+  holdbackRatio: { type: 'number' },
+  celestialEnabled: { type: 'boolean' },
+  maxCelestialBodies: { type: 'number' },
+  mergeProximityScale: { type: 'number' },
+  tpAutoManaged: { type: 'boolean' },
+  tpEvaluationCycles: { type: 'number' },
+  tpEvaluationMaxHours: { type: 'number' },
+  tpMinSampleSize: { type: 'number' },
+  tpAbsoluteMin: { type: 'number' },
+  tpAbsoluteMax: { type: 'number' },
+  tpMaxChangePercent: { type: 'number' },
+  sizeAutoManaged: { type: 'boolean' },
+  sizeEvaluationCycles: { type: 'number' },
+  sizeEvaluationMaxHours: { type: 'number' },
+  sizeMinSampleSize: { type: 'number' },
+  sizeAbsoluteMinBase: { type: 'number' },
+  sizeAbsoluteMaxBase: { type: 'number' },
+  sizeTargetUtilization: { type: 'number' },
+  sizeMaxChangePercent: { type: 'number' },
+  sizeAutoCycleBuys: { type: 'boolean' },
+  sizeMinCycleBuys: { type: 'number' },
+  sizeMaxCycleBuys: { type: 'number' },
+  maxAssetExposure: { type: 'number' },
+  depositedCapital: { type: 'number' },
+  maxUsdcDeployed: { type: 'number' },
+  maxDrawdownPercent: { type: 'number' },
+  drawdownResetHours: { type: 'number' },
+  entryOffsetBps: { type: 'number' },
+  entryOffsetUpBps: { type: 'number' },
+  entryOffsetDownBps: { type: 'number' },
+  entryMaxRetries: { type: 'number' },
+  cancelRateLimitMs: { type: 'number' },
+  orderStaleMs: { type: 'number' },
+  staleDataMs: { type: 'number' },
+  staleOrdersMs: { type: 'number' },
+  maxRestErrors: { type: 'number' },
+  maxRateLimits: { type: 'number' },
+  maxLatencyMs: { type: 'number' },
+  safeRecoveryMs: { type: 'number' },
+  maxOpenOrders: { type: 'number' },
+  reconcileIntervalMs: { type: 'number' },
+  maxSpreadBps: { type: 'number' },
+  spreadPauseMs: { type: 'number' },
+  minDepthUsdc: { type: 'number' },
+  depthPauseMs: { type: 'number' },
+  flashMoveMult: { type: 'number' },
+  flashCooldownMs: { type: 'number' },
+  cancelEntriesOnFlash: { type: 'boolean' },
+  macroEnabled: { type: 'boolean' },
+  macroUpdateIntervalMs: { type: 'number' },
+  macroHysteresis: { type: 'number' },
+  macroAccumulationThreshold: { type: 'number' },
+  macroDeclineThreshold: { type: 'number' },
+  macroMarkupThreshold: { type: 'number' },
+  macroAccumulationSizeMult: { type: 'number' },
+  macroAccumulationTpMult: { type: 'number' },
+  macroAccumulationOffsetMult: { type: 'number' },
+  macroMarkupSizeMult: { type: 'number' },
+  macroMarkupTpMult: { type: 'number' },
+  macroMarkupOffsetMult: { type: 'number' },
+  macroDeclineSizeMult: { type: 'number' },
+  macroDeclineTpMult: { type: 'number' },
+  macroDeclineOffsetMult: { type: 'number' },
+  longTermBiasEnabled: { type: 'boolean' },
+  longTermLookbackDays: { type: 'number' },
+  longTermUpdateIntervalMs: { type: 'number' },
+  autoAggressivenessEnabled: { type: 'boolean' },
+  entryMode: { type: 'string', enum: ['reactive', 'ladder'] },
+  ladderMaxAthDropPct: { type: 'number' },
+  ladderSpacingMode: { type: 'string', enum: ['linear', 'sqrt', 'exponential'] },
+  ladderSizeMode: { type: 'string', enum: ['flat', 'linear', 'sqrt', 'fibonacci'] },
+  ladderAutoSwitch: { type: 'boolean' },
+  ladderAutoSwitchVolMult: { type: 'number' },
+  ladderMinSpacingPct: { type: 'number' },
+  ...PRESET_FIELD_RULES,
+};
+
+/**
+ * Prove the primitive and enum contract before any coercive comparisons.
+ * @param {unknown} config
+ * @returns {config is Partial<RegimeStrategyConfig>}
+ */
+const hasRegimeFieldTypes = (config) => typeof config === 'object'
+  && config !== null && !Array.isArray(config)
+  && validateConfigUpdate(REGIME_FIELD_RULES, config).errors.length === 0;
+
 /**
  * Validate regime strategy configuration
- * @param {Partial<RegimeStrategyConfig>} config - Regime config to validate
- * @returns {ValidationResult}
+ * @param {unknown} config - Untrusted regime config to validate
+ * @returns {import('./types').RegimeValidationResult}
  */
 const validateRegimeConfig = (config) => {
-  const { errors } = validateConfigUpdate(PRESET_FIELD_RULES, config);
+  if (!hasRegimeFieldTypes(config)) {
+    return { valid: false, errors: validateConfigUpdate(REGIME_FIELD_RULES, config).errors };
+  }
+  const errors = [];
 
   // Aggressiveness level validation
   if (config.aggressiveness !== undefined) {
@@ -1440,10 +1555,9 @@ const validateRegimeConfig = (config) => {
     errors.push('drawdownResetHours must be between 0 (disabled) and 720 (30 days)');
   }
 
-  return {
-    valid: errors.length === 0,
-    errors,
-  };
+  return errors.length > 0
+    ? { valid: false, errors }
+    : { valid: true, errors: [], value: config };
 };
 
 /**
