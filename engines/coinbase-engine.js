@@ -42,6 +42,7 @@ const { createSocketIOProxy } = require('../src/ipc/socket-io-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel } = require('../src/shared-utils');
 const { stopAllRegimeEngines } = require('../src/engine-stop-all');
 const { migrateExchangeToPairs } = require('../src/migration');
+const { guardIncompleteRestore } = require('../src/restore-apply');
 const { LIFECYCLE } = require('../src/state-tracker');
 
 /**
@@ -907,6 +908,13 @@ const startup = async () => {
   startupLogger.info(`ℹ️    IPC: ws://127.0.0.1:${IPC_PORT}`);
 
   const exchange = EXCHANGE_NAME;
+
+  // ===== Interrupted-restore recovery =====
+  // Runs before the migration and before any fund loads its ledger or regime
+  // state: a crash mid-restore leaves data/ a mixed generation, and resuming a
+  // fund on one would trade against another era's accounting (issue #431).
+  // A rollback that cannot complete exits the process rather than trading blind.
+  guardIncompleteRestore({ processLabel: `${exchange} engine`, logger: startupLogger });
 
   // ===== One-time multi-pair migration =====
   // Move legacy data/<exchange>/ files into data/<exchange>/<defaultPair>/.

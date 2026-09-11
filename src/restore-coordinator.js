@@ -315,7 +315,18 @@ const applyRestoreUnderLock = async ({
     // Surface the applier's own code (e.g. a legacy archive with no
     // configuration manifest) so the UI can offer the right next step (#430).
     const code = typeof applied.result?.code === 'string' ? applied.result.code : 'restore-failed';
-    return { status: 500, body: { success: false, code, error, stoppedEngines, ...(warnings.length > 0 ? { warnings } : {}) } };
+    // `rolledBack: false` means the data directory is a mixed generation and the
+    // rollback artifacts are being retained for a retry — the UI must say so
+    // rather than presenting this as a plain failed restore (#431).
+    return { status: 500, body: {
+      success: false,
+      code,
+      error,
+      stoppedEngines,
+      ...(applied.ok && applied.result?.rolledBack === false ? { rolledBack: false } : {}),
+      ...(applied.result?.recovery ? { recovery: applied.result.recovery } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
+    } };
   }
   const result = applied.result;
 
