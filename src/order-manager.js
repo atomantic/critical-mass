@@ -4,6 +4,12 @@ const { createContextLogger } = require('./logger');
 const { getFibonacciSellPrice, getFibonacciSellQuantity } = require('./fibonacci-utils');
 const { getBaseCurrency } = require('./config-utils');
 const { isFilledStatus } = require('./shared-utils');
+const {
+  getBlockingPlacementIntents,
+  recordPlacementIntent,
+  markPlacementIntentUnresolved,
+  resolvePlacementIntent,
+} = require('./state-tracker');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -120,11 +126,17 @@ const NON_ADOPTABLE_STATUSES = new Set(['CANCELLED', 'EXPIRED', 'FAILED', 'REJEC
  * briefly eventually-consistent right after the network error that produced
  * the unknown outcome, and declaring a real order absent too early lets a
  * caller re-place it against one that may still land (double exposure).
+ * An outcome that CANNOT be reconciled — no client order id, no lookup
+ * capability, or a lookup that itself failed — is no longer flattened into an
+ * ordinary `{success:false}` (the shape callers read as "safe to re-place").
+ * It is held PENDING against a durable placement intent, written to disk before
+ * the POST was dispatched, and every later placement for that fund is refused
+ * until an operator reconciles it — across restarts (#472).
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @param {string} productId - Product ID (scopes the reconcile lookup)
  * @param {() => Promise<BuyResult|SellOrder>} placeFn - Placement thunk
- * @param {number[]} [retryDelaysMs] - Backoff (ms) between reconcile-lookup attempts; pass `[]` for a single immediate attempt (e.g. in tests)
- * @returns {Promise<BuyResult|SellOrder>} Placement result (possibly reconciled)
+ * @param {number[]|{retryDelaysMs?: number[], intent?: {exchange: string, pair?: string, action: string, side?: string, price?: number, size?: number, sizeUsdc?: number}|null}} [options] - Backoff array (legacy positional form), or `{retryDelaysMs, intent}`. `intent` names the fund and the order being placed and turns on durable intent tracking; omit it only where no fund owns the placement (unit tests).
+ * @returns {Promise<BuyResult|SellOrder|{success: false, pending: true, intentId: string|null, errorMessage: string}>} Placement result (possibly reconciled, possibly pending)
  */
 // Backoff between reconcile-lookup attempts when the first comes back empty —
 // the exchange's order-history endpoint can be briefly eventually-consistent
@@ -133,34 +145,115 @@ const NON_ADOPTABLE_STATUSES = new Set(['CANCELLED', 'EXPIRED', 'FAILED', 'REJEC
 // (double exposure) purely because the lookup raced ahead of propagation.
 const RECONCILE_RETRY_DELAYS_MS = [500, 1000];
 
-const placeWithUnknownReconcile = async (adapter, productId, placeFn, retryDelaysMs = RECONCILE_RETRY_DELAYS_MS) => {
+/**
+ * Accept either the legacy positional `retryDelaysMs` array or an options bag.
+ * @param {number[]|{retryDelaysMs?: number[], intent?: Object|null}} [options] - Caller options
+ * @returns {{retryDelaysMs?: number[], intent?: Object|null}} Normalized options
+ */
+const normalizePlaceOptions = (options) =>
+  Array.isArray(options) ? { retryDelaysMs: options } : (options ?? {});
+
+const placeWithUnknownReconcile = async (adapter, productId, placeFn, options = {}) => {
+  const { retryDelaysMs = RECONCILE_RETRY_DELAYS_MS, intent: intentScope = null } = normalizePlaceOptions(options);
+  const logger = orderLogger(adapter, productId);
+  const exchange = intentScope?.exchange;
+  const pair = intentScope?.pair;
+
+  // ---------------------------------------------------------------------
+  // 1. Refuse to dispatch while an earlier intent for this fund is unresolved.
+  //    This is the durable half of the guard: the record lives on disk, so a
+  //    restarted process refuses just as a running one does, and the refusal
+  //    is central — it holds no matter which caller (entry, TP, ladder level,
+  //    DCA buy, Fibonacci sell) reaches this funnel.
+  // ---------------------------------------------------------------------
+  if (intentScope) {
+    const blocking = getBlockingPlacementIntents(exchange, pair);
+    if (blocking.length > 0) {
+      const [oldest] = blocking;
+      const message = `unresolved placement intent ${oldest.id} (${oldest.action ?? 'order'}) must be reconciled by an operator before this fund places another order`;
+      logger.error(`🚫 Placement refused — ${blocking.length} unresolved placement intent(s) on this fund; oldest is ${oldest.action ?? 'order'} ${oldest.id}`, {
+        blockedByIntentId: oldest.id,
+        blockedByAction: oldest.action ?? null,
+        pendingIntents: blocking.length,
+        clientOrderId: oldest.clientOrderId ?? null,
+      });
+      return { success: false, pending: true, blockedByIntentId: oldest.id, pendingIntents: blocking.length, errorMessage: message };
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // 2. Persist the intent BEFORE dispatch. A crash between the POST leaving
+  //    this process and the response arriving would otherwise leave no record
+  //    at all (entry tracking only starts on success), and the next tick would
+  //    commit the same capital a second time. A persistence failure must
+  //    therefore PREVENT the submission rather than be logged past.
+  // ---------------------------------------------------------------------
+  let intent = null;
+  if (intentScope) {
+    try {
+      intent = recordPlacementIntent({ ...intentScope, productId });
+    } catch (err) {
+      logger.error(`🚫 Placement not submitted — could not persist the placement intent: ${err.message}`, {
+        action: intentScope.action ?? null,
+        error: err.message,
+      });
+      return { success: false, intentPersistenceFailed: true, errorMessage: `placement intent could not be persisted (${err.message}); order not submitted` };
+    }
+  }
+
+  /** Drop the intent — the outcome is now definitively known. */
+  const clearIntent = () => {
+    if (intent) resolvePlacementIntent(exchange, pair, intent.id);
+  };
+
+  /**
+   * Keep the intent on disk and hand the caller a PENDING result. `success` is
+   * still false (nothing may be tracked), but `pending` marks it as "not safe
+   * to re-place" — and the disk record enforces that regardless of what the
+   * caller does with the flag.
+   * @param {string|undefined} clientOrderId - Id the placement carried, if known
+   * @param {string} reason - Why the outcome could not be resolved
+   * @returns {{success: false, pending: true, intentId: string|null, clientOrderId: string|null, errorMessage: string}} Pending result
+   */
+  const holdIntentPending = (clientOrderId, reason) => {
+    if (intent) markPlacementIntentUnresolved(exchange, pair, intent.id, { clientOrderId: clientOrderId ?? null, reason });
+    return { success: false, pending: true, intentId: intent?.id ?? null, clientOrderId: clientOrderId ?? null, errorMessage: reason };
+  };
+
   const placement = await placeFn().catch((err) => {
     // Only the ambiguous order-POST outcome is reconcilable; anything else
     // (validation errors, hard network failure on non-order POSTs) propagates.
+    // Those are definitive — the exchange never took the order — so the intent
+    // is cleared rather than left blocking the fund.
     if (err?.status === 'unknown' || err?.unknownOutcome === true) {
       return { __unknownError: err };
     }
+    clearIntent();
     throw err;
   });
 
   if (!placement?.__unknownError) {
+    // Accepted, or cleanly rejected by the exchange — either way the outcome
+    // is known and the intent has served its purpose.
+    clearIntent();
     return placement;
   }
 
   const err = placement.__unknownError;
   const clientOrderId = err.clientOrderId;
 
-  // Can't reconcile without the id or a lookup capability — surface as a clean
-  // failure (the safe mode: no untracked position, engine re-buys next cycle).
-  const logger = orderLogger(adapter, productId);
-
+  // Can't reconcile without the id or a lookup capability. This is the case
+  // that used to return an ordinary failure — the shape callers read as "safe
+  // to re-place next cycle" — while an accepted order may be resting live and
+  // untracked. It now stays PENDING until an operator resolves it (#472).
   if (!clientOrderId || typeof adapter.findOrderByClientOrderId !== 'function') {
-    logger.error(`❌ Unknown order outcome and cannot reconcile (clientOrderId=${clientOrderId ?? 'none'}) — treating as failed`, {
+    logger.error(`❌ Unknown order outcome and cannot reconcile (clientOrderId=${clientOrderId ?? 'none'}) — holding the placement pending; no replacement will be submitted until an operator reconciles`, {
       clientOrderId: clientOrderId ?? null,
       reconcilable: false,
+      pending: true,
       error: err.message,
     });
-    return { success: false, errorMessage: err.message };
+    return holdIntentPending(clientOrderId, err.message);
   }
 
   logger.warn(`⚠️ Unknown order outcome — reconciling by client_order_id ${clientOrderId}`, {
@@ -168,15 +261,35 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, retryDelay
     error: err.message,
   });
   let found = null;
+  let lookupError = null;
   for (let attempt = 0; ; attempt++) {
-    found = await adapter.findOrderByClientOrderId(clientOrderId, productId);
-    if (found || attempt >= retryDelaysMs.length) break;
+    // A lookup that THROWS means "we could not check" — per the adapter
+    // contract only a positive not-found returns null. Treating a failed check
+    // as absence is the double-placement this whole path exists to prevent.
+    found = await adapter.findOrderByClientOrderId(clientOrderId, productId).catch((lookupErr) => {
+      lookupError = lookupErr;
+      return null;
+    });
+    if (lookupError || found || attempt >= retryDelaysMs.length) break;
     await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
+  }
+
+  if (lookupError) {
+    logger.error(`❌ Reconcile lookup for ${clientOrderId} failed (${lookupError.message}) — holding the placement pending; no replacement will be submitted until an operator reconciles`, {
+      clientOrderId,
+      pending: true,
+      lookupError: lookupError.message,
+      error: err.message,
+    });
+    return holdIntentPending(clientOrderId, `${err.message} — reconcile lookup failed: ${lookupError.message}`);
   }
 
   if (found && !NON_ADOPTABLE_STATUSES.has(found.status)) {
     // The order DID reach the exchange — adopt it rather than re-place (which
-    // would double-spend against the already-executing order).
+    // would double-spend against the already-executing order). Clearing the
+    // intent here is what makes adoption exactly-once: the row is gone, so no
+    // later recovery pass or operator action can adopt the same order twice.
+    clearIntent();
     logger.info(`ℹ️ ✅ Reconciled unknown placement — adopting exchange order ${found.orderId} (status ${found.status})`, {
       orderId: found.orderId,
       clientOrderId,
@@ -186,6 +299,11 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, retryDelay
     return { orderId: found.orderId, clientOrderId, success: true, reconciled: true };
   }
 
+  // A positive not-found (adapter contract: null only on 404/OrderNotFound) or
+  // a terminally-failed order is a DEFINITIVE outcome — the exchange never
+  // holds a live order for this id, so the intent is cleared and the caller may
+  // re-place on its next cycle.
+  clearIntent();
   logger.warn(`❌ Unknown placement not found live on exchange (client_order_id ${clientOrderId}, status ${found?.status ?? 'absent'}) — treating as failed, safe to re-place next cycle`, {
     clientOrderId,
     status: found?.status ?? 'absent',
@@ -195,13 +313,47 @@ const placeWithUnknownReconcile = async (adapter, productId, placeFn, retryDelay
 };
 
 /**
+ * Turn an unsuccessful placement result into the Error that the
+ * throw-on-failure order-manager entry points raise, preserving the pending
+ * marker so a caller can tell "the exchange refused" from "we do not know".
+ * @param {string} label - Human label for the placement
+ * @param {{errorMessage?: string, pending?: boolean, intentId?: string|null}} result - Placement result
+ * @returns {Error & {placementPending?: boolean, intentId?: string|null}} Error to throw
+ */
+const placementFailure = (label, result) => {
+  const err = /** @type {any} */ (new Error(`${label} failed: ${result?.errorMessage}`));
+  if (result?.pending) {
+    err.placementPending = true;
+    err.intentId = result.intentId ?? null;
+    err.message = `${label} outcome unknown and unresolved: ${result.errorMessage}`;
+  }
+  return err;
+};
+
+
+/**
+ * Build the durable-intent descriptor for a fund-scoped placement.
+ * Returns null when the caller supplied no fund scope, which leaves intent
+ * tracking off (the order-manager entry points are also reachable from unit
+ * tests and one-off scripts that own no fund directory).
+ * @param {{exchange: string, pair?: string}|null|undefined} scope - Fund scope
+ * @param {string} action - What is being placed, e.g. 'dca_buy'
+ * @param {'buy'|'sell'} side - Order side
+ * @param {{price?: number, size?: number, sizeUsdc?: number}} [details] - Requested order parameters
+ * @returns {Object|null} Intent descriptor, or null when unscoped
+ */
+const fundIntent = (scope, action, side, details = {}) =>
+  scope?.exchange ? { exchange: scope.exchange, pair: scope.pair, action, side, ...details } : null;
+
+/**
  * Execute a daily buy order
  * @param {ExchangeConfig} config - Configuration
  * @param {number} usdcAmount - Amount to spend in quote currency
  * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional, uses coinbase by default)
+ * @param {{exchange: string, pair?: string}|null} [scope] - Fund the placement belongs to, enabling durable placement intents (#472)
  * @returns {Promise<BuyResult>} Buy result with fill details
  */
-const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
+const executeDailyBuy = async (config, usdcAmount, adapter = null, scope = null) => {
   adapter = adapter || getAdapter('coinbase');
   const logger = orderLogger(adapter, config.productId);
 
@@ -214,11 +366,12 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
   const buyResult = await placeWithUnknownReconcile(
     adapter,
     config.productId,
-    () => adapter.placeMarketBuy(config.productId, usdcAmount)
+    () => adapter.placeMarketBuy(config.productId, usdcAmount),
+    { intent: fundIntent(scope, 'dca_buy', 'buy', { sizeUsdc: usdcAmount }) }
   );
 
   if (!buyResult.success) {
-    throw new Error(`Market buy failed: ${buyResult.errorMessage}`);
+    throw placementFailure('Market buy', buyResult);
   }
 
   logger.info(`ℹ️ Buy order placed: ${buyResult.orderId}`, { orderId: buyResult.orderId, usdcAmount });
@@ -250,7 +403,7 @@ const executeDailyBuy = async (config, usdcAmount, adapter = null) => {
  * @param {ExchangeAdapter|null} [adapter] - Exchange adapter (optional)
  * @returns {Promise<SellOrder>} Sell order result
  */
-const placeSellOrder = async (config, buyDetails, adapter = null) => {
+const placeSellOrder = async (config, buyDetails, adapter = null, scope = null) => {
   adapter = adapter || getAdapter('coinbase');
 
   // Calculate sell quantity (minus holdback)
@@ -270,11 +423,12 @@ const placeSellOrder = async (config, buyDetails, adapter = null) => {
   const sellResult = await placeWithUnknownReconcile(
     adapter,
     config.productId,
-    () => adapter.placeLimitSell(config.productId, sellQuantity, sellPrice)
+    () => adapter.placeLimitSell(config.productId, sellQuantity, sellPrice),
+    { intent: fundIntent(scope, 'dca_sell', 'sell', { price: sellPrice, size: sellQuantity }) }
   );
 
   if (!sellResult.success) {
-    throw new Error(`Limit sell failed: ${sellResult.errorMessage}`);
+    throw placementFailure('Limit sell', sellResult);
   }
 
   // A reconciled placement only carries orderId/clientOrderId (the exchange
@@ -357,7 +511,7 @@ const checkFilledOrders = async (pendingOrders, adapter = null) => {
  * @param {number} [maxRetries] - Maximum retry attempts
  * @returns {Promise<SellOrder>} Sell order result
  */
-const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRetries = 3) => {
+const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRetries = 3, scope = null) => {
   adapter = adapter || getAdapter('coinbase');
   const logger = orderLogger(adapter, config.productId);
   let lastError;
@@ -388,8 +542,16 @@ const placeSellOrderWithRetry = async (config, buyDetails, adapter = null, maxRe
     const sellResult = await placeWithUnknownReconcile(
       adapter,
       config.productId,
-      () => adapter.placeLimitSell(config.productId, sellQuantity, sellPrice)
+      () => adapter.placeLimitSell(config.productId, sellQuantity, sellPrice),
+      { intent: fundIntent(scope, 'dca_sell_retry', 'sell', { price: sellPrice, size: sellQuantity }) }
     );
+
+    // A pending (unresolved) outcome must never fall through to the retry loop
+    // below — that loop is exactly the "place a second order" behaviour the
+    // durable intent exists to stop.
+    if (sellResult.pending) {
+      throw placementFailure('Limit sell', sellResult);
+    }
 
     if (sellResult.success) {
       if (sellResult.reconciled) {
@@ -671,7 +833,7 @@ const consolidatePendingOrders = async (config, pendingOrders, adapter) => {
  * @param {ExchangeAdapter} adapter - Exchange adapter
  * @returns {Promise<{sellOrder: SellOrder, sellQuantity: number, holdbackAsset: number}>} Sell order result
  */
-const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, prevOrderId, adapter) => {
+const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, prevOrderId, adapter, scope = null) => {
   const baseCurrency = getBaseCurrency(config.productId);
   const logger = orderLogger(adapter, config.productId);
 
@@ -793,11 +955,12 @@ const placeFibonacciSellOrder = async (config, cumulativeAsset, avgCostBasis, pr
   const sellResult = await placeWithUnknownReconcile(
     adapter,
     config.productId,
-    () => adapter.placeLimitSell(config.productId, sellQuantity, adjustedPrice)
+    () => adapter.placeLimitSell(config.productId, sellQuantity, adjustedPrice),
+    { intent: fundIntent(scope, 'fibonacci_sell', 'sell', { price: adjustedPrice, size: sellQuantity }) }
   );
 
   if (!sellResult.success) {
-    throw new Error(`Fibonacci sell order failed: ${sellResult.errorMessage}`);
+    throw placementFailure('Fibonacci sell order', sellResult);
   }
 
   if (sellResult.reconciled) {

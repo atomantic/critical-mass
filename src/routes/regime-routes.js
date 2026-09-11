@@ -7,6 +7,7 @@
  */
 
 const { getRegimeConfig, updateRegimeConfig, updateFundConfig, validateRegimeConfig, getFundConfig } = require('../config-utils');
+const { resolvePlacementIntent } = require('../state-tracker');
 const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
 const { sanitizeRegimeConfig } = require('../config-validator');
@@ -356,6 +357,50 @@ module.exports = (app, deps) => {
     const pair = getFundPair(req);
     const result = await getIPC(exchange).request('regime:reset-cycle', {}, exchange, pair).catch(engineError);
     if (!result.success) return res.status(errStatus(result)).json(result);
+    res.json(result);
+  });
+
+  // Operator reconcile of an unresolved placement intent. While one exists, the
+  // fund refuses every new placement (across restarts), so this is the only way
+  // to release it — deliberately: nothing auto-clears an ambiguous placement on
+  // a timer or on an empty lookup.
+  app.post('/api/:exchange/regime/reconcile-placement-intent', async (req, res) => {
+    const { exchange } = req.params;
+    const pair = getFundPair(req);
+    const { intentId, action } = req.body || {};
+    if (!intentId || typeof intentId !== 'string') {
+      return res.status(400).json({ success: false, error: 'intentId is required' });
+    }
+    if (action !== 'adopt' && action !== 'discard') {
+      return res.status(400).json({ success: false, error: "action must be 'adopt' or 'discard'" });
+    }
+
+    const result = await getIPC(exchange)
+      .request('regime:reconcile-placement-intent', { intentId, action }, exchange, pair)
+      .catch(engineError);
+
+    if (!result.success) {
+      // With the engine down there is no in-memory tracking to adopt into, but
+      // a discard is purely a disk operation and must stay available — an
+      // intent left by a crash is exactly the case where the engine is down.
+      if (action === 'discard') {
+        const removed = resolvePlacementIntent(exchange, pair, intentId);
+        if (removed) {
+          regimeLogger(exchange, pair, '/api/:exchange/regime/reconcile-placement-intent').warn(
+            `⚠️ 🧹 [${exchange}/${pair}] Operator discarded placement intent ${intentId} with the engine down`,
+            { action: 'discard-placement-intent', intentId, engineDown: true },
+          );
+          return res.json({ success: true, engineDown: true, message: 'Discarded the placement intent; placements resume when the engine starts' });
+        }
+        return res.status(404).json({ success: false, error: `No pending placement intent ${intentId} on this fund` });
+      }
+      return res.status(errStatus(result)).json(result);
+    }
+
+    regimeLogger(exchange, pair, '/api/:exchange/regime/reconcile-placement-intent').info(
+      `ℹ️ 🧾 [${exchange}/${pair}] Placement intent ${intentId} reconciled (${action})`,
+      { action: `${action}-placement-intent`, intentId },
+    );
     res.json(result);
   });
 

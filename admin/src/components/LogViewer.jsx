@@ -4,10 +4,24 @@ import { useToast } from './Toast'
 
 const TAIL_OPTIONS = [100, 250, 500, 1000, 2000]
 
+// Streaming status as one { text, dotClass, textClass } triple, so the dot
+// and label can never disagree on tone. `terminal` (from useLogStream) is
+// set once the PM2 log child for this process stops on its own — a clean
+// exit is a mild "Stopped", an error/crash reads as a red alert.
+const describeStatus = (subscribed, terminal) => {
+  if (subscribed) return { text: 'Streaming', dotClass: 'bg-green-500 animate-pulse', textClass: 'text-green-400' }
+  if (!terminal) return { text: 'Disconnected', dotClass: 'bg-gray-500', textClass: 'text-gray-400' }
+  if (terminal.reason === 'exited') return { text: 'Stopped', dotClass: 'bg-yellow-500', textClass: 'text-yellow-400' }
+  const text = terminal.reason === 'error'
+    ? `Error: ${terminal.message || 'stream failed'}`
+    : `Crashed${terminal.code != null ? ` (code ${terminal.code})` : ''}${terminal.signal ? ` (${terminal.signal})` : ''}`
+  return { text, dotClass: 'bg-red-500', textClass: 'text-red-400' }
+}
+
 export default function LogViewer({ processName }) {
   const [tailLines, setTailLines] = useState(500)
   const [fullscreen, setFullscreen] = useState(false)
-  const { logs, subscribed, clear, flush, flushing } = useLogStream(processName, { lines: tailLines })
+  const { logs, subscribed, clear, flush, flushing, terminal, retry } = useLogStream(processName, { lines: tailLines })
   const { addToast } = useToast()
   const containerRef = useRef(null)
   const autoScrollRef = useRef(true)
@@ -35,6 +49,8 @@ export default function LogViewer({ processName }) {
     // Consider "at bottom" if within 50px of the bottom
     autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50
   }
+
+  const status = describeStatus(subscribed, terminal)
 
   const formatTime = (ts) => {
     const d = new Date(ts)
@@ -64,10 +80,16 @@ export default function LogViewer({ processName }) {
         <div className="flex items-center gap-2 ml-auto">
           {/* Streaming status */}
           <div className="flex items-center gap-1.5 text-xs">
-            <span className={`w-2 h-2 rounded-full ${subscribed ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} />
-            <span className={subscribed ? 'text-green-400' : 'text-gray-400'}>
-              {subscribed ? 'Streaming' : 'Disconnected'}
-            </span>
+            <span className={`w-2 h-2 rounded-full ${status.dotClass}`} />
+            <span className={status.textClass}>{status.text}</span>
+            {!subscribed && terminal && (
+              <button
+                onClick={retry}
+                className="px-2 py-0.5 text-xs bg-gray-700 hover:bg-gray-600 text-gray-200 rounded transition-colors"
+              >
+                Retry
+              </button>
+            )}
           </div>
 
           <button
@@ -102,7 +124,7 @@ export default function LogViewer({ processName }) {
       >
         {logs.length === 0 ? (
           <div className="text-gray-600 text-center py-8">
-            {subscribed ? 'Waiting for log output...' : `Connecting to ${processName}...`}
+            {subscribed ? 'Waiting for log output...' : terminal ? status.text : `Connecting to ${processName}...`}
           </div>
         ) : (
           logs.map((entry, i) => (

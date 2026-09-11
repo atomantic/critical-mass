@@ -478,6 +478,14 @@ ipcServer.onRequest('regime:reset-cycle', async (payload, exchange, pair) => {
   return { success: result.success, exchange, pair: resolvedPair, message: result.message, status: result.status || engine.getStatus() };
 });
 
+ipcServer.onRequest('regime:reconcile-placement-intent', async (payload, exchange, pair) => {
+  const resolvedPair = resolvePair(exchange, pair);
+  const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
+  if (!engine) return { success: false, error: 'Regime engine not running' };
+  const result = await engine.reconcilePlacementIntent(payload.intentId, payload.action);
+  return { ...result, exchange, pair: resolvedPair, status: engine.getStatus() };
+});
+
 ipcServer.onRequest('regime:set-body-tp', async (payload, exchange, pair) => {
   const resolvedPair = resolvePair(exchange, pair);
   const engine = regimeEngines.get(fundKey(exchange, resolvedPair));
