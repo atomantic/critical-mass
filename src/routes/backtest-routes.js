@@ -42,7 +42,10 @@ const backtestLogger = (exchange, pair, route) => createContextLogger({
 module.exports = (app, deps) => {
   const { io, readJSON, writeJSON, DATA_DIR, simulationCoordinator = new SimulationRunCoordinator() } = deps;
 
-  const getPair = (req) => req.fundPair;
+  // Reads the pair already validated and attached by withConfiguredPair —
+  // distinct from route-utils' resolvePairParam, which resolves one from
+  // params/query before that validation happens.
+  const getFundPair = (req) => req.fundPair;
   const registerPairRoute = (method) => (route, handler) => app[method](route, withConfiguredPair(handler));
   const pairGet = registerPairRoute('get');
   const pairPost = registerPairRoute('post');
@@ -75,7 +78,7 @@ module.exports = (app, deps) => {
   // Run backtest
   pairPost('/api/:exchange/backtest/run', async (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const logger = backtestLogger(exchange, pair, '/api/:exchange/backtest/run');
     const body = req.body || {};
     const fundConfig = getFundConfig(exchange, pair);
@@ -129,7 +132,7 @@ module.exports = (app, deps) => {
   // Optimizer cache (per-pair)
   pairGet('/api/:exchange/optimizer/cache', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const fundConfig = getFundConfig(exchange, pair);
     const cache = readJSON(getOptimizerCacheFile(exchange, fundConfig.productId), null);
     res.json(cache ? { success: true, cached: true, ...cache } : { success: true, cached: false });
@@ -137,7 +140,7 @@ module.exports = (app, deps) => {
 
   pairDelete('/api/:exchange/optimizer/cache', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const fundConfig = getFundConfig(exchange, pair);
     const fs = require('fs');
     const cacheFile = getOptimizerCacheFile(exchange, fundConfig.productId);
@@ -153,7 +156,7 @@ module.exports = (app, deps) => {
 
   pairPost('/api/:exchange/optimizer/run', (req, res) => {
     const { exchange } = req.params;
-    const pair = getPair(req);
+    const pair = getFundPair(req);
     const logger = backtestLogger(exchange, pair, '/api/:exchange/optimizer/run');
     const body = req.body || {};
     const fundConfig = getFundConfig(exchange, pair);
