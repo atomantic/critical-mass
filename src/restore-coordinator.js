@@ -267,7 +267,10 @@ const applyRestoreUnderLock = async ({
   const drainedWriters = [];
   for (const writer of gatewayWriters) {
     const failure = await stopGatewayWriter(writer, logger, filename);
-    if (failure) warnings.push(`${writer.name} failed to drain cleanly: ${failure.message}`);
+    if (failure) {
+      warnings.push(`${writer.name} failed to drain cleanly: ${failure.message}`);
+      unconfirmed.push({ exchange: 'gateway', writer: writer.name, reason: 'gateway-writer-stop-failed', error: failure.message });
+    }
     // Resume it regardless: a writer whose stop() threw is in an unknown state,
     // and leaving it dead after the restore is a second outage on top of the first.
     drainedWriters.push(writer);
@@ -276,12 +279,17 @@ const applyRestoreUnderLock = async ({
   // A throwing applier (ENOSPC mid-copy, unreadable archive) must still reach
   // the reload below.
   const applied = await Promise.resolve()
-    .then(() => restore(filename))
+    .then(() => unconfirmed.length > 0 && !force
+      ? { success: false, code: 'writers-not-quiesced', error: 'Gateway writers did not confirm shutdown. No files were changed.', rolledBack: true }
+      : restore(filename))
     .then((r) => ({ ok: true, result: r }), (err) => ({ ok: false, err }));
 
   // Reload from the (possibly unchanged) files on disk before anything can
   // persist again — on failure this puts each writer back on the pre-restore state.
-  for (const writer of drainedWriters.reverse()) {
+  // An incomplete rollback is not safe to load or persist. Keep services stopped
+  // until a process restart completes the durable journal's recovery.
+  const recoveryBlocked = applied.ok && applied.result?.rolledBack === false;
+  for (const writer of recoveryBlocked ? [] : drainedWriters.reverse()) {
     if (typeof writer.resume !== 'function') continue;
     const reloadError = await Promise.resolve().then(() => writer.resume()).then(() => null, (err) => err);
     if (reloadError) {
@@ -318,9 +326,10 @@ const applyRestoreUnderLock = async ({
     // `rolledBack: false` means the data directory is a mixed generation and the
     // rollback artifacts are being retained for a retry — the UI must say so
     // rather than presenting this as a plain failed restore (#431).
-    return { status: 500, body: {
+    return { status: code === 'writers-not-quiesced' ? 409 : 500, body: {
       success: false,
       code,
+      ...(unconfirmed.length > 0 ? { unconfirmed } : {}),
       error,
       stoppedEngines,
       ...(applied.ok && applied.result?.rolledBack === false ? { rolledBack: false } : {}),
@@ -352,10 +361,11 @@ const applyRestoreUnderLock = async ({
  * Acquire the exclusive maintenance lock, put every engine into its maintenance
  * window, and run the restore under both.
  *
- * The lock and the engine windows are released on EVERY exit path, including a
+ * The lock and engine windows are released on ordinary exits, including a
  * thrown fs error inside the archive applier — a leaked lock would 503 every
  * mutating API request for the rest of the process lifetime, and a leaked
- * engine window would refuse trading until its TTL expired.
+ * engine window would refuse trading until its TTL expired. An incomplete
+ * rollback retains the gateway lock until startup recovery proves coherence.
  *
  * @param {Object} params - See `applyRestoreUnderLock`
  * @returns {Promise<{status: number, body: Object}>} HTTP status + response body
@@ -404,7 +414,9 @@ const performRestore = async ({
   });
 
   await setEngineMaintenanceWindows({ ...windowArgs, active: false });
-  endMaintenance();
+  // Preserve the gateway gate when accounting files are still mixed. Startup
+  // recovery clears the journal before this process may resume any writers.
+  if (outcome.body?.rolledBack !== false) endMaintenance();
   return outcome;
 };
 

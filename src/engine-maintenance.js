@@ -14,8 +14,14 @@
  *
  * The window ALWAYS expires on its own. A gateway that crashes mid-restore must
  * not leave an engine permanently unable to trade, and an in-memory flag cannot
- * be cleaned up by anyone else.
+ * be cleaned up by anyone else. The durable restore journal independently
+ * blocks mutations until recovery, even after this window expires.
  */
+
+const fs = require('fs');
+const path = require('path');
+const { DATA_DIR } = require('./paths');
+const { JOURNAL_FILENAME } = require('./restore-apply');
 
 const DEFAULT_MAINTENANCE_TTL_MS = 15 * 60_000;
 const MAX_MAINTENANCE_TTL_MS = 60 * 60_000;
@@ -87,8 +93,20 @@ const setEngineMaintenance = (payload = {}) => {
  * @returns {{success: false, code: string, error: string, heldBy: string, expiresAt: number} | null} Refusal, or null to allow
  */
 const refuseDuringMaintenance = (channel) => {
+  if (MAINTENANCE_SAFE_CHANNELS.has(channel)) return null;
+  // The in-memory window expires; an unfinished restore must not. Only startup
+  // recovery may consume/remove this journal before trading mutations resume.
+  if (fs.existsSync(path.join(DATA_DIR, JOURNAL_FILENAME))) {
+    return {
+      success: false,
+      code: 'restore-incomplete-recovery',
+      error: 'Restore recovery is pending; restart after resolving the retained restore journal.',
+      heldBy: 'restore recovery',
+      expiresAt: 0,
+    };
+  }
   const active = getEngineMaintenance();
-  if (!active || MAINTENANCE_SAFE_CHANNELS.has(channel)) return null;
+  if (!active) return null;
   return {
     success: false,
     code: 'maintenance-in-progress',
