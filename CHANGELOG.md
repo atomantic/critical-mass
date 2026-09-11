@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **[issue-406] Fund lifecycle route tests for creation defaults, deletion guards, and live toggles** — Add `tests/exchange-routes-lifecycle.test.js` covering `POST /api/:exchange/funds` safe defaults (`enabled:false`, `dryRun:true`, `totalAllocation` mirrored into `regime.depositedCapital`/`maxUsdcDeployed`) and adapter-verification rejections, `DELETE /api/:exchange/funds/:pair` lifecycle/engine-running safety guards, and `PATCH /api/:exchange/config` live `enabled`/`dryRun` toggles including the IPC `regime:update-config` dispatch and 503 engine-rejection path.
+
 ### Changed
 - **[issue-369] Historical fill annotation repair extracted from engine startup** — Extract 188-line orphan recovery, size fuzzy-match, and cycle-ID rewriting heuristics from `startImpl` into dedicated `repairHistoricalFillAnnotations` helper, reducing mixed-abstraction cognitive load and enabling isolated testing of self-healing logic.
 - **[issue-356] Remove obsolete updateRegimeStateAfterEntry and scoreToSignal methods** — Delete unreferenced functions `updateRegimeStateAfterEntry` (state-tracker.js), `scoreToSignal` (signal-engine.js), and `prefixedTs` (time-utils.js) to eliminate dead code clutter and reduce architectural risk from unused state mutation paths.
