@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-499] Cost Basis monitoring now stays readable on narrow screens** — price, average-cost, position summaries, and cycle metrics wrap into responsive cards while current-cycle fills scroll inside their card when needed.
 - **[issue-498] Aggressiveness choices now stay inside narrow dashboard cards** — Mobile and tablet operators can see and tap every configuration preset without page-level horizontal overflow, while wide dashboard cards retain the compact four-choice layout.
 - **[issue-496] Own the two-process development launcher** — Replace concurrently and its exclusive dependency tree with a built-in Node launcher, preserving attributed output, aggregate completion, and SIGINT/SIGTERM/SIGHUP cleanup including the server watch child. Add fixture lifecycle tests.
 - **[issue-495] Regime settings reject wrong primitive types before persistence or live updates** — Validate every supported numeric field as a finite number, preserve existing bounds and zero sentinels, and reject malformed regime containers across all save paths so drawdown limits cannot be disabled by invalid input.
