@@ -119,17 +119,18 @@ const registerLogStreamHandlers = ({ socket, registry, spawnFn, log, allowedProc
       return;
     }
     const flushProc = spawnFn('pm2', ['flush', processName], { shell: false });
-    let output = '';
-    flushProc.stdout.on('data', (chunk) => { output += chunk.toString(); });
-    flushProc.stderr.on('data', (chunk) => { output += chunk.toString(); });
-    flushProc.on('close', (code) => {
-      socket.emit('logs:flushed', { processName, success: code === 0 });
-      log('INFO', `📋 Log flush ${code === 0 ? 'succeeded' : 'failed'} for ${processName}`);
-    });
-    flushProc.on('error', (err) => {
-      socket.emit('logs:flushed', { processName, success: false });
-      log('ERROR', `📋 Log flush error for ${processName}: ${err.message}`);
-    });
+    // A failed spawn (e.g. ENOENT) can emit both 'error' and a subsequent
+    // 'close' for the same child — settle at most once so the client never
+    // sees a duplicate (or contradictory) result for one flush request.
+    let settled = false;
+    const finish = (success, reason) => {
+      if (settled) return;
+      settled = true;
+      socket.emit('logs:flushed', { processName, success, ...(reason ? { reason } : {}) });
+      log(success ? 'INFO' : 'ERROR', `📋 Log flush ${success ? 'succeeded' : 'failed'} for ${processName}${reason ? ` (${reason})` : ''}`);
+    };
+    flushProc.on('close', (code) => finish(code === 0, code === 0 ? null : `exit code ${code}`));
+    flushProc.on('error', (err) => finish(false, err.message ? `spawn failed: ${err.message}` : 'spawn failed'));
   });
 };
 

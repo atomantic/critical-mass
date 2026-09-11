@@ -202,3 +202,69 @@ describe('log-stream-manager socket handlers', () => {
     assert.ok(err);
   });
 });
+
+describe('log-stream-manager flush handler (#451)', () => {
+  const setup = () => {
+    const registry = createLogStreamRegistry();
+    const socket = createFakeSocket('s1');
+    let spawned = [];
+    const spawnFn = () => {
+      const child = createFakeChild();
+      spawned.push(child);
+      return child;
+    };
+    registerLogStreamHandlers({ socket, registry, spawnFn, log: noopLog, allowedProcesses: ALLOWED });
+    return { registry, socket, spawned };
+  };
+
+  it('exit code 0 emits a single success result', () => {
+    const { socket, spawned } = setup();
+    socket.trigger('logs:flush', { processName: 'critical-mass' });
+    spawned[0].emit('close', 0);
+
+    const flushed = socket.emitted.filter(e => e.event === 'logs:flushed');
+    assert.equal(flushed.length, 1);
+    assert.deepEqual(flushed[0].payload, { processName: 'critical-mass', success: true });
+  });
+
+  it('a nonzero exit emits a failure result with a safe reason, no raw output', () => {
+    const { socket, spawned } = setup();
+    socket.trigger('logs:flush', { processName: 'critical-mass' });
+    spawned[0].emit('close', 1);
+
+    const flushed = socket.emitted.filter(e => e.event === 'logs:flushed');
+    assert.equal(flushed.length, 1);
+    assert.equal(flushed[0].payload.success, false);
+    assert.equal(flushed[0].payload.reason, 'exit code 1');
+  });
+
+  it('a spawn error emits a failure result', () => {
+    const { socket, spawned } = setup();
+    socket.trigger('logs:flush', { processName: 'critical-mass' });
+    spawned[0].emit('error', new Error('ENOENT'));
+
+    const flushed = socket.emitted.filter(e => e.event === 'logs:flushed');
+    assert.equal(flushed.length, 1);
+    assert.equal(flushed[0].payload.success, false);
+    assert.match(flushed[0].payload.reason, /spawn failed/);
+  });
+
+  it('a spawn error followed by close yields exactly one result, not two', () => {
+    const { socket, spawned } = setup();
+    socket.trigger('logs:flush', { processName: 'critical-mass' });
+    spawned[0].emit('error', new Error('ENOENT'));
+    spawned[0].emit('close', null);
+
+    const flushed = socket.emitted.filter(e => e.event === 'logs:flushed');
+    assert.equal(flushed.length, 1, 'expected exactly one logs:flushed result');
+  });
+
+  it('invalid process name is rejected without spawning a flush', () => {
+    const { socket, spawned } = setup();
+    socket.trigger('logs:flush', { processName: 'not-allowed' });
+
+    assert.equal(spawned.length, 0);
+    const err = socket.emitted.find(e => e.event === 'logs:error');
+    assert.ok(err);
+  });
+});
