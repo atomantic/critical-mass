@@ -361,15 +361,23 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: "action must be 'adopt' or 'discard'" });
     }
 
-    const result = await getIPC(exchange)
+    const ipc = getIPC(exchange);
+    let transportFailed = false;
+    const result = await ipc
       .request('regime:reconcile-placement-intent', { intentId, action }, exchange, pair)
-      .catch(engineError);
+      .catch((err) => { transportFailed = true; return engineError(err); });
+    const disconnected = transportFailed && (
+      !Object.prototype.hasOwnProperty.call(exchangeIPCMap, exchange)
+      || (typeof ipc.isConnected === 'function' && !ipc.isConnected())
+    );
 
     if (!result.success) {
       // With the engine down there is no in-memory tracking to adopt into, but
       // a discard is purely a disk operation and must stay available — an
       // intent left by a crash is exactly the case where the engine is down.
-      if (action === 'discard') {
+      // An explicit engine refusal or a timeout on a connected socket does
+      // not establish an offline engine; never bypass its intent ownership.
+      if (action === 'discard' && disconnected) {
         const removed = resolvePlacementIntent(exchange, pair, intentId);
         if (removed) {
           regimeLogger(exchange, pair, '/api/:exchange/regime/reconcile-placement-intent').warn(
