@@ -26,6 +26,7 @@
 const { createNewBody, syncPositionState } = require('./celestial-hierarchy');
 const { loadRegimeState, saveRegimeState } = require('./state-tracker');
 const { STATUS } = require('./manual-trades');
+const { readBooleanFlag } = require('./shared-utils');
 
 /** Logger used when a caller supplies none (tests, CLI paths). */
 const NOOP_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
@@ -273,8 +274,18 @@ const createManualTradeImporter = ({
    * @param {string} [payload.note]
    * @param {boolean} [payload.createBody=true]
    */
-  const importBuy = async ({ buyOrderId, note, createBody = true } = {}) => {
+  const importBuy = async (payload = {}) => {
+    const { buyOrderId, note } = payload;
     if (!buyOrderId) return fail('buyOrderId is required');
+
+    // Validate before the first ledger/store mutation (issue #423's ordering
+    // contract, extended to this flag by issue #454): createBody selects
+    // between ledger-only import and injecting/persisting a body that may
+    // place a live TP order, so a non-boolean (e.g. the string "false") must
+    // never reach that branch.
+    const createBodyFlag = readBooleanFlag(payload, 'createBody', true);
+    if (createBodyFlag.error) return fail(createBodyFlag.error);
+    const createBody = createBodyFlag.value;
 
     const { fills: buyFills, error } = await fetchOrderFills(buyOrderId, 'buy');
     if (error) return fail(error);

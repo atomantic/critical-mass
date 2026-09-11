@@ -480,6 +480,27 @@ const isOrderNotFoundError = (err) =>
 const isOrderStillOpen = (openOrders, orderId) =>
   Array.isArray(openOrders) && openOrders.some(o => o && o.orderId === orderId);
 
+/**
+ * Read a request/payload flag that must be a literal boolean when present,
+ * rejecting everything else (issue #454) — strings like "false", numbers,
+ * arrays, objects and null are NOT coerced. Used at both the gateway route
+ * layer and the IPC handler layer for destructive-operation flags (apply,
+ * preview, merge, createBody) that select a preview-vs-mutate branch:
+ * silently coercing "false" to truthy has flipped destructive behavior
+ * before (see the `dryRun` fund-config guard in regime-routes.js). Omitting
+ * the flag keeps the documented default untouched.
+ * @param {Object} body - Parsed request body / IPC payload
+ * @param {string} field - Flag name to validate
+ * @param {boolean} defaultValue - Value used when the flag is omitted
+ * @returns {{ value: boolean, error?: undefined } | { value?: undefined, error: string }}
+ */
+const readBooleanFlag = (body, field, defaultValue) => {
+  if (!(field in (body || {}))) return { value: defaultValue };
+  const value = body[field];
+  if (typeof value !== 'boolean') return { error: `${field} must be a boolean` };
+  return { value };
+};
+
 module.exports = {
   BASIS_POINTS_DIVISOR,
   isFilledStatus,
@@ -501,4 +522,5 @@ module.exports = {
   floorToIncrement,
   fmtPrice,
   fmtCurrency,
+  readBooleanFlag,
 };

@@ -383,3 +383,141 @@ describe('POST /api/:exchange/regime/set-body-tp-price', () => {
     assert.equal(seen.payload.limitPrice, 0.045);
   });
 });
+
+// Issue #454: apply/preview/merge/createBody are read-only-vs-mutating
+// selectors. A malformed value (string "false", number, array, object, null)
+// must be rejected with zero IPC forwarding — not truthiness-coerced into the
+// mutating branch.
+const NON_BOOLEAN_FLAG_VALUES = ['false', 'true', 0, 1, [], {}, null];
+
+describe('POST /api/:exchange/regime/recalculate', () => {
+  afterEach(() => mock.restoreAll());
+
+  for (const apply of NON_BOOLEAN_FLAG_VALUES) {
+    it(`rejects a non-boolean apply (${JSON.stringify(apply)}) with 400 and never calls IPC`, async () => {
+      let called = false;
+      const app = setupApp(() => { called = true; return Promise.resolve({ success: true }); });
+
+      const res = await invoke(app, 'POST /api/:exchange/regime/recalculate', reqFor({ apply }));
+
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.body.success, false);
+      assert.match(res.body.error, /apply must be a boolean/);
+      assert.equal(called, false, 'IPC must not be reached for a rejected flag');
+    });
+  }
+
+  it('defaults omitted apply to false (preview)', async () => {
+    let seen;
+    const app = setupApp((op, payload) => { seen = payload; return Promise.resolve({ success: true }); });
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/recalculate', reqFor({}));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(seen.apply, false);
+  });
+
+  it('forwards a literal true apply', async () => {
+    let seen;
+    const app = setupApp((op, payload) => { seen = payload; return Promise.resolve({ success: true }); });
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/recalculate', reqFor({ apply: true }));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(seen.apply, true);
+  });
+});
+
+describe('POST /api/:exchange/regime/convert-dca', () => {
+  afterEach(() => mock.restoreAll());
+
+  for (const preview of NON_BOOLEAN_FLAG_VALUES) {
+    it(`rejects a non-boolean preview (${JSON.stringify(preview)}) with 400 and never calls IPC`, async () => {
+      let called = false;
+      const app = setupApp(() => { called = true; return Promise.resolve({ success: true }); });
+
+      const res = await invoke(app, 'POST /api/:exchange/regime/convert-dca', reqFor({ preview }));
+
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.body.success, false);
+      assert.match(res.body.error, /preview must be a boolean/);
+      assert.equal(called, false);
+    });
+  }
+
+  for (const merge of NON_BOOLEAN_FLAG_VALUES) {
+    it(`rejects a non-boolean merge (${JSON.stringify(merge)}) with 400 and never calls IPC`, async () => {
+      let called = false;
+      const app = setupApp(() => { called = true; return Promise.resolve({ success: true }); });
+
+      const res = await invoke(app, 'POST /api/:exchange/regime/convert-dca', reqFor({ preview: false, merge }));
+
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.body.success, false);
+      assert.match(res.body.error, /merge must be a boolean/);
+      assert.equal(called, false);
+    });
+  }
+
+  it('defaults omitted flags to preview=true, merge=false', async () => {
+    let seen;
+    const app = setupApp((op, payload) => { seen = payload; return Promise.resolve({ success: true }); });
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/convert-dca', reqFor({}));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(seen.preview, true);
+    assert.equal(seen.merge, false);
+  });
+
+  it('forwards literal preview=false, merge=true', async () => {
+    let seen;
+    const app = setupApp((op, payload) => { seen = payload; return Promise.resolve({ success: true }); });
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/convert-dca', reqFor({ preview: false, merge: true }));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(seen.preview, false);
+    assert.equal(seen.merge, true);
+  });
+});
+
+describe('POST /api/:exchange/regime/manual-trade-buy', () => {
+  afterEach(() => mock.restoreAll());
+
+  for (const createBody of NON_BOOLEAN_FLAG_VALUES) {
+    it(`rejects a non-boolean createBody (${JSON.stringify(createBody)}) with 400 and never calls IPC`, async () => {
+      let called = false;
+      const app = setupApp(() => { called = true; return Promise.resolve({ success: true }); });
+
+      const res = await invoke(app, 'POST /api/:exchange/regime/manual-trade-buy', reqFor({ buyOrderId: 'buy-1', createBody }));
+
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.body.success, false);
+      assert.match(res.body.error, /createBody must be a boolean/);
+      assert.equal(called, false, 'IPC must not be reached for a rejected flag — no body/TP is created');
+    });
+  }
+
+  it('defaults omitted createBody to true and preserves other body fields', async () => {
+    let seen;
+    const app = setupApp((op, payload) => { seen = payload; return Promise.resolve({ success: true }); });
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/manual-trade-buy', reqFor({ buyOrderId: 'buy-1', note: 'n' }));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(seen.buyOrderId, 'buy-1');
+    assert.equal(seen.note, 'n');
+    assert.equal(seen.createBody, true);
+  });
+
+  it('forwards a literal false createBody (ledger-only import)', async () => {
+    let seen;
+    const app = setupApp((op, payload) => { seen = payload; return Promise.resolve({ success: true }); });
+
+    const res = await invoke(app, 'POST /api/:exchange/regime/manual-trade-buy', reqFor({ buyOrderId: 'buy-1', createBody: false }));
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(seen.createBody, false);
+  });
+});

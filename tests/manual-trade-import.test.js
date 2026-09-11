@@ -564,5 +564,33 @@ describe('Manual Trade Import', () => {
       const result = await createImporter({ adapter: createFakeAdapter() }).importBuy({});
       assert.deepEqual(result, { success: false, error: 'buyOrderId is required' });
     });
+
+    // Issue #454: createBody selects ledger-only import vs. injecting/persisting
+    // a body that may place a live TP order — a non-boolean must never reach
+    // that branch, and rejection must leave no trace on disk (same ordering
+    // contract importSell already follows for recoveryBuyPrice).
+    for (const createBody of ['false', 'true', 0, 1, [], {}, null]) {
+      it(`rejects a non-boolean createBody (${JSON.stringify(createBody)}) without touching the ledger or the store`, async () => {
+        const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+        const result = await createImporter({ adapter }).importBuy({ buyOrderId: 'buy-1', createBody });
+
+        assert.equal(result.success, false);
+        assert.equal(result.error, 'createBody must be a boolean');
+        assert.equal(fillLedger.getFillCount(), 0);
+        assert.equal(readManualTradesFile(), null);
+        assert.equal(readRegimeStateFile(), null);
+        // Validation short-circuits before the first fill fetch.
+        assert.deepEqual(adapter.calls.getOrderFills, []);
+      });
+    }
+
+    it('defaults omitted createBody to true (creates a body)', async () => {
+      const adapter = createFakeAdapter({ fillsByOrder: { 'buy-1': buyFills } });
+      const result = await createImporter({ adapter, injectBody: null }).importBuy({ buyOrderId: 'buy-1' });
+
+      assert.equal(result.success, true);
+      assert.equal(result.trade.status, STATUS.TP_PENDING);
+      assert.ok(readRegimeStateFile(), 'a body was persisted');
+    });
   });
 });
