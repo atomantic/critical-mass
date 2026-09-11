@@ -225,30 +225,6 @@ describe('Race 1: Duplicate TP prevention', () => {
     assert.equal(result.totalFees, 1.05);
   });
 
-  it('mutex serializes concurrent TP updates', async () => {
-    let sellCallCount = 0;
-    const adapter = createMockAdapter({
-      placeLimitSell: async () => {
-        sellCallCount++;
-        await new Promise(r => setTimeout(r, 20));
-        return { success: true, orderId: `sell-${sellCallCount}` };
-      },
-    });
-
-    const executor = createOrderExecutor('test', createTestConfig(), adapter, 'BTC-USDC');
-
-    // Fire two TP placements concurrently (both force update to bypass anti-churn)
-    const [r1, r2] = await Promise.all([
-      executor.placeTakeProfitOrder(0.01, 100000, { forceUpdate: true }),
-      executor.placeTakeProfitOrder(0.01, 101000, { forceUpdate: true }),
-    ]);
-
-    // Both should complete (serialized, not racing)
-    assert.ok(r1.success || r2.success);
-    // The second call should have cancelled the first's TP (mutex ensures no overlap)
-    assert.ok(sellCallCount >= 1);
-  });
-
   it('concurrent placeTakeProfitOrder under a slow cancel leaves exactly one live TP (issue #209 B)', async () => {
     // Two placeTakeProfitOrder calls race while each TP cancel is slow. With
     // the deadlock guard sitting well above the section duration the mutex
