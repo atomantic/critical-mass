@@ -4,7 +4,7 @@
  */
 
 const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret, getConfiguredExchanges, invalidateConfigCache } = require('../config-utils');
-const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('../backup-service');
+const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup, inspectBackup } = require('../backup-service');
 const { createContextLogger } = require('../logger');
 const { performRestore } = require('../restore-coordinator');
 const { drainPendingWrites } = require('../pending-writes');
@@ -190,6 +190,15 @@ module.exports = (app, deps) => {
     res.json({ success: true, filename: result.filename, sizeBytes: result.sizeBytes });
   });
 
+  // Pre-flight for the restore confirmation UI: reports whether the archive
+  // carries a configuration manifest, which funds it would restore, and whether
+  // reconstruction against THIS machine's base config succeeds — all without
+  // touching a single destination file (issue #430).
+  app.get('/api/backups/:filename/compatibility', (req, res) => {
+    const result = inspectBackup(req.params.filename);
+    res.status(result.success ? 200 : 400).json(result);
+  });
+
   app.delete('/api/backups/:filename', (req, res) => {
     const { filename } = req.params;
     const result = deleteBackup(filename);
@@ -223,7 +232,9 @@ module.exports = (app, deps) => {
       // Only exchanges this gateway actually proxies can own a live engine
       // process; a config key with no IPC client has no writer to drain.
       configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
-      restore: restoreBackup,
+      // A legacy (manifest-less) archive is refused unless the operator has
+      // explicitly accepted a data-only restore in the confirmation UI (#430).
+      restore: (name) => restoreBackup(name, { acceptLegacyWithoutBase: req.body?.acceptLegacyWithoutBase === true }),
       gatewayWriters: gatewayWriters(),
       drainPendingWrites,
       invalidateCaches: () => {

@@ -68,3 +68,44 @@ For each configured exchange (`coinbase`, `gemini`, `cryptocom`):
 - Pair-aware variants of the backtest, optimizer, transactions, charts, and keys pages — these still target the exchange's default fund. They'll be updated in a follow-up.
 
 ---
+
+## Backup Archives Carry Their Configuration (Unreleased)
+
+**Affects anyone restoring a backup onto a different machine or a fresh clone.**
+
+### Why
+
+`data/config.json` stores only the *difference* between your effective configuration and the machine-local base `config.json` (or, on a fresh clone, the shipped `config.example.json`). If your funds are defined in the base file — the normal native-install layout — then saving an unchanged configuration produces an empty override, and a backup of the data directory carried **no fund identity at all**.
+
+Restoring such an archive onto a fresh clone recovered the state files of, say, `coinbase/ETH-USDC` with a `1234` allocation, while the destination's effective configuration still said `BTC-USDC` at `10000`. The original fund was stranded and its capital settings were lost.
+
+### What changed
+
+- Archives now contain **`backup-manifest.json`**: a versioned, schema-allowlisted snapshot of the *effective* non-secret configuration — every configured pair identity, its capital settings and its full regime (strategy) block, already materialized so it depends on no base file.
+- Restore validates the manifest, reconstructs `data/config.json` against **the destination's** base config, and verifies in memory that loading the result reproduces the archived funds — all **before** a single destination file is written.
+- Secrets never enter the manifest: `notifications` (Telegram bot token) and `sentinel` (AI classification credentials) are excluded by allowlist, and a restore leaves the destination's own copies of both untouched. API keys (`*-keys.json`) are excluded from the archive as before.
+- The restore confirmation screen (Settings → Backups) shows a pre-flight compatibility report listing exactly which funds the archive would restore.
+
+### Restoring an OLD archive (taken before this release)
+
+Old archives have no manifest, so they cannot be made portable on their own. Restore refuses them by default rather than silently letting the destination's defaults win. You have two options:
+
+1. **Recommended — supply the source machine's base config.** Copy the *source* install's root `config.json` and pass it to the restore API as `legacyBaseConfig`:
+
+   ```bash
+   curl -X POST http://localhost:3000/api/backups/backup-2026-01-01T00-00-00.zip/restore \
+     -H 'Content-Type: application/json' \
+     -d "{\"legacyBaseConfig\": $(cat /path/to/source/config.json)}"
+   ```
+
+   The archive's stored override is merged onto that base to recover what the source machine actually ran.
+
+2. **Data-only restore.** Tick *"Restore data files only and keep this machine's current fund configuration"* in the restore dialog (or send `{"acceptLegacyWithoutBase": true}`). Your state files are recovered, but **you must configure the destination's funds yourself** so their pair identities match the restored state directories.
+
+Archives created by this release and later need neither step.
+
+### Future archives
+
+An archive whose manifest version is newer than the running build is rejected with an actionable error and no destination changes — upgrade critical-mass before restoring it.
+
+---
