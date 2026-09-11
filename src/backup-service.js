@@ -60,9 +60,11 @@ const createBackup = ({ includePriceCache = false } = {}) => {
     timeout: 60000,     // 60 second timeout
   });
 
-  if (result.status !== 0) {
-    const stderr = result.stderr ? result.stderr.toString().trim() : 'Unknown zip error';
-    return { success: false, error: stderr };
+  if (result.error || result.status !== 0) {
+    const error = result.error
+      ? result.error.message
+      : (result.stderr ? result.stderr.toString().trim() : 'Unknown zip error');
+    return { success: false, error };
   }
 
   const stats = fs.statSync(zipPath);
@@ -197,11 +199,13 @@ const restoreBackup = (filename) => {
     timeout: 60000,
   });
 
-  if (extractResult.status !== 0) {
+  if (extractResult.error || extractResult.status !== 0) {
     // Clean up temp dir
-    spawnSync('rm', ['-rf', tempDir]);
-    const stderr = extractResult.stderr ? extractResult.stderr.toString().trim() : 'Unknown unzip error';
-    return { success: false, error: stderr };
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    const error = extractResult.error
+      ? extractResult.error.message
+      : (extractResult.stderr ? extractResult.stderr.toString().trim() : 'Unknown unzip error');
+    return { success: false, error };
   }
 
   // Copy files from temp to data, skipping keys and backups
@@ -232,7 +236,7 @@ const restoreBackup = (filename) => {
   copyFiles(tempDir, DATA_DIR);
 
   // Clean up temp directory
-  spawnSync('rm', ['-rf', tempDir]);
+  fs.rmSync(tempDir, { recursive: true, force: true });
 
   return { success: true, filesRestored };
 };
