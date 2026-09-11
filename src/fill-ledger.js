@@ -521,6 +521,53 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
   };
 
   /**
+   * Compute cycle statistics (P&L, holdback, cycle detail).
+   * Pure helper that extracts duplicated cycle summary logic.
+   * Skips body-owned, satellite, and body-linked fills in accounting.
+   * @param {string} cycleId - The cycle identifier
+   * @param {Fill[]} cycleFills - All fills in this cycle
+   * @returns {{cycleDetail: object, pnl: number, holdbackAsset: number}} Cycle stats: detail row, unrounded pnl for accumulation, unrounded holdback
+   */
+  const computeCycleStats = (cycleId, cycleFills) => {
+    let totalAsset = 0;
+    let totalCost = 0;
+    let sellProceeds = 0;
+    let assetSold = 0;
+
+    for (const fill of cycleFills) {
+      // Skip body-owned fills — they have independent P&L tracking
+      if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
+
+      if (fill.side === 'buy') {
+        totalAsset += fill.size;
+        totalCost += fill.quoteAmount + fill.netFee;
+      } else if (fill.side === 'sell') {
+        sellProceeds += fill.quoteAmount - fill.netFee;
+        assetSold += fill.size;
+      }
+    }
+
+    const avgCost = totalAsset > 0 ? totalCost / totalAsset : 0;
+    const costBasisSold = avgCost * assetSold;
+    const pnl = sellProceeds - costBasisSold;
+    const holdbackAsset = totalAsset - assetSold;
+
+    const cycleDetail = {
+      cycleId,
+      buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
+      sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
+      totalAssetBought: roundAsset(totalAsset),
+      assetSold: roundAsset(assetSold),
+      holdbackAsset: roundAsset(holdbackAsset),
+      avgCost: roundUSDC(avgCost),
+      sellPrice: assetSold > 0 ? roundUSDC(sellProceeds / assetSold) : 0,
+      pnl: roundUSDC(pnl),
+    };
+
+    return { cycleDetail, pnl, holdbackAsset };
+  };
+
+  /**
    * Rebuild position state from fills
    * @param {Fill[]} [fillsToProcess] - Specific fills to process (defaults to current cycle)
    * @returns {RegimePositionState} Rebuilt position state
@@ -884,41 +931,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     globalRealizedAssetPnL = roundAsset(globalRealizedAssetPnL);
 
     for (const { cycleId, fills: cycleFills } of completedCycles) {
-      let totalAsset = 0;
-      let totalCost = 0;
-      let sellProceeds = 0;
-      let assetSold = 0;
-
-      for (const fill of cycleFills) {
-        // Skip body-owned fills — they have independent P&L tracking
-        if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
-
-        if (fill.side === 'buy') {
-          totalAsset += fill.size;
-          totalCost += fill.quoteAmount + fill.netFee;
-        } else if (fill.side === 'sell') {
-          sellProceeds += fill.quoteAmount - fill.netFee;
-          assetSold += fill.size;
-        }
-      }
-
-      const avgCost = totalAsset > 0 ? totalCost / totalAsset : 0;
-      const costBasisSold = avgCost * assetSold;
-      const pnl = sellProceeds - costBasisSold;
-      const holdbackAsset = roundAsset(totalAsset - assetSold);
-
-      cycleDetails.push({
-        cycleId,
-        buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
-        sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
-        totalAssetBought: roundAsset(totalAsset),
-        assetSold: roundAsset(assetSold),
-        holdbackAsset,
-        avgCost: roundUSDC(avgCost),
-        sellPrice: assetSold > 0 ? roundUSDC(sellProceeds / assetSold) : 0,
-        pnl: roundUSDC(pnl),
-      });
-
+      const { cycleDetail, pnl, holdbackAsset } = computeCycleStats(cycleId, cycleFills);
+      cycleDetails.push(cycleDetail);
       totalRealizedPnL += pnl;
       totalRealizedAssetPnL += holdbackAsset;
     }
@@ -985,44 +999,8 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
         const isCompleted = orphanSellRatio >= 0.5;
 
         if (isCompleted) {
-          let totalAsset = 0;
-          let totalCost = 0;
-          let sellProceeds = 0;
-          let assetSold = 0;
-
-          for (const fill of cycleFills) {
-            // Skip body-owned/satellite fills — they have independent P&L
-            // tracking. Mirror the completed-cycle path's filter exactly
-            // (isBodyOwned included) so an orphan-recovered cycle and a
-            // normal cycle compute P&L over the same set of fills (issue #108).
-            if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
-
-            if (fill.side === 'buy') {
-              totalAsset += fill.size;
-              totalCost += fill.quoteAmount + fill.netFee;
-            } else if (fill.side === 'sell') {
-              sellProceeds += fill.quoteAmount - fill.netFee;
-              assetSold += fill.size;
-            }
-          }
-
-          const avgCost = totalAsset > 0 ? totalCost / totalAsset : 0;
-          const costBasisSold = avgCost * assetSold;
-          const pnl = sellProceeds - costBasisSold;
-          const holdbackAsset = roundAsset(totalAsset - assetSold);
-
-          cycleDetails.push({
-            cycleId,
-            buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
-            sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
-            totalAssetBought: roundAsset(totalAsset),
-            assetSold: roundAsset(assetSold),
-            holdbackAsset,
-            avgCost: roundUSDC(avgCost),
-            sellPrice: assetSold > 0 ? roundUSDC(sellProceeds / assetSold) : 0,
-            pnl: roundUSDC(pnl),
-          });
-
+          const { cycleDetail, pnl, holdbackAsset } = computeCycleStats(cycleId, cycleFills);
+          cycleDetails.push(cycleDetail);
           totalRealizedPnL += pnl;
           totalRealizedAssetPnL += holdbackAsset;
           completedCycles.push({ cycleId, fills: cycleFills });
@@ -1174,33 +1152,9 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
       }
     }
 
-    // Pure helper: derive a completed-cycle detail row from a fill list. Mirrors
-    // the body-owned/satellite filter used by recalculateCycles (issue #108).
-    const detailFor = (cycleId, cycleFills) => {
-      let totalAsset = 0, totalCost = 0, sellProceeds = 0, assetSold = 0;
-      for (const fill of cycleFills) {
-        if (fill.isBodyOwned || fill.isSatellite || fill.bodyId) continue;
-        if (fill.side === 'buy') {
-          totalAsset += fill.size;
-          totalCost += fill.quoteAmount + fill.netFee;
-        } else if (fill.side === 'sell') {
-          sellProceeds += fill.quoteAmount - fill.netFee;
-          assetSold += fill.size;
-        }
-      }
-      const avgCost = totalAsset > 0 ? totalCost / totalAsset : 0;
-      return {
-        cycleId,
-        buys: cycleFills.filter(f => f.side === 'buy' && !f.isSatellite && !f.bodyId).length,
-        sells: cycleFills.filter(f => f.side === 'sell' && !f.isSatellite && !f.bodyId).length,
-        totalAssetBought: roundAsset(totalAsset),
-        assetSold: roundAsset(assetSold),
-        holdbackAsset: roundAsset(totalAsset - assetSold),
-        avgCost: roundUSDC(avgCost),
-        sellPrice: assetSold > 0 ? roundUSDC(sellProceeds / assetSold) : 0,
-        pnl: roundUSDC(sellProceeds - avgCost * assetSold),
-      };
-    };
+    // Local wrapper: extract cycleDetail from the unified computeCycleStats helper.
+    // Mirrors the body-owned/satellite filter used by recalculateCycles (issue #108).
+    const detailFor = (cycleId, cycleFills) => computeCycleStats(cycleId, cycleFills).cycleDetail;
 
     // Sell-ratio completion heuristic over ALL fills (matches recalculateCycles).
     const isCompletedCycle = (cycleFills) => {
