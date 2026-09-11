@@ -220,6 +220,11 @@ module.exports = (app, deps) => {
   // acknowledgement — or work still running after the drain window — blocks the
   // restore with zero destination file changes (issue #429). `force: true` is an
   // explicit operator override for recovering an install whose engine is dead.
+  //
+  // The application itself is transactional (issue #431): a failure part-way
+  // through reverts every destination to its pre-restore bytes, and a failure to
+  // revert returns `code: 'restore-incomplete-recovery'` with the retained
+  // rollback artifacts so the operator can retry rather than guess.
   app.post('/api/backups/:filename/restore', async (req, res) => {
     const logger = settingsLogger('/api/backups/:filename/restore');
     const { filename } = req.params;
@@ -234,7 +239,7 @@ module.exports = (app, deps) => {
       configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
       // A legacy (manifest-less) archive is refused unless the operator has
       // explicitly accepted a data-only restore in the confirmation UI (#430).
-      restore: (name) => restoreBackup(name, { acceptLegacyWithoutBase: req.body?.acceptLegacyWithoutBase === true }),
+      restore: (name) => restoreBackup(name, { acceptLegacyWithoutBase: req.body?.acceptLegacyWithoutBase === true, logger }),
       gatewayWriters: gatewayWriters(),
       drainPendingWrites,
       invalidateCaches: () => {

@@ -18,10 +18,10 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { DATA_DIR, BACKUP_DIR } = require('./paths');
+const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = require('./restore-apply');
 const {
   buildConfigSnapshot,
   reconstructConfigOverride,
-  writeUserConfigFile,
   resolveBaseConfigFile,
   normalizeToMultiExchange,
   invalidateConfigCache,
@@ -37,6 +37,9 @@ const MANIFEST_FILENAME = 'backup-manifest.json';
 const MANIFEST_VERSION = 1;
 
 const SPAWN_TIMEOUT_MS = 60000;
+
+/** Callers that have no context logger (CLI, tests) get silence, not console noise. */
+const SILENT_LOGGER = { info: () => {}, warn: () => {}, error: () => {} };
 
 /**
  * Resolve every path the service touches from a single data directory, so
@@ -183,6 +186,13 @@ const createBackup = ({ includePriceCache = false, paths: pathOverrides } = {}) 
     '*-keys.json',      // Never include API keys
     '*/*-keys.json',    // Keys in subdirectories
     MANIFEST_FILENAME,  // The manifest is generated below, never archived from data/
+    // Restore bookkeeping (rollback journal, saved originals, extraction
+    // staging). Archiving these would ship a stale journal into the next
+    // restore, and a startup recovery would then "roll back" a restore that
+    // never ran on that machine (issue #431).
+    JOURNAL_FILENAME,
+    `${STAGE_PREFIX}*`, `${STAGE_PREFIX}*/*`,
+    `${ORIGINALS_PREFIX}*`, `${ORIGINALS_PREFIX}*/*`,
   ];
 
   if (!includePriceCache) {
@@ -410,10 +420,11 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
  *   required to make a manifest-less (legacy) archive's configuration portable.
  * @param {boolean} [options.acceptLegacyWithoutBase] - Explicit operator acknowledgement
  *   that a legacy archive is being restored as data-only, keeping destination config.
+ * @param {{info: Function, warn: Function, error: Function}} [options.logger] - Context logger
  * @returns {{ success: boolean, filesRestored?: number, configRestored?: boolean,
- *   legacy?: boolean, error?: string, code?: string }}
+ *   legacy?: boolean, error?: string, code?: string, rolledBack?: boolean, recovery?: Object }}
  */
-const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false } = {}) => {
+const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, logger = SILENT_LOGGER } = {}) => {
   const paths = resolvePaths(pathOverrides);
   const resolved = resolveArchivePath(filename, paths.backupsDir);
   if (!resolved.ok) return { success: false, error: resolved.error };
@@ -429,7 +440,7 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
   if (!destination.ok) return { success: false, code: 'destination-config-unreadable', error: destination.error };
 
   // Create temp directory for extraction
-  const tempDir = path.join(paths.dataDir, `.restore-temp-${Date.now()}`);
+  const tempDir = path.join(paths.dataDir, `${STAGE_PREFIX}${Date.now()}`);
   fs.mkdirSync(tempDir, { recursive: true });
   const abort = (error, code) => {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -490,44 +501,44 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     override = rebuilt.override;
   }
 
-  // ---- Past this point the destination is mutated ----
-  let filesRestored = 0;
-  const copyFiles = (srcDir, destDir, isRoot = true) => {
-    const entries = fs.readdirSync(srcDir, { withFileTypes: true });
-    for (const entry of entries) {
-      const srcPath = path.join(srcDir, entry.name);
-      const destPath = path.join(destDir, entry.name);
-
-      // Skip backups directory, keys files and the manifest (archive metadata)
-      if (entry.name === 'backups') continue;
-      if (entry.name.endsWith('-keys.json')) continue;
-      if (isRoot && entry.name === MANIFEST_FILENAME) continue;
-
-      if (entry.isDirectory()) {
-        if (!fs.existsSync(destPath)) {
-          fs.mkdirSync(destPath, { recursive: true });
-        }
-        copyFiles(srcPath, destPath, false);
-      } else {
-        fs.copyFileSync(srcPath, destPath);
-        filesRestored++;
-      }
-    }
-  };
-
-  copyFiles(tempDir, paths.dataDir);
-
   if (override) {
-    // Replaces whatever override the archive just dropped in: the archived diff
-    // was relative to the SOURCE's base and is meaningless against this one.
-    writeUserConfigFile(override, paths.userConfigFile);
-    invalidateConfigCache();
+    // Stage the reconstruction OVER the archived config.json rather than writing
+    // it after the copy: the archived diff was relative to the SOURCE's base and
+    // is meaningless against this one, and staging it makes the config
+    // replacement part of the same all-or-nothing application below (#431).
+    // 0600 because an override can hold secrets (Telegram token) — matching
+    // writeUserConfigFile's default for a brand-new file.
+    fs.writeFileSync(path.join(tempDir, 'config.json'), JSON.stringify(override, null, 2), { mode: 0o600 });
   }
 
-  // Clean up temp directory
-  fs.rmSync(tempDir, { recursive: true, force: true });
+  // ---- Past this point the destination is mutated ----
+  // Transactional: the staged set is validated in full, every destination it
+  // replaces is copied aside under a durable rollback journal, and each
+  // replacement is a same-directory temp-file + rename. A failure reverts every
+  // destination; a crash leaves the journal for startup recovery (#431).
+  const applied = applyStagedFiles({
+    dataDir: paths.dataDir,
+    stageDir: tempDir,
+    filename,
+    logger,
+    // Skip the backups directory, key files and the archive's own metadata.
+    skip: (name, isRoot) => name === 'backups'
+      || name.endsWith('-keys.json')
+      || (isRoot && name === MANIFEST_FILENAME),
+  });
 
-  return { success: true, filesRestored, configRestored: Boolean(override), legacy };
+  // The staging directory is cleaned by the applier on every safe outcome; this
+  // covers the paths where it retains artifacts but staging is no longer needed.
+  if (applied.success || applied.rolledBack) fs.rmSync(tempDir, { recursive: true, force: true });
+
+  if (!applied.success) {
+    return { success: false, code: applied.code, error: applied.error, rolledBack: applied.rolledBack, ...(applied.recovery ? { recovery: applied.recovery } : {}) };
+  }
+
+  // Only now can a reader see the new config.json.
+  if (override) invalidateConfigCache();
+
+  return { success: true, filesRestored: applied.filesRestored, configRestored: Boolean(override), legacy };
 };
 
 module.exports = {
