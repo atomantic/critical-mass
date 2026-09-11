@@ -282,7 +282,7 @@ export default function SentinelDashboard() {
                       <span className="text-xs text-gray-500">{formatTime(alert.publishedAt)}</span>
                     </div>
                     <h3 className="font-medium mb-1">
-                      {alert.sourceUrl ? (
+                      {/^https?:\/\//i.test(alert.sourceUrl || '') ? (
                         <a href={alert.sourceUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
                           {alert.title}
                         </a>
