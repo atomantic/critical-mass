@@ -36,7 +36,16 @@ const { createMacroRegime } = require('./macro-regime');
 const { calculateApyMetrics: _calculateApyMetrics, initializeApyTracking: _initializeApyTracking } = require('./apy-calculator');
 const { tradeEvents } = require('./trade-events');
 const dryRunState = require('./dry-run-state');
-const { loadRegimeState, saveRegimeState, LIFECYCLE, createInitialRegimePositionState } = require('./state-tracker');
+const {
+  loadRegimeState,
+  saveRegimeState,
+  LIFECYCLE,
+  createInitialRegimePositionState,
+  getBlockingPlacementIntents,
+  describePlacementIntents,
+  isBlockingPlacementIntent,
+  resolvePlacementIntent,
+} = require('./state-tracker');
 const { resolveFundDataDir } = require('./migration');
 const celestialHierarchy = require('./celestial-hierarchy');
 const { fmtCurrency: fmtPrice, isFilledStatus, isCancelledStatus, isTerminalStatus, isOrderNotFoundError, isOrderStillOpen, floorToIncrement } = require('./shared-utils');
@@ -44,6 +53,11 @@ const { createContextLogger } = require('./logger');
 
 /** Interval between periodic metrics/regime-classification updates (ms) */
 const METRICS_INTERVAL_MS = 60000;
+// How often a fund that is blocked by an unresolved placement intent repeats
+// the reason in its log (the guard itself is evaluated on every tick).
+const PLACEMENT_BLOCK_LOG_INTERVAL_MS = 60_000;
+// How long the engine-side intent check may be reused between ticker messages.
+const PLACEMENT_INTENT_CACHE_MS = 1_000;
 
 /**
  * Freeze a partial sell before changing its body. A cancel acknowledgement is
@@ -687,7 +701,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
             positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(e => e.orderId !== orderId);
           }
         },
-      });
+      }, pair);
 
   // `let` so the #196 reconcile lock-release test can inject a mock with a
   // controllable deferred promise; no production reassignment.
@@ -742,7 +756,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   // own cancel+rewrite. Manual operator merges are not gated (deliberate action).
   let fillInProgress = 0;
   let stateSaveInterval = null;
-  let entryInProgress = false; // Lock to prevent concurrent entry evaluations
+  let entryInProgress = false;
+  // Rate limit for the "placements blocked by an unresolved intent" log line.
+  let placementBlockLoggedAt = 0;
+  // Short-lived cache of the intent check. evaluateEntryTrigger runs on every
+  // ticker message, and the authoritative refusal is order-manager's own fresh
+  // read immediately before each dispatch — so this can only delay the
+  // engine-side skip (and the operator's unblock) by up to a second, never let
+  // a duplicate order through.
+  let placementIntentCache = { at: 0, intents: [] }; // Lock to prevent concurrent entry evaluations
   let insufficientFundsCooldownUntil = 0; // Cooldown after InsufficientFunds to prevent rapid retry spam
   const recentlyProcessedFills = new Set(); // Dedup guard: prevents double-processing when stale check and fill check race
   const recentlyProcessedSellFills = new Set(); // Dedup guard: prevents sell orders from being processed twice across WS/reconcile/polling
@@ -3726,6 +3748,15 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     // Prevent concurrent entry evaluations (race condition from rapid ticker updates)
     if (entryInProgress) return;
 
+    // A placement whose outcome we could not establish (ambiguous response we
+    // could not reconcile, or a crash inside the dispatch window) leaves a
+    // durable intent on disk. While one is outstanding, an order we cannot see
+    // may be resting live against this fund's capital, so no new entry may be
+    // submitted — and because the record is on disk, the guard survives a
+    // restart. Monitoring, fill processing, TP repair, cancels and lifecycle
+    // operations all keep running; only NEW entries are held.
+    if (blockingPlacementIntents().length > 0) return;
+
     // Determine effective entry mode
     let effectiveMode = config.entryMode || 'reactive';
 
@@ -4853,6 +4884,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       lifecycleReason: positionState.lifecycleReason || null,
       lifecycleClosedCycle: positionState.lifecycleClosedCycle || null,
     },
+    placementIntents: isDryRun ? [] : describePlacementIntents(exchange, pair),
   });
   };
 
@@ -4913,6 +4945,109 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       cyclesCompleted: positionState.cyclesCompleted,
     });
     return { success: true, lifecycle: LIFECYCLE.DRAINING };
+  };
+
+  /**
+   * Unresolved placement intents for this fund, with rate-limited logging so a
+   * blocked engine says why once a minute instead of once a tick.
+   * @returns {Array<Object>} Blocking intents (empty when placements may proceed)
+   */
+  const blockingPlacementIntents = () => {
+    if (isDryRun) return [];
+    const now0 = Date.now();
+    if (now0 - placementIntentCache.at < PLACEMENT_INTENT_CACHE_MS) return placementIntentCache.intents;
+
+    const blocking = getBlockingPlacementIntents(exchange, pair);
+    placementIntentCache = { at: now0, intents: blocking };
+    if (blocking.length === 0) {
+      placementBlockLoggedAt = 0;
+      return blocking;
+    }
+    const now = Date.now();
+    if (now - placementBlockLoggedAt > PLACEMENT_BLOCK_LOG_INTERVAL_MS) {
+      placementBlockLoggedAt = now;
+      const [oldest] = blocking;
+      logger.error(`⏸️ [${exchange}] New entries blocked — ${blocking.length} unresolved placement intent(s); oldest ${oldest.action ?? 'order'} ${oldest.id} needs operator reconcile`, {
+        pendingIntents: blocking.length,
+        intentId: oldest.id,
+        action: oldest.action ?? null,
+        clientOrderId: oldest.clientOrderId ?? null,
+      });
+    }
+    return blocking;
+  };
+
+  /**
+   * Operator reconcile of one unresolved placement intent.
+   *
+   * `adopt` re-runs the authoritative client-order-id lookup and, only on a
+   * positive find, adopts the real exchange order into normal tracking before
+   * clearing the intent. `discard` clears an intent the operator has confirmed
+   * never became a live order. Both are exactly-once: the disk row is removed
+   * as part of the action, so a duplicate call finds nothing to act on.
+   *
+   * Nothing here auto-clears on a timer or on an empty lookup — "we did not
+   * find it" is not "it is not there", and that distinction is the whole point
+   * of the intent.
+   * @param {string} intentId - Intent id to reconcile
+   * @param {'adopt'|'discard'} action - Operator decision
+   * @returns {Promise<{success: boolean, message?: string, error?: string, adoptedOrderId?: string}>} Result
+   */
+  const reconcilePlacementIntent = async (intentId, action) => {
+    if (action !== 'adopt' && action !== 'discard') {
+      return { success: false, error: `Unknown reconcile action '${action}' (expected 'adopt' or 'discard')` };
+    }
+    const intent = describePlacementIntents(exchange, pair).find(i => i.id === intentId && isBlockingPlacementIntent(i));
+    if (!intent) {
+      return { success: false, error: `No unresolved placement intent ${intentId} on this fund (an in-flight dispatch is not reconcilable)` };
+    }
+
+    if (action === 'discard') {
+      const removed = resolvePlacementIntent(exchange, pair, intentId);
+      if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
+      logger.warn(`🧹 [${exchange}] Operator discarded placement intent ${intentId} (${intent.action ?? 'order'}) — placements resume`, {
+        intentId,
+        action: intent.action ?? null,
+        clientOrderId: intent.clientOrderId ?? null,
+      });
+      placementIntentCache = { at: 0, intents: [] };
+      return { success: true, message: `Discarded ${intent.action ?? 'placement'} intent — placements resume for this fund` };
+    }
+
+    if (!intent.clientOrderId) {
+      return { success: false, error: 'This intent carries no client order id (the process died before the response), so it cannot be looked up. Check the exchange manually, cancel any duplicate, then discard it.' };
+    }
+    if (typeof adapter.findOrderByClientOrderId !== 'function') {
+      return { success: false, error: `${exchange} cannot look up an order by client id; check the exchange manually, then discard the intent` };
+    }
+
+    const found = await adapter.findOrderByClientOrderId(intent.clientOrderId, productId).catch((err) => ({ __lookupError: err }));
+    if (found?.__lookupError) {
+      return { success: false, error: `Lookup failed (${found.__lookupError.message}) — the intent stays pending; we must not assume the order is absent` };
+    }
+    if (!found) {
+      return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup is never auto-cleared.` };
+    }
+
+    // Remove the row FIRST: whoever removes it owns the adoption, so a second
+    // (double-clicked) reconcile cannot adopt the same order twice.
+    const removed = resolvePlacementIntent(exchange, pair, intentId);
+    if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
+
+    if (typeof orderExecutor.adoptPlacement !== 'function') {
+      return { success: true, adoptedOrderId: found.orderId, message: `Intent cleared; this executor does not track orders, verify ${found.orderId} on the exchange` };
+    }
+    const adopted = orderExecutor.adoptPlacement(found, intent);
+    logger.info(`ℹ️ ✅ [${exchange}] Operator adopted exchange order ${found.orderId} for placement intent ${intentId} (${intent.action ?? 'order'})`, {
+      intentId,
+      orderId: found.orderId,
+      clientOrderId: intent.clientOrderId,
+      action: intent.action ?? null,
+      tracked: adopted.tracked,
+    });
+    placementIntentCache = { at: 0, intents: [] };
+    if (!isDryRun) saveLiveState();
+    return { success: true, adoptedOrderId: found.orderId, message: adopted.message };
   };
 
   /**
@@ -5745,6 +5880,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     resume,
     close,
     getLifecycle,
+    reconcilePlacementIntent,
     updateConfig,
     updatePosition,
     getFills,

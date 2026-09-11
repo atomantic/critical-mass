@@ -27,7 +27,7 @@ const {
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
-const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
+const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
 const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { resolvePairParam, getSafeIPC } = require('./route-utils');
@@ -446,6 +446,7 @@ module.exports = (app, deps) => {
       apiError,
       config,
       state,
+      placementIntents: stateTracker.describePlacementIntents(exchange, pair),
       lastUpdated: new Date().toISOString(),
     });
   });
@@ -569,4 +570,27 @@ module.exports = (app, deps) => {
       trigger: 'manual',
     });
   });
+
+  // Operator reconcile of an unresolved DCA placement intent. While one exists
+  // the interval cycle refuses to place, across restarts (#472).
+  app.post('/api/:exchange/reconcile-placement-intent', async (req, res) => {
+    const { exchange } = req.params;
+    const { intentId, action } = req.body || {};
+    if (!intentId || typeof intentId !== 'string') {
+      return res.status(400).json({ success: false, error: 'intentId is required' });
+    }
+    if (action !== 'adopt' && action !== 'discard') {
+      return res.status(400).json({ success: false, error: "action must be 'adopt' or 'discard'" });
+    }
+
+    const result = await reconcilePlacementIntent(exchange, intentId, action);
+    if (!result.success) return res.status(400).json(result);
+
+    exchangeLogger(exchange, undefined, '/api/:exchange/reconcile-placement-intent').info(
+      `ℹ️ 🧾 [${exchange}] Placement intent ${intentId} reconciled (${action})`,
+      { action: `${action}-placement-intent`, intentId },
+    );
+    res.json({ ...result, placementIntents: stateTracker.describePlacementIntents(exchange) });
+  });
+
 };

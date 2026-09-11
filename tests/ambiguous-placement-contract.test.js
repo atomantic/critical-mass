@@ -268,14 +268,18 @@ for (const c of cases) {
         return c.inconclusive();
       });
 
-      // An inconclusive lookup must NOT collapse into success:false — that is
-      // the shape callers read as "safe to re-place".
-      await assert.rejects(() => placeWithUnknownReconcile(
+      // An inconclusive lookup must NOT collapse into a plain success:false —
+      // that is the shape callers read as "safe to re-place". It comes back
+      // marked `pending`, and (when the placement is fund-scoped) leaves a
+      // durable intent that refuses the next placement outright (#472).
+      const result = await placeWithUnknownReconcile(
         adapter,
         c.pair,
         () => adapter.placeLimitBuy(c.pair, 0.019, 100),
         []
-      ));
+      );
+      assert.equal(result.success, false);
+      assert.equal(result.pending, true, 'an inconclusive reconcile stays pending, never a clean failure');
       assert.equal(placements.length, 1);
     });
   });
