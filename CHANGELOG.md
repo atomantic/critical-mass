@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-523] Backup archives now keep operator, AI provider, and notification credentials machine-local** — Backups omit live credential/config files while the portable manifest continues to restore funds without overwriting destination credentials.
 - **[issue-512] DCA import confirmation now shows the correct asset symbol for non-BTC funds** — The merge description at `RegimeActionModals.jsx:366` was rendering a hard-coded "BTC" suffix even for ETH, SOL, or other assets; replaced it with a dynamic call to `getBaseCurrency(convertPreview.productId)` matching the helper used on the amount rows below.
 - **[issue-508] Overlapping dashboard reads are fenced against stale responses** — Regime fills and UpDown status reads now use a per-mount monotonic request owner with AbortController, so an older in-flight response can no longer overwrite a newer fill snapshot or restore Running after a completed Stop.
 - **[issue-497] Regime order controls now stay tappable on touch layouts** — TP-edit and roll-up actions expose 44px hit areas on narrow or coarse-pointer screens while keeping wide fine-pointer tables compact.

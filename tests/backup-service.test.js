@@ -2,9 +2,9 @@
 // Covers issue #396: missing zip/unzip binaries must surface a real error
 // (not "Unknown zip error"), and temp-dir cleanup must use fs.rmSync
 // instead of shelling out to /bin/rm.
-// Covers issue #404: archive creation must exclude API keys, restore must
-// never clobber live key files, and deleteBackup/restoreBackup must reject
-// path traversal and symlink attacks; pruneBackups must enforce retention.
+// Covers issue #404: archive creation must exclude credentials, restore must
+// never clobber live credential files, and deleteBackup/restoreBackup must
+// reject path traversal and symlink attacks; pruneBackups must enforce retention.
 const { describe, it, beforeEach, afterEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -124,11 +124,17 @@ describe('backup-service — createBackup/restoreBackup', () => {
   });
 });
 
-describe('backup-service — API key exclusion', () => {
+describe('backup-service — credential exclusion', () => {
   const topLevelKeys = path.join(DATA_DIR, '__backup_service_test_coinbase-keys.json');
   const subDir = path.join(DATA_DIR, '__backup_service_test_gemini__');
   const nestedKeys = path.join(subDir, 'gemini-keys.json');
   const nestedState = path.join(subDir, 'state.json');
+  const rootCredentials = {
+    operatorAuth: path.join(DATA_DIR, 'operator-auth.json'),
+    providers: path.join(DATA_DIR, 'providers.json'),
+    bootstrap: path.join(DATA_DIR, 'operator-bootstrap-secret'),
+    config: path.join(DATA_DIR, 'config.json'),
+  };
   const createdBackups = [];
 
   beforeEach(() => {
@@ -137,11 +143,15 @@ describe('backup-service — API key exclusion', () => {
     fs.writeFileSync(topLevelKeys, JSON.stringify({ apiKey: 'top-secret' }));
     fs.writeFileSync(nestedKeys, JSON.stringify({ apiKey: 'nested-secret' }));
     fs.writeFileSync(nestedState, JSON.stringify({ marker: 'nested-state' }));
+    fs.writeFileSync(rootCredentials.operatorAuth, JSON.stringify({ hash: 'operator-secret' }));
+    fs.writeFileSync(rootCredentials.providers, JSON.stringify({ providers: { openai: { apiKey: 'provider-secret' } } }));
+    fs.writeFileSync(rootCredentials.bootstrap, 'bootstrap-secret');
+    fs.writeFileSync(rootCredentials.config, JSON.stringify({ global: { notifications: { telegram: { botToken: 'telegram-secret' } } } }));
   });
 
   afterEach(() => {
     cleanupTestFile();
-    removeAll([topLevelKeys, subDir]);
+    removeAll([topLevelKeys, subDir, ...Object.values(rootCredentials)]);
     for (const filename of createdBackups.splice(0)) {
       deleteBackup(filename);
     }
@@ -160,6 +170,22 @@ describe('backup-service — API key exclusion', () => {
     assert.ok(entries.some(e => e.endsWith('__backup_service_test_gemini__/state.json')));
   });
 
+  it('omits operator and provider credentials plus live config from the archive', () => {
+    const result = createBackup();
+    assert.equal(result.success, true);
+    createdBackups.push(result.filename);
+
+    const archivePath = path.join(BACKUP_DIR, result.filename);
+    const entries = listZipEntries(archivePath);
+    for (const entry of ['operator-auth.json', 'providers.json', 'operator-bootstrap-secret', 'config.json']) {
+      assert.ok(!entries.includes(entry), `archive should not contain ${entry}, got: ${entries.join(', ')}`);
+    }
+
+    const archiveContents = spawnSync('unzip', ['-p', archivePath]).stdout.toString();
+    assert.equal(archiveContents.includes('telegram-secret'), false, 'Telegram bot tokens must not enter the archive');
+    assert.ok(entries.includes('backup-manifest.json'), 'archive should still carry portable manifest data');
+  });
+
   it('omits the backups directory itself from the archive', () => {
     const result = createBackup();
     assert.equal(result.success, true);
@@ -170,8 +196,14 @@ describe('backup-service — API key exclusion', () => {
   });
 });
 
-describe('backup-service — restoreBackup preserves existing keys', () => {
+describe('backup-service — restoreBackup preserves existing credentials', () => {
   const liveKeys = path.join(DATA_DIR, '__backup_service_test_coinbase-keys.json');
+  const liveCredentials = {
+    operatorAuth: path.join(DATA_DIR, 'operator-auth.json'),
+    providers: path.join(DATA_DIR, 'providers.json'),
+    bootstrap: path.join(DATA_DIR, 'operator-bootstrap-secret'),
+    config: path.join(DATA_DIR, 'config.json'),
+  };
   const restoreState = path.join(DATA_DIR, '__backup_service_test_restore_state.json');
   let sourceDir;
   let craftedFilename;
@@ -182,12 +214,20 @@ describe('backup-service — restoreBackup preserves existing keys', () => {
 
     // The live "existing" key on disk before restore runs.
     fs.writeFileSync(liveKeys, JSON.stringify({ apiKey: 'live-key-must-survive' }));
+    fs.writeFileSync(liveCredentials.operatorAuth, '{"hash":"live-operator-auth"}');
+    fs.writeFileSync(liveCredentials.providers, '{"providers":{"openai":{"apiKey":"live-provider-key"}}}');
+    fs.writeFileSync(liveCredentials.bootstrap, 'live-bootstrap-secret');
+    fs.writeFileSync(liveCredentials.config, '{"global":{"notifications":{"telegram":{"botToken":"live-telegram-token"}}}}');
 
     // Craft an archive directly with `zip` (bypassing createBackup's own
     // excludes) so this test exercises restoreBackup's independent
-    // defense-in-depth skip of *-keys.json, not createBackup's exclusion.
+    // defense-in-depth skip of credential files, not createBackup's exclusion.
     sourceDir = fs.mkdtempSync(path.join(DATA_DIR, '.restore-source-'));
     fs.writeFileSync(path.join(sourceDir, '__backup_service_test_coinbase-keys.json'), JSON.stringify({ apiKey: 'archive-key-must-not-land' }));
+    fs.writeFileSync(path.join(sourceDir, 'operator-auth.json'), '{"hash":"archive-operator-auth-must-not-land"}');
+    fs.writeFileSync(path.join(sourceDir, 'providers.json'), '{"providers":{"openai":{"apiKey":"archive-provider-key-must-not-land"}}}');
+    fs.writeFileSync(path.join(sourceDir, 'operator-bootstrap-secret'), 'archive-bootstrap-must-not-land');
+    fs.writeFileSync(path.join(sourceDir, 'config.json'), '{"global":{"notifications":{"telegram":{"botToken":"archive-telegram-must-not-land"}}}}');
     fs.writeFileSync(path.join(sourceDir, '__backup_service_test_restore_state.json'), JSON.stringify({ marker: 'restored-from-archive' }));
 
     craftedFilename = `backup-${Date.now()}-crafted.zip`;
@@ -196,10 +236,10 @@ describe('backup-service — restoreBackup preserves existing keys', () => {
   });
 
   afterEach(() => {
-    removeAll([liveKeys, restoreState, sourceDir, path.join(BACKUP_DIR, craftedFilename)]);
+    removeAll([liveKeys, restoreState, sourceDir, path.join(BACKUP_DIR, craftedFilename), ...Object.values(liveCredentials)]);
   });
 
-  it('leaves the on-disk key file untouched while restoring non-key files', () => {
+  it('leaves on-disk credential files untouched while restoring non-credential files', () => {
     // The crafted archive has no #430 configuration manifest, so it is a
     // legacy archive: accept it data-only, which is what this test is about.
     const result = restoreBackup(craftedFilename, { acceptLegacyWithoutBase: true });
@@ -208,6 +248,10 @@ describe('backup-service — restoreBackup preserves existing keys', () => {
     // Key file on disk must retain its original (live) content.
     const keysOnDisk = JSON.parse(fs.readFileSync(liveKeys, 'utf8'));
     assert.equal(keysOnDisk.apiKey, 'live-key-must-survive');
+    assert.equal(fs.readFileSync(liveCredentials.operatorAuth, 'utf8'), '{"hash":"live-operator-auth"}');
+    assert.equal(fs.readFileSync(liveCredentials.providers, 'utf8'), '{"providers":{"openai":{"apiKey":"live-provider-key"}}}');
+    assert.equal(fs.readFileSync(liveCredentials.bootstrap, 'utf8'), 'live-bootstrap-secret');
+    assert.equal(fs.readFileSync(liveCredentials.config, 'utf8'), '{"global":{"notifications":{"telegram":{"botToken":"live-telegram-token"}}}}');
 
     // Non-key file from the archive must have landed.
     assert.equal(fs.existsSync(restoreState), true);
