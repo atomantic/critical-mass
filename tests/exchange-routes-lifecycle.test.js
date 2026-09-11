@@ -367,19 +367,11 @@ describe('fund lifecycle routes', () => {
 
     it('deletes the fund only when lifecycle is closed AND the engine is stopped', async () => {
       // Add a third fund the way the operator actually would (via the Add
-      // Fund modal -> POST /funds), then close and delete it. Deliberately
-      // NOT one of the two funds baked into BASE_CONFIG: config-utils'
-      // saveConfig persists only a base/modified diff (computeDiff walks
-      // Object.keys(modified), so a key deleted outright from the modified
-      // tree is simply absent from the diff, not tombstoned) — removing a
-      // fund that lives in the base config.json layer would appear to
-      // succeed but silently resurrect on the next load. That's a separate,
-      // pre-existing gap in the config diff/merge layer itself (unrelated to
-      // the lifecycle/engine-running guards this endpoint is responsible
-      // for), called out in the PR description rather than fixed here.
-      // Adding via addFund exercises the realistic path: a fund created
-      // through this same route lives entirely in the diff layer, so its
-      // removal is unambiguous.
+      // Fund modal -> POST /funds), then close and delete it. A fund created
+      // through this route lives entirely in the data/config.json diff layer,
+      // so its removal is unambiguous. The harder case — a fund defined in the
+      // BASE config.json, which saveConfig's diff persistence used to
+      // resurrect — is covered by the base-config-fund test below (#441).
       mock.method(adapters, 'getAdapter', () => ({ hasValidKeys: () => false }));
       const { app } = setup();
       const created = await invoke(app, 'POST /api/:exchange/funds', {
@@ -402,6 +394,40 @@ describe('fund lifecycle routes', () => {
       const pairs = remaining.body.funds.map((f) => f.pair);
       assert.ok(!pairs.includes('SOL-USDC'), 'deleted fund must be gone');
       assert.ok(pairs.includes('BTC-USDC') && pairs.includes('ETH-USDC'), 'other funds on the exchange must survive');
+    });
+
+    // Regression for #441: saveConfig persists only computeDiff(base, merged),
+    // and computeDiff walks Object.keys(modified) — so a pair deleted outright
+    // was simply absent from the diff, and the next deepMerge(base, diff)
+    // restored it from config.json. DELETE returned {success: true} and the
+    // fund came back on the next load.
+    it('keeps a fund defined in the BASE config deleted across a fresh config load', async () => {
+      writeRegimeState('coinbase', 'ETH-USDC', { lifecycle: 'closed' });
+      const { app, fsMocks } = setup();
+
+      const res = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
+        params: { exchange: 'coinbase', pair: 'ETH-USDC' },
+      });
+      assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+
+      // The persisted overrides must carry an explicit tombstone — the base
+      // config.json still defines ETH-USDC and is never rewritten.
+      assert.deepStrictEqual(fsMocks.user().exchanges.coinbase.deletedPairs, ['ETH-USDC']);
+
+      // Simulate a fresh process: same files on disk, no in-process cache.
+      configUtils._resetConfigCacheForTests();
+
+      const remaining = await invoke(app, 'GET /api/:exchange/funds', { params: { exchange: 'coinbase' } });
+      const pairs = remaining.body.funds.map((f) => f.pair);
+      assert.deepStrictEqual(pairs, ['BTC-USDC'], 'base-config fund must not resurrect');
+
+      // A second delete attempt now sees it as gone rather than silently
+      // re-deleting a resurrected fund.
+      const again = await invoke(app, 'DELETE /api/:exchange/funds/:pair', {
+        params: { exchange: 'coinbase', pair: 'ETH-USDC' },
+      });
+      assert.equal(again.statusCode, 400);
+      assert.match(again.body.error, /not found/i);
     });
   });
 
