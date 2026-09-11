@@ -104,7 +104,7 @@ describe('ConfigEditor shared write gate (issue #455)', () => {
 
   it('wraps the regime fund-config cards (but not the presets editor) in a disabled fieldset keyed to `locked`', () => {
     const regimeBlockMatch = configEditorSource.match(
-      /\{isRegime && \(\s*\n\s*<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">[\s\S]*?\{\/\* Save Button \*\/\}/,
+      /\{isRegime && \(\s*\n\s*<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">[\s\S]*?\{\/\* Aggressiveness Presets Editor/,
     )
     assert.ok(regimeBlockMatch, 'expected to find the regime settings block')
     const regimeBlock = regimeBlockMatch[0]

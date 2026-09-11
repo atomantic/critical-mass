@@ -363,8 +363,8 @@ const RegimeActionModals = ({
           <h3 id="convert-dca-title" className="text-white text-lg font-medium mb-3">{convertPreview.merge ? 'Import DCA Orders' : 'Upgrade DCA Orders'}</h3>
           <p id="convert-dca-description" className="text-gray-300 text-sm mb-4">
             {convertPreview.merge
-              ? `Merge DCA positions into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} BTC). New sell orders will be placed when the engine starts.`
-              : 'Convert your DCA order history into the Regime Engine format. Existing sell orders on the exchange will be preserved.'}
+              ? `Merge DCA positions into the existing regime engine (${convertPreview.existingBodies} bodies, ${convertPreview.existingAsset?.toFixed(8)} BTC). Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open. The regime engine will place new take-profit orders when started.`
+              : 'Import DCA positions into the regime engine. Existing DCA sell orders may remain open on the exchange, but the regime engine will not track them. Before starting the regime engine, cancel those DCA sell orders on the exchange and confirm that they are no longer open. The regime engine will place new take-profit orders when started.'}
           </p>
           {(() => {
             const asset = getBaseCurrency(convertPreview.productId)
@@ -406,8 +406,8 @@ const RegimeActionModals = ({
           })()}
           <p className="text-gray-500 text-xs mb-4">
             {convertPreview.merge
-              ? 'This will create backup files and add celestial bodies to the existing regime position. The regime engine will place new sell orders when started.'
-              : 'This will disable the DCA engine, create backup files, and build regime state with celestial bodies for each open position.'}
+              ? 'This will create backup files and add celestial bodies to the existing regime position. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.'
+              : 'This will disable the DCA engine, create backup files, and build regime state with celestial bodies for each open position. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.'}
           </p>
           <div className="flex justify-end gap-3">
             <button
