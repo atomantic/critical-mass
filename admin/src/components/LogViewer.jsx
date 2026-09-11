@@ -4,14 +4,18 @@ import { useToast } from './Toast'
 
 const TAIL_OPTIONS = [100, 250, 500, 1000, 2000]
 
-// Short, human status text for a stream that stopped on its own.
-const describeTerminal = (terminal) => {
-  if (!terminal) return null
-  if (terminal.reason === 'exited') return 'Stopped'
-  if (terminal.reason === 'error') return `Error: ${terminal.message || 'stream failed'}`
-  const codePart = terminal.code != null ? ` (code ${terminal.code})` : ''
-  const signalPart = terminal.signal ? ` (${terminal.signal})` : ''
-  return `Crashed${codePart}${signalPart}`
+// Streaming status as one { text, dotClass, textClass } triple, so the dot
+// and label can never disagree on tone. `terminal` (from useLogStream) is
+// set once the PM2 log child for this process stops on its own — a clean
+// exit is a mild "Stopped", an error/crash reads as a red alert.
+const describeStatus = (subscribed, terminal) => {
+  if (subscribed) return { text: 'Streaming', dotClass: 'bg-green-500 animate-pulse', textClass: 'text-green-400' }
+  if (!terminal) return { text: 'Disconnected', dotClass: 'bg-gray-500', textClass: 'text-gray-400' }
+  if (terminal.reason === 'exited') return { text: 'Stopped', dotClass: 'bg-yellow-500', textClass: 'text-yellow-400' }
+  const text = terminal.reason === 'error'
+    ? `Error: ${terminal.message || 'stream failed'}`
+    : `Crashed${terminal.code != null ? ` (code ${terminal.code})` : ''}${terminal.signal ? ` (${terminal.signal})` : ''}`
+  return { text, dotClass: 'bg-red-500', textClass: 'text-red-400' }
 }
 
 export default function LogViewer({ processName }) {
@@ -46,6 +50,8 @@ export default function LogViewer({ processName }) {
     autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50
   }
 
+  const status = describeStatus(subscribed, terminal)
+
   const formatTime = (ts) => {
     const d = new Date(ts)
     return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -74,18 +80,8 @@ export default function LogViewer({ processName }) {
         <div className="flex items-center gap-2 ml-auto">
           {/* Streaming status */}
           <div className="flex items-center gap-1.5 text-xs">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                subscribed ? 'bg-green-500 animate-pulse' : terminal ? (terminal.reason === 'exited' ? 'bg-yellow-500' : 'bg-red-500') : 'bg-gray-500'
-              }`}
-            />
-            <span
-              className={
-                subscribed ? 'text-green-400' : terminal ? (terminal.reason === 'exited' ? 'text-yellow-400' : 'text-red-400') : 'text-gray-400'
-              }
-            >
-              {subscribed ? 'Streaming' : terminal ? describeTerminal(terminal) : 'Disconnected'}
-            </span>
+            <span className={`w-2 h-2 rounded-full ${status.dotClass}`} />
+            <span className={status.textClass}>{status.text}</span>
             {!subscribed && terminal && (
               <button
                 onClick={retry}
@@ -128,7 +124,7 @@ export default function LogViewer({ processName }) {
       >
         {logs.length === 0 ? (
           <div className="text-gray-600 text-center py-8">
-            {subscribed ? 'Waiting for log output...' : terminal ? describeTerminal(terminal) : `Connecting to ${processName}...`}
+            {subscribed ? 'Waiting for log output...' : terminal ? status.text : `Connecting to ${processName}...`}
           </div>
         ) : (
           logs.map((entry, i) => (
