@@ -93,11 +93,38 @@ const resolveWorkspace = (requestedPath, roots) => {
   return allowed ? candidate : null;
 };
 
+const IMAGE_EXTENSION = /\.(png|jpe?g|gif|webp)$/i;
+const resolveScreenshots = (screenshots, screenshotsDir) => {
+  if (!Array.isArray(screenshots) || screenshots.length > 10) return null;
+  if (screenshots.length === 0) return [];
+  // Validate names before filesystem access; resolve symlinks before containment.
+  if (screenshots.some((entry) => typeof entry !== 'string' || !entry
+    || entry.includes('\0') || entry.includes('\\') || !IMAGE_EXTENSION.test(entry)
+    || entry.slice(path.parse(entry).root.length).split('/').some((part) => !part || part === '..' || part === '.'))) return null;
+  try {
+    const root = fs.realpathSync(screenshotsDir);
+    if (!fs.statSync(root).isDirectory()) return null;
+    return screenshots.map((entry) => {
+      const candidate = path.resolve(screenshotsDir, entry);
+      const relative = path.relative(path.resolve(screenshotsDir), candidate);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+      const resolved = fs.realpathSync(candidate);
+      if (!resolved.startsWith(`${root}${path.sep}`) || !IMAGE_EXTENSION.test(resolved)
+        || !fs.statSync(resolved).isFile()) return null;
+      return resolved;
+    });
+  } catch {
+    // Missing files, broken links, and inaccessible roots fail closed.
+    return null;
+  }
+};
+
 const createAiSecurity = ({
   providerService,
   workspaceRoots = (process.env.AI_WORKSPACE_ROOTS || process.cwd()).split(','),
   allowedOrigins = parseAllowedOrigins(),
   runsDir = path.join(process.cwd(), 'data', 'runs'),
+  screenshotsDir = path.join(process.cwd(), 'data', 'screenshots'),
 } = {}) => {
   installFetchGuard();
   const roots = workspaceRoots
@@ -176,6 +203,13 @@ const createAiSecurity = ({
     if (req.method === 'POST' && req.path === '/') {
       const workspacePath = resolveWorkspace(req.body?.workspacePath, roots);
       if (!workspacePath) return res.status(400).json({ error: 'Workspace path is outside AI_WORKSPACE_ROOTS' });
+      if (req.body?.screenshots !== undefined) {
+        const screenshots = resolveScreenshots(req.body.screenshots, screenshotsDir);
+        if (!screenshots || screenshots.some((entry) => entry === null)) {
+          return res.status(400).json({ error: 'Screenshots must be at most 10 existing images inside the screenshots directory' });
+        }
+        req.body.screenshots = screenshots;
+      }
       req.body.workspacePath = workspacePath;
       return providerService.getProviderById(req.body?.providerId).then((provider) => {
         const error = validateProvider(provider);

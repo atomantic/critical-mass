@@ -1,6 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const os = require('os');
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
@@ -173,6 +174,76 @@ describe('AI toolkit security boundary', () => {
 
     const variables = await callMiddleware(security.guardPrompts, { method: 'GET', path: '/variables' });
     assert.equal(variables.next, true);
+  });
+
+  it('confines HTTP run screenshots before any downstream file reads', async (t) => {
+    const express = require('express');
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-screenshots-'));
+    t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+    const screenshotsDir = path.join(temp, 'screenshots');
+    fs.mkdirSync(screenshotsDir);
+    fs.mkdirSync(path.join(screenshotsDir, 'nested'));
+    fs.mkdirSync(path.join(screenshotsDir, 'directory.png'));
+    fs.writeFileSync(path.join(screenshotsDir, 'nested', 'image.PNG'), 'image fixture');
+    fs.writeFileSync(path.join(screenshotsDir, 'keys.json'), 'secret fixture');
+    fs.writeFileSync(path.join(temp, 'outside.png'), 'outside fixture');
+    fs.mkdirSync(path.join(temp, 'screenshots-sibling'));
+    fs.writeFileSync(path.join(temp, 'screenshots-sibling', 'image.png'), 'outside fixture');
+    fs.symlinkSync(path.join(temp, 'outside.png'), path.join(screenshotsDir, 'escape.png'));
+    fs.symlinkSync(path.join(screenshotsDir, 'keys.json'), path.join(screenshotsDir, 'keys.png'));
+    fs.symlinkSync(path.join(temp, 'missing.png'), path.join(screenshotsDir, 'broken.png'));
+    fs.symlinkSync(path.join(temp, 'screenshots-sibling'), path.join(screenshotsDir, 'escape-dir'));
+    fs.symlinkSync(path.join(screenshotsDir, 'nested', 'image.PNG'), path.join(screenshotsDir, 'safe.png'));
+    const scopedSecurity = createAiSecurity({
+      providerService, workspaceRoots: [temp], screenshotsDir,
+      allowedOrigins: new Set(['https://api.example.com']),
+    });
+    let reads = 0;
+    const app = express();
+    app.use(express.json());
+    app.use('/api/runs', scopedSecurity.guardRun);
+    app.post('/api/runs', (req, res) => {
+      for (const image of req.body.screenshots || []) {
+        fs.readFileSync(image);
+        reads += 1;
+      }
+      res.json({ screenshots: req.body.screenshots });
+    });
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise((resolve) => server.once('listening', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const post = (screenshots) => fetch(`http://127.0.0.1:${server.address().port}/api/runs`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId: 'api', workspacePath: temp, screenshots }),
+    });
+    const invalid = [
+      null, 'image.png', {}, [1], [''], Array(11).fill('safe.png'),
+      ['../outside.png'], ['nested/../safe.png'], ['nested//image.PNG'],
+      ['./safe.png'], ['safe.png/'], ['bad\0.png'], ['..\\outside.png'],
+      [path.join(temp, 'outside.png')], [path.join(temp, 'screenshots-sibling', 'image.png')],
+      ['keys.json'], ['keys.png'], ['escape.png'], ['escape-dir/image.png'],
+      ['broken.png'], ['missing.png'], ['directory.png'], ['safe.png', 'escape.png'],
+    ];
+    for (const screenshots of invalid) {
+      const response = await post(screenshots);
+      assert.equal(response.status, 400, JSON.stringify(screenshots));
+      await response.arrayBuffer();
+      assert.equal(reads, 0);
+    }
+    for (const screenshots of [undefined, [], ['nested/image.PNG'], ['safe.png'], [path.join(screenshotsDir, 'safe.png')]]) {
+      const response = await post(screenshots);
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      if (screenshots?.length) {
+        assert.deepEqual(body.screenshots, [fs.realpathSync(path.join(screenshotsDir, 'safe.png'))]);
+      }
+    }
+    assert.equal(reads, 3);
+    fs.renameSync(screenshotsDir, path.join(temp, 'moved'));
+    const missingRoot = await post(['safe.png']);
+    assert.equal(missingRoot.status, 400);
+    await missingRoot.arrayBuffer();
+    assert.equal(reads, 3);
   });
 
   it('normalizes allowed workspaces and blocks escapes', async () => {
