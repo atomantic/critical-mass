@@ -622,6 +622,32 @@ describe('loadConfig', () => {
     assert.equal(result.exchanges.coinbase.enabled, true);
     assert.equal(result.global.schedulerInterval, 20000);
   });
+
+  // Issue #416: loadConfig() used to return the live _configCache object
+  // itself, so every update*Config helper mutated the shared cache before
+  // saveConfig ever touched disk. A failed saveConfig then left the cache
+  // permanently diverged from disk for the rest of the process lifetime.
+  it('returns a fresh clone on every call — mutating one result never affects another', () => {
+    const baseConfig = {
+      exchanges: { coinbase: { productId: 'BTC-USDC', enabled: true } },
+      global: { schedulerInterval: 20000 },
+    };
+    setupFsMocks({ base: baseConfig, user: null });
+
+    const first = loadConfig();
+    const second = loadConfig();
+
+    assert.notEqual(first, second, 'loadConfig() must not return the same object reference twice');
+    assert.deepStrictEqual(first, second, 'clones must be structurally equal');
+
+    // Mutate the first result the way updateRegimeConfig/updateFundConfig do.
+    first.exchanges.coinbase.enabled = false;
+    first.exchanges.coinbase.regime = { baseSizeUsdc: 999 };
+
+    const third = loadConfig();
+    assert.equal(third.exchanges.coinbase.enabled, true, 'mutating a prior loadConfig() result must not poison later reads');
+    assert.equal(third.exchanges.coinbase.regime, undefined);
+  });
 });
 
 // ============================================================================
@@ -674,6 +700,22 @@ describe('saveConfig', () => {
     const mocks = setupFsMocks({ base: baseConfig, user: null });
     saveConfig({ exchanges: { coinbase: { enabled: false } } });
     assert.deepStrictEqual(mocks.written(), {});
+  });
+
+  // Issue #416: loadRawConfig() guards a corrupt base-config parse (#185),
+  // but saveConfig() re-reads and re-parses the base file itself and did not
+  // — a transiently unreadable/corrupt base config would throw a raw
+  // SyntaxError out of saveConfig instead of a clear, attributable error.
+  it('surfaces a clear error instead of a raw SyntaxError when the base config is corrupt', () => {
+    setupFsMocks({ base: { exchanges: {} }, user: null });
+    mock.method(fs, 'readFileSync', (filePath) => {
+      if (filePath === BASE_CONFIG_FILE) return '{not valid json';
+      throw new Error(`ENOENT: no such file: ${filePath}`);
+    });
+    assert.throws(
+      () => saveConfig({ exchanges: { coinbase: { enabled: true } } }),
+      (err) => err instanceof Error && !(err instanceof SyntaxError) && /base config/i.test(err.message),
+    );
   });
 });
 
@@ -1038,6 +1080,36 @@ describe('updateRegimeConfig', () => {
     assert.ok(result.exchanges.kraken);
     assert.equal(result.exchanges.kraken.regime.enabled, true);
     assert.equal(result.exchanges.kraken.dryRun, DEFAULTS.dryRun);
+  });
+
+  // Issue #416: a failed disk write must not leave the in-process config
+  // cache reflecting the un-persisted edit. Before the fix, updateRegimeConfig
+  // mutated the live _configCache before saveConfig ever attempted the write,
+  // so a thrown fs error still left the phantom value visible to every later
+  // getRegimeConfig() call in the same process.
+  it('propagates a saveConfig disk-write failure and leaves the config cache at the pre-edit value', () => {
+    const baseConfig = {
+      exchanges: { coinbase: { regime: { enabled: false, baseSizeUsdc: 100 } } },
+      global: {},
+    };
+    setupFsMocks({ base: baseConfig, user: null });
+
+    // Prime the cache with the pre-edit value.
+    const before = getRegimeConfig('coinbase');
+    assert.equal(before.baseSizeUsdc, 100);
+
+    mock.method(fs, 'writeFileSync', () => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+
+    assert.throws(
+      () => updateRegimeConfig('coinbase', { baseSizeUsdc: 999 }),
+      /ENOSPC/,
+    );
+
+    const after = getRegimeConfig('coinbase');
+    assert.equal(after.baseSizeUsdc, 100, 'a failed save must not poison the in-process config cache');
+    assert.equal(after.enabled, false);
   });
 
 });

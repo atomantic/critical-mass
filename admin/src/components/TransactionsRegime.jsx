@@ -4,6 +4,7 @@ import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
 import ManualTrades from './ManualTrades'
 import { computeFillsWithPnL } from './transactionsRegimePnl'
+import { compareCycleIds } from '../utils/regimeFillGroups.mjs'
 
 function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const [fills, setFills] = useState([])
@@ -62,7 +63,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
   const baseCurrency = getBaseCurrency(productId)
 
   // Get unique cycle IDs for filtering
-  const cycleIds = [...new Set(fills.map(f => f.cycleId || 'current'))].sort().reverse()
+  const cycleIds = [...new Set(fills.map(f => f.cycleId || 'current'))].sort(compareCycleIds)
 
   // Filter predicate shared by the raw fill list and the P&L-enriched list
   // below, so both stay in sync without relying on object-identity checks.
