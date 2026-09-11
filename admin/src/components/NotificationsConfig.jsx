@@ -254,14 +254,16 @@ function NotificationsConfig() {
           <div className="bg-gray-800 rounded-lg p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold">Connection</h2>
-              <label className="relative inline-flex items-center cursor-pointer">
+              <label htmlFor="enable-notifications" className="relative inline-flex items-center cursor-pointer">
                 <input
+                  id="enable-notifications"
                   type="checkbox"
                   checked={config.enabled}
                   onChange={e => setConfig(prev => ({ ...prev, enabled: e.target.checked }))}
                   className="sr-only peer"
                 />
                 <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+                <span className="ml-3 text-sm font-medium">Enable notifications</span>
               </label>
             </div>
             <p className="text-gray-400 text-sm mb-5">
@@ -273,8 +275,9 @@ function NotificationsConfig() {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Bot Token</label>
+                <label htmlFor="bot-token" className="block text-sm font-medium text-gray-300 mb-1">Bot Token</label>
                 <input
+                  id="bot-token"
                   type="password"
                   value={rawToken || ''}
                   onChange={e => setRawToken(e.target.value)}
@@ -286,8 +289,9 @@ function NotificationsConfig() {
                 )}
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Chat ID</label>
+                <label htmlFor="chat-id" className="block text-sm font-medium text-gray-300 mb-1">Chat ID</label>
                 <input
+                  id="chat-id"
                   type="text"
                   value={config.telegram.chatId || ''}
                   onChange={e => setConfig(prev => ({
@@ -307,8 +311,9 @@ function NotificationsConfig() {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Rate Limit (ms)</label>
+                  <label htmlFor="rate-limit-ms" className="block text-sm font-medium text-gray-300 mb-1">Rate Limit (ms)</label>
                   <input
+                    id="rate-limit-ms"
                     type="number"
                     value={config.rateLimitMs}
                     onChange={e => setConfig(prev => ({ ...prev, rateLimitMs: parseInt(e.target.value) || 5000 }))}
@@ -319,8 +324,9 @@ function NotificationsConfig() {
                   <p className="mt-1 text-xs text-gray-500">Batch window for rapid events</p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
+                  <label htmlFor="daily-summary-hour" className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
                   <input
+                    id="daily-summary-hour"
                     type="number"
                     value={config.dailySummaryHour}
                     onChange={e => setConfig(prev => ({ ...prev, dailySummaryHour: parseInt(e.target.value) || 20 }))}
@@ -335,8 +341,9 @@ function NotificationsConfig() {
               {/* Quiet hours */}
               <div>
                 <div className="flex items-center gap-3 mb-3">
-                  <label className="relative inline-flex items-center cursor-pointer">
+                  <label htmlFor="quiet-hours-enabled" className="relative inline-flex items-center cursor-pointer">
                     <input
+                      id="quiet-hours-enabled"
                       type="checkbox"
                       checked={config.quietHours.enabled}
                       onChange={e => setConfig(prev => ({
@@ -346,15 +353,16 @@ function NotificationsConfig() {
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+                    <span className="ml-3 text-sm font-medium">Quiet Hours</span>
                   </label>
-                  <span className="text-sm font-medium">Quiet Hours</span>
                   <span className="text-xs text-gray-500">(critical events still sent)</span>
                 </div>
                 {config.quietHours.enabled && (
                   <div className="grid grid-cols-2 gap-4 ml-14">
                     <div>
-                      <label className="block text-sm text-gray-400 mb-1">Start Hour</label>
+                      <label htmlFor="quiet-hours-start" className="block text-sm text-gray-400 mb-1">Start Hour</label>
                       <input
+                        id="quiet-hours-start"
                         type="number"
                         value={config.quietHours.start}
                         onChange={e => setConfig(prev => ({
@@ -367,8 +375,9 @@ function NotificationsConfig() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm text-gray-400 mb-1">End Hour</label>
+                      <label htmlFor="quiet-hours-end" className="block text-sm text-gray-400 mb-1">End Hour</label>
                       <input
+                        id="quiet-hours-end"
                         type="number"
                         value={config.quietHours.end}
                         onChange={e => setConfig(prev => ({

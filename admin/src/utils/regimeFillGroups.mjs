@@ -1,3 +1,15 @@
+// Comparator for cycle IDs: 'current' first, numeric cycles descending, 'unknown' last
+export function compareCycleIds(a, b) {
+  if (a === b) return 0
+  if (a === 'current') return -1
+  if (b === 'current') return 1
+  if (a === 'unknown') return 1
+  if (b === 'unknown') return -1
+  const numA = parseInt(a.replace('cycle-', '')) || 0
+  const numB = parseInt(b.replace('cycle-', '')) || 0
+  return numB - numA
+}
+
 // Historical cycle accounting only. Callers own snapshot memoization; prices and
 // pending orders must not invalidate this derivation. Input fills are never mutated.
 export function deriveRegimeFillGroups(filteredFills) {
@@ -185,13 +197,7 @@ export function summarizeRegimeFillGroups(sellGroups) {
   // the paired sell). Derived from cycle pairs, same source as totalPnl.
   let totalHoldback = 0
   cycleMap.forEach(entry => { totalHoldback += entry.totalHoldback })
-  const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => {
-    if (a.cycleId === 'unknown') return 1
-    if (b.cycleId === 'unknown') return -1
-    const numA = parseInt(a.cycleId.replace('cycle-', '')) || 0
-    const numB = parseInt(b.cycleId.replace('cycle-', '')) || 0
-    return numB - numA
-  })
+  const cycleGroups = Array.from(cycleMap.values()).sort((a, b) => compareCycleIds(a.cycleId, b.cycleId))
   const totalPnl = sellGroups.reduce((sum, group) => sum + (group.sell.pnl || 0), 0)
   return { cycleGroups, totalHoldback, totalPnl }
 }
