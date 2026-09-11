@@ -1194,100 +1194,25 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
         if (isFilledStatus(orderStatus)) {
           const tierCfg = celestialHierarchy.getTierConfig(body.tier);
           logger.info(
-            `${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} filled while offline`,
+            `${tierCfg.emoji} [${exchange}] Body TP ${body.tpOrderId} filled while offline — routing through handleOrderFill`,
             { bodyId: body.id, orderId: body.tpOrderId, status: orderStatus.status }
           );
-
-          const rawFills = await adapter.getOrderFills(body.tpOrderId);
-          const ingestedFills = [];
-          for (const fill of rawFills) {
-            const result = fillLedger.ingestFill(fill);
-            if (result.fill) ingestedFills.push(result.fill);
+          orderExecutor.markSettled(body.tpOrderId);
+          // Contain per body (issue #316), same as the cancelled-with-partials
+          // branch above: one unresolved body must not abort recovery of the
+          // rest. Routing through the canonical pipeline (#367) — instead of
+          // duplicating its ~90 lines of fill aggregation, prorated cost basis,
+          // holdback, capital growth credit, source-buy linking and
+          // closedTrades.record inline — also picks up the cycle reset when
+          // this was the last body, which the old inline path omitted entirely.
+          try {
+            await handleOrderFill(buildPartialFillData(body.tpOrderId, 'sell', orderStatus));
+          } catch (err) {
+            logger.error(
+              `❌ [${exchange}] Body ${body.id.slice(-8)} TP ${body.tpOrderId.slice(0, 8)} offline full-fill recovery failed: ${err.message} — retrying on next reconcile`,
+              { bodyId: body.id, orderId: body.tpOrderId, orderType: 'body_tp', error: err.message }
+            );
           }
-
-          const fillsForBody = ingestedFills.length > 0
-            ? ingestedFills
-            : fillLedger.getFillsForOrder(body.tpOrderId);
-          const summary = fillLedger.aggregateFills(fillsForBody);
-
-          const proceeds = summary.totalValue - summary.totalFees;
-          // Prorate cost basis when sell doesn't cover full body (stale TP / partial fill)
-          const soldRatio = body.assetQty > 0 ? Math.min(summary.totalSize / body.assetQty, 1) : 1;
-          const proratedCostBasis = roundUSDC(body.costBasis * soldRatio);
-          const pnl = proceeds - proratedCostBasis;
-          const holdbackAsset = roundAsset(body.assetQty - summary.totalSize);
-
-          const cs = positionState.celestialState || celestialHierarchy.createInitialCelestialState();
-          cs.bodiesCompleted += 1;
-          positionState.celestialState = cs;
-          // realizedPnL / realizedAssetPnL (and their bodies* mirrors) are derived
-          // from buy↔sell cycle pairing; refreshRealizedFromCyclePairs() repopulates them.
-
-          const prevMaxUsdc = creditCapitalGrowth(body.tpOrderId, pnl);
-
-          positionState.celestialBodies = positionState.celestialBodies.filter(
-            b => b.tpOrderId !== body.tpOrderId
-          );
-
-          if (orderExecutor.removeBodyTracking) {
-            orderExecutor.removeBodyTracking(body.tpOrderId);
-          }
-
-          fillLedger.annotateFillsByOrderId(body.tpOrderId, {
-            isBodyOwned: true,
-            bodyId: body.id,
-            bodyTier: body.tier,
-            bodyCostBasis: body.costBasis,
-            bodyAvgPrice: body.avgPrice,
-            bodyBtcQty: body.assetQty,
-            bodyHoldbackAsset: holdbackAsset,
-            bodyPnl: pnl,
-          });
-
-          // Link source buy fills to this sell for buy→sell display linkage
-          const offlineAnnotatedSrcIds = new Set();
-          for (const srcId of (body.sourceOrderIds || [])) {
-            fillLedger.annotateFillsByOrderId(srcId, { sellOrderId: body.tpOrderId });
-            offlineAnnotatedSrcIds.add(srcId);
-          }
-          for (const buyOrder of (body.buyOrders || [])) {
-            if (buyOrder.orderId !== 'core-migration' && !offlineAnnotatedSrcIds.has(buyOrder.orderId)) {
-              fillLedger.annotateFillsByOrderId(buyOrder.orderId, { sellOrderId: body.tpOrderId });
-            }
-          }
-
-          // Sync aggregates after body removal
-          celestialHierarchy.syncPositionState(positionState, positionState.celestialBodies);
-
-          closedTrades.record({
-            sellOrderId: body.tpOrderId,
-            ...sellTradeStamp(summary),
-            recordedAt: Date.now(),
-            qtySold: summary.totalSize,
-            sellProceeds: roundUSDC(proceeds),
-            sellFees: roundUSDC(summary.totalFees),
-            costBasis: proratedCostBasis,
-            buyAvgPrice: roundUSDC(body.avgPrice),
-            pnl: roundUSDC(pnl),
-            holdbackAsset,
-            isPartial: false,
-            bodyId: body.id,
-            bodyTier: body.tier,
-            buyOrderIds: [...(body.sourceOrderIds || []), ...(body.buyOrders || []).map(b => b.orderId)].filter(id => id !== 'core-migration'),
-            source: 'offline',
-          });
-
-          logger.info(`${tierCfg.emoji} [${exchange}] Offline body fill: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, capital: $${prevMaxUsdc}→$${config.maxUsdcDeployed}`);
-
-          tradeEvents.emitTradeEvent('body_tp_filled', exchange, `[OFFLINE] ${tierCfg.emoji} ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
-            assetAmount: summary.totalSize,
-            price: summary.avgPrice,
-            pnl,
-            holdbackAsset,
-            bodyId: body.id,
-            bodyTier: body.tier,
-            offlineFill: true,
-          });
         }
       }
     }
@@ -1297,55 +1222,29 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     for (const [orderId] of pendingEntries) {
       if (!openOrderIds.has(orderId)) {
         const orderStatus = await adapter.getOrder(orderId);
-        if (orderStatus.status === 'FILLED') {
+        if (isFilledStatus(orderStatus)) {
           logger.info(
-            `✅ [${exchange}] Entry order ${orderId} filled while offline`,
+            `✅ [${exchange}] Entry order ${orderId} filled while offline — routing through handleOrderFill`,
             { orderId, orderType: 'entry', status: orderStatus.status }
           );
           entriesFilled++;
 
-          // Get and ingest fills
-          const rawFills = await adapter.getOrderFills(orderId);
-          const ingestedFills = [];
-          for (const fill of rawFills) {
-            const result = fillLedger.ingestFill(fill);
-            if (result.fill) ingestedFills.push(result.fill);
-          }
-
-          // Use ingested fills (with quoteAmount) for aggregation
-          const fillsToAggregate = ingestedFills.length > 0
-            ? ingestedFills
-            : fillLedger.getFillsForOrder(orderId);
-
-          // Update position
-          const summary = fillLedger.aggregateFills(fillsToAggregate);
-          positionState.totalAsset = roundAsset(positionState.totalAsset + summary.totalSize);
-          positionState.totalCostBasis = roundUSDC(positionState.totalCostBasis + summary.totalValue + summary.totalFees);
-          positionState.avgCostBasis = positionState.totalAsset > 0
-            ? positionState.totalCostBasis / positionState.totalAsset
-            : 0;
-          positionState.cycleBuys += 1;
-          positionState.lastEntryPrice = summary.avgPrice;
-          positionState.lastEntryTime = Date.now();
-
-          // Remove filled entry from persisted pending orders
-          if (positionState.pendingEntryOrders && positionState.pendingEntryOrders.length > 0) {
-            positionState.pendingEntryOrders = positionState.pendingEntryOrders.filter(
-              e => e.orderId !== orderId
+          // Contain per entry (issue #316): one unresolved entry must not abort
+          // recovery of subsequent pending entries/bodies. Routing through the
+          // canonical pipeline (#367) — instead of mutating flat totalAsset/
+          // totalCostBasis with no celestial body and falling back to the legacy
+          // monolithic TP — creates/merges the proper celestial body and places
+          // its dynamic TP, keeping the hierarchy in sync with position state.
+          try {
+            await handleOrderFill(buildPartialFillData(orderId, 'buy', orderStatus, {
+              placedAt: orderExecutor.getOrderPlacedAt(orderId),
+            }));
+          } catch (err) {
+            logger.error(
+              `❌ [${exchange}] Entry ${orderId.slice(0, 8)} offline fill recovery failed: ${err.message} — retrying on next reconcile`,
+              { orderId, orderType: 'entry', error: err.message }
             );
           }
-
-          orderExecutor.handleOrderFill(orderId);
-
-          // Place/update TP order to reflect new position size (force update to bypass anti-churn)
-          await placeTakeProfitOrder({ forceUpdate: true });
-
-          tradeEvents.emitTradeEvent('buy_filled', exchange, `[OFFLINE] ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}`, {
-            assetAmount: summary.totalSize,
-            price: summary.avgPrice,
-            avgCostBasis: positionState.avgCostBasis,
-            offlineFill: true,
-          });
         }
       }
     }
