@@ -23,14 +23,13 @@ const {
   removeFund,
   getBaseCurrency,
   getQuoteCurrency,
-  resolveConfiguredPair,
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
 const { validateConfigUpdate, sanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
-const { getIPC: getExchangeIPC } = require('./route-utils');
+const { resolvePairParam, getSafeIPC } = require('./route-utils');
 
 /**
  * Context logger for the per-exchange fund routes. Every endpoint here is
@@ -49,28 +48,12 @@ const exchangeLogger = (exchange, pair, route) => createContextLogger({
 });
 
 /**
- * Resolve a query pair through the shared configured-fund boundary.
- *
- * @param {import('express').Request} req
- * @returns {{ pair: string | null, error: string | null }}
- */
-const validatePairParam = (req) => {
-  return resolveConfiguredPair(req.params.exchange, req.query?.pair);
-};
-
-/**
  * @param {import('express').Express} app
  * @param {{exchangeIPCMap: Object, parseTSV: Function, calculateCostBasis: Function, getNextTradeInfo: Function}} deps
  */
 module.exports = (app, deps) => {
   const { exchangeIPCMap, parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
-  const getIPC = (exchange) => {
-    try {
-      return getExchangeIPC(exchangeIPCMap, exchange);
-    } catch (err) {
-      return { request: () => Promise.reject(err) };
-    }
-  };
+  const getIPC = (exchange) => getSafeIPC(exchangeIPCMap, exchange);
 
   // Get list of all exchanges (with each fund flattened into the array).
   // Returns one entry per (exchange, pair) — the legacy `name` field is the
@@ -242,7 +225,7 @@ module.exports = (app, deps) => {
   // Get config for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/config', (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
     res.json(config);
@@ -251,7 +234,7 @@ module.exports = (app, deps) => {
   // Update config for an exchange/fund (?pair= optional)
   app.put('/api/:exchange/config', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error: pairError } = validatePairParam(req);
+    const { pair, error: pairError } = resolvePairParam(req);
     if (pairError) return res.status(400).json({ success: false, error: pairError });
     const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
     const { value: updates, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, req.body);
@@ -334,7 +317,7 @@ module.exports = (app, deps) => {
   // Toggle enabled/dryRun for an exchange/fund (?pair= optional)
   app.patch('/api/:exchange/config', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { enabled, dryRun } = req.body;
     const logger = exchangeLogger(exchange, pair, '/api/:exchange/config');
@@ -380,7 +363,7 @@ module.exports = (app, deps) => {
   // Get state for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/state', (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const config = getFundConfig(exchange, pair);
     const state = stateTracker.loadState(config, exchange, pair);
@@ -398,7 +381,7 @@ module.exports = (app, deps) => {
   // Get live status for an exchange
   app.get('/api/:exchange/status', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { getAdapter } = require('../adapters');
 
@@ -452,7 +435,7 @@ module.exports = (app, deps) => {
   // and has been silently 3+ months stale; everything below is rebuilt fresh.
   app.get('/api/:exchange/summary', (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
 
     const summary = buildFundSummary(exchange, pair);
@@ -462,7 +445,7 @@ module.exports = (app, deps) => {
   // Get candles for an exchange/fund (for charts)
   app.get('/api/:exchange/candles', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { granularity = 'ONE_MINUTE', limit = 60 } = req.query;
     const config = getFundConfig(exchange, pair);
@@ -490,7 +473,7 @@ module.exports = (app, deps) => {
   // Sync pending orders for an exchange/fund
   app.post('/api/:exchange/sync', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
 
     if (!getGlobalConfig().simpleDcaEnabled) {
@@ -517,7 +500,7 @@ module.exports = (app, deps) => {
   // Trigger trade for an exchange/fund
   app.post('/api/:exchange/trade', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
 
     if (!getGlobalConfig().simpleDcaEnabled) {
@@ -533,7 +516,7 @@ module.exports = (app, deps) => {
   // Consolidate pending orders for an exchange/fund
   app.post('/api/:exchange/consolidate', async (req, res) => {
     const { exchange } = req.params;
-    const { pair, error } = validatePairParam(req);
+    const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
     const { orderIds } = req.body || {};
 
