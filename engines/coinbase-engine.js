@@ -40,6 +40,7 @@ const { createManualTradeImporter } = require('../src/manual-trade-import');
 const { createIPCServer } = require('../src/ipc/ipc-server');
 const { createSocketIOProxy } = require('../src/ipc/socket-io-proxy');
 const { saveRegimeRunningFlag, shouldAutoResumeRegime, fundKey, fundLabel } = require('../src/shared-utils');
+const { stopAllRegimeEngines } = require('../src/engine-stop-all');
 const { migrateExchangeToPairs } = require('../src/migration');
 const { LIFECYCLE } = require('../src/state-tracker');
 
@@ -609,21 +610,14 @@ ipcServer.onRequest('regime:dry-run-state', async (payload, exchange, pair) => {
   return { success: true, isDryRun: true, dryRunState: state.dryRun, position: state.position, regime: state.regime, market: state.market };
 });
 
-// Stop all running regime engines (used by backup restore)
-ipcServer.onRequest('regime:stop-all', async () => {
-  const stopped = [];
-  for (const [key, engine] of regimeEngines) {
-    const [stoppedExchange, stoppedPair] = key.split('::');
-    engineLogger(stoppedExchange, stoppedPair).info(`ℹ️ 🛑 [${fundLabel(stoppedExchange, stoppedPair)}] Stopping regime engine (stop-all)...`);
-    await engine.stop().catch((err) => {
-      engineLogger(stoppedExchange, stoppedPair).error(`❌ [${fundLabel(stoppedExchange, stoppedPair)}] Error stopping engine: ${err.message}`, { error: err.message });
-    });
-    stopped.push({ exchange: stoppedExchange, pair: stoppedPair });
-    saveRegimeRunningFlag(stoppedExchange, stoppedPair, false);
-  }
-  regimeEngines.clear();
-  return { success: true, stopped };
-});
+// Stop all running regime engines (used by backup restore). The reply is the
+// restore path's proof of writer quiescence, so a fund that failed to stop is
+// reported as failed and stays owned by this process (issue #429).
+ipcServer.onRequest('regime:stop-all', async () => stopAllRegimeEngines(regimeEngines, {
+  logger: engineLogger,
+  label: fundLabel,
+  setRunningFlag: saveRegimeRunningFlag,
+}));
 
 // Exchange/fund info queries
 ipcServer.onRequest('exchanges:list', async () => {

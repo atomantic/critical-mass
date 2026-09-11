@@ -3,10 +3,10 @@
  * Settings Routes: Aggressiveness Presets, Notifications, Backups
  */
 
-const fs = require('fs');
-const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret } = require('../config-utils');
+const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret, getConfiguredExchanges } = require('../config-utils');
 const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('../backup-service');
 const { createContextLogger } = require('../logger');
+const { performRestore } = require('../restore-coordinator');
 const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA, validateNotificationConfigUpdate } = require('../config-validator');
 
 /**
@@ -23,10 +23,10 @@ const settingsLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, updownService?: Object}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, exchangeIPCMap, rescheduleBackupTimer } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService } = deps;
 
   // ============ Aggressiveness Presets ============
 
@@ -178,48 +178,29 @@ module.exports = (app, deps) => {
     res.json({ success: true });
   });
 
+  // Restoring overwrites live data files in place, so it is gated on CONFIRMED
+  // writer shutdown: every configured engine process must positively
+  // acknowledge `regime:stop-all`, and the gateway's own UpDown writer is
+  // drained and reloaded around the copy. A rejection, timeout, disconnect,
+  // negative or malformed acknowledgement blocks the restore with zero
+  // destination file changes (issue #429). `force: true` is an explicit
+  // operator override for recovering an install whose engine is already dead.
   app.post('/api/backups/:filename/restore', async (req, res) => {
     const logger = settingsLogger('/api/backups/:filename/restore');
     const { filename } = req.params;
-    logger.info(`ℹ️ 💾 Restore requested: ${filename}`, {
-      action: 'restore-backup',
+    logger.info(`ℹ️ 💾 Restore requested: ${filename}`, { action: 'restore-backup', filename });
+
+    const { status, body } = await performRestore({
       filename,
+      force: req.body?.force === true,
+      exchangeIPCMap,
+      // Only exchanges this gateway actually proxies can own a live engine
+      // process; a config key with no IPC client has no writer to drain.
+      configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
+      restore: restoreBackup,
+      updownService,
+      logger,
     });
-
-    // Stop all regime engines across all exchange processes before restore
-    let stoppedEngines = [];
-    const stopPromises = Object.entries(exchangeIPCMap).map(([name, ipc]) =>
-      ipc.request('regime:stop-all', {}).catch((err) => {
-        logger.warn(`⚠️ 💾 Could not stop ${name} engine via IPC: ${err.message}`, {
-          action: 'restore-backup',
-          exchange: name,
-          channel: 'regime:stop-all',
-          error: err.message,
-        });
-        return { stopped: [] };
-      })
-    );
-    const stopResults = await Promise.all(stopPromises);
-    stoppedEngines = stopResults.flatMap((r) => r.stopped || []);
-
-    const result = restoreBackup(filename);
-    if (!result.success) {
-      return res.status(500).json({ success: false, error: result.error });
-    }
-
-    logger.info(`ℹ️ 💾 Restore complete: ${result.filesRestored} files restored from ${filename}`, {
-      action: 'restore-backup',
-      filename,
-      filesRestored: result.filesRestored,
-    });
-
-    res.json({
-      success: true,
-      filesRestored: result.filesRestored,
-      stoppedEngines,
-      message: stoppedEngines.length > 0
-        ? `Restored ${result.filesRestored} files. Stopped engines: ${stoppedEngines.join(', ')}. Restart engines manually from dashboard.`
-        : `Restored ${result.filesRestored} files.`,
-    });
+    res.status(status).json(body);
   });
 };
