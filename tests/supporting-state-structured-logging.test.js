@@ -30,14 +30,18 @@ describe('supporting state structured logging', () => {
 
   it('preserves state-link failure messages and appends order and error context', () => {
     const lines = [];
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     console.log = line => lines.push(line);
+    console.warn = line => lines.push(line);
+    console.error = line => lines.push(line);
 
     try {
       attachSellOrder({ orders: [] }, 'buy-123', { orderId: 'sell-456' });
       markSellPlacementFailed({ orders: [] }, 'buy-789', 'exchange unavailable');
     } finally {
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
     }
 
     assert.deepEqual(

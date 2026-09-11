@@ -528,8 +528,10 @@ const runMergeSnapshotCancelFailure = async (cancelFailure) => {
   assert.equal(merged.success, true, `setup merge should succeed: ${merged.message}`);
   assert.equal(placementCalls, 1, 'setup merge places one TP on the merged body');
 
-  const originalLog = console.log;
+  const original = { log: console.log, warn: console.warn, error: console.error };
   console.log = (...args) => { logs.push(args.join(' ')); };
+  console.warn = (...args) => { logs.push(args.join(' ')); };
+  console.error = (...args) => { logs.push(args.join(' ')); };
   try {
     await eng._test.handleOrderFill({
       orderId: 'tp-target',
@@ -538,7 +540,9 @@ const runMergeSnapshotCancelFailure = async (cancelFailure) => {
       averageFilledPrice: 51000,
     });
   } finally {
-    console.log = originalLog;
+    console.log = original.log;
+    console.warn = original.warn;
+    console.error = original.error;
   }
 
   const liveBody = eng._getPositionState().celestialBodies.find((body) => body.id === 'target');

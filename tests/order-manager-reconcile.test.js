@@ -1,8 +1,13 @@
 // @ts-check
-const { describe, it } = require('node:test');
+const { describe, it, mock } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
 
 const { executeDailyBuy, placeWithUnknownReconcile, placeSellOrder, placeSellOrderWithRetry, placeFibonacciSellOrder } = require('../src/order-manager');
+const { createCoinbaseAdapter } = require('../src/adapters/coinbase/api');
 
 // ---------------------------------------------------------------------------
 // #226 — order-manager reconciles an ambiguous 'unknown' placement by
@@ -274,5 +279,89 @@ describe('placeWithUnknownReconcile — helper contract (issue #226)', () => {
 
     assert.equal(lookups, 3, 'one initial attempt plus 2 retries, matching retryDelaysMs.length');
     assert.equal(res.success, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #428 — end-to-end through the REAL Coinbase adapter: a placement whose 2xx
+// response body stalls (reset/hangs after headers) must be bounded by the
+// adapter's own abort deadline and surface the same unknownOutcome/
+// clientOrderId shape placeWithUnknownReconcile already knows how to adopt —
+// proving the api.js body-read fix actually reaches this reconcile path,
+// not just a hand-built error shape.
+// ---------------------------------------------------------------------------
+
+describe('placeWithUnknownReconcile — Coinbase response-body boundary end-to-end (issue #428)', () => {
+  it('adopts the real exchange order after a stalled placement body read instead of re-buying', async () => {
+    const keysPath = path.join(os.tmpdir(), `order-manager-428-keys-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    const { privateKey } = crypto.generateKeyPairSync('ec', {
+      namedCurve: 'prime256v1',
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    fs.writeFileSync(keysPath, JSON.stringify({ name: 'organizations/test/apiKeys/test-key', privateKey }));
+    const originalFetch = global.fetch;
+
+    try {
+      mock.timers.enable({ apis: ['setTimeout'] });
+      const adapter = createCoinbaseAdapter(keysPath);
+      let orderPosts = 0;
+      let lookupCalls = 0;
+      let sentClientOrderId = null;
+
+      global.fetch = async (url, options) => {
+        const parsed = new URL(url);
+        if (parsed.pathname === '/api/v3/brokerage/orders') {
+          orderPosts++;
+          sentClientOrderId = JSON.parse(options.body).client_order_id;
+          const signal = options.signal;
+          // The exchange accepted the order (2xx headers) but the body never
+          // arrives — models a reset/stalled connection after placement.
+          return {
+            ok: true, status: 200, statusText: 'OK',
+            json: () => new Promise((_resolve, reject) => {
+              const onAbort = () => reject(Object.assign(new Error('socket hang up'), { name: 'AbortError' }));
+              if (signal.aborted) onAbort();
+              else signal.addEventListener('abort', onAbort, { once: true });
+            }),
+          };
+        }
+        if (parsed.pathname === '/api/v3/brokerage/orders/historical/batch') {
+          lookupCalls++;
+          return {
+            ok: true, status: 200, statusText: 'OK',
+            json: async () => ({
+              orders: [{
+                order_id: 'real-428', client_order_id: sentClientOrderId, status: 'FILLED',
+                filled_size: '0.002', filled_value: '100', average_filled_price: '50000',
+                completion_percentage: '100', total_fees: '0.5', created_time: '2024-01-01T00:00:00Z',
+              }],
+            }),
+          };
+        }
+        throw new Error(`unexpected endpoint ${parsed.pathname}`);
+      };
+
+      const resultPromise = placeWithUnknownReconcile(
+        adapter,
+        'BTC-USDC',
+        () => adapter.placeMarketBuy('BTC-USDC', 100),
+        []
+      );
+
+      mock.timers.tick(30000); // trip the placement attempt's abort deadline
+      const result = await resultPromise;
+
+      assert.equal(orderPosts, 1, 'must not blind-retry the placement even though its body stalled');
+      assert.equal(lookupCalls, 1, 'reconciled exactly once by the client_order_id actually sent');
+      assert.equal(result.success, true);
+      assert.equal(result.reconciled, true);
+      assert.equal(result.orderId, 'real-428');
+      assert.equal(result.clientOrderId, sentClientOrderId);
+    } finally {
+      mock.timers.reset();
+      global.fetch = originalFetch;
+      fs.rmSync(keysPath, { force: true });
+    }
   });
 });

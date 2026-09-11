@@ -31,11 +31,13 @@ describe('adapter API structured logging', () => {
   it('preserves representative messages and appends useful exchange context', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adapter-api-logging-'));
     const originalFetch = global.fetch;
-    const originalLog = console.log;
+    const original = { log: console.log, warn: console.warn, error: console.error };
     const lines = [];
 
     try {
       console.log = line => lines.push(line);
+      console.warn = line => lines.push(line);
+      console.error = line => lines.push(line);
 
       const { privateKey } = crypto.generateKeyPairSync('ec', {
         namedCurve: 'prime256v1',
@@ -93,7 +95,9 @@ describe('adapter API structured logging', () => {
       await new Promise(resolve => setImmediate(resolve));
     } finally {
       global.fetch = originalFetch;
-      console.log = originalLog;
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
 

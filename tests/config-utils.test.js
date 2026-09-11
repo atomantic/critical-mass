@@ -557,12 +557,16 @@ describe('loadRawConfig', () => {
     mock.method(fs, 'readFileSync', () => 'not json{');
     const warnings = [];
     const origLog = console.log;
-    console.log = (...a) => warnings.push(a.join(' '));
+    const origWarn = console.warn;
+    const captureWarning = (...a) => warnings.push(a.join(' '));
+    console.log = captureWarning;
+    console.warn = captureWarning;
     let result;
     try {
       result = loadRawConfig(); // must not throw
     } finally {
       console.log = origLog;
+      console.warn = origWarn;
     }
     assert.deepStrictEqual(result, good, 'returns the last-good cached config');
     assert.ok(warnings.some(w => w.includes('reload failed')), 'logs a reload-failed warning');
@@ -589,13 +593,17 @@ describe('loadRawConfig', () => {
     mock.method(fs, 'readFileSync', () => 'not json{');
     const warnings = [];
     const origLog = console.log;
-    console.log = (...a) => warnings.push(a.join(' '));
+    const origWarn = console.warn;
+    const captureWarning = (...a) => warnings.push(a.join(' '));
+    console.log = captureWarning;
+    console.warn = captureWarning;
     try {
       loadRawConfig();
       loadRawConfig();
       loadRawConfig();
     } finally {
       console.log = origLog;
+      console.warn = origWarn;
     }
     assert.equal(warnings.length, 1, 'persistent corruption must warn once, not every call');
   });
