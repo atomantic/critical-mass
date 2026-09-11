@@ -60,17 +60,21 @@ const createSentinelService = (io, deps) => {
   let errorCount = 0;
 
   /**
-   * Load persisted state from disk
+   * Load persisted state from disk, fully REPLACING what is held in memory.
+   *
+   * This is also the post-restore reload hook: a backup restore rewrites the
+   * sentinel state file underneath us, and the surviving in-memory alerts /
+   * seen-GUID map would otherwise be written straight back over the recovered
+   * file by the next persistState() (issue #429). Replacing rather than merging
+   * is what makes the reload honest — a restored file with no alerts must clear
+   * the pre-restore ones.
    */
   const loadState = () => {
     const saved = readJSON(stateFilePath, null);
-    if (!saved) return;
-    if (saved.alerts) alerts = saved.alerts;
-    if (saved.seenGuids) {
-      seenGuids = new Map(Object.entries(saved.seenGuids));
-    }
-    if (saved.lastPollAt) lastPollAt = saved.lastPollAt;
-    if (saved.pollCount) pollCount = saved.pollCount;
+    alerts = Array.isArray(saved?.alerts) ? saved.alerts : [];
+    seenGuids = saved?.seenGuids ? new Map(Object.entries(saved.seenGuids)) : new Map();
+    lastPollAt = saved?.lastPollAt || null;
+    pollCount = saved?.pollCount || 0;
     sentinelLogger.info(`ℹ️ Sentinel state loaded: ${alerts.length} alerts, ${seenGuids.size} seen items`, {
       action: 'load-state',
       alerts: alerts.length,
@@ -358,6 +362,10 @@ const createSentinelService = (io, deps) => {
   return {
     start,
     stop,
+    // Re-read the state file after a restore replaced it. Exposed separately
+    // from start() because the API surface (dismiss/clear) can persist even
+    // while the service is disabled or stopped.
+    reloadState: loadState,
     getStatus,
     getAlerts,
     forcePoll,

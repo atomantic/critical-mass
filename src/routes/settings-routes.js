@@ -3,10 +3,11 @@
  * Settings Routes: Aggressiveness Presets, Notifications, Backups
  */
 
-const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret, getConfiguredExchanges } = require('../config-utils');
+const { getNotificationConfig, updateNotificationConfig, getAggressivenessPresets, updateAggressivenessPresets, DEFAULT_AGGRESSIVENESS_PRESETS, getBackupConfig, updateBackupConfig, maskSecret, isMaskedSecret, getConfiguredExchanges, invalidateConfigCache } = require('../config-utils');
 const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup } = require('../backup-service');
 const { createContextLogger } = require('../logger');
 const { performRestore } = require('../restore-coordinator');
+const { drainPendingWrites } = require('../pending-writes');
 const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA, validateNotificationConfigUpdate } = require('../config-validator');
 
 /**
@@ -23,10 +24,34 @@ const settingsLogger = (route) => createContextLogger({
 
 /**
  * @param {import('express').Express} app
- * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, updownService?: Object}} deps
+ * @param {{notifier: Object, exchangeIPCMap: Object, rescheduleBackupTimer: Function, updownService?: Object, sentinelService?: Object, candleCache?: Object}} deps
  */
 module.exports = (app, deps) => {
-  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService } = deps;
+  const { notifier, exchangeIPCMap, rescheduleBackupTimer, updownService, sentinelService, candleCache } = deps;
+
+  /**
+   * Gateway services that own files inside the archive. Each is stopped before
+   * the copy and reloaded from the restored files afterwards, so its surviving
+   * in-memory snapshot can never be written back over the recovery (issue #429).
+   * @returns {Array<{name: string, stop: Function, resume: Function}>} Writer descriptors
+   */
+  const gatewayWriters = () => [
+    updownService && {
+      name: 'UpDown',
+      stop: () => updownService.stop(),
+      resume: () => updownService.start(),
+    },
+    sentinelService && {
+      name: 'Sentinel',
+      stop: () => sentinelService.stop(),
+      // reloadState is separate from start(): the sentinel persists from the
+      // API surface (dismiss/clear) even when it is disabled and never starts.
+      resume: () => {
+        sentinelService.reloadState?.();
+        sentinelService.start();
+      },
+    },
+  ].filter(Boolean);
 
   // ============ Aggressiveness Presets ============
 
@@ -180,11 +205,12 @@ module.exports = (app, deps) => {
 
   // Restoring overwrites live data files in place, so it is gated on CONFIRMED
   // writer shutdown: every configured engine process must positively
-  // acknowledge `regime:stop-all`, and the gateway's own UpDown writer is
-  // drained and reloaded around the copy. A rejection, timeout, disconnect,
-  // negative or malformed acknowledgement blocks the restore with zero
-  // destination file changes (issue #429). `force: true` is an explicit
-  // operator override for recovering an install whose engine is already dead.
+  // acknowledge `regime:stop-all`, gateway work already in flight must finish,
+  // and the gateway's own writers (UpDown, Sentinel) are drained and reloaded
+  // around the copy. A rejection, timeout, disconnect, negative or malformed
+  // acknowledgement — or work still running after the drain window — blocks the
+  // restore with zero destination file changes (issue #429). `force: true` is an
+  // explicit operator override for recovering an install whose engine is dead.
   app.post('/api/backups/:filename/restore', async (req, res) => {
     const logger = settingsLogger('/api/backups/:filename/restore');
     const { filename } = req.params;
@@ -198,7 +224,13 @@ module.exports = (app, deps) => {
       // process; a config key with no IPC client has no writer to drain.
       configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
       restore: restoreBackup,
-      updownService,
+      gatewayWriters: gatewayWriters(),
+      drainPendingWrites,
+      invalidateCaches: () => {
+        invalidateConfigCache();
+        // Reseeding is network work — kick it off, don't hold the lock on it.
+        candleCache?.invalidate();
+      },
       logger,
     });
     res.status(status).json(body);
