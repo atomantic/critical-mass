@@ -1056,75 +1056,22 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
     let tpFilled = false;
     let entriesFilled = 0;
 
-    // Check if active TP order still exists on exchange
-    if (positionState.activeTpOrderId && !openOrderIds.has(positionState.activeTpOrderId)) {
-      // TP order is gone - check if it filled. Mirror order-manager.js:29
-      // (status==='FILLED' OR completionPercentage>=100) — Coinbase can flip
-      // the percentage to 100 a tick before status flips to FILLED, and
-      // without that branch an offline fill in that brief window is missed
-      // and the TP is restored as open by the path further down.
-      const orderStatus = await adapter.getOrder(positionState.activeTpOrderId);
-      if (isFilledStatus(orderStatus)) {
-        logger.info(
-          `✅ [${exchange}] TP order ${positionState.activeTpOrderId} filled while offline`,
-          { orderId: positionState.activeTpOrderId, orderType: 'take_profit', status: orderStatus.status }
-        );
-        tpFilled = true;
-
-        // Get fill details
-        const rawFills = await adapter.getOrderFills(positionState.activeTpOrderId);
-        const ingestedFills = [];
-        for (const fill of rawFills) {
-          const result = fillLedger.ingestFill(fill);
-          if (result.fill) ingestedFills.push(result.fill);
+    // Recover legacy/core TPs through the same accounting and dedup as live fills.
+    const legacyTpOrderId = positionState.activeTpOrderId;
+    if (legacyTpOrderId && !openOrderIds.has(legacyTpOrderId)) {
+      try {
+        const orderStatus = await adapter.getOrder(legacyTpOrderId);
+        if (isFilledStatus(orderStatus)) {
+          await handleOrderFill(buildPartialFillData(legacyTpOrderId, 'sell', orderStatus, {
+            source: 'offline',
+          }));
+          tpFilled = true;
         }
-
-        // Use ingested fills (with quoteAmount) for aggregation
-        const fillsToAggregate = ingestedFills.length > 0
-          ? ingestedFills
-          : fillLedger.getFillsForOrder(positionState.activeTpOrderId);
-
-        // Calculate P&L from the fills
-        const summary = fillLedger.aggregateFills(fillsToAggregate);
-        const proceeds = summary.totalValue - summary.totalFees;
-        const soldCostBasis = summary.totalSize * positionState.avgCostBasis;
-        const pnl = proceeds - soldCostBasis;
-        const holdbackAsset = roundAsset(positionState.totalAsset - summary.totalSize);
-
-        // realizedPnL/realizedAssetPnL are refreshed in saveLiveState/getState;
-        // accumulating here would double-count.
-        positionState.cyclesCompleted += 1;
-
-        logger.info(`💰 [${exchange}] Offline TP fill: ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}, holdback=${holdbackAsset.toFixed(6)} ${baseCurrency}`);
-
-        tradeEvents.emitTradeEvent('tp_filled', exchange, `[OFFLINE] ${summary.totalSize} ${baseCurrency} @ ${fmtPrice(summary.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
-          assetAmount: summary.totalSize,
-          price: summary.avgPrice,
-          pnl,
-          holdbackAsset,
-          offlineFill: true,
-        });
-
-        closedTrades.record({
-          sellOrderId: positionState.activeTpOrderId,
-          ...sellTradeStamp(summary),
-          recordedAt: Date.now(),
-          qtySold: summary.totalSize,
-          sellProceeds: roundUSDC(proceeds),
-          sellFees: roundUSDC(summary.totalFees),
-          costBasis: roundUSDC(soldCostBasis),
-          buyAvgPrice: roundUSDC(positionState.avgCostBasis),
-          pnl: roundUSDC(pnl),
-          holdbackAsset,
-          isPartial: false,
-          bodyId: null,
-          bodyTier: null,
-          buyOrderIds: [],
-          source: 'offline',
-        });
-
-        // Reset cycle
-        await resetCycle();
+      } catch (err) {
+        logger.error(
+          `❌ [${exchange}] TP ${legacyTpOrderId} offline fill recovery failed: ${err.message} — retaining tracking for retry`,
+          { orderId: legacyTpOrderId, orderType: 'take_profit', error: err.message }
+        );
       }
     }
 
@@ -2373,6 +2320,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       fillData = buildPartialFillData(fillData.orderId, 'sell', cancellation.order, {
         isPartialFill: !isFilledStatus(cancellation.order),
         totalFees: cancellation.order.totalFees,
+        source: fillData.source,
       });
       // Require the final fill set before accounting; never synthesize a stale
       // partial from the pre-cancel poll while the fills endpoint catches up.
@@ -3104,7 +3052,7 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
           const pnl = proceeds - soldCostBasis;
           const holdbackAsset = roundAsset(positionState.totalAsset - summary2.totalSize);
 
-            positionState.assetOnOrder = 0;
+          positionState.assetOnOrder = 0;
           positionState.cyclesCompleted += 1;
 
           const prevMaxUsdc = creditCapitalGrowth(fillData.orderId, pnl);
@@ -3113,11 +3061,32 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
           // Link current-cycle buy fills to this sell order for buy→sell display linkage (skip body-owned)
           const cycleFills = fillLedger.getCurrentCycleFills();
+          const buyOrderIds = new Set();
           for (const fill of cycleFills) {
             if (fill.side === 'buy' && !(fill.isBodyOwned || fill.isSatellite) && !fill.bodyId) {
               fillLedger.annotateFillsByOrderId(fill.orderId, { sellOrderId: fillData.orderId });
+              buyOrderIds.add(fill.orderId);
             }
           }
+
+          // Preserve the legacy audit record before resetCycle clears its cost basis.
+          closedTrades.record({
+            sellOrderId: fillData.orderId,
+            ...sellTradeStamp(summary2),
+            recordedAt: Date.now(),
+            qtySold: summary2.totalSize,
+            sellProceeds: roundUSDC(proceeds),
+            sellFees: roundUSDC(summary2.totalFees),
+            costBasis: roundUSDC(soldCostBasis),
+            buyAvgPrice: roundUSDC(positionState.avgCostBasis),
+            pnl: roundUSDC(pnl),
+            holdbackAsset,
+            isPartial: false,
+            bodyId: null,
+            bodyTier: null,
+            buyOrderIds: [...buyOrderIds],
+            source: fillData.source || 'live',
+          });
 
           tradeEvents.emitTradeEvent('tp_filled', exchange, `${summary2.totalSize} ${baseCurrency} @ ${fmtPrice(summary2.avgPrice)}, PnL=$${pnl.toFixed(2)}`, {
             assetAmount: summary2.totalSize,
