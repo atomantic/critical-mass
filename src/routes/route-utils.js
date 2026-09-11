@@ -10,11 +10,14 @@ const { resolveConfiguredPair } = require('../config-utils');
 /**
  * Resolve the trading pair from a request's query string, falling back to the
  * configured exchange default. Callers must handle the returned error before
- * using the pair.
+ * using the pair. Named to be distinct from `req.fundPair` accessors used
+ * downstream of `withConfiguredPair` (e.g. regime/backtest routes' local
+ * `getFundPair`), which read the already-validated pair off the request
+ * instead of resolving one from params/query.
  * @param {import('express').Request} req
  * @returns {{ pair: string | null, error: string | null }}
  */
-const getPair = (req) => resolveConfiguredPair(req.params.exchange, req.query?.pair);
+const resolvePairParam = (req) => resolveConfiguredPair(req.params.exchange, req.query?.pair);
 
 /**
  * Guard a pair-aware route before it can access config, IPC, or persistence.
@@ -24,7 +27,7 @@ const getPair = (req) => resolveConfiguredPair(req.params.exchange, req.query?.p
  * @param {(req: import('express').Request, res: import('express').Response, next?: Function) => unknown} handler
  */
 const withConfiguredPair = (handler) => (req, res, next) => {
-  const { pair, error } = getPair(req);
+  const { pair, error } = resolvePairParam(req);
   if (error) return res.status(400).json({ success: false, error });
   req.fundPair = pair;
   return handler(req, res, next);
@@ -47,4 +50,21 @@ const getIPC = (exchangeIPCMap, exchange) => {
   return ipc;
 };
 
-module.exports = { getPair, getIPC, withConfiguredPair };
+/**
+ * Non-throwing variant of `getIPC` for call sites (route handlers) that need
+ * a client-shaped fallback instead of a synchronous throw. The fallback
+ * rejects on first use so the original "no IPC client" error still surfaces,
+ * just deferred to the handler's async/await or `.catch`.
+ * @param {Object} exchangeIPCMap
+ * @param {string} exchange
+ * @returns {{ request: (...args: unknown[]) => Promise<never> } | Object}
+ */
+const getSafeIPC = (exchangeIPCMap, exchange) => {
+  try {
+    return getIPC(exchangeIPCMap, exchange);
+  } catch (err) {
+    return { request: () => Promise.reject(err) };
+  }
+};
+
+module.exports = { resolvePairParam, getIPC, getSafeIPC, withConfiguredPair };
