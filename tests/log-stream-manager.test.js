@@ -268,3 +268,63 @@ describe('log-stream-manager flush handler (#451)', () => {
     assert.ok(err);
   });
 });
+
+
+describe('log-stream-manager untrusted payloads', () => {
+  const invalidPayloads = [
+    null, undefined, [], 'critical-mass', 1, true,
+    {}, { processName: null }, { processName: 1 },
+    { processName: { toString: 7 } },
+  ];
+  for (const event of ['logs:subscribe', 'logs:flush']) {
+    for (const payload of invalidPayloads) {
+      it(`${event} rejects ${JSON.stringify(payload)} without throwing or spawning`, () => {
+        const socket = createFakeSocket('s1');
+        let spawns = 0;
+        registerLogStreamHandlers({
+          socket, registry: createLogStreamRegistry(),
+          spawnFn: () => { spawns++; return createFakeChild(); },
+          log: noopLog, allowedProcesses: ALLOWED,
+        });
+        assert.doesNotThrow(() => socket.trigger(event, payload));
+        assert.equal(spawns, 0);
+        assert.equal(socket.emitted.length, 1);
+        assert.equal(socket.emitted[0].event, 'logs:error');
+        assert.equal(typeof socket.emitted[0].payload.error, 'string');
+      });
+    }
+  }
+
+  for (const lines of [null, {}, { toString: 7 }, [], true]) {
+    it(`rejects invalid lines ${JSON.stringify(lines)} and preserves an existing stream`, () => {
+      const socket = createFakeSocket('s1');
+      const registry = createLogStreamRegistry();
+      const child = createFakeChild();
+      registry.start(socket.id, 'critical-mass', child);
+      let spawns = 0;
+      registerLogStreamHandlers({
+        socket, registry, spawnFn: () => { spawns++; return createFakeChild(); },
+        log: noopLog, allowedProcesses: ALLOWED,
+      });
+      assert.doesNotThrow(() => socket.trigger('logs:subscribe', { processName: 'critical-mass', lines }));
+      assert.equal(spawns, 0);
+      assert.equal(registry.get(socket.id).process, child);
+      assert.equal(child.killed, false);
+      assert.equal(socket.emitted[0].event, 'logs:error');
+    });
+  }
+
+  it('preserves default, numeric and string line counts with clamping', () => {
+    const socket = createFakeSocket('s1');
+    const calls = [];
+    registerLogStreamHandlers({
+      socket, registry: createLogStreamRegistry(),
+      spawnFn: (...args) => { calls.push(args); return createFakeChild(); },
+      log: noopLog, allowedProcesses: ALLOWED,
+    });
+    for (const lines of [undefined, 100, '250', -1, 99999]) {
+      socket.trigger('logs:subscribe', { processName: 'critical-mass', lines });
+    }
+    assert.deepEqual(calls.map((call) => call[1].at(-1)), ['500', '100', '250', '1', '5000']);
+  });
+});

@@ -329,7 +329,10 @@ function NotificationsConfig() {
                     id="daily-summary-hour"
                     type="number"
                     value={config.dailySummaryHour}
-                    onChange={e => setConfig(prev => ({ ...prev, dailySummaryHour: parseInt(e.target.value) || 20 }))}
+                    onChange={e => {
+                      const hour = parseInt(e.target.value, 10)
+                      setConfig(prev => ({ ...prev, dailySummaryHour: Number.isNaN(hour) ? 20 : hour }))
+                    }}
                     min={0}
                     max={23}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
@@ -365,10 +368,13 @@ function NotificationsConfig() {
                         id="quiet-hours-start"
                         type="number"
                         value={config.quietHours.start}
-                        onChange={e => setConfig(prev => ({
-                          ...prev,
-                          quietHours: { ...prev.quietHours, start: parseInt(e.target.value) || 23 },
-                        }))}
+                        onChange={e => {
+                          const hour = parseInt(e.target.value, 10)
+                          setConfig(prev => ({
+                            ...prev,
+                            quietHours: { ...prev.quietHours, start: Number.isNaN(hour) ? 23 : hour },
+                          }))
+                        }}
                         min={0}
                         max={23}
                         className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
@@ -380,10 +386,13 @@ function NotificationsConfig() {
                         id="quiet-hours-end"
                         type="number"
                         value={config.quietHours.end}
-                        onChange={e => setConfig(prev => ({
-                          ...prev,
-                          quietHours: { ...prev.quietHours, end: parseInt(e.target.value) || 7 },
-                        }))}
+                        onChange={e => {
+                          const hour = parseInt(e.target.value, 10)
+                          setConfig(prev => ({
+                            ...prev,
+                            quietHours: { ...prev.quietHours, end: Number.isNaN(hour) ? 7 : hour },
+                          }))
+                        }}
                         min={0}
                         max={23}
                         className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"

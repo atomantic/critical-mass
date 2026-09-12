@@ -33,6 +33,24 @@ const sanitizeLink = (link) => {
   return protocol === 'http:' || protocol === 'https:' ? link : '';
 };
 
+/** Extract XML text constructs without coercing arbitrary parsed objects. */
+const textValue = (value) => {
+  const text = value && typeof value === 'object' ? value['#text'] : value;
+  return typeof text === 'string' || typeof text === 'number' ? String(text) : '';
+};
+
+/** Normalize independently so one malformed item cannot suppress the feed. */
+const normalizeItems = (items, normalize, feed) => items.flatMap(item => {
+  try {
+    return [normalize(item, feed.name)];
+  } catch (err) {
+    feedPollerLogger.warn(`⚠️ Sentinel: skipping malformed item from ${feed.name}`, {
+      action: 'normalize-feed-item', feed: feed.name, url: feed.url, error: err.message,
+    });
+    return [];
+  }
+});
+
 /**
  * Normalize an RSS 2.0 item to common format
  * @param {Object} item - Raw RSS item
@@ -41,8 +59,8 @@ const sanitizeLink = (link) => {
  */
 const normalizeRSSItem = (item, sourceName) => ({
   guid: item.guid?.['#text'] || item.guid || item.link || `${sourceName}-${item.title}`,
-  title: (item.title || '').trim(),
-  description: (item.description || item['content:encoded'] || '').replace(/<[^>]+>/g, '').trim().slice(0, 500),
+  title: textValue(item.title).trim(),
+  description: textValue(item.description || item['content:encoded']).replace(/<[^>]+>/g, '').trim().slice(0, 500),
   link: sanitizeLink(item.link),
   pubDate: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
   source: sourceName,
@@ -62,8 +80,8 @@ const normalizeAtomEntry = (entry, sourceName) => {
 
   return {
     guid: entry.id || href || `${sourceName}-${entry.title}`,
-    title: (typeof entry.title === 'string' ? entry.title : entry.title?.['#text'] || '').trim(),
-    description: (entry.summary || entry.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 500),
+    title: textValue(entry.title).trim(),
+    description: textValue(entry.summary || entry.content).replace(/<[^>]+>/g, '').trim().slice(0, 500),
     link: sanitizeLink(href),
     pubDate: entry.updated || entry.published ? new Date(entry.updated || entry.published).toISOString() : new Date().toISOString(),
     source: sourceName,
@@ -102,13 +120,13 @@ const fetchFeed = async (feed, timeoutMs = 15000) => {
     if (parsed.rss?.channel) {
       const channel = parsed.rss.channel;
       const items = Array.isArray(channel.item) ? channel.item : (channel.item ? [channel.item] : []);
-      return items.map(item => normalizeRSSItem(item, feed.name));
+      return normalizeItems(items, normalizeRSSItem, feed);
     }
 
     // Atom
     if (parsed.feed?.entry) {
       const entries = Array.isArray(parsed.feed.entry) ? parsed.feed.entry : [parsed.feed.entry];
-      return entries.map(entry => normalizeAtomEntry(entry, feed.name));
+      return normalizeItems(entries, normalizeAtomEntry, feed);
     }
 
     feedPollerLogger.warn(`⚠️ Sentinel: unrecognized feed format from ${feed.name}`, {
