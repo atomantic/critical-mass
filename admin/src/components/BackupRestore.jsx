@@ -267,23 +267,25 @@ function BackupRestore() {
 
         {/* Enable toggle */}
         <div className="flex items-center gap-3 mb-4">
-          <label className="relative inline-flex items-center cursor-pointer">
+          <label htmlFor="backup-enabled" className="relative inline-flex items-center gap-3 cursor-pointer">
             <input
+              id="backup-enabled"
               type="checkbox"
               checked={config.enabled}
               onChange={e => setConfig(prev => ({ ...prev, enabled: e.target.checked }))}
               className="sr-only peer"
             />
             <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
+            <span className="text-sm font-medium">Enable Scheduled Backups</span>
           </label>
-          <span className="text-sm font-medium">Enable Scheduled Backups</span>
         </div>
 
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Backup Interval</label>
+              <label htmlFor="backup-interval" className="block text-sm font-medium text-gray-300 mb-1">Backup Interval</label>
               <select
+                id="backup-interval"
                 value={config.intervalMs}
                 onChange={e => setConfig(prev => ({ ...prev, intervalMs: parseInt(e.target.value) }))}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
@@ -294,8 +296,9 @@ function BackupRestore() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Max Backups</label>
+              <label htmlFor="backup-max-count" className="block text-sm font-medium text-gray-300 mb-1">Max Backups</label>
               <input
+                id="backup-max-count"
                 type="number"
                 value={config.maxBackups}
                 onChange={e => setConfig(prev => ({ ...prev, maxBackups: Math.max(1, Math.min(30, parseInt(e.target.value) || 7)) }))}
