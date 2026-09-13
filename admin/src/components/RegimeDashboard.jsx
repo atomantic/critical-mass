@@ -166,7 +166,7 @@ const CACHE_HEALTH_STYLES = {
   full:    { bg: 'bg-green-900/40',  text: 'text-green-400',  label: 'Full cache' },
   partial: { bg: 'bg-yellow-900/40', text: 'text-yellow-400', label: 'Partial cache' },
   sparse:  { bg: 'bg-orange-900/40', text: 'text-orange-400', label: 'Sparse cache' },
-  empty:   { bg: 'bg-gray-900',      text: 'text-gray-500',   label: 'Empty cache' },
+  empty:   { bg: 'bg-gray-900',      text: 'text-gray-400',   label: 'Empty cache' },
 }
 
 const LONG_TERM_BIAS_TOOLTIP = (
@@ -243,7 +243,7 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
             {healthStyle.label}
           </span>
         </div>
-        <div className="text-[10px] text-gray-500">
+        <div className="text-[10px] text-gray-400">
           Need ≥30 daily candles. Currently have {bias.sampleSize || 0}.
           {bias.cache?.lastRefresh ? ` Last refresh ${new Date(bias.cache.lastRefresh).toLocaleTimeString()}.` : ' Refreshing...'}
         </div>
@@ -264,7 +264,7 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
           <span className={`px-1.5 py-0.5 rounded text-[10px] ${healthStyle.bg} ${healthStyle.text}`}>
             {healthStyle.label}
           </span>
-          <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-900 text-gray-500 border border-gray-700">
+          <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-900 text-gray-400 border border-gray-700">
             Advisory
           </span>
         </div>
@@ -272,7 +272,7 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
 
       {/* Score bar */}
       <div className="mb-2">
-        <div className="flex items-center justify-between text-[10px] text-gray-500 mb-0.5">
+        <div className="flex items-center justify-between text-[10px] text-gray-400 mb-0.5">
           <span>Depression Score</span>
           <span className={`font-mono ${suggestedStyle.text}`}>{scorePct}/100</span>
         </div>
@@ -291,7 +291,7 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
           <span className={`font-semibold ${suggestedStyle.text}`}>{suggestedStyle.label}</span>
         </div>
         {currentLevel && (
-          <div className="flex items-center justify-between text-[10px] text-gray-500 mt-0.5">
+          <div className="flex items-center justify-between text-[10px] text-gray-400 mt-0.5">
             <span>Current</span>
             <span>
               {currentLabel}
@@ -315,29 +315,29 @@ function LongTermBiasPanel({ bias, config, presets, exchange, pairQuery, onConfi
       {/* Component breakdown */}
       <div className="space-y-1 text-[10px]">
         <div className="flex items-center justify-between">
-          <span className="text-gray-500">Percentile of range ({(c.percentile?.weight * 100 || 0).toFixed(0)}%)</span>
+          <span className="text-gray-400">Percentile of range ({(c.percentile?.weight * 100 || 0).toFixed(0)}%)</span>
           <span className="font-mono text-gray-300">{((c.percentile?.score || 0) * 100).toFixed(0)}</span>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-gray-500">Drawdown from high ({(c.drawdown?.weight * 100 || 0).toFixed(0)}%)</span>
+          <span className="text-gray-400">Drawdown from high ({(c.drawdown?.weight * 100 || 0).toFixed(0)}%)</span>
           <span className="font-mono text-gray-300">
             {((c.drawdown?.score || 0) * 100).toFixed(0)}
-            <span className="text-gray-600 ml-1">(-{(c.drawdown?.drawdownPct || 0).toFixed(1)}%)</span>
+            <span className="text-gray-400 ml-1">(-{(c.drawdown?.drawdownPct || 0).toFixed(1)}%)</span>
           </span>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-gray-500">Z-score vs mean ({(c.zscore?.weight * 100 || 0).toFixed(0)}%)</span>
+          <span className="text-gray-400">Z-score vs mean ({(c.zscore?.weight * 100 || 0).toFixed(0)}%)</span>
           <span className="font-mono text-gray-300">
             {((c.zscore?.score || 0) * 100).toFixed(0)}
-            <span className="text-gray-600 ml-1">(σ {(c.zscore?.zscore || 0).toFixed(2)})</span>
+            <span className="text-gray-400 ml-1">(σ {(c.zscore?.zscore || 0).toFixed(2)})</span>
           </span>
         </div>
       </div>
 
-      <div className="text-[10px] text-gray-500 mt-2 pt-2 border-t border-gray-700 flex items-center justify-between">
+      <div className="text-[10px] text-gray-400 mt-2 pt-2 border-t border-gray-700 flex items-center justify-between">
         <span>
           {bias.sampleSize || 0} / {bias.cache?.lookbackDays || 0}d
-          <span className="text-gray-600 ml-1">({coveragePct.toFixed(0)}%)</span>
+          <span className="text-gray-400 ml-1">({coveragePct.toFixed(0)}%)</span>
         </span>
         {bias.cache?.lastRefresh && (
           <span>refreshed {new Date(bias.cache.lastRefresh).toLocaleTimeString()}</span>
@@ -429,7 +429,7 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
 
     return (
       <div className="bg-gray-900 rounded p-1.5">
-        <div className="text-[10px] text-gray-500 mb-0.5">{label}</div>
+        <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
         <div className="flex items-center gap-1">
           <span className="text-sm font-mono text-cyan-400">{formatCountdown(remaining)}</span>
           {remaining === 0 && <span className="text-[10px] text-yellow-400 animate-pulse">Ready</span>}
@@ -450,7 +450,7 @@ function LiveTimer({ label, targetTime, elapsed, total, variant = 'countdown' })
     const elapsedMs = now - elapsed
     return (
       <div className="bg-gray-900 rounded p-1.5">
-        <div className="text-[10px] text-gray-500 mb-0.5">{label}</div>
+        <div className="text-[10px] text-gray-400 mb-0.5">{label}</div>
         <span className="text-sm font-mono text-gray-300">{formatDuration(elapsedMs)}</span>
       </div>
     )
@@ -506,7 +506,7 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
 
   const colorClasses = {
     green: {
-      active: 'bg-green-600 text-white border-green-400 ring-2 ring-green-400 ring-offset-1 ring-offset-gray-800',
+      active: 'bg-green-800 text-white border-green-400 ring-2 ring-green-400 ring-offset-1 ring-offset-gray-800',
       inactive: 'bg-gray-800 text-gray-400 border-gray-600 hover:text-green-400 hover:border-green-600/50',
     },
     blue: {
@@ -514,11 +514,11 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
       inactive: 'bg-gray-800 text-gray-400 border-gray-600 hover:text-blue-400 hover:border-blue-600/50',
     },
     yellow: {
-      active: 'bg-yellow-600 text-white border-yellow-400 ring-2 ring-yellow-400 ring-offset-1 ring-offset-gray-800',
+      active: 'bg-yellow-800 text-white border-yellow-400 ring-2 ring-yellow-400 ring-offset-1 ring-offset-gray-800',
       inactive: 'bg-gray-800 text-gray-400 border-gray-600 hover:text-yellow-400 hover:border-yellow-600/50',
     },
     red: {
-      active: 'bg-red-600 text-white border-red-400 ring-2 ring-red-400 ring-offset-1 ring-offset-gray-800',
+      active: 'bg-red-700 text-white border-red-400 ring-2 ring-red-400 ring-offset-1 ring-offset-gray-800',
       inactive: 'bg-gray-800 text-gray-400 border-gray-600 hover:text-red-400 hover:border-red-600/50',
     },
   }
@@ -561,43 +561,43 @@ function AggressivenessControl({ config, exchange, pairQuery, onConfigUpdate, pr
         <div className="bg-gray-900 rounded p-2 text-xs">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1">
             <div className="flex justify-between">
-              <span className="text-gray-500">kFactor</span>
+              <span className="text-gray-400">kFactor</span>
               <span className={config?.kFactor !== previewParams.kFactor ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.kFactor}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">minInterval</span>
+              <span className="text-gray-400">minInterval</span>
               <span className={config?.minIntervalMs !== previewParams.minIntervalMs ? 'text-yellow-400' : 'text-gray-300'}>
                 {formatInterval(previewParams.minIntervalMs)}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">maxInterval</span>
+              <span className="text-gray-400">maxInterval</span>
               <span className={config?.maxIntervalMs !== previewParams.maxIntervalMs ? 'text-yellow-400' : 'text-gray-300'}>
                 {formatInterval(previewParams.maxIntervalMs)}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">entryOffset</span>
+              <span className="text-gray-400">entryOffset</span>
               <span className={config?.entryOffsetBps !== previewParams.entryOffsetBps ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.entryOffsetBps}bps
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">cautionScale</span>
+              <span className="text-gray-400">cautionScale</span>
               <span className={config?.cautionScale !== previewParams.cautionScale ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.cautionScale}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">trendScale</span>
+              <span className="text-gray-400">trendScale</span>
               <span className={config?.trendScale !== previewParams.trendScale ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.trendScale}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">maxCycleBuys</span>
+              <span className="text-gray-400">maxCycleBuys</span>
               <span className={config?.maxCycleBuys !== previewParams.maxCycleBuys ? 'text-yellow-400' : 'text-gray-300'}>
                 {previewParams.maxCycleBuys}
               </span>
@@ -620,12 +620,12 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
 
   return (
     <div className="bg-gray-900 rounded p-1.5">
-      <div className="text-[10px] text-gray-500 mb-0.5">ATR Trigger Distance</div>
+      <div className="text-[10px] text-gray-400 mb-0.5">ATR Trigger Distance</div>
       <div className="flex items-center justify-between">
         <span className="text-xs font-mono text-gray-300">
           ${formatPriceByMagnitude(distanceToTrigger)} to go
         </span>
-        <span className="text-[10px] text-gray-500">
+        <span className="text-[10px] text-gray-400">
           ({progress.toFixed(0)}%)
         </span>
       </div>
@@ -637,7 +637,7 @@ function TriggerDistance({ currentPrice, anchorPrice, atr, kFactor }) {
           style={{ width: `${progress}%` }}
         />
       </div>
-      <div className="flex justify-between text-[10px] text-gray-600 mt-0.5">
+      <div className="flex justify-between text-[10px] text-gray-400 mt-0.5">
         <span>Anchor: ${formatPriceByMagnitude(anchorPrice)}</span>
         <span>Target: ±${formatPriceByMagnitude(triggerDistance)}</span>
       </div>
@@ -1316,7 +1316,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <span className="text-orange-400 text-lg">⚠</span>
             <div>
               <span className="text-orange-300 font-medium text-sm">Engine Unreachable</span>
-              <span className="text-gray-500 text-xs ml-2">
+              <span className="text-gray-400 text-xs ml-2">
                 Showing last known state from disk{market.stale ? ' · prices may be stale' : ''}
               </span>
             </div>
@@ -1326,7 +1326,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <span className="text-red-400 text-lg">■</span>
             <div>
               <span className="text-red-300 font-medium text-sm">Engine Stopped</span>
-              <span className="text-gray-500 text-xs ml-2">Live market data streaming &middot; no trading</span>
+              <span className="text-gray-400 text-xs ml-2">Live market data streaming &middot; no trading</span>
             </div>
           </div>
         )
@@ -1354,7 +1354,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
           <button
             onClick={handleResumeFromAuthDenied}
             disabled={resumingAuth}
-            className="shrink-0 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
+            className="shrink-0 px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
           >
             {resumingAuth ? 'Resuming…' : 'Resume'}
           </button>
@@ -1379,7 +1379,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <button
               onClick={() => setResetCycleConfirm(true)}
               disabled={resettingCycle}
-              className="shrink-0 px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
+              className="shrink-0 px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:opacity-50 text-white text-xs font-medium rounded transition-colors"
             >
               {resettingCycle ? 'Resetting…' : 'Reset cycle & resume buying'}
             </button>
@@ -1395,7 +1395,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
             <p className="text-lg">Regime Engine is not running</p>
-            <p className="text-sm text-gray-500 mt-2">
+            <p className="text-sm text-gray-400 mt-2">
               The regime engine uses volatility-driven entries instead of fixed intervals.
               {isDryRun ? (
                 <span className="block mt-1 text-purple-400">
@@ -1422,12 +1422,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 sm:gap-3">
               {/* Live Price */}
               <div className="col-span-1">
-                <span className="text-[10px] text-gray-500">{asset} Price</span>
+                <span className="text-[10px] text-gray-400">{asset} Price</span>
                 <LivePriceTicker
                   price={market.lastPrice}
                   prevPrice={prevPriceRef.current}
                 />
-                <div className="text-[10px] text-gray-500">
+                <div className="text-[10px] text-gray-400">
                   Spread: ${formatPriceByMagnitude(market.spread)} ({market.spread && market.lastPrice ? ((market.spread / market.lastPrice) * 10000).toFixed(1) : '-'} bps)
                 </div>
               </div>
@@ -1464,7 +1464,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               {/* Entry Status */}
               <div className="col-span-1">
                 <div className="bg-gray-900 rounded p-1.5 h-full">
-                  <div className="text-[10px] text-gray-500 mb-0.5">
+                  <div className="text-[10px] text-gray-400 mb-0.5">
                     Entry Status<ConfigTooltip tip={REGIME_TOOLTIPS.entryStatus} align="left" width="w-72" />
                   </div>
                   <div className="space-y-0.5">
@@ -1522,7 +1522,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       <span className={`px-1 py-0.5 rounded text-[10px] ${macroStyle.bg} border ${macroStyle.border} ${macroStyle.text}`}>
                         {macroStyle.label}
                       </span>
-                      <span className="text-[10px] text-gray-500">{status.macro.score?.toFixed(0)}</span>
+                      <span className="text-[10px] text-gray-400">{status.macro.score?.toFixed(0)}</span>
                       {ltStyle && (
                         <span
                           className={`px-1 py-0.5 rounded text-[10px] ${ltStyle.bg} border ${ltStyle.border} ${ltStyle.text}`}
@@ -1534,7 +1534,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </div>
                   )
                 })() : (
-                  <div className="text-[10px] text-gray-500">
+                  <div className="text-[10px] text-gray-400">
                     Since {regime.since ? new Date(regime.since).toLocaleTimeString() : '-'}
                   </div>
                 )}
@@ -1553,15 +1553,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <div className={`text-xl font-bold ${status?.entryMode === 'ladder' ? 'text-indigo-400' : 'text-gray-300'}`}>
                   {status?.entryMode === 'ladder' ? 'LADDER' : 'REACTIVE'}
                 </div>
-                <div className="text-[10px] text-gray-500">
+                <div className="text-[10px] text-gray-400">
                   {status?.ladder?.active
                     ? `${status.ladder.pendingOrders} orders ($${status.ladder.committedUsdc?.toFixed(0) || 0})`
                     : status?.entryMode === 'ladder' ? 'Waiting for trigger' : 'Single order mode'}
                 </div>
                 {status?.autoSwitch && (
-                  <div className="text-[10px] text-gray-500 mt-0.5">
+                  <div className="text-[10px] text-gray-400 mt-0.5">
                     Vol: <span className={status.autoSwitch.volExpansion >= status.autoSwitch.threshold ? 'text-purple-400' : 'text-gray-400'}>{status.autoSwitch.volExpansion}x</span>
-                    <span className="text-gray-600"> / {status.autoSwitch.threshold}x</span>
+                    <span className="text-gray-400"> / {status.autoSwitch.threshold}x</span>
                   </div>
                 )}
               </div>
@@ -1577,29 +1577,29 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <h3 className="text-xs font-medium text-gray-400 mb-2">Volatility</h3>
               <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-gray-500">ATR 1m</span>
+                  <span className="text-gray-400">ATR 1m</span>
                   <span className="text-white font-mono">${formatPriceByMagnitude(market.atr1m)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-500">ATR 5m</span>
+                  <span className="text-gray-400">ATR 5m</span>
                   <span className="text-white font-mono">${formatPriceByMagnitude(market.atr5m)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-500">VWAP</span>
+                  <span className="text-gray-400">VWAP</span>
                   <span className="text-white font-mono">${formatPriceByMagnitude(market.vwap)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-500">VWAP Dist</span>
+                  <span className="text-gray-400">VWAP Dist</span>
                   <span className={`font-mono ${Math.abs(market.vwapDistance || 0) > 1 ? 'text-yellow-400' : 'text-white'}`}>
                     {market.vwapDistance?.toFixed(2) || '-'} ATR
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-500">RVol</span>
+                  <span className="text-gray-400">RVol</span>
                   <span className="text-white font-mono">{market.realizedVol?.toFixed(2) || '-'}%</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-500">Expansion</span>
+                  <span className="text-gray-400">Expansion</span>
                   <span className={`font-mono ${(market.realizedVol / market.volBaseline) > 1.5 ? 'text-yellow-400' : 'text-white'}`}>
                     {market.volBaseline ? (market.realizedVol / market.volBaseline).toFixed(2) : '-'}x
                   </span>
@@ -1627,7 +1627,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <div className="space-y-2 text-xs">
                   {/* Current Config */}
                   <div className="p-2 bg-gray-900/50 rounded">
-                    <div className="text-gray-500 text-[10px] mb-1">Current TP Settings</div>
+                    <div className="text-gray-400 text-[10px] mb-1">Current TP Settings</div>
                     <div className="grid grid-cols-3 gap-2">
                       <div>
                         <span className="text-gray-400">Min:</span>{' '}
@@ -1666,7 +1666,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   )}
 
                   {/* Evaluation Status */}
-                  <div className="flex justify-between text-gray-500 text-[10px]">
+                  <div className="flex justify-between text-gray-400 text-[10px]">
                     <span>Last eval: {tpOptimizer.lastVolEvaluationTime
                       ? `${Math.round((Date.now() - Math.max(tpOptimizer.lastEvaluationTime || 0, tpOptimizer.lastVolEvaluationTime || 0)) / 60000)}m ago`
                       : `${tpOptimizer.cyclesSinceEval || 0} cycles ago`}</span>
@@ -1676,7 +1676,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   {/* Recent Adjustments */}
                   {tpOptimizer.adjustmentHistory?.length > 0 && (
                     <div className="pt-2 border-t border-gray-700">
-                      <div className="text-gray-500 text-[10px] mb-1">Recent Adjustments</div>
+                      <div className="text-gray-400 text-[10px] mb-1">Recent Adjustments</div>
                       <div className="space-y-0.5 max-h-16 overflow-y-auto">
                         {tpOptimizer.adjustmentHistory.slice(-3).reverse().map((adj, idx) => (
                           <div key={idx} className="text-[10px] text-gray-400 flex justify-between">
@@ -1704,7 +1704,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <div className="space-y-2 text-xs">
                   {/* Current Sizing Config */}
                   <div className="p-2 bg-gray-900/50 rounded">
-                    <div className="text-gray-500 text-[10px] mb-1">Current Size Settings</div>
+                    <div className="text-gray-400 text-[10px] mb-1">Current Size Settings</div>
                     <div className="grid grid-cols-3 gap-2">
                       <div>
                         <span className="text-gray-400">Base:</span>{' '}
@@ -1743,7 +1743,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   )}
 
                   {/* Evaluation Status */}
-                  <div className="flex justify-between text-gray-500 text-[10px]">
+                  <div className="flex justify-between text-gray-400 text-[10px]">
                     <span>Cycles since eval: {sizeOptimizer.cyclesSinceEval || 0}</span>
                     <span>Samples: {sizeOptimizer.recentCycleCount || 0}</span>
                   </div>
@@ -1751,7 +1751,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   {/* Recent Adjustments */}
                   {sizeOptimizer.adjustmentHistory?.length > 0 && (
                     <div className="pt-2 border-t border-gray-700">
-                      <div className="text-gray-500 text-[10px] mb-1">Recent Adjustments</div>
+                      <div className="text-gray-400 text-[10px] mb-1">Recent Adjustments</div>
                       <div className="space-y-0.5 max-h-16 overflow-y-auto">
                         {sizeOptimizer.adjustmentHistory.slice(-3).reverse().map((adj, idx) => (
                           <div key={idx} className="text-[10px] text-gray-400 flex justify-between">
@@ -1771,7 +1771,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="bg-gray-800 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-xs font-medium text-gray-400">Fill Time Stats (7d)</h3>
-                  <span className="text-[10px] text-gray-500">
+                  <span className="text-[10px] text-gray-400">
                     {status.fillTimeStats.count} fills
                   </span>
                 </div>
@@ -1793,16 +1793,16 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   </div>
 
                   <div className="flex justify-between text-[10px]">
-                    <span className="text-gray-500">
+                    <span className="text-gray-400">
                       Range: {(status.fillTimeStats.minMs / 1000).toFixed(1)}s - {(status.fillTimeStats.maxMs / 1000).toFixed(1)}s
                     </span>
-                    <span className={status.fillTimeStats.staleRate > 10 ? 'text-red-400' : 'text-gray-500'}>
+                    <span className={status.fillTimeStats.staleRate > 10 ? 'text-red-400' : 'text-gray-400'}>
                       Stale: {status.fillTimeStats.staleRate}%
                     </span>
                   </div>
 
                   {status.effectiveStaleMs && (
-                    <div className="text-[10px] text-gray-500 pt-1 border-t border-gray-700">
+                    <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-700">
                       Timeout: {(status.effectiveStaleMs / 1000).toFixed(1)}s
                       {status.effectiveStaleMs !== config?.orderStaleMs && (
                         <span className="text-purple-400 ml-1">(regime-adjusted)</span>
@@ -1829,19 +1829,19 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="text-[10px] text-blue-400 mb-1">Current Position</div>
                     <div className="grid grid-cols-2 gap-1 text-[10px]">
                       <div>
-                        <span className="text-gray-500">Entry:</span>{' '}
+                        <span className="text-gray-400">Entry:</span>{' '}
                         <span className="text-white font-mono">${formatPriceByMagnitude(dryRunState.optimalTpAnalytics.currentCycle.entryPrice)}</span>
                       </div>
                       <div>
-                        <span className="text-gray-500">Max seen:</span>{' '}
+                        <span className="text-gray-400">Max seen:</span>{' '}
                         <span className="text-green-400 font-mono">${formatPriceByMagnitude(dryRunState.optimalTpAnalytics.currentCycle.currentMaxPrice)}</span>
                       </div>
                       <div>
-                        <span className="text-gray-500">Min seen:</span>{' '}
+                        <span className="text-gray-400">Min seen:</span>{' '}
                         <span className="text-red-400 font-mono">${formatPriceByMagnitude(dryRunState.optimalTpAnalytics.currentCycle.currentMinPrice)}</span>
                       </div>
                       <div>
-                        <span className="text-gray-500">Optimal TP:</span>{' '}
+                        <span className="text-gray-400">Optimal TP:</span>{' '}
                         <span className="text-cyan-400 font-mono">{dryRunState.optimalTpAnalytics.currentCycle.currentOptimalPct?.toFixed(2)}%</span>
                       </div>
                     </div>
@@ -1910,13 +1910,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           </div>
                         </div>
                         <div className="flex justify-between text-[10px] mt-1">
-                          <span className="text-gray-500">0%</span>
+                          <span className="text-gray-400">0%</span>
                           <span className="text-cyan-400">
                             {dryRunState.optimalTpAnalytics.recommendedTpRange.min?.toFixed(1)}% - {dryRunState.optimalTpAnalytics.recommendedTpRange.max?.toFixed(1)}%
                           </span>
-                          <span className="text-gray-500">5%</span>
+                          <span className="text-gray-400">5%</span>
                         </div>
-                        <div className="flex justify-between text-[9px] text-gray-500 mt-0.5">
+                        <div className="flex justify-between text-[9px] text-gray-400 mt-0.5">
                           <span>Config: {config?.tpMinPercent?.toFixed(4)}%-{config?.tpMaxPercent?.toFixed(4)}%</span>
                           <span className="text-blue-400">|</span>
                           <span>Observed</span>
@@ -1926,7 +1926,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     )}
                   </>
                 ) : (
-                  <div className="text-gray-500 text-[10px] text-center py-2">
+                  <div className="text-gray-400 text-[10px] text-center py-2">
                     Complete at least one cycle to see analytics
                   </div>
                 )}
@@ -1938,7 +1938,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs font-medium text-gray-400">Risk Limits</h3>
                 {risk.isDrawdownPaused && (
-                  <button onClick={() => setDrawdownResumeConfirm(true)} className="px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] rounded flex items-center gap-1">
+                  <button onClick={() => setDrawdownResumeConfirm(true)} className="px-2 py-0.5 bg-green-800 hover:bg-green-900 text-white text-[10px] rounded flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
                     Resume
                   </button>
@@ -1946,15 +1946,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <div className="text-center">
-                  <div className="text-[10px] text-gray-500 mb-1">{asset}</div>
+                  <div className="text-[10px] text-gray-400 mb-1">{asset}</div>
                   <div className="text-xs text-white font-mono">{position.totalAsset?.toFixed(4) || 0}</div>
                   <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
                     <div className="h-full bg-orange-500 transition-all" style={{ width: config?.maxAssetExposure ? `${Math.min(100, ((position.totalAsset || 0) / config.maxAssetExposure) * 100)}%` : '0%' }} />
                   </div>
-                  <div className="text-[9px] text-gray-600">{config?.maxAssetExposure ? `/ ${config.maxAssetExposure}` : 'uncapped'}</div>
+                  <div className="text-[9px] text-gray-400">{config?.maxAssetExposure ? `/ ${config.maxAssetExposure}` : 'uncapped'}</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-[10px] text-gray-500 mb-1">USDC</div>
+                  <div className="text-[10px] text-gray-400 mb-1">USDC</div>
                   {(() => {
                     const filled = position.totalCostBasis || 0
                     const committed = status?.ladder?.committedUsdc || 0
@@ -1966,19 +1966,19 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                         <div className="h-full bg-blue-500 transition-all" style={{ width: `${Math.min(100, (filled / max) * 100)}%` }} />
                         {committed > 0 && <div className="h-full bg-indigo-500 transition-all" style={{ width: `${Math.min(100 - (filled / max) * 100, (committed / max) * 100)}%` }} />}
                       </div>
-                      <div className="text-[9px] text-gray-600">/ ${max}</div>
+                      <div className="text-[9px] text-gray-400">/ ${max}</div>
                     </>
                   })()}
                 </div>
                 <div className="text-center">
-                  <div className="text-[10px] text-gray-500 mb-1">Drawdown</div>
+                  <div className="text-[10px] text-gray-400 mb-1">Drawdown</div>
                   <div className={`text-xs font-mono ${position.maxDrawdownSeen > config?.maxDrawdownPercent * 0.8 ? 'text-yellow-400' : 'text-white'}`}>
                     {position.maxDrawdownSeen?.toFixed(1) || 0}%
                   </div>
                   <div className="h-1 bg-gray-700 rounded-full overflow-hidden mt-1">
                     <div className="h-full bg-red-500 transition-all" style={{ width: `${Math.min(100, ((position.maxDrawdownSeen || 0) / (config?.maxDrawdownPercent || 20)) * 100)}%` }} />
                   </div>
-                  <div className="text-[9px] text-gray-600">/ {config?.maxDrawdownPercent || 20}%</div>
+                  <div className="text-[9px] text-gray-400">/ {config?.maxDrawdownPercent || 20}%</div>
                 </div>
               </div>
             </div>
@@ -1988,7 +1988,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
           <div className="space-y-4">
             {/* 3D Celestial Visualization */}
             {status?.celestial?.enabled && (
-              <Suspense fallback={<div className="bg-gray-800 rounded-lg p-4 text-xs text-gray-500">Loading celestial system...</div>}>
+              <Suspense fallback={<div className="bg-gray-800 rounded-lg p-4 text-xs text-gray-400">Loading celestial system...</div>}>
                 <CelestialVisualization
                   celestial={status.celestial}
                   pendingOrders={pendingOrdersList}
@@ -2005,38 +2005,38 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <h3 className="text-sm font-medium text-gray-400">Position</h3>
                 <div className="flex items-center gap-2">
                   {isDryRun && <span className="text-xs text-purple-400">(Simulated)</span>}
-                  <span className="text-xs text-gray-500">Buys {position.cycleBuys || position.ladderStep || 0}/{config?.maxCycleBuys || 10}</span>
+                  <span className="text-xs text-gray-400">Buys {position.cycleBuys || position.ladderStep || 0}/{config?.maxCycleBuys || 10}</span>
                 </div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
                 <div className="min-w-0">
-                  <div className="text-gray-500">{asset} Held</div>
+                  <div className="text-gray-400">{asset} Held</div>
                   <div className="text-orange-400 font-mono truncate">{position.totalAsset?.toFixed(8) || '0'}</div>
                 </div>
                 <div className="min-w-0">
-                  <div className="text-gray-500">On Order</div>
+                  <div className="text-gray-400">On Order</div>
                   <div className="text-yellow-400 font-mono truncate">{(isDryRun && dryRunState?.pnl?.assetOnOrder ? dryRunState.pnl.assetOnOrder : position.assetOnOrder || 0).toFixed(8)}</div>
                 </div>
                 <div className="min-w-0">
-                  <div className="text-gray-500">Reserves</div>
+                  <div className="text-gray-400">Reserves</div>
                   <div className="text-cyan-400 font-mono truncate">{(position.realizedAssetPnL || 0).toFixed(8)}</div>
                 </div>
                 <div className="min-w-0">
-                  <div className="text-gray-500">Cost Basis</div>
+                  <div className="text-gray-400">Cost Basis</div>
                   <div className="text-white font-mono truncate">${position.totalCostBasis?.toFixed(2) || '0'}</div>
                 </div>
                 <div className="min-w-0">
-                  <div className="text-gray-500">Avg Cost</div>
+                  <div className="text-gray-400">Avg Cost</div>
                   <div className="text-white font-mono truncate">${formatPriceByMagnitude(position.avgCostBasis)}</div>
                 </div>
                 <div className="min-w-0">
-                  <div className="text-gray-500">Cycle</div>
+                  <div className="text-gray-400">Cycle</div>
                   <div className="text-white font-mono">{(position.cyclesCompleted || 0) + 1}</div>
                 </div>
               </div>
               <div className="mt-2 pt-2 border-t border-gray-700 grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-gray-900/50 rounded p-2 min-w-0">
-                  <div className="text-gray-500">Unrealized P&L</div>
+                  <div className="text-gray-400">Unrealized P&L</div>
                   <div className={`font-mono text-base ${position.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {formatCurrency(position.unrealizedPnL || 0)}
                   </div>
@@ -2051,7 +2051,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     const denom = apy.depositedCapital || apy.originalCapital || apy.initialCapital || 0
                     const pct = denom > 0 ? (usdPnL / denom) * 100 : 0
                     return <>
-                      <div className="text-gray-500 truncate">Realized P&L {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
+                      <div className="text-gray-400 truncate">Realized P&L {pct ? `(${pct.toFixed(2)}%)` : ''}</div>
                       <div className={`font-mono text-base ${usdPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         {formatCurrency(usdPnL)}
                       </div>
@@ -2070,7 +2070,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               {status?.celestial?.enabled && (
                 <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="text-gray-500">Celestial Bodies</span>
+                    <span className="text-gray-400">Celestial Bodies</span>
                     <span className="text-cyan-400 font-mono">{status.celestial.bodiesActive || 0} active / {status.celestial.bodiesCompleted || 0} completed</span>
                   </div>
                 </div>
@@ -2112,26 +2112,26 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="text-gray-400">After</div>
 
                     <div className="text-gray-300">Cycles</div>
-                    <div className="text-gray-500">{recalcPreview.changes?.cyclesCompleted?.before}</div>
-                    <div className={recalcPreview.changes?.cyclesCompleted?.before !== recalcPreview.changes?.cyclesCompleted?.after ? 'text-yellow-400' : 'text-gray-500'}>
+                    <div className="text-gray-400">{recalcPreview.changes?.cyclesCompleted?.before}</div>
+                    <div className={recalcPreview.changes?.cyclesCompleted?.before !== recalcPreview.changes?.cyclesCompleted?.after ? 'text-yellow-400' : 'text-gray-400'}>
                       {recalcPreview.changes?.cyclesCompleted?.after}
                     </div>
 
                     <div className="text-gray-300">P&L</div>
-                    <div className="text-gray-500">{formatCurrency(recalcPreview.changes?.realizedPnL?.before)}</div>
-                    <div className={recalcPreview.changes?.realizedPnL?.before !== recalcPreview.changes?.realizedPnL?.after ? 'text-yellow-400' : 'text-gray-500'}>
+                    <div className="text-gray-400">{formatCurrency(recalcPreview.changes?.realizedPnL?.before)}</div>
+                    <div className={recalcPreview.changes?.realizedPnL?.before !== recalcPreview.changes?.realizedPnL?.after ? 'text-yellow-400' : 'text-gray-400'}>
                       {formatCurrency(recalcPreview.changes?.realizedPnL?.after)}
                     </div>
 
                     <div className="text-gray-300">{asset} Reserves</div>
-                    <div className="text-gray-500">{recalcPreview.changes?.realizedAssetPnL?.before?.toFixed(8)}</div>
-                    <div className={recalcPreview.changes?.realizedAssetPnL?.before !== recalcPreview.changes?.realizedAssetPnL?.after ? 'text-cyan-400' : 'text-gray-500'}>
+                    <div className="text-gray-400">{recalcPreview.changes?.realizedAssetPnL?.before?.toFixed(8)}</div>
+                    <div className={recalcPreview.changes?.realizedAssetPnL?.before !== recalcPreview.changes?.realizedAssetPnL?.after ? 'text-cyan-400' : 'text-gray-400'}>
                       {recalcPreview.changes?.realizedAssetPnL?.after?.toFixed(8)}
                     </div>
 
                     <div className="text-gray-300">Cycle Buys</div>
-                    <div className="text-gray-500">{recalcPreview.changes?.cycleBuys?.before ?? recalcPreview.changes?.ladderStep?.before}</div>
-                    <div className={(recalcPreview.changes?.cycleBuys?.before ?? recalcPreview.changes?.ladderStep?.before) !== (recalcPreview.changes?.cycleBuys?.after ?? recalcPreview.changes?.ladderStep?.after) ? 'text-yellow-400' : 'text-gray-500'}>
+                    <div className="text-gray-400">{recalcPreview.changes?.cycleBuys?.before ?? recalcPreview.changes?.ladderStep?.before}</div>
+                    <div className={(recalcPreview.changes?.cycleBuys?.before ?? recalcPreview.changes?.ladderStep?.before) !== (recalcPreview.changes?.cycleBuys?.after ?? recalcPreview.changes?.ladderStep?.after) ? 'text-yellow-400' : 'text-gray-400'}>
                       {recalcPreview.changes?.cycleBuys?.after ?? recalcPreview.changes?.ladderStep?.after}
                     </div>
                   </div>
@@ -2140,7 +2140,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="mb-3">
                       <div className="text-xs text-gray-400 mb-1">Completed Cycles:</div>
                       {recalcPreview.cycleDetails.map((cycle, i) => (
-                        <div key={i} className="text-xs text-gray-500 pl-2">
+                        <div key={i} className="text-xs text-gray-400 pl-2">
                           {cycle.cycleId?.replace('cycle-', '#')} - {cycle.buys} buys, P&L: ${cycle.pnl?.toFixed(2)}, holdback: {cycle.holdbackAsset?.toFixed(8)} {asset}
                         </div>
                       ))}
@@ -2151,7 +2151,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <button
                       onClick={handleRecalculateApply}
                       disabled={recalculating}
-                      className="flex-1 text-xs px-3 py-1.5 rounded bg-yellow-600 hover:bg-yellow-500 text-white disabled:opacity-50"
+                      className="flex-1 text-xs px-3 py-1.5 rounded bg-yellow-800 hover:bg-yellow-900 text-white disabled:opacity-50"
                     >
                       {recalculating ? 'Applying...' : 'Apply Changes'}
                     </button>
@@ -2168,7 +2168,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               {/* APY & Returns Section */}
               {apy.engineStartTime && (
                 <div className="mt-2 pt-2 border-t border-gray-700 text-xs">
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-500 mb-2">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-2">
                     <span>Deposited: ${(apy.depositedCapital || apy.originalCapital || apy.initialCapital)?.toLocaleString()}</span>
                     <span className="text-green-400">Max: ${(apy.maxUsdcDeployed || apy.currentCapital)?.toLocaleString()}</span>
                     {capitalAdjustMode ? (
@@ -2197,7 +2197,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                         </button>
                         <button
                           onClick={() => setCapitalAdjustMode(false)}
-                          className="text-gray-500 hover:text-gray-300"
+                          className="text-gray-400 hover:text-gray-300"
                           title="Cancel"
                         >
                           {'\u2717'}
@@ -2280,37 +2280,37 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   </div>
                   <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                     <div className="flex justify-between">
-                      <span className="text-gray-500">21h EMA</span>
+                      <span className="text-gray-400">21h EMA</span>
                       <span className="text-white font-mono">${formatPriceByMagnitude(m.emas?.h21)}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">50h EMA</span>
+                      <span className="text-gray-400">50h EMA</span>
                       <span className="text-white font-mono">${formatPriceByMagnitude(m.emas?.h50)}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">200h EMA</span>
+                      <span className="text-gray-400">200h EMA</span>
                       <span className="text-white font-mono">${formatPriceByMagnitude(m.emas?.h200)}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">20d EMA</span>
+                      <span className="text-gray-400">20d EMA</span>
                       <span className="text-white font-mono">${formatPriceByMagnitude(m.emas?.d20)}</span>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-gray-700">
                     <div className="text-center">
-                      <div className="text-[10px] text-gray-500">Size</div>
+                      <div className="text-[10px] text-gray-400">Size</div>
                       <div className={`text-xs font-mono ${mults.size !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.size}x</div>
                     </div>
                     <div className="text-center">
-                      <div className="text-[10px] text-gray-500">TP</div>
+                      <div className="text-[10px] text-gray-400">TP</div>
                       <div className={`text-xs font-mono ${mults.tp !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.tp}x</div>
                     </div>
                     <div className="text-center">
-                      <div className="text-[10px] text-gray-500">Offset</div>
+                      <div className="text-[10px] text-gray-400">Offset</div>
                       <div className={`text-xs font-mono ${mults.offset !== 1.0 ? macroStyle.text : 'text-gray-400'}`}>{mults.offset}x</div>
                     </div>
                   </div>
-                  <div className="text-[10px] text-gray-500 mt-1">
+                  <div className="text-[10px] text-gray-400 mt-1">
                     Updated {m.lastUpdate ? new Date(m.lastUpdate).toLocaleTimeString() : 'never'} | {m.candles?.hourly || 0}h/{m.candles?.daily || 0}d candles
                   </div>
                 </div>
@@ -2367,7 +2367,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
 
                 <div className="grid grid-cols-3 gap-4 text-xs">
                   <div>
-                    <span className="text-gray-500">Base Size<ConfigTooltip tip={CONFIG_TOOLTIPS.baseSize} align="left" /></span>
+                    <span className="text-gray-400">Base Size<ConfigTooltip tip={CONFIG_TOOLTIPS.baseSize} align="left" /></span>
                     <div className="flex items-center gap-1">
                       <span className="text-white">${config.baseSizeUsdc}</span>
                       {config.sizeAutoManaged && (
@@ -2376,23 +2376,23 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </div>
                   </div>
                   <div>
-                    <span className="text-gray-500">k Factor<ConfigTooltip tip={CONFIG_TOOLTIPS.kFactor} /></span>
+                    <span className="text-gray-400">k Factor<ConfigTooltip tip={CONFIG_TOOLTIPS.kFactor} /></span>
                     <div className="text-white">{config.kFactor}</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">Entry Offset<ConfigTooltip tip={CONFIG_TOOLTIPS.entryOffset} align="right" /></span>
+                    <span className="text-gray-400">Entry Offset<ConfigTooltip tip={CONFIG_TOOLTIPS.entryOffset} align="right" /></span>
                     <div className="text-white">{config.entryOffsetBps}bps</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">Min Interval<ConfigTooltip tip={CONFIG_TOOLTIPS.minInterval} align="left" /></span>
+                    <span className="text-gray-400">Min Interval<ConfigTooltip tip={CONFIG_TOOLTIPS.minInterval} align="left" /></span>
                     <div className="text-white">{config.minIntervalMs / 1000}s</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">Max Interval<ConfigTooltip tip={CONFIG_TOOLTIPS.maxInterval} /></span>
+                    <span className="text-gray-400">Max Interval<ConfigTooltip tip={CONFIG_TOOLTIPS.maxInterval} /></span>
                     <div className="text-white">{config.maxIntervalMs / 60000}m</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">TP Range<ConfigTooltip tip={CONFIG_TOOLTIPS.tpRange} align="right" /></span>
+                    <span className="text-gray-400">TP Range<ConfigTooltip tip={CONFIG_TOOLTIPS.tpRange} align="right" /></span>
                     <div className="flex items-center gap-1">
                       <span className="text-white">{config.tpMinPercent?.toFixed(4)}% - {config.tpMaxPercent?.toFixed(4)}%</span>
                       {config.tpAutoManaged && (
@@ -2401,15 +2401,15 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </div>
                   </div>
                   <div>
-                    <span className="text-gray-500">Caution Scale<ConfigTooltip tip={CONFIG_TOOLTIPS.cautionScale} align="left" /></span>
+                    <span className="text-gray-400">Caution Scale<ConfigTooltip tip={CONFIG_TOOLTIPS.cautionScale} align="left" /></span>
                     <div className="text-white">{config.cautionScale}</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">Trend Scale<ConfigTooltip tip={CONFIG_TOOLTIPS.trendScale} /></span>
+                    <span className="text-gray-400">Trend Scale<ConfigTooltip tip={CONFIG_TOOLTIPS.trendScale} /></span>
                     <div className="text-white">{config.trendScale}</div>
                   </div>
                   <div>
-                    <span className="text-gray-500">Max Cycle Buys<ConfigTooltip tip={CONFIG_TOOLTIPS.maxCycleBuys} align="right" /></span>
+                    <span className="text-gray-400">Max Cycle Buys<ConfigTooltip tip={CONFIG_TOOLTIPS.maxCycleBuys} align="right" /></span>
                     <div className="text-white">{config.maxCycleBuys}</div>
                   </div>
                 </div>
@@ -2451,7 +2451,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   <button
                     onClick={handleCancelLadder}
                     disabled={cancellingLadder}
-                    className="px-2 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded transition-colors disabled:opacity-50"
+                    className="px-2 py-1 text-xs bg-red-700 hover:bg-red-800 text-white rounded transition-colors disabled:opacity-50"
                   >
                     {cancellingLadder ? 'Cancelling…' : 'Cancel Ladder → Reactive'}
                   </button>
@@ -2473,7 +2473,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     value={openSearchId}
                     onChange={e => setOpenSearchId(e.target.value)}
                     placeholder="Filter by ID…"
-                    className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-500 w-36"
+                    className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-400 w-36"
                   />
                 )}
               </div>
@@ -2573,7 +2573,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <div className="max-h-40 overflow-y-auto">
                       <table className="w-full text-xs">
                         <thead>
-                          <tr className="text-gray-500 border-b border-gray-700">
+                          <tr className="text-gray-400 border-b border-gray-700">
                             <th className="text-left py-1 pr-2">#</th>
                             <th className="text-right py-1 pr-2">Price</th>
                             <th className="text-right py-1 pr-2">Size (USDC)</th>
@@ -2584,11 +2584,11 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                         <tbody>
                           {ladderPreview.levels.map((level, i) => (
                             <tr key={i} className="border-b border-gray-700/30 text-gray-300">
-                              <td className="py-1 pr-2 text-gray-500">{i + 1}</td>
+                              <td className="py-1 pr-2 text-gray-400">{i + 1}</td>
                               <td className="text-right py-1 pr-2 font-mono">{formatPriceByMagnitude(level.price)}</td>
                               <td className="text-right py-1 pr-2 font-mono">${level.sizeUsdc?.toFixed(2)}</td>
                               <td className="text-right py-1 pr-2 font-mono">{level.assetQty?.toFixed(8)}</td>
-                              <td className="text-right py-1 font-mono text-gray-500">{level.distancePct?.toFixed(2)}%</td>
+                              <td className="text-right py-1 font-mono text-gray-400">{level.distancePct?.toFixed(2)}%</td>
                             </tr>
                           ))}
                         </tbody>
@@ -2603,12 +2603,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </button>
                   </div>
                 ) : (
-                  <div className="text-xs text-gray-500">Loading preview...</div>
+                  <div className="text-xs text-gray-400">Loading preview...</div>
                 )}
               </div>
             )}
             {pendingOrdersList.length === 0 ? (
-              <div className="text-gray-500 text-sm text-center py-4">No open orders</div>
+              <div className="text-gray-400 text-sm text-center py-4">No open orders</div>
             ) : (
               <div className="overflow-x-auto">
                 {(() => {
@@ -2758,7 +2758,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     {/* Sell Orders Table */}
                     {sellOrders.length > 0 && (
                     <div>
-                      <div className="text-xs text-gray-500 mb-1">{sellOrders.length} sell {sellOrders.length === 1 ? 'order' : 'orders'}</div>
+                      <div className="text-xs text-gray-400 mb-1">{sellOrders.length} sell {sellOrders.length === 1 ? 'order' : 'orders'}</div>
                       <table className="w-full text-sm">
                       <thead>
                         <tr className="text-gray-400 text-xs border-b border-gray-700">
@@ -2787,14 +2787,14 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 className={`border-b border-gray-700/50 ${isTp && hasBuys ? 'cursor-pointer' : ''} hover:bg-gray-700/30`}
                                 onClick={isTp && hasBuys ? () => toggleOrder(order.orderId) : undefined}
                               >
-                                <td className="py-2 pr-1 text-gray-500 text-xs">
+                                <td className="py-2 pr-1 text-gray-400 text-xs">
                                   {isTp && hasBuys ? (
                                     <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
                                   ) : null}
                                 </td>
-                                <td className="py-2 pr-2 font-mono text-gray-500 text-xs">
+                                <td className="py-2 pr-2 font-mono text-gray-400 text-xs">
                                   {order.orderId}
-                                  {hasBuys && <span className="text-gray-600 ml-1">({order.relatedBuys.length} {order.relatedBuys.length === 1 ? 'buy' : 'buys'})</span>}
+                                  {hasBuys && <span className="text-gray-400 ml-1">({order.relatedBuys.length} {order.relatedBuys.length === 1 ? 'buy' : 'buys'})</span>}
                                 </td>
                                 <td className="py-2 pr-2">
                                   {(() => {
@@ -2842,7 +2842,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
                                   ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
-                                <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
+                                <td className={`text-right py-2 pr-2 font-mono text-xs ${order.estPnl !== null ? (order.estPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'}`} title={order.estSellFee ? `After est. sell fee: $${order.estSellFee.toFixed(4)}` : undefined}>
                                   {order.estPnl !== null ? `${order.estPnl >= 0 ? '+' : ''}${formatCurrency(order.estPnl)}` : '—'}
                                 </td>
                                 <td className="text-right py-2 pr-2 font-mono text-xs text-cyan-400">
@@ -2850,7 +2850,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                     <span title={`≈${formatCurrency(order.estHoldbackValue)}`}>+{order.estHoldback.toFixed(8)}</span>
                                   ) : '—'}
                                 </td>
-                                <td className="text-right py-2 pr-2 font-mono text-gray-500 text-xs">
+                                <td className="text-right py-2 pr-2 font-mono text-gray-400 text-xs">
                                   {formatDuration(order.age)}
                                 </td>
                                 <td className="py-2 text-center">
@@ -2889,7 +2889,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                               {isExpanded && order.relatedBuys.map((buy, idx) => (
                                 <tr key={`${order.orderId}-buy-${buy.orderId}-${idx}`} className="border-b border-gray-700/30 bg-gray-750/20">
                                   <td className="py-1 pr-1"></td>
-                                  <td className="py-1 pr-2 font-mono text-xs text-gray-500 pl-4">
+                                  <td className="py-1 pr-2 font-mono text-xs text-gray-400 pl-4">
                                     <span className="text-green-400/70 mr-1">BUY</span>
                                     {buy.orderId}
                                   </td>
@@ -2901,11 +2901,11 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                   <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
                                     ${buy.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                                   </td>
-                                  <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
+                                  <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
                                     ${buy.sizeUsdc?.toFixed(2)}
                                   </td>
                                   <td className="py-1 pr-2"></td>
-                                  <td className="text-right py-1 font-mono text-xs text-gray-500">
+                                  <td className="text-right py-1 font-mono text-xs text-gray-400">
                                     {formatTimestamp(buy.filledAt)}
                                   </td>
                                   <td className="py-1"></td>
@@ -2924,7 +2924,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           <td className="text-right py-2 pr-2 font-mono text-white">{totalSellSize.toFixed(8)}</td>
                           <td className="py-2 pr-2"></td>
                           <td className="text-right py-2 pr-2 font-mono text-gray-300">${totalSellValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                          <td className={`text-right py-2 pr-2 font-mono ${hasPnl ? (totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'}`} title={totalSellFees ? `After est. sell fees: $${totalSellFees.toFixed(4)}` : undefined}>
+                          <td className={`text-right py-2 pr-2 font-mono ${hasPnl ? (totalSellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'}`} title={totalSellFees ? `After est. sell fees: $${totalSellFees.toFixed(4)}` : undefined}>
                             {hasPnl ? `${totalSellPnl >= 0 ? '+' : ''}${formatCurrency(totalSellPnl)}` : '—'}
                           </td>
                           <td className="text-right py-2 pr-2 font-mono text-cyan-400">
@@ -2941,7 +2941,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     {/* Entry Orders Table */}
                     {entryOrders.length > 0 && (
                     <div>
-                      <div className="text-xs text-gray-500 mb-1">{entryOrders.length} entry {entryOrders.length === 1 ? 'order' : 'orders'}</div>
+                      <div className="text-xs text-gray-400 mb-1">{entryOrders.length} entry {entryOrders.length === 1 ? 'order' : 'orders'}</div>
                       <table className="w-full text-sm">
                       <thead>
                         <tr className="text-gray-400 text-xs border-b border-gray-700">
@@ -2955,7 +2955,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       <tbody>
                         {entryOrders.map((order) => (
                           <tr key={order.orderId} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                            <td className="py-2 pr-2 font-mono text-gray-500 text-xs">{order.orderId}</td>
+                            <td className="py-2 pr-2 font-mono text-gray-400 text-xs">{order.orderId}</td>
                             <td className="text-right py-2 pr-2 font-mono text-white">{order.size?.toFixed(8)}</td>
                             <td className="text-right py-2 pr-2 font-mono text-white">
                               ${order.price?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
@@ -2963,7 +2963,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                             <td className="text-right py-2 pr-2 font-mono text-gray-300 text-xs">
                               ${(order.size * order.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </td>
-                            <td className="text-right py-2 pr-2 font-mono text-gray-500 text-xs">{formatDuration(order.age)}</td>
+                            <td className="text-right py-2 pr-2 font-mono text-gray-400 text-xs">{formatDuration(order.age)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -3019,7 +3019,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                       </div>
                     </div>
                     <div className="mt-2 text-gray-400">{intent.recoveryHint}</div>
-                    <div className="mt-1 text-gray-500 font-mono">
+                    <div className="mt-1 text-gray-400 font-mono">
                       {intent.clientOrderId ? `client_order_id ${intent.clientOrderId} · ` : ''}
                       {formatTimestamp(intent.createdAt)}
                       {intent.reason ? ` · ${intent.reason}` : ''}
@@ -3048,7 +3048,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   </button>
                 )}
                 {((isDryRun && dryRunState?.filledOrders?.length > 0) || (!isDryRun && filteredFills.length > 0)) && (
-                  <span className="text-xs text-gray-500">
+                  <span className="text-xs text-gray-400">
                     {isDryRun
                       ? dryRunState.filledOrders.length
                       : filteredFills.length
@@ -3065,7 +3065,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   value={fillSearchId}
                   onChange={e => setFillSearchId(e.target.value)}
                   placeholder="Filter by ID…"
-                  className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-500 w-36"
+                  className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 placeholder-gray-400 w-36"
                 />
               </div>
             </div>
@@ -3073,7 +3073,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
               ? (dryRunState?.filledOrders?.length || 0)
               : filteredFills.length
             ) === 0 ? (
-              <div className="text-gray-500 text-sm text-center py-4">
+              <div className="text-gray-400 text-sm text-center py-4">
                 {!isDryRun && liveFills?.length > 0 && !showAllCycles
                   ? 'No fills in current cycle (toggle to see all cycles)'
                   : 'No filled orders yet'
@@ -3132,7 +3132,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   }
 
                   if (sellGroups.length === 0 && orphanedBuys.length === 0) {
-                    return <div className="text-gray-500 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
+                    return <div className="text-gray-400 text-sm text-center py-4">{fillSearchId ? 'No matching orders' : 'No filled sells yet'}</div>
                   }
 
                   // Source of truth: sum of per-sell pnl across all cycles. The engine's
@@ -3159,12 +3159,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                           className="border-b border-gray-700 cursor-pointer hover:bg-gray-700/40 transition-colors"
                           onClick={() => toggleFill(group.key)}
                         >
-                          <td className="py-1.5 pr-1 text-gray-500 text-xs">
+                          <td className="py-1.5 pr-1 text-gray-400 text-xs">
                             <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>&#9654;</span>
                           </td>
                           <td className="py-1.5 pr-2 font-mono text-xs text-gray-400">
                             {sell.orderId}
-                            {buys.length > 0 && <span className="text-gray-600 ml-1">({buys.length} {buys.length === 1 ? 'buy' : 'buys'})</span>}
+                            {buys.length > 0 && <span className="text-gray-400 ml-1">({buys.length} {buys.length === 1 ? 'buy' : 'buys'})</span>}
                             {buys.length === 0 && sell.duplicateTpNote && <span className="text-yellow-600/70 ml-1" title={sell.duplicateTpNote}>(dup TP)</span>}
                             {buys.length === 0 && sell.untrackedSell && !sell.duplicateTpNote && <span className="text-yellow-600/70 ml-1">(orphan)</span>}
                           </td>
@@ -3178,12 +3178,12 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                             ${sellValue.toFixed(2)}
                           </td>
                           <td className={`text-right py-1.5 pr-2 font-mono text-xs ${
-                            sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-500'
+                            sellPnl !== null ? (sellPnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-gray-400'
                           }`}>
                             {sellPnl !== null ? `${sellPnl >= 0 ? '+' : ''}${formatCurrency(sellPnl)}` : '—'}
                             {sellHoldback > 0 && <span className="ml-1 text-cyan-400" title={`Holdback ${asset}`}>+{sellHoldback.toFixed(8)}</span>}
                           </td>
-                          <td className="text-right py-1.5 font-mono text-gray-500 text-xs">
+                          <td className="text-right py-1.5 font-mono text-gray-400 text-xs">
                             {formatTimestamp(sellTime)}
                           </td>
                         </tr>
@@ -3192,7 +3192,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                             <td className="py-1 pr-1"></td>
                             <td colSpan={6} className="py-1.5 pl-5 text-xs text-yellow-600/70 italic">
                               {sell.duplicateTpNote || 'Untracked sell — buy orders linked to original TP'}
-                              {(sell.bodyCostBasis ?? sell.satelliteCostBasis) > 0 && <span className="ml-2 text-gray-500">Cost basis: ${(sell.bodyCostBasis ?? sell.satelliteCostBasis).toFixed(2)}</span>}
+                              {(sell.bodyCostBasis ?? sell.satelliteCostBasis) > 0 && <span className="ml-2 text-gray-400">Cost basis: ${(sell.bodyCostBasis ?? sell.satelliteCostBasis).toFixed(2)}</span>}
                             </td>
                           </tr>
                         )}
@@ -3208,7 +3208,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                               className="border-b border-gray-700/30 bg-gray-750/20"
                             >
                               <td className="py-1 pr-1"></td>
-                              <td className="py-1 pr-2 font-mono text-xs text-gray-500 pl-5">
+                              <td className="py-1 pr-2 font-mono text-xs text-gray-400 pl-5">
                                 <span className="text-green-400/70 mr-1">BUY</span>
                                 {buy.orderId}
                               </td>
@@ -3218,13 +3218,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                               <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
                                 ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                               </td>
-                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
+                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
                                 ${buyValue.toFixed(2)}
                               </td>
-                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-600">
+                              <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
                                 {fillTimeMs !== null ? formatDuration(fillTimeMs) : ''}
                               </td>
-                              <td className="text-right py-1 font-mono text-xs text-gray-500">
+                              <td className="text-right py-1 font-mono text-xs text-gray-400">
                                 {formatTimestamp(buyTime)}
                               </td>
                             </tr>
@@ -3325,7 +3325,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                             <div className="flex items-center gap-2">
                               <span className={`inline-block transition-transform text-xs text-gray-500 ${expandedCycles.has('orphans') ? 'rotate-90' : ''}`}>&#9654;</span>
                               <span className="px-2 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-400">Orphaned</span>
-                              <span className="text-xs text-gray-500">{orphanedBuys.length} buys not linked to any sell</span>
+                              <span className="text-xs text-gray-400">{orphanedBuys.length} buys not linked to any sell</span>
                             </div>
                             <span className="font-mono text-xs text-yellow-400">{orphanedBuys.reduce((s, b) => s + (b.size || 0), 0).toFixed(8)} {asset}</span>
                           </div>
@@ -3359,13 +3359,13 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                         <td className="text-right py-1 pr-2 font-mono text-xs text-gray-300">
                                           ${buyPrice?.toLocaleString(undefined, { minimumFractionDigits: getPriceDecimals(market.lastPrice), maximumFractionDigits: getPriceDecimals(market.lastPrice) })}
                                         </td>
-                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-500">
+                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
                                           ${buyValue.toFixed(2)}
                                         </td>
-                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-600">
+                                        <td className="text-right py-1 pr-2 font-mono text-xs text-gray-400">
                                           {buy.cycleId?.replace('cycle-', '#') || '—'}
                                         </td>
-                                        <td className="text-right py-1 font-mono text-xs text-gray-500">
+                                        <td className="text-right py-1 font-mono text-xs text-gray-400">
                                           {formatTimestamp(buy.timestamp || buy.filledAt)}
                                         </td>
                                       </tr>
@@ -3406,11 +3406,11 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                 }`}>
                                   {cycleLabel}
                                 </span>
-                                <span className="text-xs text-gray-500">
+                                <span className="text-xs text-gray-400">
                                   {cycle.sells.length} {cycle.sells.length === 1 ? 'sell' : 'sells'}, {cycle.buyCount} {cycle.buyCount === 1 ? 'buy' : 'buys'}
                                 </span>
                                 {cycle.minTs < Infinity && (
-                                  <span className="text-[10px] text-gray-600 font-mono">
+                                  <span className="text-[10px] text-gray-400 font-mono">
                                     {new Date(cycle.minTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                     {cycle.maxTs > cycle.minTs && ` – ${new Date(cycle.maxTs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
                                   </span>
@@ -3432,7 +3432,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                                     {cycle.sells.length > 1 && (
                                       <tr className="border-t border-gray-600 bg-gray-700/20">
                                         <td className="py-1.5 pr-1"></td>
-                                        <td className="py-1.5 pr-2 text-gray-500 text-xs">Subtotal ({cycle.sells.length} sells)</td>
+                                        <td className="py-1.5 pr-2 text-gray-400 text-xs">Subtotal ({cycle.sells.length} sells)</td>
                                         <td className="text-right py-1.5 pr-2 font-mono text-white text-xs">{cycle.totalSize.toFixed(8)}</td>
                                         <td className="text-right py-1.5 pr-2"></td>
                                         <td className="text-right py-1.5 pr-2"></td>

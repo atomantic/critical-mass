@@ -105,7 +105,7 @@ export default function OperatorLogin({ children }) {
             : 'Could not reach the gateway. Check that critical-mass is running, then retry.'}
         </p>
         {required && !bootstrapRequired && (
-          <p className="mt-2 text-xs text-gray-500">
+          <p className="mt-2 text-xs text-gray-400">
             This browser stays signed in for 30 days after each visit.
           </p>
         )}

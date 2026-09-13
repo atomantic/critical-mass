@@ -307,20 +307,20 @@ function Overview() {
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Capital</div>
           <div className="text-base sm:text-lg font-bold text-white truncate">{formatCurrency(totals.deployed)}</div>
-          <div className="text-xs text-gray-500">deployed</div>
+          <div className="text-xs text-gray-400">deployed</div>
           <div className="text-sm text-cyan-400 truncate">{formatCurrency(totals.available)}</div>
-          <div className="text-xs text-gray-500">available</div>
+          <div className="text-xs text-gray-400">available</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-3 sm:p-4 min-w-0 overflow-hidden">
           <div className="text-xs text-gray-400 mb-1">Unrealized P&L</div>
           <div className={`text-base sm:text-lg font-bold truncate ${totals.unrealized >= 0 ? 'text-green-400' : 'text-red-400'}`}>
             {totals.unrealized >= 0 ? '+' : ''}{formatCurrency(totals.unrealized)}
           </div>
-          <div className="text-xs text-gray-500 truncate">paper value if sold now</div>
+          <div className="text-xs text-gray-400 truncate">paper value if sold now</div>
           {totals.expectedCycleGain > 0 && (
             <div className="mt-1">
               <div className="text-xs text-cyan-400 font-mono truncate">+{formatCurrency(totals.expectedCycleGain)}</div>
-              <div className="text-xs text-gray-500 truncate">expected when cycles close</div>
+              <div className="text-xs text-gray-400 truncate">expected when cycles close</div>
             </div>
           )}
         </div>
@@ -400,7 +400,7 @@ function Overview() {
               {/* Celestial Visualization */}
               {card.celestial?.enabled && card.celestial?.bodies?.length > 0 && (
                 <div className="pointer-events-none mb-3">
-                  <Suspense fallback={<div className="bg-gray-900 rounded p-2 text-xs text-gray-500">Loading...</div>}>
+                  <Suspense fallback={<div className="bg-gray-900 rounded p-2 text-xs text-gray-400">Loading...</div>}>
                     <CelestialVisualization
                       celestial={card.celestial}
                       currentPrice={card.lastPrice}
@@ -427,7 +427,7 @@ function Overview() {
                     {card.totalAssetQty > 0 ? `${card.totalAssetQty.toFixed(6)} ${card.baseCurrency}` : '-'}
                   </div>
                   {card.totalAssetCostBasis > 0 && (
-                    <div className="text-xs text-gray-500 truncate">{formatCurrency(card.totalAssetCostBasis)} cost</div>
+                    <div className="text-xs text-gray-400 truncate">{formatCurrency(card.totalAssetCostBasis)} cost</div>
                   )}
                 </div>
                 <div className="min-w-0">
@@ -442,7 +442,7 @@ function Overview() {
                       {card.unrealizedPct >= 0 ? '+' : ''}{card.unrealizedPct.toFixed(2)}%
                     </div>
                   )}
-                  {card.totalCostBasis > 0 && <div className="text-[10px] text-gray-500">if sold now</div>}
+                  {card.totalCostBasis > 0 && <div className="text-[10px] text-gray-400">if sold now</div>}
                   {card.expectedCycleGain > 0 && (
                     <div className="text-[10px] text-cyan-400 font-mono truncate">+{formatCurrency(card.expectedCycleGain)} at target</div>
                   )}
@@ -472,12 +472,12 @@ function Overview() {
               {/* APY & Returns (matching RegimeDashboard) */}
               {(card.engineStartTime || card.isRunning) && (
                 <div className="mb-3 pt-2 border-t border-gray-700 text-xs">
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-500 mb-2">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-2">
                     <span>Deposited: {formatCurrency(card.depositedCapital)}</span>
                     <span className="text-green-400">Max: {formatCurrency(card.maxUsdcDeployed)}</span>
                     <span className="text-cyan-400">Avail: {formatCurrency(card.availableCapital)}</span>
                   </div>
-                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-500 mb-2">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-gray-400 mb-2">
                     <span>{card.elapsedDays.toFixed(1)}d running</span>
                     <span>{card.cyclesPerDay.toFixed(1)} cycles/day</span>
                     <span>Buys {card.cycleBuys}/{card.maxCycleBuys}</span>
@@ -526,7 +526,7 @@ function Overview() {
       {/* Closed funds section */}
       {cards.some(c => c.lifecycle === 'closed') && (
         <div className="mt-6">
-          <h2 className="text-sm font-medium text-gray-500 mb-2">Closed Funds</h2>
+          <h2 className="text-sm font-medium text-gray-400 mb-2">Closed Funds</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {cards.filter(c => c.lifecycle === 'closed').map(card => (
               <Link
@@ -541,11 +541,11 @@ function Overview() {
                   <div>
                     <span className="font-medium capitalize text-gray-400 text-sm">{card.exchange}</span>
                     <span className="text-gray-600 mx-1">/</span>
-                    <span className="text-sm text-gray-500">{card.pair}</span>
+                    <span className="text-sm text-gray-400">{card.pair}</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-3 text-xs">
-                  <span className="text-gray-500">{card.cyclesCompleted} cycles</span>
+                  <span className="text-gray-400">{card.cyclesCompleted} cycles</span>
                   {card.realizedPnL !== 0 && (
                     <span className={`font-mono ${card.realizedPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                       {card.realizedPnL >= 0 ? '+' : ''}{formatCurrency(card.realizedPnL)}

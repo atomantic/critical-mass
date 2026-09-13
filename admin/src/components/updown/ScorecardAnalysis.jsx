@@ -21,7 +21,7 @@ const INDICATOR_COLORS = {
 const DEFAULT_TF_ORDER = ['1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '1d', '1w']
 
 function heatmapColor(accuracy) {
-  if (accuracy == null) return 'bg-gray-700/50 text-gray-600'
+  if (accuracy == null) return 'bg-gray-700/50 text-gray-400'
   if (accuracy >= 60) return 'bg-green-900/60 text-green-300'
   if (accuracy >= 50) return 'bg-yellow-900/50 text-yellow-300'
   if (accuracy >= 45) return 'bg-orange-900/50 text-orange-300'
@@ -39,7 +39,7 @@ function formatHour(hour) {
 function StatCard({ label, value, sub }) {
   return (
     <div className="bg-gray-800 rounded-lg p-3 border border-gray-700">
-      <div className="text-xs text-gray-500 mb-1">{label}</div>
+      <div className="text-xs text-gray-400 mb-1">{label}</div>
       <div className="text-lg font-bold font-mono text-white">{value ?? '---'}</div>
       {sub && <div className="text-xs text-gray-400 mt-0.5">{sub}</div>}
     </div>
@@ -123,7 +123,7 @@ export default function ScorecardAnalysis() {
       {loading && !data ? (
         <div className="flex items-center justify-center h-48 text-gray-400">Loading analysis...</div>
       ) : !data?.summary ? (
-        <div className="bg-gray-800 rounded-lg p-8 border border-gray-700 text-center text-gray-500">
+        <div className="bg-gray-800 rounded-lg p-8 border border-gray-700 text-center text-gray-400">
           No scorecard data found for this date range.
         </div>
       ) : (
@@ -303,7 +303,7 @@ export default function ScorecardAnalysis() {
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="text-gray-500 border-b border-gray-700">
+                    <tr className="text-gray-400 border-b border-gray-700">
                       <th className="text-left py-2 pr-4">Indicators</th>
                       <th className="text-right py-2 px-2">Failure Rate</th>
                       <th className="text-right py-2 px-2">Failures</th>

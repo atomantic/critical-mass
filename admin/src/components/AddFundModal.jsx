@@ -245,7 +245,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
               disabled={submitting}
               autoComplete="off"
             />
-            <div className="text-xs text-gray-500 mt-1">{fmt.hint}</div>
+            <div className="text-xs text-gray-400 mt-1">{fmt.hint}</div>
           </div>
 
           <div>
@@ -260,7 +260,7 @@ function AddFundModal({ open, onClose, onCreated, exchanges = [] }) {
               className="w-full min-h-11 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white font-mono focus:border-blue-500 focus:outline-none"
               disabled={submitting}
             />
-            <div className="text-xs text-gray-500 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
+            <div className="text-xs text-gray-400 mt-1">Seeds <span className="font-mono">deposited capital</span> and <span className="font-mono">max deployed</span> for this fund. You can adjust both later in the fund's config.</div>
           </div>
 
           <div className="flex items-center gap-2">

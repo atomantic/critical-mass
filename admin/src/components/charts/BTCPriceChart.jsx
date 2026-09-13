@@ -337,10 +337,10 @@ export default function BTCPriceChart({
       </div>
 
       {isLoading || displayData.length < 2 ? (
-        <div className="text-gray-500 text-sm text-center py-12">
+        <div className="text-gray-400 text-sm text-center py-12">
           {isLoading ? 'Loading chart data...' : 'Waiting for price data...'}
           {!isLoading && !isIntervalMode && (
-            <div className="text-xs text-gray-600 mt-1">
+            <div className="text-xs text-gray-400 mt-1">
               {view === '7d' ? 'First data point every hour' :
                view === '1d' ? 'First data point every 15 min' :
                view === '6h' ? 'First data point every 5 min' :
@@ -462,7 +462,7 @@ export default function BTCPriceChart({
             <div className="grid grid-cols-3 gap-2 py-2 text-xs">
               {subCharts.includes('rsi') && (
                 <div className="bg-gray-900 rounded px-2 py-1 flex items-center justify-between">
-                  <span className="text-gray-500">RSI</span>
+                  <span className="text-gray-400">RSI</span>
                   <span className={`font-mono font-medium ${
                     (currentInd.rsi ?? 50) > 70 ? 'text-red-400' : (currentInd.rsi ?? 50) < 30 ? 'text-green-400' : 'text-white'
                   }`}>{currentInd.rsi?.toFixed(1) ?? '---'}</span>
@@ -470,7 +470,7 @@ export default function BTCPriceChart({
               )}
               {subCharts.includes('stochastic') && (
                 <div className="bg-gray-900 rounded px-2 py-1 flex items-center justify-between">
-                  <span className="text-gray-500">Stoch</span>
+                  <span className="text-gray-400">Stoch</span>
                   <span className="font-mono font-medium text-white">
                     {currentInd.stochastic?.k?.toFixed(0) ?? '---'}/{currentInd.stochastic?.d?.toFixed(0) ?? '---'}
                   </span>
@@ -478,7 +478,7 @@ export default function BTCPriceChart({
               )}
               {subCharts.includes('macd') && (
                 <div className="bg-gray-900 rounded px-2 py-1 flex items-center justify-between">
-                  <span className="text-gray-500">MACD</span>
+                  <span className="text-gray-400">MACD</span>
                   <span className={`font-mono font-medium ${
                     (currentInd.macd?.histogram ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
                   }`}>{currentInd.macd?.histogram?.toFixed(1) ?? '---'}</span>
@@ -490,7 +490,7 @@ export default function BTCPriceChart({
           {/* RSI Sub-chart */}
           {hasRsi && (
             <div>
-              <div className="text-[10px] text-gray-500 pl-8 -mb-1">RSI ({indicatorTf})</div>
+              <div className="text-[10px] text-gray-400 pl-8 -mb-1">RSI ({indicatorTf})</div>
               <ResponsiveContainer width="100%" height={80}>
                 <LineChart data={displayData} margin={{ top: 2, right: 5, bottom: 0, left: 5 }}>
                   <XAxis dataKey="label" hide />
@@ -507,7 +507,7 @@ export default function BTCPriceChart({
           {/* Stochastic Sub-chart */}
           {hasStoch && (
             <div>
-              <div className="text-[10px] text-gray-500 pl-8 -mb-1">Stochastic ({indicatorTf})</div>
+              <div className="text-[10px] text-gray-400 pl-8 -mb-1">Stochastic ({indicatorTf})</div>
               <ResponsiveContainer width="100%" height={80}>
                 <LineChart data={displayData} margin={{ top: 2, right: 5, bottom: 0, left: 5 }}>
                   <XAxis dataKey="label" hide />
@@ -528,7 +528,7 @@ export default function BTCPriceChart({
           {/* MACD Sub-chart */}
           {hasMacd && (
             <div>
-              <div className="text-[10px] text-gray-500 pl-8 -mb-1">MACD ({indicatorTf})</div>
+              <div className="text-[10px] text-gray-400 pl-8 -mb-1">MACD ({indicatorTf})</div>
               <ResponsiveContainer width="100%" height={80}>
                 <LineChart data={displayData} margin={{ top: 2, right: 5, bottom: 0, left: 5 }}>
                   <XAxis dataKey="label" hide />

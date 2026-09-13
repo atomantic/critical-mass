@@ -285,7 +285,7 @@ function RegimePriceChart({
         className={`flex items-center justify-center bg-gray-800 rounded-lg ${className}`}
         style={{ height }}
       >
-        <span className="text-sm text-gray-500">Collecting price data...</span>
+        <span className="text-sm text-gray-400">Collecting price data...</span>
       </div>
     )
   }

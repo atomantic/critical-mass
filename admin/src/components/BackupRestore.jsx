@@ -279,7 +279,7 @@ function BackupRestore() {
             <span>Backup list may be out of date: {refreshError}</span>
             <button
               onClick={() => fetchData({ silent: true })}
-              className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 rounded font-medium transition-colors"
+              className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded font-medium transition-colors"
             >
               Refresh
             </button>
@@ -327,7 +327,7 @@ function BackupRestore() {
                 max={30}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
               />
-              <p className="mt-1 text-xs text-gray-500">Oldest backups are pruned automatically</p>
+              <p className="mt-1 text-xs text-gray-400">Oldest backups are pruned automatically</p>
             </div>
           </div>
 
@@ -340,7 +340,7 @@ function BackupRestore() {
               className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
             />
             Include price cache files
-            <span className="text-xs text-gray-500">(~45MB per exchange, can be regenerated)</span>
+            <span className="text-xs text-gray-400">(~45MB per exchange, can be regenerated)</span>
           </label>
         </div>
 
@@ -365,7 +365,7 @@ function BackupRestore() {
           <button
             onClick={handleCreateBackup}
             disabled={creating}
-            className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+            className="px-4 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
           >
             {creating ? 'Creating...' : 'Create Backup Now'}
           </button>
@@ -523,7 +523,7 @@ function BackupRestore() {
             <button
               onClick={() => handleRestore()}
               disabled={restoring || restoreBlocked}
-              className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+              className="px-4 py-2 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
             >
               {restoring ? 'Restoring...' : blockedBy ? 'Retry Restore' : 'Confirm Restore'}
             </button>
@@ -531,7 +531,7 @@ function BackupRestore() {
               <button
                 onClick={() => handleRestore({ force: true })}
                 disabled={restoring || restoreBlocked || !forceAcknowledged}
-                className="px-4 py-2 bg-red-700 hover:bg-red-600 disabled:bg-red-900 disabled:text-red-400 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+                className="px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:text-red-400 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
               >
                 Force Restore Anyway
               </button>
@@ -559,14 +559,14 @@ function BackupRestore() {
                   <button
                     onClick={() => setRestoreTarget(backup.filename)}
                     disabled={restoring}
-                    className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 disabled:cursor-not-allowed rounded text-xs font-medium transition-colors"
+                    className="px-3 py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:cursor-not-allowed rounded text-xs font-medium transition-colors"
                   >
                     Restore
                   </button>
                   <button
                     onClick={() => handleDelete(backup.filename)}
                     disabled={deleting === backup.filename}
-                    className="px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 disabled:cursor-not-allowed rounded text-xs font-medium transition-colors"
+                    className="px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded text-xs font-medium transition-colors"
                   >
                     {deleting === backup.filename ? '...' : 'Delete'}
                   </button>

@@ -379,7 +379,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
               <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                 {selectedIntervals.map(interval => (
                   <div key={interval}>
-                    <label htmlFor={`buy-amount-${interval}`} className="text-xs text-gray-500 block">{interval}</label>
+                    <label htmlFor={`buy-amount-${interval}`} className="text-xs text-gray-400 block">{interval}</label>
                     <input
                       id={`buy-amount-${interval}`}
                       type="number"
@@ -415,7 +415,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
           <button
             onClick={() => runOptimizer(false)}
             disabled={loading || totalCombinations === 0}
-            className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-800 disabled:cursor-not-allowed rounded font-medium"
+            className="px-6 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 disabled:cursor-not-allowed rounded font-medium"
           >
             {loading ? 'Running...' : (results?.cached ? 'Load Cached' : `Run ${totalCombinations} Tests`)}
           </button>
@@ -431,7 +431,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
               <button
                 onClick={clearCache}
                 disabled={loading}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded font-medium"
+                className="px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded font-medium"
               >
                 Clear Cache
               </button>
@@ -554,7 +554,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
                 <div className="text-2xl font-bold text-green-400">
                   {formatCurrency(results.bestResult.metrics.totalValue)}
                 </div>
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-gray-400">
                   from {formatCurrency(fundSize)} fund ({formatPercent(results.bestResult.metrics.roi)} ROI)
                 </div>
               </div>
@@ -595,7 +595,7 @@ function Optimizer({ exchange = 'coinbase', pair }) {
             </div>
             <button
               onClick={() => applySettings(results.bestResult.params)}
-              className="mt-4 px-4 py-2 bg-green-600 hover:bg-green-700 rounded font-medium text-sm"
+              className="mt-4 px-4 py-2 bg-green-800 hover:bg-green-900 rounded font-medium text-sm"
             >
               Apply Best Settings to Config
             </button>
@@ -660,19 +660,19 @@ function Optimizer({ exchange = 'coinbase', pair }) {
             <h4 className="font-semibold text-gray-300 mb-2">Parameters Tested</h4>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div>
-                <span className="text-gray-500">Intervals:</span>
+                <span className="text-gray-400">Intervals:</span>
                 <span className="ml-2">{results.config.intervals.join(', ')}</span>
               </div>
               <div>
-                <span className="text-gray-500">Markups:</span>
+                <span className="text-gray-400">Markups:</span>
                 <span className="ml-2">{results.config.markups.join(', ')}%</span>
               </div>
               <div>
-                <span className="text-gray-500">Periods:</span>
+                <span className="text-gray-400">Periods:</span>
                 <span className="ml-2">{results.config.periods.join(', ')}</span>
               </div>
               <div>
-                <span className="text-gray-500">Net Fee:</span>
+                <span className="text-gray-400">Net Fee:</span>
                 <span className="ml-2">{(results.config.feePercent - results.config.rebatePercent).toFixed(3)}%</span>
               </div>
             </div>

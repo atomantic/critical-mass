@@ -198,7 +198,7 @@ function KeysConfig({ exchange, onSave }) {
         </div>
 
         <p className="text-gray-400 text-sm mb-1">{config.description}</p>
-        <p className="text-gray-500 text-xs mb-6">
+        <p className="text-gray-400 text-xs mb-6">
           {configured && createdAt ? `Stored on ${new Date(createdAt).toLocaleString()}` : ' '}
         </p>
 
@@ -247,7 +247,7 @@ function KeysConfig({ exchange, onSave }) {
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
                 />
               )}
-              {field.help && <p className="mt-1 text-xs text-gray-500">{field.help}</p>}
+              {field.help && <p className="mt-1 text-xs text-gray-400">{field.help}</p>}
             </div>
             )
           })}
@@ -294,7 +294,7 @@ function KeysConfig({ exchange, onSave }) {
             <button
               onClick={() => setConfirmDelete(true)}
               disabled={deleting}
-              className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-600 disabled:bg-red-800 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+              className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
             >
               Delete Keys
             </button>
@@ -319,7 +319,7 @@ function KeysConfig({ exchange, onSave }) {
                 <button
                   onClick={handleDelete}
                   disabled={deleting}
-                  className="min-h-11 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:bg-red-800 rounded-lg font-medium transition-colors"
+                  className="min-h-11 px-4 py-2 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded-lg font-medium transition-colors"
                 >
                   {deleting ? 'Deleting...' : 'Delete'}
                 </button>

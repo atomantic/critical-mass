@@ -76,7 +76,7 @@ export default function LogViewer({ processName }) {
           </select>
         </div>
 
-        <span className="text-xs text-gray-500">{logs.length} lines</span>
+        <span className="text-xs text-gray-400">{logs.length} lines</span>
 
         <div className="flex items-center gap-2 ml-auto">
           {/* Streaming status */}
@@ -103,7 +103,7 @@ export default function LogViewer({ processName }) {
           <button
             onClick={flush}
             disabled={flushing}
-            className="px-2 py-1 text-xs bg-yellow-700 hover:bg-yellow-600 disabled:bg-yellow-800 disabled:text-gray-500 text-yellow-100 rounded transition-colors"
+            className="px-2 py-1 text-xs bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 disabled:text-gray-500 text-yellow-100 rounded transition-colors"
           >
             {flushing ? 'Flushing...' : 'Flush'}
           </button>
@@ -124,13 +124,13 @@ export default function LogViewer({ processName }) {
         className={`${fullscreen ? 'flex-1' : 'h-[32rem]'} overflow-y-auto bg-gray-950 font-mono text-xs leading-5 p-3`}
       >
         {logs.length === 0 ? (
-          <div className="text-gray-600 text-center py-8">
+          <div className="text-gray-400 text-center py-8">
             {subscribed ? 'Waiting for log output...' : terminal ? status.text : `Connecting to ${processName}...`}
           </div>
         ) : (
           logs.map((entry, i) => (
             <div key={i} className="flex gap-2 hover:bg-gray-900/50">
-              <span className="text-gray-600 shrink-0 select-none">{formatTime(entry.timestamp)}</span>
+              <span className="text-gray-400 shrink-0 select-none">{formatTime(entry.timestamp)}</span>
               <span className={entry.type === 'stderr' ? 'text-red-400' : 'text-gray-300'}>{entry.line}</span>
             </div>
           ))

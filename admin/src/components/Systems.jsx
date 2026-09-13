@@ -127,7 +127,7 @@ const Systems = () => {
       </div>
 
       <div className="flex items-center gap-2">
-        <span className="text-gray-500 text-xs uppercase tracking-wider mr-1">View:</span>
+        <span className="text-gray-400 text-xs uppercase tracking-wider mr-1">View:</span>
         {Object.entries(CAMERA_VIEWS).map(([key, view]) => (
           <button
             key={key}

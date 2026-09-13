@@ -215,7 +215,7 @@ function NotificationsConfig() {
           <span>Settings may be out of date: {refreshError}</span>
           <button
             onClick={() => fetchConfig({ silent: true })}
-            className="px-3 py-1 bg-yellow-700 hover:bg-yellow-600 rounded font-medium transition-colors"
+            className="px-3 py-1 bg-yellow-800 hover:bg-yellow-900 rounded font-medium transition-colors"
           >
             Refresh
           </button>
@@ -285,7 +285,7 @@ function NotificationsConfig() {
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
                 />
                 {config.telegram.botToken && !rawToken && (
-                  <p className="mt-1 text-xs text-gray-500">Token configured (masked). Enter a new value to change.</p>
+                  <p className="mt-1 text-xs text-gray-400">Token configured (masked). Enter a new value to change.</p>
                 )}
               </div>
               <div>
@@ -321,7 +321,7 @@ function NotificationsConfig() {
                     max={60000}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
                   />
-                  <p className="mt-1 text-xs text-gray-500">Batch window for rapid events</p>
+                  <p className="mt-1 text-xs text-gray-400">Batch window for rapid events</p>
                 </div>
                 <div>
                   <label htmlFor="daily-summary-hour" className="block text-sm font-medium text-gray-300 mb-1">Daily Summary Hour</label>
@@ -334,7 +334,7 @@ function NotificationsConfig() {
                     max={23}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500"
                   />
-                  <p className="mt-1 text-xs text-gray-500">Hour (0-23) for daily summary</p>
+                  <p className="mt-1 text-xs text-gray-400">Hour (0-23) for daily summary</p>
                 </div>
               </div>
 
@@ -355,7 +355,7 @@ function NotificationsConfig() {
                     <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600" />
                     <span className="ml-3 text-sm font-medium">Quiet Hours</span>
                   </label>
-                  <span className="text-xs text-gray-500">(critical events still sent)</span>
+                  <span className="text-xs text-gray-400">(critical events still sent)</span>
                 </div>
                 {config.quietHours.enabled && (
                   <div className="grid grid-cols-2 gap-4 ml-14">

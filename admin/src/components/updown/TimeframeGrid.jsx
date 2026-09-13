@@ -27,13 +27,13 @@ const getDirection = (score) => {
 const DIRECTION_CONFIG = {
   up: { Icon: TrendingUp, color: 'text-green-400', barColor: 'bg-green-500', bgTint: 'bg-green-900/20' },
   down: { Icon: TrendingDown, color: 'text-red-400', barColor: 'bg-red-500', bgTint: 'bg-red-900/20' },
-  neutral: { Icon: Minus, color: 'text-gray-500', barColor: 'bg-gray-500', bgTint: '' },
+  neutral: { Icon: Minus, color: 'text-gray-400', barColor: 'bg-gray-500', bgTint: '' },
 }
 
 const TICK_DIRECTION_CONFIG = {
   up: { Icon: TrendingUp, color: 'text-green-400', bgTint: 'bg-green-900/20' },
   down: { Icon: TrendingDown, color: 'text-red-400', bgTint: 'bg-red-900/20' },
-  neutral: { Icon: Minus, color: 'text-gray-500', bgTint: '' },
+  neutral: { Icon: Minus, color: 'text-gray-400', bgTint: '' },
 }
 
 export default function TimeframeGrid({ indicators, tickMomentum }) {
@@ -132,7 +132,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
         >
           <span className="text-[10px] font-mono text-gray-400 w-6 text-right shrink-0 cursor-help">Tick</span>
           <tickCfg.Icon size={12} className={tickCfg.color} />
-          <div className="flex-1 text-[10px] font-mono text-gray-500">
+          <div className="flex-1 text-[10px] font-mono text-gray-400">
             {tickMomentum
               ? `${tickMomentum.magnitude.toFixed(1)}bp ${tickMomentum.velocity >= 0 ? '+' : ''}${tickMomentum.velocity.toFixed(1)}$/s`
               : '---'}
@@ -144,7 +144,7 @@ export default function TimeframeGrid({ indicators, tickMomentum }) {
       <div className="mt-1 flex items-center gap-2 text-[10px] font-mono cursor-help" title="Count of timeframes pointing up/down/neutral (includes tick). Strong alignment (3+ majority) tints the panel border green or red.">
         <span className="text-green-400">{alignment.up}&#8593;</span>
         <span className="text-red-400">{alignment.down}&#8595;</span>
-        <span className="text-gray-500">{alignment.neutral}&mdash;</span>
+        <span className="text-gray-400">{alignment.neutral}&mdash;</span>
       </div>
     </div>
   )

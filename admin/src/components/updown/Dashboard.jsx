@@ -279,7 +279,7 @@ export default function UpDownDashboard() {
               <button
                 onClick={handleStop}
                 disabled={stopping}
-                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-sm font-medium transition-colors flex items-center gap-1.5"
+                className="px-3 py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded text-sm font-medium transition-colors flex items-center gap-1.5"
               >
                 <Square size={14} />
                 {stopping ? '...' : 'Stop'}
@@ -288,7 +288,7 @@ export default function UpDownDashboard() {
               <button
                 onClick={handleStart}
                 disabled={starting}
-                className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-sm font-medium transition-colors flex items-center gap-1.5"
+                className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded text-sm font-medium transition-colors flex items-center gap-1.5"
               >
                 <Play size={14} />
                 {starting ? '...' : 'Start'}

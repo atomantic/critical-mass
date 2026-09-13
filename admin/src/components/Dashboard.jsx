@@ -46,7 +46,7 @@ function StatCard({ label, value, subtext, color = 'blue' }) {
     <div className={`p-2 rounded-lg border min-w-0 overflow-hidden ${colors[color]}`}>
       <div className="text-xs text-gray-400 truncate">{label}</div>
       <div className="text-sm sm:text-base font-bold truncate">{value}</div>
-      {subtext && <div className="text-xs text-gray-500 overflow-hidden">{subtext}</div>}
+      {subtext && <div className="text-xs text-gray-400 overflow-hidden">{subtext}</div>}
     </div>
   )
 }
@@ -274,11 +274,11 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
             <div className="grid grid-cols-3 gap-2 sm:gap-3">
               <div className="min-w-0">
                 <div className="text-base sm:text-lg font-bold text-green-400 truncate">{formatCurrency(state.usdcFundSize)}</div>
-                <div className="text-xs text-gray-500">{quoteCurrency}</div>
+                <div className="text-xs text-gray-400">{quoteCurrency}</div>
               </div>
               <div className="min-w-0">
                 <div className="text-base sm:text-lg font-bold text-orange-400 truncate">{formatCurrency(assetValue + pendingAssetValue)}</div>
-                <div className="text-xs text-gray-500">{baseCurrency} Value</div>
+                <div className="text-xs text-gray-400">{baseCurrency} Value</div>
               </div>
               <div className="min-w-0">
                 <div className="text-base sm:text-lg font-bold text-blue-400 truncate">{formatCurrency((state.usdcFundSize || 0) + assetValue + pendingAssetValue)}</div>
@@ -291,20 +291,20 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                 <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Pending Sale</div>
                   <div className="text-yellow-400 font-semibold truncate">{formatAssetHeld(state.outstandingOrdersAsset || 0)}</div>
-                  <div className="text-gray-500 truncate">Cost: {formatCurrency(costBasis?.pendingCostBasis || 0)}</div>
+                  <div className="text-gray-400 truncate">Cost: {formatCurrency(costBasis?.pendingCostBasis || 0)}</div>
                   <div className="text-green-400 truncate">Exp: {formatCurrency(state.outstandingOrdersUSDC || 0)}</div>
                 </div>
                 <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Reserves</div>
                   <div className="text-orange-400 font-semibold truncate">{formatAssetHeld(state.assetReserves || 0)}</div>
-                  <div className="text-gray-500 truncate">Cost: {formatCurrency(costBasis?.reservesCostBasis || 0)}</div>
-                  <div className="text-gray-500 truncate">Val: {formatCurrency(assetValue)}</div>
+                  <div className="text-gray-400 truncate">Cost: {formatCurrency(costBasis?.reservesCostBasis || 0)}</div>
+                  <div className="text-gray-400 truncate">Val: {formatCurrency(assetValue)}</div>
                 </div>
                 <div className="text-center min-w-0">
                   <div className="text-gray-400 mb-1">Total {baseCurrency}</div>
                   <div className="text-purple-400 font-semibold truncate">{formatAssetHeld(totalAssetHeld)}</div>
-                  <div className="text-gray-500 truncate">Cost: {formatCurrency(totalAssetCostBasis)}</div>
-                  <div className="text-gray-500 truncate">Avg: {formatPrice(totalAssetHeld > 0 ? totalAssetCostBasis / totalAssetHeld : 0)}/{baseCurrency}</div>
+                  <div className="text-gray-400 truncate">Cost: {formatCurrency(totalAssetCostBasis)}</div>
+                  <div className="text-gray-400 truncate">Avg: {formatPrice(totalAssetHeld > 0 ? totalAssetCostBasis / totalAssetHeld : 0)}/{baseCurrency}</div>
                 </div>
               </div>
             </div>
@@ -376,7 +376,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                 style={{ width: `${Math.min(100, (stats.allocationUsed / config.totalAllocation) * 100)}%` }}
               />
             </div>
-            <div className="flex flex-wrap justify-between mt-2 text-xs text-gray-500 gap-x-2">
+            <div className="flex flex-wrap justify-between mt-2 text-xs text-gray-400 gap-x-2">
               <span>{stats.intervalsRun || 0} of {config.intervalsToSpread || config.daysToSpread} intervals</span>
               <span>{formatCurrency(stats.allocationRemaining)} remaining</span>
             </div>
@@ -397,14 +397,14 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
           <div className="bg-gray-800 rounded-lg p-4">
             <h3 className="text-xs text-gray-400 mb-2">Configuration</h3>
             <div className="grid grid-cols-2 gap-x-3 sm:gap-x-4 gap-y-1 text-xs">
-              <div className="truncate"><span className="text-gray-500">Product:</span> <span className="text-white">{config.productId}</span></div>
-              <div className="truncate"><span className="text-gray-500">Interval:</span> <span className="text-white">{config.intervalType || 'daily'}</span></div>
-              <div className="truncate"><span className="text-gray-500">Buy:</span> <span className="text-white">{formatCurrency(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span></div>
-              <div className="truncate"><span className="text-gray-500">Intervals:</span> <span className="text-white">{config.intervalsToSpread || config.daysToSpread}</span></div>
-              <div className="truncate"><span className="text-gray-500">Markup:</span> <span className="text-white">+{config.sellMarkupPercent}%</span></div>
-              <div className="truncate"><span className="text-gray-500">Holdback:</span> <span className="text-white">{config.holdbackPercent}%</span></div>
-              <div className="truncate"><span className="text-gray-500">Max Price:</span> <span className="text-white">{formatPrice(config.maxBuyPrice)}</span></div>
-              <div className="truncate"><span className="text-gray-500">Consolidate:</span> <span className="text-white">{config.consolidateAfterOrders || 'Off'}</span></div>
+              <div className="truncate"><span className="text-gray-400">Product:</span> <span className="text-white">{config.productId}</span></div>
+              <div className="truncate"><span className="text-gray-400">Interval:</span> <span className="text-white">{config.intervalType || 'daily'}</span></div>
+              <div className="truncate"><span className="text-gray-400">Buy:</span> <span className="text-white">{formatCurrency(config.totalAllocation / (config.intervalsToSpread || config.daysToSpread || 1))}</span></div>
+              <div className="truncate"><span className="text-gray-400">Intervals:</span> <span className="text-white">{config.intervalsToSpread || config.daysToSpread}</span></div>
+              <div className="truncate"><span className="text-gray-400">Markup:</span> <span className="text-white">+{config.sellMarkupPercent}%</span></div>
+              <div className="truncate"><span className="text-gray-400">Holdback:</span> <span className="text-white">{config.holdbackPercent}%</span></div>
+              <div className="truncate"><span className="text-gray-400">Max Price:</span> <span className="text-white">{formatPrice(config.maxBuyPrice)}</span></div>
+              <div className="truncate"><span className="text-gray-400">Consolidate:</span> <span className="text-white">{config.consolidateAfterOrders || 'Off'}</span></div>
             </div>
           </div>
         </div>
@@ -491,7 +491,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
               <div className="text-xs text-gray-400 mb-1">
                 Next {nextTrade.intervalLabel || 'Daily'} Trade
                 {nextTrade.dryRun && nextTrade.enabled && (
-                  <span className="ml-2 px-1.5 py-0.5 bg-yellow-600 text-yellow-100 text-xs rounded">DRY RUN</span>
+                  <span className="ml-2 px-1.5 py-0.5 bg-yellow-800 text-yellow-100 text-xs rounded">DRY RUN</span>
                 )}
               </div>
               <div className="text-xl font-bold">
@@ -519,7 +519,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                 <span className="text-gray-400">{formatCurrency(nextTrade.remaining)} left</span>
               </div>
               {state.lastRunTimestamp && (
-                <div className="mt-1 text-xs text-gray-500">
+                <div className="mt-1 text-xs text-gray-400">
                   Last run: {new Date(state.lastRunTimestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
                 </div>
               )}
@@ -561,7 +561,7 @@ function Dashboard({ summary, onRefresh, exchange = 'coinbase', pair }) {
                 </div>
               )}
             </div>
-            <p className="text-gray-500 text-xs mb-4">
+            <p className="text-gray-400 text-xs mb-4">
               Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.
             </p>
             <div className="flex justify-end gap-3">

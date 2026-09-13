@@ -46,7 +46,7 @@ export default function SignalPanel({ signal, indicators, position }) {
   const action = liveReady
     ? (indicators?.action || signal?.action || getActionLabel(type, held))
     : null
-  const colors = action ? (signalBadgeColors[action] || signalBadgeColors.HOLD) : 'bg-gray-500/10 border-gray-500/20 text-gray-500'
+  const colors = action ? (signalBadgeColors[action] || signalBadgeColors.HOLD) : 'bg-gray-500/10 border-gray-500/20 text-gray-400'
   const Icon = action ? getSignalIcon(action) : Minus
   const labeledHistory = useMemo(() => {
     const labeled = labelHistoryActions(history)
@@ -90,14 +90,14 @@ export default function SignalPanel({ signal, indicators, position }) {
       {/* History Log */}
       {labeledHistory.length > 0 && (
         <div>
-          <div className="text-xs text-gray-500 mb-1 font-medium">History</div>
+          <div className="text-xs text-gray-400 mb-1 font-medium">History</div>
           <div className="max-h-48 overflow-y-auto space-y-1">
             {labeledHistory.map((h, i) => {
               const hAction = h.action || 'HOLD'
               const hColors = signalBadgeColors[hAction] || signalBadgeColors.HOLD
               return (
                 <div key={h.timestamp || i} className="flex items-center justify-between py-1 text-xs">
-                  <span className="text-gray-500">
+                  <span className="text-gray-400">
                     {h.timestamp ? new Date(h.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }) : '---'}
                   </span>
                   <span className={`px-1.5 py-0.5 rounded text-xs ${hColors}`}>{hAction}</span>
