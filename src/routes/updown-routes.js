@@ -547,7 +547,7 @@ module.exports = (app, deps) => {
             stderr,
           });
         } else {
-          logger.info(`✅ 🔄 PM2 restart succeeded`, {
+          logger.info('ℹ️ ✅ 🔄 PM2 restart succeeded', {
             action: 'restart-exec',
             processName,
           });
