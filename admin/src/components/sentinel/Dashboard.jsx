@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useId } from 'react'
 import useSentinelSocket from '../../hooks/useSentinelSocket'
 
 const SEVERITY_COLORS = {
@@ -197,6 +197,9 @@ export default function SentinelDashboard() {
           {(status?.config?.feeds || []).map((feed, i) => (
             <div key={i} className="flex items-center gap-3 bg-gray-900/50 rounded p-2">
               <button
+                role="switch"
+                aria-checked={feed.enabled}
+                aria-label={`Enable ${feed.name} feed`}
                 onClick={() => handleToggleFeed(i)}
                 className={`w-8 h-5 rounded-full relative transition-colors ${feed.enabled ? 'bg-green-600' : 'bg-gray-600'}`}
               >
@@ -204,7 +207,7 @@ export default function SentinelDashboard() {
               </button>
               <span className="text-sm text-white font-medium min-w-[120px]">{feed.name}</span>
               <span className="text-xs text-gray-400 truncate flex-1">{feed.url}</span>
-              <button onClick={() => handleRemoveFeed(i)} className="text-red-400 hover:text-red-300 text-sm px-2">Remove</button>
+              <button aria-label={`Remove ${feed.name} feed`} onClick={() => handleRemoveFeed(i)} className="text-red-400 hover:text-red-300 text-sm px-2">Remove</button>
             </div>
           ))}
         </div>
