@@ -106,6 +106,8 @@ const EXCHANGE_CONFIG_SCHEMA = {
   minOrderSize: { type: 'number', min: 0 },
   maxBuyPrice: { type: 'number', min: 0 },
   fibBaseAmount: { type: 'number', min: 0 },
+  consolidateAfterOrders: { type: 'number', min: 0 },
+  consolidateInterval: { type: 'string', enum: ['never', 'daily', 'weekly'] },
 };
 
 // ── Aggressiveness preset schema ─────────────────────────────────
