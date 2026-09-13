@@ -22,6 +22,7 @@ const { applyStagedFiles, STAGE_PREFIX, ORIGINALS_PREFIX, JOURNAL_FILENAME } = r
 const {
   buildConfigSnapshot,
   reconstructConfigOverride,
+  diffSnapshotAgainstConfig,
   resolveBaseConfigFile,
   normalizeToMultiExchange,
   invalidateConfigCache,
@@ -136,6 +137,43 @@ const readEffectiveConfig = ({ baseConfigFile, userConfigFile }) => {
   const base = baseRead.value || {};
   return { ok: true, base, config: normalizeToMultiExchange(deepMerge(base, userRead.value || {})) };
 };
+
+/** Per-fund state file names whose presence marks a fund as still holding data. */
+const FUND_STATE_FILENAMES = ['state.json', 'regime-state.json', 'fill-ledger.json'];
+
+/**
+ * Whether (exchange, pair) still has fund-scoped state on disk under `dataDir`.
+ *
+ * Checked directly against `dataDir` rather than through
+ * migration.resolveFundDataDir, which resolves against the module-level
+ * DATA_DIR constant and would ignore the `paths` override every restore path
+ * here takes for tests — this must see the same directory a restore itself
+ * would touch (issue #533).
+ * @param {string} dataDir
+ * @param {string} exchange
+ * @param {string} pair
+ * @returns {boolean}
+ */
+const hasFundStateOnDisk = (dataDir, exchange, pair) =>
+  FUND_STATE_FILENAMES.some((name) => fs.existsSync(path.join(dataDir, exchange, pair, name)));
+
+/**
+ * Shape the funds a restore would remove for the pre-flight report: identity
+ * plus enough of the destination's own settings for the confirmation UI to
+ * show what is at stake, and whether it still holds on-disk state.
+ * @param {string} dataDir
+ * @param {Array<{exchange: string, pair: string, fund: Object}>} removed
+ * @returns {Array<Object>}
+ */
+const buildRemovedFundsReport = (dataDir, removed) => removed.map(({ exchange, pair, fund }) => ({
+  exchange,
+  pair,
+  productId: fund?.productId ?? pair,
+  totalAllocation: fund?.totalAllocation ?? null,
+  enabled: fund?.enabled === true,
+  dryRun: fund?.dryRun !== false,
+  hasStateOnDisk: hasFundStateOnDisk(dataDir, exchange, pair),
+}));
 
 /**
  * Add the manifest to an already-created archive. Written from a staging
@@ -362,7 +400,7 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
 
   const read = readArchiveManifest(resolved.zipPath);
   if (read.error) {
-    return { success: true, filename, legacy: !read.present, compatible: false, manifestVersion: null, funds: [], error: read.error };
+    return { success: true, filename, legacy: !read.present, compatible: false, manifestVersion: null, funds: [], removedFunds: [], error: read.error };
   }
   if (!read.present) {
     return {
@@ -372,6 +410,7 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
       compatible: false,
       manifestVersion: null,
       funds: [],
+      removedFunds: [],
       code: 'legacy-archive-missing-base',
       error: `This archive predates configuration manifests, so it does not carry the fund configuration it was taken with. Restoring it replays data files only — the destination keeps its OWN config.json, which may name a different pair or allocation.`,
     };
@@ -379,7 +418,7 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
 
   const envelope = readManifestSnapshot(read.manifest);
   if (!envelope.ok) {
-    return { success: true, filename, legacy: false, compatible: false, manifestVersion: read.manifest?.manifestVersion ?? null, funds: [], error: envelope.error };
+    return { success: true, filename, legacy: false, compatible: false, manifestVersion: read.manifest?.manifestVersion ?? null, funds: [], removedFunds: [], error: envelope.error };
   }
 
   const effective = readEffectiveConfig(paths);
@@ -405,6 +444,14 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
     }
   }
 
+  // What restoring this archive would remove from the destination — computed
+  // against the FULL effective config, so a fund defined only in this
+  // machine's data/config.json override is disclosed too (issue #533).
+  const removedFunds = buildRemovedFundsReport(
+    paths.dataDir,
+    diffSnapshotAgainstConfig({ snapshot: envelope.snapshot, effectiveConfig: effective.config }),
+  );
+
   return {
     success: true,
     filename,
@@ -414,6 +461,7 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
     snapshotVersion: envelope.snapshot?.version ?? null,
     createdAt: envelope.createdAt,
     funds,
+    removedFunds,
     ...(rebuilt.ok ? {} : { error: rebuilt.error }),
   };
 };
@@ -433,11 +481,14 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
  *   required to make a manifest-less (legacy) archive's configuration portable.
  * @param {boolean} [options.acceptLegacyWithoutBase] - Explicit operator acknowledgement
  *   that a legacy archive is being restored as data-only, keeping destination config.
+ * @param {boolean} [options.acceptFundRemoval] - Explicit operator acknowledgement that
+ *   funds this machine currently runs but the archive does not carry will be removed
+ *   from the destination configuration (issue #533).
  * @param {{info: Function, warn: Function, error: Function}} [options.logger] - Context logger
  * @returns {{ success: boolean, filesRestored?: number, configRestored?: boolean,
  *   legacy?: boolean, error?: string, code?: string, rolledBack?: boolean, recovery?: Object }}
  */
-const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, logger = SILENT_LOGGER } = {}) => {
+const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null, acceptLegacyWithoutBase = false, acceptFundRemoval = false, logger = SILENT_LOGGER } = {}) => {
   const paths = resolvePaths(pathOverrides);
   const resolved = resolveArchivePath(filename, paths.backupsDir);
   if (!resolved.ok) return { success: false, error: resolved.error };
@@ -512,6 +563,21 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     });
     if (!rebuilt.ok) return abort(rebuilt.error, 'config-snapshot-invalid');
     override = rebuilt.override;
+
+    // The reconstruction above already tombstones base-defined pairs the
+    // snapshot lacks; this catches every fund the destination actually runs
+    // (base OR override-defined) that would disappear, and refuses unless the
+    // operator has explicitly accepted it — mirroring acceptLegacyWithoutBase
+    // above rather than inventing a second idiom (issue #533).
+    const removedFunds = diffSnapshotAgainstConfig({ snapshot, effectiveConfig: destination.config });
+    if (removedFunds.length > 0 && !acceptFundRemoval) {
+      const describe = removedFunds.map(({ exchange, pair }) => `${exchange}/${pair}`).join(', ');
+      return abort(
+        `Restoring this archive would remove ${removedFunds.length} fund(s) this machine currently runs that the archive does not carry (${describe}). `
+        + 'They may still hold on-disk state or a live exchange order. Pass acceptFundRemoval to proceed. No files were changed.',
+        'fund-removal-unacknowledged',
+      );
+    }
   }
 
   if (override) {

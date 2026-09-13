@@ -138,7 +138,9 @@ describe('backup config portability — manifest round-trip (#430)', () => {
     const dest = makeInstall('dest', DEST_BASE);
     transferArchive(source, dest, created.filename);
 
-    const restored = restoreBackup(created.filename, { paths: dest.paths });
+    // DEST_BASE's own coinbase/BTC-USDC fund is not in the archive, so this
+    // restore removes it — requires the #533 acknowledgement.
+    const restored = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
     assert.equal(restored.success, true, restored.error);
     assert.equal(restored.configRestored, true);
     assert.equal(restored.legacy, false);
@@ -172,7 +174,8 @@ describe('backup config portability — manifest round-trip (#430)', () => {
 
     const dest = makeInstall('dest', DEST_BASE);
     transferArchive(source, dest, created.filename);
-    assert.equal(restoreBackup(created.filename, { paths: dest.paths }).success, true);
+    // DEST_BASE's coinbase/BTC-USDC fund is not in the archive — removed.
+    assert.equal(restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true }).success, true);
 
     assert.deepEqual(fundIdentities(dest).sort(), ['coinbase/ETH-USDC', 'coinbase/SOL-USDC', 'gemini/BTCUSD']);
     const restoredPairs = buildConfigSnapshot(effectiveConfig(dest)).exchanges.coinbase.pairs;
@@ -209,7 +212,8 @@ describe('backup config portability — manifest round-trip (#430)', () => {
     // Destination is ALSO flat, and names a different pair — the worst case.
     const dest = makeInstall('dest', { exchanges: { coinbase: { productId: 'BTC-USDC', totalAllocation: 10000 } } });
     transferArchive(source, dest, created.filename);
-    assert.equal(restoreBackup(created.filename, { paths: dest.paths }).success, true);
+    // Destination's own coinbase/BTC-USDC fund is not in the archive — removed.
+    assert.equal(restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true }).success, true);
 
     assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
     const fund = buildConfigSnapshot(effectiveConfig(dest)).exchanges.coinbase.pairs['ETH-USDC'];
@@ -232,7 +236,7 @@ describe('backup config portability — manifest round-trip (#430)', () => {
     assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
   });
 
-  it('drops a destination-only fund the source never had', () => {
+  it('drops a destination-only fund the source never had, once the removal is acknowledged', () => {
     const source = makeInstall('source', SOURCE_BASE);
     const created = createBackup({ paths: source.paths });
     const dest = makeInstall('dest', {
@@ -242,7 +246,7 @@ describe('backup config portability — manifest round-trip (#430)', () => {
       },
     });
     transferArchive(source, dest, created.filename);
-    assert.equal(restoreBackup(created.filename, { paths: dest.paths }).success, true);
+    assert.equal(restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true }).success, true);
     assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
   });
 });
@@ -274,7 +278,8 @@ describe('backup config portability — secrets (#430)', () => {
       },
     });
     transferArchive(source, dest, created.filename);
-    assert.equal(restoreBackup(created.filename, { paths: dest.paths }).success, true);
+    // DEST_BASE's coinbase/BTC-USDC fund is not in the archive — removed.
+    assert.equal(restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true }).success, true);
 
     const after = effectiveConfig(dest);
     assert.equal(after.global.notifications.telegram.botToken, 'DEST-BOT-TOKEN');
@@ -324,7 +329,9 @@ describe('backup config portability — rejected archives (#430)', () => {
     const dest = makeInstall('dest', DEST_BASE);
     transferArchive(source, dest, filename);
 
-    const result = restoreBackup(filename, { paths: dest.paths, legacyBaseConfig: SOURCE_BASE });
+    // DEST_BASE's coinbase/BTC-USDC fund is not in the reconstructed source
+    // snapshot — removed.
+    const result = restoreBackup(filename, { paths: dest.paths, legacyBaseConfig: SOURCE_BASE, acceptFundRemoval: true });
     assert.equal(result.success, true, result.error);
     assert.equal(result.legacy, true);
     assert.equal(result.configRestored, true);
@@ -418,6 +425,11 @@ describe('backup config portability — inspectBackup pre-flight (#430)', () => 
     assert.deepEqual(report.funds, [{
       exchange: 'coinbase', pair: 'ETH-USDC', productId: 'ETH-USDC', totalAllocation: 1234, enabled: true, dryRun: false,
     }]);
+    // DEST_BASE's own coinbase/BTC-USDC fund is not in the archive — disclosed
+    // as a removal, not silently dropped (issue #533).
+    assert.deepEqual(report.removedFunds, [{
+      exchange: 'coinbase', pair: 'BTC-USDC', productId: 'BTC-USDC', totalAllocation: 10000, enabled: false, dryRun: true, hasStateOnDisk: false,
+    }]);
     // Pre-flight is read-only.
     assert.deepEqual(fundIdentities(dest), ['coinbase/BTC-USDC']);
   });
@@ -439,5 +451,75 @@ describe('backup config portability — inspectBackup pre-flight (#430)', () => 
   it('rejects an invalid filename', () => {
     assert.deepEqual(inspectBackup('../evil.zip'), { success: false, error: 'Invalid filename' });
     assert.deepEqual(inspectBackup('notabackup.zip'), { success: false, error: 'Invalid backup filename format' });
+  });
+});
+
+describe('backup config portability — disclosing and gating removed funds (#533)', () => {
+  /** Snapshot of every file under a directory, to prove nothing was written. */
+  const fingerprint = (dir) => {
+    const out = {};
+    const walk = (current, rel) => {
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const next = path.join(current, entry.name);
+        const key = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) walk(next, key);
+        else out[key] = fs.readFileSync(next, 'utf8');
+      }
+    };
+    walk(dir, '');
+    return out;
+  };
+
+  it('reports both a base-defined and an override-defined destination-only fund in removedFunds', () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const created = createBackup({ paths: source.paths });
+
+    // BTC-USDC comes from the destination's base config; CRO_USD exists only
+    // in its override (data/config.json) — both must be disclosed, since a
+    // restore drops the override-defined one just as completely (#533).
+    const dest = makeInstall('dest', DEST_BASE, {
+      exchanges: { cryptocom: { pairs: { CRO_USD: { productId: 'CRO_USD', totalAllocation: 500, enabled: true } } } },
+    });
+    // The base-defined fund already has state on disk; the override-defined one does not.
+    writeJson(path.join(dest.dataDir, 'coinbase', 'BTC-USDC', 'state.json'), { position: 'live' });
+    transferArchive(source, dest, created.filename);
+
+    const report = inspectBackup(created.filename, { paths: dest.paths });
+    assert.equal(report.success, true);
+    assert.deepEqual(
+      [...report.removedFunds].sort((a, b) => a.pair.localeCompare(b.pair)),
+      [
+        { exchange: 'coinbase', pair: 'BTC-USDC', productId: 'BTC-USDC', totalAllocation: 10000, enabled: false, dryRun: true, hasStateOnDisk: true },
+        { exchange: 'cryptocom', pair: 'CRO_USD', productId: 'CRO_USD', totalAllocation: 500, enabled: true, dryRun: true, hasStateOnDisk: false },
+      ],
+    );
+  });
+
+  it('refuses restoreBackup with fund-removal-unacknowledged and leaves data/config.json byte-identical', () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const created = createBackup({ paths: source.paths });
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+    const before = fingerprint(dest.dataDir);
+
+    const result = restoreBackup(created.filename, { paths: dest.paths });
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'fund-removal-unacknowledged');
+    assert.match(result.error, /coinbase\/BTC-USDC/);
+    assert.match(result.error, /No files were changed/);
+    assert.deepEqual(fingerprint(dest.dataDir), before, 'destination must be untouched');
+    assert.deepEqual(fundIdentities(dest), ['coinbase/BTC-USDC']);
+  });
+
+  it('succeeds and drops the fund once acceptFundRemoval is set', () => {
+    const source = makeInstall('source', SOURCE_BASE);
+    const created = createBackup({ paths: source.paths });
+    const dest = makeInstall('dest', DEST_BASE);
+    transferArchive(source, dest, created.filename);
+
+    const result = restoreBackup(created.filename, { paths: dest.paths, acceptFundRemoval: true });
+    assert.equal(result.success, true, result.error);
+    assert.equal(result.configRestored, true);
+    assert.deepEqual(fundIdentities(dest), ['coinbase/ETH-USDC']);
   });
 });

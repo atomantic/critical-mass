@@ -240,7 +240,13 @@ module.exports = (app, deps) => {
       configuredExchanges: getConfiguredExchanges().filter((name) => exchangeIPCMap[name]),
       // A legacy (manifest-less) archive is refused unless the operator has
       // explicitly accepted a data-only restore in the confirmation UI (#430).
-      restore: (name) => restoreBackup(name, { acceptLegacyWithoutBase: req.body?.acceptLegacyWithoutBase === true, logger }),
+      restore: (name) => restoreBackup(name, {
+        acceptLegacyWithoutBase: req.body?.acceptLegacyWithoutBase === true,
+        // Explicit operator acknowledgement that the archive would remove
+        // funds this machine currently runs from its configuration (#533).
+        acceptFundRemoval: req.body?.acceptFundRemoval === true,
+        logger,
+      }),
       gatewayWriters: gatewayWriters(),
       drainPendingWrites,
       invalidateCaches: () => {

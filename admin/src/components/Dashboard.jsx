@@ -1,5 +1,5 @@
 import { getIntervalMs } from '../utils/intervals.mjs'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useId } from 'react'
 import ActivityFeed from './ActivityFeed'
 import { useToast } from './Toast'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
@@ -8,11 +8,15 @@ import { pairQuery as buildPairQuery } from '../utils/api'
 import { runDashboardAction } from '../utils/dashboardAction.mjs'
 
 function ToggleSwitch({ label, checked, onChange, disabled, colorOn = 'bg-green-500', colorOff = 'bg-gray-600' }) {
+  const labelId = useId()
   return (
-    <label className="flex items-center gap-2 cursor-pointer">
-      <span className="text-sm text-gray-400">{label}</span>
+    <div className="flex items-center gap-2">
+      <span id={labelId} className="text-sm text-gray-400">{label}</span>
       <button
         type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-labelledby={labelId}
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
@@ -25,7 +29,7 @@ function ToggleSwitch({ label, checked, onChange, disabled, colorOn = 'bg-green-
           }`}
         />
       </button>
-    </label>
+    </div>
   )
 }
 
