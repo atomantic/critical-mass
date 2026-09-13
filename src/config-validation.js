@@ -28,6 +28,10 @@ const validateConfigUpdate = (schema, update) => {
         errors.push(`${key}: must be a finite number`);
         continue;
       }
+      if (rule.integer && !Number.isInteger(value)) {
+        errors.push(`${key}: must be an integer`);
+        continue;
+      }
       if (rule.min !== undefined && value < rule.min) {
         errors.push(`${key}: must be >= ${rule.min}`);
         continue;

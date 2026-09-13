@@ -8,7 +8,7 @@ const { createBackup, listBackups, deleteBackup, pruneBackups, restoreBackup, in
 const { createContextLogger } = require('../logger');
 const { performRestore } = require('../restore-coordinator');
 const { drainPendingWrites } = require('../pending-writes');
-const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA, validateNotificationConfigUpdate } = require('../config-validator');
+const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA, BACKUP_CONFIG_SCHEMA, validateNotificationConfigUpdate } = require('../config-validator');
 const { asyncRoute } = require('./route-utils');
 
 /**
@@ -151,7 +151,9 @@ module.exports = (app, deps) => {
   });
 
   app.put('/api/backups/config', (req, res) => {
-    const updates = req.body;
+    const { value: updates, errors } = validateConfigUpdate(BACKUP_CONFIG_SCHEMA, req.body);
+    if (errors.length > 0) return res.status(400).json({ success: false, errors });
+
     updateBackupConfig(updates);
     rescheduleBackupTimer();
     settingsLogger('/api/backups/config').info(`ℹ️ 💾 Backup config updated: enabled=${updates.enabled !== undefined ? updates.enabled : 'unchanged'}`, {

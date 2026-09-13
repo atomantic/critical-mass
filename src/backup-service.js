@@ -28,6 +28,7 @@ const {
   normalizeExchangeBlock,
   invalidateConfigCache,
   deepMerge,
+  GLOBAL_DEFAULTS,
 } = require('./config-utils');
 const { isPerFundFile, normalizeExchangeTreeToPairs } = require('./migration');
 
@@ -470,16 +471,22 @@ const deleteBackup = (filename) => {
 };
 
 /**
- * Prune old backups to keep only maxBackups
+ * Prune old backups to keep only maxBackups. Falls back to
+ * `GLOBAL_DEFAULTS.backup.maxBackups` when `maxBackups` is not a positive
+ * integer, so an invalid retain count can never delete every archive.
  * @param {number} maxBackups - Maximum number of backups to keep
  * @returns {{ pruned: number, remaining: number }}
  */
 const pruneBackups = (maxBackups) => {
+  // A hand-edited config file (or a caller bypassing route validation) can
+  // hand this a 0/null/-1/non-number. Falling back to the default retain
+  // count keeps that from deleting every archive (#547).
+  const keep = Number.isInteger(maxBackups) && maxBackups >= 1 ? maxBackups : GLOBAL_DEFAULTS.backup.maxBackups;
   const backups = listBackups(); // sorted newest-first
   let pruned = 0;
 
-  if (backups.length > maxBackups) {
-    const toDelete = backups.slice(maxBackups);
+  if (backups.length > keep) {
+    const toDelete = backups.slice(keep);
     for (const backup of toDelete) {
       const result = deleteBackup(backup.filename);
       if (result.success) pruned++;
