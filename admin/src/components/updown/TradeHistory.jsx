@@ -201,7 +201,7 @@ export default function TradeHistory() {
           </div>
           <div className="grid grid-cols-3 gap-2">
             <div>
-              <label className="text-[10px] text-gray-500 block mb-0.5">Date</label>
+              <label htmlFor="trade-date" className="text-[10px] text-gray-500 block mb-0.5">Date</label>
               <input
                 disabled={busy}
                 type="date"
@@ -232,7 +232,7 @@ export default function TradeHistory() {
               )}
             </div>
             <div>
-              <label className="text-[10px] text-gray-500 block mb-0.5">Return (Close)</label>
+              <label htmlFor="trade-return" className="text-[10px] text-gray-500 block mb-0.5">Return (Close)</label>
               <input
                 disabled={busy}
                 type="text"
@@ -274,8 +274,9 @@ export default function TradeHistory() {
             </div>
           </div>
           <div>
-            <label className="text-[10px] text-gray-500 block mb-0.5">Note (optional)</label>
+            <label htmlFor="trade-note" className="text-[10px] text-gray-500 block mb-0.5">Note (optional)</label>
             <input
+              id="trade-note"
               disabled={busy}
               type="text"
               value={form.note}
