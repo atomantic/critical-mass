@@ -18,7 +18,12 @@ const { getAdapter } = require('./adapters');
 const { getRegimeConfig, updateRegimeConfig, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
 const { createFillLedger } = require('./fill-ledger');
 const { createClosedTrades } = require('./closed-trades');
-const { createHealthMonitor, instrumentAdapterForHealth } = require('./health-monitor');
+const {
+  createHealthMonitor,
+  instrumentAdapterForHealth,
+  isPersistenceOnlySafeReason,
+  MAX_CONSECUTIVE_PERSISTENCE_FAILURES,
+} = require('./health-monitor');
 const { createTailEventsMonitor } = require('./tail-events');
 const { createWebSocketFeed } = require('./websocket-feed');
 const { createRegimeDetector } = require('./regime-detector');
@@ -58,6 +63,13 @@ const METRICS_INTERVAL_MS = 60000;
 const PLACEMENT_BLOCK_LOG_INTERVAL_MS = 60_000;
 // How long the engine-side intent check may be reused between ticker messages.
 const PLACEMENT_INTENT_CACHE_MS = 1_000;
+
+/**
+ * Position fields a SIGUSR1 reload is allowed to take from disk. Everything
+ * else (open orders, bodies, cycle bookkeeping) is owned by the running engine
+ * and would be unsafe to overwrite from an operator's hand edit.
+ */
+const RELOADABLE_STATE_FIELDS = Object.freeze(['realizedPnL', 'realizedAssetPnL', 'celestialState']);
 
 /**
  * Freeze a partial sell before changing its body. A cancel acknowledgement is
@@ -608,7 +620,14 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   const healthMonitor = createHealthMonitor(exchange, config, {
     onSafeMode: async (reason) => {
       logger.warn(`⚠️ [${exchange}] SAFE mode: ${reason}`, { reason });
-      await orderExecutor.cancelAllEntries();
+      // A disk fault is not an exchange fault (issue #532): the intervention is
+      // to stop opening NEW entries (canPlaceEntry blocks them in SAFE), not to
+      // cancel orders that are already resting. Pulling them because a write
+      // failed would turn an unpersistable-state fault into an
+      // unmanaged-position fault, which is strictly worse.
+      if (!isPersistenceOnlySafeReason(reason)) {
+        await orderExecutor.cancelAllEntries();
+      }
       if (callbacks.onHealthChange) {
         callbacks.onHealthChange('SAFE', reason);
       }
@@ -1000,6 +1019,99 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
   };
 
   /**
+   * Persist live state from a BACKGROUND caller — the 5-minute save timer and
+   * the SIGUSR1 reload — where a synchronous throw is an uncaughtException that
+   * terminates a live trading process with resting orders on the exchange
+   * (issue #532). `saveRegimeState`'s terminal `atomicWriteSync` rethrows on
+   * ENOSPC/EACCES/EROFS, so a full disk alone is enough to trigger it.
+   *
+   * A persistence fault is treated as a health condition: log it, notify the
+   * operator, and after MAX_CONSECUTIVE_PERSISTENCE_FAILURES saves in a row
+   * trip SAFE mode so no NEW entries are opened while the engine cannot write
+   * down what it already holds. Resting orders are deliberately left alone.
+   *
+   * Deliberately NOT used by stop(): that path must still propagate so the
+   * backup-restore quiescence gate learns the last state was not saved (#429).
+   * @param {string} source - Call-site label for the log line
+   * @returns {boolean} Whether the save succeeded
+   */
+  const saveLiveStateGuarded = (source) => {
+    const startedAt = Date.now();
+    try {
+      saveLiveState();
+      healthMonitor.recordPersistenceSuccess();
+      return true;
+    } catch (err) {
+      const failures = healthMonitor.recordPersistenceFailure(err.message);
+      const durationMs = Date.now() - startedAt;
+      logger.error(
+        `❌ [${fundLabel}] State save failed from ${source} after ${durationMs}ms (${failures}/${MAX_CONSECUTIVE_PERSISTENCE_FAILURES} consecutive): ${err.message}`,
+        { action: 'save-live-state', source, consecutiveFailures: failures, durationMs, error: err.message }
+      );
+      tradeEvents.emitTradeEvent(
+        'error',
+        exchange,
+        `State save failed (${failures}/${MAX_CONSECUTIVE_PERSISTENCE_FAILURES}) from ${source}: ${err.message}`,
+        { action: 'save-live-state', source, consecutiveFailures: failures, pair, error: err.message }
+      );
+      return false;
+    }
+  };
+
+  /**
+   * SIGUSR1 handler: re-read regime state and the fill ledger from disk so an
+   * operator can apply a manual state fix without restarting the engine.
+   *
+   * Guarded because a throw from a signal listener is an uncaughtException, and
+   * the exact workflow this exists for — hand-editing regime-state.json — is
+   * also the one that produces a malformed file. `loadRegimeState` throws by
+   * design on unreadable/non-object JSON, so a typo used to kill a live trading
+   * process (issue #532). It throws BEFORE anything is mutated, which is what
+   * makes the reload all-or-nothing: a failed reload leaves in-memory state
+   * exactly as it was rather than half-merging RELOADABLE_STATE_FIELDS.
+   * @returns {boolean} Whether state was reloaded
+   */
+  const reloadStateFromDisk = () => {
+    const startedAt = Date.now();
+    logger.info(`🔄 [${exchange}] SIGUSR1 received — reloading state from disk`);
+    try {
+      const savedState = loadRegimeState(exchange, pair);
+      const diskPos = savedState?.position;
+      if (!diskPos) {
+        logger.warn(`⚠️ [${exchange}] No position in disk state, skipping reload`);
+        return false;
+      }
+      // Merge safe-to-reload fields from disk into in-memory state
+      for (const field of RELOADABLE_STATE_FIELDS) {
+        if (diskPos[field] !== undefined) {
+          const old = positionState[field];
+          positionState[field] = diskPos[field];
+          logger.info(`   ${field}: ${JSON.stringify(old)} → ${JSON.stringify(diskPos[field])}`);
+        }
+      }
+      // Also reload fill ledger from disk (a live reload keeps in-memory fills
+      // on a corrupt file rather than throwing — see fill-ledger.js load()).
+      fillLedger.load();
+      logger.info(`✅ [${exchange}] State reloaded from disk in ${Date.now() - startedAt}ms`);
+      saveLiveStateGuarded('sigusr1-reload');
+      return true;
+    } catch (err) {
+      const durationMs = Date.now() - startedAt;
+      logger.error(
+        `❌ [${fundLabel}] SIGUSR1 state reload failed after ${durationMs}ms — engine still running on pre-signal state: ${err.message}`,
+        { action: 'sigusr1-reload', durationMs, error: err.message }
+      );
+      tradeEvents.emitTradeEvent(
+        'error',
+        exchange,
+        `State reload failed — engine still running on pre-signal state: ${err.message}`,
+        { action: 'sigusr1-reload', pair, error: err.message }
+      );
+      return false;
+    }
+  };
+
+  /**
    * Load live state from disk
    * @returns {boolean} Whether state was loaded
    */
@@ -1289,8 +1401,27 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // Recover state from exchange (skip in dry-run mode)
     if (!isDryRun) {
-      // First, try to load saved state for faster startup
-      const hasSavedState = loadLiveState();
+      // First, try to load saved state for faster startup.
+      // A corrupt regime-state.json throws by design (issue #108 — booting with
+      // a zeroed position would abandon a live one). Refusing to trade is right;
+      // throwing out of start() is not: it propagates to the engine process's
+      // `startup().catch` → process.exit(1) → PM2 restart → the same corrupt
+      // file, burning the restart budget in under a minute and leaving resting
+      // orders with no process watching them. Return a structured failure
+      // instead so the process stays up and regime:status can report it (#532).
+      let hasSavedState;
+      try {
+        hasSavedState = loadLiveState();
+      } catch (err) {
+        logger.error(
+          `❌ [${fundLabel}] Cannot start — operator must repair state before trading resumes: ${err.message}`,
+          { action: 'start', error: err.message }
+        );
+        tradeEvents.emitTradeEvent('error', exchange, `Engine start blocked: ${err.message}`, {
+          action: 'start', pair, error: err.message,
+        });
+        return { success: false, error: err.message, needsOperator: true };
+      }
 
       // Then recover/validate from exchange (source of truth)
       const { position } = await recoveryModule.recoverState(fillLedger, orderExecutor);
@@ -1997,7 +2128,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       // Refresh realized P&L from buy↔sell cycle pairing on startup
       refreshRealizedFromCyclePairs();
       // Start periodic state saving for live mode (every 5 minutes)
-      stateSaveInterval = setInterval(saveLiveState, 300000);
+      // Guarded: a bare `setInterval(saveLiveState, ...)` turns a full disk into
+      // an uncaughtException that kills the process from a timer tick (#532).
+      stateSaveInterval = setInterval(() => saveLiveStateGuarded('state-save-timer'), 300000);
     } else {
       // Start periodic state saving for dry-run (every 60 seconds)
       stateSaveInterval = setInterval(saveDryRunState, 60000);
@@ -2017,34 +2150,9 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
 
     // SIGUSR1: reload state from disk (for applying manual state fixes without restart)
     if (!isDryRun) {
-      const reloadHandler = () => {
-        logger.info(`🔄 [${exchange}] SIGUSR1 received — reloading state from disk`);
-        const savedState = loadRegimeState(exchange, pair);
-        const diskPos = savedState.position;
-        if (!diskPos) {
-          logger.warn(`⚠️ [${exchange}] No position in disk state, skipping reload`);
-          return;
-        }
-        // Merge safe-to-reload fields from disk into in-memory state
-        const reloadFields = [
-          'realizedPnL', 'realizedAssetPnL',
-          'celestialState',
-        ];
-        for (const field of reloadFields) {
-          if (diskPos[field] !== undefined) {
-            const old = positionState[field];
-            positionState[field] = diskPos[field];
-            logger.info(`   ${field}: ${JSON.stringify(old)} → ${JSON.stringify(diskPos[field])}`);
-          }
-        }
-        // Also reload fill ledger from disk
-        fillLedger.load();
-        logger.info(`✅ [${exchange}] State reloaded from disk`);
-        saveLiveState();
-      };
-      process.on('SIGUSR1', reloadHandler);
+      process.on('SIGUSR1', reloadStateFromDisk);
       // Store for cleanup
-      positionState._sigusr1Handler = reloadHandler;
+      positionState._sigusr1Handler = reloadStateFromDisk;
     }
 
     return { success: true };
@@ -6001,6 +6109,11 @@ const createRegimeEngine = (exchange, pairOrExchangeConfig, exchangeConfigOrCall
       getMergeTpSnapshots: () => ({ pending: new Map(pendingMergeTpOrders), completed: new Map(completedMergeTpOrders) }),
       reconcileTick,
       checkOfflineOrderFills,
+      // Background persistence guards (issue #532)
+      saveLiveStateGuarded,
+      reloadStateFromDisk,
+      getHealth: () => healthMonitor.getState(),
+      getPositionState: () => positionState,
       // Clear the background TTL timers a merge/fill schedules (5-min dedup
       // sweeps) so a test process can exit without waiting on them.
       clearTimers: () => { for (const t of ttlTimers) clearTimeout(t); ttlTimers.clear(); },

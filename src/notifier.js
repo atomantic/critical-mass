@@ -316,6 +316,21 @@ const createNotifier = () => {
   };
 
   /**
+   * Flush the pending queue immediately, cancelling the rate-limit timer.
+   * Used by shutdown and by the last-resort process guards (issue #532), where
+   * waiting out `config.rateLimitMs` would mean the operator never hears about
+   * the fault that is killing the process.
+   * @returns {Promise<boolean>}
+   */
+  const flush = () => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    return Promise.resolve(flushQueue()).then((sent) => sent !== false);
+  };
+
+  /**
    * Handle incoming trade event
    * @param {Object} event
    */
@@ -423,18 +438,17 @@ const createNotifier = () => {
       tradeHandler = null;
     }
 
-    if (flushTimer) {
-      clearTimeout(flushTimer);
-      flushTimer = null;
-    }
-
     if (dailySummaryTimer) {
       clearTimeout(dailySummaryTimer);
       dailySummaryTimer = null;
     }
 
-    // Flush remaining messages
-    flushQueue();
+    // Flush remaining messages (also clears the pending rate-limit timer).
+    // Fire-and-forget, but never as a bare promise: an unhandled rejection on a
+    // shutdown path is now fatal via the process guards (issue #532).
+    flush().catch((err) => {
+      notifierLogger.error(`❌ 📨 Flush on stop failed: ${err.message}`, { action: 'stop', error: err.message });
+    });
 
     notifierLogger.info('ℹ️ 📨 Notifier stopped', { action: 'stop' });
   };
@@ -515,6 +529,7 @@ const createNotifier = () => {
   return {
     start,
     stop,
+    flush,
     updateConfig,
     sendTest,
     getStats,
