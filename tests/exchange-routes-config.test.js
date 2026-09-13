@@ -319,3 +319,63 @@ describe('PUT /api/:exchange/config refuses a cross-market productId', () => {
     assert.equal(after.body.dryRun, true, 'disk state must match the persisted:true response');
   });
 });
+
+// Regression for #548: the config editor sends consolidateAfterOrders and
+// consolidateInterval, but EXCHANGE_CONFIG_SCHEMA didn't list either field, so
+// validateConfigUpdate silently dropped both and the route echoed back
+// success:true with the stored (unchanged) values.
+describe('PUT /api/:exchange/config persists consolidation settings (#548)', () => {
+  afterEach(() => mock.restoreAll());
+
+  const setup = () => {
+    const fsMocks = setupFsMocks(BASE_CONFIG);
+    const app = createFakeApp();
+    registerExchangeRoutes(app, {
+      exchangeIPCMap: { coinbase: { request: () => Promise.resolve({ success: true }) } },
+      parseTSV: () => [],
+      calculateCostBasis: () => ({}),
+      getNextTradeInfo: () => ({}),
+    });
+    return { app, fsMocks };
+  };
+
+  const reqFor = (body) => ({ params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' }, body });
+
+  it('saves and a follow-up GET reports both consolidation fields', async () => {
+    const { app } = setup();
+
+    const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({
+      consolidateAfterOrders: 25,
+      consolidateInterval: 'daily',
+    }));
+    assert.equal(res.statusCode, 200, `save must not 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    assert.equal(res.body.config.consolidateAfterOrders, 25);
+    assert.equal(res.body.config.consolidateInterval, 'daily');
+
+    const after = await invoke(app, 'GET /api/:exchange/config', reqFor({}));
+    assert.equal(after.body.consolidateAfterOrders, 25, 'consolidateAfterOrders must persist');
+    assert.equal(after.body.consolidateInterval, 'daily', 'consolidateInterval must persist');
+  });
+
+  it('rejects a negative consolidateAfterOrders with a field-named 400 (not a silent drop)', async () => {
+    const { app, fsMocks } = setup();
+    const before = JSON.stringify(fsMocks.user());
+
+    const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ consolidateAfterOrders: -1 }));
+
+    assert.equal(res.statusCode, 400, `invalid value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    assert.match(res.body.error, /consolidateAfterOrders/);
+    assert.equal(JSON.stringify(fsMocks.user()), before, 'a rejected value must never be persisted');
+  });
+
+  it('rejects an out-of-enum consolidateInterval with a field-named 400 (not a silent drop)', async () => {
+    const { app, fsMocks } = setup();
+    const before = JSON.stringify(fsMocks.user());
+
+    const res = await invoke(app, 'PUT /api/:exchange/config', reqFor({ consolidateInterval: 'hourly' }));
+
+    assert.equal(res.statusCode, 400, `invalid value must 400 (got ${res.statusCode}: ${JSON.stringify(res.body)})`);
+    assert.match(res.body.error, /consolidateInterval/);
+    assert.equal(JSON.stringify(fsMocks.user()), before, 'a rejected value must never be persisted');
+  });
+});

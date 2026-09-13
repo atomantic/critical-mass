@@ -39,7 +39,7 @@
         "maxAssetExposure": 0,
         "depositedCapital": 10000,
         "maxUsdcDeployed": 10000,
-        "maxDrawdownPercent": 50,
+        "maxDrawdownPercent": 20,
         "entryOffsetBps": 12,
         "cancelRateLimitMs": 1000,
         "orderStaleMs": 120000,
@@ -71,7 +71,7 @@
         "ladderMaxAthDropPct": 80,
         "ladderSizeMode": "fibonacci",
         "ladderMinSpacingPct": 1,
-        "maxCelestialBodies": 20,
+        "maxCelestialBodies": 10,
         "macroUpdateIntervalMs": 300000
       },
       "dcaStrategy": "fixed",
