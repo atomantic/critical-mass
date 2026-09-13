@@ -52,7 +52,7 @@ You don't strictly *have* to stop PM2 first — the migration runs at engine sta
 
 ### Why
 
-The system now treats a "fund" as a `(exchange, pair)` tuple instead of an `exchange` alone. State files move from `data/<exchange>/state.json` (etc.) into `data/<exchange>/<pair>/state.json` so multiple funds on the same exchange don't collide. The per-fund subdirectories also hold the regime state, fill ledger, chart buffer, transactions log, price caches, long-term candle store, and the regime-engine-running auto-resume flag.
+The system now treats a "fund" as a `(exchange, pair)` tuple instead of an `exchange` alone. State files move from `data/<exchange>/state.json` (etc.) into `data/<exchange>/<pair>/state.json` so multiple funds on the same exchange don't collide. The per-fund subdirectories also hold the regime state, fill ledger, chart buffer, transactions log, price caches, and the regime-engine-running auto-resume flag. The long-term candle store stays at the exchange level — it's shared context (not per-fund state) and its filename already carries the productId.
 
 ### What the migration does
 
@@ -67,9 +67,10 @@ For each configured exchange (`coinbase`, `gemini`, `cryptocom`):
     - `regime-engine-running.json` (the auto-resume flag — moves so resume still works)
     - `dry-run-state.json`
     - All `*price-cache-*.json` files (e.g. `btc-price-cache-5min.json`, `btcusd-price-cache-1hour.json`)
-    - All `long-term-candles-*.json` files
     - All `.backup-*` files associated with the above
 4. Migration is idempotent — running it twice is a no-op.
+
+Note: `long-term-candles-*.json` is **not** moved — it's read and written at the exchange level (the productId is already in the filename, so funds on the same exchange don't collide). An earlier release incorrectly relocated it into the pair subdirectory; the migration now also does a one-time move-back for any install stuck in that state, skipping (and logging) the move if a rebuilt exchange-level copy already exists.
 
 ### Safety guarantees
 

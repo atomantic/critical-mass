@@ -46,7 +46,6 @@ const KNOWN_PER_FUND_FILE_PREFIXES = [
   'btcusd-price-cache',
   'btc-usdc-price-cache',
   'cro-usd-price-cache',
-  'long-term-candles',
   'price-cache-',
 ];
 
@@ -217,6 +216,95 @@ describe('migrateExchangeToPairs — completeness and idempotency (issue #425)',
     assert.equal(result.defaultPair, null);
     assert.match(result.reason, /productId missing/);
     assert.deepEqual(after, before, 'directory listing must be unchanged when the default pair cannot be resolved');
+  });
+});
+
+describe('long-term-candles cache is exchange-level, not per-fund (issue #535)', () => {
+  it('isPerFundFile does not classify long-term-candles-*.json as per-fund', () => {
+    assert.equal(migration.isPerFundFile('long-term-candles-btc-usdc.json'), false);
+  });
+
+  it('a legacy layout leaves long-term-candles-*.json at the exchange level after migration', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    writeLegacyFile(exchangeDir, 'state.json', 'legacy-state');
+    writeLegacyFile(exchangeDir, 'long-term-candles-btc-usdc.json', 'candle-history');
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.migrated, true);
+    assert.equal(
+      fs.readFileSync(path.join(exchangeDir, 'long-term-candles-btc-usdc.json'), 'utf8'),
+      'candle-history',
+      'candle cache must stay at the exchange level, not move into the fund subdirectory',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(exchangeDir, PAIR, 'long-term-candles-btc-usdc.json')),
+      'candle cache must not be duplicated into the fund subdirectory',
+    );
+  });
+
+  it('un-strands a long-term-candles-*.json file left in the pair subdirectory by a prior buggy migration', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    const fundDir = path.join(exchangeDir, PAIR);
+    // Already-migrated layout: state lives in the fund dir, so needsPairMigration is false,
+    // but the candle cache was stranded there by an earlier version of this migration.
+    writeLegacyFile(fundDir, 'state.json', 'migrated-state');
+    writeLegacyFile(fundDir, 'long-term-candles-btc-usdc.json', 'stranded-candle-history');
+
+    assert.equal(migration.needsPairMigration(EXCHANGE), false);
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.migrated, false, 'no legacy state files at the exchange level, so the rest of migration is a no-op');
+    assert.equal(result.repairedFiles, 1);
+    assert.deepEqual(result.skippedRepairFiles, []);
+    assert.equal(
+      fs.readFileSync(path.join(exchangeDir, 'long-term-candles-btc-usdc.json'), 'utf8'),
+      'stranded-candle-history',
+      'stranded candle cache must be moved back up to the exchange level',
+    );
+    assert.ok(!fs.existsSync(path.join(fundDir, 'long-term-candles-btc-usdc.json')), 'stranded copy must not remain in the fund subdirectory');
+  });
+
+  it('keeps the exchange-level candle cache untouched when both an exchange-level and a stranded copy exist', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    const fundDir = path.join(exchangeDir, PAIR);
+    writeLegacyFile(fundDir, 'state.json', 'migrated-state');
+    writeLegacyFile(exchangeDir, 'long-term-candles-btc-usdc.json', 'rebuilt-candle-history');
+    writeLegacyFile(fundDir, 'long-term-candles-btc-usdc.json', 'stranded-candle-history');
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.repairedFiles, 0);
+    assert.deepEqual(result.skippedRepairFiles, ['long-term-candles-btc-usdc.json']);
+    assert.equal(
+      fs.readFileSync(path.join(exchangeDir, 'long-term-candles-btc-usdc.json'), 'utf8'),
+      'rebuilt-candle-history',
+      'the exchange-level (rebuilt) copy must not be overwritten by the stranded copy',
+    );
+    assert.equal(
+      fs.readFileSync(path.join(fundDir, 'long-term-candles-btc-usdc.json'), 'utf8'),
+      'stranded-candle-history',
+      'the stranded copy is left in place rather than discarded',
+    );
+  });
+
+  it('is idempotent: a second call after un-stranding moves nothing further', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    const fundDir = path.join(exchangeDir, PAIR);
+    writeLegacyFile(fundDir, 'state.json', 'migrated-state');
+    writeLegacyFile(fundDir, 'long-term-candles-btc-usdc.json', 'stranded-candle-history');
+
+    const first = migration.migrateExchangeToPairs(EXCHANGE);
+    assert.equal(first.repairedFiles, 1);
+
+    const second = migration.migrateExchangeToPairs(EXCHANGE);
+    assert.equal(second.repairedFiles, 0);
+    assert.deepEqual(second.skippedRepairFiles, []);
+    assert.equal(
+      fs.readFileSync(path.join(exchangeDir, 'long-term-candles-btc-usdc.json'), 'utf8'),
+      'stranded-candle-history',
+    );
   });
 });
 
