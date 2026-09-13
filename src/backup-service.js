@@ -25,9 +25,11 @@ const {
   diffSnapshotAgainstConfig,
   resolveBaseConfigFile,
   normalizeToMultiExchange,
+  normalizeExchangeBlock,
   invalidateConfigCache,
   deepMerge,
 } = require('./config-utils');
+const { isPerFundFile, normalizeExchangeTreeToPairs } = require('./migration');
 
 const BACKUPS_DIR = BACKUP_DIR;
 
@@ -174,6 +176,150 @@ const buildRemovedFundsReport = (dataDir, removed) => removed.map(({ exchange, p
   dryRun: fund?.dryRun !== false,
   hasStateOnDisk: hasFundStateOnDisk(dataDir, exchange, pair),
 }));
+
+/**
+ * Non-exchange top-level entries a layout scan must never treat as an exchange
+ * directory, whatever they happen to contain.
+ */
+const NON_EXCHANGE_DIRS = new Set(['backups']);
+
+/**
+ * Whether `<root>/<exchange>/` holding exactly `filenames` is a pre-multi-pair
+ * exchange tree: it has per-fund files at the exchange level, and it is either
+ * a configured exchange or carries an unmistakable fund-state file. The second
+ * arm keeps an unconfigured directory that merely holds a price cache from
+ * being mistaken for an exchange.
+ *
+ * @param {string} exchange
+ * @param {string[]} filenames - File names directly under the exchange directory
+ * @param {Set<string>} knownExchanges - Exchanges named by the archive or the destination
+ * @returns {boolean}
+ */
+const isLegacyExchangeLayout = (exchange, filenames, knownExchanges) =>
+  filenames.some(isPerFundFile)
+  && (knownExchanges.has(exchange) || filenames.some((name) => FUND_STATE_FILENAMES.includes(name)));
+
+/**
+ * Group an archive's entry paths by top-level directory, keeping only the file
+ * names that sit directly inside it. Shared shape with `collectExchangeFilesFromDir`
+ * so one planner serves both the pre-flight (zip listing) and the restore
+ * (extracted staging tree).
+ *
+ * @param {string[]} entries - Archive entry paths (`coinbase/state.json`, ...)
+ * @returns {Map<string, string[]>}
+ */
+const collectExchangeFilesFromEntries = (entries) => {
+  const byDir = new Map();
+  for (const entry of entries) {
+    const parts = entry.split('/');
+    if (parts.length !== 2 || !parts[1]) continue;
+    const [dir, name] = parts;
+    if (NON_EXCHANGE_DIRS.has(dir) || dir.startsWith('.')) continue;
+    if (!byDir.has(dir)) byDir.set(dir, []);
+    byDir.get(dir).push(name);
+  }
+  return byDir;
+};
+
+/**
+ * Same grouping as `collectExchangeFilesFromEntries`, read from a directory.
+ * @param {string} root - Staging (or data) root
+ * @returns {Map<string, string[]>}
+ */
+const collectExchangeFilesFromDir = (root) => {
+  const byDir = new Map();
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || NON_EXCHANGE_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+    byDir.set(entry.name, fs.readdirSync(path.join(root, entry.name), { withFileTypes: true })
+      .filter((child) => child.isFile())
+      .map((child) => child.name));
+  }
+  return byDir;
+};
+
+/**
+ * First (default) pair an exchange block names, read from an explicit config
+ * object rather than the live config cache — every path here takes a `paths`
+ * override that the cache would ignore.
+ * @param {Object} config - Normalized multi-exchange configuration
+ * @param {string} exchange
+ * @returns {string|null}
+ */
+const defaultPairFromConfig = (config, exchange) => {
+  const block = config?.exchanges?.[exchange];
+  if (!block) return null;
+  return Object.keys(normalizeExchangeBlock(block).pairs || {})[0] ?? null;
+};
+
+/**
+ * Decide, without touching a single file, which staged exchange trees are in
+ * the pre-multi-pair layout and which pair each would be relocated into.
+ *
+ * The archive's own snapshot wins: an archive that carries its configuration
+ * knows the pair its data belongs to, and the destination's default may name a
+ * different fund entirely. The destination's default is the fallback for the
+ * data-only (`acceptLegacyWithoutBase`) path, where no snapshot exists.
+ *
+ * @param {Object} params
+ * @param {Map<string, string[]>} params.exchangeFiles - Exchange dir -> file names at its root
+ * @param {Object|null} params.snapshot - Archive configuration snapshot, if any
+ * @param {Object} params.destinationConfig - Destination's effective configuration
+ * @returns {{translations: Array<{exchange: string, pair: string}>, unresolvable: string[]}}
+ */
+const planLayoutTranslation = ({ exchangeFiles, snapshot, destinationConfig }) => {
+  const knownExchanges = new Set([
+    ...Object.keys(snapshot?.exchanges || {}),
+    ...Object.keys(destinationConfig?.exchanges || {}),
+  ]);
+  const translations = [];
+  const unresolvable = [];
+
+  for (const [exchange, filenames] of exchangeFiles) {
+    if (!isLegacyExchangeLayout(exchange, filenames, knownExchanges)) continue;
+    const pair = Object.keys(snapshot?.exchanges?.[exchange]?.pairs || {})[0]
+      ?? defaultPairFromConfig(destinationConfig, exchange);
+    if (pair) translations.push({ exchange, pair });
+    else unresolvable.push(exchange);
+  }
+
+  return { translations, unresolvable };
+};
+
+/**
+ * List an archive's entry paths without extracting it.
+ * @param {string} zipPath
+ * @returns {string[]} Entry paths, or [] when the listing cannot be read
+ */
+const listArchiveEntries = (zipPath) => {
+  const result = spawnSync('unzip', ['-Z1', zipPath], { timeout: SPAWN_TIMEOUT_MS });
+  if (result.error || result.status !== 0 || !result.stdout) return [];
+  return result.stdout.toString().split('\n').map((line) => line.trim()).filter(Boolean);
+};
+
+/**
+ * Pre-flight disclosure of the layout translation a restore of `zipPath` would
+ * perform, derived from the archive's entry listing alone — nothing is
+ * extracted and no destination is touched.
+ *
+ * @param {Object} params
+ * @param {string} params.zipPath
+ * @param {Object|null} params.snapshot - Archive configuration snapshot, if any
+ * @param {Object} params.destinationConfig - Destination's effective configuration
+ * @returns {{legacyLayout: boolean, layoutTranslations: Array<{exchange: string, pair: string}>,
+ *   unresolvableLayoutExchanges: string[]}}
+ */
+const describeLayoutTranslation = ({ zipPath, snapshot, destinationConfig }) => {
+  const { translations, unresolvable } = planLayoutTranslation({
+    exchangeFiles: collectExchangeFilesFromEntries(listArchiveEntries(zipPath)),
+    snapshot,
+    destinationConfig,
+  });
+  return {
+    legacyLayout: translations.length > 0 || unresolvable.length > 0,
+    layoutTranslations: translations,
+    unresolvableLayoutExchanges: unresolvable,
+  };
+};
 
 /**
  * Add the manifest to an already-created archive. Written from a staging
@@ -403,6 +549,7 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
     return { success: true, filename, legacy: !read.present, compatible: false, manifestVersion: null, funds: [], removedFunds: [], error: read.error };
   }
   if (!read.present) {
+    const destination = readEffectiveConfig(paths);
     return {
       success: true,
       filename,
@@ -411,6 +558,11 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
       manifestVersion: null,
       funds: [],
       removedFunds: [],
+      ...describeLayoutTranslation({
+        zipPath: resolved.zipPath,
+        snapshot: null,
+        destinationConfig: destination.ok ? destination.config : {},
+      }),
       code: 'legacy-archive-missing-base',
       error: `This archive predates configuration manifests, so it does not carry the fund configuration it was taken with. Restoring it replays data files only — the destination keeps its OWN config.json, which may name a different pair or allocation.`,
     };
@@ -462,6 +614,11 @@ const inspectBackup = (filename, { paths: pathOverrides } = {}) => {
     createdAt: envelope.createdAt,
     funds,
     removedFunds,
+    ...describeLayoutTranslation({
+      zipPath: resolved.zipPath,
+      snapshot: envelope.snapshot,
+      destinationConfig: effective.config,
+    }),
     ...(rebuilt.ok ? {} : { error: rebuilt.error }),
   };
 };
@@ -588,6 +745,34 @@ const restoreBackup = (filename, { paths: pathOverrides, legacyBaseConfig = null
     // 0600 because an override can hold secrets (Telegram token) — matching
     // writeUserConfigFile's default for a brand-new file.
     fs.writeFileSync(path.join(tempDir, 'config.json'), JSON.stringify(override, null, 2), { mode: 0o600 });
+  }
+
+  // ---- Translate a pre-multi-pair archive into the per-fund layout -------
+  // Archives predating the multi-pair release hold their per-fund files at
+  // `<exchange>/`, where nothing reads them any more. Relocating them inside
+  // the STAGING tree — before the applier collects its set — puts the
+  // translation inside the same all-or-nothing transaction as every other
+  // replacement (#431): the journal records the translated destinations, so a
+  // rollback reverts them, and a destination that already holds per-fund files
+  // is still replaced rather than shadowed (issue #541).
+  const layout = planLayoutTranslation({
+    exchangeFiles: collectExchangeFilesFromDir(tempDir),
+    snapshot,
+    destinationConfig: destination.config,
+  });
+  if (layout.unresolvable.length > 0) {
+    return abort(
+      `This archive predates the multi-pair layout and holds per-fund files at the exchange level for ${layout.unresolvable.join(', ')}, `
+      + 'but neither the archive nor this machine names a fund for those exchanges, so there is no directory to restore them into. '
+      + 'Configure the fund before restoring. No files were changed.',
+      'legacy-layout-unresolvable-pair',
+    );
+  }
+  for (const { exchange, pair } of layout.translations) {
+    const { moved, skipped } = normalizeExchangeTreeToPairs({ root: tempDir, exchange, pair });
+    logger.info(`ℹ️ 💾 Restore translated legacy layout ${exchange}/ → ${exchange}/${pair}: ${moved.length} file(s) relocated, ${skipped.length} skipped (${moved.join(', ') || 'none'})`, {
+      action: 'restore-legacy-layout', filename, exchange, pair, moved: moved.length, skipped: skipped.length,
+    });
   }
 
   // ---- Past this point the destination is mutated ----

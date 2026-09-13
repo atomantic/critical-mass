@@ -85,10 +85,23 @@ Note: `long-term-candles-*.json` is **not** moved — it's read and written at t
 - The **+ Add Fund** button in the Overview header lets you create a new pair on any existing exchange. New funds start `enabled=false` and `dryRun=true` for safety — review the regime config in the new fund's Config tab before enabling.
 - All existing API routes (e.g. `/api/coinbase/regime/status`) continue to return data for the exchange's default fund. Routes accept an optional `?pair=ETH-USDC` query parameter to target a non-default fund.
 
+### Restoring an archive taken before this release
+
+Backup archives store data files at the paths they had on the source machine, so an archive taken before this release holds its per-fund files at `data/<exchange>/` — where nothing reads them any more. Restore now **translates the archive into the per-fund layout while it is still staged**, before a single destination file is written:
+
+- Per-fund files at `<exchange>/` are relocated into `<exchange>/<pair>/`, so a recovery lands where `resolveFundDataDir` reads it even when the destination has already migrated. (Before this, the restore reported success while the engine kept running on the pre-restore state.)
+- The pair comes from the archive's own configuration manifest when it carries one, and from this machine's default fund for a manifest-less data-only restore.
+- If neither names a fund for an exchange the archive carries, the restore is **refused before any destination is touched** (`legacy-layout-unresolvable-pair`) rather than applying a half-translated tree. Configure the fund, then retry.
+- The translation is part of the same all-or-nothing transaction as every other replacement, so a rollback reverts the relocated files too.
+- The restore confirmation screen (Settings → Backups) discloses the `exchange → pair` mapping it would apply before you commit to it.
+
+An archive already in the per-fund layout restores exactly as it does today.
+
 ### Backwards compatibility
 
 - **Config file**: untouched. The legacy flat format (`exchanges.coinbase.productId`, `.regime`, etc.) keeps working. When you add a second fund via the Add Fund modal, the exchange block is converted to the new nested `pairs` map — single-fund exchanges stay flat.
 - **State files**: migrated automatically as described above.
+- **Backup archives**: pre-release archives are relocated into the per-fund layout on restore (see above).
 - **API**: all existing routes work unchanged for default-pair access.
 - **PM2**: still one process per exchange. Multiple funds share the same engine process and the same API key set.
 
