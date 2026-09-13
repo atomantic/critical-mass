@@ -4,6 +4,36 @@ Step-by-step instructions for breaking changes that require operator action.
 
 ---
 
+## Dry-Run State Moves Into the Data Directory (Unreleased)
+
+**Affects dry-run funds only. No operator action required.**
+
+Dry-run simulation state used to be written to a single `dry-run-state.json` at the application root — outside `data/`. That location is not on the Docker/Umbrel volume (`docker-compose.yml` mounts only `/app/data` and `/app/logs`), so a container recreate during an update silently discarded every dry-run fund's simulated ladder, filled orders and P&L. It was also never included in a backup archive, and all three engine processes read-modify-wrote the same file with a non-atomic write, so concurrent saves lost each other's updates.
+
+It is now a per-fund artifact like every other piece of state:
+
+```
+data/<exchange>/<pair>/dry-run-state.json
+```
+
+- **Survives upgrades**: it lives on the mounted data volume, so `docker compose down && docker compose up` (or an Umbrel container recreate) keeps it.
+- **Included in backups and restores**: `createBackup` archives the whole data directory, so the file is captured and a restore reproduces the fund's simulated position.
+- **Atomic and per-fund**: every write is a temp-file + rename through `atomicWriteSync`, and each engine process only ever writes the funds it owns — no cross-process merge, no lost updates, and a torn write can no longer take every fund's state down at once.
+
+### The one-time import
+
+The first time a dry-run fund reads its state after the upgrade:
+
+1. If `data/<exchange>/<pair>/dry-run-state.json` already exists, it is used and nothing is imported.
+2. Otherwise, if a legacy root `dry-run-state.json` exists, that fund's slot is copied out of it into the new location. Both key forms the old writer produced are recognized — the composite `exchange::pair` and the bare `exchange` used by pre-multi-pair installs.
+3. The legacy root file is **never modified or deleted**. It stays exactly where it is as your fallback copy, the same way `keys.json` is left in place after the keys migration. Delete it yourself once you're satisfied the funds came across.
+
+The import is idempotent: it only runs when a fund has no file of its own, so it can never overwrite state an engine has already written, and resetting a dry-run fund does not resurrect its pre-upgrade state from the legacy file.
+
+If the legacy file is unreadable or carries an unexpected version, it is left untouched and the affected funds simply start fresh — the same behavior as before, minus the data loss.
+
+---
+
 ## Multi-Pair Funds (Unreleased)
 
 **Affects everyone.** This release reorganizes on-disk state into per-fund subdirectories so a single exchange can host multiple trading funds (e.g. BTC-USDC and ETH-USDC on Coinbase). The migration runs automatically the first time an engine starts after the upgrade — but it **refuses to run while engines are live**, so you must stop them first.
