@@ -9,6 +9,7 @@ const { createContextLogger } = require('../logger');
 const { performRestore } = require('../restore-coordinator');
 const { drainPendingWrites } = require('../pending-writes');
 const { validateConfigUpdate, AGGRESSIVENESS_SCHEMA, validateNotificationConfigUpdate } = require('../config-validator');
+const { asyncRoute } = require('./route-utils');
 
 /**
  * Context logger for the settings routes. These endpoints are global (presets,
@@ -225,7 +226,7 @@ module.exports = (app, deps) => {
   // through reverts every destination to its pre-restore bytes, and a failure to
   // revert returns `code: 'restore-incomplete-recovery'` with the retained
   // rollback artifacts so the operator can retry rather than guess.
-  app.post('/api/backups/:filename/restore', async (req, res) => {
+  app.post('/api/backups/:filename/restore', asyncRoute(async (req, res) => {
     const logger = settingsLogger('/api/backups/:filename/restore');
     const { filename } = req.params;
     logger.info(`ℹ️ 💾 Restore requested: ${filename}`, { action: 'restore-backup', filename });
@@ -250,5 +251,5 @@ module.exports = (app, deps) => {
       logger,
     });
     res.status(status).json(body);
-  });
+  }));
 };

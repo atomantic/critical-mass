@@ -10,7 +10,7 @@ const optimizerEngine = require('../optimizer-engine');
 const { formatInterval } = require('../interval-utils');
 const { getFundConfig } = require('../config-utils');
 const { createContextLogger } = require('../logger');
-const { withConfiguredPair } = require('./route-utils');
+const { withConfiguredPair, asyncRoute } = require('./route-utils');
 const {
   validatePriceQuery,
   validateBacktestInput,
@@ -60,7 +60,7 @@ module.exports = (app, deps) => {
   };
 
   // Get historical price data
-  app.get('/api/:exchange/backtest/prices', async (req, res) => {
+  app.get('/api/:exchange/backtest/prices', asyncRoute(async (req, res) => {
     const { exchange } = req.params;
     const validation = validatePriceQuery(req.query);
     if (!validation.ok) return res.status(400).json({ success: false, error: validation.error, code: validation.code });
@@ -73,10 +73,10 @@ module.exports = (app, deps) => {
     if (!admission.accepted) return rejectAdmission(res, admission);
     const prices = await admission.promise;
     res.json({ success: true, count: prices.length, intervalType, exchange, prices });
-  });
+  }));
 
   // Run backtest
-  pairPost('/api/:exchange/backtest/run', async (req, res) => {
+  pairPost('/api/:exchange/backtest/run', asyncRoute(async (req, res) => {
     const { exchange } = req.params;
     const pair = getFundPair(req);
     const logger = backtestLogger(exchange, pair, '/api/:exchange/backtest/run');
@@ -127,7 +127,7 @@ module.exports = (app, deps) => {
       totalSells: results.metrics.totalSells,
     });
     res.json({ success: true, ...results });
-  });
+  }));
 
   // Optimizer cache (per-pair)
   pairGet('/api/:exchange/optimizer/cache', (req, res) => {

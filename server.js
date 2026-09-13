@@ -8,6 +8,8 @@ const { Server } = require('socket.io');
 const { log, createContextLogger } = require('./src/logger');
 const { runMigrationIfNeeded } = require('./src/migration');
 const { guardIncompleteRestore } = require('./src/restore-apply');
+const { asyncRoute } = require('./src/routes/route-utils');
+const { errorMiddleware } = require('./src/error-middleware');
 const {
   getExchangeConfig,
   getEnabledExchanges,
@@ -265,7 +267,7 @@ require('./src/routes/legacy-routes')(app, sharedDeps);
 
 // ============ Health Aggregation ============
 
-app.get('/api/health', async (req, res) => {
+app.get('/api/health', asyncRoute(async (req, res) => {
   const timeout = 3000;
   const engines = {};
   let overallStatus = 'ok';
@@ -318,7 +320,7 @@ app.get('/api/health', async (req, res) => {
     engines,
     timestamp: new Date().toISOString(),
   });
-});
+}));
 
 // ============ Static Files ============
 
@@ -337,6 +339,16 @@ app.get('*splat', (req, res) => {
     res.status(404).send('Admin UI not built. Run: cd admin && npm run build');
   }
 });
+
+// ============ Error Handling ============
+
+// Centralized JSON error boundary (issue #530) — see src/error-middleware.js
+// for the implementation (kept in its own module so it can be unit-tested
+// directly). Registered here, after every route registration, the static
+// file server, and the SPA catch-all, as a 4-arity function so Express
+// recognizes it as error-handling middleware and it becomes the app's
+// last-resort handler for every rejection.
+app.use((err, req, res, next) => errorMiddleware(err, req, res, next));
 
 // ============ PM2 Log Streaming ============
 

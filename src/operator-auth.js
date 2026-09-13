@@ -69,7 +69,7 @@ const submittedSecret = (body = {}) => {
 
 // A single active KDF and no waiting queue bound CPU/memory across all peers.
 let hashBusy = false;
-const authError = (status, message) => Object.assign(new Error(message), { status });
+const authError = (status, message, headers) => Object.assign(new Error(message), { status, headers });
 const checkPasswordSize = (password) => {
   if (Buffer.byteLength(password) > MAX_PASSWORD_BYTES) {
     throw authError(400, `Password must be at most ${MAX_PASSWORD_BYTES} bytes`);
@@ -77,7 +77,11 @@ const checkPasswordSize = (password) => {
 };
 const hashPassword = async (password, saltHex) => {
   checkPasswordSize(password);
-  if (hashBusy) throw authError(429, 'Password verification is busy; retry later');
+  // Thrown with no try/catch in every caller (including requireAuth on the
+  // unauthenticated pre-auth path) — the JSON error middleware in server.js
+  // is what turns this into a response. Retry-After matches the sibling
+  // limitAttempts 429 so both rate-limit paths behave consistently (#530).
+  if (hashBusy) throw authError(429, 'Password verification is busy; retry later', { 'Retry-After': '1' });
   hashBusy = true;
   try {
     return await new Promise((resolve, reject) => {

@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-530] Route rejections now return JSON errors instead of HTML stack traces** — Added a centralized JSON error-handling middleware (`src/error-middleware.js`) so every unhandled route rejection — including the pre-authentication rate-limit path — responds with `{ success: false, error }` instead of Express's built-in HTML final handler, which could leak a full stack trace and the install's filesystem path. Wrapped the 14 handlers that awaited throwing I/O with no local catch in a new `asyncRoute` helper, removed a dead unreachable error branch in the candles route, and set `NODE_ENV: "production"` in `ecosystem.config.cjs`'s default PM2 env blocks so the documented `npm run pm2:start` path is no longer a development-mode deployment.
 - **[issue-528] Backup settings controls now have accessible names** — Associated the scheduled-backup switch, backup interval, and maximum-backups controls with their visible labels so screen readers can identify them and label clicks activate or focus them.
 - **[issue-523] Backup archives now keep operator, AI provider, and notification credentials machine-local** — Backups omit live credential/config files while the portable manifest continues to restore funds without overwriting destination credentials.
 - **[issue-522] AI run screenshots are confined to the screenshots directory** — Reject malformed lists, traversal, symlink escapes, and non-image paths before toolkit execution.

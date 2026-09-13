@@ -8,6 +8,7 @@ const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchange
 const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
+const { asyncRoute } = require('./route-utils');
 
 /**
  * Context logger for the unprefixed legacy routes. Every one of them is pinned
@@ -158,23 +159,23 @@ module.exports = (app, deps) => {
     });
   });
 
-  app.post('/api/sync', async (req, res) => {
+  app.post('/api/sync', asyncRoute(async (req, res) => {
     const config = getExchangeConfig('coinbase');
     const state = stateTracker.loadState(config, 'coinbase');
     const filledOrders = await syncOrderStatuses(state, 'coinbase');
     if (filledOrders.length > 0) stateTracker.saveState(state, 'coinbase');
     res.json({ success: true, filledOrders: filledOrders.length, lastSyncTime: new Date().toISOString() });
-  });
+  }));
 
   app.get('/api/sync', (req, res) => {
     res.json({ lastSyncTime: new Date().toISOString() });
   });
 
-  app.post('/api/trade', async (req, res) => {
+  app.post('/api/trade', asyncRoute(async (req, res) => {
     legacyLogger('/api/trade').info('ℹ️ Manual trade triggered via API', { action: 'manual-trade' });
     const result = await runIntervalCycle('coinbase');
     res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
-  });
+  }));
 
   app.get('/api/trade', (req, res) => {
     res.json({ status: 'no_trades_yet' });
