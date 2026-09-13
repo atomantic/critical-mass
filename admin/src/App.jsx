@@ -581,6 +581,12 @@ function AppContent() {
 
   return (
     <div className="min-h-screen">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-4 focus:py-2 focus:rounded focus:bg-blue-600 focus:text-white"
+        >
+          Skip to main content
+        </a>
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700">
           <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-2 md:py-4">
@@ -630,7 +636,7 @@ function AppContent() {
               </div>
 
               {/* Bottom row on mobile / Right side on desktop */}
-              <div className="hidden lg:flex items-center justify-end gap-4">
+              <nav aria-label="Sections" className="hidden lg:flex items-center justify-end gap-4">
                 <Link
                   to="/"
                   className="hidden lg:inline-flex min-h-11 items-center px-2 lg:px-3 py-1.5 text-xs lg:text-sm text-gray-400 hover:text-white transition-colors whitespace-nowrap"
@@ -679,12 +685,12 @@ function AppContent() {
                 >
                   Gateway
                 </Link>
-              </div>
+              </nav>
             </div>
 
             {/* Mobile menu dropdown */}
             {mobileMenuOpen && (
-              <div className="lg:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
+              <nav aria-label="Sections" className="lg:hidden mt-2 pt-2 border-t border-gray-700 flex flex-col gap-1">
                 <Link
                   to="/"
                   onClick={() => setMobileMenuOpen(false)}
@@ -741,14 +747,14 @@ function AppContent() {
                 >
                   Gateway
                 </Link>
-              </div>
+              </nav>
             )}
           </div>
         </header>
 
         {/* Exchange sub-nav (hidden on overview and AI pages) */}
         {!isOverview && !isAI && !isUpDown && !isSentinel && !isGateway && (
-          <nav className="bg-gray-800 border-b border-gray-700">
+          <nav aria-label="Fund views" className="bg-gray-800 border-b border-gray-700">
             <div className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6">
               <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-2">
                 <div className="flex gap-1 overflow-x-auto min-w-0">
@@ -756,6 +762,7 @@ function AppContent() {
                     <Link
                       key={tab.path}
                       to={buildPath(tab.path)}
+                      aria-current={isActiveTab(tab.path) ? 'page' : undefined}
                       className={`px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
                         isActiveTab(tab.path)
                           ? 'text-white border-b-2 border-blue-500'
@@ -973,7 +980,7 @@ function AppContent() {
         )}
 
         {/* Main Content */}
-        <main className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6">
+        <main id="main-content" tabIndex={-1} className="max-w-[95%] xl:max-w-[1400px] 2xl:max-w-[1800px] 3xl:max-w-[2000px] mx-auto px-4 2xl:px-6 py-6 focus:outline-none">
           {error && (
             <div className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg text-red-200">
               Error: {error}
