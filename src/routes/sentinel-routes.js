@@ -7,6 +7,7 @@
 
 const { createContextLogger } = require('../logger');
 const { validateEndpointUrl } = require('../url-validator');
+const { asyncRoute } = require('./route-utils');
 
 /**
  * Context logger for the Sentinel routes. Sentinel watches news feeds rather
@@ -37,11 +38,11 @@ module.exports = (app, deps) => {
     res.json({ success: true, alerts: sentinelService.getAlerts(filter) });
   });
 
-  app.post('/api/sentinel/poll', async (req, res) => {
+  app.post('/api/sentinel/poll', asyncRoute(async (req, res) => {
     sentinelRouteLogger('/api/sentinel/poll').info('ℹ️ Sentinel force poll requested via API', { action: 'force-poll' });
     await sentinelService.forcePoll();
     res.json({ success: true, ...sentinelService.getStatus() });
-  });
+  }));
 
   app.post('/api/sentinel/dismiss/:alertId', (req, res) => {
     const found = sentinelService.dismissAlert(req.params.alertId);
@@ -61,7 +62,7 @@ module.exports = (app, deps) => {
     'keywords',
   ]);
 
-  app.put('/api/sentinel/config', async (req, res) => {
+  app.put('/api/sentinel/config', asyncRoute(async (req, res) => {
     const logger = sentinelRouteLogger('/api/sentinel/config');
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
       return res.status(400).json({ success: false, error: 'Request body must be a JSON object' });
@@ -109,7 +110,7 @@ module.exports = (app, deps) => {
       keys: Object.keys(sanitized),
     });
     res.json({ success: true, config: getSentinelConfig() });
-  });
+  }));
 
   app.delete('/api/sentinel/alerts', (req, res) => {
     sentinelService.clearAlerts();

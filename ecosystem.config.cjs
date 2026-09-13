@@ -19,7 +19,7 @@ module.exports = {
       cwd: __dirname,
       interpreter: "node",
       env: {
-        NODE_ENV: "development",
+        NODE_ENV: "production",
         PORT: PORTS.API,
         COINBASE_IPC_PORT: PORTS.COINBASE_IPC,
         GEMINI_IPC_PORT: PORTS.GEMINI_IPC,
@@ -55,7 +55,7 @@ module.exports = {
       cwd: __dirname,
       interpreter: "node",
       env: {
-        NODE_ENV: "development",
+        NODE_ENV: "production",
         EXCHANGE_NAME: "coinbase",
         EXCHANGE_IPC_PORT: PORTS.COINBASE_IPC,
         NODE_OPTIONS: "--dns-result-order=ipv4first",
@@ -83,7 +83,7 @@ module.exports = {
       cwd: __dirname,
       interpreter: "node",
       env: {
-        NODE_ENV: "development",
+        NODE_ENV: "production",
         GEMINI_IPC_PORT: PORTS.GEMINI_IPC,
         NODE_OPTIONS: "--dns-result-order=ipv4first",
       },
@@ -109,7 +109,7 @@ module.exports = {
       cwd: __dirname,
       interpreter: "node",
       env: {
-        NODE_ENV: "development",
+        NODE_ENV: "production",
         CRYPTOCOM_IPC_PORT: PORTS.CRYPTOCOM_IPC,
         NODE_OPTIONS: "--dns-result-order=ipv4first",
       },

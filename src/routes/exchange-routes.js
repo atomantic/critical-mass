@@ -31,7 +31,21 @@ const { createContextLogger, loadTransactionHistory, getLogFile } = require('../
 const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
-const { resolvePairParam, getSafeIPC } = require('./route-utils');
+const { resolvePairParam, getSafeIPC, asyncRoute } = require('./route-utils');
+
+/**
+ * Tag a rejected promise's error with an HTTP status before rethrowing, so
+ * the error-handling middleware (server.js) responds with that status
+ * instead of the adapter's own `err.status` convention (an upstream HTTP
+ * code, or the strings 'network'/'unknown' — never meant to be echoed back
+ * as our gateway's response status).
+ * @param {number} status
+ * @returns {(err: Error & { status?: unknown }) => never}
+ */
+const tagUpstreamStatus = (status) => (err) => {
+  err.status = status;
+  throw err;
+};
 
 /**
  * Context logger for the per-exchange fund routes. Every endpoint here is
@@ -494,7 +508,7 @@ module.exports = (app, deps) => {
   });
 
   // Get candles for an exchange/fund (for charts)
-  app.get('/api/:exchange/candles', async (req, res) => {
+  app.get('/api/:exchange/candles', asyncRoute(async (req, res) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
@@ -513,16 +527,16 @@ module.exports = (app, deps) => {
     const seconds = granularitySeconds[granularity] || 60;
     const start = now - (parseInt(limit, 10) * seconds);
 
-    const result = await adapter.getCandles(productId, start, now, granularity);
-    if (!result || result.error) {
-      return res.status(500).json({ success: false, error: result?.error || 'Failed to fetch candles' });
-    }
+    // The adapter throws on failure (never returns an `{ error }` shape), so
+    // there is no result to check here — just propagate as an upstream (502)
+    // failure so the UI can tell "exchange is down" from "bad request".
+    const result = await adapter.getCandles(productId, start, now, granularity).catch(tagUpstreamStatus(502));
 
     res.json({ success: true, candles: result });
-  });
+  }));
 
   // Sync pending orders for an exchange/fund
-  app.post('/api/:exchange/sync', async (req, res) => {
+  app.post('/api/:exchange/sync', asyncRoute(async (req, res) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
@@ -546,10 +560,10 @@ module.exports = (app, deps) => {
       filledOrders: filledOrders.length,
       lastSyncTime: new Date().toISOString(),
     });
-  });
+  }));
 
   // Trigger trade for an exchange/fund
-  app.post('/api/:exchange/trade', async (req, res) => {
+  app.post('/api/:exchange/trade', asyncRoute(async (req, res) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
@@ -562,10 +576,10 @@ module.exports = (app, deps) => {
 
     const result = await runIntervalCycle(exchange);
     res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
-  });
+  }));
 
   // Consolidate pending orders for an exchange/fund
-  app.post('/api/:exchange/consolidate', async (req, res) => {
+  app.post('/api/:exchange/consolidate', asyncRoute(async (req, res) => {
     const { exchange } = req.params;
     const { pair, error } = resolvePairParam(req);
     if (error) return res.status(400).json({ success: false, error });
@@ -597,11 +611,11 @@ module.exports = (app, deps) => {
       triggeredAt: new Date().toISOString(),
       trigger: 'manual',
     });
-  });
+  }));
 
   // Operator reconcile of an unresolved DCA placement intent. While one exists
   // the interval cycle refuses to place, across restarts (#472).
-  app.post('/api/:exchange/reconcile-placement-intent', async (req, res) => {
+  app.post('/api/:exchange/reconcile-placement-intent', asyncRoute(async (req, res) => {
     const { exchange } = req.params;
     const { intentId, action } = req.body || {};
     if (!intentId || typeof intentId !== 'string') {
@@ -619,6 +633,6 @@ module.exports = (app, deps) => {
       { action: `${action}-placement-intent`, intentId },
     );
     res.json({ ...result, placementIntents: stateTracker.describePlacementIntents(exchange) });
-  });
+  }));
 
 };

@@ -67,4 +67,21 @@ const getSafeIPC = (exchangeIPCMap, exchange) => {
   }
 };
 
-module.exports = { resolvePairParam, getIPC, getSafeIPC, withConfiguredPair };
+/**
+ * Wrap an async route handler so a thrown error or rejected promise is
+ * forwarded to Express's error pipeline via `next(err)` — funneled into the
+ * JSON error-handling middleware registered in server.js — instead of
+ * becoming an unhandled rejection or falling through to Express's built-in
+ * HTML error page (issue #530). Express 5 already forwards a rejected
+ * handler promise to `next(err)` automatically, but wrapping keeps each
+ * route's failure handling explicit at the call site rather than relying
+ * solely on that framework behavior.
+ * Returns the settled promise (always resolved, never rejected — a thrown
+ * error is routed to `next` rather than propagated) so callers that await a
+ * handler directly, such as route-level unit tests invoking it with a fake
+ * `req`/`res`, still observe completion before making assertions.
+ * @param {(req: import('express').Request, res: import('express').Response, next: Function) => unknown} handler
+ */
+const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+
+module.exports = { resolvePairParam, getIPC, getSafeIPC, withConfiguredPair, asyncRoute };

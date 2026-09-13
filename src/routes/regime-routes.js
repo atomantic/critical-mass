@@ -12,7 +12,7 @@ const { buildStoppedRegimeStatus } = require('../regime-status');
 const { createContextLogger } = require('../logger');
 const { validateAndSanitizeRegimeConfig } = require('../config-validator');
 const { readBooleanFlag } = require('../shared-utils');
-const { getSafeIPC, withConfiguredPair } = require('./route-utils');
+const { getSafeIPC, withConfiguredPair, asyncRoute } = require('./route-utils');
 
 /**
  * Context logger for the regime routes. Every endpoint here is fund-scoped, so
@@ -80,11 +80,15 @@ const errStatus = (result) => result.error?.includes('unavailable') ? 503 : 400;
  */
 module.exports = (app, deps) => {
   // Every regime route is fund-scoped. Wrap registrations once so a future
-  // handler cannot accidentally forward an unvalidated query string to IPC.
+  // handler cannot accidentally forward an unvalidated query string to IPC,
+  // and so a thrown/rejected handler (e.g. a synchronous state-tracker file
+  // error, or an IPC lookup that isn't already funneled through `.catch`)
+  // reaches the JSON error middleware via `next(err)` instead of Express's
+  // built-in HTML error page (issue #530).
   const originalApp = app;
   app = Object.create(app);
   for (const method of ['get', 'post', 'put', 'delete']) {
-    app[method] = (route, handler) => originalApp[method](route, withConfiguredPair(handler));
+    app[method] = (route, handler) => originalApp[method](route, withConfiguredPair(asyncRoute(handler)));
   }
   const { exchangeIPCMap } = deps;
   const getIPC = (exchange) => getSafeIPC(exchangeIPCMap, exchange);
