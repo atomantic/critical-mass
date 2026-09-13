@@ -113,6 +113,19 @@ const EXCHANGE_CONFIG_SCHEMA = {
 // ── Aggressiveness preset schema ─────────────────────────────────
 const AGGRESSIVENESS_SCHEMA = { ...PRESET_FIELD_RULES, ...LEGACY_PRESET_FIELD_RULES };
 
+// ── Backup config schema ─────────────────────────────────────────
+// Mirrors GLOBAL_DEFAULTS.backup (src/config-utils.js). `intervalMs`'s floor
+// is 5 minutes — below the fastest interval the UI offers, and far above the
+// `setInterval` clamp that turns a bad value into a ~1ms backup loop (#547).
+// `maxBackups` must be a whole number in [1, 100] so a persisted 0/null/-1
+// can never reach `pruneBackups` and delete every archive.
+const BACKUP_CONFIG_SCHEMA = {
+  enabled: { type: 'boolean' },
+  intervalMs: { type: 'number', min: 300000 },
+  maxBackups: { type: 'number', min: 1, max: 100, integer: true },
+  includePriceCache: { type: 'boolean' },
+};
+
 // ── Notification config validation ───────────────────────────────
 const isIntegerInRange = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
 
@@ -167,5 +180,6 @@ module.exports = {
   validateAndSanitizeRegimeConfig,
   EXCHANGE_CONFIG_SCHEMA,
   AGGRESSIVENESS_SCHEMA,
+  BACKUP_CONFIG_SCHEMA,
   validateNotificationConfigUpdate,
 };

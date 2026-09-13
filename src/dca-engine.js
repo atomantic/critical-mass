@@ -75,10 +75,11 @@ const dcaLogger = (exchange, productId) => createContextLogger({
  * Sync order statuses and update state for filled orders
  * @param {BotState} state - Current state
  * @param {string} [exchange] - Exchange name
+ * @param {string} [pair] - Fund pair (default: the exchange's default fund)
  * @returns {Promise<FilledSellOrder[]>} List of newly filled orders
  */
-const syncOrderStatuses = async (state, exchange = 'coinbase') => {
-  const cycleLogger = dcaLogger(exchange);
+const syncOrderStatuses = async (state, exchange = 'coinbase', pair) => {
+  const cycleLogger = dcaLogger(exchange, pair);
   const pendingOrders = stateTracker.getPendingOrders(state);
 
   if (pendingOrders.length === 0) {
@@ -93,7 +94,7 @@ const syncOrderStatuses = async (state, exchange = 'coinbase') => {
 
   for (const filled of filledOrders) {
     stateTracker.updateAfterSellFill(state, filled);
-    logger.logSellFilled(filled, state, exchange);
+    logger.logSellFilled(filled, state, exchange, pair);
     cycleLogger.info(`ℹ️ [${exchange}] Sell order filled: +${filled.fillValue.toFixed(2)}`);
     tradeEvents.orderFilled(exchange, filled.orderId, filled.fillValue);
   }
@@ -174,7 +175,7 @@ const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null
     stateTracker.saveState(state, exchange, pair);
 
     // Log the transaction
-    logger.logConsolidation(result, state, exchange);
+    logger.logConsolidation(result, state, exchange, pair);
 
     // Emit event
     tradeEvents.ordersConsolidated(
@@ -324,7 +325,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
     if (fibFill) {
       const cyclePosition = state.fibPosition || 0;
       stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
-      logger.logFibSellFilled(fibFill, state, cyclePosition, exchange);
+      logger.logFibSellFilled(fibFill, state, cyclePosition, exchange, pair);
       stateTracker.saveState(state, exchange, pair);
       cycleLogger.info(`ℹ️ [${exchange}] Fibonacci cycle complete - now at position ${state.fibPosition || 0}`);
       tradeEvents.cycleComplete(exchange, 'fib_cycle_complete', { profit: fibFill.netProceeds, buysInCycle: cyclePosition });
@@ -334,7 +335,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
   // Sync order statuses (check for filled sells) - for fixed strategy
   let filledOrders = [];
   if (!isFibonacci) {
-    filledOrders = await syncOrderStatuses(state, exchange);
+    filledOrders = await syncOrderStatuses(state, exchange, pair);
 
     if (filledOrders.length > 0) {
       cycleLogger.info(`ℹ️ [${exchange}] ${filledOrders.length} orders filled since last run`);
@@ -531,8 +532,8 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
       };
 
       stateTracker.updateAfterFibSellOrder(state, sellOrder, sellQuantity, holdbackAsset);
-      logger.logFibBuy(buyResult, state, cycleInfo, exchange);
-      logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange);
+      logger.logFibBuy(buyResult, state, cycleInfo, exchange, pair);
+      logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange, pair);
     } else {
       // Fixed dry run
       const sellQuantity = simulatedBtcAmount * (1 - config.holdbackPercent / 100);
@@ -548,8 +549,8 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
       };
 
       stateTracker.updateAfterBuy(state, buyResult, sellOrder, config);
-      logger.logBuy(buyResult, state, exchange);
-      logger.logSellOrder(sellOrder, state, exchange);
+      logger.logBuy(buyResult, state, exchange, pair);
+      logger.logSellOrder(sellOrder, state, exchange, pair);
     }
 
     cycleLogger.info(`ℹ️ [${exchange}] ${modeLabel}Simulated sell order: ${sellOrder.baseSize.toFixed(8)} ${assetCcy} at ${sellOrder.limitPrice.toFixed(2)}`);
@@ -597,7 +598,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
       stateTracker.updateAfterFibBuy(state, buyResult, config);
       stateTracker.saveState(state, exchange, pair);
       const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
-      logger.logFibBuy(buyResult, state, cycleInfo, exchange);
+      logger.logFibBuy(buyResult, state, cycleInfo, exchange, pair);
 
       try {
         const fibSellResult = await orderManager.placeFibonacciSellOrder(
@@ -620,7 +621,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
           // The sell filled after this interval’s buy was already booked; carry that buy forward.
           stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
           stateTracker.saveState(state, exchange, pair);
-          logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange);
+          logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange, pair);
           // Now place new sell order for this buy
           const newFibSellResult = await orderManager.placeFibonacciSellOrder(
             config,
@@ -650,7 +651,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
         return sellPlacementFailed(err);
       }
 
-      logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange);
+      logger.logFibSellOrder(sellOrder, state, cycleInfo, exchange, pair);
       tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
     } else {
       // Fixed strategy: persist the buy BEFORE attempting sell placement so
@@ -658,7 +659,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
       holdbackAsset = buyResult.assetAmount * (config.holdbackPercent / 100);
       stateTracker.recordBuyFill(state, buyResult, config);
       stateTracker.saveState(state, exchange, pair);
-      logger.logBuy(buyResult, state, exchange);
+      logger.logBuy(buyResult, state, exchange, pair);
 
       try {
         sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange, pair });
@@ -669,7 +670,7 @@ const runIntervalCycle = async (exchange = 'coinbase', pair) => {
       }
 
       stateTracker.attachSellOrder(state, buyResult.orderId, sellOrder);
-      logger.logSellOrder(sellOrder, state, exchange);
+      logger.logSellOrder(sellOrder, state, exchange, pair);
       tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
     }
   }
@@ -782,7 +783,7 @@ const checkStatus = async (exchange = 'coinbase', pair) => {
   const adapter = getAdapter(exchange);
 
   // Sync order statuses
-  const filledOrders = await syncOrderStatuses(state, exchange);
+  const filledOrders = await syncOrderStatuses(state, exchange, fund);
 
   if (filledOrders.length > 0) {
     stateTracker.saveState(state, exchange, fund);
