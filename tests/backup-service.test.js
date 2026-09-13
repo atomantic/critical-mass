@@ -454,4 +454,33 @@ describe('backup-service — pruneBackups retention', () => {
     assert.equal(result.remaining, totalBackups);
     assert.equal(listBackups().length, 5);
   });
+
+  // #547: a route bug or hand-edited config.json can persist an invalid
+  // maxBackups. pruneBackups must fall back to the default retain count
+  // rather than deleting every archive on `slice(0)`/`slice(null)`-style bugs.
+  const invalidMaxBackupsCases = [
+    { label: '0', value: 0 },
+    { label: 'null', value: null },
+    { label: '-1', value: -1 },
+    { label: 'a non-number ("5")', value: '5' },
+    { label: 'NaN', value: NaN },
+    { label: 'a non-integer (2.5)', value: 2.5 },
+  ];
+
+  for (const { label, value } of invalidMaxBackupsCases) {
+    it(`falls back to the default retain count instead of deleting everything when maxBackups is ${label}`, () => {
+      assert.equal(listBackups().length, 5);
+
+      // Fixture has 5 backups, well under the default retain count (7), so a
+      // correct fallback deletes NOTHING here — a raw `slice(0)`/`slice(null)`
+      // bug would instead have wiped out all 5.
+      const defaultMaxBackups = require('../src/config-utils').GLOBAL_DEFAULTS.backup.maxBackups;
+      assert.ok(defaultMaxBackups > 5, 'fixture assumes the default retain count exceeds the 5 seeded backups');
+
+      const result = pruneBackups(value);
+      assert.equal(result.pruned, 0);
+      assert.equal(result.remaining, 5);
+      assert.equal(listBackups().length, 5);
+    });
+  }
 });
