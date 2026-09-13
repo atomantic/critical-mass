@@ -9,6 +9,7 @@
 const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
+const { promisify } = require('util');
 const { readFileSync, readdirSync } = fs;
 const { createContextLogger } = require('../logger');
 const { UPDOWN_DATA_DIR } = require('../paths');
@@ -47,6 +48,9 @@ const parseFiniteNumber = (v) => {
   }
   return NaN;
 };
+
+// Promisified child_process.exec for use in async routes
+const execAsync = promisify(exec);
 
 /**
  * Read a request body stream into a Buffer, aborting once `maxBytes` is
@@ -507,10 +511,49 @@ module.exports = (app, deps) => {
     res.json({ success: true });
   });
 
-  app.post('/api/updown/restart', (req, res) => {
-    updownRouteLogger('/api/updown/restart').info('ℹ️ 🔄 PM2 restart requested via API', { action: 'restart' });
-    res.json({ success: true, message: 'Restarting...' });
-    setTimeout(() => exec('pm2 restart critical-mass'), 500);
+  app.post('/api/updown/restart', async (req, res) => {
+    const processName = process.env.PM2_PROCESS_NAME ?? 'critical-mass';
+    const logger = updownRouteLogger('/api/updown/restart');
+
+    logger.info('ℹ️ 🔄 PM2 restart requested via API', { action: 'restart', processName });
+
+    // Pre-flight check: verify PM2 is managing this process
+    try {
+      await execAsync(`pm2 describe ${processName}`);
+    } catch (err) {
+      const errorMsg = 'PM2 is not managing this process — restart it from the host (see README)';
+      logger.error(`❌ 🔄 PM2 pre-flight check failed code=${err.code} err=${err.message}`, {
+        action: 'restart-preflight',
+        processName,
+        error: err.message,
+        exitCode: err.code,
+      });
+      return res.status(503).json({ success: false, error: errorMsg });
+    }
+
+    // Pre-flight passed, respond with 202 Accepted
+    res.status(202).json({ success: true, message: 'Restarting...' });
+
+    // Schedule the actual restart with error logging
+    setTimeout(() => {
+      exec(`pm2 restart ${processName}`, (err, stdout, stderr) => {
+        if (err) {
+          const firstLine = stderr?.split('\n')[0] || err.message || 'Unknown error';
+          logger.error(`❌ 🔄 PM2 restart failed code=${err.code} stderr=${firstLine}`, {
+            action: 'restart-exec',
+            processName,
+            exitCode: err.code,
+            error: err.message,
+            stderr,
+          });
+        } else {
+          logger.info('ℹ️ ✅ 🔄 PM2 restart succeeded', {
+            action: 'restart-exec',
+            processName,
+          });
+        }
+      });
+    }, 500);
   });
 
   app.get('/api/updown/candles', (req, res) => {
