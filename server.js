@@ -11,8 +11,9 @@ const { guardIncompleteRestore } = require('./src/restore-apply');
 const { asyncRoute } = require('./src/routes/route-utils');
 const { errorMiddleware } = require('./src/error-middleware');
 const {
-  getExchangeConfig,
+  getFundConfig,
   getEnabledExchanges,
+  getEnabledFunds,
   getConfiguredExchanges,
   getGlobalConfig,
   getBackupConfig,
@@ -36,6 +37,8 @@ const {
   parseTSV,
   calculateCostBasis,
   getNextTradeInfo,
+  fundKey,
+  fundLabel,
 } = require('./src/shared-utils');
 const { createIPCClient } = require('./src/ipc/ipc-client');
 const { maintenanceGuard, isMaintenanceActive } = require('./src/restore-maintenance');
@@ -412,35 +415,39 @@ const checkAndRunIntervalTrade = () => {
     return;
   }
 
-  const enabledExchanges = getEnabledExchanges();
-
-  for (const exchange of enabledExchanges) {
-    const config = normalizeConfig(getExchangeConfig(exchange));
+  // Scheduled per FUND, not per exchange: each enabled fund has its own
+  // interval config, its own state file and its own budget, so a second fund
+  // on an exchange must get its own cycle instead of the default fund being
+  // charged for it (#546).
+  for (const { exchange, pair } of getEnabledFunds()) {
+    const config = normalizeConfig(getFundConfig(exchange, pair));
     const { intervalType } = config;
+    const key = fundKey(exchange, pair);
+    const label = fundLabel(exchange, pair);
 
-    if (!schedulerState[exchange]) {
-      schedulerState[exchange] = { lastRunId: null, nextExecutionTime: 0 };
+    if (!schedulerState[key]) {
+      schedulerState[key] = { lastRunId: null, nextExecutionTime: 0 };
     }
 
-    if (hasRunThisInterval(schedulerState[exchange].lastRunId, intervalType)) {
+    if (hasRunThisInterval(schedulerState[key].lastRunId, intervalType)) {
       continue;
     }
 
     const now = Date.now();
-    const nextExec = schedulerState[exchange].nextExecutionTime;
+    const nextExec = schedulerState[key].nextExecutionTime;
 
     if (now >= nextExec) {
       const intervalLabel = formatInterval(intervalType);
-      log('INFO', `[${exchange}] Scheduled ${intervalLabel} trade starting at ${new Date().toISOString()}`);
-      schedulerState[exchange].lastRunId = getRunIdentifier(intervalType);
-      schedulerState[exchange].nextExecutionTime = getNextExecutionTime(intervalType);
+      log('INFO', `[${label}] Scheduled ${intervalLabel} trade starting at ${new Date().toISOString()}`);
+      schedulerState[key].lastRunId = getRunIdentifier(intervalType);
+      schedulerState[key].nextExecutionTime = getNextExecutionTime(intervalType);
 
-      runIntervalCycle(exchange)
+      runIntervalCycle(exchange, pair)
         .then(result => {
-          log('INFO', `[${exchange}] Scheduled trade complete: ${result.status}`);
+          log('INFO', `[${label}] Scheduled trade complete: ${result.status}`);
         })
         .catch(err => {
-          log('ERROR', `[${exchange}] Scheduled trade failed: ${err.message}`);
+          log('ERROR', `[${label}] Scheduled trade failed: ${err.message}`);
         });
     }
   }
@@ -469,11 +476,11 @@ LISTEN_HOSTS.forEach((host, i) => {
   log('INFO', `Configured exchanges: ${getConfiguredExchanges().join(', ')}`);
   log('INFO', `Enabled exchanges: ${enabledExchanges.length > 0 ? enabledExchanges.join(', ') : 'none'}`);
 
-  for (const exchange of enabledExchanges) {
-    const config = normalizeConfig(getExchangeConfig(exchange));
+  for (const { exchange, pair } of getEnabledFunds()) {
+    const config = normalizeConfig(getFundConfig(exchange, pair));
     const intervalLabel = formatInterval(config.intervalType);
     const timeUntilNext = getTimeUntilNext(config.intervalType);
-    log('INFO', `[${exchange}] Interval: ${intervalLabel}, next trade in ${timeUntilNext.formatted}`);
+    log('INFO', `[${fundLabel(exchange, pair)}] Interval: ${intervalLabel}, next trade in ${timeUntilNext.formatted}`);
   }
 
   // Regime engine auto-resume is handled by engine processes (e.g. cm-coinbase)

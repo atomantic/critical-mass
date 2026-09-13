@@ -394,17 +394,17 @@ describe('DCA operator reconcile', () => {
     const [intent] = dcaIntents();
     assert.equal(intent.status, stateTracker.PLACEMENT_INTENT_STATUS.UNRESOLVED);
 
-    const result = await dcaEngine.reconcilePlacementIntent(EXCHANGE, intent.id, 'discard');
+    const result = await dcaEngine.reconcilePlacementIntent(EXCHANGE, undefined, intent.id, 'discard');
     assert.equal(result.success, true);
     assert.deepEqual(dcaIntents(), []);
 
-    const again = await dcaEngine.reconcilePlacementIntent(EXCHANGE, intent.id, 'discard');
+    const again = await dcaEngine.reconcilePlacementIntent(EXCHANGE, undefined, intent.id, 'discard');
     assert.equal(again.success, false, 'a double-clicked discard must not report a second success');
   });
 
   it('rejects an unknown reconcile action', async () => {
     const dcaEngine = require('../src/dca-engine');
-    const result = await dcaEngine.reconcilePlacementIntent(EXCHANGE, 'whatever', 'delete-everything');
+    const result = await dcaEngine.reconcilePlacementIntent(EXCHANGE, undefined, 'whatever', 'delete-everything');
     assert.equal(result.success, false);
     assert.match(result.error, /Unknown reconcile action/);
   });
