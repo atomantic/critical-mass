@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useId } from 'react'
 import { createRunLifecycle } from '../../utils/runLifecycle.mjs'
 
 const PROVIDER_TYPES = { cli: 'CLI', api: 'API' }
@@ -168,6 +168,8 @@ export default function AIProviders() {
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-4">
           <div className="flex flex-col sm:flex-row gap-2 sm:gap-4">
             <select
+              id={providerSelectId}
+              aria-label="Select Provider"
               value={activeProviderId || ''}
               onChange={(e) => handleSetActive(e.target.value)}
               className="px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white w-full sm:w-auto"
@@ -180,6 +182,8 @@ export default function AIProviders() {
           </div>
 
           <textarea
+            id={promptTextareaId}
+            aria-label="Prompt"
             value={runPrompt}
             onChange={(e) => setRunPrompt(e.target.value)}
             placeholder="Enter your prompt..."
@@ -450,6 +454,7 @@ export default function AIProviders() {
       )}
     </div>
   )
+  }
 }
 
 function ProviderForm({ provider, onClose, onSave }) {
@@ -515,14 +520,30 @@ function ProviderForm({ provider, onClose, onSave }) {
     onSave()
   }
 
-  const ModelSelect = ({ label, color, value, field }) => (
+  const providerSelectId = useId()
+  const promptTextareaId = useId()
+  const nameInputId = useId()
+  const typeSelectId = useId()
+  const commandInputId = useId()
+  const argsInputId = useId()
+  const endpointInputId = useId()
+  const apiKeyInputId = useId()
+  const availableModelsId = useId()
+  const defaultModelId = useId()
+  const timeoutInputId = useId()
+  const enabledCheckboxId = useId()
+
+  const ModelSelect = ({ label, color, value, field }) => {
+    const fieldId = useId()
+    return (
     <div>
-      <label className="block text-xs text-gray-400 mb-1">
+      <label htmlFor={fieldId} className="block text-xs text-gray-400 mb-1">
         <span className={`inline-block w-2 h-2 rounded-full ${color} mr-1`}></span>
         {label}
       </label>
       {availableModels.length > 0 ? (
         <select
+          id={fieldId}
           value={value}
           onChange={(e) => setFormData(prev => ({ ...prev, [field]: e.target.value }))}
           className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-indigo-500 focus:outline-none"
@@ -532,6 +553,7 @@ function ProviderForm({ provider, onClose, onSave }) {
         </select>
       ) : (
         <input
+          id={fieldId}
           type="text"
           value={value}
           onChange={(e) => setFormData(prev => ({ ...prev, [field]: e.target.value }))}
@@ -549,8 +571,9 @@ function ProviderForm({ provider, onClose, onSave }) {
         </h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Name *</label>
+            <label htmlFor={nameInputId} className="block text-sm text-gray-400 mb-1">Name *</label>
             <input
+              id={nameInputId}
               type="text"
               value={formData.name}
               onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
@@ -560,8 +583,9 @@ function ProviderForm({ provider, onClose, onSave }) {
           </div>
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Type *</label>
+            <label htmlFor={typeSelectId} className="block text-sm text-gray-400 mb-1">Type *</label>
             <select
+              id={typeSelectId}
               value={formData.type}
               onChange={(e) => setFormData(prev => ({ ...prev, type: e.target.value }))}
               className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
@@ -574,8 +598,9 @@ function ProviderForm({ provider, onClose, onSave }) {
           {formData.type === 'cli' && (
             <>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Command *</label>
+                <label htmlFor={commandInputId} className="block text-sm text-gray-400 mb-1">Command *</label>
                 <input
+                  id={commandInputId}
                   type="text"
                   value={formData.command}
                   onChange={(e) => setFormData(prev => ({ ...prev, command: e.target.value }))}
@@ -585,8 +610,9 @@ function ProviderForm({ provider, onClose, onSave }) {
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Arguments (space-separated)</label>
+                <label htmlFor={argsInputId} className="block text-sm text-gray-400 mb-1">Arguments (space-separated)</label>
                 <input
+                  id={argsInputId}
                   type="text"
                   value={formData.args}
                   onChange={(e) => setFormData(prev => ({ ...prev, args: e.target.value }))}
@@ -600,8 +626,9 @@ function ProviderForm({ provider, onClose, onSave }) {
           {formData.type === 'api' && (
             <>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Endpoint *</label>
+                <label htmlFor={endpointInputId} className="block text-sm text-gray-400 mb-1">Endpoint *</label>
                 <input
+                  id={endpointInputId}
                   type="url"
                   value={formData.endpoint}
                   onChange={(e) => setFormData(prev => ({ ...prev, endpoint: e.target.value }))}
@@ -611,8 +638,9 @@ function ProviderForm({ provider, onClose, onSave }) {
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">API Key</label>
+                <label htmlFor={apiKeyInputId} className="block text-sm text-gray-400 mb-1">API Key</label>
                 <input
+                  id={apiKeyInputId}
                   type="password"
                   value={formData.apiKey}
                   onChange={(e) => setFormData(prev => ({ ...prev, apiKey: e.target.value }))}
@@ -638,9 +666,10 @@ function ProviderForm({ provider, onClose, onSave }) {
           </div>
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Default Model</label>
+            <label htmlFor={defaultModelId} className="block text-sm text-gray-400 mb-1">Default Model</label>
             {availableModels.length > 0 ? (
               <select
+                id={defaultModelId}
                 value={formData.defaultModel}
                 onChange={(e) => setFormData(prev => ({ ...prev, defaultModel: e.target.value }))}
                 className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:border-indigo-500 focus:outline-none"
@@ -650,6 +679,7 @@ function ProviderForm({ provider, onClose, onSave }) {
               </select>
             ) : (
               <input
+                id={defaultModelId}
                 type="text"
                 value={formData.defaultModel}
                 onChange={(e) => setFormData(prev => ({ ...prev, defaultModel: e.target.value }))}
@@ -670,8 +700,9 @@ function ProviderForm({ provider, onClose, onSave }) {
           </div>
 
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Timeout (ms)</label>
+            <label htmlFor={timeoutInputId} className="block text-sm text-gray-400 mb-1">Timeout (ms)</label>
             <input
+              id={timeoutInputId}
               type="number"
               value={formData.timeout}
               onChange={(e) => setFormData(prev => ({ ...prev, timeout: e.target.value }))}
@@ -679,8 +710,9 @@ function ProviderForm({ provider, onClose, onSave }) {
             />
           </div>
 
-          <label className="flex items-center gap-2">
+          <label htmlFor={enabledCheckboxId} className="flex items-center gap-2">
             <input
+              id={enabledCheckboxId}
               type="checkbox"
               checked={formData.enabled}
               onChange={(e) => setFormData(prev => ({ ...prev, enabled: e.target.checked }))}
