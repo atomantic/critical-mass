@@ -256,7 +256,10 @@ export default function UpDownDashboard() {
                 setError(null)
                 try {
                   const res = await fetch('/api/updown/restart', { method: 'POST' })
-                  if (!res.ok) throw new Error('Restart request failed')
+                  const body = await res.json()
+                  if (body.success !== true) {
+                    throw new Error(body.error || 'Restart request failed')
+                  }
                 } catch (err) {
                   setError(err.message || 'Restart request failed')
                 } finally {
