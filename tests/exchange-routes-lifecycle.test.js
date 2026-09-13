@@ -544,4 +544,39 @@ describe('fund lifecycle routes', () => {
       assert.equal(after.body.dryRun, true, 'disk state must match persisted:true even though the engine rejected it');
     });
   });
+
+  describe('GET /api/:exchange/transactions (issue #543)', () => {
+    it('resolves the requested pair, so two funds on one exchange see distinct histories', async () => {
+      // Real logger + real parseTSV, writing under the same tempRoot the
+      // migration.getExchangeDataDir patch in beforeEach points at — this
+      // exercises getLogFile's actual per-fund path resolution end to end,
+      // not a mock of it.
+      const { logBuy } = require('../src/logger');
+      const { parseTSV } = require('../src/shared-utils');
+      const state = { usdcFundSize: 100, assetReserves: 0, outstandingOrdersUSDC: 0, outstandingOrdersAsset: 0 };
+      logBuy({ price: 100, assetAmount: 1, usdcAmount: 100, orderId: 'buy-btc' }, state, 'coinbase', 'BTC-USDC');
+      logBuy({ price: 3000, assetAmount: 1, usdcAmount: 3000, orderId: 'buy-eth' }, state, 'coinbase', 'ETH-USDC');
+
+      setupFsMocks(BASE_CONFIG);
+      const app = createFakeApp();
+      registerExchangeRoutes(app, {
+        exchangeIPCMap: { coinbase: { request: () => Promise.resolve({ success: true }) } },
+        parseTSV,
+        calculateCostBasis: () => ({}),
+        getNextTradeInfo: () => ({}),
+      });
+
+      const btc = await invoke(app, 'GET /api/:exchange/transactions', {
+        params: { exchange: 'coinbase' }, query: { pair: 'BTC-USDC' },
+      });
+      const eth = await invoke(app, 'GET /api/:exchange/transactions', {
+        params: { exchange: 'coinbase' }, query: { pair: 'ETH-USDC' },
+      });
+
+      assert.equal(btc.body.length, 1);
+      assert.equal(btc.body[0]['Order ID'], 'buy-btc');
+      assert.equal(eth.body.length, 1);
+      assert.equal(eth.body[0]['Order ID'], 'buy-eth');
+    });
+  });
 });

@@ -1,7 +1,7 @@
 // @ts-check
 const fs = require('fs');
 const path = require('path');
-const { getExchangeDataDir } = require('./migration');
+const { resolveFundDataDir } = require('./migration');
 
 /**
  * @typedef {import('./types').BotState} BotState
@@ -17,13 +17,13 @@ const { getExchangeDataDir } = require('./migration');
  */
 
 /**
- * Get log file path for an exchange
+ * Get log file path for a fund (exchange + pair).
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {string} Path to transactions log file
  */
-const getLogFile = (exchange = 'coinbase') => {
-  const dir = getExchangeDataDir(exchange);
-  return path.join(dir, 'transactions.tsv');
+const getLogFile = (exchange = 'coinbase', pair) => {
+  return path.join(resolveFundDataDir(exchange, pair), 'transactions.tsv');
 };
 
 const HEADERS = [
@@ -48,10 +48,11 @@ const HEADERS = [
 /**
  * Ensure log file exists with headers, migrate old schema if needed
  * @param {string} [exchange] - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const ensureLogFile = (exchange = 'coinbase') => {
-  const logFile = getLogFile(exchange);
+const ensureLogFile = (exchange = 'coinbase', pair) => {
+  const logFile = getLogFile(exchange, pair);
   const dir = path.dirname(logFile);
 
   if (!fs.existsSync(dir)) {
@@ -103,11 +104,12 @@ const formatNumber = (value, decimals = 8) => {
  * @param {TransactionDetails} details - Transaction details including fees
  * @param {BotState} state - Current state after transaction
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const logTransaction = (type, details, state, exchange = 'coinbase') => {
-  ensureLogFile(exchange);
-  const logFile = getLogFile(exchange);
+const logTransaction = (type, details, state, exchange = 'coinbase', pair) => {
+  ensureLogFile(exchange, pair);
+  const logFile = getLogFile(exchange, pair);
 
   const now = new Date();
   const row = [
@@ -137,9 +139,10 @@ const logTransaction = (type, details, state, exchange = 'coinbase') => {
  * @param {BuyResult} buyDetails - Buy order details with fees
  * @param {BotState} state - Current state
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const logBuy = (buyDetails, state, exchange = 'coinbase') => {
+const logBuy = (buyDetails, state, exchange = 'coinbase', pair) => {
   logTransaction('BUY', {
     price: buyDetails.price,
     assetAmount: buyDetails.assetAmount,
@@ -148,7 +151,7 @@ const logBuy = (buyDetails, state, exchange = 'coinbase') => {
     rebates: buyDetails.rebates || 0,
     netFees: buyDetails.netFees || 0,
     orderId: buyDetails.orderId,
-  }, state, exchange);
+  }, state, exchange, pair);
 };
 
 /**
@@ -156,15 +159,16 @@ const logBuy = (buyDetails, state, exchange = 'coinbase') => {
  * @param {SellOrder} sellOrder - Sell order details
  * @param {BotState} state - Current state
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const logSellOrder = (sellOrder, state, exchange = 'coinbase') => {
+const logSellOrder = (sellOrder, state, exchange = 'coinbase', pair) => {
   logTransaction('SELL_ORDER', {
     price: sellOrder.limitPrice,
     assetAmount: -sellOrder.baseSize,
     usdcAmount: sellOrder.baseSize * sellOrder.limitPrice,
     orderId: sellOrder.orderId,
-  }, state, exchange);
+  }, state, exchange, pair);
 };
 
 /**
@@ -172,9 +176,10 @@ const logSellOrder = (sellOrder, state, exchange = 'coinbase') => {
  * @param {FilledSellOrder} fillDetails - Fill details with fees
  * @param {BotState} state - Current state
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const logSellFilled = (fillDetails, state, exchange = 'coinbase') => {
+const logSellFilled = (fillDetails, state, exchange = 'coinbase', pair) => {
   logTransaction('SELL_FILLED', {
     price: fillDetails.averageFilledPrice,
     assetAmount: -fillDetails.filledSize,
@@ -183,16 +188,17 @@ const logSellFilled = (fillDetails, state, exchange = 'coinbase') => {
     rebates: fillDetails.rebates || 0,
     netFees: fillDetails.netFees || 0,
     orderId: fillDetails.orderId,
-  }, state, exchange);
+  }, state, exchange, pair);
 };
 
 /**
  * Load transaction history from TSV
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {TransactionRecord[]} Transaction records
  */
-const loadTransactionHistory = (exchange = 'coinbase') => {
-  const logFile = getLogFile(exchange);
+const loadTransactionHistory = (exchange = 'coinbase', pair) => {
+  const logFile = getLogFile(exchange, pair);
 
   if (!fs.existsSync(logFile)) {
     return [];
@@ -285,15 +291,16 @@ const createContextLogger = (baseContext = {}) => {
  * @param {ConsolidationResult} consolidation - Consolidation result
  * @param {BotState} state - Current state after consolidation
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const logConsolidation = (consolidation, state, exchange = 'coinbase') => {
+const logConsolidation = (consolidation, state, exchange = 'coinbase', pair) => {
   logTransaction('CONSOLIDATE', {
     price: consolidation.consolidatedPrice,
     assetAmount: consolidation.consolidatedAsset,
     usdcAmount: consolidation.consolidatedAsset * consolidation.consolidatedPrice,
     orderId: consolidation.newOrderId,
-  }, state, exchange);
+  }, state, exchange, pair);
 };
 
 /**
@@ -302,9 +309,10 @@ const logConsolidation = (consolidation, state, exchange = 'coinbase') => {
  * @param {BotState} state - Current state
  * @param {FibonacciCycleInfo} cycleInfo - Fibonacci cycle information
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const logFibBuy = (buyDetails, state, cycleInfo, exchange = 'coinbase') => {
+const logFibBuy = (buyDetails, state, cycleInfo, exchange = 'coinbase', pair) => {
   logTransaction('FIB_BUY', {
     price: buyDetails.price,
     assetAmount: buyDetails.assetAmount,
@@ -313,7 +321,7 @@ const logFibBuy = (buyDetails, state, cycleInfo, exchange = 'coinbase') => {
     rebates: buyDetails.rebates || 0,
     netFees: buyDetails.netFees || 0,
     orderId: buyDetails.orderId,
-  }, state, exchange);
+  }, state, exchange, pair);
 
   log('INFO', `[${exchange}] Fib position ${cycleInfo.position}: bought ${buyDetails.assetAmount.toFixed(8)} @ $${buyDetails.price.toFixed(2)}, cycle total: ${cycleInfo.cumulativeAsset.toFixed(8)} BTC, avg cost: $${cycleInfo.avgCostBasis.toFixed(2)}`);
 };
@@ -324,15 +332,16 @@ const logFibBuy = (buyDetails, state, cycleInfo, exchange = 'coinbase') => {
  * @param {BotState} state - Current state
  * @param {FibonacciCycleInfo} cycleInfo - Fibonacci cycle information
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const logFibSellOrder = (sellOrder, state, cycleInfo, exchange = 'coinbase') => {
+const logFibSellOrder = (sellOrder, state, cycleInfo, exchange = 'coinbase', pair) => {
   logTransaction('FIB_SELL_ORDER', {
     price: sellOrder.limitPrice,
     assetAmount: -sellOrder.baseSize,
     usdcAmount: sellOrder.baseSize * sellOrder.limitPrice,
     orderId: sellOrder.orderId,
-  }, state, exchange);
+  }, state, exchange, pair);
 
   log('INFO', `[${exchange}] Fib cycle sell order: ${sellOrder.baseSize.toFixed(8)} BTC @ $${sellOrder.limitPrice.toFixed(2)} (position ${cycleInfo.position})`);
 };
@@ -343,9 +352,10 @@ const logFibSellOrder = (sellOrder, state, cycleInfo, exchange = 'coinbase') => 
  * @param {BotState} state - Current state
  * @param {number} cyclePosition - Final position of the cycle
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
  * @returns {void}
  */
-const logFibSellFilled = (fillDetails, state, cyclePosition, exchange = 'coinbase') => {
+const logFibSellFilled = (fillDetails, state, cyclePosition, exchange = 'coinbase', pair) => {
   logTransaction('FIB_SELL_FILLED', {
     price: fillDetails.averageFilledPrice,
     assetAmount: -fillDetails.filledSize,
@@ -354,7 +364,7 @@ const logFibSellFilled = (fillDetails, state, cyclePosition, exchange = 'coinbas
     rebates: fillDetails.rebates || 0,
     netFees: fillDetails.netFees || 0,
     orderId: fillDetails.orderId,
-  }, state, exchange);
+  }, state, exchange, pair);
 
   log('INFO', `[${exchange}] Fib cycle complete! Sold ${fillDetails.filledSize.toFixed(8)} BTC @ $${fillDetails.averageFilledPrice.toFixed(2)} for $${fillDetails.netProceeds.toFixed(2)} (${cyclePosition} buys in cycle)`);
 };

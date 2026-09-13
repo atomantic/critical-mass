@@ -72,6 +72,8 @@ For each configured exchange (`coinbase`, `gemini`, `cryptocom`):
 
 Note: `long-term-candles-*.json` is **not** moved — it's read and written at the exchange level (the productId is already in the filename, so funds on the same exchange don't collide). An earlier release incorrectly relocated it into the pair subdirectory; the migration now also does a one-time move-back for any install stuck in that state, skipping (and logging) the move if a rebuilt exchange-level copy already exists.
 
+Separately, an earlier release of this same multi-pair migration moved `transactions.tsv` into the pair subdirectory above, but its reader/writer (`getLogFile`) had not yet been updated to look there — it kept resolving `data/<exchange>/transactions.tsv` and quietly recreated an empty file there on the next trade, so the Transactions page appeared to lose all history predating the upgrade. `getLogFile` now resolves the per-fund path like every other per-fund file, and the migration does a one-time reconciliation of any install left with both copies: if only the exchange-level file exists, it's moved into the pair directory; if both exist, the exchange-level file's rows (which are all necessarily newer than the move) are appended onto the per-fund file and the exchange-level copy is deleted. This reconciliation runs even on installs that are otherwise already fully migrated, and is idempotent — running it again is a no-op.
+
 ### Safety guarantees
 
 - The migration runs **before** anything else on engine startup, so the new engine in the same process hasn't started yet and the previous engine in the previous process is by definition dead (PM2 wouldn't be spawning a new process otherwise). It's always safe to run.
@@ -109,7 +111,8 @@ An archive already in the per-fund layout restores exactly as it does today.
 
 - API key isolation per fund (all funds on an exchange share the exchange's API key).
 - A UI for moving capital between funds.
-- Pair-aware variants of the backtest, optimizer, transactions, charts, and keys pages — these still target the exchange's default fund. They'll be updated in a follow-up.
+- Pair-aware variants of the backtest, optimizer, charts, and keys pages — these still target the exchange's default fund. They'll be updated in a follow-up.
+- The transactions page and its API route (`GET /api/:exchange/transactions`) are pair-aware: pass `?pair=` to target a non-default fund, matching every other per-fund route.
 
 ---
 
