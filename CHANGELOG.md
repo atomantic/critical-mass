@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **[issue-531] Dry-run state now lives inside the data directory, one file per fund** — Simulated ladders, filled orders and P&L were written to `<app root>/dry-run-state.json`, off the mounted volume and out of every backup, so a Docker/Umbrel container recreate wiped them. State moves to `data/<exchange>/<pair>/dry-run-state.json`, every write goes through `atomicWriteSync`, and per-fund files end the cross-process read-modify-write that let concurrent engines lose each other's updates. A legacy root file is imported per fund on first read (both the `exchange::pair` and bare `exchange` key forms) and is never deleted.
 - **[issue-528] Backup settings controls now have accessible names** — Associated the scheduled-backup switch, backup interval, and maximum-backups controls with their visible labels so screen readers can identify them and label clicks activate or focus them.
 - **[issue-523] Backup archives now keep operator, AI provider, and notification credentials machine-local** — Backups omit live credential/config files while the portable manifest continues to restore funds without overwriting destination credentials.
 - **[issue-522] AI run screenshots are confined to the screenshots directory** — Reject malformed lists, traversal, symlink escapes, and non-image paths before toolkit execution.
