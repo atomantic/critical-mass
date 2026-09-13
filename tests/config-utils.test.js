@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const configUtils = require('../src/config-utils');
+const { validateConfigUpdate, EXCHANGE_CONFIG_SCHEMA } = require('../src/config-validator');
 
 const {
   DEFAULTS,
@@ -1321,6 +1322,56 @@ describe('config.example.json aggressivenessPresets structural parity', () => {
   });
 
   afterEach(() => mock.restoreAll());
+});
+
+// ============================================================================
+// Structural Parity: config.example.json regime blocks vs REGIME_DEFAULTS bounds
+// ============================================================================
+
+describe('config.example.json regime blocks stay inside validator bounds', () => {
+  let exampleConfig = exampleConfigForParityTest;
+
+  beforeEach(() => {
+    if (!exampleConfig) {
+      mock.restoreAll();
+      exampleConfig = JSON.parse(require('fs').readFileSync(exampleConfigPath, 'utf-8'));
+    }
+  });
+
+  afterEach(() => mock.restoreAll());
+
+  it('validateRegimeConfig accepts every exchange regime block merged with REGIME_DEFAULTS', () => {
+    const exchangeNames = Object.keys(exampleConfig.exchanges);
+    assert.ok(exchangeNames.length > 0, 'config.example.json must define at least one exchange');
+
+    for (const exchangeName of exchangeNames) {
+      const regimeBlock = exampleConfig.exchanges[exchangeName].regime || {};
+      const merged = { ...REGIME_DEFAULTS, ...regimeBlock };
+      const { valid, errors } = validateRegimeConfig(merged);
+      assert.equal(
+        valid,
+        true,
+        `exchanges.${exchangeName}.regime must validate against REGIME_DEFAULTS bounds, got errors: ${JSON.stringify(errors)}`
+      );
+    }
+  });
+
+  it('validateConfigUpdate reports no errors for each exchange\'s fund-level fields', () => {
+    const exchangeNames = Object.keys(exampleConfig.exchanges);
+    assert.ok(exchangeNames.length > 0, 'config.example.json must define at least one exchange');
+
+    for (const exchangeName of exchangeNames) {
+      // Drop the nested `regime` block: it has its own dedicated validator
+      // above and is not part of EXCHANGE_CONFIG_SCHEMA's fund-level fields.
+      const { regime, ...fundLevelFields } = exampleConfig.exchanges[exchangeName];
+      const { errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, fundLevelFields);
+      assert.deepStrictEqual(
+        errors,
+        [],
+        `exchanges.${exchangeName} fund-level fields must pass EXCHANGE_CONFIG_SCHEMA validation, got errors: ${JSON.stringify(errors)}`
+      );
+    }
+  });
 });
 
 // ============================================================================

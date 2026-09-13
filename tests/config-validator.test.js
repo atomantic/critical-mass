@@ -96,6 +96,36 @@ describe('validateConfigUpdate', () => {
     assert.match(regimeErrors[0], /dcaStrategy.*one of/);
   });
 
+  it('persists consolidateAfterOrders and consolidateInterval (#548)', () => {
+    const { value, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, {
+      consolidateAfterOrders: 25,
+      consolidateInterval: 'daily',
+    });
+    assert.deepStrictEqual(errors, []);
+    assert.deepStrictEqual(value, {
+      consolidateAfterOrders: 25,
+      consolidateInterval: 'daily',
+    });
+  });
+
+  it('rejects a negative consolidateAfterOrders', () => {
+    const { value, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, {
+      consolidateAfterOrders: -1,
+    });
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /consolidateAfterOrders.*>= 0/);
+    assert.deepStrictEqual(value, {});
+  });
+
+  it('rejects an out-of-enum consolidateInterval instead of silently dropping it', () => {
+    const { value, errors } = validateConfigUpdate(EXCHANGE_CONFIG_SCHEMA, {
+      consolidateInterval: 'hourly',
+    });
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /consolidateInterval.*one of/);
+    assert.deepStrictEqual(value, {});
+  });
+
   it('EXCHANGE_CONFIG_SCHEMA includes all DEFAULTS fields', () => {
     const expected = [
       'enabled', 'dryRun', 'productId', 'dcaStrategy', 'intervalType',
