@@ -222,10 +222,14 @@ function BackupRestore() {
   // A legacy archive carries no configuration, so restoring it is a data-only
   // operation the operator has to opt into explicitly (issue #430). A
   // compatible archive that would still remove funds this machine currently
-  // runs needs its own explicit acknowledgement (issue #533).
+  // runs needs its own explicit acknowledgement (issue #533). A pre-multi-pair
+  // archive naming an exchange no fund can be resolved for would be refused by
+  // the server anyway, so the button is disabled rather than inviting the
+  // round trip (issue #541).
   const restoreBlocked = compatibilityLoading
     || (compatibility?.legacy === true && !legacyAcknowledged)
     || (compatibility?.compatible === true && compatibility?.removedFunds?.length > 0 && !fundRemovalAcknowledged)
+    || compatibility?.unresolvableLayoutExchanges?.length > 0
 
   if (error) {
     return (
@@ -450,6 +454,29 @@ function BackupRestore() {
                 )}
               </div>
             )
+          )}
+          {compatibility?.legacyLayout && !compatibilityLoading && (
+            <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-4 mb-4">
+              <p className="text-sm font-semibold text-amber-200 mb-2">
+                Pre-multi-pair archive: data files will be relocated into the per-fund layout.
+              </p>
+              {compatibility.layoutTranslations?.length > 0 && (
+                <ul className="text-xs text-amber-200/90 font-mono space-y-1">
+                  {compatibility.layoutTranslations.map(t => (
+                    <li key={t.exchange}>
+                      {t.exchange}/ &rarr; {t.exchange}/{t.pair}/
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {compatibility.unresolvableLayoutExchanges?.length > 0 && (
+                <p className="text-xs text-red-200 mt-2">
+                  Cannot resolve a fund for {compatibility.unresolvableLayoutExchanges.join(', ')} — neither the archive
+                  nor this machine names one, so the restore would be refused before any file is written.
+                  Configure the fund first.
+                </p>
+              )}
+            </div>
           )}
           {compatibilityError && !compatibilityLoading && (
             <div className="bg-yellow-900/40 border border-yellow-700 rounded-lg p-4 mb-4 text-xs text-yellow-200">

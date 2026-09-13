@@ -354,6 +354,53 @@ const isPerFundFile = (filename) => {
 };
 
 /**
+ * Move every per-fund file sitting directly under `<root>/<exchange>/` into
+ * `<root>/<exchange>/<pair>/`, translating a pre-multi-pair tree into the
+ * current layout.
+ *
+ * Pure with respect to `root`, so the live migration (root = DATA_DIR) and a
+ * restore's staging directory share one implementation. Idempotent: a tree
+ * already in per-fund layout has nothing at the exchange level to move, so the
+ * call is a no-op and never creates the pair directory.
+ *
+ * Conflicts are skipped rather than overwritten, matching the live migration —
+ * a file already at the target is the newer generation.
+ *
+ * @param {Object} params
+ * @param {string} params.root - Data-directory root holding `<exchange>/`
+ * @param {string} params.exchange - Exchange directory name
+ * @param {string} params.pair - Destination fund subdirectory
+ * @returns {{moved: string[], skipped: string[]}} File names relocated and skipped
+ */
+const normalizeExchangeTreeToPairs = ({ root, exchange, pair }) => {
+  const exchangeDir = path.join(root, exchange);
+  if (!fs.existsSync(exchangeDir)) return { moved: [], skipped: [] };
+
+  const stragglers = fs.readdirSync(exchangeDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && isPerFundFile(entry.name))
+    .map((entry) => entry.name);
+  // Return before resolveFundPath/mkdir so an already-migrated tree is left
+  // byte-identical — no empty pair directory conjured as a side effect.
+  if (stragglers.length === 0) return { moved: [], skipped: [] };
+
+  const fundDir = resolveFundPath(exchangeDir, pair);
+  fs.mkdirSync(fundDir, { recursive: true });
+
+  const moved = [];
+  const skipped = [];
+  for (const name of stragglers) {
+    const dst = path.join(fundDir, name);
+    if (fs.existsSync(dst)) {
+      skipped.push(name);
+      continue;
+    }
+    fs.renameSync(path.join(exchangeDir, name), dst);
+    moved.push(name);
+  }
+  return { moved, skipped };
+};
+
+/**
  * Detect whether the exchange's data directory is in legacy single-pair
  * layout (files at data/<exchange>/) and needs migration to the per-fund
  * layout (files at data/<exchange>/<pair>/).
@@ -478,11 +525,13 @@ const migrateExchangeToPairs = (exchange) => {
   }
 
   const exchangeDir = path.join(DATA_DIR, exchange);
-  const fundDir = path.join(exchangeDir, defaultPair);
+  // resolveFundPath (not path.join) so a pair that would escape the exchange
+  // directory is rejected BEFORE anything is created on disk.
+  const fundDir = resolveFundPath(exchangeDir, defaultPair);
 
   // If the target subdirectory exists but is empty (e.g. accidentally
   // created by the API server reading per-fund paths before migration ran),
-  // it's safe to keep it — the rename calls below will populate it.
+  // it's safe to keep it — the moves below will populate it.
   // If it exists with content, that's a previous partial migration; we
   // skip individual files that already exist at the target.
   fs.mkdirSync(fundDir, { recursive: true });
@@ -491,26 +540,14 @@ const migrateExchangeToPairs = (exchange) => {
   console.log(`  Source: ${exchangeDir}`);
   console.log(`  Target: ${fundDir}`);
 
-  let moved = 0;
-  const skippedFiles = [];
-  const entries = fs.readdirSync(exchangeDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isFile()) continue; // Don't move existing subdirectories
-    if (!isPerFundFile(entry.name)) continue;
-
-    const src = path.join(exchangeDir, entry.name);
-    const dst = path.join(fundDir, entry.name);
-
-    if (fs.existsSync(dst)) {
-      console.log(`  ⚠️  Skip (target exists): ${entry.name}`);
-      skippedFiles.push(entry.name);
-      continue;
-    }
-
-    fs.renameSync(src, dst);
-    moved++;
-    console.log(`  ✓ ${entry.name}`);
-  }
+  const { moved: movedNames, skipped: skippedFiles } = normalizeExchangeTreeToPairs({
+    root: DATA_DIR,
+    exchange,
+    pair: defaultPair,
+  });
+  const moved = movedNames.length;
+  for (const name of movedNames) console.log(`  ✓ ${name}`);
+  for (const name of skippedFiles) console.log(`  ⚠️  Skip (target exists): ${name}`);
 
   // Clean up any OTHER empty pair subdirectories (e.g. created by the API
   // server using a non-default pair key before migration ran). Only removes
@@ -557,6 +594,7 @@ module.exports = {
   resolveFundDataDir,
   resolveFundPath,
   migrateExchangeToPairs,
+  normalizeExchangeTreeToPairs,
   repairStrandedLongTermCandles,
   isPerFundFile,
   PER_FUND_FILES,
