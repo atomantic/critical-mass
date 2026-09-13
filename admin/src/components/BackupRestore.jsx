@@ -36,6 +36,10 @@ function BackupRestore() {
   const [compatibilityLoading, setCompatibilityLoading] = useState(false)
   const [compatibilityError, setCompatibilityError] = useState(null)
   const [legacyAcknowledged, setLegacyAcknowledged] = useState(false)
+  // Required acknowledgement that funds this machine currently runs but the
+  // archive does not carry (compatibility.removedFunds) will be removed from
+  // the configuration by this restore (issue #533).
+  const [fundRemovalAcknowledged, setFundRemovalAcknowledged] = useState(false)
   const [deleting, setDeleting] = useState(null)
   const [refreshError, setRefreshError] = useState(null)
 
@@ -78,6 +82,10 @@ function BackupRestore() {
     setCompatibilityLoading(true)
     setCompatibility(null)
     setCompatibilityError(null)
+    // A newly-selected archive has its own removal set; an acknowledgement
+    // ticked for a previous one must never carry over.
+    setLegacyAcknowledged(false)
+    setFundRemovalAcknowledged(false)
     fetch(`/api/backups/${restoreTarget}/compatibility`)
       .then(res => res.json().then(data => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
@@ -158,7 +166,7 @@ function BackupRestore() {
       const res = await fetch(`/api/backups/${restoreTarget}/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force, acceptLegacyWithoutBase: legacyAcknowledged }),
+        body: JSON.stringify({ force, acceptLegacyWithoutBase: legacyAcknowledged, acceptFundRemoval: fundRemovalAcknowledged }),
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok && data.success) {
@@ -177,6 +185,10 @@ function BackupRestore() {
         // Nothing was written. Keep the target selected and offer the override.
         blocked = data.unconfirmed || []
         setMessage({ type: 'error', text: data.error || 'Restore blocked: writers did not confirm shutdown' })
+      } else if (data.code === 'fund-removal-unacknowledged') {
+        // Nothing was written. Surfaces if the removal set changed server-side
+        // since the pre-flight check ran — tick the checkbox again to retry.
+        setMessage({ type: 'error', text: data.error || 'Restore blocked: acknowledge the funds this archive would remove' })
       } else if (data.code === 'restore-incomplete-recovery') {
         // The application failed AND could not be rolled back: data/ is a mix of
         // archive-era and current-era files. Say so plainly — the recovery
@@ -204,11 +216,16 @@ function BackupRestore() {
     setBlockedBy(null)
     setForceAcknowledged(false)
     setLegacyAcknowledged(false)
+    setFundRemovalAcknowledged(false)
   }
 
   // A legacy archive carries no configuration, so restoring it is a data-only
-  // operation the operator has to opt into explicitly (issue #430).
-  const restoreBlocked = compatibilityLoading || (compatibility?.legacy === true && !legacyAcknowledged)
+  // operation the operator has to opt into explicitly (issue #430). A
+  // compatible archive that would still remove funds this machine currently
+  // runs needs its own explicit acknowledgement (issue #533).
+  const restoreBlocked = compatibilityLoading
+    || (compatibility?.legacy === true && !legacyAcknowledged)
+    || (compatibility?.compatible === true && compatibility?.removedFunds?.length > 0 && !fundRemovalAcknowledged)
 
   if (error) {
     return (
@@ -369,22 +386,50 @@ function BackupRestore() {
           )}
           {compatibility && !compatibilityLoading && (
             compatibility.compatible ? (
-              <div className="bg-green-900/30 border border-green-700 rounded-lg p-4 mb-4">
-                <p className="text-sm font-semibold text-green-200 mb-2">
-                  Archive carries its fund configuration (manifest v{compatibility.manifestVersion}).
-                  It will be replayed onto this machine's config, replacing the funds below.
-                </p>
-                <ul className="text-xs text-green-200/90 font-mono space-y-1">
-                  {compatibility.funds?.map(f => (
-                    <li key={`${f.exchange}:${f.pair}`}>
-                      {f.exchange} &middot; {f.pair} &middot; {f.totalAllocation ?? '—'}
-                      {f.enabled ? ' · enabled' : ' · disabled'}{f.dryRun ? ' · dry-run' : ''}
-                    </li>
-                  ))}
-                </ul>
-                <p className="text-xs text-green-200/70 mt-2">
-                  API keys, Telegram and Sentinel credentials on this machine are preserved.
-                </p>
+              <div className="space-y-3 mb-4">
+                {compatibility.removedFunds?.length > 0 && (
+                  <div className="bg-red-900/40 border border-red-700 rounded-lg p-4">
+                    <p className="text-sm font-semibold text-red-200 mb-2">
+                      This restore will REMOVE {compatibility.removedFunds.length} fund(s) currently configured
+                      on this machine — the archive does not carry them.
+                    </p>
+                    <ul className="text-xs text-red-200/90 font-mono space-y-1 mb-3">
+                      {compatibility.removedFunds.map(f => (
+                        <li key={`${f.exchange}:${f.pair}`}>
+                          {f.exchange} &middot; {f.pair} &middot; {f.totalAllocation ?? '—'}
+                          {f.enabled ? ' · enabled' : ' · disabled'}{f.dryRun ? ' · dry-run' : ''}
+                          {f.hasStateOnDisk && ' · still has state on disk — possibly a live exchange order'}
+                        </li>
+                      ))}
+                    </ul>
+                    <label className="flex items-center gap-2 text-xs text-red-200">
+                      <input
+                        type="checkbox"
+                        checked={fundRemovalAcknowledged}
+                        onChange={e => setFundRemovalAcknowledged(e.target.checked)}
+                        className="accent-red-500"
+                      />
+                      Remove the funds listed above from this machine's configuration
+                    </label>
+                  </div>
+                )}
+                <div className="bg-green-900/30 border border-green-700 rounded-lg p-4">
+                  <p className="text-sm font-semibold text-green-200 mb-2">
+                    Archive carries its fund configuration (manifest v{compatibility.manifestVersion}).
+                    After restore, this machine will run the funds below.
+                  </p>
+                  <ul className="text-xs text-green-200/90 font-mono space-y-1">
+                    {compatibility.funds?.map(f => (
+                      <li key={`${f.exchange}:${f.pair}`}>
+                        {f.exchange} &middot; {f.pair} &middot; {f.totalAllocation ?? '—'}
+                        {f.enabled ? ' · enabled' : ' · disabled'}{f.dryRun ? ' · dry-run' : ''}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-xs text-green-200/70 mt-2">
+                    API keys, Telegram and Sentinel credentials on this machine are preserved.
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="bg-red-900/40 border border-red-700 rounded-lg p-4 mb-4">

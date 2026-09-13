@@ -1969,6 +1969,10 @@ const reconstructConfigOverride = ({ snapshot, baseConfig, destinationGlobal }) 
     // computeDiff only emits keys present in the target, so a pair the base
     // defines but the source did not would merge straight back in. Tombstone it
     // instead — the same mechanism fund deletion uses (#441).
+    // Deliberately the RAW base pairs map, not diffSnapshotAgainstConfig below:
+    // an already-tombstoned pair must stay tombstoned even though normalized
+    // reads (and buildConfigSnapshot) filter it out, or this would silently
+    // undelete it the next time an archive lacking it is restored.
     const basePairs = isPlainObject(baseBlock?.pairs) ? Object.keys(baseBlock.pairs) : [];
     const tombstones = basePairs.filter((pair) => !(pair in snapshotPairs));
     const block = { ...(baseBlock || {}), pairs: structuredClone(snapshotPairs) };
@@ -2007,6 +2011,35 @@ const reconstructConfigOverride = ({ snapshot, baseConfig, destinationGlobal }) 
     ok: false,
     error: `restored configuration would not reproduce the archived funds (archived: ${describe(snapshot.exchanges)}; reconstructed: ${describe(reproduced.exchanges)}) — destination config left unchanged`,
   };
+};
+
+/**
+ * Diff an archive snapshot against a full (already-merged) destination
+ * configuration, returning every EFFECTIVE fund the destination currently
+ * runs that the snapshot does not carry — i.e. what restoring `snapshot`
+ * onto `effectiveConfig` would remove.
+ *
+ * Effective, not base-only: a fund defined only in the override
+ * (data/config.json) disappears from a restore just as completely as a
+ * base-defined one, because reconstructConfigOverride above replaces the
+ * override's `pairs` map wholesale rather than merging it. Reporting must
+ * cover both, or an override-only fund vanishes with no warning (issue #533).
+ *
+ * @param {Object} args
+ * @param {*} args.snapshot - Snapshot from the archive manifest
+ * @param {Object} args.effectiveConfig - Destination's full merged (base + override) configuration
+ * @returns {Array<{exchange: string, pair: string, fund: Object}>}
+ */
+const diffSnapshotAgainstConfig = ({ snapshot, effectiveConfig }) => {
+  const effectiveSnapshot = buildConfigSnapshot(effectiveConfig);
+  const removed = [];
+  for (const [exchange, block] of Object.entries(effectiveSnapshot.exchanges || {})) {
+    const snapshotPairs = isPlainObject(snapshot?.exchanges?.[exchange]?.pairs) ? snapshot.exchanges[exchange].pairs : {};
+    for (const [pair, fund] of Object.entries(block.pairs || {})) {
+      if (!(pair in snapshotPairs)) removed.push({ exchange, pair, fund });
+    }
+  }
+  return removed;
 };
 
 module.exports = {
@@ -2069,6 +2102,7 @@ module.exports = {
   buildConfigSnapshot,
   validateConfigSnapshot,
   reconstructConfigOverride,
+  diffSnapshotAgainstConfig,
   writeUserConfigFile,
   resolveBaseConfigFile,
   USER_CONFIG_FILE,
