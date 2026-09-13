@@ -45,6 +45,7 @@ const { createSentinelService } = require('./src/sentinel/sentinel-service');
 const { getSentinelConfig, updateSentinelConfig } = require('./src/config-utils');
 const { createOperatorAuth } = require('./src/operator-auth');
 const { resolveListenHosts, isGatewayOrigin } = require('./src/gateway-listen');
+const { registerProcessGuards } = require('./src/process-guard');
 
 // A backup restore that a crash interrupted leaves data/ as a mix of
 // archive-era and current-era files. Finish its rollback BEFORE anything reads
@@ -532,3 +533,12 @@ const gracefulShutdown = async (signal) => {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Last-resort fault reporters (issue #532): log + push a critical Telegram
+// message before the process dies, so a gateway crash isn't silent. The
+// notifier lives here, so its queue is flushed rather than lost on exit.
+registerProcessGuards({
+  logger: createContextLogger({ module: 'gateway' }),
+  source: 'gateway',
+  flush: () => notifier.flush(),
+});

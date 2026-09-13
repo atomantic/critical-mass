@@ -16,6 +16,31 @@
 const { createContextLogger } = require('./logger');
 
 /**
+ * Consecutive failed state persists before the engine trips into SAFE mode
+ * (issue #532). At the engine's 5-minute save cadence this is ~15 minutes of
+ * state that could not be written — long enough to ride out a transient write
+ * error, short enough that the engine stops opening NEW positions it would be
+ * unable to recover after a crash.
+ */
+const MAX_CONSECUTIVE_PERSISTENCE_FAILURES = 3;
+
+/** Prefix stamped on a SAFE-mode reason caused by unpersistable state. */
+const PERSISTENCE_FAILED_PREFIX = 'persistence_failed:';
+
+/**
+ * True when EVERY reason in a SAFE-mode reason string is a persistence
+ * failure — the disk is broken but the exchange connection is not. Callers use
+ * this to keep resting orders in place: cancelling live orders because a write
+ * failed would turn a save fault into an unmanaged-position fault (issue #532).
+ * @param {string|null|undefined} reason - SAFE-mode reason string
+ * @returns {boolean}
+ */
+const isPersistenceOnlySafeReason = (reason) => {
+  const parts = (reason || '').split(', ').filter(Boolean);
+  return parts.length > 0 && parts.every((part) => part.startsWith(PERSISTENCE_FAILED_PREFIX));
+};
+
+/**
  * @typedef {import('./types').HealthState} HealthState
  * @typedef {import('./types').HealthMode} HealthMode
  * @typedef {import('./types').RegimeStrategyConfig} RegimeStrategyConfig
@@ -36,6 +61,7 @@ const createInitialHealthState = () => ({
     restErrorCount: 0,
     rateLimitCount: 0,
     avgLatencyMs: 0,
+    persistenceFailureCount: 0,
   },
 });
 
@@ -63,6 +89,9 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
   let rateLimitTimestamps = [];
 
   let lastHealthyTimestamp = Date.now();
+
+  /** @type {number} Consecutive failed state persists (issue #532) */
+  let persistenceFailures = 0;
 
   const ERROR_WINDOW_MS = 5 * 60 * 1000; // 5 minute window
 
@@ -131,6 +160,39 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     // Prune old timestamps
     rateLimitTimestamps = rateLimitTimestamps.filter(t => now - t < ERROR_WINDOW_MS);
     state.healthChecks.rateLimitCount = rateLimitTimestamps.length;
+  };
+
+  /**
+   * Record a failed state persist. A sustained run of failures trips SAFE mode
+   * so no NEW entries are opened while the engine cannot write down what it
+   * already holds. The reason carries PERSISTENCE_FAILED_PREFIX so the engine
+   * can tell a disk fault from a market/connectivity fault and leave resting
+   * orders untouched (issue #532).
+   * @param {string} [detail] - Error detail for operator display
+   * @returns {number} Consecutive failure count including this one
+   */
+  const recordPersistenceFailure = (detail = '') => {
+    persistenceFailures += 1;
+    state.healthChecks.persistenceFailureCount = persistenceFailures;
+
+    if (persistenceFailures >= MAX_CONSECUTIVE_PERSISTENCE_FAILURES) {
+      // ", " is the issue separator in a SAFE reason (see checkHealth), and an
+      // fs error message readily contains one ("ENOSPC: ..., write '/path'") —
+      // sanitise it so the reason stays one parseable token.
+      const note = detail ? ` (${String(detail).replace(/,\s*/g, '; ')})` : '';
+      enterSafeMode(`${PERSISTENCE_FAILED_PREFIX}${persistenceFailures}${note}`);
+    }
+
+    return persistenceFailures;
+  };
+
+  /**
+   * Record a successful state persist — clears the consecutive failure run so
+   * checkHealth() can exit SAFE mode once the disk is writable again.
+   */
+  const recordPersistenceSuccess = () => {
+    persistenceFailures = 0;
+    state.healthChecks.persistenceFailureCount = 0;
   };
 
   /**
@@ -306,6 +368,13 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
       issues.push('ws_disconnected');
     }
 
+    // Unpersistable state — holds SAFE mode until a save succeeds again, so the
+    // safeRecoveryMs timer can't quietly re-enable entries while the disk is
+    // still refusing writes (issue #532).
+    if (persistenceFailures >= MAX_CONSECUTIVE_PERSISTENCE_FAILURES) {
+      issues.push(`${PERSISTENCE_FAILED_PREFIX}${persistenceFailures}`);
+    }
+
     if (issues.length > 0) {
       // Something is wrong
       if (state.mode === 'ACTIVE') {
@@ -361,6 +430,7 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     if (healthChecks.avgLatencyMs > 0) parts.push(`latency=${healthChecks.avgLatencyMs}ms`);
     if (healthChecks.restErrorCount > 0) parts.push(`errors=${healthChecks.restErrorCount}`);
     if (healthChecks.rateLimitCount > 0) parts.push(`ratelimits=${healthChecks.rateLimitCount}`);
+    if (healthChecks.persistenceFailureCount > 0) parts.push(`savefailures=${healthChecks.persistenceFailureCount}`);
 
     return parts.join(' ');
   };
@@ -382,6 +452,8 @@ const createHealthMonitor = (exchange, config, callbacks = {}) => {
     recordRestLatency,
     recordRestError,
     recordRateLimit,
+    recordPersistenceFailure,
+    recordPersistenceSuccess,
     enterSafeMode,
     exitSafeMode,
     recordAuthDenied,
@@ -500,6 +572,9 @@ const instrumentAdapterForHealth = (adapter, healthMonitor) => {
 module.exports = {
   createHealthMonitor,
   createInitialHealthState,
+  isPersistenceOnlySafeReason,
+  MAX_CONSECUTIVE_PERSISTENCE_FAILURES,
+  PERSISTENCE_FAILED_PREFIX,
   instrumentAdapterForHealth,
   isRateLimitError,
   isAuthDeniedError,

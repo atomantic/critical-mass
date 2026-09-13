@@ -459,6 +459,7 @@
  * @property {number} healthChecks.restErrorCount - REST errors in window
  * @property {number} healthChecks.rateLimitCount - Rate limits in window
  * @property {number} healthChecks.avgLatencyMs - Average REST latency
+ * @property {number} healthChecks.persistenceFailureCount - Consecutive failed state persists (issue #532)
  */
 
 /**

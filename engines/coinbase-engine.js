@@ -45,8 +45,9 @@ const { registerEngineLifecycleHandlers } = require('../src/engine-lifecycle-han
 const { registerEngineRecalculateHandler } = require('../src/engine-recalculate-handler');
 const { migrateExchangeToPairs } = require('../src/migration');
 const { guardIncompleteRestore } = require('../src/restore-apply');
-const { LIFECYCLE, loadRegimeState, saveRegimeState } = require('../src/state-tracker');
+const { LIFECYCLE, loadRegimeState, loadRegimeStateSafe, saveRegimeState } = require('../src/state-tracker');
 const { getAdapter } = require('../src/adapters');
+const { registerProcessGuards } = require('../src/process-guard');
 
 /**
  * Build a context logger for one engine operation.
@@ -215,9 +216,17 @@ ipcServer.onRequest('regime:status', async (payload, exchange, pair) => {
   const engine = regimeEngines.get(key);
 
   if (!engine) {
-    const { loadRegimeState, saveRegimeState } = require('../src/state-tracker');
     const { buildStoppedRegimeStatus } = require('../src/regime-status');
-    const savedState = loadRegimeState(exchange, resolvedPair);
+    const { state: savedState, error: stateError } = loadRegimeStateSafe(exchange, resolvedPair);
+    if (stateError) {
+      // Report the descriptive repair instruction instead of throwing out of
+      // the handler — this is how an operator sees WHY a fund won't boot (#532).
+      engineLogger(exchange, resolvedPair).error(
+        `❌ [${fundLabel(exchange, resolvedPair)}] regime:status unavailable — ${stateError}`,
+        { action: 'regime:status', error: stateError }
+      );
+      return { success: false, exchange, pair: resolvedPair, running: false, status: null, error: stateError };
+    }
     const position = savedState?.position || null;
     const marketService = getMarketDataService(exchange, resolvedPair);
     const serviceStatus = marketService ? marketService.getStatus() : null;
@@ -447,8 +456,10 @@ ipcServer.onRequest('regime:open-orders', async (payload, exchange, pair) => {
   }
 
   const marketService = getMarketDataService(exchange, resolvedPair);
-  const { loadRegimeState } = require('../src/state-tracker');
-  const savedState = loadRegimeState(exchange, resolvedPair);
+  const { state: savedState, error: stateError } = loadRegimeStateSafe(exchange, resolvedPair);
+  if (stateError) {
+    return { running: false, success: false, error: stateError };
+  }
   const orders = [];
 
   if (marketService?.getOpenOrders) {
@@ -743,8 +754,15 @@ const startup = async () => {
 
     if (shouldAutoResumeRegime(exchange, fundPair)) {
       // Skip auto-resume for closed funds — the operator must explicitly reopen.
-      const { loadRegimeState } = require('../src/state-tracker');
-      const savedState = loadRegimeState(exchange, fundPair);
+      const { state: savedState, error: stateError } = loadRegimeStateSafe(exchange, fundPair);
+      if (stateError) {
+        // Stay up in a "needs operator" state rather than exit(1) into a PM2
+        // restart loop against the same corrupt file (issue #532). The running
+        // flag is deliberately left set so a repaired file auto-resumes on the
+        // next restart; regime:status reports the repair instruction meanwhile.
+        fundLogger.error(`❌ [${label}] Skipping auto-resume — ${stateError}`, { action: 'auto-resume', error: stateError });
+        continue;
+      }
       if (savedState?.position?.lifecycle === LIFECYCLE.CLOSED) {
         fundLogger.info(`ℹ️ 🛑 [${label}] Skipping auto-resume: fund is closed (call regime:reopen to reactivate)`);
         saveRegimeRunningFlag(exchange, fundPair, false);
@@ -879,3 +897,12 @@ const setupShutdownHandlers = () => {
 };
 
 setupShutdownHandlers();
+
+// Last-resort fault reporters (issue #532). The engine process has no notifier
+// of its own — trade events reach Telegram through the gateway's IPC
+// subscription — so there is nothing to flush here beyond letting the emit
+// leave the socket before the exit.
+registerProcessGuards({
+  logger: engineLogger(EXCHANGE_NAME),
+  source: `${EXCHANGE_NAME}-engine`,
+});

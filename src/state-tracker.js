@@ -973,6 +973,29 @@ const loadRegimeState = (exchange = 'coinbase', pair) => {
  */
 const PROTECTED_FIELDS = ['celestialBodies', 'celestialState', 'realizedPnL', 'realizedAssetPnL'];
 
+/**
+ * Non-throwing wrapper around `loadRegimeState` for callers that must survive a
+ * corrupt state file rather than die on it (issue #532).
+ *
+ * `loadRegimeState` throws by design on unreadable/non-object JSON (issue #108)
+ * so nothing boots on top of a zeroed position. That is right for trading and
+ * wrong for reporting and for process supervision: an IPC handler would surface
+ * the throw as an unstructured exception, and the engine's startup path would
+ * exit(1) into a PM2 restart loop against the very same file — burning the
+ * restart budget in under a minute while resting orders sit on the exchange
+ * with no process watching them.
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
+ * @returns {{state: Object|null, error: string|null}} State, or the operator-facing repair message
+ */
+const loadRegimeStateSafe = (exchange, pair) => {
+  try {
+    return { state: loadRegimeState(exchange, pair), error: null };
+  } catch (err) {
+    return { state: null, error: err.message };
+  }
+};
+
 const saveRegimeState = (position, regime, exchange = 'coinbase', tpOptimizer = null, sizeOptimizer = null, pair) => {
   const stateFile = getRegimeStateFile(exchange, pair);
   const dir = path.dirname(stateFile);
@@ -1350,6 +1373,7 @@ module.exports = {
   createInitialRegimePositionState,
   createInitialRegimeState,
   loadRegimeState,
+  loadRegimeStateSafe,
   saveRegimeState,
   // Atomic write utility (exposed for fill-ledger and testing)
   getPlacementIntentsFile,
