@@ -313,15 +313,20 @@ const PER_FUND_FILES = [
 /**
  * Per-fund file glob prefixes. Any file in data/<exchange>/ whose name starts
  * with one of these prefixes is moved into the fund subdirectory during
- * multi-pair migration. This catches per-product price caches and long-term
- * candle stores which include the productId in their filename.
+ * multi-pair migration. This catches per-product price caches which include
+ * the productId in their filename.
+ *
+ * NOTE: long-term-candles-*.json is deliberately NOT in this list — it is
+ * read/written at the exchange level (long-term-candle-store.js:cachePath),
+ * not per-fund, even though its filename embeds the productId. See
+ * repairStrandedLongTermCandles below for un-stranding installs affected by
+ * an earlier version of this migration that moved it incorrectly.
  */
 const PER_FUND_FILE_PREFIXES = [
   'btc-price-cache',
   'btcusd-price-cache',
   'btc-usdc-price-cache',
   'cro-usd-price-cache',
-  'long-term-candles',
   'price-cache-',
 ];
 
@@ -368,6 +373,59 @@ const needsPairMigration = (exchange) => {
 };
 
 /**
+ * Un-strand long-term-candles-*.json files that an earlier version of the
+ * pair migration incorrectly relocated into a `data/<exchange>/<pair>/`
+ * subdirectory. The store is exchange-level (long-term-candle-store.js
+ * cachePath), not per-fund — the productId in the filename already keeps
+ * multiple funds on one exchange from colliding, so there's no reason for
+ * the file to live under a pair subdirectory.
+ *
+ * Scans every pair subdirectory under `data/<exchange>/` and renames any
+ * `long-term-candles-*.json` file back up to the exchange level. If a file
+ * already exists at the exchange-level target (e.g. it was rebuilt from
+ * scratch after being stranded), the stranded copy is skipped and logged
+ * rather than overwriting — a rebuilt cache is at least as fresh.
+ *
+ * Idempotent and safe to call unconditionally on every engine startup,
+ * independent of whether the rest of the pair migration has anything to do
+ * (an install can be fully migrated already and still have a stranded file
+ * from before this repair existed).
+ *
+ * @param {string} exchange
+ * @returns {{repairedFiles: number, skippedFiles: string[]}}
+ */
+const repairStrandedLongTermCandles = (exchange) => {
+  const exchangeDir = path.join(DATA_DIR, exchange);
+  const skippedFiles = [];
+  let repairedFiles = 0;
+  if (!fs.existsSync(exchangeDir)) return { repairedFiles, skippedFiles };
+
+  const pairDirs = fs.readdirSync(exchangeDir, { withFileTypes: true }).filter((e) => e.isDirectory());
+  for (const pairDir of pairDirs) {
+    const pairPath = path.join(exchangeDir, pairDir.name);
+    const strandedFiles = fs.readdirSync(pairPath, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.startsWith('long-term-candles'));
+
+    for (const file of strandedFiles) {
+      const src = path.join(pairPath, file.name);
+      const dst = path.join(exchangeDir, file.name);
+
+      if (fs.existsSync(dst)) {
+        console.log(`  ⚠️  [Pair Migration] Skip un-stranding (exchange-level file already exists): ${pairDir.name}/${file.name}`);
+        skippedFiles.push(file.name);
+        continue;
+      }
+
+      fs.renameSync(src, dst);
+      repairedFiles++;
+      console.log(`  ✓ [Pair Migration] Un-stranded ${pairDir.name}/${file.name} → ${exchange}/${file.name}`);
+    }
+  }
+
+  return { repairedFiles, skippedFiles };
+};
+
+/**
  * Migrate an exchange from the legacy single-pair layout to the multi-pair
  * layout by moving all per-fund files into a subdirectory named after the
  * exchange's default pair (read from config).
@@ -383,12 +441,26 @@ const needsPairMigration = (exchange) => {
  * Cleans up empty pre-existing pair subdirectories that may have been
  * accidentally created by the API server before migration ran.
  *
+ * Also un-strands any long-term-candles-*.json files a previous version of
+ * this migration incorrectly moved into a pair subdirectory (see
+ * repairStrandedLongTermCandles) — this runs regardless of whether the rest
+ * of the migration below has anything to do.
+ *
  * @param {string} exchange
- * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, skippedFiles?: string[]}}
+ * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, skippedFiles?: string[], repairedFiles?: number, skippedRepairFiles?: string[]}}
  */
 const migrateExchangeToPairs = (exchange) => {
+  const { repairedFiles, skippedFiles: skippedRepairFiles } = repairStrandedLongTermCandles(exchange);
+
   if (!needsPairMigration(exchange)) {
-    return { migrated: false, defaultPair: null, movedFiles: 0, reason: 'no-op (already migrated or empty)' };
+    return {
+      migrated: false,
+      defaultPair: null,
+      movedFiles: 0,
+      reason: 'no-op (already migrated or empty)',
+      repairedFiles,
+      skippedRepairFiles,
+    };
   }
 
   // Resolve the default pair from config (legacy productId field).
@@ -400,6 +472,8 @@ const migrateExchangeToPairs = (exchange) => {
       defaultPair: null,
       movedFiles: 0,
       reason: `Cannot determine default pair for ${exchange} (config.exchanges.${exchange}.productId missing)`,
+      repairedFiles,
+      skippedRepairFiles,
     };
   }
 
@@ -458,7 +532,7 @@ const migrateExchangeToPairs = (exchange) => {
   }
 
   console.log(`[Pair Migration] ${exchange}: moved ${moved} files (${skippedFiles.length} skipped)`);
-  return { migrated: true, defaultPair, movedFiles: moved, skippedFiles };
+  return { migrated: true, defaultPair, movedFiles: moved, skippedFiles, repairedFiles, skippedRepairFiles };
 };
 
 /**
@@ -483,6 +557,7 @@ module.exports = {
   resolveFundDataDir,
   resolveFundPath,
   migrateExchangeToPairs,
+  repairStrandedLongTermCandles,
   isPerFundFile,
   PER_FUND_FILES,
   PER_FUND_FILE_PREFIXES,

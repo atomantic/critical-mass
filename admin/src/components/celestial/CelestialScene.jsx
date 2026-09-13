@@ -10,7 +10,7 @@ import { TIER_RANK } from './celestialConstants'
  * Bodies are sorted largest-first; the largest sits at center and each
  * subsequent body orbits the next-larger one in a nested chain.
  */
-const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurrency = 'BTC', controlsRef }) => {
+const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurrency = 'BTC', controlsRef, reducedMotion = false }) => {
   // Sort bodies: tier rank ascending (higher tier = closer to center), then costBasis desc
   const sortedBodies = useMemo(() =>
     [...bodies].sort((a, b) => {
@@ -32,7 +32,7 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       {/* Camera controls — pan enabled for better navigation */}
       <OrbitControls
         ref={controlsRef}
-        autoRotate
+        autoRotate={!reducedMotion}
         autoRotateSpeed={0.3}
         enablePan
         panSpeed={0.8}
@@ -67,9 +67,9 @@ const CelestialScene = ({ bodies = [], buyOrders = [], maxUsdcDeployed, baseCurr
       <directionalLight position={[-4, 2, 6]} intensity={0.2} color="#FDBA74" />
 
       {/* Multi-layer starfield background */}
-      <Stars radius={60} depth={50} count={1800} factor={3.2} saturation={0.15} fade speed={0.3} />
-      <Stars radius={100} depth={80} count={1600} factor={2.1} saturation={0.25} fade speed={0.1} />
-      <Stars radius={140} depth={110} count={2400} factor={1.2} saturation={0.4} fade speed={0.05} />
+      <Stars radius={60} depth={50} count={1800} factor={3.2} saturation={0.15} fade speed={reducedMotion ? 0 : 0.3} />
+      <Stars radius={100} depth={80} count={1600} factor={2.1} saturation={0.25} fade speed={reducedMotion ? 0 : 0.1} />
+      <Stars radius={140} depth={110} count={2400} factor={1.2} saturation={0.4} fade speed={reducedMotion ? 0 : 0.05} />
 
       {/* Hierarchical celestial bodies - largest at center, each smaller orbits the next-larger */}
       <HierarchicalOrbit
