@@ -112,7 +112,7 @@ function ExchangeSelector({ currentExchange, currentPair, exchanges, onChange, o
       {isOpen && (
         <div className="fixed left-4 right-4 md:absolute md:left-auto md:right-0 mt-2 md:w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
           <div className="p-2">
-            <div className="text-xs text-gray-500 uppercase tracking-wider px-2 py-1">Select Exchange & Pair</div>
+            <div className="text-xs text-gray-400 uppercase tracking-wider px-2 py-1">Select Exchange & Pair</div>
 
             {exchanges?.map(exchange => {
               const status = getEngineStatus(exchange)

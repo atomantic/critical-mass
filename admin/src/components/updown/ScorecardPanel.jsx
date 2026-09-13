@@ -5,7 +5,7 @@ const WINDOW_ORDER = ['1m', '5m', '15m', '1h']
 const TF_ORDER = ['1d', '4h', '2h', '1h', '30m', '15m', '10m', '5m', '3m', '1m']
 
 function accuracyColor(accuracy) {
-  if (accuracy == null) return 'text-gray-500'
+  if (accuracy == null) return 'text-gray-400'
   if (accuracy >= 60) return 'text-green-400'
   if (accuracy >= 50) return 'text-yellow-400'
   return 'text-red-400'
@@ -32,7 +32,7 @@ function AccuracyBar({ accuracy, label, detail }) {
       <span className={`w-12 text-right font-mono ${accuracyColor(accuracy)}`}>
         {accuracy != null ? `${accuracy.toFixed(0)}%` : '---'}
       </span>
-      {detail && <span className="text-gray-500 w-14 text-right">{detail}</span>}
+      {detail && <span className="text-gray-400 w-14 text-right">{detail}</span>}
     </div>
   )
 }
@@ -45,7 +45,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
           <Target size={16} className="text-purple-400" />
           <h3 className="text-sm font-semibold">Prediction Scorecard</h3>
         </div>
-        <div className="text-xs text-gray-500">Waiting for predictions...</div>
+        <div className="text-xs text-gray-400">Waiting for predictions...</div>
       </div>
     )
   }
@@ -77,7 +77,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Perp long paper book — 0.01 BTC per contract, flatten on Close */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] uppercase tracking-wide text-gray-500">Perp long P&amp;L (0.01 BTC / contract)</span>
+          <span className="text-[10px] uppercase tracking-wide text-gray-400">Perp long P&amp;L (0.01 BTC / contract)</span>
           {perp?.contracts > 0 && (
             <span className="text-[10px] font-mono text-teal-400">{perp.contracts} open @ {formatUsd(perp.avgEntry)}</span>
           )}
@@ -86,19 +86,19 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
           <span className={`text-2xl font-bold font-mono ${pnlColor(perp?.totalPnl ?? 0)}`}>
             {formatUsd(perp?.totalPnl ?? 0)}
           </span>
-          <span className="text-xs text-gray-500" title="Realized from closed rounds + mark-to-market on open lots">
+          <span className="text-xs text-gray-400" title="Realized from closed rounds + mark-to-market on open lots">
             {formatUsd(perp?.realizedPnl ?? 0)} real
             {perp?.contracts > 0 && <span className={`ml-1 ${pnlColor(perp.unrealizedPnl)}`}>{formatUsd(perp.unrealizedPnl)} mtm</span>}
           </span>
         </div>
-        <div className="flex justify-between text-xs text-gray-500">
+        <div className="flex justify-between text-xs text-gray-400">
           <span>{perp?.rounds ?? 0} rounds</span>
           <span className="text-green-500">{perp?.wins ?? 0}W</span>
           <span className="text-red-500">{perp?.losses ?? 0}L</span>
           <span>{perp?.winRate != null ? `${perp.winRate.toFixed(0)}%` : '---'}</span>
         </div>
         {(perp?.avgWin !== 0 || perp?.avgLoss !== 0) && (
-          <div className="flex justify-between text-xs text-gray-500 mt-0.5">
+          <div className="flex justify-between text-xs text-gray-400 mt-0.5">
             <span>Avg win: <span className="text-green-400 font-mono">{formatUsd(perp.avgWin)}</span></span>
             <span>Avg loss: <span className="text-red-400 font-mono">{formatUsd(perp.avgLoss)}</span></span>
           </div>
@@ -108,7 +108,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Directional accuracy — still used for adaptive indicator weights */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] uppercase tracking-wide text-gray-500">UP precision (options)</span>
+          <span className="text-[10px] uppercase tracking-wide text-gray-400">UP precision (options)</span>
           <div className="flex items-center gap-1">
             <StreakIcon size={14} className={streakColor} />
             <span className={`text-xs font-mono ${streakColor}`}>
@@ -132,17 +132,17 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
             style={{ width: `${Math.max(0, Math.min(100, overall?.accuracy ?? 0))}%` }}
           />
         </div>
-        <div className="flex justify-between text-xs text-gray-500">
+        <div className="flex justify-between text-xs text-gray-400">
           <span title="Each prediction is evaluated at 1m, 5m, 15m, and 1h windows">{totalEvaluated} outcomes</span>
           <span className="text-green-500">{overall?.correct ?? 0}W</span>
           <span className="text-red-500">{overall?.incorrect ?? 0}L</span>
         </div>
-        <div className="flex justify-between text-xs text-gray-500 mt-1">
+        <div className="flex justify-between text-xs text-gray-400 mt-1">
           <span>{totalPredictions} UP calls</span>
           <span>{totalSkipped} skip</span>
         </div>
         {(overall?.avgCorrectBps > 0 || overall?.avgIncorrectBps > 0) && (
-          <div className="flex justify-between text-xs text-gray-500 mt-0.5">
+          <div className="flex justify-between text-xs text-gray-400 mt-0.5">
             <span>Avg win: <span className="text-green-400 font-mono">{overall.avgCorrectBps.toFixed(1)}bp</span></span>
             <span>Avg loss: <span className="text-red-400 font-mono">{overall.avgIncorrectBps.toFixed(1)}bp</span></span>
           </div>
@@ -152,12 +152,12 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Contract Accuracy */}
       {contractAware && (
         <div className="mb-4 bg-gray-900 rounded-lg p-2.5">
-          <div className="text-xs text-gray-500 mb-1 font-medium">Contract-expiry Accuracy</div>
+          <div className="text-xs text-gray-400 mb-1 font-medium">Contract-expiry Accuracy</div>
           <div className="flex items-center justify-between">
             <span className={`text-lg font-bold font-mono ${accuracyColor(contractAware.accuracy)}`}>
               {contractAware.accuracy.toFixed(1)}%
             </span>
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-gray-400">
               <span className="text-green-500">{contractAware.wins}W</span>
               {' / '}
               <span className="text-red-500">{contractAware.losses}L</span>
@@ -171,7 +171,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Window Accuracy */}
       {totalEvaluated > 0 && (
         <div className="mb-4">
-          <div className="text-xs text-gray-500 mb-1.5 font-medium">By Window <span className="font-normal text-gray-600">(* 1m/5m tick-to-tick)</span></div>
+          <div className="text-xs text-gray-400 mb-1.5 font-medium">By Window <span className="font-normal text-gray-400">(* 1m/5m tick-to-tick)</span></div>
           <div className="space-y-1">
             {WINDOW_ORDER.map(w => {
               const data = byWindow?.[w]
@@ -193,7 +193,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Timeframe Accuracy */}
       {totalEvaluated > 0 && (
         <div className="mb-4">
-          <div className="text-xs text-gray-500 mb-1.5 font-medium">By Timeframe</div>
+          <div className="text-xs text-gray-400 mb-1.5 font-medium">By Timeframe</div>
           <div className="grid grid-cols-5 gap-1">
             {TF_ORDER.map(tf => {
               const data = byTimeframe?.[tf]
@@ -201,7 +201,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
                 <div
                   key={tf}
                   className={`text-center p-1 rounded text-xs ${
-                    data?.accuracy == null ? 'bg-gray-700/50 text-gray-600'
+                    data?.accuracy == null ? 'bg-gray-700/50 text-gray-400'
                     : data.accuracy >= 60 ? 'bg-green-900/40 text-green-400'
                     : data.accuracy >= 50 ? 'bg-yellow-900/40 text-yellow-400'
                     : 'bg-red-900/40 text-red-400'
@@ -221,7 +221,7 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Indicator Accuracy */}
       {totalEvaluated > 0 && (
         <div className="mb-4">
-          <div className="text-xs text-gray-500 mb-1.5 font-medium">By Indicator</div>
+          <div className="text-xs text-gray-400 mb-1.5 font-medium">By Indicator</div>
           <div className="space-y-1">
             {INDICATORS.map(key => {
               const label = INDICATOR_LABELS[key] ?? key
@@ -242,14 +242,14 @@ export default function ScorecardPanel({ scorecard, perp: perpOverride }) {
       {/* Adaptive Weights */}
       {adaptiveWeights && totalEvaluated > 0 && (
         <div>
-          <div className="text-xs text-gray-500 mb-1.5 font-medium">Adaptive Weights</div>
+          <div className="text-xs text-gray-400 mb-1.5 font-medium">Adaptive Weights</div>
           <div className="space-y-0.5">
             {INDICATORS.map(key => {
               const label = INDICATOR_LABELS[key] ?? key
               const current = adaptiveWeights[key] ?? INDICATOR_WEIGHTS[key]
               const base = INDICATOR_WEIGHTS[key]
               const delta = current - base
-              const deltaColor = delta > 0.005 ? 'text-green-400' : delta < -0.005 ? 'text-red-400' : 'text-gray-500'
+              const deltaColor = delta > 0.005 ? 'text-green-400' : delta < -0.005 ? 'text-red-400' : 'text-gray-400'
               return (
                 <div key={key} className="flex items-center gap-2 text-xs">
                   <span className="w-16 text-gray-400 truncate">{label}</span>

@@ -164,11 +164,11 @@ export default function SentinelDashboard() {
 
           <div className="ml-auto flex gap-2">
             {status?.running ? (
-              <button onClick={handleStop} className="px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-sm">
+              <button onClick={handleStop} className="px-3 py-1.5 bg-red-700 hover:bg-red-800 rounded text-sm">
                 Stop
               </button>
             ) : (
-              <button onClick={handleStart} className="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm">
+              <button onClick={handleStart} className="px-3 py-1.5 bg-green-800 hover:bg-green-900 rounded text-sm">
                 Start
               </button>
             )}
@@ -182,7 +182,7 @@ export default function SentinelDashboard() {
             <button
               onClick={handleToggleEnabled}
               disabled={!status?.config}
-              className={`px-3 py-1.5 rounded text-sm ${status?.config?.enabled ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-gray-600 hover:bg-gray-700'} ${!status?.config ? 'opacity-50 cursor-not-allowed' : ''}`}
+              className={`px-3 py-1.5 rounded text-sm ${status?.config?.enabled ? 'bg-yellow-800 hover:bg-yellow-900' : 'bg-gray-600 hover:bg-gray-700'} ${!status?.config ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {status?.config?.enabled ? 'Disable' : 'Enable'}
             </button>
@@ -231,7 +231,7 @@ export default function SentinelDashboard() {
           <button
             onClick={handleAddFeed}
             disabled={!newFeedName.trim() || !newFeedUrl.trim()}
-            className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm"
+            className="px-3 py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm"
           >
             Add Feed
           </button>
@@ -285,7 +285,7 @@ export default function SentinelDashboard() {
                         </span>
                       )}
                       <span className="text-xs text-gray-400">{alert.source}</span>
-                      <span className="text-xs text-gray-500">{formatTime(alert.publishedAt)}</span>
+                      <span className="text-xs text-gray-400">{formatTime(alert.publishedAt)}</span>
                     </div>
                     <h3 className="font-medium mb-1">
                       {/^https?:\/\//i.test(alert.sourceUrl || '') ? (

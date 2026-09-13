@@ -24,7 +24,7 @@ function FormInput({ label, hint, value, onChange, type = 'text', className = ''
           onChange={(e) => onChange(e.target.value)}
           className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
         />
-        {hint && <div id={hintId} className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
+        {hint && <div id={hintId} className="text-[10px] text-gray-400 mt-0.5 leading-tight">{hint}</div>}
       </div>
     )
   }
@@ -51,7 +51,7 @@ function FormInput({ label, hint, value, onChange, type = 'text', className = ''
         onBlur={() => setDraft(null)}
         className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"
       />
-      {hint && <div id={hintId} className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
+      {hint && <div id={hintId} className="text-[10px] text-gray-400 mt-0.5 leading-tight">{hint}</div>}
     </div>
   )
 }
@@ -73,7 +73,7 @@ function FormSelect({ label, hint, value, onChange, options, className = '' }) {
           <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
       </select>
-      {hint && <div id={hintId} className="text-[10px] text-gray-500 mt-0.5 leading-tight">{hint}</div>}
+      {hint && <div id={hintId} className="text-[10px] text-gray-400 mt-0.5 leading-tight">{hint}</div>}
     </div>
   )
 }
@@ -576,15 +576,15 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-gray-400">
                 <div>
-                  <span className="text-gray-500">Entry Trigger:</span>
+                  <span className="text-gray-400">Entry Trigger:</span>
                   <span className="ml-1 text-white">k × ATR price move</span>
                 </div>
                 <div>
-                  <span className="text-gray-500">Position Sizing:</span>
+                  <span className="text-gray-400">Position Sizing:</span>
                   <span className="ml-1 text-white">Liquidity-aware ladder</span>
                 </div>
                 <div>
-                  <span className="text-gray-500">Take-Profit:</span>
+                  <span className="text-gray-400">Take-Profit:</span>
                   <span className="ml-1 text-white">Dynamic volatility-based</span>
                 </div>
               </div>
@@ -615,7 +615,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     <span className="text-yellow-400 font-medium">Fibonacci Sequence:</span>{' '}
                     <span className="text-white font-mono">{getFibPreview(config.fibBaseAmount || 10)}</span>
                   </div>
-                  <p className="text-gray-500 leading-relaxed">
+                  <p className="text-gray-400 leading-relaxed">
                     This strategy is a volatility-harvesting accumulation system that incrementally builds an asset position using
                     Fibonacci-sized buys on a fixed cadence during sideways conditions, continuously resetting a limit-sell order
                     based on the updated weighted cost basis while retaining a small percentage as long-term inventory.
@@ -686,7 +686,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <div className="flex items-center gap-4">
                   <span className="text-xs text-gray-400 whitespace-nowrap">Auto-Consolidate:</span>
                   <div className="flex items-center gap-2">
-                    <span id="consolidate-when-label" className="text-xs text-gray-500">When orders &gt;</span>
+                    <span id="consolidate-when-label" className="text-xs text-gray-400">When orders &gt;</span>
                     <input
                       aria-labelledby="consolidate-when-label"
                       type="number"
@@ -696,7 +696,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <span id="consolidate-schedule-label" className="text-xs text-gray-500">or on schedule:</span>
+                    <span id="consolidate-schedule-label" className="text-xs text-gray-400">or on schedule:</span>
                     <select
                       aria-labelledby="consolidate-schedule-label"
                       value={config.consolidateInterval || 'never'}
@@ -708,7 +708,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       ))}
                     </select>
                   </div>
-                  <span className="text-xs text-gray-500 ml-auto">
+                  <span className="text-xs text-gray-400 ml-auto">
                     Active: <span className="text-white">{getConsolidationStatus()}</span>
                   </span>
                 </div>
@@ -720,28 +720,28 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 {!isFibonacci && (
                   <div>
-                    <span className="text-gray-500">Buy per {intervalLabel}:</span>
+                    <span className="text-gray-400">Buy per {intervalLabel}:</span>
                     <span className="ml-1 text-white">${intervalAmount.toFixed(2)}</span>
                   </div>
                 )}
                 {isFibonacci && (
                   <div>
-                    <span className="text-gray-500">Strategy:</span>
+                    <span className="text-gray-400">Strategy:</span>
                     <span className="ml-1 text-yellow-400">Fibonacci</span>
                   </div>
                 )}
                 <div>
-                  <span className="text-gray-500">Return/Cycle:</span>
+                  <span className="text-gray-400">Return/Cycle:</span>
                   <span className="ml-1 text-green-400">
                     +{((1 - config.holdbackPercent / 100) * (1 + config.sellMarkupPercent / 100) * 100 - 100).toFixed(2)}%
                   </span>
                 </div>
                 <div>
-                  <span className="text-gray-500">Holdback:</span>
+                  <span className="text-gray-400">Holdback:</span>
                   <span className="ml-1 text-white">{config.holdbackPercent}%</span>
                 </div>
                 <div>
-                  <span className="text-gray-500">Sell Multiplier:</span>
+                  <span className="text-gray-400">Sell Multiplier:</span>
                   <span className="ml-1 text-white">{(1 + config.sellMarkupPercent / 100).toFixed(2)}x</span>
                 </div>
               </div>
@@ -781,7 +781,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <FormInput label="Max Cycle Buys" hint="Max buys per cycle before pausing entries" value={regimeConfig.maxCycleBuys || 10} onChange={(v) => handleRegimeChange('maxCycleBuys', v)} type="number" />
                 <FormInput label="Min Order Size ($)" hint="Floor for order size after all multipliers" value={regimeConfig.minOrderSizeUsdc || 5} onChange={(v) => handleRegimeChange('minOrderSizeUsdc', v)} type="number" />
               </div>
-              <div className="mt-2 text-xs text-gray-500">
+              <div className="mt-2 text-xs text-gray-400">
                 Scaling: HARVEST={regimeConfig.harvestScale || 1.0}x, CAUTION={regimeConfig.cautionScale || 0.5}x, TREND={regimeConfig.trendScale || 0.0}x base size
               </div>
             </SectionCard>
@@ -810,7 +810,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     />
                     <label htmlFor="ladderAutoSwitch" className="text-sm text-gray-300">Auto-Switch on Vol</label>
                   </div>
-                  <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">Switch from reactive to ladder when vol spikes</div>
+                  <div className="text-[10px] text-gray-400 mt-0.5 leading-tight">Switch from reactive to ladder when vol spikes</div>
                 </div>
                 {regimeConfig.ladderAutoSwitch && (
                   <FormInput label="Auto-Switch Vol Mult" hint="realizedVol / volBaseline threshold to trigger switch (e.g. 1.5 = vol 50% above baseline)" value={regimeConfig.ladderAutoSwitchVolMult || 2.0} onChange={(v) => handleRegimeChange('ladderAutoSwitchVolMult', v)} type="number" />
@@ -851,7 +851,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       ]}
                     />
                   </div>
-                  <div className="mt-2 text-xs text-gray-500">
+                  <div className="mt-2 text-xs text-gray-400">
                     Dynamic order count. Floor at {regimeConfig.ladderMaxAthDropPct || 80}% below ATH. {regimeConfig.ladderSizeMode || 'fibonacci'} sizing across all available USDC.
                     {regimeConfig.ladderAutoSwitch && ` Auto-switches to ladder when vol expands ${regimeConfig.ladderAutoSwitchVolMult || 2.0}x.`}
                   </div>
@@ -875,7 +875,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 const assetProfitPct = (holdbackRatio * tpMin).toFixed(2);
 
                 return (
-                  <div className="mt-2 text-xs text-gray-500">
+                  <div className="mt-2 text-xs text-gray-400">
                     Sell <span className="text-white font-medium">{(sellRatio * 100).toFixed(0)}%</span>, hold <span className="text-white font-medium">{(holdbackRatio * 100).toFixed(0)}%</span> of position.
                     {' '}At min TP ({tpMin}%): <span className="text-green-400">+{usdcProfitPct}% USDC</span>, <span className="text-blue-400">+{assetProfitPct}% {baseCurrency} value</span>
                   </div>
@@ -914,7 +914,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     <FormInput label="Max Celestial Bodies" hint="Max concurrent body TP orders (1-15)" value={regimeConfig.maxCelestialBodies ?? 10} onChange={(v) => handleRegimeChange('maxCelestialBodies', Math.round(v))} type="number" />
                     <FormInput label="Merge Proximity Scale" hint="How aggressively bodies merge (0.25=conservative, 1.0=default, 3.0=aggressive)" value={regimeConfig.mergeProximityScale ?? 1.0} onChange={(v) => handleRegimeChange('mergeProximityScale', Math.max(0.25, Math.min(3.0, Math.round(v * 100) / 100)))} type="number" />
                   </div>
-                  <div className="mt-2 text-xs text-gray-500">
+                  <div className="mt-2 text-xs text-gray-400">
                     Each buy creates a celestial body. Bodies merge when TP prices are close, and promote to higher tiers as mass grows.
                     Tiers: 🛰️ satellite → 🪨 asteroid → 🌙 moon → 🪐 planet → ☀️ sun → 💫 hypergiant → ✨ nebula → 🌌 galaxy → 🕳️ black hole.
                     Higher tiers have wider TP targets and hold more {baseCurrency}.
@@ -935,7 +935,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       <div key={tier.name} className="bg-gray-800/50 rounded p-1">
                         <div>{tier.emoji}</div>
                         <div className="text-gray-400">{tier.name}</div>
-                        <div className="text-gray-500">{tier.range}</div>
+                        <div className="text-gray-400">{tier.range}</div>
                       </div>
                     ))}
                   </div>
@@ -992,7 +992,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       </div>
                     </div>
                   </div>
-                  <div className="mt-2 text-xs text-gray-500">
+                  <div className="mt-2 text-xs text-gray-400">
                     RANGING mode uses 1.0x for all multipliers (passthrough). Score range: -100 to +100. Thresholds must be ordered: decline &lt; accumulation &lt; markup.
                   </div>
                 </>
@@ -1023,7 +1023,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     <FormInput label="Absolute Min %" hint="Hard floor: TP can never go below this" value={regimeConfig.tpAbsoluteMin || 0.05} onChange={(v) => handleRegimeChange('tpAbsoluteMin', v)} type="number" />
                     <FormInput label="Absolute Max %" hint="Hard ceiling: TP can never go above this" value={regimeConfig.tpAbsoluteMax || 5.0} onChange={(v) => handleRegimeChange('tpAbsoluteMax', v)} type="number" />
                   </div>
-                  <div className="mt-2 text-xs text-gray-500">
+                  <div className="mt-2 text-xs text-gray-400">
                     Auto-adjusts TP range every {regimeConfig.tpEvaluationCycles || 5} cycles or {regimeConfig.tpEvaluationMaxHours || 24}h.
                     Requires {regimeConfig.tpMinSampleSize || 10} samples before first adjustment.
                     Holdback auto-set to half of TP Min.
@@ -1043,7 +1043,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <FormInput label="Drawdown Reset (hrs)" hint="Hours at drawdown cap before auto-resuming (0 = off)" value={regimeConfig.drawdownResetHours || 72} onChange={(v) => handleRegimeChange('drawdownResetHours', v)} type="number" />
                 <FormInput label="Cycle Reset (hrs)" hint="Hours at cycle buys limit before auto-resetting (0 = off)" value={regimeConfig.cycleResetHours || 72} onChange={(v) => handleRegimeChange('cycleResetHours', v)} type="number" />
               </div>
-              <div className="mt-2 text-xs text-gray-500">
+              <div className="mt-2 text-xs text-gray-400">
                 Auto-reset hours: 0 = disabled. After this time at a limit, the engine resumes with reset counters.
               </div>
             </SectionCard>
@@ -1090,7 +1090,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                       />
                       <label htmlFor="cancelEntriesOnFlash" className="text-sm text-gray-300">Cancel Entries on Flash</label>
                     </div>
-                    <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">Pull all pending entries during flash events</div>
+                    <div className="text-[10px] text-gray-400 mt-0.5 leading-tight">Pull all pending entries during flash events</div>
                   </div>
                 </>
               )}
@@ -1106,7 +1106,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <FormInput label="Max REST Errors" hint="Consecutive API errors before SAFE mode" value={regimeConfig.maxRestErrors || 5} onChange={(v) => handleRegimeChange('maxRestErrors', v)} type="number" />
                 <FormInput label="Max Rate Limits" hint="Consecutive rate limits before SAFE mode" value={regimeConfig.maxRateLimits || 3} onChange={(v) => handleRegimeChange('maxRateLimits', v)} type="number" />
               </div>
-              <div className="mt-2 text-xs text-gray-500">
+              <div className="mt-2 text-xs text-gray-400">
                 System enters SAFE mode when health thresholds are exceeded. Safe Recovery is time healthy before exiting SAFE.
               </div>
             </SectionCard>
@@ -1115,7 +1115,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
             {/* Aggressiveness Presets Editor — full width */}
             {editingPresets && (
               <SectionCard title="Aggressiveness Presets" className="lg:col-span-2">
-                <div className="text-xs text-gray-500 mb-3">
+                <div className="text-xs text-gray-400 mb-3">
                   Customize the parameter values applied by each aggressiveness level on the dashboard.
                 </div>
                 <div className="space-y-2">
@@ -1191,7 +1191,7 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
       </div>
 
       {/* Warning - more compact */}
-      <p className="mt-3 text-xs text-gray-500">
+      <p className="mt-3 text-xs text-gray-400">
         Changes take effect on the next run. The bot will not make additional trades this interval if it has already run.
       </p>
     </div>

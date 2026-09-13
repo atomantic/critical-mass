@@ -72,7 +72,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
   const trendGate = indicators?.trendGate
   const confPct = Math.max(0, Math.min(100, confidence * 100))
   const bannerColor = action ? (BANNER_COLORS[action] || BANNER_COLORS.HOLD) : 'bg-gray-800 border-gray-600/40'
-  const labelColor = action ? (LABEL_COLORS[action] || LABEL_COLORS.HOLD) : 'text-gray-500'
+  const labelColor = action ? (LABEL_COLORS[action] || LABEL_COLORS.HOLD) : 'text-gray-400'
   const barColor = action ? (CONFIDENCE_BAR_COLORS[action] || CONFIDENCE_BAR_COLORS.HOLD) : 'bg-gray-600'
 
   const hasTime = Number.isFinite(timeRemaining) && timeRemaining > 0
@@ -111,7 +111,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
                   className="flex items-center gap-1 px-2 py-1 rounded bg-gray-800/60 border border-gray-700/50"
                   title={`${desc} — Score: ${h.score.toFixed(1)}`}
                 >
-                  <span className="text-xs text-gray-500">{h.key}</span>
+                  <span className="text-xs text-gray-400">{h.key}</span>
                   <HIcon size={12} className={hColor} />
                   <span className={`text-xs font-mono ${hColor}`}>{h.score >= 0 ? '+' : ''}{h.score.toFixed(0)}</span>
                 </div>
@@ -146,7 +146,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
           </div>
         )}
         {trendFilter?.trendBias === 'neutral' && (
-          <div className="px-2 py-1 rounded text-xs font-bold bg-gray-700/40 text-gray-500" title="Trend: EMA(50) ≈ EMA(200) on 1h candles — no trend bias applied">FLAT</div>
+          <div className="px-2 py-1 rounded text-xs font-bold bg-gray-700/40 text-gray-400" title="Trend: EMA(50) ≈ EMA(200) on 1h candles — no trend bias applied">FLAT</div>
         )}
         {trendGate && !trendGate.open && (
           <div
@@ -163,7 +163,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
             className={`px-2 py-1 rounded text-xs font-mono ${
               dailySMA.trend === 'bullish' ? 'bg-green-900/30 text-green-500'
               : dailySMA.trend === 'bearish' ? 'bg-red-900/30 text-red-500'
-              : 'bg-gray-700/40 text-gray-500'
+              : 'bg-gray-700/40 text-gray-400'
             }`}
             title={`Daily SMAs — 50: $${dailySMA.sma50?.toFixed(0)} | 100: $${dailySMA.sma100?.toFixed(0)} | 200: $${dailySMA.sma200?.toFixed(0)} | Price vs SMA200: ${dailySMA.priceVsSMA200?.toFixed(1)}% | ${dailySMA.goldenCross ? 'Golden Cross (50>200)' : dailySMA.deathCross ? 'Death Cross (50<200)' : 'No cross'}`}
           >
@@ -178,7 +178,7 @@ export default function SignalBanner({ signal, indicators, timeRemaining, positi
             className={`px-2 py-1 rounded text-xs font-mono ${
               volatility.ratio > 1.5 ? 'bg-orange-900/40 text-orange-400'
               : volatility.ratio < 0.7 ? 'bg-blue-900/40 text-blue-400'
-              : 'bg-gray-700/40 text-gray-500'
+              : 'bg-gray-700/40 text-gray-400'
             }`}
             title={`Volatility: ATR / baseline = ${volatility.ratio.toFixed(2)}x — ${volatility.ratio > 1.5 ? 'High vol: tighter signal thresholds' : volatility.ratio < 0.7 ? 'Low vol: wider signal thresholds' : 'Normal volatility'}`}
           >

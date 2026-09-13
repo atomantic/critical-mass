@@ -195,14 +195,14 @@ export default function AIProviders() {
             <button
               onClick={handleExecuteRun}
               disabled={!runPrompt.trim() || !activeProviderId || !!runningId || runPending}
-              className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
+              className="px-6 py-2 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
             >
               {runningId || runPending ? 'Running...' : 'Execute'}
             </button>
             {runningId && (
               <button
                 onClick={handleStopRun}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-sm"
+                className="px-4 py-2 bg-red-700 hover:bg-red-800 text-white rounded-lg transition-colors text-sm"
               >
                 Stop
               </button>
@@ -225,7 +225,7 @@ export default function AIProviders() {
             <div className="flex gap-2">
               <button
                 onClick={handleAddAllSamples}
-                className="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors text-sm"
+                className="px-4 py-1.5 bg-green-800 hover:bg-green-900 text-white rounded-lg transition-colors text-sm"
               >
                 Add All ({sampleProviders.length})
               </button>
@@ -400,7 +400,7 @@ export default function AIProviders() {
         ))}
 
         {providers.length === 0 && (
-          <div className="text-center py-12 text-gray-500">
+          <div className="text-center py-12 text-gray-400">
             <p>No providers configured.</p>
             <button
               onClick={handleLoadSamples}
@@ -430,7 +430,7 @@ export default function AIProviders() {
                   }`} />
                   <div className="min-w-0">
                     <p className="text-sm text-white truncate">{run.prompt}</p>
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-gray-400">
                       {run.providerName} &middot; {new Date(run.startTime).toLocaleString()}
                     </p>
                   </div>
@@ -653,7 +653,7 @@ function ProviderForm({ provider, onClose, onSave }) {
           <div>
             <label className="block text-sm text-gray-400 mb-1">
               Available Models
-              {formData.type === 'api' && <span className="text-xs text-gray-500 ml-2">(Use Refresh after saving)</span>}
+              {formData.type === 'api' && <span className="text-xs text-gray-400 ml-2">(Use Refresh after saving)</span>}
             </label>
             <textarea
               value={modelsText}

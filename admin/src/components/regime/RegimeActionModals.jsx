@@ -68,7 +68,7 @@ const RegimeActionModals = ({
           <p id="collapse-all-description" className="text-gray-300 text-sm mb-4">
             Cancel <span className="text-amber-300 font-medium">{status?.celestial?.bodies?.length || 0}</span> body TP orders, combine all buys into a single body, and place one new TP order.
           </p>
-          <p className="text-gray-500 text-xs mb-4">
+          <p className="text-gray-400 text-xs mb-4">
             Aborts if any TP has a partial fill. Final TP% is capped at the highest body's pre-merge TP%, so the combined sell price can only move down.
           </p>
           <div className="flex justify-end gap-3">
@@ -103,7 +103,7 @@ const RegimeActionModals = ({
           <p id="reset-cycle-description" className="text-gray-300 text-sm mb-4">
             Starts a new accumulation cycle so the bot resumes buying. Your open positions and their take-profit orders are preserved.
           </p>
-          <p className="text-gray-500 text-xs mb-4">
+          <p className="text-gray-400 text-xs mb-4">
             Resets the cycle buy counter ({position.cycleBuys}/{config?.maxCycleBuys}) to 0. The reset is persistent and survives an engine restart.
           </p>
           <div className="flex justify-end gap-3">
@@ -116,7 +116,7 @@ const RegimeActionModals = ({
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-yellow-600 hover:bg-yellow-500 rounded transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded transition-colors disabled:opacity-50"
               onClick={onExecuteResetCycle}
               disabled={resettingCycle}
             >
@@ -142,7 +142,7 @@ const RegimeActionModals = ({
               ? 'Looks this placement up on the exchange by its client order id and, only if a live or filled order comes back, brings it under normal tracking. Nothing is adopted on an empty or failed lookup.'
               : 'Clears the record so this fund can place orders again. Do this only once you have checked the exchange yourself and confirmed no order from this placement is live — a duplicate would trade against the same capital twice.'}
           </p>
-          <p className="text-gray-500 text-xs mb-4 font-mono break-all">
+          <p className="text-gray-400 text-xs mb-4 font-mono break-all">
             {intentConfirm.intent?.action || 'order'} · {intentConfirm.intent?.side || '?'}
             {intentConfirm.intent?.clientOrderId ? ` · client_order_id ${intentConfirm.intent.clientOrderId}` : ' · no client order id recorded'}
           </p>
@@ -188,7 +188,7 @@ const RegimeActionModals = ({
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-green-600 hover:bg-green-500 rounded transition-colors"
+              className="px-4 py-2 text-sm text-white bg-green-800 hover:bg-green-900 rounded transition-colors"
               onClick={onExecuteResumeDrawdown}
             >
               Resume Trading
@@ -209,7 +209,7 @@ const RegimeActionModals = ({
           <p id="roll-up-description" className="text-gray-300 text-sm mb-4">
             Merge body <span className="font-mono text-yellow-400">{rollUpConfirm.bodyLabel}</span> into <span className="font-mono text-green-400">{rollUpConfirm.targetLabel}</span>?
           </p>
-          <p className="text-gray-500 text-xs mb-4">
+          <p className="text-gray-400 text-xs mb-4">
             Both TP orders will be cancelled, buys combined, and a new TP placed for the merged body.
           </p>
           <div className="flex justify-end gap-3">
@@ -222,7 +222,7 @@ const RegimeActionModals = ({
               Cancel
             </button>
             <button
-              className="px-4 py-2 text-sm text-white bg-yellow-600 hover:bg-yellow-500 rounded transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded transition-colors disabled:opacity-50"
               onClick={() => onExecuteRollUp(rollUpConfirm.bodyId)}
               disabled={rollingUp}
             >
@@ -283,10 +283,10 @@ const RegimeActionModals = ({
                 <span className="text-gray-400 text-sm">%</span>
               </div>
               {tpEditModal.currentTpPct && (
-                <p className="text-gray-500 text-xs mt-1">Current: {tpEditModal.currentTpPct}%</p>
+                <p className="text-gray-400 text-xs mt-1">Current: {tpEditModal.currentTpPct}%</p>
               )}
               {tpEditModal.avgPrice && tpEditModal.inputValue && !isNaN(parseFloat(tpEditModal.inputValue)) && (
-                <p className="text-gray-500 text-xs mt-0.5">= ${(tpEditModal.avgPrice * (1 + parseFloat(tpEditModal.inputValue) / 100)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                <p className="text-gray-400 text-xs mt-0.5">= ${(tpEditModal.avgPrice * (1 + parseFloat(tpEditModal.inputValue) / 100)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               )}
             </div>
           ) : (
@@ -313,13 +313,13 @@ const RegimeActionModals = ({
                 />
               </div>
               {tpEditModal.currentPrice && (
-                <p className="text-gray-500 text-xs mt-1">Current: ${tpEditModal.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                <p className="text-gray-400 text-xs mt-1">Current: ${tpEditModal.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               )}
               {tpEditModal.avgPrice && tpEditModal.priceValue && !isNaN(parseFloat(tpEditModal.priceValue)) && parseFloat(tpEditModal.priceValue) > tpEditModal.avgPrice && (
-                <p className="text-gray-500 text-xs mt-0.5">= {(((parseFloat(tpEditModal.priceValue) - tpEditModal.avgPrice) / tpEditModal.avgPrice) * 100).toFixed(2)}% above avg cost</p>
+                <p className="text-gray-400 text-xs mt-0.5">= {(((parseFloat(tpEditModal.priceValue) - tpEditModal.avgPrice) / tpEditModal.avgPrice) * 100).toFixed(2)}% above avg cost</p>
               )}
               {tpEditModal.avgPrice && (
-                <p className="text-gray-500 text-xs mt-0.5">Avg cost: ${tpEditModal.avgPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                <p className="text-gray-400 text-xs mt-0.5">Avg cost: ${tpEditModal.avgPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               )}
             </div>
           )}
@@ -382,7 +382,7 @@ const RegimeActionModals = ({
                 {convertPreview.skipped > 0 && (
                   <div className="flex justify-between">
                     <span className="text-gray-400">Skipped (consolidated sources)</span>
-                    <span className="text-gray-500 font-mono">{convertPreview.skipped}</span>
+                    <span className="text-gray-400 font-mono">{convertPreview.skipped}</span>
                   </div>
                 )}
                 <div className="border-t border-gray-700 pt-1.5 flex justify-between">
@@ -404,7 +404,7 @@ const RegimeActionModals = ({
               </div>
             )
           })()}
-          <p className="text-gray-500 text-xs mb-4">
+          <p className="text-gray-400 text-xs mb-4">
             {convertPreview.merge
               ? 'This will create backup files and add celestial bodies to the existing regime position. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.'
               : 'This will disable the DCA engine, create backup files, and build regime state with celestial bodies for each open position. Before starting the regime engine, cancel any remaining DCA sell orders on the exchange and confirm that they are no longer open.'}

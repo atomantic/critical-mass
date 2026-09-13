@@ -104,7 +104,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
             <tbody>
               {sortedTx.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
                     No transactions found
                   </td>
                 </tr>
@@ -144,7 +144,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
           <h3 className="text-sm font-medium text-gray-400 mb-3">Summary</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <span className="text-gray-500">Total {quoteCurrency} Spent:</span>
+              <span className="text-gray-400">Total {quoteCurrency} Spent:</span>
               <span className="ml-2 text-white">
                 {formatCurrency(sortedTx
                   .filter(t => t.Type === 'BUY')
@@ -153,7 +153,7 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
               </span>
             </div>
             <div>
-              <span className="text-gray-500">Total {quoteCurrency} Received:</span>
+              <span className="text-gray-400">Total {quoteCurrency} Received:</span>
               <span className="ml-2 text-white">
                 {formatCurrency(sortedTx
                   .filter(t => t.Type === 'SELL_FILLED')
@@ -162,13 +162,13 @@ function TransactionsDCA({ transactions = [], baseCurrency = 'BTC', quoteCurrenc
               </span>
             </div>
             <div>
-              <span className="text-gray-500">Total Fees:</span>
+              <span className="text-gray-400">Total Fees:</span>
               <span className="ml-2 text-red-400">
                 {formatCurrency(sortedTx.reduce((sum, t) => sum + (t.Fees || 0), 0))}
               </span>
             </div>
             <div>
-              <span className="text-gray-500">Total Rebates:</span>
+              <span className="text-gray-400">Total Rebates:</span>
               <span className="ml-2 text-green-400">
                 {formatCurrency(sortedTx.reduce((sum, t) => sum + (t.Rebates || 0), 0))}
               </span>

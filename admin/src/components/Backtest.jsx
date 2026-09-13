@@ -249,7 +249,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
               value={params.fundSize}
               onChange={(e) => handleParamChange('fundSize', e.target.value)}
               placeholder="0 = unlimited"
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white placeholder:text-gray-500"
+              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white placeholder:text-gray-400"
             />
           </div>
           <div>
@@ -325,7 +325,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
           <button
             onClick={runBacktest}
             disabled={loading}
-            className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded font-medium"
+            className="px-6 py-2 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded font-medium"
           >
             {loading ? 'Running Backtest...' : 'Run Backtest'}
           </button>
@@ -369,7 +369,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
                 </div>
                 <div className="text-xl font-bold text-blue-400">{formatCurrency(results.metrics.roiBasis)}</div>
                 {results.metrics.fundSize && (
-                  <div className="text-xs text-gray-500 mt-1">
+                  <div className="text-xs text-gray-400 mt-1">
                     Recycled: {formatCurrency(results.metrics.totalInvested)}
                   </div>
                 )}
@@ -617,7 +617,7 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
                   </tbody>
                 </table>
                 {results.pendingOrders.length > 20 && (
-                  <div className="text-center text-gray-500 text-sm mt-2">
+                  <div className="text-center text-gray-400 text-sm mt-2">
                     Showing 20 of {results.pendingOrders.length} pending orders
                   </div>
                 )}

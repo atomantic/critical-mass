@@ -363,7 +363,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                 {loading ? 'Fetching...' : 'Fetch'}
               </button>
               {unaccountedOrders.length > 0 && (
-                <span className="text-xs text-gray-500">{unaccountedOrders.length} unaccounted orders</span>
+                <span className="text-xs text-gray-400">{unaccountedOrders.length} unaccounted orders</span>
               )}
             </div>
 
@@ -378,7 +378,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               <div className="overflow-x-auto max-h-64 overflow-y-auto">
                 <table className="w-full text-xs">
                   <thead className="sticky top-0 bg-gray-800">
-                    <tr className="text-gray-500 text-left">
+                    <tr className="text-gray-400 text-left">
                       <th className="px-2 py-1">Order ID</th>
                       <th className="px-2 py-1">Side</th>
                       <th className="px-2 py-1 text-right">Size (BTC)</th>
@@ -432,15 +432,15 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               {/* Order summary */}
               <div className="grid grid-cols-3 gap-3 mb-3 text-xs">
                 <div>
-                  <span className="text-gray-500">Size:</span>
+                  <span className="text-gray-400">Size:</span>
                   <span className="ml-1 text-gray-300">{importModal.totalBtc.toFixed(8)} BTC</span>
                 </div>
                 <div>
-                  <span className="text-gray-500">Price:</span>
+                  <span className="text-gray-400">Price:</span>
                   <span className="ml-1 text-gray-300">{formatPrice(importModal.avgPrice)}</span>
                 </div>
                 <div>
-                  <span className="text-gray-500">Total:</span>
+                  <span className="text-gray-400">Total:</span>
                   <span className="ml-1 text-gray-300">{formatCurrency(importModal.totalUsdc)}</span>
                 </div>
               </div>
@@ -503,7 +503,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
                       {importMode === 'place' ? (
                         <div className="mb-3">
-                          <label htmlFor="recovery-buy-price" className="block text-[10px] text-gray-500 mb-1">Recovery Buy Limit Price (USD)</label>
+                          <label htmlFor="recovery-buy-price" className="block text-[10px] text-gray-400 mb-1">Recovery Buy Limit Price (USD)</label>
                           <input
                             id="recovery-buy-price"
                             type="number"
@@ -512,13 +512,13 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                             placeholder="e.g. 70000"
                             className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-gray-300"
                           />
-                          <div className="text-[10px] text-gray-500 mt-0.5">
+                          <div className="text-[10px] text-gray-400 mt-0.5">
                             Will place a GTC limit buy for {importModal.totalBtc.toFixed(8)} BTC
                           </div>
                         </div>
                       ) : (
                         <div className="mb-3">
-                          <label htmlFor="existing-buy-order-id" className="block text-[10px] text-gray-500 mb-1">Existing Buy Order ID</label>
+                          <label htmlFor="existing-buy-order-id" className="block text-[10px] text-gray-400 mb-1">Existing Buy Order ID</label>
                           <input
                             id="existing-buy-order-id"
                             type="text"
@@ -542,7 +542,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         />
                         Create celestial body for TP management
                       </label>
-                      <div className="text-[10px] text-gray-500 mt-1 ml-5">
+                      <div className="text-[10px] text-gray-400 mt-1 ml-5">
                         {createBody
                           ? 'Engine will create a satellite body and place a take-profit sell order'
                           : 'Buy fills will be ingested into the ledger without TP management'}
@@ -556,14 +556,14 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
               {importTab === 'pair' && (
                 <div>
                   {matchSuggestions.length === 0 ? (
-                    <p className="text-xs text-gray-500 mb-3">
+                    <p className="text-xs text-gray-400 mb-3">
                       No {importModal.side === 'buy' ? 'sell' : 'buy'} orders available to pair with.
                     </p>
                   ) : (
                     <div className="mb-3 max-h-48 overflow-y-auto">
                       <table className="w-full text-xs">
                         <thead className="sticky top-0 bg-gray-800">
-                          <tr className="text-gray-500 text-left">
+                          <tr className="text-gray-400 text-left">
                             <th className="px-2 py-1"></th>
                             <th className="px-2 py-1">Order ID</th>
                             <th className="px-2 py-1 text-right">Size</th>
@@ -607,7 +607,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                                         style={{ width: `${s.score * 100}%` }}
                                       />
                                     </div>
-                                    <span className="text-[10px] text-gray-500 w-8 text-right">
+                                    <span className="text-[10px] text-gray-400 w-8 text-right">
                                       {(s.score * 100).toFixed(0)}%
                                     </span>
                                   </div>
@@ -654,7 +654,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
               {/* Note field */}
               <div className="mb-3">
-                <label htmlFor="import-note" className="block text-[10px] text-gray-500 mb-1">Note (optional)</label>
+                <label htmlFor="import-note" className="block text-[10px] text-gray-400 mb-1">Note (optional)</label>
                 <input
                   id="import-note"
                   type="text"
@@ -702,12 +702,12 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
             </h4>
 
             {manualTrades.length === 0 ? (
-              <p className="text-xs text-gray-500">No manual trades tracked yet.</p>
+              <p className="text-xs text-gray-400">No manual trades tracked yet.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="text-gray-500 text-left">
+                    <tr className="text-gray-400 text-left">
                       <th className="px-2 py-1">Status</th>
                       <th className="px-2 py-1">Type</th>
                       <th className="px-2 py-1">Anchor</th>
@@ -737,7 +737,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                               {STATUS_LABELS[trade.status] || trade.status}
                             </span>
                           </td>
-                          <td className="px-2 py-1 text-[10px] text-gray-500">
+                          <td className="px-2 py-1 text-[10px] text-gray-400">
                             {isPaired ? 'Pair' : isBuyFirst ? 'Buy\u2192TP' : 'Sell\u2192Buy'}
                           </td>
                           <td className="px-2 py-1 font-mono text-gray-400">{truncId(anchorId)}</td>
@@ -748,10 +748,10 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                           <td className="px-2 py-1 text-right text-red-400">
                             {trade.sellPrice ? formatPrice(trade.sellPrice) : '-'}
                           </td>
-                          <td className={`px-2 py-1 text-right font-medium ${pnl === null ? 'text-gray-500' : pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          <td className={`px-2 py-1 text-right font-medium ${pnl === null ? 'text-gray-400' : pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                             {pnl !== null ? `${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}` : '-'}
                           </td>
-                          <td className="px-2 py-1 text-gray-500 max-w-[120px] truncate" title={trade.note}>
+                          <td className="px-2 py-1 text-gray-400 max-w-[120px] truncate" title={trade.note}>
                             {trade.note || '-'}
                           </td>
                           <td className="px-2 py-1">

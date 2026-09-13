@@ -178,7 +178,7 @@ export function PendingOrdersChart({
 
   if (!orders || orders.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500">
+      <div className="flex items-center justify-center h-full text-gray-400">
         No pending orders
       </div>
     )
@@ -327,7 +327,7 @@ export function CostBasisDistributionChart({
 
   if (!orders || orders.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500">
+      <div className="flex items-center justify-center h-full text-gray-400">
         No orders for distribution
       </div>
     )

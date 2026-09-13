@@ -365,7 +365,7 @@ export function PriceChart({
 
   if (!priceData || priceData.length < 1) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500">
+      <div className="flex items-center justify-center h-full text-gray-400">
         Not enough price data
       </div>
     )

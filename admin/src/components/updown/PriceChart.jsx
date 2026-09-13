@@ -121,7 +121,7 @@ export default function PriceChart({ tick, indicators, weeklyTrend, dailySMA, co
     <div className="space-y-2">
       {/* Candle count selector */}
       <div className="flex items-center gap-1.5">
-        <span className="text-xs text-gray-500">Candles:</span>
+        <span className="text-xs text-gray-400">Candles:</span>
         {CANDLE_COUNT_OPTIONS.map(opt => (
           <button
             key={opt.label}

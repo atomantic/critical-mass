@@ -472,7 +472,7 @@ export default function ContractSetup({ initialContract }) {
             value={expiry}
             onChange={e => setExpiry(e.target.value)}
             placeholder="2026-02-21T00:00:00Z"
-            className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+            className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
           />
         </div>
 
@@ -485,7 +485,7 @@ export default function ContractSetup({ initialContract }) {
               value={target}
               onChange={e => setTarget(e.target.value)}
               placeholder="100000"
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
             />
           </div>
           <div>
@@ -496,7 +496,7 @@ export default function ContractSetup({ initialContract }) {
               value={stop}
               onChange={e => setStop(e.target.value)}
               placeholder="95000"
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
             />
           </div>
         </div>
@@ -521,7 +521,7 @@ export default function ContractSetup({ initialContract }) {
                 onClick={() => setDirection('Up')}
                 className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
                   direction === 'Up'
-                    ? 'bg-green-600 text-white'
+                    ? 'bg-green-800 text-white'
                     : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
                 }`}
               >
@@ -531,7 +531,7 @@ export default function ContractSetup({ initialContract }) {
                 onClick={() => setDirection('Down')}
                 className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${
                   direction === 'Down'
-                    ? 'bg-red-600 text-white'
+                    ? 'bg-red-700 text-white'
                     : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
                 }`}
               >

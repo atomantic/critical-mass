@@ -290,7 +290,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
                     )
                   })}
                 </div>
-                <div className="flex justify-between text-xs text-gray-500 mt-2">
+                <div className="flex justify-between text-xs text-gray-400 mt-2">
                   <span>First Fill</span>
                   <span className={pnlData[pnlData.length - 1]?.cumulative >= 0 ? 'text-green-400' : 'text-red-400'}>
                     Total: {formatCurrency(pnlData[pnlData.length - 1]?.cumulative || 0)}
@@ -308,7 +308,7 @@ function ChartsRegime({ exchange = 'coinbase', pair }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
             </svg>
             <p className="text-lg">No chart data available</p>
-            <p className="text-sm text-gray-500 mt-2">
+            <p className="text-sm text-gray-400 mt-2">
               Start the regime engine from the Dashboard to begin collecting data.
             </p>
           </div>

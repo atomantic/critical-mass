@@ -173,7 +173,7 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
               resize={chartResize}
             />
           ) : (
-            <div className="flex items-center justify-center h-full text-gray-500 text-sm">No buy data yet</div>
+            <div className="flex items-center justify-center h-full text-gray-400 text-sm">No buy data yet</div>
           )}
         </div>
       </div>
@@ -211,7 +211,7 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
                 resize={chartResize}
               />
             ) : (
-              <div className="flex items-center justify-center h-full text-gray-500 text-sm">No volume data</div>
+              <div className="flex items-center justify-center h-full text-gray-400 text-sm">No volume data</div>
             )}
           </div>
         </div>
@@ -235,7 +235,7 @@ function ChartsDCA({ summary, quoteCurrency = 'USDC' }) {
                 resize={chartResize}
               />
             ) : (
-              <div className="flex items-center justify-center h-full text-gray-500 text-sm">No fee data</div>
+              <div className="flex items-center justify-center h-full text-gray-400 text-sm">No fee data</div>
             )}
           </div>
         </div>

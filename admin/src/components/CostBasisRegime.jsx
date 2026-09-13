@@ -153,7 +153,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
               <span className="min-w-0 break-words text-gray-400">Current Value:</span>
               <span className="min-w-0 max-w-full break-words text-right">{formatCurrency(assetReservesUsd)}</span>
             </div>
-            <div className="flex flex-wrap text-sm text-gray-500 pt-2">
+            <div className="flex flex-wrap text-sm text-gray-400 pt-2">
               <span className="min-w-0 break-words">Accumulated from holdback on profitable cycles</span>
             </div>
           </div>
@@ -203,7 +203,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
       <div className="min-w-0 bg-gray-800 rounded-lg p-4">
         <h3 className="text-lg font-semibold mb-4">Cycle-Based Cost Breakdown</h3>
         {cycles.length === 0 ? (
-          <div className="text-center text-gray-500 py-8">
+          <div className="text-center text-gray-400 py-8">
             No cycle data available. Start the regime engine to begin trading.
           </div>
         ) : (
@@ -227,7 +227,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                       }`}>
                         {cycle.cycleId === 'current' ? 'Current Cycle' : cycle.cycleId}
                       </span>
-                      <span className="min-w-0 break-words text-sm text-gray-500">
+                      <span className="min-w-0 break-words text-sm text-gray-400">
                         {cycle.entries.length} entries, {cycle.exits.length} exits
                       </span>
                     </div>
@@ -240,20 +240,20 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
                     <div className="min-w-0">
-                      <span className="block text-gray-500">Bought:</span>
+                      <span className="block text-gray-400">Bought:</span>
                       <span className="block min-w-0 break-words font-mono">{formatAsset(cycle.totalBought)} {baseCurrency}</span>
                     </div>
                     <div className="min-w-0">
-                      <span className="block text-gray-500">Cost:</span>
+                      <span className="block text-gray-400">Cost:</span>
                       <span className="block min-w-0 break-words">{formatCurrency(cycle.totalCost)}</span>
                     </div>
                     <div className="min-w-0">
-                      <span className="block text-gray-500">Avg Entry:</span>
+                      <span className="block text-gray-400">Avg Entry:</span>
                       <span className="block min-w-0 break-words">{formatPrice(avgEntry)}</span>
                     </div>
                     {cycle.totalSold > 0 && (
                       <div className="min-w-0">
-                        <span className="block text-gray-500">Avg Exit:</span>
+                        <span className="block text-gray-400">Avg Exit:</span>
                         <span className="block min-w-0 break-words">{formatPrice(avgExit)}</span>
                       </div>
                     )}
@@ -265,7 +265,7 @@ function CostBasisRegime({ exchange = 'coinbase', pair }) {
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs">
                           <thead>
-                            <tr className="text-gray-500">
+                            <tr className="text-gray-400">
                               <th className="text-left pb-1">Time</th>
                               <th className="text-left pb-1">Side</th>
                               <th className="text-right pb-1">Size</th>

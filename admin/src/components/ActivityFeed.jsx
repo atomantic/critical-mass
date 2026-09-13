@@ -66,7 +66,7 @@ function ActivityFeed({ exchange = null, maxEvents = 10, showWhenEmpty = true })
       </div>
 
       {events.length === 0 ? (
-        <div className="text-gray-500 text-sm text-center py-8">
+        <div className="text-gray-400 text-sm text-center py-8">
           {connected ? 'Waiting for trade activity...' : 'Connecting to server...'}
         </div>
       ) : (

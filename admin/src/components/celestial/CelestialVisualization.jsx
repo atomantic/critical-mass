@@ -81,7 +81,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
         <div className="flex items-center gap-2 text-xs">
           <span className="text-cyan-400 font-mono">{bodies.length} bodies</span>
           {buyOrders.length > 0 && (
-            <span className="text-gray-500 font-mono">+{buyOrders.length} incoming</span>
+            <span className="text-gray-400 font-mono">+{buyOrders.length} incoming</span>
           )}
           <button
             type="button"
@@ -102,12 +102,12 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
         style={{ aspectRatio: '16/10', background: '#0f0f14' }}
       >
         {bodies.length === 0 && buyOrders.length === 0 ? (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-xs">
+          <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
             No celestial bodies yet
           </div>
         ) : (
           <Suspense fallback={
-            <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-xs">
+            <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-xs">
               Loading 3D scene...
             </div>
           }>
@@ -138,7 +138,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
             <div key={tier} className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-full" style={{ backgroundColor: TIER_COLORS[tier] }} />
               <span className="text-gray-400">
-                {TIER_EMOJIS[tier]} {tier.replace('_', ' ')} <span className="text-gray-500">×{count}</span>
+                {TIER_EMOJIS[tier]} {tier.replace('_', ' ')} <span className="text-gray-400">×{count}</span>
               </span>
             </div>
           )
@@ -146,7 +146,7 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
         {buyOrders.length > 0 && (
           <div className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full border border-gray-500" style={{ background: 'transparent' }} />
-            <span className="text-gray-500">incoming ×{buyOrders.length}</span>
+            <span className="text-gray-400">incoming ×{buyOrders.length}</span>
           </div>
         )}
       </div>

@@ -217,7 +217,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-gray-500 text-xs font-mono">
+                    <td className="px-4 py-2 text-gray-400 text-xs font-mono">
                       {order.orderId}
                     </td>
                   </tr>
@@ -227,7 +227,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
           </div>
         )}
         {openOrders.length === 0 && (
-          <div className="text-sm text-gray-500">No open orders</div>
+          <div className="text-sm text-gray-400">No open orders</div>
         )}
       </div>
 
@@ -237,37 +237,37 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
           <h3 className="text-sm font-medium text-gray-400 mb-3">Summary</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
-              <span className="text-gray-500">Buy Orders:</span>
+              <span className="text-gray-400">Buy Orders:</span>
               <span className="ml-2 text-green-400">{totalBuys}</span>
             </div>
             <div>
-              <span className="text-gray-500">Sell Orders:</span>
+              <span className="text-gray-400">Sell Orders:</span>
               <span className="ml-2 text-red-400">{totalSells}</span>
             </div>
             <div>
-              <span className="text-gray-500">{baseCurrency} Bought:</span>
+              <span className="text-gray-400">{baseCurrency} Bought:</span>
               <span className="ml-2 text-white font-mono">{formatAsset(totalAssetBought)}</span>
             </div>
             <div>
-              <span className="text-gray-500">{baseCurrency} Sold:</span>
+              <span className="text-gray-400">{baseCurrency} Sold:</span>
               <span className="ml-2 text-white font-mono">{formatAsset(totalBtcSold)}</span>
             </div>
             <div>
-              <span className="text-gray-500">Total Fees:</span>
+              <span className="text-gray-400">Total Fees:</span>
               <span className="ml-2 text-gray-400">{formatCurrency(totalFees)}</span>
             </div>
             <div>
-              <span className="text-gray-500">{baseCurrency} Holdback:</span>
+              <span className="text-gray-400">{baseCurrency} Holdback:</span>
               <span className="ml-2 text-cyan-400 font-mono" title={`≈${formatCurrency(totalHoldbackValue)}`}>
                 +{formatAsset(totalHoldbackBtc)}
               </span>
             </div>
             <div>
-              <span className="text-gray-500">Holdback Value:</span>
+              <span className="text-gray-400">Holdback Value:</span>
               <span className="ml-2 text-cyan-400">{formatCurrency(totalHoldbackValue)}</span>
             </div>
             <div>
-              <span className="text-gray-500">Total P&L:</span>
+              <span className="text-gray-400">Total P&L:</span>
               <span className={`ml-2 font-medium ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {totalPnL >= 0 ? '+' : ''}{formatCurrency(totalPnL)}
               </span>
@@ -352,7 +352,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
             <tbody>
               {displayFills.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
                     No transactions found. Start the regime engine to begin trading.
                   </td>
                 </tr>
@@ -385,7 +385,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                     <td className="px-4 py-3">
                       {formatCurrency(fill.quoteAmount || fill.size * fill.price)}
                     </td>
-                    <td className="px-4 py-3 text-gray-500">
+                    <td className="px-4 py-3 text-gray-400">
                       {formatCurrency(fill.netFee || fill.fee || 0)}
                     </td>
                     <td className="px-4 py-3">
@@ -394,7 +394,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                           +{formatAsset(fill.holdbackAsset)}
                         </span>
                       ) : (
-                        <span className="text-gray-500">—</span>
+                        <span className="text-gray-400">—</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
@@ -403,7 +403,7 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
                           {fill.pnl >= 0 ? '+' : ''}{formatCurrency(fill.pnl)}
                         </span>
                       ) : (
-                        <span className="text-gray-500">—</span>
+                        <span className="text-gray-400">—</span>
                       )}
                     </td>
                   </tr>

@@ -827,7 +827,7 @@ function AppContent() {
                           <button
                             onClick={openCloseFundDialog}
                             disabled={closing}
-                            className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-800 rounded text-xs md:text-sm font-medium transition-colors`}
+                            className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-yellow-800 hover:bg-yellow-900 disabled:bg-yellow-950 rounded text-xs md:text-sm font-medium transition-colors`}
                             title="Block new entries; auto-close after current cycle's TP fills"
                           >
                             {closing ? '...' : 'Close Fund'}
@@ -836,7 +836,7 @@ function AppContent() {
                         <button
                           onClick={handleStopRegime}
                           disabled={stopping}
-                          className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded text-xs md:text-sm font-medium transition-colors`}
+                          className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-red-700 hover:bg-red-800 disabled:bg-red-900 rounded text-xs md:text-sm font-medium transition-colors`}
                         >
                           {stopping ? '...' : 'Stop'}
                         </button>
@@ -854,7 +854,7 @@ function AppContent() {
                       <button
                         onClick={handleStartRegime}
                         disabled={starting}
-                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-800 rounded text-xs md:text-sm font-medium transition-colors`}
+                        className={`${REGIME_ACTION_TOUCH_TARGET} px-2 md:px-3 py-1 md:py-1.5 bg-green-800 hover:bg-green-900 disabled:bg-green-950 rounded text-xs md:text-sm font-medium transition-colors`}
                       >
                         {starting ? '...' : 'Start'}
                       </button>
@@ -885,7 +885,7 @@ function AppContent() {
               order(s) will remain in place, and the fund will close automatically
               after the current cycle's TP fills.
             </p>
-            <p className="text-gray-500 text-xs mb-4">
+            <p className="text-gray-400 text-xs mb-4">
               You can reopen the fund later, but it will not auto-resume on engine restart.
             </p>
             <div className="mb-4">
@@ -913,7 +913,7 @@ function AppContent() {
                 Cancel
               </button>
               <button
-                className="px-4 py-2 text-sm text-white bg-yellow-600 hover:bg-yellow-500 rounded transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-white bg-yellow-800 hover:bg-yellow-900 rounded transition-colors disabled:opacity-50"
                 onClick={submitCloseFund}
                 disabled={closing}
               >
@@ -954,7 +954,7 @@ function AppContent() {
               This restores the fund's lifecycle to <span className="text-green-400">active</span> so the
               regime engine can run again.
             </p>
-            <p className="text-gray-500 text-xs mb-4">
+            <p className="text-gray-400 text-xs mb-4">
               Reopening does <strong>not</strong> restart the engine. After confirming, click
               <span className="font-mono text-green-400"> Start </span>
               to resume trading.

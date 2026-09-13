@@ -31,7 +31,7 @@ describe('CostBasisRegime responsive layout (issue #499)', () => {
 
   it('wraps cycle metrics and keeps current-cycle table overflow local', () => {
     assert.match(source, /grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm/)
-    assert.ok((source.match(/<div className="min-w-0">\s*<span className="block text-gray-500">/g) || []).length >= 3)
+    assert.ok((source.match(/<div className="min-w-0">\s*<span className="block text-gray-400">/g) || []).length >= 3)
     assert.match(source, /<div className="overflow-x-auto">\s*<table className="w-full text-xs">/)
     assert.doesNotMatch(source, /grid grid-cols-4 gap-4 text-sm/)
   })
