@@ -28,6 +28,7 @@ const {
   pruneBackups,
   restoreBackup,
 } = require('../src/backup-service');
+const { GLOBAL_DEFAULTS } = require('../src/config-utils');
 Object.assign(pathsModule, originalPaths);
 after(() => fs.rmSync(DATA_DIR, { recursive: true, force: true }));
 
@@ -474,8 +475,7 @@ describe('backup-service — pruneBackups retention', () => {
       // Fixture has 5 backups, well under the default retain count (7), so a
       // correct fallback deletes NOTHING here — a raw `slice(0)`/`slice(null)`
       // bug would instead have wiped out all 5.
-      const defaultMaxBackups = require('../src/config-utils').GLOBAL_DEFAULTS.backup.maxBackups;
-      assert.ok(defaultMaxBackups > 5, 'fixture assumes the default retain count exceeds the 5 seeded backups');
+      assert.ok(GLOBAL_DEFAULTS.backup.maxBackups > 5, 'fixture assumes the default retain count exceeds the 5 seeded backups');
 
       const result = pruneBackups(value);
       assert.equal(result.pruned, 0);
