@@ -455,7 +455,6 @@ export default function AIProviders() {
     </div>
   )
   }
-}
 
 function ProviderForm({ provider, onClose, onSave }) {
   const [formData, setFormData] = useState({
@@ -563,6 +562,7 @@ function ProviderForm({ provider, onClose, onSave }) {
     </div>
   )
 
+  }
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 sm:p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
