@@ -84,9 +84,10 @@ describe('CelestialVisualization pause control and canvas name (issue #539)', ()
     assert.match(celestialVisualizationSource, /frameloop={motionPaused \? 'demand' : 'always'}/)
   })
 
-  it('gives the canvas region a role and computed accessible name from the tier/order counts', () => {
-    assert.match(celestialVisualizationSource, /role="img"/)
-    assert.match(celestialVisualizationSource, /aria-label={canvasLabel}/)
+  it('gives the actual <canvas> DOM node a role and computed accessible name from the tier/order counts', () => {
+    assert.match(celestialVisualizationSource, /gl\.domElement\.setAttribute\('role', 'img'\)/)
+    assert.match(celestialVisualizationSource, /gl\.domElement\.setAttribute\('aria-label', canvasLabel\)/)
+    assert.match(celestialVisualizationSource, /canvasElRef\.current\.setAttribute\('aria-label', canvasLabel\)/)
     assert.match(celestialVisualizationSource, /Celestial system:/)
   })
 })

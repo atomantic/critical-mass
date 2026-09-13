@@ -1,4 +1,4 @@
-import { useMemo, useState, Suspense } from 'react'
+import { useMemo, useState, useRef, useEffect, Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Pause, Play } from 'lucide-react'
 import CelestialScene from './CelestialScene'
@@ -61,6 +61,17 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
     return parts.length > 0 ? `Celestial system: ${parts.join(', ')}` : 'Celestial system: no bodies yet'
   }, [tierSummary, buyOrders.length])
 
+  // Give the actual <canvas> DOM node (not just a wrapping div) a text
+  // alternative — R3F's <Canvas> forwards unknown props to its own wrapper
+  // div rather than the <canvas> it renders, so the name/role are set
+  // imperatively on the real element via onCreated, then kept in sync.
+  const canvasElRef = useRef(null)
+  useEffect(() => {
+    if (!canvasElRef.current) return
+    canvasElRef.current.setAttribute('role', 'img')
+    canvasElRef.current.setAttribute('aria-label', canvasLabel)
+  }, [canvasLabel])
+
   if (!enabled) return null
 
   return (
@@ -89,8 +100,6 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
       <div
         className="relative w-full rounded-lg overflow-hidden"
         style={{ aspectRatio: '16/10', background: '#0f0f14' }}
-        role="img"
-        aria-label={canvasLabel}
       >
         {bodies.length === 0 && buyOrders.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-xs">
@@ -107,7 +116,12 @@ const CelestialVisualization = ({ celestial, pendingOrders = [], currentPrice, m
               camera={{ position: [0, 8, 12], fov: 45, near: 0.1, far: 100 }}
               gl={{ antialias: true, alpha: false }}
               frameloop={motionPaused ? 'demand' : 'always'}
-              onCreated={({ gl }) => { gl.setClearColor('#0f0f14') }}
+              onCreated={({ gl }) => {
+                gl.setClearColor('#0f0f14')
+                canvasElRef.current = gl.domElement
+                gl.domElement.setAttribute('role', 'img')
+                gl.domElement.setAttribute('aria-label', canvasLabel)
+              }}
             >
               <CelestialScene bodies={bodies} buyOrders={buyOrders} maxUsdcDeployed={maxUsdcDeployed} baseCurrency={baseCurrency} reducedMotion={motionPaused} />
             </Canvas>
