@@ -379,8 +379,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
               <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                 {selectedIntervals.map(interval => (
                   <div key={interval}>
-                    <label className="text-xs text-gray-500 block">{interval}</label>
+                    <label htmlFor={`buy-amount-${interval}`} className="text-xs text-gray-500 block">{interval}</label>
                     <input
+                      id={`buy-amount-${interval}`}
                       type="number"
                       value={buyAmounts[interval] || DEFAULT_BUY_AMOUNTS[interval]}
                       onChange={(e) => setBuyAmounts(prev => ({
@@ -400,8 +401,9 @@ function Optimizer({ exchange = 'coinbase', pair }) {
 
         <div className="flex items-end gap-4 flex-wrap">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Fund Size ($)</label>
+            <label htmlFor="fund-size" className="block text-sm text-gray-400 mb-1">Fund Size ($)</label>
             <input
+              id="fund-size"
               type="number"
               value={fundSize}
               onChange={(e) => setFundSize(parseFloat(e.target.value) || 0)}

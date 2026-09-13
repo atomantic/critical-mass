@@ -345,6 +345,7 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
             <h4 className="text-xs font-medium text-purple-400 mb-2">Unaccounted Exchange Fills</h4>
             <div className="flex items-center gap-2 mb-3">
               <input
+                aria-label="Start Date for Unaccounted Fills"
                 type="date"
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
@@ -502,8 +503,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
                       {importMode === 'place' ? (
                         <div className="mb-3">
-                          <label className="block text-[10px] text-gray-500 mb-1">Recovery Buy Limit Price (USD)</label>
+                          <label htmlFor="recovery-buy-price" className="block text-[10px] text-gray-500 mb-1">Recovery Buy Limit Price (USD)</label>
                           <input
+                            id="recovery-buy-price"
                             type="number"
                             value={recoveryBuyPrice}
                             onChange={(e) => setRecoveryBuyPrice(e.target.value)}
@@ -516,8 +518,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
                         </div>
                       ) : (
                         <div className="mb-3">
-                          <label className="block text-[10px] text-gray-500 mb-1">Existing Buy Order ID</label>
+                          <label htmlFor="existing-buy-order-id" className="block text-[10px] text-gray-500 mb-1">Existing Buy Order ID</label>
                           <input
+                            id="existing-buy-order-id"
                             type="text"
                             value={existingBuyOrderId}
                             onChange={(e) => setExistingBuyOrderId(e.target.value)}
@@ -651,8 +654,9 @@ function ManualTrades({ exchange = 'coinbase', pair }) {
 
               {/* Note field */}
               <div className="mb-3">
-                <label className="block text-[10px] text-gray-500 mb-1">Note (optional)</label>
+                <label htmlFor="import-note" className="block text-[10px] text-gray-500 mb-1">Note (optional)</label>
                 <input
+                  id="import-note"
                   type="text"
                   value={importNote}
                   onChange={(e) => setImportNote(e.target.value)}

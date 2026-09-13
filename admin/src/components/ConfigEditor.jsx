@@ -686,8 +686,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                 <div className="flex items-center gap-4">
                   <span className="text-xs text-gray-400 whitespace-nowrap">Auto-Consolidate:</span>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500">When orders &gt;</span>
+                    <span id="consolidate-when-label" className="text-xs text-gray-500">When orders &gt;</span>
                     <input
+                      aria-labelledby="consolidate-when-label"
                       type="number"
                       value={config.consolidateAfterOrders || 0}
                       onChange={(e) => handleChange('consolidateAfterOrders', parseInt(e.target.value) || 0)}
@@ -695,8 +696,9 @@ function ConfigEditor({ config: initialConfig, onSave, exchange = 'coinbase', pa
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500">or on schedule:</span>
+                    <span id="consolidate-schedule-label" className="text-xs text-gray-500">or on schedule:</span>
                     <select
+                      aria-labelledby="consolidate-schedule-label"
                       value={config.consolidateInterval || 'never'}
                       onChange={(e) => handleChange('consolidateInterval', e.target.value)}
                       className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white focus:outline-none focus:border-blue-500"

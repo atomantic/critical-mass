@@ -92,8 +92,9 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
       <div className="space-y-3">
         {error && <div className="text-xs text-red-400" role="alert">{error}</div>}
         <div>
-          <label className="text-xs text-gray-400 block mb-1">Entry Price ($)</label>
+          <label htmlFor="entry-price" className="text-xs text-gray-400 block mb-1">Entry Price ($)</label>
           <input
+            id="entry-price"
             type="number"
             value={entryPrice}
             onChange={e => setEntryPrice(e.target.value)}
@@ -103,8 +104,9 @@ export default function PositionTracker({ initialPosition, currentPrice, contrac
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 block mb-1">Contracts (0.01 BTC each)</label>
+          <label htmlFor="contracts" className="text-xs text-gray-400 block mb-1">Contracts (0.01 BTC each)</label>
           <input
+            id="contracts"
             type="number"
             value={amount}
             onChange={e => setAmount(e.target.value)}

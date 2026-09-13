@@ -116,8 +116,9 @@ export default function GatewayAccess() {
         <form onSubmit={handleSet} className="space-y-3">
           {required && (
             <div>
-              <label className="text-xs text-gray-400 block mb-1">Current password</label>
+              <label htmlFor="current-password" className="text-xs text-gray-400 block mb-1">Current password</label>
               <input
+                id="current-password"
                 type="password"
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
@@ -127,8 +128,9 @@ export default function GatewayAccess() {
             </div>
           )}
           <div>
-            <label className="text-xs text-gray-400 block mb-1">{required ? 'New password' : 'Password'} (min 8 characters)</label>
+            <label htmlFor="new-password" className="text-xs text-gray-400 block mb-1">{required ? 'New password' : 'Password'} (min 8 characters)</label>
             <input
+              id="new-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -139,8 +141,9 @@ export default function GatewayAccess() {
             />
           </div>
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Confirm</label>
+            <label htmlFor="confirm-password" className="text-xs text-gray-400 block mb-1">Confirm</label>
             <input
+              id="confirm-password"
               type="password"
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}

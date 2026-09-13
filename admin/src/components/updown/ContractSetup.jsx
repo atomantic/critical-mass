@@ -1,10 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useId } from 'react'
 import { FileText, Save, Camera, Upload, Check, X, Loader2 } from 'lucide-react'
 
 const LS_PROVIDER_KEY = 'updown-screenshot-provider'
 const LS_MODEL_KEY = 'updown-screenshot-model'
 
 export default function ContractSetup({ initialContract }) {
+  const providerSelectId = useId()
+  const modelSelectId = useId()
+  const expiryId = useId()
+  const targetId = useId()
+  const stopId = useId()
+  const rangeId = useId()
   const [expiry, setExpiry] = useState('')
   const [target, setTarget] = useState('')
   const [stop, setStop] = useState('')
@@ -232,6 +238,8 @@ export default function ContractSetup({ initialContract }) {
         {/* Provider / Model selectors */}
         <div className="grid grid-cols-2 gap-2">
           <select
+            id={providerSelectId}
+            aria-label="AI Provider"
             value={selectedProvider}
             onChange={e => setSelectedProvider(e.target.value)}
             className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-purple-500"
@@ -242,6 +250,8 @@ export default function ContractSetup({ initialContract }) {
             ))}
           </select>
           <select
+            id={modelSelectId}
+            aria-label="AI Model"
             value={selectedModel}
             onChange={e => setSelectedModel(e.target.value)}
             disabled={!currentProviderModels.length}
@@ -455,8 +465,9 @@ export default function ContractSetup({ initialContract }) {
 
       <div className="border-t border-gray-700 pt-3 space-y-3">
         <div>
-          <label className="text-xs text-gray-400 block mb-1">Expiry (ISO / date-time)</label>
+          <label htmlFor={expiryId} className="text-xs text-gray-400 block mb-1">Expiry (ISO / date-time)</label>
           <input
+            id={expiryId}
             type="text"
             value={expiry}
             onChange={e => setExpiry(e.target.value)}
@@ -467,8 +478,9 @@ export default function ContractSetup({ initialContract }) {
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Target Price ($)</label>
+            <label htmlFor={targetId} className="text-xs text-gray-400 block mb-1">Target Price ($)</label>
             <input
+              id={targetId}
               type="number"
               value={target}
               onChange={e => setTarget(e.target.value)}
@@ -477,8 +489,9 @@ export default function ContractSetup({ initialContract }) {
             />
           </div>
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Stop Price ($)</label>
+            <label htmlFor={stopId} className="text-xs text-gray-400 block mb-1">Stop Price ($)</label>
             <input
+              id={stopId}
               type="number"
               value={stop}
               onChange={e => setStop(e.target.value)}
@@ -490,8 +503,9 @@ export default function ContractSetup({ initialContract }) {
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Range</label>
+            <label htmlFor={rangeId} className="text-xs text-gray-400 block mb-1">Range</label>
             <select
+              id={rangeId}
               value={range}
               onChange={e => setRange(e.target.value)}
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"

@@ -1,5 +1,5 @@
 import { INTERVAL_OPTIONS } from '../utils/intervals.mjs'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useId } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Area, Bar } from 'recharts'
 import { formatCurrency, formatPrice, formatPriceCompact } from './charts/chartUtils'
 import { pairQuery } from '../utils/api'
@@ -95,6 +95,13 @@ const parseProductId = (productId) => {
 }
 
 function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: defaultQuoteCurrency = 'USDC' }) {
+  const intervalId = useId()
+  const buyAmountId = useId()
+  const fundSizeId = useId()
+  const sellMarkupId = useId()
+  const holdbackId = useId()
+  const feeId = useId()
+  const rebateId = useId()
   const [params, setParams] = useState(DEFAULT_PARAMS)
   const [selectedPeriod, setSelectedPeriod] = useState('1D')
   const [loading, setLoading] = useState(false)
@@ -212,8 +219,9 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
 
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4 mb-4">
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Interval</label>
+            <label htmlFor={intervalId} className="block text-sm text-gray-400 mb-1">Interval</label>
             <select
+              id={intervalId}
               value={params.intervalType}
               onChange={(e) => handleIntervalTypeChange(e.target.value)}
               className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
@@ -224,8 +232,9 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
             </select>
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Buy Amount ($)</label>
+            <label htmlFor={buyAmountId} className="block text-sm text-gray-400 mb-1">Buy Amount ($)</label>
             <input
+              id={buyAmountId}
               type="number"
               value={params.intervalBuyAmount}
               onChange={(e) => handleParamChange('intervalBuyAmount', e.target.value)}
@@ -233,8 +242,9 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Fund Size ($)</label>
+            <label htmlFor={fundSizeId} className="block text-sm text-gray-400 mb-1">Fund Size ($)</label>
             <input
+              id={fundSizeId}
               type="number"
               value={params.fundSize}
               onChange={(e) => handleParamChange('fundSize', e.target.value)}
@@ -243,8 +253,9 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Sell Markup (%)</label>
+            <label htmlFor={sellMarkupId} className="block text-sm text-gray-400 mb-1">Sell Markup (%)</label>
             <input
+              id={sellMarkupId}
               type="number"
               step="0.1"
               value={params.sellMarkupPercent}
@@ -253,8 +264,9 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Holdback (%)</label>
+            <label htmlFor={holdbackId} className="block text-sm text-gray-400 mb-1">Holdback (%)</label>
             <input
+              id={holdbackId}
               type="number"
               step="0.1"
               value={params.holdbackPercent}
@@ -263,8 +275,9 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Fee (%)</label>
+            <label htmlFor={feeId} className="block text-sm text-gray-400 mb-1">Fee (%)</label>
             <input
+              id={feeId}
               type="number"
               step="0.001"
               value={params.feePercent}
@@ -273,8 +286,9 @@ function Backtest({ summary, exchange = 'coinbase', pair, quoteCurrency: default
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Rebate (%)</label>
+            <label htmlFor={rebateId} className="block text-sm text-gray-400 mb-1">Rebate (%)</label>
             <input
+              id={rebateId}
               type="number"
               step="0.001"
               value={params.rebatePercent}
