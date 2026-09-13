@@ -434,10 +434,12 @@ module.exports = (app, deps) => {
     res.json(state);
   });
 
-  // Get transactions for an exchange
+  // Get transactions for an exchange/fund (?pair= optional)
   app.get('/api/:exchange/transactions', (req, res) => {
     const { exchange } = req.params;
-    const logFile = getLogFile(exchange);
+    const { pair, error } = resolvePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
+    const logFile = getLogFile(exchange, pair);
     const transactions = parseTSV(logFile);
     res.json(transactions);
   });

@@ -361,3 +361,241 @@ describe('resolveFundPath (issue #425)', () => {
     assert.throws(() => migration.resolveFundPath(baseDir, 123), /non-empty string/);
   });
 });
+
+describe('repairStrandedTransactionLog — reconciling a per-fund-classified file the accessor wrote at the exchange level (issue #543)', () => {
+  const HEADER = 'Timestamp\tDate\tType\tPrice\tBTC Amount\tUSDC Amount\tFees\tRebates\tNet Fees\tOrder ID\tFund Size\tBTC Reserves\tOutstanding USDC\tOutstanding BTC\tTotal Fees\tTotal Rebates';
+  const row = (orderId) => `2026-01-0${orderId}T00:00:00.000Z\t2026-01-0${orderId}\tBUY\t100.00\t1.00000000\t100.00\t0.1000\t0.0000\t0.1000\torder-${orderId}\t1000.00\t1.00000000\t0.00\t0.00\t0.1000\t0.0000`;
+
+  const exchangeDir = () => path.join(tmpDir, EXCHANGE);
+  const fundDir = () => path.join(exchangeDir(), PAIR);
+
+  it('is a no-op when neither the exchange-level nor per-fund file exists', () => {
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+    assert.deepEqual(result, { repaired: false, action: 'none', rowsAppended: 0 });
+  });
+
+  it('moves a lone exchange-level file into the fund directory', () => {
+    const content = [HEADER, row(1), row(2)].join('\n') + '\n';
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', content);
+
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    assert.equal(result.repaired, true);
+    assert.equal(result.action, 'moved');
+    assert.ok(!fs.existsSync(path.join(exchangeDir(), 'transactions.tsv')), 'exchange-level copy must be gone');
+    assert.equal(fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8'), content, 'moved content must be byte-identical');
+  });
+
+  it('is a no-op when only the per-fund file exists (already reconciled)', () => {
+    const content = [HEADER, row(1)].join('\n') + '\n';
+    writeLegacyFile(fundDir(), 'transactions.tsv', content);
+
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    assert.deepEqual(result, { repaired: false, action: 'none', rowsAppended: 0 });
+    assert.equal(fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8'), content, 'per-fund file must be untouched');
+  });
+
+  it('appends the exchange-level data rows (never its header) and removes the stranded copy, with no duplicated rows and exactly one header', () => {
+    const perFundContent = [HEADER, row(1), row(2)].join('\n') + '\n';
+    const exchangeLevelContent = [HEADER, row(3), row(4)].join('\n') + '\n';
+    writeLegacyFile(fundDir(), 'transactions.tsv', perFundContent);
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', exchangeLevelContent);
+
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    assert.equal(result.repaired, true);
+    assert.equal(result.action, 'merged');
+    assert.equal(result.rowsAppended, 2);
+    assert.ok(!fs.existsSync(path.join(exchangeDir(), 'transactions.tsv')), 'exchange-level copy must be removed');
+
+    const merged = fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8');
+    const lines = merged.split('\n').filter(Boolean);
+    assert.equal(lines.filter(l => l === HEADER).length, 1, 'exactly one header line');
+    // Row order preserved: exchange-level rows are strictly newer, so a plain
+    // append keeps timestamp order — fund rows first, then exchange-level rows.
+    assert.deepEqual(lines, [HEADER, row(1), row(2), row(3), row(4)]);
+  });
+
+  it('is idempotent: a second call after a move does nothing further', () => {
+    const content = [HEADER, row(1)].join('\n') + '\n';
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', content);
+
+    const first = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+    assert.equal(first.action, 'moved');
+
+    const second = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+    assert.deepEqual(second, { repaired: false, action: 'none', rowsAppended: 0 });
+    assert.equal(fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8'), content);
+  });
+
+  it('is idempotent: a second call after a merge duplicates no rows', () => {
+    const perFundContent = [HEADER, row(1)].join('\n') + '\n';
+    const exchangeLevelContent = [HEADER, row(2)].join('\n') + '\n';
+    writeLegacyFile(fundDir(), 'transactions.tsv', perFundContent);
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', exchangeLevelContent);
+
+    const first = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+    assert.equal(first.action, 'merged');
+    const afterFirst = fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8');
+
+    // Second call: nothing at the exchange level any more, so it's a plain no-op.
+    const second = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+    assert.deepEqual(second, { repaired: false, action: 'none', rowsAppended: 0 });
+    assert.equal(fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8'), afterFirst, 'no duplicate rows after a second call');
+  });
+
+  it('recovers idempotently from a crash between the merge write and deleting the stranded copy', () => {
+    // Simulate the post-crash state directly: the fund file already reflects
+    // the merge (exchange-level rows appended), but the stranded copy was
+    // never deleted because the process died between the two steps.
+    const mergedContent = [HEADER, row(1), row(2)].join('\n') + '\n';
+    const staleExchangeLevelContent = [HEADER, row(2)].join('\n') + '\n';
+    writeLegacyFile(fundDir(), 'transactions.tsv', mergedContent);
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', staleExchangeLevelContent);
+
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    assert.equal(result.repaired, true);
+    assert.equal(result.action, 'merged');
+    assert.ok(!fs.existsSync(path.join(exchangeDir(), 'transactions.tsv')), 'stranded copy must be cleaned up');
+    // Row must NOT be duplicated — the rewrite was skipped because row(2) was
+    // already the tail of the fund file.
+    assert.equal(fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8'), mergedContent);
+  });
+
+  it('treats an empty stranded file as nothing to append and just removes it', () => {
+    writeLegacyFile(fundDir(), 'transactions.tsv', [HEADER, row(1)].join('\n') + '\n');
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', '');
+
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    assert.equal(result.repaired, true);
+    assert.equal(result.rowsAppended, 0);
+    assert.ok(!fs.existsSync(path.join(exchangeDir(), 'transactions.tsv')));
+    assert.equal(fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8'), [HEADER, row(1)].join('\n') + '\n');
+  });
+
+  it('treats a header-only stranded file as nothing to append and just removes it', () => {
+    const perFundContent = [HEADER, row(1)].join('\n') + '\n';
+    writeLegacyFile(fundDir(), 'transactions.tsv', perFundContent);
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', HEADER + '\n');
+
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    assert.equal(result.rowsAppended, 0);
+    assert.equal(fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8'), perFundContent);
+  });
+
+  it('merges correctly when the per-fund file is itself header-only', () => {
+    writeLegacyFile(fundDir(), 'transactions.tsv', HEADER + '\n');
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', [HEADER, row(1)].join('\n') + '\n');
+
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    assert.equal(result.action, 'merged');
+    assert.equal(result.rowsAppended, 1);
+    const lines = fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8').split('\n').filter(Boolean);
+    assert.deepEqual(lines, [HEADER, row(1)]);
+  });
+
+  it('does not glue rows together when the exchange-level file has no trailing newline', () => {
+    const perFundContent = [HEADER, row(1)].join('\n') + '\n';
+    const exchangeLevelContent = [HEADER, row(2)].join('\n'); // no trailing newline
+    writeLegacyFile(fundDir(), 'transactions.tsv', perFundContent);
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', exchangeLevelContent);
+
+    migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    const lines = fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8').split('\n').filter(Boolean);
+    assert.deepEqual(lines, [HEADER, row(1), row(2)], 'row(1) and row(2) must remain on separate lines');
+  });
+
+  it('does not glue rows together when the per-fund file has no trailing newline', () => {
+    const perFundContent = [HEADER, row(1)].join('\n'); // no trailing newline
+    const exchangeLevelContent = [HEADER, row(2)].join('\n') + '\n';
+    writeLegacyFile(fundDir(), 'transactions.tsv', perFundContent);
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', exchangeLevelContent);
+
+    migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    const lines = fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8').split('\n').filter(Boolean);
+    assert.deepEqual(lines, [HEADER, row(1), row(2)], 'row(1) and row(2) must remain on separate lines');
+  });
+
+  it('handles CRLF line endings in the stranded file without corrupting rows', () => {
+    const perFundContent = [HEADER, row(1)].join('\n') + '\n';
+    const exchangeLevelContent = [HEADER, row(2)].join('\r\n') + '\r\n';
+    writeLegacyFile(fundDir(), 'transactions.tsv', perFundContent);
+    writeLegacyFile(exchangeDir(), 'transactions.tsv', exchangeLevelContent);
+
+    const result = migration.repairStrandedTransactionLog(EXCHANGE, PAIR);
+
+    assert.equal(result.rowsAppended, 1);
+    const lines = fs.readFileSync(path.join(fundDir(), 'transactions.tsv'), 'utf8').split('\n').filter(Boolean);
+    assert.deepEqual(lines, [HEADER, row(1), row(2)]);
+  });
+});
+
+describe('migrateExchangeToPairs invokes the transaction-log repair in both branches (issue #543)', () => {
+  const HEADER = 'Timestamp\tDate\tType\tPrice\tBTC Amount\tUSDC Amount\tFees\tRebates\tNet Fees\tOrder ID\tFund Size\tBTC Reserves\tOutstanding USDC\tOutstanding BTC\tTotal Fees\tTotal Rebates';
+  const row = (orderId) => `2026-01-0${orderId}T00:00:00.000Z\t2026-01-0${orderId}\tBUY\t100.00\t1.00000000\t100.00\t0.1000\t0.0000\t0.1000\torder-${orderId}\t1000.00\t1.00000000\t0.00\t0.00\t0.1000\t0.0000`;
+
+  it('reconciles a stranded transactions.tsv even when needsPairMigration is false (already-migrated install)', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    const fundDir = path.join(exchangeDir, PAIR);
+    // Already-migrated layout: state lives in the fund dir.
+    writeLegacyFile(fundDir, 'state.json', '{}');
+    writeLegacyFile(fundDir, 'transactions.tsv', [HEADER, row(1)].join('\n') + '\n');
+    // Post-migration bug recreated an exchange-level copy.
+    writeLegacyFile(exchangeDir, 'transactions.tsv', [HEADER, row(2)].join('\n') + '\n');
+
+    assert.equal(migration.needsPairMigration(EXCHANGE), false);
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.migrated, false, 'the rest of migration has nothing to do');
+    assert.equal(result.transactionLogRepair.repaired, true);
+    assert.equal(result.transactionLogRepair.action, 'merged');
+    assert.ok(!fs.existsSync(path.join(exchangeDir, 'transactions.tsv')));
+    const lines = fs.readFileSync(path.join(fundDir, 'transactions.tsv'), 'utf8').split('\n').filter(Boolean);
+    assert.deepEqual(lines, [HEADER, row(1), row(2)]);
+  });
+
+  it('reconciles a stranded transactions.tsv during a full legacy migration when normalizeExchangeTreeToPairs skipped it', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    const fundDir = path.join(exchangeDir, PAIR);
+    // Legacy layout not yet migrated (state.json at exchange level)...
+    writeLegacyFile(exchangeDir, 'state.json', '{}');
+    // ...but a per-fund transactions.tsv already exists from a previous
+    // partial migration attempt, AND a fresh exchange-level copy was
+    // recreated by the unpatched accessor since.
+    writeLegacyFile(fundDir, 'transactions.tsv', [HEADER, row(1)].join('\n') + '\n');
+    writeLegacyFile(exchangeDir, 'transactions.tsv', [HEADER, row(2)].join('\n') + '\n');
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.migrated, true);
+    assert.deepEqual(result.skippedFiles, ['transactions.tsv'], 'the generic move must skip the colliding file');
+    assert.equal(result.transactionLogRepair.repaired, true);
+    assert.equal(result.transactionLogRepair.action, 'merged');
+    assert.ok(!fs.existsSync(path.join(exchangeDir, 'transactions.tsv')));
+    const lines = fs.readFileSync(path.join(fundDir, 'transactions.tsv'), 'utf8').split('\n').filter(Boolean);
+    assert.deepEqual(lines, [HEADER, row(1), row(2)]);
+  });
+
+  it('a plain never-migrated install moves transactions.tsv via the generic per-fund move, and the repair is then a no-op', () => {
+    const exchangeDir = path.join(tmpDir, EXCHANGE);
+    const fundDir = path.join(exchangeDir, PAIR);
+    writeLegacyFile(exchangeDir, 'state.json', '{}');
+    writeLegacyFile(exchangeDir, 'transactions.tsv', [HEADER, row(1)].join('\n') + '\n');
+
+    const result = migration.migrateExchangeToPairs(EXCHANGE);
+
+    assert.equal(result.migrated, true);
+    assert.ok(result.skippedFiles.length === 0 || !result.skippedFiles.includes('transactions.tsv'));
+    assert.deepEqual(result.transactionLogRepair, { repaired: false, action: 'none', rowsAppended: 0 });
+    assert.ok(!fs.existsSync(path.join(exchangeDir, 'transactions.tsv')));
+    assert.equal(fs.readFileSync(path.join(fundDir, 'transactions.tsv'), 'utf8'), [HEADER, row(1)].join('\n') + '\n');
+  });
+});

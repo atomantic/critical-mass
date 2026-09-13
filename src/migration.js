@@ -473,6 +473,132 @@ const repairStrandedLongTermCandles = (exchange) => {
 };
 
 /**
+ * Split TSV file content into a header line and its data rows, tolerating the
+ * edge cases a hand-edited or historically-written log file can have:
+ *  - completely empty file (no header at all)
+ *  - header-only file, with or without a trailing newline
+ *  - CRLF line endings
+ *  - a final data row with no trailing newline
+ * The trailing-newline handling matters: naively splitting on '\n' and using
+ * every element as a row would either invent a bogus empty trailing row (file
+ * ends with '\n') or, if a caller then re-joins rows without accounting for
+ * that, glue a rowless-file's last real row to the next appended row.
+ *
+ * @param {string} content
+ * @returns {{header: string|null, dataLines: string[]}}
+ */
+const parseTsvLines = (content) => {
+  if (content.length === 0) return { header: null, dataLines: [] };
+  const lines = content.split(/\r\n|\r|\n/);
+  // A trailing newline produces one bogus empty element at the end — drop it,
+  // it is not a data row.
+  if (lines[lines.length - 1] === '') lines.pop();
+  const [header, ...dataLines] = lines;
+  return { header: header ?? null, dataLines };
+};
+
+/**
+ * True if `arr` ends with exactly the elements of `suffix`, in order.
+ * @param {string[]} arr
+ * @param {string[]} suffix
+ * @returns {boolean}
+ */
+const endsWithSuffix = (arr, suffix) => {
+  if (suffix.length === 0) return true;
+  if (arr.length < suffix.length) return false;
+  const offset = arr.length - suffix.length;
+  return suffix.every((line, i) => arr[offset + i] === line);
+};
+
+/**
+ * One-time repair for a stranded `data/<exchange>/transactions.tsv` (issue #543).
+ *
+ * `transactions.tsv` is listed in PER_FUND_FILES, but its accessor
+ * (logger.js's getLogFile) historically ignored `pair` and always resolved
+ * the exchange level — disagreeing with its own classification. That mismatch
+ * produces three possible install states, independent of whether the rest of
+ * migrateExchangeToPairs has anything to do (an exchange can be fully migrated
+ * — state.json/regime-state.json already per-fund — and still have this
+ * left over):
+ *
+ *  - Neither file exists: nothing to repair.
+ *  - Only the exchange-level file exists: it holds the fund's entire history
+ *    (never migrated yet, or the generic per-fund-file move above skipped it
+ *    due to a same-name collision at the fund directory). Move it into the
+ *    fund directory.
+ *  - Both exist: the pre-upgrade history was already relocated into the fund
+ *    directory, but the unpatched accessor kept resolving the exchange level
+ *    and recreated a fresh `transactions.tsv` there on the next write. Every
+ *    row in that recreated file was necessarily written AFTER the move (the
+ *    accessor could not have written there otherwise), so appending it
+ *    verbatim onto the fund file preserves timestamp order. Append its data
+ *    rows only — never its header — then delete the exchange-level copy.
+ *
+ * The merge branch writes through atomicWriteSync (temp file + rename) so a
+ * crash mid-repair can never leave a truncated transactions.tsv. The whole
+ * function is idempotent, including across a crash landing between the
+ * atomic write and the deletion of the stranded copy: on re-entry the rows
+ * that would be appended are detected as already present (a trailing suffix
+ * of the fund file) and the append is skipped, so a second run never
+ * duplicates a row — it only finishes deleting the leftover stranded file.
+ *
+ * @param {string} exchange
+ * @param {string} pair - Resolved default pair for `exchange`; callers must
+ *   already have confirmed this is non-empty (config.exchanges.<exchange>.productId).
+ * @returns {{repaired: boolean, action: 'none'|'moved'|'merged', rowsAppended: number}}
+ */
+const repairStrandedTransactionLog = (exchange, pair) => {
+  const exchangeDir = path.join(DATA_DIR, exchange);
+  const exchangeLevelFile = path.join(exchangeDir, 'transactions.tsv');
+  if (!fs.existsSync(exchangeLevelFile)) {
+    return { repaired: false, action: 'none', rowsAppended: 0 };
+  }
+
+  const fundDir = resolveFundPath(exchangeDir, pair);
+  const perFundFile = path.join(fundDir, 'transactions.tsv');
+
+  if (!fs.existsSync(perFundFile)) {
+    // Lone exchange-level file: relocate it. A rename is a single atomic
+    // filesystem operation — there is no partial state a crash could leave.
+    fs.mkdirSync(fundDir, { recursive: true });
+    fs.renameSync(exchangeLevelFile, perFundFile);
+    console.log(`  ✓ [Transaction Log Repair] Moved stranded ${exchange}/transactions.tsv → ${exchange}/${pair}/transactions.tsv`);
+    return { repaired: true, action: 'moved', rowsAppended: 0 };
+  }
+
+  // Both exist: reconcile by appending the exchange-level file's data rows
+  // (never its header) onto the fund file, then removing the stranded copy.
+  const perFundParsed = parseTsvLines(fs.readFileSync(perFundFile, 'utf8'));
+  const exchangeParsed = parseTsvLines(fs.readFileSync(exchangeLevelFile, 'utf8'));
+
+  if (exchangeParsed.dataLines.length === 0) {
+    // Empty or header-only stray file: nothing to append, just clean it up.
+    fs.rmSync(exchangeLevelFile);
+    console.log(`  ✓ [Transaction Log Repair] Removed empty stranded ${exchange}/transactions.tsv (no data rows to merge)`);
+    return { repaired: true, action: 'merged', rowsAppended: 0 };
+  }
+
+  // Resuming after a crash between the write below and the delete: the rows
+  // we would append are already the tail of the fund file. Skip the rewrite
+  // (it would duplicate them) and just finish the cleanup.
+  const alreadyAppended = endsWithSuffix(perFundParsed.dataLines, exchangeParsed.dataLines);
+
+  if (!alreadyAppended) {
+    const header = perFundParsed.header ?? exchangeParsed.header;
+    const dataLines = [...perFundParsed.dataLines, ...exchangeParsed.dataLines];
+    const merged = header === null ? '' : [header, ...dataLines].join('\n') + '\n';
+    // Lazy require: state-tracker requires migration at module load, so a
+    // top-level require here would form a cycle.
+    const { atomicWriteSync } = require('./state-tracker');
+    atomicWriteSync(perFundFile, merged);
+  }
+
+  fs.rmSync(exchangeLevelFile);
+  console.log(`  ✓ [Transaction Log Repair] Merged ${exchangeParsed.dataLines.length} stranded row(s) from ${exchange}/transactions.tsv into ${exchange}/${pair}/transactions.tsv`);
+  return { repaired: true, action: 'merged', rowsAppended: exchangeParsed.dataLines.length };
+};
+
+/**
  * Migrate an exchange from the legacy single-pair layout to the multi-pair
  * layout by moving all per-fund files into a subdirectory named after the
  * exchange's default pair (read from config).
@@ -490,16 +616,31 @@ const repairStrandedLongTermCandles = (exchange) => {
  *
  * Also un-strands any long-term-candles-*.json files a previous version of
  * this migration incorrectly moved into a pair subdirectory (see
- * repairStrandedLongTermCandles) — this runs regardless of whether the rest
- * of the migration below has anything to do.
+ * repairStrandedLongTermCandles), and reconciles a stranded exchange-level
+ * transactions.tsv (see repairStrandedTransactionLog) — both run regardless
+ * of whether the rest of the migration below has anything to do, so an
+ * already-migrated exchange still gets reconciled.
  *
  * @param {string} exchange
- * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, skippedFiles?: string[], repairedFiles?: number, skippedRepairFiles?: string[]}}
+ * @returns {{migrated: boolean, defaultPair: string|null, movedFiles: number, reason?: string, skippedFiles?: string[], repairedFiles?: number, skippedRepairFiles?: string[], transactionLogRepair?: {repaired: boolean, action: string, rowsAppended: number}}}
  */
 const migrateExchangeToPairs = (exchange) => {
   const { repairedFiles, skippedFiles: skippedRepairFiles } = repairStrandedLongTermCandles(exchange);
 
+  // Resolve the default pair from config (legacy productId field) up front —
+  // both the no-op early-return below and the main migration path need it to
+  // reconcile a stranded transactions.tsv.
+  const configUtils = require('./config-utils');
+  const defaultPairForRepair = configUtils.getDefaultPair(exchange);
+
   if (!needsPairMigration(exchange)) {
+    // The rest of the migration has nothing to do, but a stranded
+    // transactions.tsv (recreated post-migration by the unpatched accessor)
+    // can still exist even on an exchange whose state.json/regime-state.json
+    // are already per-fund — reconcile it here (issue #543).
+    const transactionLogRepair = defaultPairForRepair
+      ? repairStrandedTransactionLog(exchange, defaultPairForRepair)
+      : { repaired: false, action: 'none', rowsAppended: 0 };
     return {
       migrated: false,
       defaultPair: null,
@@ -507,12 +648,11 @@ const migrateExchangeToPairs = (exchange) => {
       reason: 'no-op (already migrated or empty)',
       repairedFiles,
       skippedRepairFiles,
+      transactionLogRepair,
     };
   }
 
-  // Resolve the default pair from config (legacy productId field).
-  const configUtils = require('./config-utils');
-  const defaultPair = configUtils.getDefaultPair(exchange);
+  const defaultPair = defaultPairForRepair;
   if (!defaultPair) {
     return {
       migrated: false,
@@ -521,6 +661,7 @@ const migrateExchangeToPairs = (exchange) => {
       reason: `Cannot determine default pair for ${exchange} (config.exchanges.${exchange}.productId missing)`,
       repairedFiles,
       skippedRepairFiles,
+      transactionLogRepair: { repaired: false, action: 'none', rowsAppended: 0 },
     };
   }
 
@@ -569,7 +710,15 @@ const migrateExchangeToPairs = (exchange) => {
   }
 
   console.log(`[Pair Migration] ${exchange}: moved ${moved} files (${skippedFiles.length} skipped)`);
-  return { migrated: true, defaultPair, movedFiles: moved, skippedFiles, repairedFiles, skippedRepairFiles };
+
+  // Reconcile a stranded exchange-level transactions.tsv (issue #543). Runs
+  // AFTER normalizeExchangeTreeToPairs above so the common case — no per-fund
+  // copy existed yet — is already handled by the generic per-fund-file move
+  // and counted in `moved`; this only has work left when normalizeExchangeTreeToPairs
+  // skipped transactions.tsv (both a stranded and a per-fund copy exist).
+  const transactionLogRepair = repairStrandedTransactionLog(exchange, defaultPair);
+
+  return { migrated: true, defaultPair, movedFiles: moved, skippedFiles, repairedFiles, skippedRepairFiles, transactionLogRepair };
 };
 
 /**
@@ -596,6 +745,7 @@ module.exports = {
   migrateExchangeToPairs,
   normalizeExchangeTreeToPairs,
   repairStrandedLongTermCandles,
+  repairStrandedTransactionLog,
   isPerFundFile,
   PER_FUND_FILES,
   PER_FUND_FILE_PREFIXES,
