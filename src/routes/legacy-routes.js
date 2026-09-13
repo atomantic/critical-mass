@@ -4,7 +4,7 @@
  */
 
 const stateTracker = require('../state-tracker');
-const { getExchangeConfig, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, getRegimeConfig } = require('../config-utils');
+const { getExchangeConfig, getDefaultPair, updateExchangeConfig, setExchangeEnabled, setExchangeDryRun, getRegimeConfig } = require('../config-utils');
 const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
@@ -29,6 +29,12 @@ const legacyLogger = (route) => createContextLogger({
  */
 module.exports = (app, deps) => {
   const { parseTSV, calculateCostBasis, getNextTradeInfo } = deps;
+
+  // Every route here is pinned to coinbase's default fund by definition. State
+  // and cycle calls name that fund explicitly rather than relying on each
+  // callee's argument-omission fallback, so the intent is stated once and a
+  // second coinbase fund can never be reached from an unprefixed legacy route.
+  const legacyPair = () => getDefaultPair('coinbase') ?? undefined;
 
   app.get('/api/config', (req, res) => {
     const config = getExchangeConfig('coinbase');
@@ -84,7 +90,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/state', (req, res) => {
     const config = getExchangeConfig('coinbase');
-    const state = stateTracker.loadState(config, 'coinbase');
+    const state = stateTracker.loadState(config, 'coinbase', legacyPair());
     res.json(state);
   });
 
@@ -97,7 +103,7 @@ module.exports = (app, deps) => {
   app.get('/api/status', async (req, res) => {
     const { getAdapter } = require('../adapters');
     const config = getExchangeConfig('coinbase');
-    const state = stateTracker.loadState(config, 'coinbase');
+    const state = stateTracker.loadState(config, 'coinbase', legacyPair());
 
     let currentPrice = 0;
     let usdcBalance = { available: 0, hold: 0 };
@@ -128,7 +134,7 @@ module.exports = (app, deps) => {
 
   app.get('/api/summary', (req, res) => {
     const config = getExchangeConfig('coinbase');
-    const state = stateTracker.loadState(config, 'coinbase');
+    const state = stateTracker.loadState(config, 'coinbase', legacyPair());
     const logFile = getLogFile('coinbase');
     const transactions = parseTSV(logFile);
 
@@ -160,10 +166,11 @@ module.exports = (app, deps) => {
   });
 
   app.post('/api/sync', asyncRoute(async (req, res) => {
+    const pair = legacyPair();
     const config = getExchangeConfig('coinbase');
-    const state = stateTracker.loadState(config, 'coinbase');
+    const state = stateTracker.loadState(config, 'coinbase', pair);
     const filledOrders = await syncOrderStatuses(state, 'coinbase');
-    if (filledOrders.length > 0) stateTracker.saveState(state, 'coinbase');
+    if (filledOrders.length > 0) stateTracker.saveState(state, 'coinbase', pair);
     res.json({ success: true, filledOrders: filledOrders.length, lastSyncTime: new Date().toISOString() });
   }));
 
@@ -173,7 +180,7 @@ module.exports = (app, deps) => {
 
   app.post('/api/trade', asyncRoute(async (req, res) => {
     legacyLogger('/api/trade').info('ℹ️ Manual trade triggered via API', { action: 'manual-trade' });
-    const result = await runIntervalCycle('coinbase');
+    const result = await runIntervalCycle('coinbase', legacyPair());
     res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
   }));
 

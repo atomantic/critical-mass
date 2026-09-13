@@ -7,11 +7,12 @@ const orderManager = require('./order-manager');
 const logger = require('./logger');
 const { createContextLogger } = logger;
 const { consolidatePendingOrders } = require('./order-manager');
-const { getExchangeConfig, getEnabledExchanges, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
+const { getFundConfig, getDefaultPair, getBaseCurrency, getQuoteCurrency } = require('./config-utils');
 const { normalizeConfig, formatInterval, shouldRunConsolidation, getConsolidationRunId } = require('./interval-utils');
 const { tradeEvents } = require('./trade-events');
 const { getFibonacciBuyAmount } = require('./fibonacci-utils');
 const { trackPendingWrite } = require('./pending-writes');
+const { fundKey } = require('./shared-utils');
 
 /**
  * @typedef {import('./types').ExchangeConfig} ExchangeConfig
@@ -28,11 +29,30 @@ const FEE_RATE = 0.00125; // ~0.125% taker fee
 const REBATE_RATE = 0.00031; // ~0.031% maker rebate
 
 /**
- * Load configuration for an exchange
+ * Load configuration for one fund (exchange + pair).
+ *
+ * `pair` is optional everywhere in this module: omitting it keeps the
+ * documented default-fund fallback that single-fund installs and the legacy
+ * unprefixed routes rely on.
  * @param {string} [exchange] - Exchange name (default: coinbase)
- * @returns {ExchangeConfig} Configuration
+ * @param {string} [pair] - Fund pair (default: the exchange's default fund)
+ * @returns {ExchangeConfig} Fund configuration
  */
-const loadConfig = (exchange = 'coinbase') => getExchangeConfig(exchange);
+const loadConfig = (exchange = 'coinbase', pair) => getFundConfig(exchange, pair);
+
+/**
+ * Resolve which fund a call targets, once, at the module boundary.
+ *
+ * Every config read, state read/write and placement-intent lookup below is
+ * keyed off the resolved pair, so a caller that names a fund can no longer
+ * have its order land on the exchange's default fund. An omitted pair still
+ * resolves to the default fund; `undefined` is preserved when an exchange has
+ * no configured fund so downstream path resolution behaves as it always did.
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Requested fund pair
+ * @returns {string|undefined} Resolved pair
+ */
+const resolveFundPair = (exchange, pair) => pair ?? getDefaultPair(exchange) ?? undefined;
 
 /**
  * Build a context logger for one DCA cycle operation.
@@ -82,15 +102,16 @@ const syncOrderStatuses = async (state, exchange = 'coinbase') => {
 };
 
 /**
- * Execute order consolidation for an exchange
+ * Execute order consolidation for one fund
  * @param {string} [exchange] - Exchange name (default: coinbase)
- * @param {string[]} [orderIds] - Specific order IDs to consolidate (optional, defaults to all pending)
+ * @param {string} [pair] - Fund pair (default: the exchange's default fund)
+ * @param {string[]} [orderIds] - Specific order IDs to consolidate (optional, defaults to every pending order of THIS fund)
  * @returns {Promise<ConsolidationResult>} Result of the consolidation
  */
-const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
-  const config = loadConfig(exchange);
+const executeConsolidation = async (exchange = 'coinbase', pair, orderIds = null) => {
+  const config = loadConfig(exchange, pair);
   const cycleLogger = dcaLogger(exchange, config.productId);
-  const state = stateTracker.loadState(config, exchange);
+  const state = stateTracker.loadState(config, exchange, pair);
   const adapter = getAdapter(exchange);
 
   // Get pending orders to consolidate
@@ -123,7 +144,7 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
       state.lastConsolidationId = getConsolidationRunId(config.consolidateInterval);
       state.lastConsolidationTimestamp = Date.now();
     }
-    stateTracker.saveState(state, exchange);
+    stateTracker.saveState(state, exchange, pair);
     cycleLogger.info(`ℹ️ [${exchange}] Consolidation placed no order — all eligible orders filled during cancel (${result.filledDuringCancelOrderIds?.length || 0} filled)`);
     return result;
   }
@@ -150,7 +171,7 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
     }
 
     // Save state
-    stateTracker.saveState(state, exchange);
+    stateTracker.saveState(state, exchange, pair);
 
     // Log the transaction
     logger.logConsolidation(result, state, exchange);
@@ -172,7 +193,7 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
     // then persist so the engine doesn't keep tracking the cancelled orders.
     if (result.restoredOrders?.length || result.failedRestoreOrderIds?.length) {
       stateTracker.applyConsolidationRecovery(state, result.restoredOrders, result.failedRestoreOrderIds);
-      stateTracker.saveState(state, exchange);
+      stateTracker.saveState(state, exchange, pair);
       if (result.failedRestoreOrderIds?.length) {
         cycleLogger.error(`❌ [${exchange}] ${result.failedRestoreOrderIds.length} sell(s) left naked after failed consolidation — operator action needed: ${result.failedRestoreOrderIds.join(', ')}`, {
           failedRestoreOrderIds: result.failedRestoreOrderIds,
@@ -211,9 +232,10 @@ const executeConsolidation = async (exchange = 'coinbase', orderIds = null) => {
  * @param {ExchangeConfig} config - Configuration
  * @param {Object} adapter - Exchange adapter
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Fund pair (default: the exchange's default fund)
  * @returns {Promise<{recovered: number, failed: number}>} Reconciliation outcome
  */
-const reconcileAwaitingSells = async (state, config, adapter, exchange) => {
+const reconcileAwaitingSells = async (state, config, adapter, exchange, pair) => {
   const cycleLogger = dcaLogger(exchange, config.productId);
   const awaiting = (state.orders || []).filter(o => o.status === 'awaiting_sell');
   if (awaiting.length === 0) {
@@ -237,7 +259,7 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange) => {
 
     let sellOrder;
     try {
-      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange });
+      sellOrder = await orderManager.placeSellOrderWithRetry(config, buyDetails, adapter, 3, { exchange, pair });
     } catch (err) {
       stateTracker.markSellPlacementFailed(state, order.buyOrderId, err.message);
       cycleLogger.error(`❌ 🔧 [${exchange}] Recovery sell failed for buy ${order.buyOrderId} — marked sell_failed: ${err.message}`, {
@@ -261,14 +283,15 @@ const reconcileAwaitingSells = async (state, config, adapter, exchange) => {
 };
 
 /**
- * Run the interval DCA cycle for an exchange
+ * Run the interval DCA cycle for one fund
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Fund pair (default: the exchange's default fund)
  * @returns {Promise<CycleResult>} Result of the cycle
  */
-const runIntervalCycle = async (exchange = 'coinbase') => {
-  const config = loadConfig(exchange);
+const runIntervalCycle = async (exchange = 'coinbase', pair) => {
+  const config = loadConfig(exchange, pair);
   const cycleLogger = dcaLogger(exchange, config.productId);
-  const state = stateTracker.loadState(config, exchange);
+  const state = stateTracker.loadState(config, exchange, pair);
   const intervalLabel = formatInterval(config.intervalType);
   const adapter = getAdapter(exchange);
   const isFibonacci = config.dcaStrategy === 'fibonacci';
@@ -302,7 +325,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       const cyclePosition = state.fibPosition || 0;
       stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
       logger.logFibSellFilled(fibFill, state, cyclePosition, exchange);
-      stateTracker.saveState(state, exchange);
+      stateTracker.saveState(state, exchange, pair);
       cycleLogger.info(`ℹ️ [${exchange}] Fibonacci cycle complete - now at position ${state.fibPosition || 0}`);
       tradeEvents.cycleComplete(exchange, 'fib_cycle_complete', { profit: fibFill.netProceeds, buysInCycle: cyclePosition });
     }
@@ -315,16 +338,16 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
 
     if (filledOrders.length > 0) {
       cycleLogger.info(`ℹ️ [${exchange}] ${filledOrders.length} orders filled since last run`);
-      stateTracker.saveState(state, exchange);
+      stateTracker.saveState(state, exchange, pair);
     }
 
     // Recover orphaned awaiting_sell rows (crash between buy-save and sell
     // placement) BEFORE evaluating a new buy — otherwise the filled buy sits
     // with no tracked sell while later intervals keep buying (issue #129).
     if (config.dryRun !== true) {
-      const recon = await reconcileAwaitingSells(state, config, adapter, exchange);
+      const recon = await reconcileAwaitingSells(state, config, adapter, exchange, pair);
       if (recon.recovered > 0 || recon.failed > 0) {
-        stateTracker.saveState(state, exchange);
+        stateTracker.saveState(state, exchange, pair);
       }
     }
   }
@@ -335,7 +358,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   // this fund's capital, so no new buy may be submitted until an operator
   // reconciles it — and because the record is on disk, the block survives a
   // restart. Status, fill sync and awaiting-sell recovery above all still run.
-  const blockingIntents = stateTracker.getBlockingPlacementIntents(exchange);
+  const blockingIntents = stateTracker.getBlockingPlacementIntents(exchange, pair);
   if (blockingIntents.length > 0) {
     const [oldest] = blockingIntents;
     cycleLogger.error(`⏸️ [${exchange}] Interval cycle held — ${blockingIntents.length} unresolved placement intent(s); oldest ${oldest.action ?? 'order'} ${oldest.id} needs operator reconcile`, {
@@ -533,7 +556,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     tradeEvents.sellPlaced(exchange, sellOrder.orderId, sellOrder.baseSize, sellOrder.limitPrice);
   } else {
     // Execute real trades
-    buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter, { exchange });
+    buyResult = await orderManager.executeDailyBuy(config, actualBuyAmount, adapter, { exchange, pair });
     tradeEvents.buyFilled(exchange, buyResult.assetAmount, buyResult.price, buyResult.fees || buyResult.netFees || 0);
 
     /**
@@ -572,7 +595,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       // Fibonacci strategy: persist the buy BEFORE attempting the
       // consolidated sell so a sell-placement throw cannot lose it (issue #106)
       stateTracker.updateAfterFibBuy(state, buyResult, config);
-      stateTracker.saveState(state, exchange);
+      stateTracker.saveState(state, exchange, pair);
       const cycleInfo = stateTracker.getFibonacciCycleInfo(state);
       logger.logFibBuy(buyResult, state, cycleInfo, exchange);
 
@@ -583,7 +606,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
           cycleInfo.avgCostBasis,
           state.fibActiveSellOrderId,
           adapter,
-          { exchange }
+          { exchange, pair }
         );
 
         if (fibSellResult.alreadyFilled) {
@@ -596,7 +619,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
           }
           // The sell filled after this interval’s buy was already booked; carry that buy forward.
           stateTracker.settleFibSellAndCarryUncoveredBuys(state, fibFill);
-          stateTracker.saveState(state, exchange);
+          stateTracker.saveState(state, exchange, pair);
           logger.logFibSellFilled(fibFill, state, cycleInfo.position, exchange);
           // Now place new sell order for this buy
           const newFibSellResult = await orderManager.placeFibonacciSellOrder(
@@ -605,7 +628,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
             buyResult.price + (buyResult.netFees || 0) / buyResult.assetAmount,
             null,
             adapter,
-            { exchange }
+            { exchange, pair }
           );
           sellOrder = newFibSellResult.sellOrder;
           holdbackAsset = newFibSellResult.holdbackAsset;
@@ -634,14 +657,14 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
       // a sell-placement throw cannot lose it (issue #106)
       holdbackAsset = buyResult.assetAmount * (config.holdbackPercent / 100);
       stateTracker.recordBuyFill(state, buyResult, config);
-      stateTracker.saveState(state, exchange);
+      stateTracker.saveState(state, exchange, pair);
       logger.logBuy(buyResult, state, exchange);
 
       try {
-        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange });
+        sellOrder = await orderManager.placeSellOrderWithRetry(config, buyResult, adapter, 3, { exchange, pair });
       } catch (err) {
         stateTracker.markSellPlacementFailed(state, buyResult.orderId, err.message);
-        stateTracker.saveState(state, exchange);
+        stateTracker.saveState(state, exchange, pair);
         return sellPlacementFailed(err);
       }
 
@@ -652,7 +675,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
   }
 
   // Save state
-  stateTracker.saveState(state, exchange);
+  stateTracker.saveState(state, exchange, pair);
 
   const baseCurrency = getBaseCurrency(config.productId);
 
@@ -681,7 +704,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     // Threshold-based consolidation
     if (config.consolidateAfterOrders > 0 && pendingCount > config.consolidateAfterOrders) {
       cycleLogger.info(`ℹ️ [${exchange}] Auto-consolidation triggered: ${pendingCount} orders > ${config.consolidateAfterOrders} threshold`);
-      const consolResult = await executeConsolidation(exchange).catch(err => {
+      const consolResult = await executeConsolidation(exchange, pair).catch(err => {
         cycleLogger.error(`❌ [${exchange}] Auto-consolidation failed: ${err.message}`, {
           trigger: 'auto',
           pendingCount,
@@ -702,7 +725,7 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
     // Interval-based consolidation (only if threshold didn't trigger and we have 2+ orders)
     else if (pendingCount >= 2 && shouldRunConsolidation(state.lastConsolidationId, config.consolidateInterval)) {
       cycleLogger.info(`ℹ️ [${exchange}] Scheduled consolidation triggered: ${config.consolidateInterval} interval`);
-      await executeConsolidation(exchange).catch(err => {
+      await executeConsolidation(exchange, pair).catch(err => {
         cycleLogger.error(`❌ [${exchange}] Scheduled consolidation failed: ${err.message}`, {
           trigger: 'scheduled',
           consolidateInterval: config.consolidateInterval,
@@ -745,20 +768,24 @@ const runIntervalCycle = async (exchange = 'coinbase') => {
 };
 
 /**
- * Check status only (no trading) for an exchange
+ * Check status only (no trading) for one fund
  * @param {string} [exchange] - Exchange name (default: coinbase)
+ * @param {string} [pair] - Fund pair (default: the exchange's default fund)
  * @returns {Promise<StatusResult>} Current status
  */
-const checkStatus = async (exchange = 'coinbase') => {
-  const config = loadConfig(exchange);
-  const state = stateTracker.loadState(config, exchange);
+const checkStatus = async (exchange = 'coinbase', pair) => {
+  // Read-only, but still fund-scoped: resolve once so the config, the state
+  // file and the reported intents all describe the same fund.
+  const fund = resolveFundPair(exchange, pair);
+  const config = loadConfig(exchange, fund);
+  const state = stateTracker.loadState(config, exchange, fund);
   const adapter = getAdapter(exchange);
 
   // Sync order statuses
   const filledOrders = await syncOrderStatuses(state, exchange);
 
   if (filledOrders.length > 0) {
-    stateTracker.saveState(state, exchange);
+    stateTracker.saveState(state, exchange, fund);
   }
 
   const currentPrice = await adapter.getCurrentPrice(config.productId);
@@ -766,8 +793,9 @@ const checkStatus = async (exchange = 'coinbase') => {
 
   return {
     exchange,
+    pair: fund ?? null,
     currentPrice,
-    placementIntents: stateTracker.describePlacementIntents(exchange),
+    placementIntents: stateTracker.describePlacementIntents(exchange, fund),
     config: {
       productId: config.productId,
       totalAllocation: config.totalAllocation,
@@ -809,21 +837,22 @@ const checkStatus = async (exchange = 'coinbase') => {
  * Nothing auto-clears on a timer or on an empty lookup: "we did not find it" is
  * not "it is not there".
  * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Fund pair (default: the exchange's default fund)
  * @param {string} intentId - Intent id to reconcile
  * @param {'adopt'|'discard'} action - Operator decision
  * @returns {Promise<{success: boolean, message?: string, error?: string, orderId?: string}>} Result
  */
-const reconcilePlacementIntent = async (exchange, intentId, action) => {
+const reconcilePlacementIntent = async (exchange, pair, intentId, action) => {
   if (action !== 'adopt' && action !== 'discard') {
     return { success: false, error: `Unknown reconcile action '${action}' (expected 'adopt' or 'discard')` };
   }
-  const intent = stateTracker.describePlacementIntents(exchange).find(i => i.id === intentId && stateTracker.isBlockingPlacementIntent(i));
+  const intent = stateTracker.describePlacementIntents(exchange, pair).find(i => i.id === intentId && stateTracker.isBlockingPlacementIntent(i));
   if (!intent) return { success: false, error: `No unresolved placement intent ${intentId} on this fund (an in-flight dispatch is not reconcilable)` };
 
-  const cycleLogger = dcaLogger(exchange);
+  const cycleLogger = dcaLogger(exchange, pair);
 
   if (action === 'discard') {
-    const removed = stateTracker.resolvePlacementIntent(exchange, undefined, intentId);
+    const removed = stateTracker.resolvePlacementIntent(exchange, pair, intentId);
     if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
     cycleLogger.warn(`🧹 [${exchange}] Operator discarded placement intent ${intentId} (${intent.action ?? 'order'}) — interval cycles resume`, {
       intentId,
@@ -842,7 +871,7 @@ const reconcilePlacementIntent = async (exchange, intentId, action) => {
     return { success: false, error: `${exchange} cannot look up an order by client id; check the exchange manually, then discard the intent` };
   }
 
-  const config = loadConfig(exchange);
+  const config = loadConfig(exchange, pair);
   const found = await adapter.findOrderByClientOrderId(intent.clientOrderId, config.productId).catch((err) => ({ __lookupError: err }));
   if (found?.__lookupError) {
     return { success: false, error: `Lookup failed (${found.__lookupError.message}) — the intent stays pending; we must not assume the order is absent` };
@@ -851,7 +880,7 @@ const reconcilePlacementIntent = async (exchange, intentId, action) => {
     return { success: false, error: `The exchange reports no order for client id ${intent.clientOrderId}. If you have confirmed that, discard the intent instead — an empty lookup is never auto-cleared.` };
   }
 
-  const removed = stateTracker.resolvePlacementIntent(exchange, undefined, intentId);
+  const removed = stateTracker.resolvePlacementIntent(exchange, pair, intentId);
   if (!removed) return { success: false, error: `Placement intent ${intentId} was already resolved` };
   cycleLogger.info(`ℹ️ ✅ [${exchange}] Operator matched placement intent ${intentId} to exchange order ${found.orderId} (status ${found.status})`, {
     intentId,
@@ -866,18 +895,45 @@ const reconcilePlacementIntent = async (exchange, intentId, action) => {
   };
 };
 
+/**
+ * Stamp the fund a mutating entry point actually acted on onto its result.
+ *
+ * Done once here rather than at each of the cycle's many return points, so
+ * every outcome — success, skip, refusal, failure — names its fund and a
+ * future drift between the caller's selector and the fund the engine used is
+ * visible to the client instead of silent (#546).
+ * @template {Object} T
+ * @param {Promise<T>} result - The entry point's result
+ * @param {string|undefined} pair - Fund the call resolved to
+ * @returns {Promise<T & {pair: string|null}>} Result carrying its fund
+ */
+const withFund = (result, pair) => result.then((value) => ({ ...value, pair: pair ?? null }));
+
 // The two mutating entry points are exported wrapped so a backup restore can
 // join a cycle that was already in flight when it took the maintenance lock
-// (issue #429). Internal calls (e.g. consolidation from inside a cycle) stay
-// unwrapped — they are already covered by the outer cycle's registration.
+// (issue #429). The wrapper also resolves the target fund once, so the
+// pending-write label, the work itself and the echoed result all name the same
+// fund. Internal calls (e.g. consolidation from inside a cycle) stay unwrapped
+// — they are already covered by the outer cycle's registration and fund.
 module.exports = {
-  reconcilePlacementIntent,
-  runIntervalCycle: (exchange = 'coinbase') =>
-    trackPendingWrite(`dca-cycle:${exchange}`, () => runIntervalCycle(exchange)),
+  reconcilePlacementIntent: (exchange = 'coinbase', pair, intentId, action) =>
+    reconcilePlacementIntent(exchange, resolveFundPair(exchange, pair), intentId, action),
+  runIntervalCycle: (exchange = 'coinbase', pair) => {
+    const fund = resolveFundPair(exchange, pair);
+    return withFund(
+      trackPendingWrite(`dca-cycle:${fundKey(exchange, fund)}`, () => runIntervalCycle(exchange, fund)),
+      fund,
+    );
+  },
   checkStatus,
   syncOrderStatuses,
   reconcileAwaitingSells,
   loadConfig,
-  executeConsolidation: (exchange = 'coinbase', orderIds = null) =>
-    trackPendingWrite(`dca-consolidation:${exchange}`, () => executeConsolidation(exchange, orderIds)),
+  executeConsolidation: (exchange = 'coinbase', pair, orderIds = null) => {
+    const fund = resolveFundPair(exchange, pair);
+    return withFund(
+      trackPendingWrite(`dca-consolidation:${fundKey(exchange, fund)}`, () => executeConsolidation(exchange, fund, orderIds)),
+      fund,
+    );
+  },
 };

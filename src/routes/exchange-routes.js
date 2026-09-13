@@ -28,7 +28,7 @@ const {
 } = require('../config-utils');
 const { normalizeConfig, getNextExecutionTime, hasRunThisInterval, formatInterval, getTimeUntilNext } = require('../interval-utils');
 const { createContextLogger, loadTransactionHistory, getLogFile } = require('../logger');
-const { syncOrderStatuses, runIntervalCycle, loadConfig, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
+const { syncOrderStatuses, runIntervalCycle, executeConsolidation, reconcilePlacementIntent } = require('../dca-engine');
 const { shouldAutoResumeRegime } = require('../shared-utils');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { resolvePairParam, getSafeIPC, asyncRoute } = require('./route-utils');
@@ -574,8 +574,8 @@ module.exports = (app, deps) => {
 
     exchangeLogger(exchange, pair, '/api/:exchange/trade').info(`ℹ️ [${exchange}/${pair}] Manual trade triggered via API`, { action: 'manual-trade' });
 
-    const result = await runIntervalCycle(exchange);
-    res.json({ ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
+    const result = await runIntervalCycle(exchange, pair);
+    res.json({ exchange, pair, ...result, triggeredAt: new Date().toISOString(), trigger: 'manual' });
   }));
 
   // Consolidate pending orders for an exchange/fund
@@ -605,8 +605,10 @@ module.exports = (app, deps) => {
       });
     }
 
-    const result = await executeConsolidation(exchange, orderIds);
+    const result = await executeConsolidation(exchange, pair, orderIds);
     res.json({
+      exchange,
+      pair,
       ...result,
       triggeredAt: new Date().toISOString(),
       trigger: 'manual',
@@ -617,6 +619,8 @@ module.exports = (app, deps) => {
   // the interval cycle refuses to place, across restarts (#472).
   app.post('/api/:exchange/reconcile-placement-intent', asyncRoute(async (req, res) => {
     const { exchange } = req.params;
+    const { pair, error } = resolvePairParam(req);
+    if (error) return res.status(400).json({ success: false, error });
     const { intentId, action } = req.body || {};
     if (!intentId || typeof intentId !== 'string') {
       return res.status(400).json({ success: false, error: 'intentId is required' });
@@ -625,14 +629,14 @@ module.exports = (app, deps) => {
       return res.status(400).json({ success: false, error: "action must be 'adopt' or 'discard'" });
     }
 
-    const result = await reconcilePlacementIntent(exchange, intentId, action);
+    const result = await reconcilePlacementIntent(exchange, pair, intentId, action);
     if (!result.success) return res.status(400).json(result);
 
-    exchangeLogger(exchange, undefined, '/api/:exchange/reconcile-placement-intent').info(
-      `ℹ️ 🧾 [${exchange}] Placement intent ${intentId} reconciled (${action})`,
+    exchangeLogger(exchange, pair, '/api/:exchange/reconcile-placement-intent').info(
+      `ℹ️ 🧾 [${exchange}/${pair}] Placement intent ${intentId} reconciled (${action})`,
       { action: `${action}-placement-intent`, intentId },
     );
-    res.json({ ...result, placementIntents: stateTracker.describePlacementIntents(exchange) });
+    res.json({ exchange, pair, ...result, placementIntents: stateTracker.describePlacementIntents(exchange, pair) });
   }));
 
 };
