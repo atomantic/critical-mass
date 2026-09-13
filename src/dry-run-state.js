@@ -3,21 +3,39 @@
  * Dry-Run State Persistence
  *
  * Saves and loads dry-run simulation state to survive server restarts.
- * State is stored per-exchange in a JSON file.
+ *
+ * State lives with every other per-fund artifact, at
+ * `data/<exchange>/<pair>/dry-run-state.json` — inside the mounted data
+ * directory, so it survives a container recreate, lands in backups and comes
+ * back from a restore. It used to live at `<app root>/dry-run-state.json`:
+ * outside the volume, outside backups, and shared by every engine process,
+ * which made concurrent read-modify-write saves lose each other's updates
+ * (issue #531). One file per fund means each process only ever writes the
+ * funds it owns, so no cross-process merge and no lock is needed.
+ *
+ * A legacy root file is imported lazily, per fund, on first read and is never
+ * deleted — it stays as the operator's fallback, the same way `migrateKeys`
+ * leaves `keys.json` in place.
  */
 
 const fs = require('fs');
 const path = require('path');
+const { resolveFundDataDir, getFundDataDir } = require('./migration');
+const { atomicWriteSync } = require('./state-tracker');
+const { fundKey: composeFundKey } = require('./shared-utils');
 const { createContextLogger } = require('./logger');
 
 const dryRunStateLogger = createContextLogger();
 
-const STATE_FILE = path.join(__dirname, '..', 'dry-run-state.json');
+const STATE_FILENAME = 'dry-run-state.json';
+const APP_ROOT = path.join(__dirname, '..');
+/** Pre-#531 location: a single file for every fund, outside the data directory. */
+const LEGACY_STATE_FILE = path.join(APP_ROOT, STATE_FILENAME);
 const SAVE_DEBOUNCE_MS = 5000; // Debounce saves to avoid excessive disk writes
 
 let pendingSave = null;
 let lastSaveTime = 0;
-/** @type {Map<string, ExchangeDryRunState>} */
+/** @type {Map<string, {exchange: string, pair: string|undefined, state: ExchangeDryRunState}>} */
 const pendingStates = new Map();
 
 /**
@@ -68,91 +86,176 @@ const pendingStates = new Map();
  */
 
 /**
- * @typedef {Object} AllDryRunState
- * @property {Object.<string, ExchangeDryRunState>} exchanges - State per exchange
+ * On-disk envelope for one fund. `state: null` is a tombstone written by
+ * clearState — it records "this fund was deliberately reset" so a later read
+ * does NOT fall back to importing a stale slot out of the legacy root file.
+ * @typedef {Object} FundStateFile
+ * @property {number} version - State version for migration
+ * @property {ExchangeDryRunState|null} state - The fund's state, or null when cleared
+ */
+
+/**
+ * Legacy (pre-#531) root file: every fund in one `exchanges` map.
+ * @typedef {Object} LegacyAllDryRunState
+ * @property {Object.<string, ExchangeDryRunState>} exchanges - State per fund key
  * @property {number} version - State version for migration
  */
 
 const STATE_VERSION = 1;
+const STALE_STATE_DAYS = 7;
+
+// Compose the key identifying a fund in logs (and in the legacy root file).
+// Legacy single-fund installations stored state under bare exchange names;
+// callers that pass no pair still get that form so their log context is stable.
+const fundKey = (exchange, pair) => (pair ? composeFundKey(exchange, pair) : exchange);
 
 /**
- * Load all dry-run state from disk
- * @returns {AllDryRunState}
+ * Resolve the per-fund state file PATH without creating anything. Read side.
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name; defaults to the exchange's default pair
+ * @returns {string}
  */
-const loadAllState = () => {
-  if (!fs.existsSync(STATE_FILE)) {
-    return { exchanges: {}, version: STATE_VERSION };
-  }
+const getStateFile = (exchange, pair) => path.join(resolveFundDataDir(exchange, pair), STATE_FILENAME);
 
-  let state;
-  // A corrupt state file must not crash the process — this runs from a
-  // debounced setTimeout flush as well as on load. But returning empty would
-  // let the next save overwrite the file, silently dropping every other fund's
-  // dry-run state — so quarantine the bad file aside for manual recovery first.
+/**
+ * Read + validate one fund's on-disk envelope.
+ * @param {string} stateFile - Path to the fund's state file
+ * @param {string} key - Fund key, for log context
+ * @param {{info: Function, warn: Function}} logger - Context logger
+ * @returns {ExchangeDryRunState|null} The fund's state, or null when absent/cleared/unusable
+ */
+const readFundStateFile = (stateFile, key, logger) => {
+  /** @type {FundStateFile} */
+  let payload;
+  // A corrupt state file must not crash the process — this also runs from a
+  // debounced setTimeout flush. Quarantine it rather than leaving it in place
+  // for the next save to overwrite, so the operator can still recover it.
   try {
-    state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    payload = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   } catch (err) {
-    const quarantinePath = `${STATE_FILE}.corrupt-${Date.now()}`;
-    fs.renameSync(STATE_FILE, quarantinePath);
-    dryRunStateLogger.warn(`⚠️ Dry-run state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)}, starting fresh`, {
-      stateFile: STATE_FILE,
+    const quarantinePath = `${stateFile}.corrupt-${Date.now()}`;
+    fs.renameSync(stateFile, quarantinePath);
+    logger.warn(`⚠️ [${key}] Dry-run state unreadable (${err.message}) — quarantined to ${path.basename(quarantinePath)}, starting fresh`, {
+      fundKey: key,
+      stateFile,
       quarantinePath,
       error: err.message,
     });
-    return { exchanges: {}, version: STATE_VERSION };
+    return null;
   }
 
   // Version check for future migrations
-  if (state.version !== STATE_VERSION) {
-    dryRunStateLogger.warn(`⚠️ Dry-run state version mismatch (${state.version} vs ${STATE_VERSION}), starting fresh`, {
-      stateFile: STATE_FILE,
-      actualVersion: state.version,
+  if (payload?.version !== STATE_VERSION) {
+    logger.warn(`⚠️ [${key}] Dry-run state version mismatch (${payload?.version} vs ${STATE_VERSION}), starting fresh`, {
+      fundKey: key,
+      stateFile,
+      actualVersion: payload?.version ?? null,
       expectedVersion: STATE_VERSION,
     });
-    return { exchanges: {}, version: STATE_VERSION };
+    return null;
   }
 
+  return payload.state ?? null;
+};
+
+/**
+ * Write one fund's envelope atomically (temp file + rename), creating the fund
+ * directory if needed. A torn write can no longer strand unparseable JSON, and
+ * it can never take another fund down with it.
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name
+ * @param {ExchangeDryRunState|null} [state] - State to persist, or null for a tombstone
+ * @returns {string} The file written
+ */
+const writeFundStateFile = (exchange, pair, state = null) => {
+  const stateFile = path.join(getFundDataDir(exchange, pair), STATE_FILENAME);
+  atomicWriteSync(stateFile, JSON.stringify({ version: STATE_VERSION, state }, null, 2));
+  return stateFile;
+};
+
+/**
+ * Read the legacy root file's fund map, or null when there is nothing usable.
+ * The legacy file is never renamed or deleted here — it is the operator's
+ * fallback copy, so an unreadable one is reported and skipped, not quarantined.
+ * @param {{warn: Function}} logger - Context logger
+ * @returns {Object.<string, ExchangeDryRunState>|null}
+ */
+const readLegacyFundMap = (logger) => {
+  if (!fs.existsSync(LEGACY_STATE_FILE)) return null;
+
+  /** @type {LegacyAllDryRunState} */
+  let legacy;
+  try {
+    legacy = JSON.parse(fs.readFileSync(LEGACY_STATE_FILE, 'utf8'));
+  } catch (err) {
+    logger.warn(`⚠️ Legacy dry-run state is unreadable (${err.message}) — leaving it in place, starting fresh`, {
+      stateFile: LEGACY_STATE_FILE,
+      error: err.message,
+    });
+    return null;
+  }
+
+  if (legacy?.version !== STATE_VERSION) {
+    logger.warn(`⚠️ Legacy dry-run state version mismatch (${legacy?.version} vs ${STATE_VERSION}) — leaving it in place, starting fresh`, {
+      stateFile: LEGACY_STATE_FILE,
+      actualVersion: legacy?.version ?? null,
+      expectedVersion: STATE_VERSION,
+    });
+    return null;
+  }
+
+  return legacy.exchanges ?? null;
+};
+
+/**
+ * One-time, idempotent import of a single fund's slot out of the legacy root
+ * file. Only ever called when the fund has no file of its own, so re-running it
+ * after a successful import is a no-op, and it can never overwrite state the
+ * engine has already written. Both key forms the legacy writer produced are
+ * accepted: the composite `exchange::pair` and the bare `exchange`.
+ * @param {string} exchange - Exchange name
+ * @param {string} [pair] - Pair name
+ * @param {string} resolvedPair - Pair the fund directory actually resolved to
+ * @param {{info: Function, warn: Function}} logger - Context logger
+ * @returns {ExchangeDryRunState|null}
+ */
+const importLegacyFundState = (exchange, pair, resolvedPair, logger) => {
+  const legacyFunds = readLegacyFundMap(logger);
+  if (!legacyFunds) return null;
+
+  const key = composeFundKey(exchange, resolvedPair);
+  // Accept the bare-exchange key too: that is what pre-multi-pair installs wrote.
+  const legacyKey = [key, exchange]
+    .find(candidate => Object.hasOwn(legacyFunds, candidate) && legacyFunds[candidate]);
+  if (!legacyKey) return null;
+
+  const state = legacyFunds[legacyKey];
+  const stateFile = writeFundStateFile(exchange, pair, state);
+  logger.info(`📦 [${key}] Imported dry-run state from legacy ${STATE_FILENAME} slot '${legacyKey}' (original left in place)`, {
+    fundKey: key,
+    legacyKey,
+    legacyFile: LEGACY_STATE_FILE,
+    stateFile,
+  });
   return state;
 };
 
 /**
- * Save all state to disk
- * @param {AllDryRunState} state - State to save
- */
-const saveAllState = (state) => {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-};
-
-/**
- * Flush every queued fund in `pendingStates` to disk in a single pass, stamping
- * each with `now`, then empty the queue. Shared by the debounce timer, the
- * immediate save branch, and forceSave so none of them can strand a fund that
- * was queued by an earlier debounced call (#159).
+ * Flush every queued fund in `pendingStates` to its own file, stamping each
+ * with `now`, then empty the queue. Shared by the debounce timer, the immediate
+ * save branch, and forceSave so none of them can strand a fund that was queued
+ * by an earlier debounced call (#159).
  * @returns {number} how many funds were flushed
  */
 const flushPendingStates = () => {
   const now = Date.now();
-  const allState = loadAllState();
   const fundCount = pendingStates.size;
-  for (const [k, state] of pendingStates) {
-    allState.exchanges[k] = {
-      ...state,
-      savedAt: now,
-    };
+  for (const { exchange, pair, state } of pendingStates.values()) {
+    writeFundStateFile(exchange, pair, { ...state, savedAt: now });
   }
   pendingStates.clear();
-  saveAllState(allState);
   return fundCount;
 };
-
-const { fundKey: composeFundKey } = require('./shared-utils');
-
-// Compose the key for the per-fund slot inside the dry-run state file.
-// Legacy single-fund installations stored state under bare exchange names;
-// for backwards compat we still write that form when no pair is provided
-// (older callers won't break) — but new callers always pass a pair and get
-// a proper composite key.
-const fundKey = (exchange, pair) => (pair ? composeFundKey(exchange, pair) : exchange);
 
 /**
  * Load dry-run state for a fund (exchange + pair).
@@ -163,33 +266,51 @@ const fundKey = (exchange, pair) => (pair ? composeFundKey(exchange, pair) : exc
 const loadState = (exchange, pair) => {
   const key = fundKey(exchange, pair);
   const logger = createContextLogger({ exchange, pair });
-  const allState = loadAllState();
-  const exchangeState = allState.exchanges[key];
+  const stateFile = getStateFile(exchange, pair);
 
-  if (!exchangeState) {
-    logger.info(`ℹ️ [${key}] No saved dry-run state found`, { fundKey: key, stateFile: STATE_FILE });
+  // The fund directory name is the authoritative pair when the caller omitted
+  // one (resolveFundDataDir falls back to the exchange's configured default).
+  const fundState = fs.existsSync(stateFile)
+    ? readFundStateFile(stateFile, key, logger)
+    : importLegacyFundState(exchange, pair, pair || path.basename(path.dirname(stateFile)), logger);
+
+  if (!fundState) {
+    logger.info(`ℹ️ [${key}] No saved dry-run state found`, { fundKey: key, stateFile });
     return null;
   }
 
-  // Check if state is stale (older than 7 days)
-  const ageMs = Date.now() - exchangeState.savedAt;
-  const ageDays = ageMs / (1000 * 60 * 60 * 24);
-  if (ageDays > 7) {
-    logger.warn(`⚠️ [${key}] Dry-run state is ${ageDays.toFixed(1)} days old, discarding`, {
+  // A snapshot without a usable timestamp cannot be aged, and restoring an
+  // unknown-age simulation is exactly what the staleness check exists to
+  // prevent — discard it rather than let `new Date(undefined)` throw below.
+  const savedAt = Number(fundState.savedAt);
+  if (!Number.isFinite(savedAt)) {
+    logger.warn(`⚠️ [${key}] Dry-run state has no usable savedAt timestamp, discarding`, {
       fundKey: key,
-      stateFile: STATE_FILE,
-      ageDays,
-      savedAt: exchangeState.savedAt,
+      stateFile,
+      savedAt: fundState.savedAt ?? null,
     });
     return null;
   }
 
-  logger.info(`📂 [${key}] Loaded dry-run state from ${new Date(exchangeState.savedAt).toISOString()}`, {
+  // Check if state is stale (older than 7 days)
+  const ageMs = Date.now() - savedAt;
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+  if (ageDays > STALE_STATE_DAYS) {
+    logger.warn(`⚠️ [${key}] Dry-run state is ${ageDays.toFixed(1)} days old, discarding`, {
+      fundKey: key,
+      stateFile,
+      ageDays,
+      savedAt,
+    });
+    return null;
+  }
+
+  logger.info(`📂 [${key}] Loaded dry-run state from ${new Date(savedAt).toISOString()}`, {
     fundKey: key,
-    stateFile: STATE_FILE,
-    savedAt: exchangeState.savedAt,
+    stateFile,
+    savedAt,
   });
-  return exchangeState;
+  return fundState;
 };
 
 /**
@@ -202,7 +323,7 @@ const saveState = (exchange, exchangeState, pair) => {
   const key = fundKey(exchange, pair);
   const logger = createContextLogger({ exchange, pair });
   // Always store the latest state for this fund
-  pendingStates.set(key, exchangeState);
+  pendingStates.set(key, { exchange, pair, state: exchangeState });
 
   // Debounce saves
   const now = Date.now();
@@ -214,7 +335,6 @@ const saveState = (exchange, exchangeState, pair) => {
         const fundCount = flushPendingStates();
         lastSaveTime = Date.now();
         dryRunStateLogger.info(`💾 Dry-run state saved for ${fundCount} fund(s)`, {
-          stateFile: STATE_FILE,
           fundCount,
           saveMode: 'debounced',
         });
@@ -239,7 +359,7 @@ const saveState = (exchange, exchangeState, pair) => {
   const fundCount = flushPendingStates();
   logger.info(`💾 [${key}] Dry-run state saved (${fundCount} fund(s))`, {
     fundKey: key,
-    stateFile: STATE_FILE,
+    stateFile: getStateFile(exchange, pair),
     fundCount,
     saveMode: 'immediate',
   });
@@ -263,10 +383,11 @@ const clearState = (exchange, pair) => {
     pendingSave = null;
   }
 
-  const allState = loadAllState();
-  delete allState.exchanges[key];
-  saveAllState(allState);
-  logger.info(`🗑️ [${key}] Dry-run state cleared`, { fundKey: key, stateFile: STATE_FILE });
+  // Write a tombstone rather than removing the file: an absent file is the
+  // signal that triggers the legacy-root import, so deleting would let a reset
+  // fund resurrect its pre-migration state on the next read.
+  const stateFile = writeFundStateFile(exchange, pair, null);
+  logger.info(`🗑️ [${key}] Dry-run state cleared`, { fundKey: key, stateFile });
 };
 
 /**
@@ -286,11 +407,11 @@ const forceSave = (exchange, exchangeState, pair) => {
   // Queue this fund's fresh snapshot, then flush the whole queue — cancelling the
   // timer above would otherwise strand any fund queued by an earlier debounced
   // call (issue #159). Setting it last lets it win over any stale queued entry.
-  pendingStates.set(key, exchangeState);
+  pendingStates.set(key, { exchange, pair, state: exchangeState });
   flushPendingStates();
   logger.info(`💾 [${key}] Dry-run state force saved`, {
     fundKey: key,
-    stateFile: STATE_FILE,
+    stateFile: getStateFile(exchange, pair),
     saveMode: 'forced',
   });
 };
@@ -300,5 +421,7 @@ module.exports = {
   saveState,
   clearState,
   forceSave,
-  STATE_FILE,
+  getStateFile,
+  STATE_FILENAME,
+  LEGACY_STATE_FILE,
 };

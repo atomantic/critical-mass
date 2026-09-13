@@ -124,6 +124,49 @@ describe('backup-service — createBackup/restoreBackup', () => {
   });
 });
 
+describe('backup-service — dry-run state round-trips (#531)', () => {
+  // Dry-run state used to live at <app root>/dry-run-state.json, outside the
+  // data directory: never archived, never restored, and lost on every container
+  // recreate. Now that it is a per-fund artifact it must survive the round trip
+  // like every other one.
+  const fundDir = path.join(DATA_DIR, '__backup_dryrun__', 'BTC-USD');
+  const stateFile = path.join(fundDir, 'dry-run-state.json');
+  const payload = { version: 1, state: { isDryRun: true, position: { totalAsset: 0.25, totalCostBasis: 12345 }, savedAt: 1 } };
+  const createdBackups = [];
+
+  beforeEach(() => {
+    fs.mkdirSync(fundDir, { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify(payload));
+  });
+
+  afterEach(() => {
+    removeAll([path.join(DATA_DIR, '__backup_dryrun__')]);
+    for (const filename of createdBackups.splice(0)) {
+      deleteBackup(filename);
+    }
+  });
+
+  it('archives the per-fund state file and restores the simulated position', () => {
+    const created = createBackup();
+    assert.equal(created.success, true);
+    createdBackups.push(created.filename);
+
+    const entries = listZipEntries(path.join(BACKUP_DIR, created.filename));
+    assert.ok(
+      entries.includes('__backup_dryrun__/BTC-USD/dry-run-state.json'),
+      `archive should contain the per-fund dry-run state, got: ${entries.join(', ')}`
+    );
+
+    // Wipe the fund the way a container recreate would, then restore.
+    fs.rmSync(path.join(DATA_DIR, '__backup_dryrun__'), { recursive: true, force: true });
+    assert.equal(fs.existsSync(stateFile), false);
+
+    const restored = restoreBackup(created.filename);
+    assert.equal(restored.success, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')), payload);
+  });
+});
+
 describe('backup-service — credential exclusion', () => {
   const topLevelKeys = path.join(DATA_DIR, '__backup_service_test_coinbase-keys.json');
   const subDir = path.join(DATA_DIR, '__backup_service_test_gemini__');

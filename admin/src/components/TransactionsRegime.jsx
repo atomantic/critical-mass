@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useId } from 'react'
 import { formatCurrency, formatPrice, formatAsset } from './charts/chartUtils'
 import { getBaseCurrency } from '../App'
 import { pairQuery as buildPairQuery } from '../utils/api'
@@ -7,6 +7,7 @@ import { computeFillsWithPnL } from './transactionsRegimePnl'
 import { compareCycleIds } from '../utils/regimeFillGroups.mjs'
 
 function TransactionsRegime({ exchange = 'coinbase', pair }) {
+  const cycleFilterId = useId()
   const [fills, setFills] = useState([])
   const [openOrders, setOpenOrders] = useState([])
   const [status, setStatus] = useState(null)
@@ -296,8 +297,9 @@ function TransactionsRegime({ exchange = 'coinbase', pair }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-400">Cycle:</span>
+          <label htmlFor={cycleFilterId} className="text-sm text-gray-400">Cycle:</label>
           <select
+            id={cycleFilterId}
             value={cycleFilter}
             onChange={(e) => setCycleFilter(e.target.value)}
             className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white"

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense, useId } from 'react'
 import { useRegimeEvents } from '../hooks/useTradeEvents'
 import { useChartDataBuffer } from '../hooks/useChartDataBuffer'
 import { useToast } from './Toast'
@@ -2173,8 +2173,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     <span className="text-green-400">Max: ${(apy.maxUsdcDeployed || apy.currentCapital)?.toLocaleString()}</span>
                     {capitalAdjustMode ? (
                       <span className="inline-flex items-center gap-1">
-                        <span className="text-cyan-400">Available: $</span>
+                        <label htmlFor={capitalAdjustInputId} className="text-cyan-400">Available: $</label>
                         <input
+                          id={capitalAdjustInputId}
                           type="number"
                           className="w-24 bg-gray-700 border border-cyan-500 rounded px-1 py-0.5 text-cyan-400 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500"
                           value={capitalAdjustValue}
@@ -2467,6 +2468,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 )}
                 {pendingOrdersList.length > 0 && (
                   <input
+                    aria-label="Filter open orders by ID"
                     type="text"
                     value={openSearchId}
                     onChange={e => setOpenSearchId(e.target.value)}
@@ -2482,8 +2484,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                 <div className="text-xs font-medium text-indigo-300">Ladder Settings</div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div>
-                    <label className="text-[10px] text-gray-400 block mb-1">ATH Drop %</label>
+                    <label htmlFor={athDropId} className="text-[10px] text-gray-400 block mb-1">ATH Drop %</label>
                     <input
+                      id={athDropId}
                       type="text"
                       inputMode="decimal"
                       value={ladderNumberDraft.ladderMaxAthDropPct ?? ladderEdits.ladderMaxAthDropPct}
@@ -2502,8 +2505,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] text-gray-400 block mb-1">Spacing Mode</label>
+                    <label htmlFor={spacingModeId} className="text-[10px] text-gray-400 block mb-1">Spacing Mode</label>
                     <select
+                      id={spacingModeId}
                       value={ladderEdits.ladderSpacingMode}
                       onChange={e => {
                         const val = e.target.value
@@ -2518,8 +2522,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </select>
                   </div>
                   <div>
-                    <label className="text-[10px] text-gray-400 block mb-1">Size Mode</label>
+                    <label htmlFor={sizeModeId} className="text-[10px] text-gray-400 block mb-1">Size Mode</label>
                     <select
+                      id={sizeModeId}
                       value={ladderEdits.ladderSizeMode}
                       onChange={e => {
                         const val = e.target.value
@@ -2535,8 +2540,9 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                     </select>
                   </div>
                   <div>
-                    <label className="text-[10px] text-gray-400 block mb-1">Min Spacing %</label>
+                    <label htmlFor={minSpacingId} className="text-[10px] text-gray-400 block mb-1">Min Spacing %</label>
                     <input
+                      id={minSpacingId}
                       type="text"
                       inputMode="decimal"
                       value={ladderNumberDraft.ladderMinSpacingPct ?? ladderEdits.ladderMinSpacingPct}
@@ -3054,6 +3060,7 @@ function RegimeDashboard({ exchange = 'coinbase', pair }) {
                   </span>
                 )}
                 <input
+                  aria-label="Filter fills by ID"
                   type="text"
                   value={fillSearchId}
                   onChange={e => setFillSearchId(e.target.value)}

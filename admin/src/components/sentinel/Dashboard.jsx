@@ -210,6 +210,7 @@ export default function SentinelDashboard() {
         </div>
         <div className="flex gap-2">
           <input
+            aria-label="Feed name"
             type="text"
             value={newFeedName}
             onChange={e => setNewFeedName(e.target.value)}
@@ -217,6 +218,7 @@ export default function SentinelDashboard() {
             className="px-3 py-1.5 bg-gray-900 border border-gray-600 rounded text-sm text-white w-40"
           />
           <input
+            aria-label="RSS feed URL"
             type="text"
             value={newFeedUrl}
             onChange={e => setNewFeedUrl(e.target.value)}
@@ -239,6 +241,7 @@ export default function SentinelDashboard() {
           <h2 className="text-lg font-semibold text-white">Alerts</h2>
           <div className="flex items-center gap-2">
             <select
+              aria-label="Alert filter"
               value={filter}
               onChange={e => setFilter(e.target.value)}
               className="bg-gray-900 border border-gray-600 rounded text-sm text-white px-2 py-1"

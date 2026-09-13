@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useId } from 'react'
 import { useLogStream } from '../hooks/useLogStream'
 import { useToast } from './Toast'
 import { flushResultToast } from '../utils/flushResult.mjs'
@@ -20,6 +20,7 @@ const describeStatus = (subscribed, terminal) => {
 }
 
 export default function LogViewer({ processName }) {
+  const tailSelectId = useId()
   const [tailLines, setTailLines] = useState(500)
   const [fullscreen, setFullscreen] = useState(false)
   const { logs, subscribed, clear, flush, flushing, flushResult, terminal, retry } = useLogStream(processName, { lines: tailLines })
@@ -62,8 +63,9 @@ export default function LogViewer({ processName }) {
       {/* Header bar */}
       <div className="flex items-center gap-3 px-4 py-2 bg-gray-800 border-b border-gray-700 flex-wrap">
         <div className="flex items-center gap-2">
-          <label className="text-xs text-gray-400">Tail:</label>
+          <label htmlFor={tailSelectId} className="text-xs text-gray-400">Tail:</label>
           <select
+            id={tailSelectId}
             value={tailLines}
             onChange={(e) => setTailLines(Number(e.target.value))}
             className="bg-gray-700 text-gray-200 text-xs rounded px-2 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
