@@ -215,23 +215,25 @@ const readLegacyFundMap = (logger) => {
  * accepted: the composite `exchange::pair` and the bare `exchange`.
  * @param {string} exchange - Exchange name
  * @param {string} [pair] - Pair name
- * @param {string} [resolvedPair] - Pair the fund directory actually resolved to
- * @param {{info: Function, warn: Function}} [logger] - Context logger
+ * @param {string} resolvedPair - Pair the fund directory actually resolved to
+ * @param {{info: Function, warn: Function}} logger - Context logger
  * @returns {ExchangeDryRunState|null}
  */
-const importLegacyFundState = (exchange, pair, resolvedPair, logger = dryRunStateLogger) => {
+const importLegacyFundState = (exchange, pair, resolvedPair, logger) => {
   const legacyFunds = readLegacyFundMap(logger);
   if (!legacyFunds) return null;
 
-  const key = [composeFundKey(exchange, resolvedPair), exchange]
+  const key = composeFundKey(exchange, resolvedPair);
+  // Accept the bare-exchange key too: that is what pre-multi-pair installs wrote.
+  const legacyKey = [key, exchange]
     .find(candidate => Object.hasOwn(legacyFunds, candidate) && legacyFunds[candidate]);
-  if (!key) return null;
+  if (!legacyKey) return null;
 
-  const state = legacyFunds[key];
+  const state = legacyFunds[legacyKey];
   const stateFile = writeFundStateFile(exchange, pair, state);
-  logger.info(`📦 [${key}] Imported dry-run state from legacy ${STATE_FILENAME} (original left in place)`, {
+  logger.info(`📦 [${key}] Imported dry-run state from legacy ${STATE_FILENAME} slot '${legacyKey}' (original left in place)`, {
     fundKey: key,
-    legacyKey: key,
+    legacyKey,
     legacyFile: LEGACY_STATE_FILE,
     stateFile,
   });
