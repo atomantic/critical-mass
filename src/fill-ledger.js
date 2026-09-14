@@ -110,8 +110,9 @@ const isCompletedCycle = (cycleFills, threshold = CYCLE_COMPLETE_SELL_RATIO) => 
   let buys = 0;
   let sells = 0;
   for (const fill of cycleFills) {
-    if (fill.side === 'buy') buys += fill.size;
-    else if (fill.side === 'sell') sells += fill.size;
+    const size = Number(fill.size) || 0;
+    if (fill.side === 'buy') buys += size;
+    else if (fill.side === 'sell') sells += size;
   }
   return buys > 0 && (sells / buys) >= threshold;
 };
@@ -200,6 +201,35 @@ const buildCycleRenumberingMap = (cycleTimestamps, completedIds) => {
     cycleNum++;
   }
   return { idMap, nextCycleNumber: cycleNum, renumbered };
+};
+
+/**
+ * Collect the earliest fill timestamp for each cycle across existing cycles and orphan cycles.
+ * @param {Map<string, Fill[]>} cycleMap - Map of cycleId -> array of fills
+ * @param {Array<{cycleId: string, fills: Fill[]}>} [orphanCycles=[]] - Array of recovered orphan cycles
+ * @returns {Map<string, number>} Map of cycleId -> earliest timestamp
+ */
+const collectCycleTimestamps = (cycleMap, orphanCycles = []) => {
+  const cycleTimestamps = new Map();
+  for (const [id, cycleFills] of cycleMap) {
+    for (const fill of cycleFills) {
+      const ts = Number(fill.timestamp) || 0;
+      const existing = cycleTimestamps.get(id);
+      if (existing === undefined || ts < existing) {
+        cycleTimestamps.set(id, ts);
+      }
+    }
+  }
+  for (const { cycleId, fills: cycleFills } of orphanCycles) {
+    for (const fill of cycleFills) {
+      const ts = Number(fill.timestamp) || 0;
+      const existing = cycleTimestamps.get(cycleId);
+      if (existing === undefined || ts < existing) {
+        cycleTimestamps.set(cycleId, ts);
+      }
+    }
+  }
+  return cycleTimestamps;
 };
 
 /**
@@ -1130,15 +1160,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // Renumber cycles only when orphan fills created new cycle IDs that need
     // sequential numbering. Skip renumbering otherwise to preserve stable IDs.
     if (orphansFixed > 0) {
-      const cycleTimestamps = new Map();
-      for (const fill of Array.from(fills.values())) {
-        if (!fill.cycleId) continue;
-        const existing = cycleTimestamps.get(fill.cycleId);
-        if (!existing || fill.timestamp < existing) {
-          cycleTimestamps.set(fill.cycleId, fill.timestamp);
-        }
-      }
-
+      const cycleTimestamps = collectCycleTimestamps(cycleMap, orphanCycles);
       const completedIds = new Set(cycleDetails.map(d => d.cycleId));
       const { idMap, nextCycleNumber: cycleNum, renumbered } = buildCycleRenumberingMap(cycleTimestamps, completedIds);
 
@@ -1262,19 +1284,7 @@ const createFillLedger = (exchange, productId, pair, opts = {}) => {
     // Renumber preview cycle IDs if orphan fills created new cycle IDs,
     // mirroring the renumbering in recalculateCycles without mutating fills.
     if (orphansFixed > 0) {
-      const cycleTimestamps = new Map();
-      for (const [id, cycleFills] of cycleMap) {
-        for (const fill of cycleFills) {
-          const existing = cycleTimestamps.get(id);
-          if (!existing || fill.timestamp < existing) {
-            cycleTimestamps.set(id, fill.timestamp);
-          }
-        }
-      }
-      for (const { cycleId, fills: cycleFills } of orphanCycles) {
-        cycleTimestamps.set(cycleId, cycleFills[0].timestamp);
-      }
-
+      const cycleTimestamps = collectCycleTimestamps(cycleMap, orphanCycles);
       const completedIds = new Set(cycleDetails.map(d => d.cycleId));
       const { idMap } = buildCycleRenumberingMap(cycleTimestamps, completedIds);
 
@@ -1767,6 +1777,7 @@ module.exports = {
   isCompletedCycle,
   splitOrphansIntoCycles,
   groupFillsByCycle,
+  collectCycleTimestamps,
   buildCycleRenumberingMap,
   setCycleCompleteSellRatioForTest,
 };
