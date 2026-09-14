@@ -9,6 +9,7 @@ const { syncOrderStatuses, runIntervalCycle } = require('../dca-engine');
 const { createContextLogger, getLogFile } = require('../logger');
 const { validateConfigUpdate, validateAndSanitizeRegimeConfig, EXCHANGE_CONFIG_SCHEMA } = require('../config-validator');
 const { asyncRoute } = require('./route-utils');
+const { readBooleanFlag } = require('../shared-utils');
 
 /**
  * Context logger for the unprefixed legacy routes. Every one of them is pinned
@@ -81,11 +82,16 @@ module.exports = (app, deps) => {
   });
 
   app.patch('/api/config', (req, res) => {
-    const { enabled, dryRun } = req.body || {};
-    if (typeof enabled === 'boolean') setExchangeEnabled('coinbase', enabled);
-    if (typeof dryRun === 'boolean') setExchangeDryRun('coinbase', dryRun);
+    const body = req.body || {};
+    const enabledFlag = readBooleanFlag(body, 'enabled', undefined);
+    if (enabledFlag.error) return res.status(400).json({ success: false, error: enabledFlag.error });
+    const dryRunFlag = readBooleanFlag(body, 'dryRun', undefined);
+    if (dryRunFlag.error) return res.status(400).json({ success: false, error: dryRunFlag.error });
+    let applied = false;
+    if (typeof enabledFlag.value === 'boolean') { setExchangeEnabled('coinbase', enabledFlag.value); applied = true; }
+    if (typeof dryRunFlag.value === 'boolean') { setExchangeDryRun('coinbase', dryRunFlag.value); applied = true; }
     const config = getExchangeConfig('coinbase');
-    res.json({ success: true, config });
+    res.json({ success: true, applied, config });
   });
 
   app.get('/api/state', (req, res) => {
