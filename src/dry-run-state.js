@@ -181,15 +181,18 @@ const writeFundStateFile = (exchange, pair, state = null) => {
  * @returns {Object.<string, ExchangeDryRunState>|null}
  */
 const readLegacyFundMap = (logger) => {
-  if (!fs.existsSync(LEGACY_STATE_FILE)) return null;
+  // Read through module.exports so tests that repoint LEGACY_STATE_FILE at a
+  // tmp root take effect, the same seam migration.getExchangeDataDir uses.
+  const legacyFile = module.exports.LEGACY_STATE_FILE;
+  if (!fs.existsSync(legacyFile)) return null;
 
   /** @type {LegacyAllDryRunState} */
   let legacy;
   try {
-    legacy = JSON.parse(fs.readFileSync(LEGACY_STATE_FILE, 'utf8'));
+    legacy = JSON.parse(fs.readFileSync(legacyFile, 'utf8'));
   } catch (err) {
     logger.warn(`⚠️ Legacy dry-run state is unreadable (${err.message}) — leaving it in place, starting fresh`, {
-      stateFile: LEGACY_STATE_FILE,
+      stateFile: legacyFile,
       error: err.message,
     });
     return null;
@@ -197,7 +200,7 @@ const readLegacyFundMap = (logger) => {
 
   if (legacy?.version !== STATE_VERSION) {
     logger.warn(`⚠️ Legacy dry-run state version mismatch (${legacy?.version} vs ${STATE_VERSION}) — leaving it in place, starting fresh`, {
-      stateFile: LEGACY_STATE_FILE,
+      stateFile: legacyFile,
       actualVersion: legacy?.version ?? null,
       expectedVersion: STATE_VERSION,
     });
@@ -234,7 +237,7 @@ const importLegacyFundState = (exchange, pair, resolvedPair, logger) => {
   logger.info(`📦 [${key}] Imported dry-run state from legacy ${STATE_FILENAME} slot '${legacyKey}' (original left in place)`, {
     fundKey: key,
     legacyKey,
-    legacyFile: LEGACY_STATE_FILE,
+    legacyFile: module.exports.LEGACY_STATE_FILE,
     stateFile,
   });
   return state;

@@ -11,9 +11,10 @@ const migration = require('../src/migration');
  * Reload the module fresh per test so its module-level `pendingStates` /
  * `lastSaveTime` start clean and don't bleed across cases, and point the data
  * directory at a throwaway tmp root through the `migration.getExchangeDataDir`
- * seam every other per-fund module is tested through. The legacy root file is
- * backed up and restored so the suite can exercise the one-time import without
- * destroying a developer's own pre-migration state.
+ * seam every other per-fund module is tested through. `LEGACY_STATE_FILE` is
+ * repointed into the same tmp root: the legacy path is a real file in the app
+ * root on any machine that has run the engine, so reading it would make these
+ * cases depend on developer state, and writing it would clobber it.
  */
 const setup = (t, now = 10_000) => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now });
@@ -28,14 +29,10 @@ const setup = (t, now = 10_000) => {
   const modPath = require.resolve('../src/dry-run-state');
   delete require.cache[modPath];
   const mod = require('../src/dry-run-state');
-  const legacyBackup = fs.existsSync(mod.LEGACY_STATE_FILE)
-    ? fs.readFileSync(mod.LEGACY_STATE_FILE)
-    : null;
+  mod.LEGACY_STATE_FILE = path.join(tmpRoot, mod.STATE_FILENAME);
 
   t.after(() => {
     migration.getExchangeDataDir = originalGetExchangeDataDir;
-    if (legacyBackup === null) fs.rmSync(mod.LEGACY_STATE_FILE, { force: true });
-    else fs.writeFileSync(mod.LEGACY_STATE_FILE, legacyBackup);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     delete require.cache[modPath];
   });
@@ -97,7 +94,7 @@ describe('dry-run-state per-fund location (#531)', () => {
     assert.ok(fs.existsSync(file), `expected per-fund state at ${file}`);
     assert.equal(readFund(file).tag, 'A');
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).version, 1, 'version envelope preserved');
-    assert.equal(fs.existsSync(LEGACY_STATE_FILE), false, 'nothing is written to the app root any more');
+    assert.equal(fs.existsSync(LEGACY_STATE_FILE), false, 'nothing is written to the legacy single-file location any more');
   });
 
   it('keeps two funds on the same exchange isolated', (t) => {
